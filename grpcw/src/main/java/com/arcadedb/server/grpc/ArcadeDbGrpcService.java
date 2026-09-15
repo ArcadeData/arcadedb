@@ -1171,17 +1171,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         responded = true;
         resp.onCompleted();
       } catch (Exception e) {
-        final Throwable cause = e instanceof ExecutionException && e.getCause() != null ? e.getCause() : e;
-        if (!responded) {
-          if (cause instanceof RecordNotFoundException)
-            resp.onError(Status.NOT_FOUND.withDescription("LookupByRid: " + cause.getMessage()).asException());
-          else if (cause instanceof StatusRuntimeException sre)
-            // Preserve an explicit gRPC status (e.g. FAILED_PRECONDITION from requireTransactionStillActive)
-            // instead of masking it as INTERNAL, mirroring executeQuery/executeCommand/bulkInsert.
-            resp.onError(sre);
-          else
-            resp.onError(Status.INTERNAL.withDescription("LookupByRid: " + cause.getMessage()).asException());
-        }
+        // GrpcErrorMapper both classifies the failure (RecordNotFoundException -> NOT_FOUND, etc. - issue
+        // #7123) and passes an already-mapped StatusRuntimeException through unchanged (e.g.
+        // FAILED_PRECONDITION from requireTransactionStillActive) instead of masking it as INTERNAL.
+        if (!responded)
+          resp.onError(GrpcErrorMapper.toStatusRuntimeException(e, "LookupByRid"));
       }
       return;
     }
@@ -1191,12 +1185,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       resp.onNext(lookupByRidInternal(req, db));
       responded = true;
       resp.onCompleted();
-    } catch (RecordNotFoundException e) {
-      if (!responded)
-        resp.onError(Status.NOT_FOUND.withDescription("LookupByRid: " + e.getMessage()).asException());
     } catch (Exception e) {
       if (!responded)
-        resp.onError(Status.INTERNAL.withDescription("LookupByRid: " + e.getMessage()).asException());
+        resp.onError(GrpcErrorMapper.toStatusRuntimeException(e, "LookupByRid"));
     }
   }
 
@@ -1242,18 +1233,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         responded = true;
         resp.onCompleted();
       } catch (Exception e) {
-        final Throwable cause = e instanceof ExecutionException && e.getCause() != null ? e.getCause() : e;
-        LogManager.instance().log(this, Level.SEVERE, "ERROR in updateRecord (external tx)", cause);
-        if (!responded) {
-          if (cause instanceof RecordNotFoundException)
-            resp.onError(Status.NOT_FOUND.withDescription("Record not found: " + req.getRid()).asException());
-          else if (cause instanceof StatusRuntimeException sre)
-            // Preserve an explicit gRPC status (e.g. FAILED_PRECONDITION from requireTransactionStillActive)
-            // instead of masking it as INTERNAL, mirroring executeQuery/executeCommand/bulkInsert.
-            resp.onError(sre);
-          else
-            resp.onError(Status.INTERNAL.withDescription("UpdateRecord: " + cause.getMessage()).asException());
-        }
+        LogManager.instance().log(this, Level.SEVERE, "ERROR in updateRecord (external tx)", GrpcErrorMapper.unwrap(e));
+        // GrpcErrorMapper both classifies the failure (RecordNotFoundException -> NOT_FOUND, etc. - issue
+        // #7123) and passes an already-mapped StatusRuntimeException through unchanged (e.g.
+        // FAILED_PRECONDITION from requireTransactionStillActive) instead of masking it as INTERNAL.
+        if (!responded)
+          resp.onError(GrpcErrorMapper.toStatusRuntimeException(e, "UpdateRecord"));
       }
       return;
     }
@@ -1264,13 +1249,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       resp.onNext(updateRecordInternal(req, db));
       responded = true;
       resp.onCompleted();
-    } catch (RecordNotFoundException e) {
-      if (!responded)
-        resp.onError(Status.NOT_FOUND.withDescription("Record not found: " + req.getRid()).asException());
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "ERROR in updateRecord", e);
       if (!responded)
-        resp.onError(Status.INTERNAL.withDescription("UpdateRecord: " + e.getMessage()).asException());
+        resp.onError(GrpcErrorMapper.toStatusRuntimeException(e, "UpdateRecord"));
     }
   }
 
@@ -1433,18 +1415,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         responded = true;
         resp.onCompleted();
       } catch (Exception e) {
-        final Throwable cause = e instanceof ExecutionException && e.getCause() != null ? e.getCause() : e;
-        LogManager.instance().log(this, Level.SEVERE, "ERROR in deleteRecord (external tx)", cause);
-        if (!responded) {
-          if (cause instanceof RecordNotFoundException)
-            resp.onError(Status.NOT_FOUND.withDescription("Record not found: " + req.getRid()).asException());
-          else if (cause instanceof StatusRuntimeException sre)
-            // Preserve an explicit gRPC status (e.g. FAILED_PRECONDITION from requireTransactionStillActive)
-            // instead of masking it as INTERNAL, mirroring executeQuery/executeCommand/bulkInsert.
-            resp.onError(sre);
-          else
-            resp.onError(Status.INTERNAL.withDescription("DeleteRecord: " + cause.getMessage()).asException());
-        }
+        LogManager.instance().log(this, Level.SEVERE, "ERROR in deleteRecord (external tx)", GrpcErrorMapper.unwrap(e));
+        // GrpcErrorMapper both classifies the failure (RecordNotFoundException -> NOT_FOUND, etc. - issue
+        // #7123) and passes an already-mapped StatusRuntimeException through unchanged (e.g.
+        // FAILED_PRECONDITION from requireTransactionStillActive) instead of masking it as INTERNAL.
+        if (!responded)
+          resp.onError(GrpcErrorMapper.toStatusRuntimeException(e, "DeleteRecord"));
       }
       return;
     }
@@ -1455,15 +1431,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       resp.onNext(deleteRecordInternal(req, db));
       responded = true;
       resp.onCompleted();
-    } catch (RecordNotFoundException e) {
-      if (!responded)
-        resp.onError(Status.NOT_FOUND.withDescription("Record not found: " + req.getRid()).asException());
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "ERROR in deleteRecord", e);
       if (!responded)
-        resp.onError(
-            Status.INTERNAL.withDescription("DeleteRecord: " + (e.getMessage() == null ? e.toString() : e.getMessage()))
-                .asException());
+        resp.onError(GrpcErrorMapper.toStatusRuntimeException(e, "DeleteRecord"));
     }
   }
 
@@ -1557,8 +1528,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         } else {
           LogManager.instance().log(this, Level.SEVERE, "Error executing query: %s", cause, cause.getMessage());
           if (!txResponded)
-            responseObserver.onError(Status.INTERNAL
-                .withDescription("Query execution failed: " + cause.getMessage()).asException());
+            responseObserver.onError(GrpcErrorMapper.toStatusRuntimeException(cause, "Query execution failed"));
         }
       }
       return;
@@ -1585,7 +1555,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error executing query: %s", e, e.getMessage());
       if (!responded)
-        responseObserver.onError(Status.INTERNAL.withDescription("Query execution failed: " + e.getMessage()).asException());
+        responseObserver.onError(GrpcErrorMapper.toStatusRuntimeException(e, "Query execution failed"));
     }
   }
 
@@ -2203,14 +2173,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         /* no-op */
       }
 
-      if (!cancelled.get()) {
-        // Preserve an explicit gRPC status (e.g. RESOURCE_EXHAUSTED from the MATERIALIZE_ALL cap) instead of
-        // masking it as INTERNAL; only genuinely unexpected failures are reported as INTERNAL.
-        if (e instanceof StatusRuntimeException sre)
-          responseObserver.onError(sre);
-        else
-          responseObserver.onError(Status.INTERNAL.withDescription("Stream query failed: " + e.getMessage()).asException());
-      }
+      if (!cancelled.get())
+        // GrpcErrorMapper both classifies the failure (a SQL syntax error, a missing type, etc. - issue
+        // #7123) and passes an already-mapped StatusRuntimeException through unchanged (e.g.
+        // RESOURCE_EXHAUSTED from the MATERIALIZE_ALL cap) instead of masking it as INTERNAL.
+        responseObserver.onError(GrpcErrorMapper.toStatusRuntimeException(e, "Stream query failed"));
     } finally {
       // Stream endpoints mix engine iteration and row serialization throughout; expose the
       // total cost as engineNanos so the Server Profiler still captures query-level metrics.
@@ -2667,18 +2634,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           responded = true;
           resp.onCompleted();
         } catch (final Exception e) {
-          // Catches both a Future.get() ExecutionException (wrapping a StatusRuntimeException thrown inside
-          // the task) and a bare StatusRuntimeException thrown synchronously by submitToActiveTransaction
-          // when the executor was already shut down (RejectedExecutionException case, issue #6709).
-          final Throwable cause = e instanceof ExecutionException && e.getCause() != null ? e.getCause() : e;
-          if (!responded) {
-            if (cause instanceof StatusRuntimeException sre)
-              // Preserve an explicit gRPC status (e.g. FAILED_PRECONDITION from requireTransactionStillActive)
-              // instead of masking it as INTERNAL, mirroring executeQuery/executeCommand.
-              resp.onError(sre);
-            else
-              resp.onError(Status.INTERNAL.withDescription("bulkInsert: " + cause.getMessage()).asException());
-          }
+          // GrpcErrorMapper unwraps a Future.get() ExecutionException the same way this used to by hand, both
+          // classifies the failure (issue #7123) and passes an already-mapped StatusRuntimeException through
+          // unchanged (e.g. FAILED_PRECONDITION from requireTransactionStillActive, or the bare
+          // StatusRuntimeException submitToActiveTransaction throws synchronously when the executor was
+          // already shut down - RejectedExecutionException case, issue #6709) instead of masking it as INTERNAL.
+          if (!responded)
+            resp.onError(GrpcErrorMapper.toStatusRuntimeException(e, "bulkInsert"));
         }
       } else {
         try (InsertContext ctx = new InsertContext(opts)) {
@@ -2691,7 +2653,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       }
     } catch (Exception e) {
       if (!responded)
-        resp.onError(Status.INTERNAL.withDescription("bulkInsert: " + e.getMessage()).asException());
+        resp.onError(GrpcErrorMapper.toStatusRuntimeException(e, "bulkInsert"));
     } finally {
       ProtocolContext.clear();
     }
@@ -2971,7 +2933,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             out.onCompleted();
           }
         } catch (Exception e) {
-          out.onError(Status.INTERNAL.withDescription("insertStream: " + e.getMessage()).asException());
+          out.onError(GrpcErrorMapper.toStatusRuntimeException(e, "insertStream"));
         } finally {
           InsertContext ctx = ctxRef.get();
           if (ctx != null)
@@ -3190,8 +3152,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           // caller can reconcile instead of re-sending a load that is partly in the database already. The
           // abandoned batch is still the one holding the flushed-edge count, and abandon() drops what was
           // buffered without touching what it had already committed.
-          out.onError(Status.INTERNAL.withDescription("graphBatchLoad: " + e.getMessage())
-              .asException(partialCommitTrailer(abandoned, counts, tempIdMap, startedAt)));
+          final Metadata trailers = partialCommitTrailer(abandoned, counts, tempIdMap, startedAt);
+          out.onError(graphBatchLoadError(e, trailers));
           return;
         } finally {
           if (!cancelled.get() && !errorSent[0])
@@ -3248,12 +3210,34 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         } catch (final Exception e) {
           // close() is where the deferred incoming edges are connected, so a failure here can leave edges
           // buffered that the counters must not claim: the batch is asked what it actually flushed.
-          out.onError(Status.INTERNAL.withDescription("graphBatchLoad: " + e.getMessage())
-              .asException(partialCommitTrailer(batchRef.get(), counts, tempIdMap, startedAt)));
+          final Metadata trailers = partialCommitTrailer(batchRef.get(), counts, tempIdMap, startedAt);
+          out.onError(graphBatchLoadError(e, trailers));
           closeQuietly(batchRef.get());
         }
       }
     };
+  }
+
+  /**
+   * Builds the {@code onError} exception for a {@code graphBatchLoad} failure, classifying {@code e} and
+   * layering {@code trailers} (the partial-commit summary) onto it via {@link GrpcErrorMapper#classifyAndAddTrailers}.
+   * <p>
+   * When the cause is already a mapped {@link StatusRuntimeException}/{@link StatusException} - e.g. a
+   * {@code getDatabase()} auth refusal - its own description is kept verbatim instead of being overwritten with
+   * a synthesized {@code "graphBatchLoad: " + message}, matching how {@link GrpcErrorMapper#toStatusRuntimeException}
+   * treats the same pass-through case elsewhere.
+   */
+  private static StatusException graphBatchLoadError(final Throwable e, final Metadata trailers) {
+    final Throwable cause = GrpcErrorMapper.unwrap(e);
+    final Status.Code code = GrpcErrorMapper.classifyAndAddTrailers(cause, trailers);
+    final String description;
+    if (cause instanceof StatusRuntimeException sre)
+      description = sre.getStatus().getDescription();
+    else if (cause instanceof StatusException se)
+      description = se.getStatus().getDescription();
+    else
+      description = "graphBatchLoad: " + cause.getMessage();
+    return code.toStatus().withDescription(description).asException(trailers);
   }
 
   // ---------------------------------------------------------------------------------------------------------
@@ -4191,7 +4175,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
                   out.onNext(InsertResponse.newBuilder().setCommitted(Committed.newBuilder().setSummary(sum).build()).build());
                   out.onCompleted();
                 } catch (Exception e) {
-                  out.onError(Status.INTERNAL.withDescription("commit: " + e.getMessage()).asException());
+                  out.onError(GrpcErrorMapper.toStatusRuntimeException(e, "commit"));
                 } finally {
                   sessionWatermark.remove(ctx.sessionId);
                   ctx.closeQuietly();
@@ -4209,7 +4193,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             }
           } catch (Exception unexpected) {
             // defensive: fail fast on unexpected exceptions
-            out.onError(Status.INTERNAL.withDescription("insertBidirectional: " + unexpected.getMessage()).asException());
+            out.onError(GrpcErrorMapper.toStatusRuntimeException(unexpected, "insertBidirectional"));
             final InsertContext ctx = ref.getAndSet(null);
             if (ctx != null) {
               sessionWatermark.remove(ctx.sessionId);
@@ -5383,11 +5367,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       return se;
     if (e instanceof final StatusRuntimeException sre)
       return new StatusException(sre.getStatus(), sre.getTrailers());
-    if (e instanceof IllegalArgumentException)
-      return Status.INVALID_ARGUMENT.withDescription(operation + ": " + e.getMessage()).asException();
-    if (e instanceof SecurityException || e instanceof ServerSecurityException)
+    // ServerSecurityException does NOT extend java.lang.SecurityException (see GrpcErrorMapper), so it needs
+    // its own arm here; everything else - including IllegalArgumentException, which ErrorCategory's
+    // VALIDATION category already maps to INVALID_ARGUMENT - falls through to the same classification
+    // every other wire protocol uses (issue #7123) instead of collapsing to INTERNAL.
+    if (e instanceof ServerSecurityException)
       return Status.PERMISSION_DENIED.withDescription(operation + ": " + e.getMessage()).asException();
-    return Status.INTERNAL.withDescription(operation + ": " + e.getMessage()).asException();
+    return GrpcErrorMapper.statusCodeFor(e).toStatus().withDescription(operation + ": " + e.getMessage()).asException();
   }
 
   // Helper methods

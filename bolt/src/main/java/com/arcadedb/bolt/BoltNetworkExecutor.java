@@ -44,7 +44,9 @@ import com.arcadedb.exception.CauseChain;
 import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
@@ -1923,12 +1925,27 @@ public class BoltNetworkExecutor extends Thread {
    * {@code ConcurrentModificationException} or a {@code LockTimeoutException}) map to a Neo4j
    * transient status so managed-transaction drivers auto-retry; an {@link ArithmeticErrorException}
    * (64-bit overflow, division by zero) maps to Neo4j's ArithmeticError so a driver reports the caller's
-   * values rather than a server fault (issue #5602); anything else keeps the given default.
+   * values rather than a server fault (issue #5602); a {@link DuplicatedKeyException} (unique-index
+   * violation) and a {@link SecurityException} (permission denial) are both permanent client errors,
+   * so they must not fall into DatabaseError, which a driver's retry policy reads as "safe to retry";
+   * a {@link TimeoutException} (a query/statement deadline, not the retryable
+   * {@code LockTimeoutException} contention {@link #isRetryableConflict} already handles) maps to
+   * Neo4j's own TransactionTimedOut - not Transaction.Terminated, which means "explicitly killed by
+   * the user" and is excluded from driver retry predicates for exactly that reason (issue #7123).
+   * Anything else keeps the given default.
    */
   static String classifyExecutionError(final Throwable error, final String defaultCode) {
     if (isRetryableConflict(error))
       return BoltErrorCodes.TRANSIENT_CONFLICT_ERROR;
-    return isArithmeticError(error) ? BoltErrorCodes.ARITHMETIC_ERROR : defaultCode;
+    if (isArithmeticError(error))
+      return BoltErrorCodes.ARITHMETIC_ERROR;
+    if (CauseChain.contains(error, DuplicatedKeyException.class))
+      return BoltErrorCodes.CONSTRAINT_VIOLATION_ERROR;
+    if (CauseChain.contains(error, SecurityException.class))
+      return BoltErrorCodes.FORBIDDEN_ERROR;
+    if (CauseChain.contains(error, TimeoutException.class))
+      return BoltErrorCodes.TRANSACTION_TIMED_OUT_ERROR;
+    return defaultCode;
   }
 
   /**

@@ -28,9 +28,12 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.locks.ReentrantLock;
@@ -38,7 +41,7 @@ import java.util.logging.Level;
 
 /**
  * File-based storage for AI chat conversations.
- * Chats are stored as JSON files under {serverRoot}/chats/{username}/.
+ * Chats are stored as JSON files under {serverRoot}/chats/{@link #hashUsername(String) hash(username)}/.
  */
 public class ChatStorage {
   // Fixed stripe of locks giving concurrent writers to the same (user, chatId) a deterministic
@@ -179,11 +182,41 @@ public class ChatStorage {
   }
 
   private File getUserDir(final String username) {
-    return Paths.get(rootPath, "chats", sanitizeFilename(username)).toFile();
+    final File hashedDir = Paths.get(rootPath, "chats", hashUsername(username)).toFile();
+    migrateLegacyDirectoryIfPresent(username, hashedDir);
+    return hashedDir;
+  }
+
+  /**
+   * One-time lazy migration from the pre-hash directory layout ({@link #sanitizeFilename(String)}
+   * of the username) to the current one ({@link #hashUsername(String)}), so a server upgrading from
+   * a release that predates the hash keeps serving each user's existing chat history instead of
+   * silently orphaning it under the old directory name.
+   *
+   * <p>This cannot reproduce the collision the hash was introduced to fix: two usernames that used
+   * to sanitize to the same legacy directory raced to READ that shared, ambiguous directory forever.
+   * Here the first of the two to be looked up after the upgrade claims the legacy directory by
+   * renaming it away, so the second one finds nothing left to migrate and starts a fresh, private,
+   * empty hashed directory - it can no longer see the first user's history.
+   */
+  private void migrateLegacyDirectoryIfPresent(final String username, final File hashedDir) {
+    if (hashedDir.exists())
+      return;
+    final File legacyDir = Paths.get(rootPath, "chats", sanitizeFilename(username)).toFile();
+    if (!legacyDir.exists() || legacyDir.equals(hashedDir))
+      return;
+    try {
+      Files.move(legacyDir.toPath(), hashedDir.toPath());
+    } catch (final IOException e) {
+      // Lost a race with a concurrent migration of the same user, or the legacy directory vanished/
+      // the hashed one appeared between the exists() checks above and this move: either way, whatever
+      // directory is left standing is authoritative and the caller just proceeds with hashedDir.
+      LogManager.instance().log(this, Level.FINE, "Could not migrate legacy chat directory: %s", e.getMessage());
+    }
   }
 
   private File getChatFile(final String username, final String chatId) {
-    return Paths.get(rootPath, "chats", sanitizeFilename(username), sanitizeFilename(chatId) + ".json").toFile();
+    return new File(getUserDir(username), sanitizeFilename(chatId) + ".json");
   }
 
   /**
@@ -193,5 +226,27 @@ public class ChatStorage {
     if (input == null || input.isEmpty())
       return "default";
     return input.replaceAll("[^a-zA-Z0-9_\\-]", "_");
+  }
+
+  /**
+   * Maps a username to its chat-store directory name.
+   *
+   * <p>{@link #sanitizeFilename(String)} maps every character outside {@code [a-zA-Z0-9_-]} to
+   * {@code '_'}, which is not injective: usernames are essentially unconstrained (only non-blank is
+   * enforced), so e.g. {@code user@corp.com}, {@code user.corp.com} and {@code user_corp_com} all
+   * sanitize to the same string. Using that as the directory identity let two distinct users share
+   * one chat store, each able to read and delete the other's chats. A SHA-256 hex digest of the
+   * username is collision-resistant and is itself already filename-safe, so it is used as the
+   * identity directly rather than sanitized.
+   */
+  static String hashUsername(final String username) {
+    final String normalized = username == null || username.isEmpty() ? "default" : username;
+    try {
+      final byte[] hash = MessageDigest.getInstance("SHA-256").digest(normalized.getBytes(StandardCharsets.UTF_8));
+      return HexFormat.of().formatHex(hash);
+    } catch (final NoSuchAlgorithmException e) {
+      // SHA-256 is a JCE-mandated algorithm on every JVM; unreachable in practice.
+      throw new IllegalStateException("SHA-256 not available", e);
+    }
   }
 }

@@ -151,8 +151,9 @@ class AiChatHandlerStreamingTest extends BaseGraphServerTest {
       fakeGateway.stop();
     // Wipe the chats this test wrote so the next test that asserts an empty chat
     // list (AiServerTest.listChatsReturnsEmpty) is not polluted; SERVER_ROOT_PATH is
-    // shared across all tests in this module.
-    final var rootDir = new File("./target/chats/root");
+    // shared across all tests in this module. The user directory is named after the
+    // hashed username (ChatStorage.hashUsername), not the literal "root".
+    final var rootDir = new File("./target/chats/" + ChatStorage.hashUsername("root"));
     if (rootDir.exists()) {
       final var files = rootDir.listFiles();
       if (files != null)

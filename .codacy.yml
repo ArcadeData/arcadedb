@@ -15,6 +15,17 @@ exclude_paths:
   - "**/src/test/**"
   - "**/*Test.java"
   - "**/*IT.java"
+  # Java test sources have their own exclusion above (**/src/test/**); these are the non-Java test
+  # suites, which had none, so pytest's standard `assert`-per-check idiom was scanned as if it were
+  # production code (Bandit B101, already skipped project-wide for exactly this reason - see
+  # bindings/python/pyproject.toml's [tool.bandit]) and analysed against a docstring-summary
+  # convention (D213) the project's own production code does not follow either (issue #7123 review).
+  # Named explicitly, not "**/tests/**", so a future Java test directory that happens to be named
+  # "tests" instead of following the src/test/** convention above is not silently exempted too.
+  - "bindings/python/tests/**"
+  - "e2e-python/tests/**"
+  - "e2e-studio/tests/**"
+  - ".github/scripts/tests/**"
   - "**/*CharStream.java"
   - "**/SqlParser*.java"
   - "**/GraphQLParser*.java"

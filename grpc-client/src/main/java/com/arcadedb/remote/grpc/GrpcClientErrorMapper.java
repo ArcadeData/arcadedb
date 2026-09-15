@@ -22,6 +22,7 @@ import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.remote.RemoteException;
@@ -94,6 +95,11 @@ final class GrpcClientErrorMapper {
       case "java.lang.SecurityException" -> new SecurityException(msg);
       case "com.arcadedb.network.binary.ServerIsNotTheLeaderException" ->
           new ServerIsNotTheLeaderException(msg, leaderAddress(trailers));
+      // SchemaException (a missing type/bucket/property) and RecordNotFoundException (a missing record)
+      // both classify to the same NOT_FOUND status server-side (issue #7123's ErrorCategory), so without
+      // this exact-type reconstruction a schema error was indistinguishable from - and, worse, silently
+      // reconstructed AS - a RecordNotFoundException by the legacy status-code fallback below.
+      case "com.arcadedb.exception.SchemaException" -> new SchemaException(msg);
       // Unknown class: let the caller fall back to status-code mapping.
       default -> null;
     };

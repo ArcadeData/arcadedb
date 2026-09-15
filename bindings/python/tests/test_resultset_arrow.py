@@ -114,6 +114,80 @@ def test_to_arrow_multi_batch(temp_db_path):
         assert sorted(table.column("n").to_pylist()) == list(range(n))
 
 
+def test_to_arrow_multi_batch_int_then_float_column(temp_db_path):
+    """A column that's int in one batch and float in the next (#7108) is a
+    legal result set - ArcadeDB is schemaless per document - but ColumnBatcher
+    infers each batch's column type independently, so without unification the
+    int64/float64 chunks can't be concatenated into one ChunkedArray."""
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE DOCUMENT TYPE Rec")
+        with db.transaction():
+            for i in range(64):
+                db.command("sql", f"INSERT INTO Rec SET seq = {i}, v = {i}")
+            for i in range(64, 100):
+                db.command("sql", f"INSERT INTO Rec SET seq = {i}, v = {i}.5")
+
+        table = db.query("sql", "SELECT v FROM Rec ORDER BY seq").to_arrow(
+            batch_size=64
+        )
+
+        assert table.num_rows == 100
+        assert table.column("v").type == pa.float64()
+        values = table.column("v").to_pylist()
+        assert values[:64] == [float(i) for i in range(64)]
+        assert values[64:] == [i + 0.5 for i in range(64, 100)]
+
+
+def test_to_arrow_multi_batch_mixed_type_degrades_to_string(temp_db_path):
+    """A column that's numeric in one batch and a string in another (#7108)
+    has no common Arrow numeric type, so it must degrade to string rather
+    than raise when the batches are concatenated."""
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE DOCUMENT TYPE Rec")
+        with db.transaction():
+            for i in range(64):
+                db.command("sql", f"INSERT INTO Rec SET seq = {i}, v = {i}")
+            for i in range(64, 100):
+                db.command("sql", f"INSERT INTO Rec SET seq = {i}, v = 'text{i}'")
+
+        table = db.query("sql", "SELECT v FROM Rec ORDER BY seq").to_arrow(
+            batch_size=64
+        )
+
+        assert table.num_rows == 100
+        assert table.column("v").type == pa.string()
+        values = table.column("v").to_pylist()
+        assert values[:64] == [str(i) for i in range(64)]
+        assert values[64:] == [f"text{i}" for i in range(64, 100)]
+
+
+def test_to_arrow_multi_batch_non_representable_int_forces_string_fallback(
+    temp_db_path,
+):
+    """A batch of int64 values outside float64's exact +-2**53 range, next to a batch of floats,
+    must not raise when unifying: pyarrow's numeric cast is safe by default and rejects a lossy
+    int64->float64 conversion, so the fallback must degrade the whole column to string rather than
+    let that ArrowInvalid escape (code review on #7108)."""
+    large_int = 2**53 + 1
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE DOCUMENT TYPE Rec")
+        with db.transaction():
+            for i in range(64):
+                db.command("sql", f"INSERT INTO Rec SET seq = {i}, v = {large_int}")
+            for i in range(64, 100):
+                db.command("sql", f"INSERT INTO Rec SET seq = {i}, v = {i}.5")
+
+        table = db.query("sql", "SELECT v FROM Rec ORDER BY seq").to_arrow(
+            batch_size=64
+        )
+
+        assert table.num_rows == 100
+        assert table.column("v").type == pa.string()
+        values = table.column("v").to_pylist()
+        assert values[0] == str(large_int)
+        assert values[64] == "64.5"
+
+
 def test_to_arrow_empty(temp_db_path):
     """An empty result is an empty table, not None and not an error."""
     with arcadedb.create_database(temp_db_path) as db:

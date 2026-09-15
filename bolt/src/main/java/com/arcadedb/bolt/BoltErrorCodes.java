@@ -23,10 +23,6 @@ package com.arcadedb.bolt;
  * These error codes are used across BOLT protocol messages and exceptions.
  */
 public final class BoltErrorCodes {
-  private BoltErrorCodes() {
-    // Utility class - prevent instantiation
-  }
-
   // Security errors
   public static final String AUTHENTICATION_ERROR = "Neo.ClientError.Security.Unauthorized";
   public static final String FORBIDDEN_ERROR      = "Neo.ClientError.Security.Forbidden";
@@ -34,6 +30,10 @@ public final class BoltErrorCodes {
   // Statement errors
   public static final String SYNTAX_ERROR   = "Neo.ClientError.Statement.SyntaxError";
   public static final String SEMANTIC_ERROR = "Neo.ClientError.Statement.SemanticError";
+  // A unique-index violation (DuplicatedKeyException). It is a permanent failure - retrying the
+  // identical write can never succeed - so it must not fall into the generic DatabaseError a driver
+  // would treat as a transient server fault (issue #7123).
+  public static final String CONSTRAINT_VIOLATION_ERROR = "Neo.ClientError.Schema.ConstraintValidationFailed";
   // A statement that parses and is semantically valid but references a $parameter the client never bound.
   // Neo4j gives this its own title, and drivers/tools key off it to tell "your query is wrong" apart from
   // "you forgot to send a value", so it must not collapse into SyntaxError.
@@ -52,9 +52,25 @@ public final class BoltErrorCodes {
   // two excluded titles (Transaction.Terminated / Transaction.LockClientStopped) are deliberately avoided.
   public static final String TRANSIENT_CONFLICT_ERROR = "Neo.TransientError.Transaction.DeadlockDetected";
 
+  // A deadline/budget timeout (com.arcadedb.exception.TimeoutException - a query or the SQL TIMEOUT
+  // clause ran out of time), as opposed to the LockTimeoutException contention above. NOT
+  // Neo.TransientError.Transaction.Terminated: that title means "explicitly terminated by the user"
+  // (e.g. dbms.killTransaction()) and both the Neo4j driver and Spring Data Neo4j explicitly EXCLUDE
+  // it from their retry predicates for exactly that reason - retrying a transaction the user killed on
+  // purpose is never correct (code review on issue #7123; see the two-title exclusion documented on
+  // TRANSIENT_CONFLICT_ERROR above, which already knew this). TransactionTimedOut is Neo4j's own code
+  // for this case and its own documentation says what to do with it: "You may want to retry with a
+  // longer timeout" - a caller decision, not an automatic driver retry, but still not the
+  // generic DatabaseError a driver reads as an unexplained server fault.
+  public static final String TRANSACTION_TIMED_OUT_ERROR = "Neo.ClientError.Transaction.TransactionTimedOut";
+
   // Request errors
   public static final String PROTOCOL_ERROR = "Neo.ClientError.Request.Invalid";
 
   // Database errors
   public static final String DATABASE_ERROR = "Neo.DatabaseError.General.UnknownError";
+
+  private BoltErrorCodes() {
+    // Utility class - prevent instantiation
+  }
 }

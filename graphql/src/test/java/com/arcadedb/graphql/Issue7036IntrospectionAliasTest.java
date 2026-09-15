@@ -100,8 +100,10 @@ class Issue7036IntrospectionAliasTest extends AbstractGraphQLTest {
         for (final Result field : fields) {
           assertThat(field.getPropertyNames()).contains("t").doesNotContain("type");
           final Result type = field.getProperty("t");
-          assertThat(type.<String>getProperty("name")).isNotNull();
           assertThat(type.<String>getProperty("kind")).isNotNull();
+          // A wrapping LIST type (e.g. "wrote": [Book]) carries no name of its own (#7116).
+          if (!"LIST".equals(type.getProperty("kind")))
+            assertThat(type.<String>getProperty("name")).isNotNull();
         }
         assertThat(resultSet.hasNext()).isFalse();
       }

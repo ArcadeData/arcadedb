@@ -31,6 +31,7 @@ import com.arcadedb.graphql.parser.Document;
 import com.arcadedb.graphql.parser.FieldDefinition;
 import com.arcadedb.graphql.parser.GraphQLParser;
 import com.arcadedb.graphql.parser.InputValueDefinition;
+import com.arcadedb.graphql.parser.ListType;
 import com.arcadedb.graphql.parser.ObjectTypeDefinition;
 import com.arcadedb.graphql.parser.OperationDefinition;
 import com.arcadedb.graphql.parser.ParseException;
@@ -619,17 +620,39 @@ public class GraphQLSchema {
   }
 
   private ResultInternal buildFieldTypeInfo(final FieldDefinition fd) {
-    final ResultInternal typeInfo = new ResultInternal();
-    if (fd.getType().getListType() != null) {
-      final String name = fd.getType().getListType().getType().getTypeName().getName();
-      typeInfo.setProperty("name", name);
-      typeInfo.setProperty("kind", "LIST");
-    } else if (fd.getType().getTypeName() != null) {
-      final String name = fd.getType().getTypeName().getName();
-      typeInfo.setProperty("name", name);
-      typeInfo.setProperty("kind", objectTypeDefinitionMap.containsKey(name) ? "OBJECT" : "SCALAR");
+    return buildTypeInfo(fd.getType());
+  }
+
+  /**
+   * Recursively describes a GraphQL type reference, matching the introspection schema a client
+   * relies on to walk list/non-null wrappers (#7116): a wrapping type (LIST or NON_NULL) carries
+   * {@code ofType} and no {@code name} of its own; only the innermost named type carries
+   * {@code name}. The parameter is {@code com.arcadedb.graphql.parser.Type}, qualified because
+   * {@code com.arcadedb.schema.Type} is already imported under the same simple name.
+   */
+  private ResultInternal buildTypeInfo(final com.arcadedb.graphql.parser.Type type) {
+    if (type.getListType() != null) {
+      final ListType listType = type.getListType();
+      final ResultInternal listInfo = new ResultInternal();
+      listInfo.setProperty("name", null);
+      listInfo.setProperty("kind", "LIST");
+      listInfo.setProperty("ofType", buildTypeInfo(listType.getType()));
+      return listType.isBang() ? wrapNonNull(listInfo) : listInfo;
     }
-    return typeInfo;
+
+    final String name = type.getTypeName().getName();
+    final ResultInternal namedInfo = new ResultInternal();
+    namedInfo.setProperty("name", name);
+    namedInfo.setProperty("kind", objectTypeDefinitionMap.containsKey(name) ? "OBJECT" : "SCALAR");
+    return type.isBang() ? wrapNonNull(namedInfo) : namedInfo;
+  }
+
+  private static ResultInternal wrapNonNull(final ResultInternal inner) {
+    final ResultInternal wrapper = new ResultInternal();
+    wrapper.setProperty("name", null);
+    wrapper.setProperty("kind", "NON_NULL");
+    wrapper.setProperty("ofType", inner);
+    return wrapper;
   }
 
   private ResultInternal buildNameResult(final String name) {

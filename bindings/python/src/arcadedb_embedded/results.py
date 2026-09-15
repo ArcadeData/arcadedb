@@ -40,6 +40,67 @@ def _java_class_name(value: Any) -> str:
     return str(value.getClass().getName())
 
 
+def _cast_all_to_string(arrs: list, pa) -> list:
+    """
+    Cast every array to a string type.
+
+    Tolerates a type pyarrow cannot cast directly (e.g. a vector/list column)
+    by going through Python objects instead.
+    """
+    unified = []
+    for a in arrs:
+        try:
+            unified.append(a.cast(pa.string()))
+        except pa.ArrowException:
+            unified.append(
+                pa.array(
+                    [None if v is None else str(v) for v in a.to_pylist()],
+                    type=pa.string(),
+                )
+            )
+    return unified
+
+
+def _unify_arrow_chunk_types(arrs: list, pa) -> list:
+    """
+    Unify a column's per-batch Arrow arrays onto one Arrow type.
+
+    ArcadeDB is schemaless per document, so a property's Java type can
+    legally vary row to row; ColumnBatcher infers each batch's column type
+    independently, so two batches of the same result set can produce
+    incompatible Arrow types for the same column (#7108) - e.g. int64 in one
+    batch, float64 in the next. ``pa.chunked_array`` requires every chunk to
+    share one type, so leaving them as-is raises at concatenation time on a
+    result set that is otherwise entirely legal.
+
+    Numeric types widen (int64 -> float64, matching to_columns' pandas-style
+    promotion) when every value survives the cast exactly; pyarrow's cast is
+    safe by default and raises rather than silently lose precision, which an
+    int64 outside float64's +-2**53 exact range would (code review on #7108),
+    so that case - and anything else, including a json or vector column that
+    varied - degrades to string instead, so the column always ends up with
+    exactly one type rather than an exception.
+
+    int64/float64 is the only numeric pair worth special-casing: ColumnBatcher
+    (bindings/python/src/java/.../ColumnBatcher.java) already widens every
+    Java integer type (Long/Integer/Short/Byte) to the same "i8" wire encoding
+    and every Java floating type (Double/Float) to "f8" *within* one batch, so
+    across batches the only numeric type mismatch this ever has to unify is
+    exactly this pair - there is no int32/int64 or bool/int64 case to widen.
+    """
+    types = {a.type for a in arrs}
+    if len(types) <= 1:
+        return arrs
+
+    if types <= {pa.int64(), pa.float64()}:
+        try:
+            return [a.cast(pa.float64()) for a in arrs]
+        except pa.ArrowException:
+            pass
+
+    return _cast_all_to_string(arrs, pa)
+
+
 class ResultSet:
     """Iterator wrapper for ArcadeDB query results."""
 
@@ -477,7 +538,12 @@ class ResultSet:
 
         if total == 0 or not first_names:
             return pa.table({})
-        return pa.table({n: pa.chunked_array(chunks[n]) for n in first_names})
+        return pa.table(
+            {
+                n: pa.chunked_array(_unify_arrow_chunk_types(chunks[n], pa))
+                for n in first_names
+            }
+        )
 
     def iter_chunks(
         self, size: int = 1000, convert_types: bool = True

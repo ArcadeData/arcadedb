@@ -155,20 +155,28 @@ class Database:
                 result = fn()
                 self.commit()
                 return result
-            except ArcadeDBError as e:
+            except BaseException as e:
+                # Any exit path other than a successful commit must roll back,
+                # not just ArcadeDBError - matching LocalDatabase.transaction()'s
+                # `catch (final Throwable e)` on the Java side (#7108). An
+                # ordinary bug in fn() (TypeError, KeyError, ...) must not leave
+                # an open transaction for the next caller to inherit, and neither
+                # must KeyboardInterrupt/SystemExit, which `except Exception`
+                # does not catch (code review on #7108).
                 try:
                     if self.is_transaction_active():
                         self.rollback()
                 except Exception:  # nosec B110 - best-effort rollback before retry
                     pass
-                msg = str(e)
-                retryable = (
-                    "ConcurrentModificationException" in msg
-                    or "NeedRetryException" in msg
-                )
-                if retryable and attempt < retries:
-                    _time.sleep(backoff_s * (attempt + 1))
-                    continue
+                if isinstance(e, ArcadeDBError):
+                    msg = str(e)
+                    retryable = (
+                        "ConcurrentModificationException" in msg
+                        or "NeedRetryException" in msg
+                    )
+                    if retryable and attempt < retries:
+                        _time.sleep(backoff_s * (attempt + 1))
+                        continue
                 raise
 
     def begin(self):

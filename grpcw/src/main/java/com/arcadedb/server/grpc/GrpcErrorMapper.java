@@ -20,9 +20,8 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.exception.DatabaseOperationInProgressException;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.NeedRetryException;
-import com.arcadedb.exception.RecordNotFoundException;
-import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.server.HAServerPlugin;
 import io.grpc.Metadata;
@@ -100,12 +99,12 @@ public final class GrpcErrorMapper {
    * the caller should go, on the {@link LeaderRedirectProtocol} trailers (issue #6183), instead of only the one
    * RPC that happened to build the trailers by hand.
    * <p>
-   * That covers the RPCs that report through this mapper: {@code executeCommand}, {@code createRecord},
-   * {@code beginTransaction}, {@code commitTransaction} and {@code graphBatchLoad}. Handlers that assemble a
-   * {@link Status} themselves ({@code updateRecord}, {@code lookupByRid}, the streaming and bulk-insert paths)
-   * do not pass here and would carry no redirect - none of them can raise this exception today, since they
-   * neither check leadership nor mutate schema, but a handler that grows either has to route its errors through
-   * this mapper to stay redirectable.
+   * Every RPC in {@code ArcadeDbGrpcService} now reports through this mapper (issue #7123 finished wiring in
+   * {@code updateRecord}, {@code lookupByRid}, {@code deleteRecord} and the streaming/bulk-insert paths, which
+   * used to hand-roll a narrower {@code RecordNotFoundException}-or-{@code INTERNAL} ladder of their own and so
+   * answered a SQL syntax error, a missing type, a division by zero or a permission denial all as
+   * {@code INTERNAL}). A handler that cannot raise {@link ServerIsNotTheLeaderException} simply never triggers
+   * that branch; it still gets the full classification from {@link #statusCodeFor}.
    *
    * @param t             the throwable to map (may be an {@link ExecutionException} wrapping the cause)
    * @param contextPrefix optional short prefix for the client-facing description (e.g. "Commit failed")
@@ -135,10 +134,7 @@ public final class GrpcErrorMapper {
       redirect = attachLeaderRedirect(trailers, ha, notTheLeader);
     } else if (cause instanceof DuplicatedKeyException dup) {
       code = Status.Code.ALREADY_EXISTS;
-      if (dup.getIndexName() != null)
-        trailers.put(DUP_INDEX_KEY, encodeTrailer(dup.getIndexName()));
-      if (dup.getKeys() != null)
-        trailers.put(DUP_KEYS_KEY, encodeTrailer(dup.getKeys()));
+      addDuplicatedKeyTrailers(trailers, dup);
     } else if (cause instanceof DatabaseOperationInProgressException) {
       // A backup, restore or import of the same database already holds the per-database maintenance slot, so a
       // SQL 'BACKUP DATABASE' or 'IMPORT DATABASE' sent through ExecuteCommand was refused. ABORTED is what the
@@ -146,23 +142,8 @@ public final class GrpcErrorMapper {
       // request is well formed and authorized, and retrying once the other operation finishes is the fix
       // (issue #7443). Without this arm it would read as INTERNAL - a server fault the caller cannot act on.
       code = Status.Code.ABORTED;
-    } else if (cause instanceof NeedRetryException) {
-      // Covers ConcurrentModificationException (a NeedRetryException subclass): retryable conflict.
-      code = Status.Code.ABORTED;
-    } else if (cause instanceof RecordNotFoundException) {
-      code = Status.Code.NOT_FOUND;
-    } else if (cause instanceof TimeoutException) {
-      code = Status.Code.DEADLINE_EXCEEDED;
-    } else if (cause instanceof SecurityException) {
-      // Matches java.lang.SecurityException. ArcadeDB's ServerSecurityException does NOT extend it, but
-      // security failures are already pre-mapped to a StatusRuntimeException by getDatabase and returned
-      // via the pass-through branch above, so they never reach here as a raw exception. If a future
-      // onError path hands a raw ServerSecurityException to this mapper it would fall through to INTERNAL.
-      code = Status.Code.PERMISSION_DENIED;
-    } else if (cause instanceof IllegalArgumentException) {
-      code = Status.Code.INVALID_ARGUMENT;
     } else {
-      code = Status.Code.INTERNAL;
+      code = statusCodeFor(cause);
     }
 
     final String msg = cause.getMessage() != null ? cause.getMessage() : cause.toString();
@@ -170,6 +151,77 @@ public final class GrpcErrorMapper {
     final String description = redirect != null ? prefixed + ". " + redirect : prefixed;
 
     return code.toStatus().withDescription(description).withCause(cause).asRuntimeException(trailers);
+  }
+
+  /**
+   * Maps everything not already special-cased above (leader redirects, duplicated keys, and the maintenance-slot
+   * conflict all need extra trailers or a distinct reason to earn their own branch) through {@link ErrorCategory},
+   * the classification every other wire protocol already answers a failure with (issue #7123): a SQL syntax
+   * error, a missing type, a division by zero and a permission denial used to all read as {@code INTERNAL} here -
+   * "server broke, safe to retry" to a driver's retry policy - when none of the four will ever succeed on retry,
+   * and none but the first is actually the server's fault.
+   * <p>
+   * Package-visible (not just used by {@link #toStatusRuntimeException}) for the handlers - {@code graphBatchLoad}
+   * is the current example - that must attach their own trailers (a partial-commit summary) alongside the
+   * classified code rather than the trailer set this class builds for {@code EXCEPTION_CLASS_KEY}/dup-key details.
+   */
+  static Status.Code statusCodeFor(final Throwable cause) {
+    return switch (ErrorCategory.of(cause)) {
+      case RETRY -> Status.Code.ABORTED;
+      case ARITHMETIC -> Status.Code.OUT_OF_RANGE;
+      // Unreachable from toStatusRuntimeException/classifyAndAddTrailers, which both special-case
+      // DuplicatedKeyException before reaching here - but ArcadeDbGrpcService.toSearchStatus calls this
+      // method directly with no such pre-check, so this arm exists for that caller (and any future one),
+      // not just to keep the switch exhaustive over ErrorCategory.
+      case DUPLICATED_KEY -> Status.Code.ALREADY_EXISTS;
+      case NOT_FOUND, SCHEMA -> Status.Code.NOT_FOUND;
+      case SECURITY -> Status.Code.PERMISSION_DENIED;
+      case VALIDATION, PARSING -> Status.Code.INVALID_ARGUMENT;
+      case TIMEOUT -> Status.Code.DEADLINE_EXCEEDED;
+      case SERVER -> Status.Code.INTERNAL;
+    };
+  }
+
+  /**
+   * Same classification as {@link #toStatusRuntimeException}, but layers this class's own trailers (the
+   * exception class name, and for a {@link DuplicatedKeyException} the index/keys) onto a trailer set the
+   * caller already owns, rather than building a standalone one - for a handler like {@code graphBatchLoad}
+   * that must attach its own trailers (a partial-commit summary) alongside these. Before this, such a handler
+   * had to call {@link #statusCodeFor} directly and lost the {@code DUP_INDEX_KEY}/{@code DUP_KEYS_KEY}
+   * trailers that {@code executeCommand}/{@code createRecord} attach for the identical
+   * {@link DuplicatedKeyException} (code review on issue #7123).
+   * <p>
+   * Also preserves a status already chosen upstream, the same as {@link #toStatusRuntimeException} - a
+   * {@code getDatabase()} auth/authz refusal reaches {@code graphBatchLoad} as a raw
+   * {@link StatusRuntimeException}/{@link StatusException} the same way it reaches every other RPC, and
+   * without this check {@link ErrorCategory#of} would not recognise it and fold it into {@code SERVER}
+   * (code review on issue #7123).
+   */
+  static Status.Code classifyAndAddTrailers(final Throwable t, final Metadata trailers) {
+    final Throwable cause = unwrap(t);
+    if (cause instanceof StatusRuntimeException sre) {
+      if (sre.getTrailers() != null)
+        trailers.merge(sre.getTrailers());
+      return sre.getStatus().getCode();
+    }
+    if (cause instanceof StatusException se) {
+      if (se.getTrailers() != null)
+        trailers.merge(se.getTrailers());
+      return se.getStatus().getCode();
+    }
+    trailers.put(EXCEPTION_CLASS_KEY, cause.getClass().getName());
+    if (cause instanceof DuplicatedKeyException dup) {
+      addDuplicatedKeyTrailers(trailers, dup);
+      return Status.Code.ALREADY_EXISTS;
+    }
+    return statusCodeFor(cause);
+  }
+
+  private static void addDuplicatedKeyTrailers(final Metadata trailers, final DuplicatedKeyException dup) {
+    if (dup.getIndexName() != null)
+      trailers.put(DUP_INDEX_KEY, encodeTrailer(dup.getIndexName()));
+    if (dup.getKeys() != null)
+      trailers.put(DUP_KEYS_KEY, encodeTrailer(dup.getKeys()));
   }
 
   /**

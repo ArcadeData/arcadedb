@@ -115,6 +115,46 @@ def test_async_executor_pending_and_processing_flags(temp_db):
     async_exec.close()
 
 
+def test_async_executor_is_pending_true_while_queued(temp_db):
+    """Regression test for #7107: is_pending() must poll without blocking.
+
+    It used to call waitCompletion(0), which the engine clamps to an infinite
+    wait, so it always blocked until the queue drained and then reported
+    False - never True, even while work was still queued.
+    """
+    db = temp_db
+    db.command("sql", "CREATE DOCUMENT TYPE Msg")
+
+    # commit_every equal to the row count means the queue's own commit boundary lands
+    # on the very last row, so there is always a real commit (page writes, WAL flush)
+    # in flight - not just an idle queue - at the moment the check below runs. Tried
+    # widening this to a much larger row count with commit_every set past it instead
+    # (so the queue would simply stay non-empty for longer): that made the test LESS
+    # reliable, not more, because JPype's per-call submission overhead from Python
+    # dominates the single background worker's per-row insert cost, so a larger
+    # backlog gives the worker more real time to catch up and fully drain the queue
+    # before the check runs (code review follow-up on #7107).
+    async_exec = db.async_executor().set_parallel_level(1).set_commit_every(2000)
+    assert async_exec.is_pending() is False
+
+    for i in range(2000):
+        async_exec.command("sql", "INSERT INTO Msg SET id = :id", id=i)
+
+    start = time.time()
+    pending = async_exec.is_pending()
+    elapsed = time.time() - start
+
+    assert (
+        elapsed < 1.0
+    ), "is_pending() must answer immediately, not wait for the queue to drain"
+    assert pending is True
+
+    async_exec.wait_completion()
+    assert async_exec.is_pending() is False
+
+    async_exec.close()
+
+
 def test_async_executor_getters_and_sync_modes(temp_db):
     db = temp_db
     async_exec = db.async_executor()
