@@ -263,6 +263,12 @@ class Issue7609DecimalLiteralPrecisionTest extends TestHelper {
     assertThat(compare(Type.castComparableNumber(0.05f, new BigDecimal("0.05")))).as("0.05f vs decimal").isZero();
     assertThat(compare(Type.castComparableNumber(new BigDecimal("0.05"), 0.05f))).as("decimal vs 0.05f").isZero();
 
+    // the BigDecimal branch had no Long case at all, so the couple came back uncast and the caller threw
+    assertThat(compare(Type.castComparableNumber(new BigDecimal("5"), 5L))).as("decimal 5 vs 5L").isZero();
+    assertThat(compare(Type.castComparableNumber(new BigDecimal("3000000000"), 3000000000L)))
+        .as("decimal vs a Long past the int range").isZero();
+    assertThat(compare(Type.castComparableNumber(new BigDecimal("4"), 5L))).as("decimal 4 vs 5L").isNegative();
+
     // ordering is still respected, the widening only removes the error it used to introduce
     assertThat(compare(Type.castComparableNumber(0.05f, 0.06d))).as("0.05f vs 0.06d").isNegative();
     assertThat(compare(Type.castComparableNumber(0.06f, 0.05d))).as("0.06f vs 0.05d").isPositive();
