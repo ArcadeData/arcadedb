@@ -74,11 +74,14 @@ public class InputParameter extends SimpleNode {
 
     if (value instanceof Number number) {
       final FloatingPoint result = new FloatingPoint();
-      result.sign = number.doubleValue() >= 0 ? 1 : -1;
       result.stringValue = value.toString();
+      // ISSUE #7609: THE SIGN COMES FROM THE TEXT, NOT FROM `doubleValue() >= 0`, WHICH IS TRUE FOR NEGATIVE ZERO
+      // TOO AND SO BOUND -0.0 AS +0.0 - A DIFFERENCE Double.equals() CAN SEE, SO THE PARAMETER MATCHED NOTHING
       if (result.stringValue.startsWith("-")) {
+        result.sign = -1;
         result.stringValue = result.stringValue.substring(1);
-      }
+      } else
+        result.sign = 1;
       // ISSUE #7609: A SUFFIX-LESS LITERAL IS A DOUBLE, SO A Float PARAMETER HAS TO CARRY ITS SUFFIX TO BIND BACK AS ONE
       if (value instanceof Float)
         result.stringValue += "F";
