@@ -399,6 +399,7 @@ databases
 doc/src/main/asciidoc/*/.asciidoctor/
 doc/src/main/asciidoc/*/var/
 gremlin/file:/
+gremlin-it/file:/
 server/backups/
 server/config/*
 server/exports

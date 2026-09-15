@@ -359,6 +359,12 @@ class Issue7609DecimalLiteralPrecisionTest extends TestHelper {
 
     assertThat(count("SELECT FROM Zero WHERE v = :z", Map.of("z", -0.0f))).as("bound -0.0f matches one").isEqualTo(1);
     assertThat(count("SELECT FROM Zero WHERE v = :z", Map.of("z", 0.0f))).as("bound 0.0f matches one").isEqualTo(1);
+
+    // a non-finite Float parameter binds without the suffix: "NaNF" would be a spelling the grammar cannot lex,
+    // and NaN carries the same value as a Double. It must still bind rather than throw
+    assertThat(count("SELECT FROM Zero WHERE v = :z", Map.of("z", Float.NaN))).as("bound NaN").isZero();
+    assertThat(count("SELECT FROM Zero WHERE v < :z", Map.of("z", Float.POSITIVE_INFINITY)))
+        .as("bound +Infinity").isEqualTo(2);
   }
 
   // ---------------------------------------------------------------------------------------------

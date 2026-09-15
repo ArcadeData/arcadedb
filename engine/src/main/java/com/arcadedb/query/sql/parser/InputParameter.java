@@ -82,8 +82,10 @@ public class InputParameter extends SimpleNode {
         result.stringValue = result.stringValue.substring(1);
       } else
         result.sign = 1;
-      // ISSUE #7609: A SUFFIX-LESS LITERAL IS A DOUBLE, SO A Float PARAMETER HAS TO CARRY ITS SUFFIX TO BIND BACK AS ONE
-      if (value instanceof Float)
+      // ISSUE #7609: A SUFFIX-LESS LITERAL IS A DOUBLE, SO A Float PARAMETER HAS TO CARRY ITS SUFFIX TO BIND BACK AS
+      // ONE. NaN AND THE INFINITIES ARE LEFT ALONE: "NaN" IS ALREADY NOT A LITERAL THE GRAMMAR LEXES, AND "NaNF" WOULD
+      // BE A SECOND UNLEXABLE SPELLING RATHER THAN A FIX. THEY BIND AS A Double, WHICH CARRIES THE SAME VALUE
+      if (value instanceof Float float1 && Float.isFinite(float1))
         result.stringValue += "F";
       return result;
     }
