@@ -718,6 +718,33 @@ public class LocalDocumentType implements DocumentType {
    *
    * @return the property dropped if found
    */
+  /**
+   * The index, if any, anywhere in the type hierarchy that names {@code propertyName} - this type's own indexes,
+   * a super type's (both via {@link #getAllIndexes(boolean)}, which only ever walks up), and a SUBTYPE's own index
+   * on the inherited property, which {@code getAllIndexes} alone misses. {@link #dropProperty} and {@link
+   * #renameProperty} both need the full picture: an index a subtype declared on a property this type owns would
+   * otherwise survive a rename or a drop, left pointing at a name the type no longer has under that meaning.
+   */
+  private TypeIndex findIndexOnProperty(final String propertyName) {
+    for (final TypeIndex index : getAllIndexes(true))
+      if (index.getPropertyNames().contains(propertyName))
+        return index;
+    return findDescendantIndexOnProperty(propertyName);
+  }
+
+  private TypeIndex findDescendantIndexOnProperty(final String propertyName) {
+    for (final LocalDocumentType subType : subTypes) {
+      for (final TypeIndex index : subType.getAllIndexes(false))
+        if (index.getPropertyNames().contains(propertyName))
+          return index;
+
+      final TypeIndex foundDeeper = subType.findDescendantIndexOnProperty(propertyName);
+      if (foundDeeper != null)
+        return foundDeeper;
+    }
+    return null;
+  }
+
   @Override
   public Property dropProperty(final String propertyName) {
     checkForSchemaMutation();
@@ -732,11 +759,10 @@ public class LocalDocumentType implements DocumentType {
           + "' because it is a declared TIMESERIES column: the storage engine keeps reading and writing it. Drop the "
           + "whole type to remove the column");
 
-    for (final TypeIndex index : getAllIndexes(true)) {
-      if (index.getPropertyNames().contains(propertyName))
-        throw new SchemaException(
-            "Error on dropping property '" + propertyName + "' because used by index '" + index.getName() + "'");
-    }
+    final TypeIndex indexOnProperty = findIndexOnProperty(propertyName);
+    if (indexOnProperty != null)
+      throw new SchemaException(
+          "Error on dropping property '" + propertyName + "' because used by index '" + indexOnProperty.getName() + "'");
 
     return recordFileChanges(() -> {
       final Property removed = properties.remove(propertyName);
@@ -767,11 +793,18 @@ public class LocalDocumentType implements DocumentType {
    * one in {@link #properties}. The old {@code Property} handle is stale from this point on, the same way a
    * dropped property's handle already is.
    * <p>
-   * Refused, mirroring {@link #dropProperty}, when an index stands on the property: the index's own definition
-   * names the property by the old name, and propagating the rename into every index type/file naming scheme is
-   * out of scope here - drop the index, rename, then recreate it on the new name. Also refused when the property
-   * is a declared TIMESERIES column, for the same reason {@link #dropProperty} refuses one: the write path
-   * resolves those by the fixed name in {@code LocalTimeSeriesType.tsColumns}, which this method does not touch.
+   * Refused, mirroring {@link #dropProperty}, when an index stands on the property anywhere in the type hierarchy
+   * - a super type's own index, or one a SUBTYPE declared on this (inherited) property, which {@link
+   * #getAllIndexes(boolean)} alone would miss (it only ever walks up): the index's own definition names the
+   * property by the old name, and propagating the rename into every index type/file naming scheme is out of scope
+   * here - drop the index, rename, then recreate it on the new name. Also refused when the property is a declared
+   * TIMESERIES column, for the same reason {@link #dropProperty} refuses one: the write path resolves those by
+   * the fixed name in {@code LocalTimeSeriesType.tsColumns}, which this method does not touch.
+   * <p>
+   * Every check above, and the mutation itself, runs inside the single {@link #recordFileChanges} callback below:
+   * validating outside it and mutating inside would let two concurrent renames both validate against the
+   * pre-rename state and then both apply, since only the mutation - not the read that preceded it - is serialised
+   * by the database write lock {@code recordFileChanges} takes.
    *
    * @param propertyName    the property's current name
    * @param newPropertyName the name it should have from now on
@@ -782,36 +815,35 @@ public class LocalDocumentType implements DocumentType {
   public Property renameProperty(final String propertyName, final String newPropertyName) {
     checkForSchemaMutation();
 
-    final LocalProperty property = (LocalProperty) properties.get(propertyName);
-    if (property == null)
-      throw new SchemaException("Cannot rename the property '" + propertyName + "' in type '" + name + "' because it does not exist");
-
-    if (propertyName.equals(newPropertyName))
-      return property;
-
-    if (this instanceof LocalTimeSeriesType tsType && tsType.isDeclaredColumn(propertyName))
-      throw new SchemaException("Cannot rename the property '" + propertyName + "' in type '" + name
-          + "' because it is a declared TIMESERIES column: the storage engine keeps reading and writing it under its "
-          + "declared name. Drop the whole type to change the column");
-
-    if (properties.containsKey(newPropertyName))
-      throw new SchemaException("Cannot rename the property '" + propertyName + "' in type '" + name + "' to '"
-          + newPropertyName + "' because a property with that name already exists");
-
-    if (getPolymorphicPropertyNames().contains(newPropertyName))
-      throw new SchemaException("Cannot rename the property '" + propertyName + "' in type '" + name + "' to '"
-          + newPropertyName + "' because it is already defined in a super type");
-
-    for (final TypeIndex index : getAllIndexes(true)) {
-      if (index.getPropertyNames().contains(propertyName))
-        throw new SchemaException("Cannot rename the property '" + propertyName + "' in type '" + name
-            + "' because it is used by index '" + index.getName()
-            + "'. Drop the index first, rename the property, then recreate the index on the new name");
-    }
-
-    final LocalProperty renamed = property.copyWithName(newPropertyName);
-
     return recordFileChanges(() -> {
+      final LocalProperty property = (LocalProperty) properties.get(propertyName);
+      if (property == null)
+        throw new SchemaException("Cannot rename the property '" + propertyName + "' in type '" + name + "' because it does not exist");
+
+      if (propertyName.equals(newPropertyName))
+        return property;
+
+      if (this instanceof LocalTimeSeriesType tsType && tsType.isDeclaredColumn(propertyName))
+        throw new SchemaException("Cannot rename the property '" + propertyName + "' in type '" + name
+            + "' because it is a declared TIMESERIES column: the storage engine keeps reading and writing it under its "
+            + "declared name. Drop the whole type to change the column");
+
+      if (properties.containsKey(newPropertyName))
+        throw new SchemaException("Cannot rename the property '" + propertyName + "' in type '" + name + "' to '"
+            + newPropertyName + "' because a property with that name already exists");
+
+      if (getPolymorphicPropertyNames().contains(newPropertyName))
+        throw new SchemaException("Cannot rename the property '" + propertyName + "' in type '" + name + "' to '"
+            + newPropertyName + "' because it is already defined in a super type");
+
+      final TypeIndex indexOnProperty = findIndexOnProperty(propertyName);
+      if (indexOnProperty != null)
+        throw new SchemaException("Cannot rename the property '" + propertyName + "' in type '" + name
+            + "' because it is used by index '" + indexOnProperty.getName()
+            + "'. Drop the index first, rename the property, then recreate the index on the new name");
+
+      final LocalProperty renamed = property.copyWithName(newPropertyName);
+
       properties.remove(propertyName);
       properties.put(newPropertyName, renamed);
       if (propertiesWithDefaultDefined.get().contains(propertyName)) {
