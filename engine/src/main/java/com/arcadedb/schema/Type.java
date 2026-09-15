@@ -1439,7 +1439,10 @@ public enum Type {
       if (value instanceof BigInteger bigInteger)
         return new BigDecimal(bigInteger);
       if (value instanceof Double || value instanceof Float) {
-        final double d = ((Number) value).doubleValue();
+        // A Float reaches its key through the decimal form, as it does everywhere else a Float meets a wider type:
+        // .doubleValue() would key 0.05f as 0.05000000074505806 while the Double 0.05 keys as 0.05, splitting one
+        // logical group in two - which is the very thing this method exists to prevent (issue #7609).
+        final double d = value instanceof Float float1 ? widenFloat(float1) : ((Number) value).doubleValue();
         if (Double.isNaN(d) || Double.isInfinite(d))
           return value;
         return BigDecimal.valueOf(d).stripTrailingZeros();
