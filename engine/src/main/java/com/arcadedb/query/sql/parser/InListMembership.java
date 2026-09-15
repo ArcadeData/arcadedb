@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.query.sql.executor.MultiValue;
+import com.arcadedb.schema.Type;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -172,7 +173,10 @@ public final class InListMembership {
 
     final Number number = (Number) value;
     if (number instanceof Double || number instanceof Float) {
-      final double d = number.doubleValue();
+      // ISSUE #7609: A Float IS WIDENED THROUGH ITS DECIMAL FORM, THE SAME WAY Type.castComparableNumber DOES IT FOR
+      // THE LINEAR PATH THIS FAST PATH HAS TO AGREE WITH. .doubleValue() WOULD REPRODUCE THE SINGLE PRECISION
+      // ROUNDING ERROR, SO A FLOAT PROPERTY HOLDING 0.05 KEYED AS 0.05000000074505806 AND `IN [0.05]` MISSED IT
+      final double d = number instanceof Float float1 ? Type.widenFloat(float1) : number.doubleValue();
       if (Double.isNaN(d) || Double.isInfinite(d))
         // Not representable as a BigDecimal at all; the linear path answers these from Double.equals.
         return null;
