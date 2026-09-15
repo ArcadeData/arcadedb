@@ -664,8 +664,18 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       clearBatchState();
       for (final DatabaseAsyncCommand command : abandonedCommands)
         command.notifyError(cause);
-      for (final DatabaseAsyncTask task : abandonedTasks)
-        task.notifyBatchAbandoned(cause);
+      for (final DatabaseAsyncTask task : abandonedTasks) {
+        try {
+          task.notifyBatchAbandoned(cause);
+        } catch (final Throwable notifyError) {
+          // #7615 (claude-review): every current override of notifyBatchAbandoned() already swallows its
+          // own callback's failure, same as DatabaseAsyncCommand#notifyError - wrapped here too, at this
+          // single choke point, so that guarantee does not depend on every future override remembering it.
+          // Left uncaught, this would both abort the loop (skipping notification for the rest of the
+          // batch) and replace the real conflict propagating out of commitBatch() with this one instead.
+          LogManager.instance().log(this, Level.WARNING, "Error on invoking notifyBatchAbandoned() of %s", notifyError, task);
+        }
+      }
     }
 
     /**
