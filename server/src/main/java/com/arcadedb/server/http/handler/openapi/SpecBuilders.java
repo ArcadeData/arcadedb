@@ -78,8 +78,8 @@ public final class SpecBuilders {
   public static final String WRITE_SESSION_REQUEST_DESCRIPTION = """
       Session id returned by 'beginTransaction'. It makes this call run under that session's lock and \
       principal and refreshes its idle timer, so a client that only ingests does not have its transaction \
-      reaped underneath it, and it makes an id this server no longer knows a 404 instead of a silent write \
-      outside the transaction you believe you are in.
+      reaped underneath it, and it turns a session id this server no longer knows into a 404 rather than a \
+      silent write outside the transaction you believe you are in.
 
       It does NOT put the samples in that transaction. They are committed as they are appended and are \
       readable by everyone before you commit anything; rolling the transaction back does not remove them. \
