@@ -240,6 +240,78 @@ class RemoteHttpComponentTest {
     assertThat(result).isInstanceOf(RecordNotFoundException.class);
   }
 
+  // Issue #7716: the untyped-fallback envelope. The TimeSeries endpoints answer a refusal as {"error": "..."}
+  // with no 'exception' member, so this arm is the one a caller actually meets - and what it puts FIRST is
+  // what an application logging getMessage() logs. Tested directly rather than only through the ITs'
+  // hasMessageContaining assertions, because the dedup below is dense enough that a future edit wants a unit
+  // test to break rather than an integration one.
+
+  @Test
+  void anUntypedRefusalLeadsWithTheServersOwnSentence() {
+    final HttpResponse<String> response = createMockResponse(400,
+        new JSONObject().put("error", "Field 'nosuchtag' is not a TAG column").toString());
+
+    final Exception result = component.manageException(response, "ts query");
+
+    assertThat(result).isInstanceOf(RemoteException.class);
+    assertThat(result.getMessage())
+        .as("the reason has to come before the envelope, or a truncated log line never reaches it")
+        .startsWith("Error on executing remote command 'ts query': Field 'nosuchtag' is not a TAG column");
+    assertThat(result.getMessage()).contains("httpErrorCode=400");
+  }
+
+  @Test
+  void thePromotedSentenceIsNotThenRepeatedInTheEnvelope() {
+    final HttpResponse<String> response = createMockResponse(400,
+        new JSONObject().put("error", "Aggregation SUM cannot be applied to column 'host'").toString());
+
+    final String message = component.manageException(response, "ts query").getMessage();
+
+    assertThat(message.split("Aggregation SUM cannot be applied", -1))
+        .as("stating the same diagnosis twice in one message is what the promotion was meant to stop")
+        .hasSize(2);
+    assertThat(message).doesNotContain("reason=Aggregation");
+  }
+
+  /**
+   * A detail that differs from the promoted reason by so much as a character is still printed: the envelope
+   * drops a field only when it ADDS nothing.
+   */
+  @Test
+  void aDetailThatDiffersFromTheReasonSurvivesTheEnvelope() {
+    final JSONObject json = new JSONObject();
+    json.put("error", "Bad request");
+    json.put("detail", "Bad request, actually");
+
+    final String message = component.manageException(createMockResponse(400, json.toString()), "ts query")
+        .getMessage();
+
+    assertThat(message).startsWith("Error on executing remote command 'ts query': Bad request (");
+    assertThat(message).contains("detail=Bad request, actually");
+    assertThat(message).doesNotContain("reason=Bad request ");
+  }
+
+  /** A field the server left out, or left empty, says nothing and is omitted rather than printed as null. */
+  @Test
+  void anAbsentOrEmptyEnvelopeFieldIsNotPrinted() {
+    final String noReason = component.manageException(
+        createMockResponse(500, new JSONObject().put("detail", "boom").toString()), "ts query").getMessage();
+    assertThat(noReason).startsWith("Error on executing remote command 'ts query': boom (");
+    assertThat(noReason).doesNotContain("reason=");
+
+    final JSONObject empty = new JSONObject();
+    empty.put("error", "");
+    empty.put("detail", "boom");
+    final String emptyReason = component.manageException(createMockResponse(500, empty.toString()), "ts query")
+        .getMessage();
+    assertThat(emptyReason).as("an empty value is no more informative than a missing one")
+        .doesNotContain("reason=");
+
+    final String neither = component.manageException(createMockResponse(500, "{}"), "ts query").getMessage();
+    assertThat(neither).as("nothing to promote: the sentence is the operation alone")
+        .startsWith("Error on executing remote command 'ts query' (");
+  }
+
   // Regression tests for issue #4551: manageException must not throw StringIndexOutOfBoundsException
   // while parsing the RID out of a RecordNotFoundException detail message.
 

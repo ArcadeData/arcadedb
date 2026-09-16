@@ -20,6 +20,7 @@ package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.engine.timeseries.ColumnDefinition.ColumnRole;
+import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Type;
@@ -116,6 +117,45 @@ class Issue7725NonNumericAggregationColumnTest extends TestHelper {
 
     TimeSeriesGateway.requireAggregatableColumn(host, AggregationType.COUNT);
     TimeSeriesGateway.requireAggregatableColumn(field("v", Type.DOUBLE), AggregationType.SUM);
+  }
+
+  /**
+   * The upgrade-visible half of asking the CODEC rather than the type: on a TimeSeries type created before
+   * issue #5475, {@code BOOLEAN} resolves through {@link ColumnDefinition#legacyCodecFor} to
+   * {@code DICTIONARY}, not {@code SIMPLE8B}. Such a column is refused where a post-#5475 one is accepted.
+   * <p>
+   * That is deliberate and it is the only honest answer available. The sealed layer's decoder handles the two
+   * numeric codecs and nothing else, so a legacy boolean genuinely is not stored as a number: the choices were
+   * a real {@code 0.0} per sample (what the mutable path did, and the defect this issue reports), an
+   * {@code IllegalArgumentException} out of the decoder once compaction had run, or a named refusal before
+   * either layer is reached. But it does mean an aggregation that used to ANSWER on an old database now
+   * throws, which reads as a regression to an operator upgrading in place unless it is written down - so it is
+   * written down here and in the PR, and pinned so it cannot change by accident.
+   */
+  @Test
+  void aLegacyBooleanColumnIsRefusedBecauseItReallyIsNotStoredAsANumber() {
+    // Tied to the real legacy table rather than to a hand-picked codec, or the test would pin the wrong thing.
+    assertThat(ColumnDefinition.legacyCodecFor(Type.BOOLEAN, ColumnRole.FIELD))
+        .as("pre-#5475, a BOOLEAN field fell to the default arm").isEqualTo(TimeSeriesCodec.DICTIONARY);
+    assertThat(ColumnDefinition.defaultCodecFor(Type.BOOLEAN, ColumnRole.FIELD))
+        .as("since #5475 it is an integer column").isEqualTo(TimeSeriesCodec.SIMPLE8B);
+
+    final ColumnDefinition legacy = new ColumnDefinition("active", Type.BOOLEAN, ColumnRole.FIELD,
+        ColumnDefinition.legacyCodecFor(Type.BOOLEAN, ColumnRole.FIELD));
+    assertThat(legacy.isNumericallyAggregatable())
+        .as("the sealed decoder has no arm for DICTIONARY, so this column cannot be read as a number").isFalse();
+
+    assertThatThrownBy(() -> TimeSeriesGateway.requireAggregatableColumn(legacy, AggregationType.SUM))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("'active'")
+        .hasMessageContaining("is not stored as a number");
+
+    // COUNT never reads the column, so it keeps working on an old schema exactly as it did.
+    TimeSeriesGateway.requireAggregatableColumn(legacy, AggregationType.COUNT);
+
+    // And the post-#5475 column of the same declared type is still accepted, which is what makes the refusal
+    // above a statement about STORAGE rather than about BOOLEAN.
+    TimeSeriesGateway.requireAggregatableColumn(field("active", Type.BOOLEAN), AggregationType.SUM);
   }
 
   // ---- the two layers over the same samples ----
