@@ -192,7 +192,7 @@ class Issue7136LocalResyncStatusTest {
   void aRunningDownloadRaisesAWarningNamingWhatIsInFlight() {
     final JSONArray alerts = new JSONArray();
     ClusterAlerts.addLocalResyncAlert(
-        new LocalResyncState(false, true, List.of(), -1, Map.of()), null, alerts);
+        new LocalResyncState(false, true, List.of(), -1, Map.of(), Map.of()), null, alerts);
 
     assertThat(alerts.length()).isEqualTo(1);
     final JSONObject alert = alerts.getJSONObject(0);
@@ -207,7 +207,8 @@ class Issue7136LocalResyncStatusTest {
   void aQuarantinedDatabaseEscalatesToCriticalAndIsNamed() {
     final JSONArray alerts = new JSONArray();
     ClusterAlerts.addLocalResyncAlert(
-        new LocalResyncState(false, false, List.of(DB_A), -1, Map.of()), null, alerts);
+        new LocalResyncState(false, false, List.of(DB_A), -1, Map.of(),
+            Map.of(DB_A, DivergenceCause.WAL_VERSION_GAP)), null, alerts);
 
     assertThat(alerts.length()).isEqualTo(1);
     final JSONObject alert = alerts.getJSONObject(0);
@@ -219,7 +220,7 @@ class Issue7136LocalResyncStatusTest {
   void anOutstandingReadFloorEscalatesToCritical() {
     final JSONArray alerts = new JSONArray();
     ClusterAlerts.addLocalResyncAlert(
-        new LocalResyncState(false, false, List.of(), 100L, Map.of()), null, alerts);
+        new LocalResyncState(false, false, List.of(), 100L, Map.of(), Map.of()), null, alerts);
 
     assertThat(alerts.getJSONObject(0).getString("severity")).isEqualTo(ClusterAlerts.SEVERITY_CRITICAL);
     assertThat(alerts.getJSONObject(0).getJSONObject("details").getLong("snapshotAppliedFloor")).isEqualTo(100L);
@@ -234,7 +235,8 @@ class Issue7136LocalResyncStatusTest {
   void databaseNamesAreScopedToTheCallerButTheAlertStillFires() {
     final JSONArray alerts = new JSONArray();
     ClusterAlerts.addLocalResyncAlert(
-        new LocalResyncState(false, false, List.of(DB_A, DB_B), -1, Map.of(DB_B, 7L)), Set.of(DB_A), alerts);
+        new LocalResyncState(false, false, List.of(DB_A, DB_B), -1, Map.of(DB_B, 7L),
+            Map.of(DB_A, DivergenceCause.WAL_VERSION_GAP, DB_B, DivergenceCause.APPLY_ERROR)), Set.of(DB_A), alerts);
 
     assertThat(alerts.length()).as("a resyncing node is node-level news, not per-tenant news").isEqualTo(1);
     final JSONObject details = alerts.getJSONObject(0).getJSONObject("details");
@@ -262,7 +264,8 @@ class Issue7136LocalResyncStatusTest {
   @Test
   void aQuarantinedFollowerIsVisibleInTheStatusDocument() {
     final JSONObject json = GetClusterHandler.buildLocalResync(
-        new LocalResyncState(true, false, List.of(DB_A), -1, Map.of(DB_A, 42L)), null);
+        new LocalResyncState(true, false, List.of(DB_A), -1, Map.of(DB_A, 42L),
+            Map.of(DB_A, DivergenceCause.WAL_VERSION_GAP)), null);
 
     assertThat(json.getBoolean("inProgress")).isTrue();
     assertThat(json.getBoolean("snapshotDownloadQueued")).isTrue();
@@ -277,7 +280,8 @@ class Issue7136LocalResyncStatusTest {
   @Test
   void theStatusDocumentScopesDatabaseNamesButNotTheNodeLevelAnswer() {
     final JSONObject json = GetClusterHandler.buildLocalResync(
-        new LocalResyncState(false, false, List.of(DB_A, DB_B), -1, Map.of(DB_B, 7L)), Set.of(DB_A));
+        new LocalResyncState(false, false, List.of(DB_A, DB_B), -1, Map.of(DB_B, 7L),
+            Map.of(DB_A, DivergenceCause.WAL_VERSION_GAP, DB_B, DivergenceCause.WAL_VERSION_GAP)), Set.of(DB_A));
 
     assertThat(json.getBoolean("inProgress")).isTrue();
     assertThat(json.getJSONArray("divergedDatabases").toList()).containsExactly(DB_A);
@@ -339,7 +343,7 @@ class Issue7136LocalResyncStatusTest {
   // ---------------------------------------------------------------------------------------------
 
   private static LocalResyncState clean() {
-    return new LocalResyncState(false, false, List.of(), -1, Map.of());
+    return new LocalResyncState(false, false, List.of(), -1, Map.of(), Map.of());
   }
 
   private static ArcadeStateMachine newStateMachine(final Path tempDir) {

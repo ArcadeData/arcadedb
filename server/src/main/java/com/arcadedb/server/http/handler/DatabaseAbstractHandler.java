@@ -341,11 +341,17 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
    * Defaults to {@link #requiresTransaction()}, which is the answer for every handler whose auto-commit wrapper
    * IS the thing a stale id would substitute for the caller's transaction. It is a separate question for a
    * handler that writes without wanting that wrapper: {@code POST /api/v1/ts/{database}/write} appends through
-   * {@code TimeSeriesShard.appendSamples}, which opens its own {@code begin}/{@code commit} per shard, so an
-   * outer auto-commit transaction would buy it nothing and would cost it the parallel shard dispatch
-   * {@code TimeSeriesEngine.appendBatch} only takes with no transaction active on the calling thread (#4957).
-   * That handler answers {@code false} to {@link #requiresTransaction()} and {@code true} here: a write must
-   * still not run outside the transaction its caller believes it is inside (issue #7402).
+   * {@code TimeSeriesShard.appendSamples}, which opens and commits its own transaction per shard whatever the
+   * caller has open (#7410), so an outer auto-commit transaction would buy it nothing - it would neither make
+   * the write atomic nor take it back on rollback, and the samples are published by the shard's own commit
+   * either way. That handler answers {@code false} to {@link #requiresTransaction()} and {@code true} here: a
+   * write must still not run outside the transaction its caller believes it is inside (issue #7402).
+   * <p>
+   * What that {@code false} does NOT buy is the parallel shard dispatch, which this javadoc used to give as the
+   * reason (issue #7741): {@code TimeSeriesGateway.write} calls {@code database.begin()} itself before the
+   * appends, so {@code TimeSeriesEngine.appendBatch} sees an active transaction and keeps the shard writes
+   * in-thread on this route whatever the wrapper does. The dispatch is taken by callers that append with no
+   * transaction of their own (#4957); the line-protocol ingest has never been one.
    */
   protected boolean rejectsUnresolvableSession() {
     return requiresTransaction();

@@ -2125,7 +2125,7 @@ public enum GlobalConfiguration {
   HA_PROXY_BATCH_READ_TIMEOUT("arcadedb.ha.proxyBatchReadTimeout", SCOPE.SERVER,
       """
       Milliseconds a follower waits for the leader to answer a /api/v1/batch load it relayed via \
-      PostBatchHandler (issues #7526/#7542), before giving up and answering the client HTTP 503. Deliberately \
+      PostBatchHandler (issues #7526/#7542), before giving up and answering the client HTTP 504. Deliberately \
       its own setting rather than arcadedb.ha.proxyReadTimeout: a bulk load's legitimate duration is a function \
       of the payload the client is still streaming, so the same generous order of magnitude as \
       arcadedb.server.httpStreamingReadTimeout (the budget this node grants the INCOMING side of the same load) \

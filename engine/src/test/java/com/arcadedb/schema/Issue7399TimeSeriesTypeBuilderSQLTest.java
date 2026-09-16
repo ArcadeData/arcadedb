@@ -267,13 +267,24 @@ class Issue7399TimeSeriesTypeBuilderSQLTest extends TestHelper {
         .hasMessageContaining("downsampling granularity");
   }
 
+  /**
+   * A back-quote in a name used to be refused outright, on the ground that the grammar has no escape for it. It
+   * has one - {@code QUOTED_IDENTIFIER : BACKTICK ( ~[`\\] | '\\' . )+ BACKTICK} - so the name is escaped and
+   * carried instead (issue #7740), and the injection it was refused to prevent is still prevented: the whole
+   * thing stays ONE identifier and nothing in it runs as statement text.
+   */
   @Test
-  void anIdentifierCarryingABackQuoteIsRefusedRatherThanConcatenated() {
-    // There is no escape for a back-quote inside a quoted identifier, so a name carrying one would close the quote
-    // and let whatever follows it run as statement text.
-    assertThatThrownBy(() -> builder("Injected`; DROP TYPE `V").withField("value", Type.DOUBLE).toSQL())
-        .isInstanceOf(SchemaException.class)
-        .hasMessageContaining("back-quote");
+  void anIdentifierCarryingABackQuoteIsEscapedRatherThanConcatenated() {
+    database.command("sql", "CREATE DOCUMENT TYPE V");
+
+    final String injected = "Injected`; DROP TYPE `V";
+    final String sql = builder(injected).withField("value", Type.DOUBLE).toSQL().getFirst();
+    assertParses(sql);
+
+    database.command("sql", sql);
+
+    assertThat(database.getSchema().existsType(injected)).as("the name is a name, odd as it is").isTrue();
+    assertThat(database.getSchema().existsType("V")).as("and the statement it tried to smuggle never ran").isTrue();
   }
 
   @Test

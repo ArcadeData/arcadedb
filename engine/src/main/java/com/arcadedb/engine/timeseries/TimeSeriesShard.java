@@ -168,13 +168,14 @@ public class TimeSeriesShard implements AutoCloseable {
       // standalone database getWrappedDatabaseInstance() returns the same instance, so behaviour is
       // unchanged.
       final DatabaseInternal db = database.getWrappedDatabaseInstance();
-      db.begin();
+      final OwnTransaction tx = OwnTransaction.begin(db);
       try {
         mutableBucket.initHeaderPage();
-        db.commit();
+        tx.commit();
       } catch (final Exception e) {
-        if (db.isTransactionActive())
-          db.rollback();
+        // Only this method's own transaction, never the caller's: a shard is commonly created from inside an
+        // open transaction, and a failed commit() has already popped ours (issue #7732).
+        tx.rollbackIfMine();
         throw e instanceof IOException ? (IOException) e :
             new IOException("Failed to initialise header for shard " + shardIndex, e);
       }
@@ -291,12 +292,14 @@ public class TimeSeriesShard implements AutoCloseable {
         compactionLock.readLock().lock();
         boolean readLockHeld = true;
         try {
-          db.begin();
+          // Tracked rather than inferred from isTransactionActive(): after a FAILED commit the transaction begun
+          // here is already off the thread's stack, so "is a transaction active" answers for the CALLER's and
+          // rolling that back discards work this append knows nothing about (issue #7732).
+          final OwnTransaction tx = OwnTransaction.begin(db);
           try {
             mutableBucket.appendSamples(source);
           } catch (final Exception e) {
-            if (db.isTransactionActive())
-              db.rollback();
+            tx.rollbackIfMine();
             throw e instanceof IOException ? (IOException) e : new IOException("Failed to append timeseries samples", e);
           }
           // On Raft HA leaders, release the read lock BEFORE commit. See appendSamples() javadoc for
@@ -308,13 +311,13 @@ public class TimeSeriesShard implements AutoCloseable {
             readLockHeld = false;
           }
           try {
-            db.commit();
+            tx.commit();
             return; // success
           } catch (final ConcurrentModificationException e) {
             // Phase 4c committed a page-0 clear between the read-lock release and our commit (HA only).
-            // Roll back and retry on the freshly-cleared page.
-            if (db.isTransactionActive())
-              db.rollback();
+            // Roll back and retry on the freshly-cleared page. Usually a no-op - commit1stPhase has already
+            // rolled this transaction back on every arm and commit() has popped it - and never the caller's.
+            tx.rollbackIfMine();
             if (attempt == 1)
               throw new IOException("Failed to append timeseries samples after compaction-race retries", e);
             final int attemptNumber = 4 - attempt; // ascending 1..3 for human-readable logging
@@ -323,8 +326,7 @@ public class TimeSeriesShard implements AutoCloseable {
                 shardIndex, attemptNumber);
             // else loop again
           } catch (final Exception e) {
-            if (db.isTransactionActive())
-              db.rollback();
+            tx.rollbackIfMine();
             throw e instanceof IOException ? (IOException) e : new IOException("Failed to append timeseries samples", e);
           }
         } finally {
@@ -352,9 +354,10 @@ public class TimeSeriesShard implements AutoCloseable {
       final List<Object[]> sealedResults = sealedStore.scanRange(fromTs, toTs, columnIndices, tagFilter);
       results.addAll(sealedResults);
 
-      // Then mutable layer
-      final List<Object[]> mutableResults = mutableBucket.scanRange(fromTs, toTs, columnIndices);
-      addFiltered(results, mutableResults, tagFilter, columnIndices);
+      // Then mutable layer, filtered by the bucket itself: the filter is evaluated on the page, where a tag
+      // column the projection leaves out is still readable, instead of on the projected row that cannot carry
+      // it (issue #7733).
+      results.addAll(mutableBucket.scanRange(fromTs, toTs, columnIndices, tagFilter, null));
 
       return results;
     } finally {
@@ -395,7 +398,7 @@ public class TimeSeriesShard implements AutoCloseable {
       // Eagerly materialize the mutable iterator under the lock.
       // A lazy iterator would risk reading stale (cleared) pages if compaction
       // acquires the write lock and clears the bucket before next() is called.
-      final List<Object[]> mutableRows = mutableBucket.scanRange(fromTs, toTs, columnIndices, metrics);
+      final List<Object[]> mutableRows = mutableBucket.scanRange(fromTs, toTs, columnIndices, tagFilter, metrics);
       mutableIter = mutableRows.iterator();
     } finally {
       compactionLock.readLock().unlock();
@@ -413,21 +416,23 @@ public class TimeSeriesShard implements AutoCloseable {
         advance();
       }
 
+      /**
+       * No filtering here: both layers have already applied the filter, each where it can see every column -
+       * the sealed store on the block metadata and on the widened row, the mutable bucket on the page.
+       * Re-testing the PROJECTED row is what made a filter on a non-projected tag answer nothing (issue #7733).
+       */
       private void advance() {
-        nextRow = null;
         while (true) {
           if (current.hasNext()) {
-            final Object[] row = current.next();
-            // Use matchesMapped() so the filter works correctly when columnIndices is a subset.
-            if (tagFilter == null || tagFilter.matchesMapped(row, columnIndices)) {
-              nextRow = row;
-              return;
-            }
-          } else if (!switchedToMutable) {
-            current = mutableIter;
-            switchedToMutable = true;
-          } else
+            nextRow = current.next();
             return;
+          }
+          if (switchedToMutable) {
+            nextRow = null;
+            return;
+          }
+          current = mutableIter;
+          switchedToMutable = true;
         }
       }
 
@@ -472,10 +477,8 @@ public class TimeSeriesShard implements AutoCloseable {
       if (!sealedStore.forEachRow(fromTs, toTs, columnIndices, tagFilter, metrics, visitor))
         return false;
 
-      for (final Object[] row : mutableBucket.scanRange(fromTs, toTs, columnIndices)) {
-        // Use matchesMapped() so the filter works correctly when columnIndices is a subset.
-        if (tagFilter != null && !tagFilter.matchesMapped(row, columnIndices))
-          continue;
+      // Filtered by the bucket, on the page: see scanRange (issue #7733).
+      for (final Object[] row : mutableBucket.scanRange(fromTs, toTs, columnIndices, tagFilter, null)) {
         if (metrics != null)
           metrics.addMaterializedRows(1);
         if (!visitor.visit(row))
@@ -1037,7 +1040,7 @@ public class TimeSeriesShard implements AutoCloseable {
 
           final TimeSeriesCodec codec = columns.get(c).getCompressionHint();
           if (codec == TimeSeriesCodec.GORILLA_XOR || codec == TimeSeriesCodec.SIMPLE8B) {
-            final double[] stats = TimeSeriesSealedStore.reduceNumericStats(chunkValues);
+            final double[] stats = TimeSeriesSealedStore.reduceNumericStats(columns.get(c), chunkValues);
             mins[c] = stats[0];
             maxs[c] = stats[1];
             sums[c] = stats[2];
@@ -1422,17 +1425,6 @@ public class TimeSeriesShard implements AutoCloseable {
   }
 
   // --- Private helpers ---
-
-  private static void addFiltered(final List<Object[]> results, final List<Object[]> source, final TagFilter filter,
-                                  final int[] columnIndices) {
-    if (filter == null)
-      results.addAll(source);
-    else
-      for (final Object[] row : source)
-        // Use matchesMapped() so the filter works correctly when columnIndices is a subset.
-        if (filter.matchesMapped(row, columnIndices))
-          results.add(row);
-  }
 
   private static int[] sortIndices(final long[] timestamps) {
     final int n = timestamps.length;
