@@ -21,8 +21,6 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
-import com.arcadedb.engine.timeseries.TimeSeriesEngine;
-import com.arcadedb.engine.timeseries.TimeSeriesGateway;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.security.SecurityDatabaseUser;
@@ -107,37 +105,21 @@ public class GetPromQLLabelValuesHandler extends DatabaseAbstractHandler {
         if (!hasTagColumn(labelName, columns))
           continue;
 
-        // PROJECTION, not the whole row (issue #7371). The answer is made of one column, so that is the only one
-        // the scan decodes. In the sealed layer that is the larger saving: a block stores each column in its own
-        // byte range and TimeSeriesSealedStore.decompressColumns() reads only the ranges the projection names, so
-        // the DOUBLE value column every Prometheus metric carries is not read off disk and not Gorilla-decoded.
-        // In the mutable layer TimeSeriesBucket.readRow() still walks the row - it has to, to find each column's
-        // offset - but calls readColumnValue() only on the projected column, so nothing else is decoded or boxed.
-        // Either way the rows handed to the visitor are Object[2] rather than the full width.
+        // The answer is largely already RECORDED, so most of it is read rather than computed (issue #7660): every
+        // sealed block's directory entry carries the complete distinct value set of each of its TAG columns, built
+        // at seal time from the very rows the block holds. Unioning those entries costs O(blocks x cardinality) and
+        // decompresses nothing, which matters because a Grafana datasource calls this to populate a label picker on
+        // every dashboard load and every variable refresh - against a type holding millions of samples, the scan
+        // this replaces read every one of them to produce a set of five strings.
         //
-        // columnIndices count NON-TIMESTAMP columns, and the projected row is { timestamp, selected columns in
-        // schema order } - the contract TimeSeriesGateway.selectedColumns() spells out and the row layout
-        // TimeSeriesBucket.readRow() builds. The slot is therefore READ from that list rather than assumed to be
-        // the column's schema index, which is what the previous code did and what rested on the TIMESTAMP column
-        // being declared first - true of every type-creation path but enforced by none of them.
-        final int[] columnIndices = TimeSeriesGateway.resolveColumnIndices(List.of(labelName), columns);
-        final int valueSlot = projectedSlotOf(labelName, TimeSeriesGateway.selectedColumns(columns, columnIndices));
-        if (valueSlot < 0)
-          continue;
-
-        // forEachRow, not query(): the answer is the tag's cardinality - a handful of hosts or regions - while
-        // query() merges every shard's full range into one ArrayList and sorts it by timestamp, a sort this loop
-        // does not use at all. A Grafana datasource calls this to populate a label picker, on every dashboard load
-        // and every variable refresh, so a type holding millions of samples used to allocate the whole series per
-        // call. The rows still have to be READ, but they no longer have to be resident (issue #7354).
-        // The visitor runs under the shard's read locks (see TimeSeriesRowVisitor): it folds, it does not compute
-        // and it never calls back into the engine.
-        final TimeSeriesEngine engine = tsType.getEngine();
-        engine.forEachRow(Long.MIN_VALUE, Long.MAX_VALUE, columnIndices, null, null, row -> {
-          if (valueSlot < row.length && row[valueSlot] != null)
-            values.add(row[valueSlot].toString());
-          return true;
-        });
+        // The union is EXACT, not an over-approximation: TimeSeriesSealedStore.collectDistinctTagValues() reads a
+        // block rather than its declaration in the one case where the two would disagree, and no path removes rows
+        // from a sealed block without recomputing the declaration. That distinction is the whole reason this was
+        // left out of issue #7371 - Prometheus documents /label/{name}/values as the values a label actually
+        // carries, so naming a series that no surviving sample carries is a behaviour change a user sees in a
+        // Grafana picker, not a free win. The mutable bucket has no declaration and is still scanned, on the same
+        // one-column projection issue #7371 introduced, but it is bounded by the compaction interval.
+        tsType.getEngine().collectDistinctTagValues(labelName, values, null);
       }
     }
 
@@ -152,17 +134,5 @@ public class GetPromQLLabelValuesHandler extends DatabaseAbstractHandler {
       if (column.getRole() == ColumnDefinition.ColumnRole.TAG && column.getName().equals(name))
         return true;
     return false;
-  }
-
-  /**
-   * The slot a projected column's value occupies in the scanned row, or {@code -1} when the projection does not
-   * carry it. {@code row[0]} is the timestamp on every read path, and the columns
-   * {@link TimeSeriesGateway#selectedColumns(List, int[])} lists after it follow in the same order.
-   */
-  private static int projectedSlotOf(final String name, final List<ColumnDefinition> projected) {
-    for (int i = 1; i < projected.size(); i++)
-      if (projected.get(i).getName().equals(name))
-        return i;
-    return -1;
   }
 }
