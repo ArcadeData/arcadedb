@@ -28,6 +28,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.PriorityQueue;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutorService;
@@ -428,6 +429,55 @@ public class TimeSeriesEngine implements AutoCloseable {
       if (!shard.forEachRow(fromTs, toTs, columnIndices, tagFilter, metrics, visitor))
         return false;
     return true;
+  }
+
+  /**
+   * The distinct values of one TAG column, across every shard, without scanning the samples that already declared
+   * them (issue #7660).
+   * <p>
+   * {@link #forEachRow} is the right shape for a fold over the rows, but this particular fold has its answer
+   * already written down: every sealed block's directory entry carries the complete distinct value set of each of
+   * its TAG columns, recorded at seal time from the very rows the block holds. Unioning those entries answers the
+   * sealed layer in O(blocks x cardinality) without decompressing a block, and the walk over millions of samples
+   * that a Grafana label picker used to pay for on every dashboard load is left to the mutable bucket alone.
+   * <p>
+   * This is NOT an over-approximation, which is what kept it out of issue #7371. The returned set is exactly the
+   * set a full projected scan produces - {@link TimeSeriesSealedStore#collectDistinctTagValues} spells out why the
+   * declaration cannot outlive its rows, and falls back to reading the block in the one case where the declaration
+   * and the scan would disagree. {@code TimeSeriesTagDictionary} is deliberately NOT consulted: its own class
+   * javadoc calls it append-only, and it holds values no live sample carries once retention has expired.
+   *
+   * @param tagColumnName the TAG column to enumerate
+   * @param out           receives the distinct values; not cleared first, so several types can fold into one set
+   * @param metrics       optional counters, may be {@code null}
+   *
+   * @throws IllegalArgumentException when this type declares no TAG column with that name. A FIELD of the same
+   *                                  name is not a label and does not answer here
+   */
+  public void collectDistinctTagValues(final String tagColumnName, final Set<String> out,
+      final AggregationMetrics metrics) throws IOException {
+    int schemaColumnIndex = -1;
+    int nonTsColumnIndex = -1;
+
+    int nonTsIdx = 0;
+    for (int c = 0; c < columns.size(); c++) {
+      final ColumnDefinition column = columns.get(c);
+      if (column.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+        continue;
+      if (column.getRole() == ColumnDefinition.ColumnRole.TAG && column.getName().equals(tagColumnName)) {
+        schemaColumnIndex = c;
+        nonTsColumnIndex = nonTsIdx;
+        break;
+      }
+      nonTsIdx++;
+    }
+
+    if (schemaColumnIndex < 0)
+      throw new IllegalArgumentException(
+          "TimeSeries type '" + typeName + "' declares no TAG column named '" + tagColumnName + "'");
+
+    for (final TimeSeriesShard shard : shards)
+      shard.collectDistinctTagValues(schemaColumnIndex, nonTsColumnIndex, out, metrics);
   }
 
   /**
