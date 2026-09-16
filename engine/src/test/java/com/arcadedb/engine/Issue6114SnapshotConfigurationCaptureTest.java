@@ -26,6 +26,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -56,8 +57,11 @@ class Issue6114SnapshotConfigurationCaptureTest extends TestHelper {
       final List<PageSnapshot.SnapshotConfigFile> captured = snapshot.getConfigurationFiles();
 
       assertThat(captured).extracting(PageSnapshot.SnapshotConfigFile::fileName)
-          .as("configuration.json first, then schema.json - the order a consumer archives them in")
-          .containsExactly(LocalDatabase.CONFIGURATION_FILE_NAME, LocalSchema.SCHEMA_FILE_NAME);
+          .as("configuration.json first, then schema.json, then schema.prev.json - the order a consumer archives "
+              + "them in. The previous copy joined the window in #7637, so a restored database keeps the "
+              + "corruption fallback its source had")
+          .containsExactly(LocalDatabase.CONFIGURATION_FILE_NAME, LocalSchema.SCHEMA_FILE_NAME,
+              LocalSchema.SCHEMA_PREV_FILE_NAME);
 
       assertThat(schemaOf(captured)).as("the window must serve the schema exactly as it was at t0")
           .isEqualTo(liveSchemaAtT0);
@@ -129,7 +133,12 @@ class Issue6114SnapshotConfigurationCaptureTest extends TestHelper {
     }
   }
 
-  /** A configuration file that does not exist at t0 is simply absent, never an empty entry a restore would extract. */
+  /**
+   * A configuration file that does not exist at t0 is simply absent, never an empty entry a restore would extract.
+   * Both optional files are removed here, not just {@code configuration.json}: {@code schema.prev.json} is legitimately
+   * missing on a database whose schema has never been re-saved, and joining the captured set in #7637 must not have
+   * turned that into a zero-length entry either.
+   */
   @Test
   void aMissingConfigurationFileIsOmittedRatherThanCapturedEmpty() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
@@ -137,6 +146,10 @@ class Issue6114SnapshotConfigurationCaptureTest extends TestHelper {
 
     FileUtils.deleteFile(local.getConfigurationFile());
     assertThat(local.getConfigurationFile()).doesNotExist();
+
+    final File previousSchema = new File(database.getDatabasePath(), LocalSchema.SCHEMA_PREV_FILE_NAME);
+    FileUtils.deleteFile(previousSchema);
+    assertThat(previousSchema).doesNotExist();
 
     try (final PageSnapshot snapshot = db.getPageManager().openSnapshot(db)) {
       assertThat(snapshot.getConfigurationFiles()).extracting(PageSnapshot.SnapshotConfigFile::fileName)
