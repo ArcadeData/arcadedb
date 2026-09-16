@@ -61,19 +61,23 @@ final class TagProjection {
     if (columnIndices == null || tagFilter == null)
       return new TagProjection(columnIndices, null);
 
-    int[] widened = columnIndices;
-    int count = columnIndices.length;
-    for (final TagFilter.Condition cond : tagFilter.getConditions()) {
-      if (contains(widened, count, cond.columnIndex()))
-        continue;
-      if (widened == columnIndices)
-        // Copied only when there really is something to add, so the common projection is never duplicated.
-        widened = Arrays.copyOf(columnIndices, columnIndices.length + tagFilter.getConditionCount());
-      widened[count++] = cond.columnIndex();
-    }
+    int missing = 0;
+    for (final TagFilter.Condition cond : tagFilter.getConditions())
+      if (!contains(columnIndices, columnIndices.length, cond.columnIndex()))
+        ++missing;
 
-    if (widened == columnIndices)
+    // The common case, and the one worth not paying for: the projection already carries every filter column, so
+    // the caller's own array is the scan set and no row will be copied.
+    if (missing == 0)
       return new TagProjection(columnIndices, null);
+
+    // `missing` counts a column named by two conditions twice, which only over-allocates: the fill below skips a
+    // column already added and the array is trimmed to what was really written.
+    final int[] widened = Arrays.copyOf(columnIndices, columnIndices.length + missing);
+    int count = columnIndices.length;
+    for (final TagFilter.Condition cond : tagFilter.getConditions())
+      if (!contains(widened, count, cond.columnIndex()))
+        widened[count++] = cond.columnIndex();
 
     // The decompressor emits columns in schema order whatever order it was asked in, so the scan set is sorted and
     // the positions to keep are computed against that order rather than against the caller's.
