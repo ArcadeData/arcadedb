@@ -69,6 +69,15 @@ public final class MultiColumnAggregationResult {
   private Map<Long, double[]> overflowValues;
   private Map<Long, long[]>   overflowCounts;
 
+  // --- Response ceiling (issue #7724) ---
+  // The number of buckets the caller will accept, 0 for no ceiling, and the running count of the buckets
+  // something has actually landed in. A scan asks isOverBucketCeiling() as it goes and stops the moment the
+  // answer can no longer be sent, so an oversized request costs the work of reaching the ceiling rather than
+  // the work of computing an answer that is thrown away. In flat mode the count cannot be read off
+  // bucketUsed[] without walking it, hence the counter; in map mode orderedBuckets already is the count.
+  private int bucketCeiling;
+  private int flatUsedBuckets;
+
   /**
    * Map-mode constructor (original behavior).
    */
@@ -364,14 +373,40 @@ public final class MultiColumnAggregationResult {
   }
 
   public int size() {
-    if (flatMode) {
-      int count = overflowValues != null ? overflowValues.size() : 0;
-      for (int b = 0; b < maxBuckets; b++)
-        if (bucketUsed[b])
-          count++;
-      return count;
-    }
-    return valuesByBucket.size();
+    return getUsedBucketCount();
+  }
+
+  /**
+   * The number of buckets something has landed in, which is the number of rows
+   * {@link #getBucketTimestamps()} will hand back. O(1) in both modes.
+   */
+  public int getUsedBucketCount() {
+    if (flatMode)
+      return flatUsedBuckets + (overflowValues != null ? overflowValues.size() : 0);
+    return orderedBuckets.size();
+  }
+
+  /**
+   * Declares the largest number of buckets the caller can accept, {@code <= 0} for no ceiling (issue #7724).
+   * <p>
+   * A bound on the WORK, not a truncation: a result that trips the ceiling is incomplete by construction and
+   * exists only to be refused. Every surface that sets one already refuses a bucket count above it after the
+   * fact - {@code /ts/query}, the Grafana query route, the gRPC bucket stream - and that refusal is what still
+   * answers the caller, unchanged in wording. What changes is its price: the scan stops as soon as the count
+   * passes the ceiling instead of visiting the whole range first. Because the scan stops only once the count is
+   * ALREADY above the ceiling, the after-the-fact check necessarily fires, so no caller can receive a partial
+   * result.
+   */
+  public void setBucketCeiling(final int bucketCeiling) {
+    this.bucketCeiling = bucketCeiling;
+  }
+
+  /**
+   * Whether this result has passed the ceiling {@link #setBucketCeiling(int)} declared, i.e. whether the scan
+   * filling it is now doing work that can only end in a refusal. Always false when no ceiling was declared.
+   */
+  public boolean isOverBucketCeiling() {
+    return bucketCeiling > 0 && getUsedBucketCount() > bucketCeiling;
   }
 
   /**
@@ -491,6 +526,7 @@ public final class MultiColumnAggregationResult {
       return false;
     if (!bucketUsed[idx]) {
       bucketUsed[idx] = true;
+      flatUsedBuckets++;
       flatValues[idx] = newInitializedValues();
       flatCounts[idx] = new long[requestCount];
       cachedBucketTimestamps = null; // invalidate cache

@@ -52,6 +52,7 @@ import com.arcadedb.remote.timeseries.TimeSeriesQuery;
 import com.arcadedb.remote.timeseries.TimeSeriesQueryResult;
 import com.arcadedb.remote.timeseries.TimeSeriesWriteSummary;
 import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.Pair;
 
@@ -1052,8 +1053,17 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
               stringList(error.getJSONArray("unavailableTypes", null)));
       }
 
-      throw new RemoteException("Error on time series write", manageException(response, "ts write"));
-    } catch (final RemoteException | SecurityException e) {
+      // The server's sentence in the message, for the reason postToTimeSeriesEndpoint gives (issue #7716).
+      throw asRuntime(manageException(response, "ts write"), "time series write");
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new RemoteException("Request interrupted", e);
+    } catch (final JSONException e) {
+      // Before the RuntimeException clause, for the reason postToTimeSeriesEndpoint gives at its own. Reachable
+      // on this method from the partial-write branch above, which parses the 400 body to tell a rejected
+      // request from a partially applied one.
+      throw new RemoteException("Error on time series write", e);
+    } catch (final RuntimeException e) {
       throw e;
     } catch (final Exception e) {
       throw new RemoteException("Error on time series write", e);
@@ -1184,12 +1194,19 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       final HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
       if (response.statusCode() != 200)
-        throw new RemoteException("Error on time series latest", manageException(response, "ts latest"));
+        // The server's sentence in the message, for the reason postToTimeSeriesEndpoint gives (issue #7716).
+        throw asRuntime(manageException(response, "ts latest"), "time series latest");
 
       final JSONObject body = new JSONObject(response.body());
       final Object[] latest = body.isNull("latest") ? null : jsonValues(body.getJSONArray("latest"));
       return new TimeSeriesLatestResult(body.getString("type"), stringList(body.getJSONArray("columns", null)), latest);
-    } catch (final RemoteException | SecurityException e) {
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new RemoteException("Request interrupted", e);
+    } catch (final JSONException e) {
+      // Before the RuntimeException clause, for the reason postToTimeSeriesEndpoint gives at its own.
+      throw new RemoteException("Error on time series latest", e);
+    } catch (final RuntimeException e) {
       throw e;
     } catch (final Exception e) {
       throw new RemoteException("Error on time series latest", e);
@@ -1206,10 +1223,30 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
       final HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
       if (response.statusCode() != 200)
-        throw new RemoteException("Error on time series " + endpoint, manageException(response, operation));
+        // asRuntime, not a fixed "Error on time series <endpoint>" with the reason hung off it as the cause
+        // (issue #7716). The server names the offending member in its refusal - which is the whole point of
+        // issues #7334, #7340 and #7675 - and an application that logs getMessage(), the common thing to do,
+        // used to log a sentence carrying none of it. The gRPC client puts the server's sentence in the
+        // message, so the two protocols now answer the same refusal the same way.
+        throw asRuntime(manageException(response, operation), "time series " + endpoint);
 
       return new JSONObject(response.body());
-    } catch (final RemoteException | SecurityException e) {
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new RemoteException("Request interrupted", e);
+    } catch (final JSONException e) {
+      // A body this client could not parse is a transport failure, not one of the server's typed exceptions, so
+      // it keeps the "Error on time series <endpoint>" context the generic clause below used to give it.
+      // Placed BEFORE the RuntimeException clause on purpose: JSONException extends RuntimeException, so
+      // without this it would ride the
+      // pass-through meant for the reconstructed server types and reach the caller as a bare parser error.
+      // RemoteHttpComponent wraps the same failure the same way.
+      throw new RemoteException("Error on time series " + endpoint, e);
+    } catch (final RuntimeException e) {
+      // Unchanged, for the reason vectorOperation gives at its own generic clause: manageException reconstructs
+      // the server's exception type, and SecurityException, NoSuchElementException and SchemaException are
+      // none of them a RemoteException. Catching only those supertypes buried a denied or malformed
+      // time-series request as a generic RemoteException.
       throw e;
     } catch (final Exception e) {
       throw new RemoteException("Error on time series " + endpoint, e);

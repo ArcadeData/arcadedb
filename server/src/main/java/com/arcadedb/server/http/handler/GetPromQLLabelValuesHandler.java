@@ -20,6 +20,7 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.timeseries.AggregationMetrics;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
@@ -27,6 +28,7 @@ import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.monitor.TimeSeriesReadMetrics;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
@@ -65,12 +67,26 @@ public class GetPromQLLabelValuesHandler extends DatabaseAbstractHandler {
   }
 
   /**
-   * A session-less read is answered on the IO thread, which is what this handler has always done. A request
-   * that names a session is not: see {@link DatabaseAbstractHandler#carriesSessionId}.
+   * A full-range scan of every sample of every type the label appears on, so never on an Undertow IO thread
+   * (issue #7722).
+   * <p>
+   * The work is unbounded in the size of the SERIES rather than in the size of the request: the endpoint takes
+   * no bound the caller could narrow, and the {@code start}/{@code end} the Prometheus API defines for it are
+   * accepted and ignored here, so there is no request the server can answer cheaply. An IO thread serves many
+   * connections at once, and the cost of parking one is not paid by the caller whose scan it is - it is paid by
+   * every unrelated connection multiplexed onto the same thread.
+   * <p>
+   * This route is on Grafana's variable-refresh path, so a dashboard with one templated variable issues it on
+   * every load and on every refresh interval.
+   * <p>
+   * Answered handler-wide, which SUPERSEDES the per-request override issue #7681 gave this handler. That one
+   * dispatched only a request naming a session, deliberately leaving the session-less case as it was - and the
+   * session-less case is the one Grafana and Prometheus exercise, since neither ever sends
+   * {@code arcadedb-session-id}. Both reasons to leave the IO thread still hold; this is the wider of the two.
    */
   @Override
-  protected boolean mustExecuteOnWorkerThread(final HttpServerExchange exchange) {
-    return carriesSessionId(exchange);
+  protected boolean mustExecuteOnWorkerThread() {
+    return true;
   }
 
   @Override
@@ -119,7 +135,19 @@ public class GetPromQLLabelValuesHandler extends DatabaseAbstractHandler {
         // carries, so naming a series that no surviving sample carries is a behaviour change a user sees in a
         // Grafana picker, not a free win. The mutable bucket has no declaration and is still scanned, on the same
         // one-column projection issue #7371 introduced, but it is bounded by the compaction interval.
-        tsType.getEngine().collectDistinctTagValues(labelName, values, null);
+        //
+        // What the read actually did, published to whatever the server's metrics subsystem feeds (issue #7717):
+        // on this route above all, because the ratio of blocks answered from a declaration to blocks that had to
+        // be decompressed is exactly what says whether the push-down issue #7660 added is working for a given
+        // tenant's data - and an operator could not see it at all. null - and therefore free - when metrics are
+        // off.
+        final AggregationMetrics readMetrics = TimeSeriesReadMetrics.start();
+        try {
+          tsType.getEngine().collectDistinctTagValues(labelName, values, readMetrics);
+        } finally {
+          TimeSeriesReadMetrics.publish(readMetrics, database.getName(), tsType.getName(),
+              TimeSeriesReadMetrics.SURFACE_PROM_LABEL_VALUES);
+        }
       }
     }
 

@@ -49,6 +49,7 @@ import com.arcadedb.database.QueryMetricsRecorder;
 import com.arcadedb.database.QueryTracer;
 import com.arcadedb.server.monitor.EngineMetricsBinder;
 import com.arcadedb.server.monitor.MicrometerQueryMetricsRecorder;
+import com.arcadedb.server.monitor.TimeSeriesReadMetrics;
 import com.arcadedb.server.monitor.MicrometerQueryTracer;
 import com.arcadedb.server.monitor.HAReplicationMetrics;
 import com.arcadedb.server.monitor.PoolMetrics;
@@ -909,6 +910,9 @@ public class ArcadeDBServer {
     haReplicationMetrics = new HAReplicationMetrics(this);
     haReplicationMetrics.bindTo(Metrics.globalRegistry);
     QueryMetricsRecorder.Holder.register(new MicrometerQueryMetricsRecorder());
+    // From here the TimeSeries read handlers hand the engine an AggregationMetrics and publish what it counted
+    // (issue #7717). Off, it answers null and the reads take the allocation-free path they always did.
+    TimeSeriesReadMetrics.setEnabled(true);
 
     if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_METRICS_LOGGING)) {
       LogManager.instance().log(this, Level.INFO, "- Logging metrics enabled...");
@@ -955,6 +959,7 @@ public class ArcadeDBServer {
       QueryMetricsRecorder.Holder.register(QueryMetricsRecorder.NO_OP);
       MicrometerQueryMetricsRecorder.invalidateTimerCache();
       AbstractServerHttpHandler.invalidateTimerCache();
+      TimeSeriesReadMetrics.setEnabled(false);
 
       for (final Meter meter : Metrics.globalRegistry.getMeters())
         if (!metersBeforeInstall.contains(meter.getId()))
