@@ -227,8 +227,18 @@ public class PostTimeSeriesQueryHandler extends DatabaseAbstractHandler {
     // 'detail' field buildErrorBody conceals in production mode (issues #7325, #7340).
     try {
       final JSONObject aggJson = TimeSeriesHandlerUtils.requireObject(payload, "aggregation", "aggregation");
-      bucketInterval = TimeSeriesHandlerUtils.requireLong(aggJson, "bucketInterval", "aggregation.bucketInterval");
+      // The VALUE of a member #7340 only guaranteed to be present and numeric. A non-positive bucketInterval is
+      // refused here rather than handed to the engine, which reads it as "one bucket over the whole range" and
+      // used to answer a 200 that looks like a legitimate answer to a legitimate question; the gRPC RPC and the
+      // Java client have always refused the same input (issue #7675). The rule lives in TimeSeriesGateway so the
+      // three surfaces cannot drift, and the member is named in this endpoint's own spelling.
+      bucketInterval = TimeSeriesGateway.requireBucketInterval(
+          TimeSeriesHandlerUtils.requireLong(aggJson, "bucketInterval", "aggregation.bucketInterval"),
+          "aggregation.bucketInterval");
       final JSONArray requestsJson = TimeSeriesHandlerUtils.requireArray(aggJson, "requests", "aggregation.requests");
+      // An empty array is not an aggregation of nothing: it used to answer a bucket per interval whose 'values'
+      // array was empty, a shape no client has anything to do with (issue #7675).
+      TimeSeriesGateway.requireAggregationRequests(requestsJson.length(), "aggregation.requests");
 
       for (int i = 0; i < requestsJson.length(); i++) {
         final String reqPath = "aggregation.requests[" + i + "]";

@@ -188,8 +188,10 @@ public class TimeSeriesApiSpec implements OpenApiContributor {
     final Schema<Object> aggregation = SpecBuilders.object(
         "Bucketed aggregation. Present only when the caller wants buckets rather than raw rows.");
     aggregation.addProperty("bucketInterval", SpecBuilders.integer(
-        "Bucket width in the same unit as the timestamps"));
-    aggregation.addProperty("requests", SpecBuilders.arrayOf(request, "Aggregations to compute"));
+        "Bucket width in the same unit as the timestamps. Required, and must be positive: a value of zero or "
+            + "less is refused with 400 rather than read as a single bucket over the whole range."));
+    aggregation.addProperty("requests", SpecBuilders.arrayOf(request,
+        "Aggregations to compute. Must name at least one; an empty array is refused with 400."));
 
     final Schema<Object> schema = SpecBuilders.object("Time-series query definition");
     schema.addProperty("type", SpecBuilders.string("Time-series type name"));
@@ -201,7 +203,9 @@ public class TimeSeriesApiSpec implements OpenApiContributor {
         "Tag filter as name to value pairs. All pairs must match. A name that is no TAG column of the type is "
             + "refused with 400 rather than ignored."));
     schema.addProperty("fields", SpecBuilders.arrayOf(
-        SpecBuilders.string("Field name"), "Fields to project. All fields when omitted."));
+        SpecBuilders.string("Field name"),
+        "Fields to project. All fields when omitted. A name that is no column of the type is refused with 400 "
+            + "rather than ignored."));
     schema.addProperty("aggregation", aggregation);
     schema.addProperty("limit", SpecBuilders.integer(
         "Maximum rows to return for a raw (non-aggregated) query. Defaults to 20000. Ignored when "
