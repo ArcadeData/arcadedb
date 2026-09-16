@@ -338,6 +338,6 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
   // unconditional and now places CountStrategy (OptimizationStrategy) before this strategy on every
   // JVM, the opposite of what #5841 arranged. The net effect is still deterministic, just reversed:
   // CountStrategy always wins now, so applyEdgeCountFilterOptimization can no longer fire for the
-  // where(outE(X).count().is(boundedPredicate)) shape. See docs/5840-gav-csr-labeled-gremlin-string-traversals.md
-  // ("Known trade-off") for why this is accepted rather than fixed here.
+  // where(outE(X).count().is(boundedPredicate)) shape. See issue #5840 and PR #5899 ("Known trade-off")
+  // for why this is accepted rather than fixed here.
 }
