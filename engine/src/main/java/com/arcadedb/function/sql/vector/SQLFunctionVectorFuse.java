@@ -78,6 +78,16 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
 
   private enum Strategy { RRF, DBSF, LINEAR }
 
+  /**
+   * The strategy names this function accepts, derived from the enum above rather than written out.
+   * <p>
+   * Public because this function is the one place fusion scoring happens, so it is where the vocabulary is
+   * decided: {@code HybridSearch} validates a request against it before building the statement, and the OpenAPI
+   * document declares it as an enum so a generated client rejects a typo locally instead of discovering it as a
+   * 400 (issue #7579). Three copies of a closed value set is three chances for one of them to fall behind.
+   */
+  public static final List<String> STRATEGIES = Arrays.stream(Strategy.values()).map(Enum::name).toList();
+
   public SQLFunctionVectorFuse() {
     super(NAME);
   }
@@ -178,7 +188,7 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
       return Strategy.valueOf(name);
     } catch (final IllegalArgumentException e) {
       throw new CommandSQLParsingException(
-          "Unknown fusion strategy '" + raw + "'. Allowed: RRF, DBSF, LINEAR");
+          "Unknown fusion strategy '" + raw + "'. Allowed: " + String.join(", ", STRATEGIES));
     }
   }
 
