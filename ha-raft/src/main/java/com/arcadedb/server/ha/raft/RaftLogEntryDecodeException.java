@@ -19,8 +19,10 @@
 package com.arcadedb.server.ha.raft;
 
 /**
- * Thrown by {@link RaftLogEntryCodec#decode} when a committed entry of a KNOWN type cannot be decoded:
- * truncated, corrupt, or written in a shape this version does not understand.
+ * Thrown when a committed entry of a KNOWN type cannot be decoded: truncated, corrupt, or written in a shape
+ * this version does not understand. {@link RaftLogEntryCodec#decode} raises it for the entry envelope, and
+ * {@code ArcadeStateMachine} raises it for the WAL payload a transaction entry carries, which is decoded later
+ * and on the apply thread (issue #7495).
  * <p>
  * It exists so the failure is not indistinguishable from a bug in the apply itself (issue #7138). A decode
  * failure carries the two things a caller needs to decide how bad it is - the entry {@link #getType() type}
