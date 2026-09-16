@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.Document;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.InvalidPropertyTypeException;
 import com.arcadedb.query.sql.executor.Result;
@@ -105,8 +106,8 @@ class CypherMapPropertyDiagnosticsIssue7729Test {
   void aSqlWrittenMapPropertyRidesAlongInsideTheNode() {
     final Result row = single("MATCH (n:R) RETURN n");
     final Object node = row.getProperty("n");
-    assertThat(node).isInstanceOf(com.arcadedb.database.Document.class);
-    assertThat(((com.arcadedb.database.Document) node).get("m")).isInstanceOf(Map.class);
+    assertThat(node).isInstanceOf(Document.class);
+    assertThat(((Document) node).get("m")).isInstanceOf(Map.class);
   }
 
   @Test
