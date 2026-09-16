@@ -39,15 +39,17 @@ import static org.mockito.Mockito.when;
  * that method's {@code catch} arm calls {@code rollbackIfActive()} on the session's transaction.
  * <p>
  * Before #7402 those routes never resolved {@code arcadedb-session-id}, so nothing they did could touch a
- * client's open transaction. Afterwards two of them could destroy it for reasons that are pure client input and
- * that provably touch nothing:
+ * client's open transaction. Afterwards two of them could destroy it:
  * <ul>
- * <li>{@code POST /ts/{db}/write} answers 400 when {@code LineProtocolParser.parse} refuses an unterminated or
- * over-long quoted field value. That runs before {@code TimeSeriesGateway.write}, so not one byte of the request
- * has reached the engine - and the handler's own javadoc states the opposite contract, that the samples are
- * durable before the caller commits anything.</li>
+ * <li>{@code POST /ts/{db}/write} answers 403 when {@code TimeSeriesGateway.write} refuses the append on the
+ * per-type ACL ({@code tsType.checkAccess(CREATE_RECORD)}) - and the handler's own javadoc states the opposite
+ * contract, that the samples are durable before the caller commits anything. <b>Not</b> the body parser, which
+ * is where issue #7734 puts it: {@code LineProtocolParser.parseLine} catches every
+ * {@code IllegalArgumentException} {@code readFieldValue} raises and has {@code parse} log-and-skip the line, so
+ * an unterminated quoted field value answers 204.</li>
  * <li>{@code POST /ts/{db}/query} answers 413 when the caller's {@code limit} is above, or absent and therefore
- * lowered to, {@code arcadedb.server.httpQueryMaxResultRows}. A READ destroying a WRITE transaction.</li>
+ * lowered to, {@code arcadedb.server.httpQueryMaxResultRows}. A READ destroying a WRITE transaction, and the one
+ * driven end to end in {@code Issue7402TimeSeriesHttpSessionIT}.</li>
  * </ul>
  * The session stayed registered either way, so the client's later {@code /commit} found a session whose
  * transaction was already dead and did not report that anything had been lost.

@@ -110,9 +110,15 @@ public class PostTimeSeriesWriteHandler extends DatabaseAbstractHandler {
 
   /**
    * False, which is the same statement the class javadoc above makes: an append is NOT part of the caller's
-   * transaction, so a failure on this route must not roll it back (issue #7734). {@code LineProtocolParser.parse}
-   * refuses an unterminated or over-long quoted field value before {@code TimeSeriesGateway.write} is reached,
-   * so a 400 from a malformed body used to destroy a transaction not one byte of the request had touched.
+   * transaction, so a failure on this route must not roll it back (issue #7734).
+   * <p>
+   * The reachable throw is the per-type ACL denial in {@code TimeSeriesGateway.write} -
+   * {@code tsType.checkAccess(CREATE_RECORD)}, which answers 403 and, before this, took the caller's open
+   * transaction down with it. <b>Not</b> the body parser, despite what issue #7734 says: every
+   * {@code IllegalArgumentException} {@code LineProtocolParser.readFieldValue} raises is caught by
+   * {@code parseLine}, which returns null and has {@code parse} log-and-skip the line, so a malformed body
+   * answers 204 rather than 400. Named here because the wrong rationale in a comment outlives the right one in
+   * an issue (claude-review on PR #7748).
    */
   @Override
   protected boolean participatesInSessionTransaction() {
