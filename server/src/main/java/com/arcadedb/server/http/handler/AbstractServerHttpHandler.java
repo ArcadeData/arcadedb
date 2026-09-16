@@ -888,6 +888,19 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return;
     }
 
+    // A value a property cannot hold - openCypher refusing a map, or a list containing one. Like the arithmetic
+    // arm above it has to be decided before the generic CommandExecutionException arm further down, which it
+    // extends and which answers 500: the statement is fine and so is the server, the value the caller asked to
+    // store is not storable. It answered 400 as an IllegalArgumentException before #7729 gave it its own type, and
+    // this keeps that answer rather than silently downgrading it to a server fault. The whole chain is searched,
+    // for the same reason the arithmetic arm searches it: the wrapping depends on how the request arrived.
+    final InvalidPropertyTypeException invalidPropertyType = CauseChain.find(e, InvalidPropertyTypeException.class);
+    if (invalidPropertyType != null) {
+      logUserError(invalidPropertyType);
+      sendErrorResponse(exchange, 400, "Cannot execute command", invalidPropertyType, null);
+      return;
+    }
+
     // Ahead of the JSON arm below, which is the precedence the old CommandExecutionException|CommandParsingException
     // chain had: a statement whose text failed to parse is reported as the parsing failure it is, even when the
     // parser's own cause happens to be a JSONException. Both answer 400, so the order decides the message and the

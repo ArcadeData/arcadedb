@@ -477,15 +477,21 @@ public class CreateStep extends AbstractExecutionStep {
       // Intern property names to reduce string allocations in bulk operations
       final String key = entry.getKey().intern();
       Object value = entry.getValue();
+      // What the query wrote for this property, kept so a refused value can say where it came from - the
+      // evaluated value alone cannot (issue #7729). A parameter reference is described by its name, an expression
+      // by its own text; a literal needs no description and contributes none.
+      Object rawValue = null;
 
       // Resolve parameter references
       if (value instanceof CypherASTBuilder.ParameterReference) {
         final String paramName = ((CypherASTBuilder.ParameterReference) value).getName();
+        rawValue = paramName;
         value = context.getInputParameters().get(paramName);
       }
       // Evaluate Expression objects (e.g., property access, function calls like rand())
       else if (value instanceof Expression) {
         final Expression expr = (Expression) value;
+        rawValue = expr;
         if (evaluator != null)
           value = evaluator.evaluate(expr, currentResult, context);
         else
@@ -494,7 +500,7 @@ public class CreateStep extends AbstractExecutionStep {
 
       // In Cypher, null property values are not stored
       if (value != null)
-        document.set(key, convertTemporalForStorage(value));
+        document.set(key, convertTemporalForStorage(value, key, rawValue));
     }
   }
 
@@ -509,7 +515,7 @@ public class CreateStep extends AbstractExecutionStep {
       for (final Map.Entry<String, Object> entry : ((Map<String, Object>) paramValue).entrySet()) {
         final Object value = entry.getValue();
         if (value != null)
-          document.set(entry.getKey(), convertTemporalForStorage(value));
+          document.set(entry.getKey(), convertTemporalForStorage(value, entry.getKey(), parameterName));
       }
     }
   }
@@ -521,8 +527,9 @@ public class CreateStep extends AbstractExecutionStep {
    * already does for SET/MERGE, instead of silently storing something no other openCypher write clause accepts
    * (issue #7629).
    */
-  private static Object convertTemporalForStorage(final Object value) {
-    return CypherValues.coerceAndValidatePropertyValue(value);
+  private static Object convertTemporalForStorage(final Object value, final String propertyName,
+      final Object valueOrigin) {
+    return CypherValues.coerceAndValidatePropertyValue(value, propertyName, valueOrigin);
   }
 
   /**
@@ -540,15 +547,21 @@ public class CreateStep extends AbstractExecutionStep {
       // Intern property names to reduce string allocations in bulk operations
       final String key = entry.getKey().intern();
       Object value = entry.getValue();
+      // What the query wrote for this property, kept so a refused value can say where it came from - the
+      // evaluated value alone cannot (issue #7729). A parameter reference is described by its name, an expression
+      // by its own text; a literal needs no description and contributes none.
+      Object rawValue = null;
 
       // Resolve parameter references
       if (value instanceof CypherASTBuilder.ParameterReference) {
         final String paramName = ((CypherASTBuilder.ParameterReference) value).getName();
+        rawValue = paramName;
         value = context.getInputParameters().get(paramName);
       }
       // Evaluate Expression objects (e.g., property access, function calls like rand())
       else if (value instanceof Expression) {
         final Expression expr = (Expression) value;
+        rawValue = expr;
         if (evaluator != null)
           value = evaluator.evaluate(expr, currentResult, context);
         else
@@ -558,7 +571,7 @@ public class CreateStep extends AbstractExecutionStep {
       // In Cypher, null property values are not stored
       if (value != null) {
         keyValues.add(key);
-        keyValues.add(convertTemporalForStorage(value));
+        keyValues.add(convertTemporalForStorage(value, key, rawValue));
       }
     }
     return keyValues.toArray();
@@ -579,7 +592,7 @@ public class CreateStep extends AbstractExecutionStep {
       final Object value = entry.getValue();
       if (value != null) {
         keyValues.add(entry.getKey());
-        keyValues.add(convertTemporalForStorage(value));
+        keyValues.add(convertTemporalForStorage(value, entry.getKey(), parameterName));
       }
     }
     return keyValues.toArray();

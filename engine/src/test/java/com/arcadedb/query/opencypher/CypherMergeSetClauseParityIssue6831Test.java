@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.exception.InvalidPropertyTypeException;
 import com.arcadedb.event.AfterRecordUpdateListener;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -108,7 +109,10 @@ class CypherMergeSetClauseParityIssue6831Test {
     // The identical stand-alone SET already raises this; the MERGE action must not be the lenient one.
     assertThatThrownBy(() -> database.transaction(
         () -> database.command("opencypher", "MERGE (n:P {id: 2}) ON CREATE SET n.p = {a: 1}")))
-        .rootCause()
+        // Not .rootCause(): since #7729 this is an InvalidPropertyTypeException, a CommandExecutionException the
+        // openCypher engine rethrows unchanged instead of wrapping, so the diagnosis IS the outermost throwable -
+        // which is exactly what makes it reach a Bolt/HTTP client rather than only the server log.
+        .isInstanceOf(InvalidPropertyTypeException.class)
         .hasMessageContaining("TypeError: InvalidPropertyType");
   }
 
@@ -273,7 +277,10 @@ class CypherMergeSetClauseParityIssue6831Test {
 
     assertThatThrownBy(() -> database.transaction(
         () -> database.command("opencypher", "MERGE (n:P {id: 1}) ON MATCH SET n += {bad: {nested: 1}}")))
-        .rootCause()
+        // Not .rootCause(): since #7729 this is an InvalidPropertyTypeException, a CommandExecutionException the
+        // openCypher engine rethrows unchanged instead of wrapping, so the diagnosis IS the outermost throwable -
+        // which is exactly what makes it reach a Bolt/HTTP client rather than only the server log.
+        .isInstanceOf(InvalidPropertyTypeException.class)
         .hasMessageContaining("TypeError: InvalidPropertyType");
   }
 }

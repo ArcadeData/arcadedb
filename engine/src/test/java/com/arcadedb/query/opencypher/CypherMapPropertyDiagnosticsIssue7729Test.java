@@ -1,0 +1,257 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.query.opencypher;
+
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.exception.ErrorCategory;
+import com.arcadedb.exception.InvalidPropertyTypeException;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import java.util.List;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/**
+ * Regression tests for issue #7729, the follow-up to #7629.
+ * <p>
+ * #7629 settled that a map-valued property is refused by every openCypher write clause, matching Neo4j's "Property
+ * values can only be of primitive types or arrays thereof" ({@code Neo.ClientError.Statement.TypeError}). SQL is
+ * deliberately not bound by that rule - {@code MAP} is a first-class ArcadeDB schema type - so a record can carry a
+ * map property that openCypher can read but can never write. That leaves two gaps this class closes.
+ * <p>
+ * First, the SQL-written / openCypher-read path had no test at all, so nothing stopped a future change from hiding
+ * or stringifying such a property. Reads are and must stay permissive: in a multi-model database openCypher is one
+ * lens on a store shared with SQL, and silently dropping what another query language wrote would be worse than
+ * returning a value Neo4j itself would never have produced.
+ * <p>
+ * Second, the refusal message was written for the literal case ({@code SET n.x = {y: 1}}), where the offending value
+ * is visible in the query text. On the copy paths - {@code SET t = n} and {@code SET t.m2 = n.m} against a record
+ * whose map was written by SQL - the caller wrote no map at all, and the message named neither the property being
+ * written nor where the value came from. Worse, it was an {@link IllegalArgumentException}, which Bolt could only
+ * classify as {@code Neo.DatabaseError.General.UnknownError}, and whose message the {@code CommandExecutionException}
+ * wrapper replaced with the query text - so the reporter's client saw an unexplained server fault. It is now an
+ * {@link InvalidPropertyTypeException}, which passes the wrapper unchanged and carries its own diagnosis.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+@SuppressWarnings("unchecked")
+class CypherMapPropertyDiagnosticsIssue7729Test {
+  private Database database;
+
+  @BeforeEach
+  void setUp() {
+    database = new DatabaseFactory("./target/databases/testcypher-7729").create();
+    database.getSchema().createVertexType("R");
+    database.getSchema().createVertexType("T");
+    database.getSchema().createEdgeType("REL");
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX R SET id = 1, m = {'k': 1, 'nested': {'deep': true}}, plain = 'x'");
+      database.command("sql", "CREATE VERTEX T SET id = 2");
+    });
+  }
+
+  @AfterEach
+  void tearDown() {
+    if (database != null) {
+      if (database.isTransactionActive())
+        database.rollback();
+      database.drop();
+      database = null;
+    }
+  }
+
+  private Result single(final String cypher) {
+    try (final ResultSet rs = database.query("opencypher", cypher)) {
+      assertThat(rs.hasNext()).isTrue();
+      return rs.next();
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // Reads: permissive, and must stay that way.
+  // ---------------------------------------------------------------------------------------------------------------
+
+  @Test
+  void aSqlWrittenMapPropertyIsReturnedWholeByCypher() {
+    final Object value = single("MATCH (n:R) RETURN n.m AS m").getProperty("m");
+    assertThat(value).isInstanceOf(Map.class);
+    assertThat((Map<String, Object>) value).containsEntry("k", 1).containsEntry("nested", Map.of("deep", true));
+  }
+
+  @Test
+  void aSqlWrittenMapPropertyRidesAlongInsideTheNode() {
+    final Result row = single("MATCH (n:R) RETURN n");
+    final Object node = row.getProperty("n");
+    assertThat(node).isInstanceOf(com.arcadedb.database.Document.class);
+    assertThat(((com.arcadedb.database.Document) node).get("m")).isInstanceOf(Map.class);
+  }
+
+  @Test
+  void aSqlWrittenMapPropertyIsNavigableWithDotAndBracketSyntax() {
+    assertThat(single("MATCH (n:R) RETURN n.m.k AS k").<Object>getProperty("k")).isEqualTo(1);
+    assertThat(single("MATCH (n:R) RETURN n.m['k'] AS k").<Object>getProperty("k")).isEqualTo(1);
+    assertThat(single("MATCH (n:R) RETURN n.m.nested.deep AS d").<Object>getProperty("d")).isEqualTo(true);
+  }
+
+  @Test
+  void aSqlWrittenMapPropertyIsUsableInAPredicate() {
+    assertThat(single("MATCH (n:R) WHERE n.m.k = 1 RETURN n.id AS id").<Object>getProperty("id")).isEqualTo(1);
+  }
+
+  @Test
+  void aSqlWrittenMapPropertyIsVisibleToPropertiesAndKeys() {
+    final Object properties = single("MATCH (n:R) RETURN properties(n) AS p").getProperty("p");
+    assertThat((Map<String, Object>) properties).containsKey("m");
+    assertThat(single("MATCH (n:R) RETURN keys(n) AS k").<List<Object>>getProperty("k")).contains("m");
+  }
+
+  @Test
+  void writingASiblingPropertyLeavesTheMapAloneAndDoesNotRevalidateIt() {
+    database.transaction(() -> database.command("opencypher", "MATCH (n:R) SET n.other = 1"));
+
+    assertThat(single("MATCH (n:R) RETURN n.other AS o").<Object>getProperty("o")).isEqualTo(1L);
+    assertThat(single("MATCH (n:R) RETURN n.m AS m").<Object>getProperty("m")).isInstanceOf(Map.class);
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // Writes: refused, and the refusal has to say why.
+  // ---------------------------------------------------------------------------------------------------------------
+
+  @Test
+  void copyingAWholeRecordThatCarriesAMapNamesThePropertyAndTheSourceRecord() {
+    final String sourceRid = single("MATCH (n:R) RETURN n.id AS id, elementId(n) AS rid").getProperty("rid").toString();
+
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.command("opencypher", "MATCH (n:R), (t:T) SET t = n")))
+        .isInstanceOf(InvalidPropertyTypeException.class)
+        .hasMessageContaining("TypeError: InvalidPropertyType")
+        .hasMessageContaining("property 'm'")
+        .hasMessageContaining(sourceRid)
+        .hasMessageContaining("SQL");
+  }
+
+  @Test
+  void copyingASingleMapPropertyNamesTheTargetPropertyAndTheExpressionItCameFrom() {
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.command("opencypher", "MATCH (n:R), (t:T) SET t.m2 = n.m")))
+        .isInstanceOf(InvalidPropertyTypeException.class)
+        .hasMessageContaining("property 'm2'")
+        .hasMessageContaining("n.m");
+  }
+
+  @Test
+  void mergingAWholeRecordThatCarriesAMapNamesTheProperty() {
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.command("opencypher", "MATCH (n:R), (t:T) SET t += n")))
+        .isInstanceOf(InvalidPropertyTypeException.class)
+        .hasMessageContaining("property 'm'");
+  }
+
+  @Test
+  void aParameterSourcedMapNamesTheEntryItWasRefusedFor() {
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.command("opencypher", "MATCH (t:T) SET t += $p", Map.of("p", Map.of("payload", Map.of("k", 1))))))
+        .isInstanceOf(InvalidPropertyTypeException.class)
+        .hasMessageContaining("property 'payload'");
+  }
+
+  @Test
+  void createNamesThePropertyItRefused() {
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.command("opencypher", "CREATE (n:R {id: 9, m: $m})", Map.of("m", Map.of("k", 1)))))
+        .isInstanceOf(InvalidPropertyTypeException.class)
+        .hasMessageContaining("property 'm'");
+  }
+
+  @Test
+  void mergeCreationBranchNamesThePropertyItRefused() {
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.command("opencypher", "MERGE (n:R {id: 9, m: $m})", Map.of("m", Map.of("k", 1)))))
+        .isInstanceOf(InvalidPropertyTypeException.class)
+        .hasMessageContaining("property 'm'");
+  }
+
+  @Test
+  void aListCarryingAMapNamesThePropertyAndSaysTheMapWasInsideTheList() {
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.command("opencypher", "MATCH (t:T) SET t.tags = [1, {k: 2}]")))
+        .isInstanceOf(InvalidPropertyTypeException.class)
+        .hasMessageContaining("property 'tags'")
+        .hasMessageContaining("list");
+  }
+
+  @Test
+  void theRefusalNamesTheOffendingKeysSoTheValueCanBeIdentified() {
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.command("opencypher", "MATCH (n:R), (t:T) SET t.m2 = n.m")))
+        .hasMessageContaining("k")
+        .hasMessageContaining("nested");
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // The refusal has to survive the trip to a client: right category, right message, no generic server fault.
+  // ---------------------------------------------------------------------------------------------------------------
+
+  @Test
+  void theRefusalIsAClientValidationErrorAndNotAServerFault() {
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.command("opencypher", "MATCH (n:R), (t:T) SET t = n")))
+        .satisfies(e -> assertThat(ErrorCategory.of(e)).isEqualTo(ErrorCategory.VALIDATION));
+  }
+
+  @Test
+  void theDiagnosisReachesTheOutermostMessageInsteadOfBeingReplacedByTheQueryText() {
+    // The Bolt/HTTP layers report the outermost throwable's message. Before #7729 the openCypher engine wrapped the
+    // IllegalArgumentException in a CommandExecutionException whose message is just the query text, so the caller
+    // was told only that "MATCH ... SET t = n" failed. Subclassing CommandExecutionException makes the engine
+    // rethrow it untouched, so the diagnosis is what the client reads.
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.command("opencypher", "MATCH (n:R), (t:T) SET t = n")))
+        .hasMessageContaining("TypeError: InvalidPropertyType")
+        .hasMessageContaining("property 'm'");
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // Nothing above may loosen the rule itself.
+  // ---------------------------------------------------------------------------------------------------------------
+
+  @Test
+  void aPointValuedPropertyStaysExemptAndIsStillWritable() {
+    database.transaction(
+        () -> database.command("opencypher", "MATCH (t:T) SET t.loc = point({x: 1.0, y: 2.0, crs: 'cartesian'})"));
+
+    final Object loc = single("MATCH (t:T) RETURN t.loc AS loc").getProperty("loc");
+    assertThat(loc).isInstanceOf(Map.class);
+    assertThat((Map<String, Object>) loc).containsEntry("x", 1.0).containsEntry("y", 2.0);
+  }
+
+  @Test
+  void aMapSmuggledUnderAPointShapedKeyIsStillRefused() {
+    assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher",
+        "MATCH (t:T) SET t.loc = {x: 1.0, y: 2.0, crs: 'cartesian', payload: {secret: 1}}")))
+        .isInstanceOf(InvalidPropertyTypeException.class);
+  }
+}
