@@ -145,7 +145,9 @@ public abstract class AbstractExporterFormat {
    */
   protected final void refuseExistingTarget(final File exportFile) {
     if (exportFile.exists() && !settings.overwriteFile)
-      throw new ExportException("The export file '%s' already exist and '-o' setting is false".formatted(settings.file));
+      // The file that is actually in the way, not settings.file: for a 'file://' target the two differ, and the
+      // resolved path is the one an operator has to go and look at.
+      throw new ExportException("The export file '%s' already exist and '-o' setting is false".formatted(exportFile));
   }
 
   /**
