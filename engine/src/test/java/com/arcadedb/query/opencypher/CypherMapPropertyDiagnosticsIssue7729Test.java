@@ -205,6 +205,26 @@ class CypherMapPropertyDiagnosticsIssue7729Test {
   }
 
   @Test
+  void cuttingALongNameShortNeverSplitsACharacterInHalf() {
+    // An astral character is two chars in UTF-16. Cutting between its halves leaves a lone surrogate, which renders
+    // as a replacement character wherever the message is read. 39 letters puts one straddling the cut.
+    final String name = "p".repeat(39) + "\uD83D\uDE00".repeat(5);
+
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.command("opencypher", "MATCH (t:T) SET t.`" + name + "` = {k: 1}")))
+        .isInstanceOf(InvalidPropertyTypeException.class)
+        .satisfies(e -> {
+          for (int i = 0; i < e.getMessage().length(); i++)
+            assertThat(Character.isSurrogate(e.getMessage().charAt(i))
+                && !(Character.isHighSurrogate(e.getMessage().charAt(i)) && i + 1 < e.getMessage().length()
+                    && Character.isLowSurrogate(e.getMessage().charAt(i + 1)))
+                && !(Character.isLowSurrogate(e.getMessage().charAt(i)) && i > 0
+                    && Character.isHighSurrogate(e.getMessage().charAt(i - 1))))
+                .as("lone surrogate at %d in: %s", i, e.getMessage()).isFalse();
+        });
+  }
+
+  @Test
   void aBareParameterReadsTheSameWhicheverClauseRefusedIt() {
     // CREATE and MERGE resolve a bare parameter to its name before validating; SET passes the expression. Both
     // describe the same thing, so both say it the same way.
