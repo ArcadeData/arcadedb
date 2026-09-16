@@ -37,6 +37,9 @@ public final class CypherValues {
   /** How many of a refused map's keys a message names before it stops; see {@link #describeKeys}. */
   private static final int MAX_DESCRIBED_KEYS = 5;
 
+  /** How long an expression's text may be before a message stops naming it; see {@link #namesAValue}. */
+  private static final int MAX_ECHOED_EXPRESSION_LENGTH = 100;
+
   private CypherValues() {
   }
 
@@ -154,17 +157,43 @@ public final class CypherValues {
           .append(". ArcadeDB SQL can store a map in a property and openCypher can not, so such a property can be"
               + " read and returned but never copied into another one");
     } else if (valueOrigin instanceof Expression expression) {
-      // Named even when the expression is a literal the query text already shows, e.g. SET n.x = {y: 1}. Echoing
-      // it back is redundant there but never wrong, and suppressing it would mean asking the AST which node kinds
-      // count as "self-evident" - a brittle test to write and a worse failure than a redundant clause when it is
-      // wrong, since the clause is the only thing that identifies the value on every other right-hand side.
       final String text = expression.getText();
-      if (text != null && !text.isEmpty())
+      if (namesAValue(text))
         message.append(", produced by the expression ").append(text);
     } else if (valueOrigin instanceof String parameterName)
       message.append(", supplied by parameter $").append(parameterName);
 
     return message.append(".").toString();
+  }
+
+  /**
+   * Whether an expression's own text may be echoed into the message: only when it NAMES the value rather than
+   * spelling it out - {@code n.m}, {@code n.m.k}, {@code $p}.
+   * <p>
+   * This is a privacy bound, not a tidiness one. The rest of this message deliberately reports a refused map by its
+   * keys and never its contents, because it travels to a client and into the server log; echoing the right-hand
+   * side verbatim would put those contents back, since a map literal's text IS its values -
+   * {@code SET n.x = {password: 'secret'}} would otherwise log the secret. A literal cannot match the shape below,
+   * so it can never be echoed, and nothing is lost by refusing it: for a literal right-hand side the clause would
+   * only repeat query text the caller just wrote, while for every other shape it is the only thing that says where
+   * the value came from.
+   * <p>
+   * Matched by a character walk rather than a regex: this runs while building an exception message from
+   * caller-supplied text, which is the last place to hand a backtracking matcher an unbounded string. The length
+   * cap bounds the clause for the same reason.
+   */
+  private static boolean namesAValue(final String text) {
+    if (text == null || text.isEmpty() || text.length() > MAX_ECHOED_EXPRESSION_LENGTH)
+      return false;
+    final char first = text.charAt(0);
+    if (!Character.isLetter(first) && first != '_' && first != '$')
+      return false;
+    for (int i = 1; i < text.length(); i++) {
+      final char c = text.charAt(i);
+      if (!Character.isLetterOrDigit(c) && c != '_' && c != '.' && c != '$')
+        return false;
+    }
+    return true;
   }
 
   /** At most {@link #MAX_DESCRIBED_KEYS} keys, so a wide map cannot turn one refusal into a page of log. */
