@@ -3528,16 +3528,29 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   /**
    * Streams the raw rows of a time-series query.
    * <p>
-   * The rows are pulled through {@link TimeSeriesEngine#iterateQuery}, a lazy merge across shards, so the
-   * server holds one block per shard rather than the whole range: a query whose answer does not fit in memory
-   * is bounded by the client's consumption rather than by this process' heap.
+   * <b>A client-stated {@code limit} bounds the FETCH</b> (issue #7663), through
+   * {@link TimeSeriesEngine#queryAscending}: every shard stops walking blocks once its own bound is satisfied, so
+   * {@code limit: 10} over an unbounded range costs O(shards x blocks touched) instead of O(matching rows). One
+   * row past the limit is fetched and never emitted - that extra row is what still tells a cut answer from a
+   * complete one, and so decides {@code truncated}.
+   * <p>
+   * A request stating NO limit keeps {@link TimeSeriesEngine#iterateQuery}, and that arm really does hold the
+   * whole range: {@code iterateQuery}'s own javadoc says {@code TimeSeriesSealedStore#iterateRange} materialises
+   * every matching row of the sealed layer before the iterator is returned, because the directory read lock has
+   * to be released before the caller iterates. What it saves against {@code query} is the second copy and the
+   * sort, not the series. This comment used to claim the opposite - one block per shard, bounded by the client's
+   * consumption - which was the next bug report rather than a description of the code.
    */
   private void streamTimeSeriesRows(final ServerCallStreamObserver<TimeSeriesQueryResult> call,
       final AtomicBoolean cancelled, final AtomicBoolean serverTimedOut, final TimeSeriesQueryRequest req,
       final TimeSeriesEngine engine, final List<ColumnDefinition> columns, final long fromTs, final long toTs,
       final TagFilter tagFilter, final int batchSize) throws Exception {
 
-    final int[] columnIndices = TimeSeriesGateway.resolveColumnIndices(req.getFieldsList(), columns);
+    // requireColumnIndices, not resolveColumnIndices: a 'fields' name that matches no column is refused rather
+    // than dropped (issue #7675), so a typo cannot silently narrow the projection - or, when NO name resolves,
+    // widen it to every column. The IllegalArgumentException reaches the client as INVALID_ARGUMENT, and it is
+    // raised BEFORE the first streamed message, so a client is never handed a plausible wrong set of columns.
+    final int[] columnIndices = TimeSeriesGateway.requireColumnIndices(req.getFieldsList(), columns);
     final List<String> columnNames = TimeSeriesGateway.columnNames(columns, columnIndices);
 
     // Same bounding contract as executeQuery: an explicit positive limit at or below the configured cap is the
@@ -3560,7 +3573,15 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           + configuredMax, TS_ROW_CEILING_REMEDY);
     final boolean clientLimited = requestedLimit > 0;
 
-    final Iterator<Object[]> rows = engine.iterateQuery(fromTs, toTs, columnIndices, tagFilter);
+    // Issue #7663: the bound the client stated belongs to the FETCH, not to the emission. Reading it and then
+    // asking the engine for the whole range is what the HTTP twin did before #7336.
+    // The +1 is the row that decides `truncated` below and is never emitted. It cannot overflow while the ceiling
+    // is on - requestedLimit was proved <= configuredMax above - and the one case it could, a ceiling-less
+    // Integer.MAX_VALUE limit, is a request for everything: fetch it unbounded rather than wrap to a negative.
+    final int fetchLimit = requestedLimit == Integer.MAX_VALUE ? 0 : requestedLimit + 1;
+    final Iterator<Object[]> rows = clientLimited
+        ? engine.queryAscending(fromTs, toTs, columnIndices, tagFilter, fetchLimit, null).iterator()
+        : engine.iterateQuery(fromTs, toTs, columnIndices, tagFilter);
 
     final List<TimeSeriesRow> batch = new ArrayList<>(Math.min(batchSize, 1024));
     // Serialized size of what is in `batch`, so the message can be bounded by bytes and not only by rows.
@@ -3646,12 +3667,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       final TagFilter tagFilter, final int batchSize) throws Exception {
 
     final TimeSeriesAggregation aggregation = req.getAggregation();
-    if (aggregation.getBucketIntervalMs() <= 0)
-      throw Status.INVALID_ARGUMENT
-          .withDescription("TimeSeriesAggregation.bucket_interval_ms must be positive").asRuntimeException();
-    if (aggregation.getRequestsCount() == 0)
-      throw Status.INVALID_ARGUMENT
-          .withDescription("TimeSeriesAggregation needs at least one request").asRuntimeException();
+    // Both refusals moved into TimeSeriesGateway (issue #7675): the RULE is now the one the two HTTP endpoints
+    // enforce as well, and the member is still named in THIS protocol's spelling. The status a client reads is
+    // unchanged - GrpcErrorMapper classifies an IllegalArgumentException as VALIDATION, which maps to
+    // INVALID_ARGUMENT - so what moved is where the rule lives, not what this RPC answers.
+    TimeSeriesGateway.requireBucketInterval(aggregation.getBucketIntervalMs(),
+        "TimeSeriesAggregation.bucket_interval_ms");
+    TimeSeriesGateway.requireAggregationRequests(aggregation.getRequestsCount(), "TimeSeriesAggregation.requests");
 
     final List<MultiColumnAggregationRequest> requests = new ArrayList<>(aggregation.getRequestsCount());
     final List<String> aliases = new ArrayList<>(aggregation.getRequestsCount());

@@ -66,6 +66,22 @@ class Issue7716RemoteTimeSeriesRefusalMessageIT extends BaseGraphServerTest {
           + " TIMESTAMP ts TAGS (location STRING) FIELDS (temperature DOUBLE)");
   }
 
+  /**
+   * The case #7716 was reported for: a projection naming a column the type does not have. The server answers
+   * 400 with that sentence in {@code error} since issue #7675, and the caller has to be able to read it off
+   * {@code getMessage()} - which is the assertion {@code Issue7675GrpcTimeSeriesProjectionIT} had to write as
+   * {@code hasStackTraceContaining} instead, and said so.
+   */
+  @Test
+  void anUnresolvableProjectionIsNamedInTheMessage() {
+    try (final RemoteDatabase database = remote()) {
+      createType(database);
+
+      assertThatThrownBy(() -> database.timeSeriesQuery(new TimeSeriesQuery(TYPE).fields("nosuchcolumn")))
+          .hasMessageContaining("nosuchcolumn");
+    }
+  }
+
   /** A tag name that resolves to no TAG column, refused by name since issue #7334. */
   @Test
   void anUnresolvableTagIsNamedInTheMessage() {

@@ -393,6 +393,13 @@ public final class TimeSeriesGateway {
    * <b>non-timestamp</b> columns, ascending and without repeats. Returns {@code null} for an empty projection,
    * which the engine reads as "every column". A name that matches no non-timestamp column contributes nothing.
    * <p>
+   * <b>This is the LENIENT resolver, and no wire protocol uses it.</b> The three query surfaces call
+   * {@link #requireColumnIndices(List, List)} instead, which refuses a name that resolves to nothing (issue
+   * #7675). What is left here is the PromQL discovery endpoints, where a label the store does not carry is a
+   * Prometheus-specified empty selection rather than a malformed request - the same reading
+   * {@code PromQLEvaluator.excludesEverySeries} gives an unknown label matcher, and the reason {@link #andTag}
+   * exempts PromQL too.
+   * <p>
    * The convention matters and used to be wrong here (found while building the gRPC surface for issue #7305).
    * {@code TimeSeriesBucket.readRow} always prepends the timestamp and then tests each non-timestamp column's
    * own ordinal against this array, and {@link TagFilter#matchesMapped} reads it the same way; a resolver that
@@ -403,6 +410,35 @@ public final class TimeSeriesGateway {
    * {@link #columnNames(List, int[])} produces only line up with the values when both are ascending.
    */
   public static int[] resolveColumnIndices(final List<String> fields, final List<ColumnDefinition> columns) {
+    return columnIndices(fields, columns, false);
+  }
+
+  /**
+   * As {@link #resolveColumnIndices(List, List)}, but a name that matches NO column of the type is refused
+   * instead of dropped (issue #7675). This is what every wire protocol's {@code fields}/{@code projection}
+   * member resolves through, so the three cannot answer a typo three different ways.
+   * <p>
+   * Dropping it was the same widening {@link #andTag} refuses for a tag name, on the sibling member and with
+   * the same symptom: {@code "fields": ["temprature"]} answered 200 with a timestamp-only row, and
+   * {@code ["temprature","temperature"]} answered the one column that did resolve as if the caller had asked
+   * for only that. Neither is distinguishable, by the caller, from a projection the server answered correctly -
+   * and when NO name resolved the projection collapsed to the empty array, which the engine reads as "every
+   * column", so a wholly mistyped projection WIDENED to the full row.
+   * <p>
+   * The TIMESTAMP column's own name is accepted and contributes nothing, exactly as before: the timestamp is
+   * always projected and always first, so {@code ["ts","temperature"]} is a legitimate spelling of
+   * {@code ["temperature"]} rather than a mistake. Only a name that matches nothing at all is a mistake.
+   *
+   * @throws IllegalArgumentException if a name matches no column of the type. The HTTP handlers render this as
+   *                                  a 400 {@code error} body or a per-target Grafana error frame, and the gRPC
+   *                                  service as {@code INVALID_ARGUMENT} through {@code GrpcErrorMapper}
+   */
+  public static int[] requireColumnIndices(final List<String> fields, final List<ColumnDefinition> columns) {
+    return columnIndices(fields, columns, true);
+  }
+
+  private static int[] columnIndices(final List<String> fields, final List<ColumnDefinition> columns,
+      final boolean refuseUnresolvable) {
     if (fields == null || fields.isEmpty())
       return null;
 
@@ -410,19 +446,96 @@ public final class TimeSeriesGateway {
     final SortedSet<Integer> indices = new TreeSet<>();
 
     for (final String fieldName : fields) {
+      boolean resolved = false;
       int nonTsIdx = 0;
       for (final ColumnDefinition column : columns) {
-        if (column.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+        if (column.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP) {
+          // The timestamp is always projected and always first, so naming it selects nothing further - but it
+          // IS a column of the type, so it is not the unresolvable name the strict resolver refuses.
+          if (column.getName().equals(fieldName)) {
+            resolved = true;
+            break;
+          }
           continue;
+        }
         if (column.getName().equals(fieldName)) {
           indices.add(nonTsIdx);
+          resolved = true;
           break;
         }
         nonTsIdx++;
       }
+
+      if (!resolved && refuseUnresolvable)
+        throw new IllegalArgumentException(
+            "Field '" + fieldName + "' is not a column of this type" + declaredColumnNames(columns));
     }
 
     return indices.stream().mapToInt(Integer::intValue).toArray();
+  }
+
+  /**
+   * The type's column names, rendered for the refusal above: {@code " (declared columns: ts, a, b)"}. Built from
+   * the same {@code columns} list the resolution walked, so it cannot name a set the caller was not actually
+   * matched against - the same guarantee {@link #tagColumnNames} gives the tag refusal.
+   */
+  private static String declaredColumnNames(final List<ColumnDefinition> columns) {
+    final StringJoiner declared = new StringJoiner(", ");
+    for (final ColumnDefinition col : columns)
+      declared.add(col.getName());
+    return declared.length() == 0 ? ": the type declares no column" : " (declared columns: " + declared + ")";
+  }
+
+  /**
+   * Holds a caller-stated bucket width to the one reading every wire protocol agrees on: it must be positive
+   * (issue #7675).
+   * <p>
+   * The engine deliberately reads a non-positive {@code bucketIntervalMs} as "one bucket over the whole range"
+   * - {@code TimeSeriesEngine.aggregateMulti}'s {@code useFlatMode = bucketIntervalMs > 0} - and that mode is a
+   * real part of its API, which is why the guard lives HERE, at the protocol boundary, and not in the engine.
+   * What no caller ever means by it is a request that stated {@code 0}: an uninitialised variable, a division
+   * that rounded down, a template that was never filled in. {@code POST /ts/{database}/query} used to answer
+   * that {@code 200} with a single aggregate over the whole range, which looks exactly like a legitimate answer
+   * to a legitimate question, and the Grafana endpoint used to substitute {@code 60000} for it. gRPC refused it
+   * from the start, and so does the Java client ({@code TimeSeriesQuery.aggregate}); this is the rule the other
+   * two now share.
+   * <p>
+   * A JSON {@code 0.5} arrives here as {@code 0} - {@code JSONObject.getLong} narrows with
+   * {@code Number.longValue()} - and is refused by the same test rather than landing in the whole-range branch.
+   *
+   * @param member the member's name as the CALLER spells it on this protocol, e.g.
+   *               {@code aggregation.bucketInterval}, {@code targets[0].aggregation.bucketInterval} or
+   *               {@code TimeSeriesAggregation.bucket_interval_ms}. The rule is shared; the spelling is not,
+   *               and a caller has to be able to look the name up in its own request (issue #7340)
+   *
+   * @return {@code bucketIntervalMs}, so the check can wrap the read
+   *
+   * @throws IllegalArgumentException if {@code bucketIntervalMs} is not positive
+   */
+  public static long requireBucketInterval(final long bucketIntervalMs, final String member) {
+    if (bucketIntervalMs <= 0)
+      throw new IllegalArgumentException(
+          "'" + member + "' must be a positive number of milliseconds: received " + bucketIntervalMs);
+    return bucketIntervalMs;
+  }
+
+  /**
+   * Holds a caller-stated aggregation to the one reading every wire protocol agrees on: it must name at least
+   * one aggregation to compute (issue #7675).
+   * <p>
+   * An empty list is not an aggregation of nothing - it is a request that cannot be answered. gRPC refused it
+   * from the start; both HTTP endpoints used to answer {@code 200} with a bucket per interval whose
+   * {@code values} array was empty, which is a shape no client has anything to do with.
+   *
+   * @param requestCount how many aggregations the request named
+   * @param member       the member's name as the CALLER spells it on this protocol. See
+   *                     {@link #requireBucketInterval}
+   *
+   * @throws IllegalArgumentException if {@code requestCount} is not positive
+   */
+  public static void requireAggregationRequests(final int requestCount, final String member) {
+    if (requestCount <= 0)
+      throw new IllegalArgumentException("'" + member + "' must name at least one aggregation to compute");
   }
 
   /**

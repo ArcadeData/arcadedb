@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.AggregationMetrics;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
@@ -43,12 +44,28 @@ import java.util.Set;
 /**
  * HTTP handler for listing PromQL label values.
  * Endpoint: GET /api/v1/ts/{database}/prom/api/v1/label/{name}/values
+ * <p>
+ * On {@link DatabaseAbstractHandler} since issue #7681, for the reasons spelled out on
+ * {@link PostGrafanaQueryHandler}: a request carrying {@code arcadedb-session-id} reads through that session's
+ * transaction, under its lock and on its principal and refreshing its idle timer, and the base class subsumes
+ * the {@code checkAuthorizationOnDatabase} call this handler used to make by hand.
+ *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class GetPromQLLabelValuesHandler extends AbstractServerHttpHandler {
+public class GetPromQLLabelValuesHandler extends DatabaseAbstractHandler {
 
   public GetPromQLLabelValuesHandler(final HttpServer httpServer) {
     super(httpServer);
+  }
+
+  /**
+   * A read: an auto-commit wrapper would only add a commit with nothing to commit, so an unresolvable session
+   * id degrades to a session-less read rather than being refused - see
+   * {@link DatabaseAbstractHandler#rejectsUnresolvableSession()}.
+   */
+  @Override
+  protected boolean requiresTransaction() {
+    return false;
   }
 
   /**
@@ -63,6 +80,11 @@ public class GetPromQLLabelValuesHandler extends AbstractServerHttpHandler {
    * <p>
    * This route is on Grafana's variable-refresh path, so a dashboard with one templated variable issues it on
    * every load and on every refresh interval.
+   * <p>
+   * Answered handler-wide, which SUPERSEDES the per-request override issue #7681 gave this handler. That one
+   * dispatched only a request naming a session, deliberately leaving the session-less case as it was - and the
+   * session-less case is the one Grafana and Prometheus exercise, since neither ever sends
+   * {@code arcadedb-session-id}. Both reasons to leave the IO thread still hold; this is the wider of the two.
    */
   @Override
   protected boolean mustExecuteOnWorkerThread() {
@@ -71,22 +93,14 @@ public class GetPromQLLabelValuesHandler extends AbstractServerHttpHandler {
 
   @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
-      final JSONObject payload) throws Exception {
-
-    final Deque<String> databaseParam = exchange.getQueryParameters().get("database");
-    if (databaseParam == null || databaseParam.isEmpty())
-      return new ExecutionResponse(400, PromQLResponseFormatter.formatError("bad_data", "Database parameter is required"));
-
-    // Enforce database-level authorization (GHSA-x8mg-6r4p-87pf): this handler does not extend DatabaseAbstractHandler.
-    // Checked before any payload/parameter validation so an unauthorized caller cannot probe the target database.
-    checkAuthorizationOnDatabase(user, databaseParam.getFirst());
+      final Database db, final JSONObject payload) throws Exception {
 
     final Deque<String> nameParam = exchange.getQueryParameters().get("name");
     if (nameParam == null || nameParam.isEmpty())
       return new ExecutionResponse(400, PromQLResponseFormatter.formatError("bad_data", "Label name parameter is required"));
 
     final String labelName = nameParam.getFirst();
-    final DatabaseInternal database = httpServer.getServer().getDatabase(databaseParam.getFirst(), false, false);
+    final DatabaseInternal database = (DatabaseInternal) db;
 
     final Set<String> values = new LinkedHashSet<>();
 

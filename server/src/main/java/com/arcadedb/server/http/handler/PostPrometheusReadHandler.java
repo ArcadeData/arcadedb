@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.TagFilter;
@@ -43,7 +44,6 @@ import org.xerial.snappy.Snappy;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
-import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -54,6 +54,16 @@ import java.util.Map;
  * <p>
  * Receives Snappy-compressed protobuf ReadRequest messages,
  * queries the TimeSeries engine, and returns Snappy-compressed protobuf ReadResponse.
+ * <p>
+ * Session-aware since issue #7681: {@link AbstractBinaryHttpHandler} was reparented onto
+ * {@link DatabaseAbstractHandler} in that change, so a request carrying {@code arcadedb-session-id} reads
+ * through that session's transaction, under its lock and on its principal and refreshing its idle timer, and
+ * the base class subsumes the {@code checkAuthorizationOnDatabase} call this handler used to make by hand.
+ * <p>
+ * {@link #requiresTransaction()} is false: remote_read is a read, and an auto-commit wrapper would only add a
+ * commit with nothing to commit. An unresolvable session id therefore degrades to a session-less read rather
+ * than being refused, the same asymmetry with {@link PostPrometheusWriteHandler} that #7402 established
+ * between the {@code /api/v1/ts} reads and write.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -64,17 +74,17 @@ public class PostPrometheusReadHandler extends AbstractBinaryHttpHandler {
   }
 
   @Override
+  protected boolean requiresTransaction() {
+    return false;
+  }
+
+  @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
-      final JSONObject payload) throws Exception {
+      final Database db, final JSONObject payload) throws Exception {
 
-    final Deque<String> databaseParam = exchange.getQueryParameters().get("database");
-    if (databaseParam == null || databaseParam.isEmpty())
-      return new ExecutionResponse(400, "{ \"error\" : \"Database parameter is required\"}");
-
-    // Enforce database-level authorization (GHSA-x8mg-6r4p-87pf): this handler does not extend DatabaseAbstractHandler.
-    // Checked before any payload/parameter validation so an unauthorized caller cannot probe the target database.
-    checkAuthorizationOnDatabase(user, databaseParam.getFirst());
-
+    // THIS request's bytes, off the exchange rather than off a field shared with every concurrent request; see
+    // AbstractBinaryHttpHandler.RAW_BINARY_PAYLOAD and issue #7683.
+    final byte[] rawBytes = rawBytes(exchange);
     if (rawBytes == null || rawBytes.length == 0)
       return new ExecutionResponse(400, "{ \"error\" : \"Request body is empty\"}");
 
@@ -87,7 +97,12 @@ public class PostPrometheusReadHandler extends AbstractBinaryHttpHandler {
     }
 
     final ReadRequest readRequest = ReadRequest.decode(decompressed);
-    final DatabaseInternal database = httpServer.getServer().getDatabase(databaseParam.getFirst(), false, false);
+    final DatabaseInternal database = (DatabaseInternal) db;
+
+    // The hard ceiling this endpoint never consulted (issue #7663). One budget for the WHOLE response: a
+    // remote-read request carries one Query per selector and they all travel back in a single ReadResponse, so a
+    // per-query ceiling would let a request with twenty selectors return twenty times the maximum.
+    final TimeSeriesHandlerUtils.RowBudget budget = new TimeSeriesHandlerUtils.RowBudget(getMaxResultRows());
 
     final List<QueryResult> queryResults = new ArrayList<>();
 
@@ -153,8 +168,16 @@ public class PostPrometheusReadHandler extends AbstractBinaryHttpHandler {
           tagFilter = tagFilter.and(nonTsIndex, coerced);
       }
 
-      // Query the engine
-      final List<Object[]> rows = engine.query(query.getStartTimestampMs(), query.getEndTimestampMs(), null, tagFilter);
+      // Issue #7663: engine.query() merged every shard's full range into one sorted ArrayList before a single
+      // sample was looked at, so a selector over a wide range cost O(matching rows) heap however few series it
+      // resolved to. The bounded ascending fetch stops each shard as soon as its own bound is satisfied, and the
+      // one row past the budget is what proves the response would have exceeded the ceiling.
+      final List<Object[]> rows = engine.queryAscending(query.getStartTimestampMs(), query.getEndTimestampMs(),
+          null, tagFilter, budget.fetchLimit(), null);
+      // Refused rather than truncated: Prometheus has no way to represent a partial remote-read response, so a
+      // silently cut one is indistinguishable from a gap in the data (issue #5719's rule, applied here).
+      if (!budget.charge(rows.size()))
+        throw resultSetTooLarge(budget.ceiling());
 
       // Group by label combination → TimeSeries
       final Map<String, List<Object[]>> grouped = new LinkedHashMap<>();

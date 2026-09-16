@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.AggregationMetrics;
 import com.arcadedb.engine.timeseries.AggregationType;
@@ -39,7 +40,6 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
 import java.util.ArrayList;
-import java.util.Deque;
 import java.util.List;
 
 /**
@@ -47,8 +47,25 @@ import java.util.List;
  * Endpoint: POST /api/v1/ts/{database}/grafana/query
  *
  * Accepts multi-target queries and returns Grafana DataFrame wire format (columnar arrays with schema metadata).
+ * <p>
+ * On {@link DatabaseAbstractHandler} since issue #7681, which finished for the ten Grafana and Prometheus
+ * routes what issue #7402 did for the three documented {@code /api/v1/ts} ones. A request carrying
+ * {@code arcadedb-session-id} now reads through the transaction that session opened - under the session's
+ * lock, on the session's principal, with the session's idle clock refreshed - instead of on whatever context
+ * the Undertow worker happened to carry. Before, the header was accepted by the transport and dropped by the
+ * handler, which is the failure mode that cannot be noticed from the answer.
+ * <p>
+ * That base class also subsumes the {@code checkAuthorizationOnDatabase} call this handler used to make by
+ * hand - the helper whose own javadoc said it existed "Because these handlers do not extend
+ * {@code DatabaseAbstractHandler}". It is the database-level gate of GHSA-x8mg-6r4p-87pf and the per-type
+ * principal binding of GHSA-c23x-pqcj-7hfm in one, which is what that helper stood in for.
+ * <p>
+ * {@link #requiresTransaction()} is false: this is a read, and an auto-commit wrapper around it would only add
+ * a commit with nothing to commit. A consequence of that answer, shared with {@code POST /api/v1/ts/{database}/query},
+ * is that an unresolvable session id degrades to a session-less read rather than being refused - see
+ * {@link DatabaseAbstractHandler#rejectsUnresolvableSession()}.
  */
-public class PostGrafanaQueryHandler extends AbstractServerHttpHandler {
+public class PostGrafanaQueryHandler extends DatabaseAbstractHandler {
 
   public PostGrafanaQueryHandler(final HttpServer httpServer) {
     super(httpServer);
@@ -60,23 +77,20 @@ public class PostGrafanaQueryHandler extends AbstractServerHttpHandler {
   }
 
   @Override
+  protected boolean requiresTransaction() {
+    return false;
+  }
+
+  @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
-      final JSONObject payload) throws Exception {
-
-    final Deque<String> databaseParam = exchange.getQueryParameters().get("database");
-    if (databaseParam == null || databaseParam.isEmpty())
-      return new ExecutionResponse(400, "{ \"error\" : \"Database parameter is required\"}");
-
-    // Enforce database-level authorization (GHSA-x8mg-6r4p-87pf): this handler does not extend DatabaseAbstractHandler.
-    // Checked before any payload/parameter validation so an unauthorized caller cannot probe the target database.
-    checkAuthorizationOnDatabase(user, databaseParam.getFirst());
+      final Database db, final JSONObject payload) throws Exception {
 
     // A missing body goes through the SAME refusal an absent 'targets' member gets below, rather than a second,
     // differently worded one: 'targets' is absent either way (issue #7340).
     if (payload == null)
       return TimeSeriesHandlerUtils.badRequest(TimeSeriesHandlerUtils.missingMember("targets", "a JSON array"));
 
-    final DatabaseInternal database = httpServer.getServer().getDatabase(databaseParam.getFirst(), false, false);
+    final DatabaseInternal database = (DatabaseInternal) db;
 
     // The request ENVELOPE is refused as a whole, because nothing in it belongs to one target: a 'targets' that is
     // not an array, or a range bound that is not a number, leaves no refId to key an error frame by. The reason
@@ -98,6 +112,11 @@ public class PostGrafanaQueryHandler extends AbstractServerHttpHandler {
       return TimeSeriesHandlerUtils.badRequest(e);
     }
 
+    // The hard ceiling this endpoint never consulted (issue #7663). One budget for the WHOLE response: a
+    // dashboard sends one target per panel query, and a per-target ceiling would let twenty of them return twenty
+    // times the maximum a single response may carry.
+    final TimeSeriesHandlerUtils.RowBudget budget = new TimeSeriesHandlerUtils.RowBudget(getMaxResultRows());
+
     final JSONObject results = new JSONObject();
 
     for (int t = 0; t < targets.length(); t++) {
@@ -114,7 +133,7 @@ public class PostGrafanaQueryHandler extends AbstractServerHttpHandler {
         return TimeSeriesHandlerUtils.badRequest(e);
       }
 
-      results.put(refId, buildTargetFrame(database, target, targetPath, fromTs, toTs, maxDataPoints));
+      results.put(refId, buildTargetFrame(database, target, targetPath, fromTs, toTs, maxDataPoints, budget));
     }
 
     final JSONObject response = new JSONObject();
@@ -136,7 +155,8 @@ public class PostGrafanaQueryHandler extends AbstractServerHttpHandler {
    *                   caller actually wrote (issue #7340)
    */
   private JSONObject buildTargetFrame(final DatabaseInternal database, final JSONObject target,
-      final String targetPath, final long fromTs, final long toTs, final int maxDataPoints) throws Exception {
+      final String targetPath, final long fromTs, final long toTs, final int maxDataPoints,
+      final TimeSeriesHandlerUtils.RowBudget budget) throws Exception {
 
     final String typeName;
     try {
@@ -186,18 +206,19 @@ public class PostGrafanaQueryHandler extends AbstractServerHttpHandler {
 
     if (!target.isNull("aggregation"))
       return executeAggregation(target, targetPath, engine, database.getName(), typeName, columns, fromTs, toTs,
-          maxDataPoints, tagFilter);
+          maxDataPoints, tagFilter, budget);
 
-    return executeRawQuery(target, targetPath, engine, columns, fromTs, toTs, tagFilter);
+    return executeRawQuery(target, targetPath, engine, columns, fromTs, toTs, tagFilter, budget);
   }
 
   private JSONObject executeRawQuery(final JSONObject target, final String targetPath,
       final TimeSeriesEngine engine, final List<ColumnDefinition> columns, final long fromTs, final long toTs,
-      final TagFilter tagFilter) throws Exception {
+      final TagFilter tagFilter, final TimeSeriesHandlerUtils.RowBudget budget) throws Exception {
 
-    // The try covers the PROJECTION ONLY, never engine.query below. An IllegalArgumentException raised inside the
-    // engine is a broken engine invariant, not a caller mistake, and folding it into an error frame would answer
-    // 200 with internal state in the message - a server fault rendered to a dashboard as a data problem.
+    // The try covers the PROJECTION ONLY, never engine.queryAscending below. An IllegalArgumentException raised
+    // inside the engine is a broken engine invariant, not a caller mistake, and folding it into an error frame
+    // would answer 200 with internal state in the message - a server fault rendered to a dashboard as a data
+    // problem.
     final int[] columnIndices;
     try {
       columnIndices = target.isNull("fields") ? null
@@ -208,7 +229,16 @@ public class PostGrafanaQueryHandler extends AbstractServerHttpHandler {
       return buildErrorFrame(e.getMessage());
     }
 
-    final List<Object[]> rows = engine.query(fromTs, toTs, columnIndices, tagFilter);
+    // Issue #7663: engine.query() merged every shard's full range into one sorted ArrayList before a single row
+    // was looked at, so a panel over a wide range cost O(matching rows) heap whatever it went on to draw. The
+    // bounded ascending fetch stops each shard as soon as its own bound is satisfied, and the one row past the
+    // budget is what proves the response would have exceeded the ceiling.
+    final List<Object[]> rows = engine.queryAscending(fromTs, toTs, columnIndices, tagFilter, budget.fetchLimit(),
+        null);
+    // Thrown rather than rendered as this target's error frame: a 413 is a refusal of the REQUEST, and a frame
+    // would answer 200 with a truncated series a dashboard cannot tell from a complete one.
+    if (!budget.charge(rows.size()))
+      throw resultSetTooLarge(budget.ceiling());
 
     // Build schema fields and columnar data. The projection's indices count NON-timestamp columns and the
     // engine always prepends the timestamp, so the selection is resolved by the same helper the /ts/query and
@@ -246,8 +276,8 @@ public class PostGrafanaQueryHandler extends AbstractServerHttpHandler {
 
   private JSONObject executeAggregation(final JSONObject target, final String targetPath,
       final TimeSeriesEngine engine, final String databaseName, final String typeName,
-      final List<ColumnDefinition> columns, final long fromTs, final long toTs,
-      final int maxDataPoints, final TagFilter tagFilter) throws Exception {
+      final List<ColumnDefinition> columns, final long fromTs, final long toTs, final int maxDataPoints,
+      final TagFilter tagFilter, final TimeSeriesHandlerUtils.RowBudget budget) throws Exception {
 
     final String aggPath = targetPath + ".aggregation";
 
@@ -264,14 +294,30 @@ public class PostGrafanaQueryHandler extends AbstractServerHttpHandler {
       final JSONObject aggJson = TimeSeriesHandlerUtils.requireObject(target, "aggregation", aggPath);
       final JSONArray requestsJson = TimeSeriesHandlerUtils.requireArray(aggJson, "requests", aggPath + ".requests");
 
-      // Determine bucket interval: explicit or auto-calculated from maxDataPoints
-      long resolvedInterval = TimeSeriesHandlerUtils.optLong(aggJson, "bucketInterval", 0,
-          aggPath + ".bucketInterval");
-      if (resolvedInterval <= 0 && maxDataPoints > 0 && fromTs != Long.MIN_VALUE && toTs != Long.MAX_VALUE)
-        resolvedInterval = Math.max(1, (toTs - fromTs) / maxDataPoints);
-      if (resolvedInterval <= 0)
-        resolvedInterval = 60000; // fallback: 1 minute
+      // Determine bucket interval: explicit or auto-calculated from maxDataPoints.
+      //
+      // The two are not the same member (issue #7675). ABSENT is genuinely optional here and means "derive one",
+      // which is what maxDataPoints and the 60000 fallback are for, and that stays. A bucketInterval the caller
+      // DID state and stated as <= 0 is a client error, and substituting 60000 for it answered a panel drawn at
+      // a resolution nobody asked for - the same input /ts/query used to collapse into a single bucket and gRPC
+      // has always refused. isNull() rather than a sentinel: it is the only way to tell "stated 0" from "not
+      // stated", and it is the reading every optional member on these endpoints already gets.
+      final long resolvedInterval;
+      if (aggJson.isNull("bucketInterval")) {
+        long derived = 0;
+        if (maxDataPoints > 0 && fromTs != Long.MIN_VALUE && toTs != Long.MAX_VALUE)
+          derived = Math.max(1, (toTs - fromTs) / maxDataPoints);
+        resolvedInterval = derived > 0 ? derived : 60000; // fallback: 1 minute
+      } else {
+        resolvedInterval = TimeSeriesGateway.requireBucketInterval(
+            TimeSeriesHandlerUtils.requireLong(aggJson, "bucketInterval", aggPath + ".bucketInterval"),
+            aggPath + ".bucketInterval");
+      }
       bucketInterval = resolvedInterval;
+
+      // As on /ts/query: an empty array used to answer a bucket per interval whose 'values' array was empty,
+      // which a Grafana panel renders as a frame with a time column and nothing to plot (issue #7675).
+      TimeSeriesGateway.requireAggregationRequests(requestsJson.length(), aggPath + ".requests");
 
       for (int i = 0; i < requestsJson.length(); i++) {
         // Every refusal below is an IllegalArgumentException naming the member, rendered as this target's error
@@ -298,27 +344,35 @@ public class PostGrafanaQueryHandler extends AbstractServerHttpHandler {
       return buildErrorFrame(e.getMessage());
     }
 
-    // The hard ceiling every other read surface enforces (issue #5719), on the one branch that had no bound of
-    // its own: this route reads no 'limit', and a small 'bucketInterval' over a wide range produces one frame
-    // row per bucket. Carried INTO the scan rather than checked only on its result, so a request that will be
-    // refused stops costing the whole range first (issue #7724) - the engine stops one block past the ceiling,
-    // which leaves a result the check below necessarily refuses.
-    final int maxResultRows = getMaxResultRows();
-
     // What the read actually did, published to whatever the server's metrics subsystem feeds (issue #7717).
     // null - and therefore free - whenever metrics are off.
     final AggregationMetrics readMetrics = TimeSeriesReadMetrics.start();
     final MultiColumnAggregationResult aggResult;
     try {
-      aggResult = engine.aggregateMulti(fromTs, toTs, requests, bucketInterval, tagFilter, readMetrics, maxResultRows);
+      // The budget is carried INTO the scan, not merely checked on its result (issue #7724): the engine stops
+      // once the bucket count passes what the response can still carry, so a request that will be refused no
+      // longer pays for the whole range first. fetchLimit() is the same number the raw branch hands
+      // queryAscending - what the budget can still carry, plus the row that proves it carried more - which as a
+      // stopping point is one bucket wider than strictly needed and cannot stop a request that fits.
+      aggResult = engine.aggregateMulti(fromTs, toTs, requests, bucketInterval, tagFilter, readMetrics,
+          budget.fetchLimit());
     } finally {
       TimeSeriesReadMetrics.publish(readMetrics, databaseName, typeName, TimeSeriesReadMetrics.SURFACE_GRAFANA);
     }
 
     final List<Long> timestamps = aggResult.getBucketTimestamps();
 
-    if (maxResultRows > 0 && timestamps.size() > maxResultRows)
-      throw resultSetTooLarge(maxResultRows);
+    // The same ceiling the raw branch above enforces, on the same budget (issue #7663), and for the same reason
+    // the sibling /ts/{database}/query aggregation branch enforces it: a small 'bucketInterval' - or a large
+    // 'maxDataPoints', which is how this endpoint derives one - produces one response row per bucket, which is
+    // the same unbounded response the raw branch is refused for.
+    //
+    // It is kept even though the scan above is now bounded by the same number, because that bound is a stopping
+    // point and not a count: the engine stops once it is PAST the ceiling, so this is the check that turns the
+    // over-sized result it hands back into the refusal, and it is also what charges the budget the raw branch
+    // shares.
+    if (!budget.charge(timestamps.size()))
+      throw resultSetTooLarge(budget.ceiling());
 
     // Schema: time + one field per aggregation
     final JSONArray schemaFields = new JSONArray();

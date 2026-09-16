@@ -246,6 +246,15 @@ function tsExecuteQuery() {
       alias: aggType ? fields[i] + "_" + effectiveAgg.toLowerCase() : fields[i]
     });
   }
+
+  // A type that declares only tags has no value column to aggregate, so there is nothing to chart. Say so here
+  // rather than posting an aggregation with an empty "requests", which the endpoint refuses by name (issue
+  // #7675) and which would reach the user as a raw server error about a member Studio wrote, not they did.
+  if (requests.length === 0) {
+    globalNotify("Warning", "This time series type declares no value fields to aggregate", "warning");
+    return;
+  }
+
   request.aggregation = {
     bucketInterval: bucketInterval,
     requests: requests

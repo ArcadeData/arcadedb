@@ -23,6 +23,7 @@ import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.DownsamplingTier;
+import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
 import com.arcadedb.exception.SchemaException;
 
 import java.util.ArrayList;
@@ -122,8 +123,9 @@ public class TimeSeriesTypeBuilder {
    * hand, where the codec is recorded per column precisely because it is not re-derivable (issue #5475), and
    * re-deriving it would silently re-encode the restored type differently from the one it came from.
    * <p>
-   * A column whose codec is NOT the default for its type and role has no {@code CREATE TIMESERIES TYPE} expression,
-   * so {@link #toSQL()} refuses such a builder and the type can only be created against an embedded database.
+   * The codec has a {@code CREATE TIMESERIES TYPE} expression since issue #7689 - {@code name TYPE CODEC NAME} -
+   * so a column carrying an explicit one renders like any other and a logical restore runs against a remote
+   * database as well as an embedded one.
    *
    * @param column the column to add; a TIMESTAMP-role column also becomes the type's timestamp column
    */
@@ -174,27 +176,24 @@ public class TimeSeriesTypeBuilder {
    * Renders the accumulated state as the DDL that creates the same type, for an implementation that can only reach
    * the schema through {@code command("sql", ...)}.
    * <p>
-   * One or two statements: the {@code CREATE TIMESERIES TYPE}, followed by an
-   * {@code ALTER TIMESERIES TYPE ... ADD DOWNSAMPLING POLICY} when tiers were declared - the create grammar has no
-   * downsampling clause. Execute them in order.
+   * <b>Exactly one statement</b>, in every builder state this method accepts. It used to be one or two - a
+   * {@code CREATE TIMESERIES TYPE} followed by an {@code ALTER TIMESERIES TYPE ... ADD DOWNSAMPLING POLICY} when
+   * tiers were declared, because the create grammar had no downsampling clause - and a caller that got the CREATE
+   * through and not the ALTER was left with a type missing its policy and an exception in hand. The grammar now
+   * carries the policy and the per-column codecs, so there is nothing left to tear (issue #7689). The return type
+   * stays a list, and callers still execute it in order, so that a clause the grammar may one day still not carry
+   * has somewhere to go.
    * <p>
    * Throws {@link SchemaException} rather than emitting DDL the server would reject, for every builder state the
-   * grammar cannot express: an explicit per-column codec, a precision outside the four the grammar names, and a
-   * retention, compaction interval or downsampling threshold that is not a whole number of seconds (the grammar's
-   * smallest unit). Failing here, at build time, is the point: the alternative is invalid SQL reaching the server.
+   * grammar cannot express: a precision outside the four the grammar names, and a retention, compaction interval or
+   * downsampling threshold that is not a whole number of seconds (the grammar's smallest unit). Failing here, at
+   * build time, is the point: the alternative is invalid SQL reaching the server.
    */
   public List<String> toSQL() {
     validate();
     validateForSQL();
 
-    final List<String> statements = new ArrayList<>(2);
-    statements.add(renderCreate());
-
-    final String downsampling = renderDownsamplingPolicy();
-    if (downsampling != null)
-      statements.add(downsampling);
-
-    return statements;
+    return List.of(renderCreate());
   }
 
   private String renderCreate() {
@@ -211,6 +210,8 @@ public class TimeSeriesTypeBuilder {
       sql.append(" PRECISION ").append(precision);
     }
 
+    appendCodec(sql, timestampColumnDefinition());
+
     appendColumnList(sql, " TAGS (", ColumnDefinition.ColumnRole.TAG);
     appendColumnList(sql, " FIELDS (", ColumnDefinition.ColumnRole.FIELD);
 
@@ -223,6 +224,8 @@ public class TimeSeriesTypeBuilder {
     if (compactionBucketIntervalMs > 0)
       sql.append(" COMPACTION_INTERVAL ").append(renderDuration(compactionBucketIntervalMs, "compaction bucket interval"));
 
+    appendDownsamplingPolicy(sql);
+
     return sql.toString();
   }
 
@@ -232,33 +235,78 @@ public class TimeSeriesTypeBuilder {
       if (col.getRole() != role)
         continue;
       sql.append(first ? header : ", ").append(quote(col.getName())).append(' ').append(col.getDataType().name());
+      appendCodec(sql, col);
       first = false;
     }
     if (!first)
       sql.append(')');
   }
 
-  private String renderDownsamplingPolicy() {
-    if (downsamplingTiers.isEmpty())
-      return null;
+  /**
+   * Appends {@code CODEC <name>} when the column carries a codec that is NOT the default for its data type and
+   * role, and nothing at all when it carries the default.
+   * <p>
+   * The clause is omitted for a default because the column is always constructed with one - "explicit" is only
+   * visible as "differs from {@link ColumnDefinition#defaultCodecFor}" - and naming it anyway would pin today's
+   * default table into every rendered statement, so a type recreated from that DDL after the table changes would
+   * get the old codec rather than the new one the same builder code gets embedded.
+   */
+  private static void appendCodec(final StringBuilder sql, final ColumnDefinition column) {
+    if (column == null)
+      return;
+    final TimeSeriesCodec codec = column.getCompressionHint();
+    if (codec != null && codec != ColumnDefinition.defaultCodecFor(column.getDataType(), column.getRole()))
+      sql.append(" CODEC ").append(codec.name());
+  }
 
-    final StringBuilder sql = new StringBuilder(64);
-    sql.append("ALTER TIMESERIES TYPE ").append(quote(typeName)).append(" ADD DOWNSAMPLING POLICY");
+  /**
+   * The TIMESTAMP-role column, or {@code null} when the builder carries none. {@link #validate()} has already
+   * refused a builder with no timestamp column by the time {@link #renderCreate()} asks, so the null is for the
+   * column list carrying a timestamp column under a different name than {@link #timestampColumn}, which
+   * {@link #withColumn} cannot produce and a subclass could.
+   */
+  private ColumnDefinition timestampColumnDefinition() {
+    for (final ColumnDefinition col : columns)
+      if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP && col.getName().equals(timestampColumn))
+        return col;
+    return null;
+  }
+
+  private void appendDownsamplingPolicy(final StringBuilder sql) {
+    if (downsamplingTiers.isEmpty())
+      return;
+
+    sql.append(" DOWNSAMPLING POLICY");
     for (final DownsamplingTier tier : downsamplingTiers)
       sql.append(" AFTER ").append(renderDuration(tier.afterMs(), "downsampling threshold"))
           .append(" GRANULARITY ").append(renderDuration(tier.granularityMs(), "downsampling granularity"));
-    return sql.toString();
   }
 
   /**
    * {@code <count> <unit>} for a duration in milliseconds, using the largest of DAYS/HOURS/MINUTES/SECONDS that
-   * divides it exactly. The unit is never omitted: the parser's default for a bare {@code RETENTION 90} is DAYS, so
-   * emitting the raw millisecond count without a unit would multiply it by 86,400,000.
+   * divides it exactly, or {@code null} when none of them does.
+   * <p>
+   * The unit is never omitted: the parser's default for a bare {@code RETENTION 90} is DAYS, so emitting the raw
+   * millisecond count without a unit would multiply it by 86,400,000. That is why this returns {@code null} instead
+   * of a bare number - the two callers have to answer an unrenderable duration differently, and neither answer is a
+   * unit-less count. This one throws, because DDL the server would reject must not leave the client;
+   * {@code CreateTimeSeriesTypeStatement.toString()} falls back to the raw count, because a printer that throws
+   * would take {@code EXPLAIN} and the statement cache with it.
+   * <p>
+   * Public and shared so the DAYS/HOURS/MINUTES/SECONDS table exists once: two copies would have to be kept in step
+   * by hand if a unit were ever added (claude review on PR #7721).
    */
-  private static String renderDuration(final long millis, final String what) {
+  public static String renderSQLDuration(final long millis) {
     for (int i = 0; i < SQL_UNIT_MS.length; i++)
       if (millis % SQL_UNIT_MS[i] == 0)
         return (millis / SQL_UNIT_MS[i]) + " " + SQL_UNIT_NAMES[i];
+    return null;
+  }
+
+  private static String renderDuration(final long millis, final String what) {
+    final String rendered = renderSQLDuration(millis);
+    if (rendered != null)
+      return rendered;
 
     throw new SchemaException("A " + what + " of " + millis
         + "ms has no CREATE TIMESERIES TYPE expression: the grammar's smallest time unit is SECONDS, so the value must be a whole number of seconds");
@@ -309,15 +357,13 @@ public class TimeSeriesTypeBuilder {
    * Same as {@link #validate()} plus the checks that only a SQL-rendered create has to pass.
    */
   private void validateForSQL() {
+    // A non-default per-column codec used to be refused here: the grammar could not name one, so rendering the
+    // column without it would have silently recreated it with the default (issue #5475's failure). CREATE
+    // TIMESERIES TYPE carries a CODEC clause since issue #7689, so the codec renders instead.
     int timestampColumns = 0;
-    for (final ColumnDefinition col : columns) {
+    for (final ColumnDefinition col : columns)
       if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
         ++timestampColumns;
-      if (col.getCompressionHint() != ColumnDefinition.defaultCodecFor(col.getDataType(), col.getRole()))
-        throw new SchemaException("Column '" + col.getName() + "' declares the explicit codec "
-            + col.getCompressionHint() + ", which has no CREATE TIMESERIES TYPE expression. A type with per-column codecs "
-            + "can only be created against an embedded database");
-    }
     if (timestampColumns > 1)
       throw new SchemaException(
           "CREATE TIMESERIES TYPE declares exactly one TIMESTAMP column, and this builder carries " + timestampColumns);

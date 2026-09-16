@@ -355,16 +355,17 @@ final class TimeSeriesHandlerUtils {
   /**
    * Resolves a {@code fields} projection to the column indices the engine takes.
    * <p>
-   * Only the JSON SHAPE of the projection is checked here. A well-formed name that matches no column is DROPPED
-   * by {@link TimeSeriesGateway#resolveColumnIndices}, not refused - see its Javadoc, and
-   * {@code TimeSeriesGatewayProjectionTest}, which pins that. So {@code "fields": ["temprature"]} still answers
-   * 200 with a timestamp-only row rather than naming the typo, which is the same widening #7334 refused for a tag
-   * name and is tracked separately.
+   * The JSON SHAPE of the projection is checked here; what the names MEAN is
+   * {@link TimeSeriesGateway#requireColumnIndices}, which every protocol's projection now shares. A well-formed
+   * name that matches no column of the type is REFUSED there (issue #7675) rather than dropped, so
+   * {@code "fields": ["temprature"]} names the typo instead of answering 200 with a timestamp-only row, and a
+   * projection where nothing resolves can no longer collapse to the empty array the engine reads as "every
+   * column". That is the same widening #7334 refused for a tag name, on the sibling member.
    *
    * @param path the projection's request path, e.g. {@code fields} or {@code targets[0].fields}, used to name an
    *             element that is not a string (issue #7340)
    *
-   * @throws IllegalArgumentException if an element is absent, null or not a string
+   * @throws IllegalArgumentException if an element is absent, null or not a string, or names no column of the type
    */
   static int[] resolveColumnIndices(final JSONArray fieldsJson, final List<ColumnDefinition> columns,
       final String path) {
@@ -375,7 +376,7 @@ final class TimeSeriesHandlerUtils {
     for (int f = 0; f < fieldsJson.length(); f++)
       fields.add(requireStringElement(fieldsJson, f, path + "[" + f + "]"));
 
-    return TimeSeriesGateway.resolveColumnIndices(fields, columns);
+    return TimeSeriesGateway.requireColumnIndices(fields, columns);
   }
 
   static int findColumnIndex(final String fieldName, final List<ColumnDefinition> columns) {
@@ -418,5 +419,73 @@ final class TimeSeriesHandlerUtils {
     };
 
     return new ExecutionResponse(400, new JSONObject().put("error", message).toString());
+  }
+
+  /**
+   * The hard row ceiling (issue #5719) spread across a response that answers SEVERAL reads: a Grafana request
+   * carries one target per panel query, a Prometheus remote-read request one {@code Query} per selector, and each
+   * of them used to reach {@code TimeSeriesEngine.query} with no bound at all (issue #7663).
+   * <p>
+   * The budget is deliberately for the whole response and not for each read in it. The setting's own wording is
+   * "the maximum number of rows a single HTTP response may carry", and a per-read ceiling would let a request with
+   * twenty targets return twenty times it - which is the hole, not a narrower version of it.
+   * <p>
+   * Not thread-safe, and it does not need to be: both handlers walk their reads sequentially on the request
+   * thread.
+   */
+  static final class RowBudget {
+    private final int ceiling;
+    private       int used;
+
+    /**
+     * @param ceiling the configured maximum; {@code <= 0} disables the budget, exactly as everywhere else this
+     *                setting is read
+     */
+    RowBudget(final int ceiling) {
+      this.ceiling = ceiling;
+    }
+
+    int ceiling() {
+      return ceiling;
+    }
+
+    /**
+     * The row cap to hand {@code TimeSeriesEngine.queryAscending} for the next read: what the response can still
+     * carry, plus the one row that proves it carried more. {@code 0} - which that method reads as unlimited - when
+     * the ceiling is disabled and there is genuinely no bound.
+     * <p>
+     * A caller stops at the first {@link #charge} that returns {@code false}, so {@code used} never passes
+     * {@code ceiling} while this is read again and the subtraction stays non-negative. The {@code + 1} still has
+     * one arithmetic edge: a ceiling configured AT {@code Integer.MAX_VALUE} would wrap it to a negative value
+     * that {@code queryAscending} reads as unlimited - the right answer by the wrong route, and one that reads
+     * like a bug the first time anyone audits it. It is named instead, exactly as {@code PostTimeSeriesQueryHandler}
+     * names it for the same arithmetic: such a ceiling IS unlimited in practice, because no {@code List} can hold
+     * that many rows (claude-review on PR #7720).
+     * <p>
+     * The off-by-one is what separates a complete response from a truncated one, so it is pinned rather than
+     * merely argued: {@code Issue7663GrafanaPrometheusRowCeilingIT}'s
+     * {@code theGrafanaRawBranchServesExactlyTheCeilingAndRefusesOneMore} and
+     * {@code thePrometheusReadServesExactlyTheCeilingAndRefusesOneMore} fail if this arithmetic moves in either
+     * direction, and {@code RowBudgetTest} covers the edges directly.
+     */
+    int fetchLimit() {
+      if (ceiling <= 0)
+        return 0;
+      final int remaining = ceiling - used;
+      return remaining == Integer.MAX_VALUE ? 0 : remaining + 1;
+    }
+
+    /**
+     * Charges {@code rows} against the budget.
+     *
+     * @return {@code false} when the response would exceed the ceiling, which the caller answers with
+     *         {@code resultSetTooLarge} rather than reading the budget again
+     */
+    boolean charge(final int rows) {
+      if (ceiling <= 0)
+        return true;
+      used += rows;
+      return used <= ceiling;
+    }
   }
 }
