@@ -115,6 +115,26 @@ final class PromQLResponseFormatter {
     return response.toString();
   }
 
+  /**
+   * Whether a value NAMES a label, in the sense the Prometheus data model gives that word (issue #7712).
+   * <p>
+   * There, a label whose value is empty is defined as ABSENT: {@code host=""} selects the series that do not
+   * carry {@code host} at all, {@code /label/{name}/values} does not offer the empty string among a label's
+   * values, and a series is identified by its NON-empty labels, so two series differing only in an empty label
+   * are one series. Every ArcadeDB read path spells a null tag {@code ""} - {@code TimeSeriesBucket} returns it
+   * for a zero-length STRING, {@code TimeSeriesTagDictionary} maps both null and {@code ""} onto the same id, and
+   * {@code TimeSeriesSealedStore.compressColumn} writes a null tag as {@code ""} - so without this rule a metric
+   * whose samples include a null tag offered a blank entry in a Grafana label picker that selects nothing, and
+   * reported one series more than Prometheus would for the same data.
+   * <p>
+   * This is a PRESENTATION rule of the Prometheus surface and nothing else: the engine keeps reporting exactly
+   * what the samples hold, and {@code POST /api/v1/ts/{database}/query} still answers {@code ""} for the same
+   * column, because a tag that genuinely holds the empty string is a value there.
+   */
+  static boolean isLabelValuePresent(final String value) {
+    return value != null && !value.isEmpty();
+  }
+
   static String formatError(final String errorType, final String message) {
     final JSONObject response = new JSONObject();
     response.put("status", "error");

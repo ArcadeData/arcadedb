@@ -142,6 +142,11 @@ class Issue7402TimeSeriesHttpSessionIT extends BaseGraphServerTest {
     return response.headers().firstValue(HttpSessionManager.ARCADEDB_SESSION_ID).orElse(null);
   }
 
+  /** The id the server could not resolve, on a read that ran outside the transaction anyway (issue #7714). */
+  private static String sessionExpiredOf(final HttpResponse<?> response) {
+    return response.headers().firstValue(DatabaseAbstractHandler.SESSION_EXPIRED).orElse(null);
+  }
+
   private String beginSession(final String auth) throws Exception {
     final HttpResponse<String> begun = post("/begin/" + getDatabaseName(), auth, null, "", "application/json");
     assertThat(begun.statusCode()).isEqualTo(204);
@@ -304,6 +309,15 @@ class Issue7402TimeSeriesHttpSessionIT extends BaseGraphServerTest {
    * {@code GET /query} does, because a read has no pending work for the caller to be wrong about. Pinned so a
    * later change that tightens the reads has to argue with this test rather than silently break every client
    * that retries a read after its session expired.
+   * <p>
+   * Issue #7714 settled that argument and recorded the answer here: the degrade STAYS, because refusing would
+   * turn a currently-succeeding retry into an error for every client that does one, and the gRPC
+   * {@code TimeSeriesQuery}/{@code TimeSeriesLatest} RPCs go on refusing the same case with
+   * {@code FAILED_PRECONDITION}, following their own protocol's convention. The two are a deliberate split,
+   * written down in the OpenAPI operations and in the proto comments. What #7714 DID change is that the degrade
+   * is no longer silent: it is now reported in the {@code arcadedb-session-expired} response header, so a client
+   * can tell "your transaction is gone, this answer came from outside it" from "your transaction answered this"
+   * without having to notice a header that is not there.
    */
   @Test
   void aTimeSeriesReadNamingAnUnknownSessionStillAnswers() throws Exception {
@@ -315,10 +329,37 @@ class Issue7402TimeSeriesHttpSessionIT extends BaseGraphServerTest {
         .isEqualTo(200);
     assertThat(timestampsOf(query).toList()).containsExactly(1_000L, 2_000L);
     assertThat(sessionIdOf(query)).as("nothing was resolved, so there is no id to echo").isNull();
+    assertThat(sessionExpiredOf(query))
+        .as("#7714: the degrade is deliberate but must not be silent - it names the id that did not resolve")
+        .isEqualTo(UNKNOWN_SESSION);
 
     final HttpResponse<String> newest = latest(rootAuth(), UNKNOWN_SESSION);
     assertThat(newest.statusCode()).isEqualTo(200);
     assertThat(new JSONObject(newest.body()).getJSONArray("latest").getLong(0)).isEqualTo(2_000L);
+    assertThat(sessionExpiredOf(newest)).isEqualTo(UNKNOWN_SESSION);
+  }
+
+  /**
+   * The control for the header above: a read that names NO session, and one that names a LIVE session, must not
+   * carry it. A header sent unconditionally would say nothing, and a client keying on its presence would read
+   * every answer as having come from outside a transaction (issue #7714).
+   */
+  @Test
+  void aReadThatResolvesItsSessionOrNamesNoneCarriesNoExpiryHeader() throws Exception {
+    seed();
+
+    assertThat(sessionExpiredOf(queryWholeRange(rootAuth(), null)))
+        .as("no session was named, so nothing expired").isNull();
+
+    final String session = beginSession(rootAuth());
+    try {
+      final HttpResponse<String> query = queryWholeRange(rootAuth(), session);
+      assertThat(query.statusCode()).isEqualTo(200);
+      assertThat(sessionIdOf(query)).isEqualTo(session);
+      assertThat(sessionExpiredOf(query)).as("the session resolved, so the read ran INSIDE it").isNull();
+    } finally {
+      rollback(rootAuth(), session);
+    }
   }
 
   /**

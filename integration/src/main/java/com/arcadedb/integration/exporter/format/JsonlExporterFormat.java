@@ -75,13 +75,10 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
   @Override
   public void exportDatabase() throws Exception {
     final File file = new File(settings.file);
-    if (file.exists() && !settings.overwriteFile)
-      throw new ExportException("The export file '%s' already exist and '-o' setting is false".formatted(settings.file));
-
-    if (file.getParentFile() != null && !file.getParentFile().exists()) {
-      if (!file.getParentFile().mkdirs())
-        throw new ExportException("The export file '%s' cannot be created".formatted(settings.file));
-    }
+    // NO ensureParentDirectory HERE: 'file' is the UNRESOLVED settings.file, which for a 'file://' target names a
+    // different (bogus) parent than the archive actually goes in. claimExportFile creates the real one, from the
+    // resolved path, right before it takes the claim in it.
+    refuseExistingTarget(file);
 
     if (database.isTransactionActive())
       database.getTransaction().rollback();
@@ -94,9 +91,7 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
     else
       exportFile = new File(settings.file);
 
-    if (!exportFile.getParentFile().exists())
-      exportFile.getParentFile().mkdirs();
-
+    final File lock = claimExportFile(exportFile);
     try (final OutputStreamWriter fileWriter = new OutputStreamWriter(new GZIPOutputStream(new FileOutputStream(exportFile)),
         DatabaseFactory.getDefaultCharset())) {
       writer = fileWriter;
@@ -158,6 +153,8 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
       exportEdges(edgeTypes, graphSerializer);
       exportLightweightEdges(vertexTypes, graphSerializer);
       exportTimeSeries(timeSeriesTypes);
+    } finally {
+      releaseExportFile(lock);
     }
   }
 

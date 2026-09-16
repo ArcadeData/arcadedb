@@ -18,6 +18,8 @@
  */
 package com.arcadedb.server.http.handler.openapi;
 
+import com.arcadedb.server.http.HttpSessionManager;
+import com.arcadedb.server.http.handler.DatabaseAbstractHandler;
 import io.swagger.v3.oas.models.Components;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.Operation;
@@ -29,6 +31,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -236,15 +240,29 @@ class CoreApiSpecTest {
         .containsKey("409");
   }
 
+  /**
+   * Narrowed from "declares no headers at all" to "declares not THAT header" when issue #7714 gave these two
+   * operations one they genuinely do send. What both handlers remove before responding is
+   * {@code ARCADEDB_SESSION_ID} and only that; {@code arcadedb-session-expired} is set by
+   * {@code DatabaseAbstractHandler} on the way in and nothing takes it off, which is what a retried commit
+   * naming an already-removed session is answered with.
+   */
   @Test
   void commitAndRollbackDoNotAdvertiseTheSessionIdResponseHeader() {
     for (final String path : List.of("/api/v1/commit/{database}", "/api/v1/rollback/{database}")) {
       final Operation post = openAPI.getPaths().get(path).getPost();
+      final Map<String, Header> headers = post.getResponses().get("204").getHeaders();
 
-      assertThat(post.getResponses().get("204").getHeaders())
+      assertThat(headers == null ? Set.<String>of() : headers.keySet())
           .as("PostCommitHandler/PostRollbackHandler strip the session header before responding on "
               + path + "; advertising it here would be a lie only 'begin' is entitled to make")
-          .isNullOrEmpty();
+          .doesNotContain(HttpSessionManager.ARCADEDB_SESSION_ID);
+
+      assertThat(headers)
+          .as(path + " degrades rather than refuses a session it cannot resolve, so it DOES send "
+              + DatabaseAbstractHandler.SESSION_EXPIRED + " and has to say so (issue #7714)")
+          .isNotNull()
+          .containsKey(DatabaseAbstractHandler.SESSION_EXPIRED);
     }
   }
 

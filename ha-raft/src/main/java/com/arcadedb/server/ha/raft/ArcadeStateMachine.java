@@ -3688,6 +3688,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // node lifetime. This branch never calls drop(), so the eviction cannot precede a failed drop.
     if (!server.existsDatabase(databaseName)) {
       evictBootstrapBaseline(databaseName);
+      clearDroppedDatabaseQuarantine(databaseName);
       HALog.log(this, HALog.TRACE, "Database '%s' already absent, skipping drop-database entry", databaseName);
       return;
     }
@@ -3720,9 +3721,39 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // restart can still recover it (evicting first would lose the baseline of a database that was not
     // actually dropped - the #5100 failure mode).
     evictBootstrapBaseline(databaseName);
+    clearDroppedDatabaseQuarantine(databaseName);
 
     LogManager.instance().log(this, Level.INFO, "Database '%s' dropped via Raft drop-database entry%s", databaseName,
         staged != null ? " (files staged as '" + staged.getFileName() + "' for background deletion)" : "");
+  }
+
+  /**
+   * Retires the quarantine bookkeeping of a database a DROP entry has just removed: the per-database read floor
+   * (issue #6760) and the diverged marker that goes with it.
+   * <p>
+   * Both exist to hold back readers of a database a snapshot install could NOT bring up to date, until a targeted
+   * resync restores it. A dropped database has no such obligation left - there is nothing to resync and nothing to
+   * read - and the floor is only ever cleared by {@link #clearDivergedDatabase}, which runs when a resync succeeds.
+   * So without this, the floor of a database that was quarantined when it was dropped outlives it for the node's
+   * lifetime, with two consequences (review of PR #7649):
+   * <ul>
+   *   <li>{@link RaftHAServer#getTrustedAppliedIndex(String)} clamps to that floor forever, so the local-apply wait
+   *   {@code RaftReplicatedDatabase.dropInReplicas} takes could never be satisfied - the drop would report failure
+   *   through its full quorum timeout even though the directory is gone;</li>
+   *   <li>a database later recreated under the same name would inherit the dead floor and have its LINEARIZABLE
+   *   reads pinned behind it.</li>
+   * </ul>
+   * The same reasoning the eviction of {@code pageVersions} and the bootstrap baseline in this method already
+   * applies - do not keep per-database state for a name that no longer has a database.
+   */
+  private void clearDroppedDatabaseQuarantine(final String databaseName) {
+    if (getDatabaseAppliedFloor(databaseName) < 0 && !isDatabaseDiverged(databaseName))
+      return;
+
+    HALog.log(this, HALog.BASIC,
+        "Database '%s' was quarantined when it was dropped: retiring its read floor and diverged marker, "
+            + "since a dropped database has no resync left to wait for (issue #6760)", databaseName);
+    clearDivergedDatabase(databaseName);
   }
 
   // @VisibleForTesting
