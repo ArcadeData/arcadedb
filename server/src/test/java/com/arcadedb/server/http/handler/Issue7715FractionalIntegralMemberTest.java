@@ -257,15 +257,31 @@ class Issue7715FractionalIntegralMemberTest {
   }
 
   /**
-   * The length cap on a numeric string, defence in depth against an arbitrarily long digit run. Reported as
-   * "must be a number" rather than with a message of its own, because that is #7340's answer for a member that
-   * did not arrive as one and there is no reason for this endpoint to have two.
+   * The length cap on a numeric string is defence in depth against a pathological digit run, and nothing more.
+   * It must not refuse a value the caller could legitimately mean: a zero-padded {@code 1} is a faithful
+   * representation of {@code 1}, however many zeros it carries, and reading it as anything else - including as
+   * "not a number" - is the substitution this whole issue is about (CodeRabbit on PR #7730).
+   * <p>
+   * The refusal, when it does fire, is reported as "must be a number" rather than with a message of its own,
+   * because that is #7340's answer for a member that did not arrive as one and there is no reason for this
+   * endpoint to have two.
    */
   @Test
-  void refusesANumericStringLongerThanAnyWholeLongNeeds() {
-    final JSONObject owner = new JSONObject().put("from", "1".repeat(200));
+  void refusesOnlyAPathologicalNumericStringAndReadsAZeroPaddedOne() {
+    final JSONObject padded = new JSONObject();
+    padded.put("from", "0".repeat(42) + "1");
+    padded.put("to", "-" + "0".repeat(40) + "9223372036854775807");
+    padded.put("bucketInterval", "1." + "0".repeat(60));
 
-    assertThatThrownBy(() -> TimeSeriesHandlerUtils.optLong(owner, "from", 0L, "from"))
+    assertThat(TimeSeriesHandlerUtils.optLong(padded, "from", -1L, "from"))
+        .as("a zero-padded 1 names 1, whatever its length").isEqualTo(1L);
+    assertThat(TimeSeriesHandlerUtils.optLong(padded, "to", 0L, "to")).isEqualTo(Long.MIN_VALUE + 1);
+    assertThat(TimeSeriesHandlerUtils.requireLong(padded, "bucketInterval", "aggregation.bucketInterval"))
+        .as("trailing zeros after the point do not make it fractional").isEqualTo(1L);
+
+    final JSONObject pathological = new JSONObject().put("from", "1".repeat(5000));
+    assertThatThrownBy(() -> TimeSeriesHandlerUtils.optLong(pathological, "from", 0L, "from"))
+        .as("an excessive run of SIGNIFICANT digits is still kept out of the parser")
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageStartingWith("'from' must be a number: received ");
   }
