@@ -461,6 +461,14 @@ public class TimeSeriesEngine implements AutoCloseable {
 
   /**
    * Aggregates across all shards.
+   * <p>
+   * <b>Validates nothing.</b> {@code columnIndex} is used as given: a column no storage layer can read as a
+   * number answers {@link TimeSeriesNaN#ABSENT} per row rather than being refused, and an index the row does
+   * not reach does the same. The refusal that makes an unreadable column a named error instead of a silent gap
+   * is {@link TimeSeriesGateway#requireAggregatableColumn}, which every caller-facing surface applies before it
+   * builds a request; a caller reaching this method directly wants the same check first, or it gets the gap.
+   * No production surface calls this - the three wire protocols and the SQL push-down all go through
+   * {@link #aggregateMulti} - so this note is for whoever adds the first one (issue #7725).
    *
    * @param columnIndex 0-based index among non-timestamp columns (i.e. column 0 = first non-ts column).
    *                    This differs from {@link MultiColumnAggregationRequest#columnIndex()} which uses
