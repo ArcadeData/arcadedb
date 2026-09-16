@@ -419,4 +419,59 @@ final class TimeSeriesHandlerUtils {
 
     return new ExecutionResponse(400, new JSONObject().put("error", message).toString());
   }
+
+  /**
+   * The hard row ceiling (issue #5719) spread across a response that answers SEVERAL reads: a Grafana request
+   * carries one target per panel query, a Prometheus remote-read request one {@code Query} per selector, and each
+   * of them used to reach {@code TimeSeriesEngine.query} with no bound at all (issue #7663).
+   * <p>
+   * The budget is deliberately for the whole response and not for each read in it. The setting's own wording is
+   * "the maximum number of rows a single HTTP response may carry", and a per-read ceiling would let a request with
+   * twenty targets return twenty times it - which is the hole, not a narrower version of it.
+   * <p>
+   * Not thread-safe, and it does not need to be: both handlers walk their reads sequentially on the request
+   * thread.
+   */
+  static final class RowBudget {
+    private final int ceiling;
+    private       int used;
+
+    /**
+     * @param ceiling the configured maximum; {@code <= 0} disables the budget, exactly as everywhere else this
+     *                setting is read
+     */
+    RowBudget(final int ceiling) {
+      this.ceiling = ceiling;
+    }
+
+    int ceiling() {
+      return ceiling;
+    }
+
+    /**
+     * The row cap to hand {@code TimeSeriesEngine.queryAscending} for the next read: what the response can still
+     * carry, plus the one row that proves it carried more. {@code 0} - which that method reads as unlimited - only
+     * when the ceiling is disabled and there is genuinely no bound.
+     * <p>
+     * A caller stops at the first {@link #charge} that returns {@code false}, so {@code used} never passes
+     * {@code ceiling} while this is read again: the subtraction stays non-negative and the {@code + 1} cannot
+     * overflow a positive {@code int} ceiling.
+     */
+    int fetchLimit() {
+      return ceiling <= 0 ? 0 : ceiling - used + 1;
+    }
+
+    /**
+     * Charges {@code rows} against the budget.
+     *
+     * @return {@code false} when the response would exceed the ceiling, which the caller answers with
+     *         {@code resultSetTooLarge} rather than reading the budget again
+     */
+    boolean charge(final int rows) {
+      if (ceiling <= 0)
+        return true;
+      used += rows;
+      return used <= ceiling;
+    }
+  }
 }

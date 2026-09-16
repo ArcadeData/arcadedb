@@ -89,6 +89,11 @@ public class PostPrometheusReadHandler extends AbstractBinaryHttpHandler {
     final ReadRequest readRequest = ReadRequest.decode(decompressed);
     final DatabaseInternal database = httpServer.getServer().getDatabase(databaseParam.getFirst(), false, false);
 
+    // The hard ceiling this endpoint never consulted (issue #7663). One budget for the WHOLE response: a
+    // remote-read request carries one Query per selector and they all travel back in a single ReadResponse, so a
+    // per-query ceiling would let a request with twenty selectors return twenty times the maximum.
+    final TimeSeriesHandlerUtils.RowBudget budget = new TimeSeriesHandlerUtils.RowBudget(getMaxResultRows());
+
     final List<QueryResult> queryResults = new ArrayList<>();
 
     for (final Query query : readRequest.getQueries()) {
@@ -153,8 +158,16 @@ public class PostPrometheusReadHandler extends AbstractBinaryHttpHandler {
           tagFilter = tagFilter.and(nonTsIndex, coerced);
       }
 
-      // Query the engine
-      final List<Object[]> rows = engine.query(query.getStartTimestampMs(), query.getEndTimestampMs(), null, tagFilter);
+      // Issue #7663: engine.query() merged every shard's full range into one sorted ArrayList before a single
+      // sample was looked at, so a selector over a wide range cost O(matching rows) heap however few series it
+      // resolved to. The bounded ascending fetch stops each shard as soon as its own bound is satisfied, and the
+      // one row past the budget is what proves the response would have exceeded the ceiling.
+      final List<Object[]> rows = engine.queryAscending(query.getStartTimestampMs(), query.getEndTimestampMs(),
+          null, tagFilter, budget.fetchLimit(), null);
+      // Refused rather than truncated: Prometheus has no way to represent a partial remote-read response, so a
+      // silently cut one is indistinguishable from a gap in the data (issue #5719's rule, applied here).
+      if (!budget.charge(rows.size()))
+        throw resultSetTooLarge(budget.ceiling());
 
       // Group by label combination → TimeSeries
       final Map<String, List<Object[]>> grouped = new LinkedHashMap<>();
