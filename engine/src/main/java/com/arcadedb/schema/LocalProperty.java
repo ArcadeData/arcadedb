@@ -336,4 +336,35 @@ public class LocalProperty extends AbstractProperty {
 
     return prev;
   }
+
+  @Override
+  public Property rename(final String newName) {
+    checkForSchemaMutation();
+    checkStillDeclaredIn((LocalDocumentType) owner);
+    return ((LocalDocumentType) owner).renameProperty(name, newName);
+  }
+
+  /**
+   * Builds the {@link LocalProperty} that {@link LocalDocumentType#renameProperty} swaps in for this one: same
+   * owner, type and every mutable attribute, under {@code newName}. {@code name} and {@code id} are {@code final}
+   * on {@link AbstractProperty}, so a rename cannot mutate this instance in place - id in particular MUST change:
+   * it is a dictionary id resolved from the name ({@link LocalProperty#LocalProperty}), and {@code newName} gets
+   * its own, which is what makes a write under the new name land under a different key than the old one ever did.
+   */
+  LocalProperty copyWithName(final String newName) {
+    final LocalProperty copy = new LocalProperty((LocalDocumentType) owner, newName, type);
+    copy.custom = new HashMap<>(custom);
+    copy.readonly = readonly;
+    copy.mandatory = mandatory;
+    copy.notNull = notNull;
+    copy.hidden = hidden;
+    copy.external = external;
+    copy.compression = compression;
+    copy.max = max;
+    copy.min = min;
+    copy.regexp = regexp;
+    copy.ofType = ofType;
+    copy.defaultValue = defaultValue;
+    return copy;
+  }
 }

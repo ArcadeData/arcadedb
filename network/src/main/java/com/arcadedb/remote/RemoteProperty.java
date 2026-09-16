@@ -47,6 +47,11 @@ public class RemoteProperty extends AbstractProperty {
   }
 
   @Override
+  public Property rename(String newName) {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
   public Property setOfType(String ofType) {
     throw new UnsupportedOperationException();
   }
