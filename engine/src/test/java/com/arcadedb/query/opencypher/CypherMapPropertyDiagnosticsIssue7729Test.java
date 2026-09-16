@@ -172,6 +172,30 @@ class CypherMapPropertyDiagnosticsIssue7729Test {
   }
 
   @Test
+  void aNewlineInAnIdentifierCannotForgeALogLine() {
+    // A property name is caller-supplied text - Cypher's backtick-quoted identifiers accept a newline inside one -
+    // and this message is written to the server log as a line (CWE-117).
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.command("opencypher", "MATCH (t:T) SET t.`a\nFAKE LOG LINE` = {k: 1}")))
+        .isInstanceOf(InvalidPropertyTypeException.class)
+        .satisfies(e -> assertThat(e.getMessage()).doesNotContain("\n"))
+        .hasMessageContaining("FAKE LOG LINE");
+  }
+
+  @Test
+  void aBareParameterReadsTheSameWhicheverClauseRefusedIt() {
+    // CREATE and MERGE resolve a bare parameter to its name before validating; SET passes the expression. Both
+    // describe the same thing, so both say it the same way.
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.command("opencypher", "MATCH (t:T) SET t.m = $p", Map.of("p", Map.of("k", 1)))))
+        .hasMessageContaining("supplied by parameter $p");
+
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.command("opencypher", "CREATE (n:R {id: 9, m: $p})", Map.of("p", Map.of("k", 1)))))
+        .hasMessageContaining("supplied by parameter $p");
+  }
+
+  @Test
   void aParameterSourcedMapNamesTheEntryAndTheParameterItCameFrom() {
     assertThatThrownBy(() -> database.transaction(
         () -> database.command("opencypher", "MATCH (t:T) SET t += $p", Map.of("p", Map.of("payload", Map.of("k", 1))))))
