@@ -170,6 +170,15 @@ public final class CypherValues {
   }
 
   /**
+   * Caps one key's own length. Bounding how MANY keys a message names is only half the bound: a single key is
+   * caller-supplied text too, and one long enough would carry the same weight into the client response and the
+   * server log that naming every key would.
+   */
+  private static String abbreviate(final String key) {
+    return key.length() <= MAX_DESCRIBED_KEY_LENGTH ? key : key.substring(0, MAX_DESCRIBED_KEY_LENGTH) + "...";
+  }
+
+  /**
    * Whether an expression's own text may be echoed into the message: only when it NAMES the value rather than
    * spelling it out - {@code n.m}, {@code n.m.k}, {@code $p}.
    * <p>
@@ -185,15 +194,6 @@ public final class CypherValues {
    * caller-supplied text, which is the last place to hand a backtracking matcher an unbounded string. The length
    * cap bounds the clause for the same reason.
    */
-  /**
-   * Caps one key's own length. Bounding how MANY keys a message names is only half the bound: a single key is
-   * caller-supplied text too, and one long enough would carry the same weight into the client response and the
-   * server log that naming every key would.
-   */
-  private static String abbreviate(final String key) {
-    return key.length() <= MAX_DESCRIBED_KEY_LENGTH ? key : key.substring(0, MAX_DESCRIBED_KEY_LENGTH) + "...";
-  }
-
   private static boolean namesAValue(final String text) {
     if (text == null || text.isEmpty() || text.length() > MAX_ECHOED_EXPRESSION_LENGTH)
       return false;
