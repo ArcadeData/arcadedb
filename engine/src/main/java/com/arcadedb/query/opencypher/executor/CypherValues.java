@@ -146,13 +146,18 @@ public final class CypherValues {
     else
       message.append("a property");
 
-    if (valueOrigin instanceof Document source) {
+    if (valueOrigin instanceof Document source && source.getIdentity() != null) {
       // The one case nothing else explains: the caller named two variables and neither is a map. Say which record
-      // holds the value, and why it was storable in the first place.
+      // holds the value, and why it was storable in the first place. A record with no identity yet cannot be one
+      // the caller copied FROM, so it names no record rather than the string "null".
       message.append(", copied from record ").append(source.getIdentity())
           .append(". ArcadeDB SQL can store a map in a property and openCypher can not, so such a property can be"
               + " read and returned but never copied into another one");
     } else if (valueOrigin instanceof Expression expression) {
+      // Named even when the expression is a literal the query text already shows, e.g. SET n.x = {y: 1}. Echoing
+      // it back is redundant there but never wrong, and suppressing it would mean asking the AST which node kinds
+      // count as "self-evident" - a brittle test to write and a worse failure than a redundant clause when it is
+      // wrong, since the clause is the only thing that identifies the value on every other right-hand side.
       final String text = expression.getText();
       if (text != null && !text.isEmpty())
         message.append(", produced by the expression ").append(text);
