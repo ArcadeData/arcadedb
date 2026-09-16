@@ -196,7 +196,11 @@ public final class CypherValues {
     return true;
   }
 
-  /** At most {@link #MAX_DESCRIBED_KEYS} keys, so a wide map cannot turn one refusal into a page of log. */
+  /**
+   * At most {@link #MAX_DESCRIBED_KEYS} keys, so a wide map cannot turn one refusal into a page of log. Which keys
+   * those are follows the map's own iteration order: insertion order for a map the parser built, and whatever the
+   * driver's map gives for a bound parameter. The cap is the behaviour worth relying on, not the selection.
+   */
   private static String describeKeys(final Map<?, ?> map) {
     if (map.isEmpty())
       return "with no entries";
