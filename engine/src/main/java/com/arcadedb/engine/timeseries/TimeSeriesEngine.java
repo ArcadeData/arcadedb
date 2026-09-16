@@ -754,7 +754,7 @@ public class TimeSeriesEngine implements AutoCloseable {
         for (final TimeSeriesShard shard : shards) {
           if (result.isOverBucketCeiling())
             break;
-          final Iterator<Object[]> mutableIter = shard.getMutableBucket().iterateRange(fromTs, toTs, null);
+          final Iterator<Object[]> mutableIter = shard.getMutableBucket().iterateRange(fromTs, toTs, null, metrics);
           while (mutableIter.hasNext()) {
             if (result.isOverBucketCeiling())
               break;
@@ -798,7 +798,7 @@ public class TimeSeriesEngine implements AutoCloseable {
         try {
           shard.getSealedStore().aggregateMultiBlocks(fromTs, toTs, requests, bucketIntervalMs, result, metrics, tagFilter);
 
-          final Iterator<Object[]> mutableIter = shard.getMutableBucket().iterateRange(fromTs, toTs, null);
+          final Iterator<Object[]> mutableIter = shard.getMutableBucket().iterateRange(fromTs, toTs, null, metrics);
           while (mutableIter.hasNext()) {
             if (result.isOverBucketCeiling())
               break;

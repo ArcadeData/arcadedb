@@ -819,6 +819,22 @@ public class TimeSeriesBucket extends PaginatedComponent {
    * @return iterator yielding Object[] { timestamp, col1, col2, ... }
    */
   public Iterator<Object[]> iterateRange(final long fromTs, final long toTs, final int[] columnIndices) throws IOException {
+    return iterateRange(fromTs, toTs, columnIndices, null);
+  }
+
+  /**
+   * {@link #iterateRange(long, long, int[])}, counting the pages it discards on their header, the pages it
+   * examines and the rows it materialises into {@code metrics} (issue #7717). {@code null} means "do not
+   * count".
+   * <p>
+   * This is the mutable half of {@code TimeSeriesEngine.aggregateMulti}, so without it an aggregation answered
+   * mostly from uncompacted data reported zero pages and zero rows while genuinely doing the work - the same
+   * way round as the ascending {@link #scanRange} did before it was given counters. The counting is lazy like
+   * the iterator: a page is charged when the walk actually opens it, not when the iterator is built, so a
+   * caller that stops early (the bucket-ceiling stop of issue #7724 does) is charged only for what it read.
+   */
+  public Iterator<Object[]> iterateRange(final long fromTs, final long toTs, final int[] columnIndices,
+      final AggregationMetrics metrics) throws IOException {
     if (getSampleCount() == 0)
       return Collections.emptyIterator();
 
@@ -853,10 +869,15 @@ public class TimeSeriesBucket extends PaginatedComponent {
               final long pageMinTs = currentPage.readLong(DATA_MIN_TS_OFFSET);
               final long pageMaxTs = currentPage.readLong(DATA_MAX_TS_OFFSET);
               if (pageMaxTs < fromTs || pageMinTs > toTs) {
+                if (metrics != null)
+                  metrics.addSkippedPage();
                 currentPage = null;
                 pageNum++;
                 continue;
               }
+
+              if (metrics != null)
+                metrics.addScannedPage();
             }
 
             while (rowIdx < currentSampleCount) {
@@ -866,6 +887,8 @@ public class TimeSeriesBucket extends PaginatedComponent {
 
               if (ts >= fromTs && ts <= toTs) {
                 nextRow = readRow(currentPage, rowOffset, columnIndices);
+                if (metrics != null)
+                  metrics.addMaterializedRows(1);
                 return;
               }
             }
