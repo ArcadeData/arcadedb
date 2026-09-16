@@ -108,9 +108,6 @@ public class BinaryComparator {
       // narrow-instead-of-widen bug as INT/SHORT/BYTE/LONG, just for the floating types (#5900 review
       // follow-up). The widening itself goes through toDouble(), not doubleValue(), so it reads the float's
       // decimal rather than reproducing its rounding error (#7609).
-      final double v1 = toDouble(value1, type1);
-      final double v2;
-
       switch (type2) {
       case BinaryTypes.TYPE_INT:
       case BinaryTypes.TYPE_SHORT:
@@ -118,7 +115,21 @@ public class BinaryComparator {
       case BinaryTypes.TYPE_DATETIME:
       case BinaryTypes.TYPE_DATE:
       case BinaryTypes.TYPE_BYTE:
+        // Exact for an integral operand past 2^53 where a double is not, and delegating rather than duplicating
+        // keeps this direction answering the negation of its reverse - the antisymmetry the narrowing branches
+        // used to break (#5900) and the 2^53 band would break again (#7628).
+        return -compareIntegralAgainstFloating(((Number) value2).longValue(), (Number) value1, type1);
+
       case BinaryTypes.TYPE_DECIMAL:
+        // The DECIMAL branch of this same method compares exactly; going through double here instead would make
+        // this call and its reverse disagree on any decimal carrying more precision than a double holds (#7628).
+        return -compare(value2, type2, value1, type1);
+      }
+
+      final double v1 = toDouble(value1, type1);
+      final double v2;
+
+      switch (type2) {
       case BinaryTypes.TYPE_FLOAT:
       case BinaryTypes.TYPE_DOUBLE:
         v2 = toDouble(value2, type2);
@@ -282,7 +293,7 @@ public class BinaryComparator {
     case BinaryTypes.TYPE_DECIMAL:
     case BinaryTypes.TYPE_FLOAT:
     case BinaryTypes.TYPE_DOUBLE:
-      return Double.compare(value1.doubleValue(), toDouble(value2, type2));
+      return compareIntegralAgainstFloating(value1.longValue(), (Number) value2, type2);
 
     case BinaryTypes.TYPE_STRING:
       return compareAgainstNumericString(value1, (String) value2);
@@ -334,7 +345,7 @@ public class BinaryComparator {
     case BinaryTypes.TYPE_DECIMAL:
     case BinaryTypes.TYPE_FLOAT:
     case BinaryTypes.TYPE_DOUBLE:
-      return Double.compare(value1.doubleValue(), toDouble(value2, type2));
+      return compareIntegralAgainstFloating(value1.longValue(), (Number) value2, type2);
 
     case BinaryTypes.TYPE_STRING:
       return compareAgainstNumericString(value1, (String) value2);
@@ -342,6 +353,34 @@ public class BinaryComparator {
     default:
       return -1;
     }
+  }
+
+  /**
+   * Compares an integral operand against a {@code DECIMAL}/{@code FLOAT}/{@code DOUBLE} one. The natural meeting
+   * point is {@code double}, but it is only lossless while both operands fit in its 53-bit mantissa: a {@code long}
+   * past 2^53 shares its double with the neighbours two or more apart from it, and a {@code DECIMAL} carries
+   * arbitrary precision by definition. Either of those routes the pair through {@link BigDecimal} instead, so this
+   * comparator keeps answering what the {@code DECIMAL} branch of {@link #compare} and
+   * {@link Type#castComparableNumber} answer for the same pair - the three have to agree, or ordering and equality
+   * disagree at the same magnitude (issues #7609, #7614, #7628).
+   * <p>
+   * NaN and the infinities have no decimal form at all and stay in {@code double}, where {@link Double#compare}
+   * already orders them totally.
+   *
+   * @param value1 the integral operand, exact as a {@code long}
+   * @param value2 the floating point or decimal operand
+   * @param type2  {@code value2}'s {@link BinaryTypes} code
+   *
+   * @return the sign of {@code value1 - value2}
+   */
+  private static int compareIntegralAgainstFloating(final long value1, final Number value2, final byte type2) {
+    if (type2 == BinaryTypes.TYPE_DECIMAL)
+      return BigDecimal.valueOf(value1).compareTo((BigDecimal) value2);
+
+    if (Type.isExactAsDouble(value1) || !Type.isFinite(value2))
+      return Double.compare(value1, toDouble(value2, type2));
+
+    return BigDecimal.valueOf(value1).compareTo(Type.floatingToBigDecimal(value2));
   }
 
   /**
