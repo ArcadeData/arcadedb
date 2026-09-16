@@ -186,12 +186,15 @@ class Issue7657AppendStaysSelfCommittingTest extends TestHelper {
           .isNull();
 
       assertThat(commits.get())
-          .as("exactly one of the two transactions can publish its version of page 0")
+          .as("exactly one of the two transactions can publish its version of page 0. A 2 here means the two "
+              + "stopped contending - something serialized them, and the premise of the #7657 decision would "
+              + "need re-checking; a 0 means neither could commit, which is a different bug entirely")
           .isEqualTo(1);
       assertThat(conflicts.get())
           .as("#7657: the other loses its whole transaction to a ConcurrentModificationException. An append "
               + "that joined the caller's transaction would hand this failure to the caller, where the shard's "
-              + "own retry loop cannot reach it")
+              + "own retry loop cannot reach it. A 0 here is the same finding as a 2 above, seen from the "
+              + "other side")
           .isEqualTo(1);
     } finally {
       engine.close();
