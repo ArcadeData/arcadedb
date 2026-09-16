@@ -420,10 +420,14 @@ public class RaftTransactionBroker {
 
   /**
    * Replicates a drop-database entry so replicas remove the database.
+   *
+   * @return the Raft log index the entry committed at, for {@link RaftReplicatedDatabase#dropInReplicas()} to
+   * wait on before returning - see {@link #submitAndWait} on why the caller, not this method, is the one that
+   * knows whether waiting for the local apply is required (issue #7641, review of PR #7649).
    */
-  public void replicateDropDatabase(final String dbName) {
+  public long replicateDropDatabase(final String dbName) {
     final ByteString entry = RaftLogEntryCodec.encodeDropDatabaseEntry(dbName);
-    groupCommitter.submitAndWait(entry.toByteArray());
+    return groupCommitter.submitAndWait(entry.toByteArray());
   }
 
   /**
