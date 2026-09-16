@@ -240,6 +240,27 @@ class CypherMapPropertyDiagnosticsIssue7729Test {
   }
 
   @Test
+  void aLiteralRightHandSideIsNeverEchoedBackSoItsValuesStayOutOfTheMessageAndTheLog() {
+    // The message reports a refused map by its keys and never its contents, because it reaches both a client and
+    // the server log. An expression's text is only named when it NAMES the value (n.m, $p); a map literal's text
+    // IS its values, so echoing it would put back exactly what the key-only rule keeps out.
+    assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher",
+        "MATCH (t:T) SET t.creds = {password: 'hunter2', token: 'abc'}")))
+        .isInstanceOf(InvalidPropertyTypeException.class)
+        .hasMessageContaining("property 'creds'")
+        .hasMessageContaining("password")   // the key identifies what was refused
+        .hasMessageNotContaining("hunter2") // the value never leaves the query
+        .hasMessageNotContaining("abc");
+  }
+
+  @Test
+  void aValueCopiedFromAnotherPropertyIsStillNamedByTheExpressionThatReadIt() {
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.command("opencypher", "MATCH (n:R), (t:T) SET t.m2 = n.m")))
+        .hasMessageContaining("produced by the expression n.m");
+  }
+
+  @Test
   void theRefusalNamesTheOffendingKeysSoTheValueCanBeIdentified() {
     assertThatThrownBy(() -> database.transaction(
         () -> database.command("opencypher", "MATCH (n:R), (t:T) SET t.m2 = n.m")))
