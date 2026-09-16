@@ -6704,7 +6704,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     if (bodyCtx.TIMESTAMP() != null && bodyCtx.identifier().size() > 1) {
       stmt.timestampColumn = (Identifier) visit(bodyCtx.identifier(1));
       if (bodyCtx.PRECISION() != null && bodyCtx.tsPrecision() != null)
-        stmt.precision = bodyCtx.tsPrecision().getText().toUpperCase();
+        // Locale.ENGLISH, not the default locale: the four precision names all contain an 'i', and under a Turkish
+        // default locale the no-arg toUpperCase maps it to a dotted capital that matches none of them (claude
+        // review on PR #7721).
+        stmt.precision = bodyCtx.tsPrecision().getText().toUpperCase(Locale.ENGLISH);
       // The body-level tsCodecClause is the TIMESTAMP column's: the tag and field ones are nested inside
       // tsTagColumnDef/tsFieldColumnDef and so are not children of this context.
       stmt.timestampCodec = codecOf(bodyCtx.tsCodecClause());

@@ -62,15 +62,6 @@ public class CreateTimeSeriesTypeStatement extends DDLStatement {
    */
   public List<DownsamplingTier> tiers = new ArrayList<>();
 
-  /**
-   * The time units {@code RETENTION} and {@code COMPACTION_INTERVAL} accept, largest first, paired with their
-   * millisecond value. Used by {@link #toString(Map, StringBuilder)}, which has to re-render a duration in the SAME
-   * units the parser reads: the parser's default for a bare {@code RETENTION 90} is DAYS, so printing the raw
-   * millisecond count would multiply it by 86,400,000 the next time the printed form is parsed.
-   */
-  private static final long[]   SQL_UNIT_MS    = { 86_400_000L, 3_600_000L, 60_000L, 1_000L };
-  private static final String[] SQL_UNIT_NAMES = { "DAYS", "HOURS", "MINUTES", "SECONDS" };
-
   public CreateTimeSeriesTypeStatement() {
   }
 
@@ -234,17 +225,19 @@ public class CreateTimeSeriesTypeStatement extends DDLStatement {
   }
 
   /**
-   * {@code <count> <unit>} for a duration in milliseconds, using the largest unit that divides it exactly. A
-   * duration that is not a whole number of seconds - which the grammar cannot express at all - falls back to
-   * milliseconds with no unit rather than throwing: {@code toString} is a rendering of whatever the statement
-   * happens to carry, including a value that got there through a parameter or a hand-built AST, and a printer that
-   * throws would take {@code EXPLAIN} and the statement cache down with it.
+   * {@code <count> <unit>} for a duration in milliseconds, in the SAME units the parser reads - the unit table
+   * lives once, on {@link TimeSeriesTypeBuilder#renderSQLDuration}, so the two renderings cannot drift apart
+   * (claude review on PR #7721).
+   * <p>
+   * A duration that is not a whole number of seconds - which the grammar cannot express at all - falls back to
+   * milliseconds with no unit rather than throwing: {@code toString} renders whatever the statement happens to
+   * carry, including a value that got there through a hand-built AST, and a printer that throws would take
+   * {@code EXPLAIN} and the statement cache down with it. No in-tree path reaches that fallback: the only
+   * constructors are the parser's no-arg one and {@link #copy()}, and the grammar's smallest unit is SECONDS.
    */
   private static String renderDuration(final long millis) {
-    for (int i = 0; i < SQL_UNIT_MS.length; i++)
-      if (millis % SQL_UNIT_MS[i] == 0)
-        return (millis / SQL_UNIT_MS[i]) + " " + SQL_UNIT_NAMES[i];
-    return String.valueOf(millis);
+    final String rendered = TimeSeriesTypeBuilder.renderSQLDuration(millis);
+    return rendered != null ? rendered : String.valueOf(millis);
   }
 
   @Override

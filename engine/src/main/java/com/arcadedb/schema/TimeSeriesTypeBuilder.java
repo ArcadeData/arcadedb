@@ -284,13 +284,29 @@ public class TimeSeriesTypeBuilder {
 
   /**
    * {@code <count> <unit>} for a duration in milliseconds, using the largest of DAYS/HOURS/MINUTES/SECONDS that
-   * divides it exactly. The unit is never omitted: the parser's default for a bare {@code RETENTION 90} is DAYS, so
-   * emitting the raw millisecond count without a unit would multiply it by 86,400,000.
+   * divides it exactly, or {@code null} when none of them does.
+   * <p>
+   * The unit is never omitted: the parser's default for a bare {@code RETENTION 90} is DAYS, so emitting the raw
+   * millisecond count without a unit would multiply it by 86,400,000. That is why this returns {@code null} instead
+   * of a bare number - the two callers have to answer an unrenderable duration differently, and neither answer is a
+   * unit-less count. This one throws, because DDL the server would reject must not leave the client;
+   * {@code CreateTimeSeriesTypeStatement.toString()} falls back to the raw count, because a printer that throws
+   * would take {@code EXPLAIN} and the statement cache with it.
+   * <p>
+   * Public and shared so the DAYS/HOURS/MINUTES/SECONDS table exists once: two copies would have to be kept in step
+   * by hand if a unit were ever added (claude review on PR #7721).
    */
-  private static String renderDuration(final long millis, final String what) {
+  public static String renderSQLDuration(final long millis) {
     for (int i = 0; i < SQL_UNIT_MS.length; i++)
       if (millis % SQL_UNIT_MS[i] == 0)
         return (millis / SQL_UNIT_MS[i]) + " " + SQL_UNIT_NAMES[i];
+    return null;
+  }
+
+  private static String renderDuration(final long millis, final String what) {
+    final String rendered = renderSQLDuration(millis);
+    if (rendered != null)
+      return rendered;
 
     throw new SchemaException("A " + what + " of " + millis
         + "ms has no CREATE TIMESERIES TYPE expression: the grammar's smallest time unit is SECONDS, so the value must be a whole number of seconds");
