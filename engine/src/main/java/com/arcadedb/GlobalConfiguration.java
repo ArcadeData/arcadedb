@@ -1450,7 +1450,10 @@ public enum GlobalConfiguration {
 
   SERVER_DEFAULT_DATABASES("arcadedb.server.defaultDatabases", SCOPE.SERVER, """
       The default databases created when the server starts. The format is `(<database-name>[(<user-name>:<user-passwd>[:<user-group>])[,]*])[{import|restore:<URL>}][;]*'. Pay attention on using `;`\
-       to separate databases and `,` to separate credentials. The supported actions are `import` and `restore`. Example: `Universe[albert:einstein:admin];Amiga[Jay:Miner,Jack:Tramiel]{import:/tmp/movies.tgz}`""",
+       to separate databases and `,` to separate credentials. The supported actions are `import` and `restore`. Example: `Universe[albert:einstein:admin];Amiga[Jay:Miner,Jack:Tramiel]{import:/tmp/movies.tgz}`. \
+       On a replicated database, `restore` is per-node: it does not force a cluster snapshot install the way the `restore database`/`restore backup` server commands do, so it is meant for every node in the cluster to run for itself \
+       with the same startup configuration, not as a way to replace a database cluster-wide from one node. A node that finds an existing copy of the database drops ONLY its own local copy before restoring, and logs a WARNING when \
+       that copy was replicated, because the rest of the cluster keeps whatever it already has until it is restored the same way.""",
       String.class, ""),
 
   SERVER_DEFAULT_DATABASE_MODE("arcadedb.server.defaultDatabaseMode", SCOPE.SERVER, """

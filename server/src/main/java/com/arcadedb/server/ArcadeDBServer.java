@@ -1755,6 +1755,19 @@ public class ArcadeDBServer {
    * {@code setAllowLocalUrls} call below and issue #7468. What this command does <b>not</b> run is
    * {@code ServerControlPlane.validateClientRestoreImportUrl}: that gate exists to refuse a URL a <i>client</i>
    * supplied, and the {@code restore:} URL comes from the operator's own configuration file.
+   * <h2>The drop is node-local, on a replicated database too (issue #7643)</h2>
+   * {@code restore:} is the operator's per-node boot configuration - every node started with the same
+   * {@code arcadedb.server.defaultDatabases} string runs this same command for itself - and is deliberately NOT
+   * the cluster-wide replace {@code ServerControlPlane.performRestore} performs: it does not force a snapshot
+   * install on the rest of the cluster, on the same node-local premise. Routing the drop through the HA-aware path
+   * {@code ServerControlPlane.dropDatabase} uses would turn one node's boot into a drop of the whole cluster's
+   * database, replayed on every peer in turn as each of them starts with the same command - a worse failure than
+   * the one this method is careful about elsewhere.
+   * <p>
+   * What this method does NOT do silently is destroy a replicated database without saying so: dropping this
+   * node's copy of a database other nodes still hold is logged at {@code WARNING}, naming the database, so a node
+   * that has just diverged from its peers at boot leaves a line in the log saying it - the silence was the #7389
+   * failure mode, not the local drop itself.
    *
    * @param databaseName the database being restored, and the key the progress is published under
    * @param url          the archive URL exactly as the operator wrote it after {@code restore:}
@@ -1789,9 +1802,27 @@ public class ArcadeDBServer {
       // issue #7469 describes for the control-plane restores.
       reserveDatabaseNameForRestore(databaseName);
 
-      // DROP THE DATABASE BECAUSE THE RESTORE OPERATION WILL TAKE CARE OF CREATING A NEW DATABASE
+      // DROP THE DATABASE BECAUSE THE RESTORE OPERATION WILL TAKE CARE OF CREATING A NEW DATABASE.
+      //
+      // NODE-LOCAL, DELIBERATELY (issue #7643): 'restore:' is the operator's per-node boot configuration, not a
+      // cluster snapshot install - unlike ServerControlPlane.performRestore, it does not force one, and every node
+      // booting with the same arcadedb.server.defaultDatabases string is expected to run this same command for
+      // itself. Routing the drop cluster-wide (ServerControlPlane.dropDatabase's path) would make one node's boot
+      // drop the database out from under every peer in turn during a rolling restart, which is a worse outcome
+      // than the one this guards against.
+      //
+      // What is NOT acceptable is doing this silently on a replicated database: a node that diverges from its
+      // peers at boot with nothing in the log saying so is the #7389 failure mode. So a replicated database gets a
+      // WARNING naming exactly what happened, even though the drop itself stays local.
       if (existsDatabase(databaseName)) {
-        ((DatabaseInternal) getDatabase(databaseName)).getEmbedded().drop();
+        final ServerDatabase existing = getDatabase(databaseName);
+        if (existing.getWrappedDatabaseInstance() instanceof HAReplicatedDatabase)
+          LogManager.instance().log(this, Level.WARNING,
+              "The startup 'restore:' command for database '%s' is dropping this node's copy ONLY: the rest of "
+                  + "the cluster is not told, and every peer keeps its current copy of '%s' until it restores from "
+                  + "the same startup command or is otherwise brought back in sync", null, databaseName, databaseName);
+
+        ((DatabaseInternal) existing).getEmbedded().drop();
         // Route through removeDatabase so this registry mutation also runs under databasesLock, keeping the
         // defect-2 invariant consistent (this path is startup-single-threaded, but consistency is cheaper
         // to keep than to reason about the exception).

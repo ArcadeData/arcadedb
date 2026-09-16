@@ -24,6 +24,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -127,6 +128,23 @@ public class BackupCoordinator implements MaintenanceCoordinator {
   private final Map<String, int[]> inProgress = new ConcurrentHashMap<>();
 
   /**
+   * How many callers of {@link #begin(String, Operation, long)} are currently waiting for a {@link Operation#RESTORE}
+   * on a database, indexed by database name. A value is never zero or less - the entry is removed instead.
+   * <p>
+   * Only {@code RESTORE} ever calls that overload (the HA snapshot install, applying a committed Raft entry), and
+   * {@link Operation#RESTORE} already conflicts with everything, so this is only ever consulted to decide whether a
+   * DIFFERENT kind of new reservation should queue behind it - see the guard in {@link #begin(String, Operation)}.
+   * <p>
+   * This is what closes issue #7646: {@link Operation#EXPORT} is the one kind {@link Operation#conflictsWith}
+   * admits without limit, so a steady stream of exports arriving after a restore started waiting could keep the
+   * per-database count above zero forever and the restore's bounded wait would expire every single time - starving
+   * it rather than merely delaying it, and silently, because the timeout expiring looks identical to an ordinary
+   * conflict that happened to outlast the wait. Once a restore is registered here, a fresh export is refused before
+   * it is ever admitted, so the exports already running are the last ones the restore has to wait out.
+   */
+  private final Map<String, AtomicInteger> waitingRestores = new ConcurrentHashMap<>();
+
+  /**
    * The monitor a bounded wait parks on, notified by every {@link #end(String, Operation)}.
    * <p>
    * One monitor for the whole coordinator rather than one per database: a server runs a handful of these
@@ -159,6 +177,14 @@ public class BackupCoordinator implements MaintenanceCoordinator {
    */
   @Override
   public Operation begin(final String databaseName, final Operation operation) {
+    // A RESTORE ALREADY WAITING ON THIS DATABASE TAKES PRIORITY OVER EVERY NEW RESERVATION OF A DIFFERENT KIND,
+    // EVEN WHEN NOTHING IS CURRENTLY IN PROGRESS (issue #7646): OTHERWISE A FRESH Operation.EXPORT - ADMITTED
+    // WITHOUT LIMIT - CAN ALWAYS SLIP IN BETWEEN THE LAST EXPORT DRAINING AND THE WAITING RESTORE'S NEXT RE-CHECK,
+    // AND THE COUNT NEVER REACHES ZERO. RESTORE ITSELF IS EXEMPT, OR THE WAITER'S OWN RE-CHECK - CALLED FROM
+    // INSIDE ITS BOUNDED WAIT LOOP IN begin(String, Operation, long) - WOULD REFUSE ITSELF ON ITS OWN REGISTRATION.
+    if (operation != Operation.RESTORE && isRestoreWaiting(databaseName))
+      return Operation.RESTORE;
+
     final AtomicReference<Operation> conflict = new AtomicReference<>();
 
     inProgress.compute(databaseName, (name, running) -> {
@@ -209,25 +235,74 @@ public class BackupCoordinator implements MaintenanceCoordinator {
     if (conflict == null || timeoutMs <= 0)
       return conflict;
 
-    final long deadline = System.currentTimeMillis() + timeoutMs;
-    synchronized (slotReleased) {
-      // Re-checked inside the monitor before every wait, and end() takes the same monitor to notify AFTER it has
-      // updated the map: a release that lands between the check and the wait therefore cannot be missed.
-      while ((conflict = begin(databaseName, operation)) != null) {
-        final long remaining = deadline - System.currentTimeMillis();
-        if (remaining <= 0)
-          return conflict;
+    // REGISTERED BEFORE THE FIRST WAIT, NOT AFTER: A RESERVATION ARRIVING IN THE WINDOW BETWEEN THE INITIAL
+    // begin() ABOVE AND THIS LINE STILL GETS ADMITTED, BUT EVERY ONE AFTER IT IS REFUSED BY THE GUARD IN
+    // begin(String, Operation) - SO THE OPERATIONS ALREADY RUNNING (OR THIS ONE STRAGGLER) ARE THE LAST ONES THIS
+    // CALLER HAS TO WAIT OUT (issue #7646). A NO-OP FOR ANY OPERATION OTHER THAN RESTORE: ONLY RESTORE CALLS THIS
+    // OVERLOAD, BUT THE GUARD IT REGISTERS FOR ONLY EVER EXEMPTS RESTORE ITSELF, SO REGISTERING A DIFFERENT KIND
+    // HERE WOULD MERELY COST A MAP ENTRY NO CALLER EVER CONSULTS.
+    final boolean waitingAsRestore = operation == Operation.RESTORE;
+    if (waitingAsRestore)
+      restoreStartedWaiting(databaseName);
+    try {
+      final long deadline = System.currentTimeMillis() + timeoutMs;
+      synchronized (slotReleased) {
+        // Re-checked inside the monitor before every wait, and end() takes the same monitor to notify AFTER it has
+        // updated the map: a release that lands between the check and the wait therefore cannot be missed.
+        while ((conflict = begin(databaseName, operation)) != null) {
+          final long remaining = deadline - System.currentTimeMillis();
+          if (remaining <= 0)
+            return conflict;
 
-        try {
-          slotReleased.wait(remaining);
-        } catch (final InterruptedException e) {
-          // Restore the flag and report the conflict: an interrupted caller took nothing and must not release.
-          Thread.currentThread().interrupt();
-          return conflict;
+          try {
+            slotReleased.wait(remaining);
+          } catch (final InterruptedException e) {
+            // Restore the flag and report the conflict: an interrupted caller took nothing and must not release.
+            Thread.currentThread().interrupt();
+            return conflict;
+          }
         }
+        return null;
       }
-      return null;
+    } finally {
+      if (waitingAsRestore)
+        restoreStoppedWaiting(databaseName);
     }
+  }
+
+  /**
+   * Registers a waiting {@link Operation#RESTORE} on {@code databaseName}. Pairs with {@link #restoreStoppedWaiting}.
+   * <p>
+   * The create-or-increment happens in ONE {@code compute}, not a {@code computeIfAbsent} followed by a separate
+   * {@code incrementAndGet}: split across two steps, a second waiter's {@link #restoreStoppedWaiting} could land
+   * between them - find the freshly created counter still at zero, decrement it to below zero and remove the map
+   * entry - and this call's increment would then apply to a counter no longer in the map, silently losing the
+   * registration the whole {@code waitingRestores} mechanism exists for (issue #7646, review of PR #7649). Two
+   * waiting restores on one database are reachable: a second {@code RESTORE} is refused by {@code conflictsWith}
+   * and then waits in {@link #begin(String, Operation, long)} exactly like the first.
+   */
+  private void restoreStartedWaiting(final String databaseName) {
+    waitingRestores.compute(databaseName, (name, count) -> {
+      if (count == null)
+        return new AtomicInteger(1);
+      count.incrementAndGet();
+      return count;
+    });
+  }
+
+  /**
+   * Deregisters a waiting {@link Operation#RESTORE} on {@code databaseName}, whether it stopped waiting because it
+   * was admitted, because it timed out or because it was interrupted - every exit out of the wait in
+   * {@link #begin(String, Operation, long)} owes this call.
+   */
+  private void restoreStoppedWaiting(final String databaseName) {
+    waitingRestores.computeIfPresent(databaseName, (name, count) -> count.decrementAndGet() > 0 ? count : null);
+  }
+
+  /** Whether at least one caller is currently waiting for a {@link Operation#RESTORE} on this database. */
+  private boolean isRestoreWaiting(final String databaseName) {
+    final AtomicInteger count = waitingRestores.get(databaseName);
+    return count != null && count.get() > 0;
   }
 
   /**

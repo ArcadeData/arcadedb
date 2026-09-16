@@ -43,13 +43,10 @@ public class GraphSONExporterFormat extends AbstractExporterFormat {
   @Override
   public void exportDatabase() throws Exception {
     final File file = new File(settings.file);
-    if (file.exists() && !settings.overwriteFile)
-      throw new ExportException("The export file '%s' already exist and '-o' setting is false".formatted(settings.file));
-
-    if (file.getParentFile() != null && !file.getParentFile().exists()) {
-      if (!file.getParentFile().mkdirs())
-        throw new ExportException("The export file '%s' cannot be created".formatted(settings.file));
-    }
+    // NO ensureParentDirectory HERE: 'file' is the UNRESOLVED settings.file, which for a 'file://' target names a
+    // different (bogus) parent than the archive actually goes in. claimExportFile creates the real one, from the
+    // resolved path, right before it takes the claim in it.
+    refuseExistingTarget(file);
 
     if (database.isTransactionActive())
       throw new ExportException("Transaction in progress found");
@@ -62,14 +59,18 @@ public class GraphSONExporterFormat extends AbstractExporterFormat {
     else
       exportFile = new File(settings.file);
 
-    if (!exportFile.getParentFile().exists())
-      exportFile.getParentFile().mkdirs();
-
-    final ArcadeGraph graph = ArcadeGraph.open(database);
-    try (final FileOutputStream fos = new FileOutputStream(exportFile)) {
-      try (final GZIPOutputStream out = new GZIPOutputStream(fos)) {
-        graph.io(IoCore.graphson()).writer().create().writeGraph(out, graph);
+    // CLAIMED BEFORE THE GRAPH IS OPENED: A REFUSED CLAIM THEN LEAVES NOTHING OPEN TO CLOSE, RATHER THAN LEAKING
+    // AN ArcadeGraph THAT NOTHING IN THIS METHOD EVER CLOSES ON ANY PATH (issue #7644 review)
+    final File lock = claimExportFile(exportFile);
+    try {
+      final ArcadeGraph graph = ArcadeGraph.open(database);
+      try (final FileOutputStream fos = new FileOutputStream(exportFile)) {
+        try (final GZIPOutputStream out = new GZIPOutputStream(fos)) {
+          graph.io(IoCore.graphson()).writer().create().writeGraph(out, graph);
+        }
       }
+    } finally {
+      releaseExportFile(lock);
     }
   }
 
