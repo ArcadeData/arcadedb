@@ -333,8 +333,8 @@ public final class MultiColumnAggregationResult {
    * issues #4596 and #7043 needed and what a count-based guard could not give (a NaN sample increments the count
    * without contributing a value).
    * <p>
-   * A SUM request answers 0 instead when nothing was ever offered to it in this bucket, which is what the empty sum
-   * is; it answers {@link TimeSeriesNaN#ABSENT} once an absent sample has reached it (issue #7506).
+   * SUM and AVG answer the same way (issue #7089), and answer it whether the request was offered only absent
+   * samples or offered none at all: the two are one question here, decided in issue #7694.
    */
   public double getValue(final long bucketTs, final int requestIndex) {
     if (flatMode) {
@@ -358,9 +358,7 @@ public final class MultiColumnAggregationResult {
    * <p>
    * It used to count NaN samples too, which is precisely what made the old {@code counts[i] == 0} guard miss an
    * all-NaN bucket and leak the MIN/MAX sentinel (issue #7043). The value still carries its own "no data" answer:
-   * {@code TimeSeriesNaN.isAbsent(getValue(bucketTs, requestIndex))} is the test for MIN/MAX/AVG, and for a SUM that
-   * was offered at least one sample. A SUM nothing was ever offered reads 0, the empty sum, rather than absent
-   * (issue #7506); this count is zero either way, so it is the value that separates those two, not this.
+   * {@code TimeSeriesNaN.isAbsent(getValue(bucketTs, requestIndex))} is the test for MIN/MAX/SUM/AVG alike.
    */
   public long getCount(final long bucketTs, final int requestIndex) {
     if (flatMode) {
@@ -548,16 +546,20 @@ public final class MultiColumnAggregationResult {
    * side-channel is needed to recover it. SUM/AVG follow since issue #7089: a zero seed cannot tell "nothing real
    * arrived" from "it all added up to zero", and the {@code +=} it fed turned one NaN sample into a NaN total.
    * <p>
-   * SUM seeds at the additive identity instead, because the empty sum is zero and a request nothing was ever
-   * offered in this bucket - one a sibling request over another column brought into existence - has no absence to
-   * report (issue #7506). The seed does not cost the #7089 answer: {@link TimeSeriesNaN#sum} turns it absent on the
-   * first absent sample, so an all-NaN bucket still reads {@link TimeSeriesNaN#ABSENT}. AVG keeps the absent seed,
-   * an empty average being undefined rather than zero, and so do MIN/MAX, which have no identity element at all.
+   * SUM keeps the absent seed too, rather than the additive identity issue #7506 gave it (issue #7694). That seed
+   * existed so a request nothing was ever offered in a bucket could answer the empty sum instead of an absence -
+   * a state no QUERY produces: every call site in {@code src/main} goes through {@link #accumulateRow} or
+   * {@link #accumulateBlockStats}, which take one value per request, or loops {@link #accumulateSingleStat} over
+   * all of them, so a bucket that exists has been offered to every request. The single-request
+   * {@link #accumulate(long, int, double)} can still construct it, and the tests do; what it cannot do is come
+   * from a query. The distinction also disagreed with SQL's {@code SUM}, which is NULL over an empty group and
+   * over an all-NULL one alike. COUNT is the one accumulator seeded with a number, counting rows as
+   * {@code COUNT(*)} does.
    */
   private double[] newInitializedValues() {
     final double[] vals = new double[requestCount];
     for (int i = 0; i < requestCount; i++)
-      vals[i] = (types[i] == AggregationType.COUNT || types[i] == AggregationType.SUM) ? 0.0 : TimeSeriesNaN.ABSENT;
+      vals[i] = types[i] == AggregationType.COUNT ? 0.0 : TimeSeriesNaN.ABSENT;
     return vals;
   }
 

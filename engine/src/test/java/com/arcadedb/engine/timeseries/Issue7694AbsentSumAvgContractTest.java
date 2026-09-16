@@ -25,19 +25,23 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Issue #7506: a SUM request that was never offered a sample in a bucket reported {@link TimeSeriesNaN#ABSENT}
- * instead of zero.
+ * Issue #7694: the one absent-SUM/AVG contract, driven through every entry point that can decide it.
  * <p>
- * Issue #7089 put SUM/AVG under the NaN-as-absent policy by seeding their accumulators with {@code ABSENT}, which
- * made "the request was never asked anything" indistinguishable from "the request was asked and every sample was
- * absent". The two are different questions and have different answers: the empty sum is the additive identity, and
- * a window whose samples were all absent is a measurement gap. This test pins both halves, and pins that the AVG
- * of nothing stays absent rather than joining SUM at zero - an empty average is undefined, not zero.
+ * A SUM or AVG request holding no real sample in a bucket answers {@link TimeSeriesNaN#ABSENT}, whether it was
+ * offered only absent samples or offered none at all. Issue #7506 briefly made those two cases differ, seeding SUM
+ * at the additive identity so a request nothing was ever offered could answer the empty sum; #7694 removed the
+ * distinction, because no query produces that state (only the single-request
+ * {@link MultiColumnAggregationResult#accumulate(long, int, double)} constructs it, as the tests below do, and it
+ * has no caller in {@code src/main}) and because it disagreed with SQL, where {@code SUM} is NULL over an empty
+ * group and over an all-NULL group alike.
  * <p>
- * The reported repro is {@link MultiColumnAggregationResultTest#emptySumAndCountStayZeroNotNaN()}, which the
- * #7089 change turned red on main. Everything below drives the same invariant through the other entry points.
+ * Every entry point issue #7506's coverage table listed is still driven below; what changed is the answer each one
+ * asserts. The #7089 half - a request that was offered samples and found none real - is unchanged, and is kept here
+ * alongside so the two can no longer drift apart.
+ *
+ * @see <a href="https://github.com/ArcadeData/arcadedb/issues/7694">issue #7694</a>
  */
-class Issue7506UntouchedSumColumnTest {
+class Issue7694AbsentSumAvgContractTest {
 
   private static final long HOUR = 3_600_000L;
 
@@ -52,53 +56,73 @@ class Issue7506UntouchedSumColumnTest {
         new MultiColumnAggregationRequest(2, AggregationType.COUNT, "countB"));
   }
 
+  /**
+   * Asserting the bucket is really there is what makes an absent answer read afterwards evidence about the SEED
+   * that {@code newInitializedValues()} laid down for that request index, rather than about the bucket's
+   * existence: {@code getValue} answers a plain {@code 0.0} for a bucket it has never heard of.
+   */
+  private static void assertBucketExists(final MultiColumnAggregationResult result, final long bucketTs) {
+    assertThat(result.getBucketTimestamps())
+        .as("the bucket must exist, or an absent answer proves nothing about the per-request seed")
+        .contains(bucketTs);
+  }
+
   // ---- the fold itself ----
 
   /**
-   * The fold turns "untouched" into "absent" the moment an absent sample reaches it, so a zero seed can still
-   * answer the #7089 question. Every pre-existing caller seeds at ABSENT, for which this is a no-op.
+   * The fold leaves an absent sample where it found the accumulator, which is why the SEED carries the whole
+   * contract: with the absent seed "nothing real arrived" IS the value, and with a numeric seed the fold would
+   * hand that number straight back. The last assertion is the one that would have to change for SUM to answer
+   * zero again, and it is here so that it cannot change quietly.
    */
   @Test
-  void anAbsentSampleTurnsTheUntouchedAccumulatorAbsent() {
-    assertThat(TimeSeriesNaN.sum(0.0, 0, Double.NaN)).as("untouched, then an absent sample: absent").isNaN();
-    assertThat(TimeSeriesNaN.sum(TimeSeriesNaN.ABSENT, 0, Double.NaN)).as("unchanged for an ABSENT seed").isNaN();
-    assertThat(TimeSeriesNaN.sum(0.0, 0, 5.0)).as("the first real sample replaces the seed").isEqualTo(5.0);
+  void anAbsentSampleLeavesTheAccumulatorWhereItFoundIt() {
+    assertThat(TimeSeriesNaN.sum(TimeSeriesNaN.ABSENT, 0, Double.NaN)).as("absent seed, absent sample: absent")
+        .isNaN();
+    assertThat(TimeSeriesNaN.sum(TimeSeriesNaN.ABSENT, 0, 5.0)).as("the first real sample replaces the seed")
+        .isEqualTo(5.0);
     assertThat(TimeSeriesNaN.sum(5.0, 1, Double.NaN)).as("a real total is not disturbed").isEqualTo(5.0);
+    assertThat(TimeSeriesNaN.sum(0.0, 0, Double.NaN))
+        .as("the fold does not manufacture an absence: a numeric seed survives, so the seed is the contract")
+        .isEqualTo(0.0);
   }
 
   /**
-   * Merging is the same rule, and absence propagates through the addition: untouched + untouched is untouched,
-   * untouched + absent is absent.
+   * Merging is the same rule: a partial with no real sample behind it is skipped whatever its value, so the
+   * running accumulator - absent until a real sample reaches it - is what comes back.
    */
   @Test
-  void mergingAnAbsentPartialIntoAnUntouchedAccumulatorIsAbsent() {
-    assertThat(TimeSeriesNaN.mergeSum(0.0, 0, 0.0, 0)).as("untouched + untouched").isEqualTo(0.0);
-    assertThat(TimeSeriesNaN.mergeSum(0.0, 0, TimeSeriesNaN.ABSENT, 0)).as("untouched + absent").isNaN();
-    assertThat(TimeSeriesNaN.mergeSum(TimeSeriesNaN.ABSENT, 0, 0.0, 0)).as("absent + untouched").isNaN();
-    // The #7089 assertions are untouched by the new branch: a real total on either side still wins.
-    assertThat(TimeSeriesNaN.mergeSum(5.0, 1, TimeSeriesNaN.ABSENT, 0)).isEqualTo(5.0);
-    assertThat(TimeSeriesNaN.mergeSum(TimeSeriesNaN.ABSENT, 0, 5.0, 1)).isEqualTo(5.0);
+  void mergingAPartialWithNoRealSampleLeavesTheAccumulator() {
+    assertThat(TimeSeriesNaN.mergeSum(TimeSeriesNaN.ABSENT, 0, TimeSeriesNaN.ABSENT, 0)).as("absent + absent")
+        .isNaN();
+    assertThat(TimeSeriesNaN.mergeSum(TimeSeriesNaN.ABSENT, 0, 5.0, 1)).as("a real partial replaces an absent run")
+        .isEqualTo(5.0);
+    assertThat(TimeSeriesNaN.mergeSum(5.0, 1, TimeSeriesNaN.ABSENT, 0)).as("a real total is not disturbed")
+        .isEqualTo(5.0);
+    assertThat(TimeSeriesNaN.mergeSum(2.0, 1, 3.0, 1)).as("two totals are added").isEqualTo(5.0);
   }
 
-  // ---- accumulate(bucketTs, requestIndex, value): the reported entry point ----
+  // ---- accumulate(bucketTs, requestIndex, value): the state the two PRs disagreed about ----
 
   @Test
-  void mapModeUntouchedSumIsZeroWhenAnotherRequestTouchedTheBucket() {
+  void mapModeUntouchedSumIsAbsentWhenAnotherRequestTouchedTheBucket() {
     final MultiColumnAggregationResult result = new MultiColumnAggregationResult(sumThenCount());
     result.accumulate(1000L, 1, 7.0);
 
-    assertThat(result.getValue(1000L, 0)).as("SUM of nothing is the additive identity").isEqualTo(0.0);
+    assertBucketExists(result, 1000L);
+    assertThat(result.getValue(1000L, 0)).as("a SUM holding no real sample is absent, not a total of zero").isNaN();
     assertThat(result.getCount(1000L, 0)).isZero();
-    assertThat(result.getValue(1000L, 1)).as("COUNT is real").isEqualTo(1.0);
+    assertThat(result.getValue(1000L, 1)).as("COUNT still counts rows").isEqualTo(1.0);
   }
 
   @Test
-  void flatModeUntouchedSumIsZeroWhenAnotherRequestTouchedTheBucket() {
+  void flatModeUntouchedSumIsAbsentWhenAnotherRequestTouchedTheBucket() {
     final MultiColumnAggregationResult result = new MultiColumnAggregationResult(sumThenCount(), 0L, 1000L, 16);
     result.accumulate(1000L, 1, 7.0);
 
     assertThat(result.isFlatMode()).isTrue();
-    assertThat(result.getValue(1000L, 0)).isEqualTo(0.0);
+    assertBucketExists(result, 1000L);
+    assertThat(result.getValue(1000L, 0)).isNaN();
     assertThat(result.getValue(1000L, 1)).isEqualTo(1.0);
   }
 
@@ -107,27 +131,35 @@ class Issue7506UntouchedSumColumnTest {
    * accumulators through the same helper and must answer the same way.
    */
   @Test
-  void flatModeOverflowBucketUntouchedSumIsZero() {
+  void flatModeOverflowBucketUntouchedSumIsAbsent() {
     final MultiColumnAggregationResult result = new MultiColumnAggregationResult(sumThenCount(), 0L, 1000L, 2);
     result.accumulate(5000L, 1, 7.0);
 
     assertThat(result.isFlatMode()).isTrue();
     assertThat(result.getOverflowBucketCount()).as("the bucket fell outside the window").isEqualTo(1);
-    assertThat(result.getValue(5000L, 0)).isEqualTo(0.0);
+    assertBucketExists(result, 5000L);
+    assertThat(result.getValue(5000L, 0)).isNaN();
     assertThat(result.getValue(5000L, 1)).isEqualTo(1.0);
   }
 
   /**
-   * A bucket nothing ever touched already answered zero, and still does: the two "no data" shapes agree.
+   * A bucket NO request ever touched is a different thing from an empty request inside a bucket that exists, and
+   * it still answers {@code 0.0} rather than absent - the "unknown bucket" arm of {@code getValue}, which predates
+   * the whole policy. It is not reachable through any of the four readers, because all four iterate
+   * {@code getBucketTimestamps()} and so never ask for a bucket that is not in it. Pinned as the known residue of
+   * this decision rather than silently left, and tracked by issue #7698.
    */
   @Test
-  void aBucketNoRequestEverTouchedIsZero() {
+  void aBucketNoRequestEverTouchedStillAnswersZeroAndIsNotInTheTimestamps() {
     final MultiColumnAggregationResult mapMode = new MultiColumnAggregationResult(sumThenCount());
     mapMode.accumulate(1000L, 1, 7.0);
+    assertThat(mapMode.getBucketTimestamps()).as("no reader can reach 2000L: it is not a bucket")
+        .doesNotContain(2000L);
     assertThat(mapMode.getValue(2000L, 0)).isEqualTo(0.0);
 
     final MultiColumnAggregationResult flatMode = new MultiColumnAggregationResult(sumThenCount(), 0L, 1000L, 16);
     flatMode.accumulate(1000L, 1, 7.0);
+    assertThat(flatMode.getBucketTimestamps()).doesNotContain(2000L);
     assertThat(flatMode.getValue(2000L, 0)).isEqualTo(0.0);
   }
 
@@ -159,7 +191,7 @@ class Issue7506UntouchedSumColumnTest {
 
   /**
    * The block-statistics fast path hands over a value with the count of the real samples behind it. A count of
-   * zero means the block's column was all absent, which is not the same as the request never being asked.
+   * zero means the block's column carried nothing real, and the merge must not let the seed show through.
    */
   @Test
   void blockStatsWithAZeroRealCountKeepsTheSumAbsent() {
@@ -173,11 +205,17 @@ class Issue7506UntouchedSumColumnTest {
     assertThat(result.getValue(0L, 2)).isEqualTo(4.0);
   }
 
+  /**
+   * The vectorized segment path, and the decision itself in one test: a request that was never asked and one that
+   * was asked and saw nothing real now answer the SAME thing. That agreement is what #7694 bought, and the
+   * assertion that would go red if the seed moved back.
+   */
   @Test
-  void singleStatDistinguishesAnUntouchedRequestFromAnAbsentOne() {
+  void singleStatAnswersAbsentForAnUntouchedRequestAndForAnAbsentOneAlike() {
     final MultiColumnAggregationResult untouched = new MultiColumnAggregationResult(sumThenCount(), 0L, HOUR, 2);
     untouched.accumulateSingleStat(0L, 1, 3.0, 3);
-    assertThat(untouched.getValue(0L, 0)).as("the SUM request was never asked").isEqualTo(0.0);
+    assertBucketExists(untouched, 0L);
+    assertThat(untouched.getValue(0L, 0)).as("the SUM request was never asked").isNaN();
 
     final MultiColumnAggregationResult absent = new MultiColumnAggregationResult(sumThenCount(), 0L, HOUR, 2);
     absent.accumulateSingleStat(0L, 0, TimeSeriesNaN.ABSENT, 0);
@@ -185,22 +223,39 @@ class Issue7506UntouchedSumColumnTest {
     assertThat(absent.getValue(0L, 0)).as("the SUM request was asked and saw nothing real").isNaN();
   }
 
+  /**
+   * A SUM that really did total to zero must stay the number zero. This is the distinction the absent marker
+   * exists to make, and the reason "absent" is not simply "zero by another name".
+   */
+  @Test
+  void aSumOfRealSamplesThatCancelToZeroIsStillTheNumberZero() {
+    final MultiColumnAggregationResult result = new MultiColumnAggregationResult(sumAndAvg(), 0L, HOUR, 2);
+    result.accumulateRow(0L, new double[] { 2.5, 2.5, 1.0 });
+    result.accumulateRow(0L, new double[] { -2.5, -2.5, 1.0 });
+    result.finalizeAvg();
+
+    assertThat(result.getValue(0L, 0)).as("a real total of zero is data, not a gap").isEqualTo(0.0);
+    assertThat(result.getValue(0L, 1)).isEqualTo(0.0);
+    assertThat(result.getCount(0L, 0)).isEqualTo(2);
+  }
+
   // ---- merging ----
 
   @Test
-  void mergingFlatResultsPropagatesAbsenceButNotUntouchedness() {
+  void mergingFlatResultsKeepsAnEmptySumAbsentOnBothSides() {
     final MultiColumnAggregationResult untouchedLeft = new MultiColumnAggregationResult(sumThenCount(), 0L, HOUR, 2);
     final MultiColumnAggregationResult untouchedRight = new MultiColumnAggregationResult(sumThenCount(), 0L, HOUR, 2);
     untouchedRight.accumulate(0L, 1, 7.0);
     untouchedLeft.mergeFrom(untouchedRight);
-    assertThat(untouchedLeft.getValue(0L, 0)).as("neither side ever asked the SUM request").isEqualTo(0.0);
+    assertBucketExists(untouchedLeft, 0L);
+    assertThat(untouchedLeft.getValue(0L, 0)).as("neither side ever asked the SUM request").isNaN();
     assertThat(untouchedLeft.getValue(0L, 1)).isEqualTo(1.0);
 
     final MultiColumnAggregationResult absentLeft = new MultiColumnAggregationResult(sumThenCount(), 0L, HOUR, 2);
     final MultiColumnAggregationResult absentRight = new MultiColumnAggregationResult(sumThenCount(), 0L, HOUR, 2);
     absentRight.accumulate(0L, 0, Double.NaN);
     absentLeft.mergeFrom(absentRight);
-    assertThat(absentLeft.getValue(0L, 0)).as("an absent partial makes the merged sum absent").isNaN();
+    assertThat(absentLeft.getValue(0L, 0)).as("an absent partial leaves the merged sum absent").isNaN();
 
     // A real total still wins over both shapes of nothing.
     final MultiColumnAggregationResult realLeft = new MultiColumnAggregationResult(sumThenCount(), 0L, HOUR, 2);
@@ -218,7 +273,8 @@ class Issue7506UntouchedSumColumnTest {
     right.accumulate(1000L, 1, 7.0);
     left.mergeFrom(right);
 
-    assertThat(left.getValue(1000L, 0)).isEqualTo(0.0);
+    assertBucketExists(left, 1000L);
+    assertThat(left.getValue(1000L, 0)).isNaN();
     assertThat(left.getValue(1000L, 1)).isEqualTo(1.0);
 
     final MultiColumnAggregationResult absentLeft = new MultiColumnAggregationResult(sumThenCount());
@@ -228,29 +284,35 @@ class Issue7506UntouchedSumColumnTest {
     assertThat(absentLeft.getValue(1000L, 0)).isNaN();
   }
 
-  // ---- AVG does not follow SUM to zero ----
+  // ---- the other three aggregates ----
 
   /**
-   * The empty sum is zero; the empty average is undefined. An AVG request never offered a sample keeps the absent
-   * marker, so a chart draws a gap rather than a line at zero.
+   * SUM and AVG now answer alike for an empty request, which is the agreement issue #7506's seed gave up. COUNT
+   * is the one aggregate outside the policy and still answers the number zero.
    */
   @Test
-  void anUntouchedAvgStaysAbsent() {
+  void anUntouchedSumAndAnUntouchedAvgBothStayAbsentWhileCountStaysZero() {
     final MultiColumnAggregationResult mapMode = new MultiColumnAggregationResult(sumAndAvg());
     mapMode.accumulate(1000L, 2, 7.0);
     mapMode.finalizeAvg();
-    assertThat(mapMode.getValue(1000L, 0)).as("SUM of nothing is zero").isEqualTo(0.0);
-    assertThat(mapMode.getValue(1000L, 1)).as("AVG of nothing is undefined").isNaN();
+    assertBucketExists(mapMode, 1000L);
+    assertThat(mapMode.getValue(1000L, 0)).as("SUM of nothing is absent").isNaN();
+    assertThat(mapMode.getValue(1000L, 1)).as("AVG of nothing is absent").isNaN();
 
     final MultiColumnAggregationResult flatMode = new MultiColumnAggregationResult(sumAndAvg(), 0L, 1000L, 16);
     flatMode.accumulate(1000L, 2, 7.0);
     flatMode.finalizeAvg();
-    assertThat(flatMode.getValue(1000L, 0)).isEqualTo(0.0);
+    assertThat(flatMode.getValue(1000L, 0)).isNaN();
     assertThat(flatMode.getValue(1000L, 1)).isNaN();
+
+    // The counter-case, so "absent" cannot quietly become "everything empty is absent".
+    final MultiColumnAggregationResult countEmpty = new MultiColumnAggregationResult(sumThenCount());
+    countEmpty.accumulate(1000L, 0, 7.0);
+    assertThat(countEmpty.getValue(1000L, 1)).as("COUNT of no rows is 0, not absent").isEqualTo(0.0);
   }
 
   /**
-   * MIN/MAX keep the answer issue #4597 needed: absent, whether the request was asked or not, because there is no
+   * MIN/MAX keep the answer issue #4596 needed: absent, whether the request was asked or not, because there is no
    * identity element to fall back on.
    */
   @Test
@@ -261,6 +323,7 @@ class Issue7506UntouchedSumColumnTest {
             new MultiColumnAggregationRequest(2, AggregationType.COUNT, "countB")));
     result.accumulate(1000L, 2, 7.0);
 
+    assertBucketExists(result, 1000L);
     assertThat(result.getValue(1000L, 0)).isNaN();
     assertThat(result.getValue(1000L, 1)).isNaN();
   }
