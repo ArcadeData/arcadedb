@@ -85,10 +85,10 @@ public class ReplicatedSecurityFingerprintRepository {
   // security entry - touches no filesystem.
   private final Map<String, String> fingerprints = new ConcurrentHashMap<>();
 
-  public ReplicatedSecurityFingerprintRepository(String securityConfPath) {
-    if (!securityConfPath.endsWith(File.separator))
-      securityConfPath += File.separator;
-    this.securityConfPath = securityConfPath;
+  public ReplicatedSecurityFingerprintRepository(final String securityConfPath) {
+    this.securityConfPath = securityConfPath.endsWith(File.separator) ?
+        securityConfPath :
+        securityConfPath + File.separator;
     load();
   }
 
@@ -100,8 +100,17 @@ public class ReplicatedSecurityFingerprintRepository {
   /**
    * Records that {@code document} in force on this node is now the one the cluster installed, identified by
    * {@code fingerprint}. Best-effort: a write failure is logged and swallowed, see the class javadoc.
+   * <p>
+   * A fingerprint that has not changed writes nothing. That is the case for every re-apply of a document this
+   * node already holds - the Ratis replay of the entries between the last snapshot and a restart is the routine
+   * one - and skipping it keeps this off the {@code fsync} path for exactly the applies that have nothing new to
+   * say. The write that remains is one small file per security change that actually changes something, beside
+   * the document's own write, which already fsyncs.
    */
   public void record(final String document, final String fingerprint) {
+    if (fingerprint == null || fingerprint.equals(fingerprints.get(document)))
+      return;
+
     fingerprints.put(document, fingerprint);
     save();
   }
