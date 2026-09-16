@@ -142,11 +142,11 @@ public class CsvBatchRecordStream implements BatchRecordStream {
 
     for (int i = 0; i < headers.length; i++) {
       switch (headers[i]) {
-      case "@type" -> typeCol = i;
-      case "@class" -> classCol = i;
-      case "@id" -> idCol = i;
-      case "@from" -> fromCol = i;
-      case "@to" -> toCol = i;
+      case BatchControlKeys.TYPE -> typeCol = i;
+      case BatchControlKeys.CLASS -> classCol = i;
+      case BatchControlKeys.ID -> idCol = i;
+      case BatchControlKeys.FROM -> fromCol = i;
+      case BatchControlKeys.TO -> toCol = i;
       default -> rejectReservedColumn(headers[i]);
       }
     }
@@ -172,7 +172,7 @@ public class CsvBatchRecordStream implements BatchRecordStream {
     if (!column.isEmpty() && column.charAt(0) == '@')
       throw new IllegalArgumentException("Unknown control column '" + column + "' in the CSV header at line "
           + lineNumber + ": the '@' prefix is reserved by the batch encoding and only "
-          + "@type, @class, @id, @from and @to are understood. A property column cannot start with '@': rename the "
+          + BatchControlKeys.LIST + " are understood. A property column cannot start with '@': rename the "
           + "column, or drop it");
   }
 
@@ -197,11 +197,14 @@ public class CsvBatchRecordStream implements BatchRecordStream {
       throw new IllegalArgumentException("Missing @class at line " + lineNumber);
 
     if (record.kind == BatchRecord.Kind.VERTEX) {
+      rejectMisplacedControlValue(fields, fromCol, BatchControlKeys.FROM, BatchRecord.Kind.VERTEX);
+      rejectMisplacedControlValue(fields, toCol, BatchControlKeys.TO, BatchRecord.Kind.VERTEX);
       if (idCol >= 0) {
         final String id = fields.get(idCol);
         record.tempId = id.isEmpty() ? null : id;
       }
     } else {
+      rejectMisplacedControlValue(fields, idCol, BatchControlKeys.ID, BatchRecord.Kind.EDGE);
       if (fromCol < 0 || toCol < 0)
         throw new IllegalArgumentException("Edge section header missing @from or @to column at line " + lineNumber);
       record.fromRef = fields.get(fromCol);
@@ -218,6 +221,21 @@ public class CsvBatchRecordStream implements BatchRecordStream {
       if (!value.isEmpty())
         record.addProperty(headers[i], parseValue(value));
     }
+  }
+
+  /**
+   * Refuses a NON-EMPTY value in a control column the row's kind cannot use (issue #7574).
+   * <p>
+   * Keyed on the value rather than on the column, unlike the JSONL rule's key test, and that is deliberate: the
+   * documented CSV shape puts a fresh header after the {@code ---} sentinel, but a single header carrying all five
+   * control columns across both sections works today and is a reasonable thing for a client to emit, with empty
+   * {@code @from}/{@code @to} on the vertex rows. Refusing the column would break it; refusing only a value that
+   * was actually sent leaves it working and still catches the drop.
+   */
+  private void rejectMisplacedControlValue(final List<String> fields, final int column, final String key,
+      final BatchRecord.Kind kind) {
+    if (column >= 0 && column < fields.size() && !fields.get(column).isEmpty())
+      throw BatchControlKeys.misplaced(key, kind, lineNumber);
   }
 
   /**
