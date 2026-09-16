@@ -42,6 +42,12 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Iterator;
 import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -106,27 +112,55 @@ class Issue7704BinaryIdempotencyKeyBodyIT extends BaseGraphServerTest {
   }
 
   /**
-   * {@code remote_read} shares the base class, and this pins that two different queries under one correlation id
-   * each answer their own body.
+   * {@code remote_read} shares the base class, and two concurrent reads under one correlation id must each come
+   * back with THEIR OWN series.
    * <p>
-   * It is NOT a reproduction of the replay: {@code PostPrometheusReadHandler} writes its response itself and
-   * returns {@code null}, which ABORTS the reservation, so that route never populates the cache and nothing can be
-   * replayed from it - the same shape a streaming route has (#7311). What the key still decides for it is the
-   * in-flight arm: two concurrent reads sharing one correlation id used to collide on one key and the second
-   * waited {@code IN_FLIGHT_WAIT_MS} for a result that was never going to be its own. With the body in the key
-   * they are two requests again. The test is here so that a change making this route return an
-   * {@code ExecutionResponse} - which WOULD cache, and would replay one caller's series to another - lands on an
-   * assertion rather than on a Grafana panel.
+   * <b>What this test can and cannot detect, stated plainly so the next reader does not assume more of it.</b>
+   * {@code PostPrometheusReadHandler} writes its response itself and returns {@code null}, which ABORTS the
+   * reservation, so the route never populates the cache and nothing can be replayed from it - the same shape a
+   * streaming route has (#7311). What the body-agnostic key COULD still do is make two concurrent reads collide
+   * on a single key, the second finding the first in flight and waiting for a result that was never going to be
+   * its own. That collision is not reachable from a test: a remote read of a handful of samples finishes and
+   * aborts its reservation in microseconds, long before a second HTTP request gets to the handler. A timing
+   * assertion on the pair was written and MEASURED against the unfixed key here - it passed, i.e. it separated
+   * nothing - so it was removed rather than shipped as a bound that never fires. Manufacturing the window (a
+   * six-figure-sample first read) would be engineering a delay to make a bound separate, for a latent collision
+   * on a route that does not cache.
+   * <p>
+   * The deterministic proof that these two requests are two keys is
+   * {@code IdempotencyKeyTest.sameRequestIdDifferentBinaryBodyProducesDifferentKey}, which needs no server and no
+   * clock. This test is the end-to-end guard beside it: it runs the reads concurrently, so a future change making
+   * this route return an {@code ExecutionResponse} - which WOULD cache, and would replay one caller's series to
+   * another - lands on an assertion rather than on a Grafana panel.
    */
   @Test
-  void twoRemoteReadsSharingOneRequestIdEachAnswerTheirOwnQuery() throws Exception {
+  void twoConcurrentRemoteReadsSharingOneRequestIdEachAnswerTheirOwnQuery() throws Exception {
     assertThat(postPromWrite(writeOf("ts7704_read_a", 3.5, 100_004L), null)).isEqualTo(204);
     assertThat(postPromWrite(writeOf("ts7704_read_b", 4.5, 100_005L), null)).isEqualTo(204);
 
-    assertThat(readBack("ts7704_read_a", SHARED_REQUEST_ID)).isEqualTo("ts7704_read_a -> 3.5@100004");
-    assertThat(readBack("ts7704_read_b", SHARED_REQUEST_ID))
-        .as("each read is answered from its own query")
-        .isEqualTo("ts7704_read_b -> 4.5@100005");
+    final String[] metrics = { "ts7704_read_a", "ts7704_read_b" };
+    final CyclicBarrier releaseTogether = new CyclicBarrier(metrics.length);
+    final ExecutorService pool = Executors.newFixedThreadPool(metrics.length);
+    final List<String> answers;
+    try {
+      final List<Callable<String>> calls = new ArrayList<>(metrics.length);
+      for (final String metric : metrics)
+        calls.add(() -> {
+          releaseTogether.await(30, TimeUnit.SECONDS);
+          return readBack(metric, SHARED_REQUEST_ID);
+        });
+
+      answers = new ArrayList<>(metrics.length);
+      for (final Future<String> answered : pool.invokeAll(calls, 120, TimeUnit.SECONDS))
+        answers.add(answered.get());
+    } finally {
+      pool.shutdownNow();
+      assertThat(pool.awaitTermination(30, TimeUnit.SECONDS)).isTrue();
+    }
+
+    assertThat(answers)
+        .as("#7704: each concurrent read must be answered from its OWN body")
+        .containsExactlyInAnyOrder("ts7704_read_a -> 3.5@100004", "ts7704_read_b -> 4.5@100005");
   }
 
   // ---- Helpers ----
