@@ -28,7 +28,6 @@ import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.math.BigDecimal;
-import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -54,7 +53,8 @@ final class TimeSeriesHandlerUtils {
    * characters, so this leaves ample room for a decimal point, an exponent and a run of zeros while keeping an
    * arbitrarily long digit string out of {@link BigDecimal}'s parser, whose cost grows with the digit count.
    * The exponent is what makes the value large, not the text, so this is defence in depth rather than the guard
-   * itself - see {@link #readLong} for the one that closes the hole.
+   * itself - see {@link #readLong} for the one that closes the hole. Applies to a member that arrived as a
+   * STRING: a JSON number is bounded by the same body limit and cannot be long without also being many digits.
    */
   private static final int MAX_NUMERIC_TEXT_LENGTH = 40;
 
@@ -227,6 +227,15 @@ final class TimeSeriesHandlerUtils {
    * range where a millisecond instant lives. What is accepted is otherwise unchanged - a numeric string is still
    * read as a number, as the class javadoc states - so no request that named a whole number stops working.
    * <p>
+   * <b>Why the value is read through {@code getBigDecimal} and not through {@code opt}.</b> {@code opt} goes via
+   * {@code JSONObject.elementToObject}, which narrows any number whose text carries a {@code '.'} or an exponent
+   * to a {@code double} - so {@code {"from": 9007199254740993.0}} would arrive here as
+   * {@code 9007199254740992.0}, already rounded, and would be accepted as a whole number one away from the one
+   * the caller wrote. Rejecting every double past the safe-integer range would close that, but it would also
+   * refuse instants that are perfectly exact as written. {@code getBigDecimal} keeps the LEXEME - the digits the
+   * request actually carried - so the value is neither rounded nor needlessly refused (CodeRabbit on PR #7730).
+   * {@code opt} is still used, for the error message and the length guard, where a narrowed value is fine.
+   * <p>
    * <b>Why the bound below is re-derived instead of left to {@link BigDecimal#longValueExact()}.</b> That method
    * bails out early on {@code (precision() - scale) > 19}, computed in {@code int}. A crafted exponent makes the
    * subtraction OVERFLOW: {@code "1E2147483647"} parses to {@code (unscaled=1, scale=-2147483647)} without
@@ -241,29 +250,19 @@ final class TimeSeriesHandlerUtils {
   private static long readLong(final JSONObject owner, final String name, final String path) {
     final Object received = owner.opt(name);
 
+    // Before the parse, because BigDecimal's cost grows with the digit count and the body limit was the only
+    // other bound on it. Only a STRING can be long in the first place - an extreme value written as a JSON
+    // number is SHORT, which is why this is defence in depth and not the guard that matters.
+    if (received instanceof String text && text.trim().length() > MAX_NUMERIC_TEXT_LENGTH)
+      throw wrongType(path, "a number", received,
+          new NumberFormatException("longer than " + MAX_NUMERIC_TEXT_LENGTH + " characters"));
+
     final BigDecimal exact;
     try {
-      exact = switch (received) {
-        // elementToObject() hands back an Integer or a Long for a JSON integer, and a Double as soon as the text
-        // carries a '.' or an exponent - so the Double branch is where a fractional bucketInterval lands.
-        case Double value -> {
-          if (value.isNaN() || value.isInfinite())
-            throw new NumberFormatException("not a finite number");
-          yield BigDecimal.valueOf(value);
-        }
-        case Float value -> {
-          if (value.isNaN() || value.isInfinite())
-            throw new NumberFormatException("not a finite number");
-          yield new BigDecimal(value.toString());
-        }
-        case BigDecimal value -> value;
-        case BigInteger value -> new BigDecimal(value);
-        case Number value -> BigDecimal.valueOf(value.longValue());
-        // A numeric string, which getLong() has always accepted and which is what a form-encoded client sends.
-        case String text -> parseNumericText(text);
-        case null, default -> throw new NumberFormatException("not a number");
-      };
-    } catch (final NumberFormatException e) {
+      // A boolean, an object, an array, a non-numeric string and the lenient parser's NaN/Infinity all fail
+      // here, which is what makes the "must be a number" refusal below cover every one of them.
+      exact = owner.getBigDecimal(name);
+    } catch (final JSONException e) {
       throw wrongType(path, "a number", received, e);
     }
 
@@ -292,25 +291,6 @@ final class TimeSeriesHandlerUtils {
       // pass the digit count and land here.
       throw notAWholeLong(path, received, e);
     }
-  }
-
-  /**
-   * Parses a numeric member that arrived as a STRING, which {@code JSONObject.getLong} has always accepted.
-   * <p>
-   * Length-capped before the parse, because {@link BigDecimal}'s cost grows with the digit count and the body
-   * limit is the only other bound on it. The cap rejects nothing a whole number a long can hold needs - see
-   * {@link #MAX_NUMERIC_TEXT_LENGTH} - and it is NOT what makes an extreme exponent safe, since those are short.
-   * <p>
-   * An over-long string is signalled the same way an unparseable one is, so it is reported as "must be a
-   * number" with the echo truncated: the two are the same answer to the caller, and #7340's message for a member
-   * that did not arrive as a number stays the one message.
-   */
-  private static BigDecimal parseNumericText(final String text) {
-    final String trimmed = text.trim();
-    if (trimmed.length() > MAX_NUMERIC_TEXT_LENGTH)
-      throw new NumberFormatException("longer than " + MAX_NUMERIC_TEXT_LENGTH + " characters");
-
-    return new BigDecimal(trimmed);
   }
 
   /**
