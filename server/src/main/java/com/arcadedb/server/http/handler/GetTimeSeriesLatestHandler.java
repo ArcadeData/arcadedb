@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.TagFilter;
@@ -27,39 +28,54 @@ import com.arcadedb.engine.timeseries.TimeSeriesGateway.TypeResolution;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.http.HttpSessionManager;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
+import io.undertow.util.HeaderValues;
 
-import java.util.Deque;
 import java.util.List;
 
 /**
  * HTTP handler for retrieving the latest TimeSeries value.
  * Endpoint: GET /api/v1/ts/{database}/latest?type=weather&tag=location:us-east
+ * <p>
+ * On {@link DatabaseAbstractHandler} since issue #7402, for the reasons spelled out on
+ * {@link PostTimeSeriesQueryHandler}: a request carrying {@code arcadedb-session-id} reads through that
+ * session's transaction, under its lock and on its principal, and the base class subsumes the
+ * {@code checkAuthorizationOnDatabase} call this handler used to make by hand.
  */
-public class GetTimeSeriesLatestHandler extends AbstractServerHttpHandler {
+public class GetTimeSeriesLatestHandler extends DatabaseAbstractHandler {
 
   public GetTimeSeriesLatestHandler(final HttpServer httpServer) {
     super(httpServer);
   }
 
   @Override
+  protected boolean requiresTransaction() {
+    return false;
+  }
+
+  /**
+   * A session-less read of one row is short enough to answer on the IO thread, which is what this handler has
+   * always done. A request that names a session is not: the base class runs it under
+   * {@code HttpSession.execute}, which blocks for up to five seconds on the session lock, and blocking an
+   * Undertow IO thread starves every other connection being served on it.
+   */
+  @Override
+  protected boolean mustExecuteOnWorkerThread(final HttpServerExchange exchange) {
+    final HeaderValues sessionId = exchange.getRequestHeaders().get(HttpSessionManager.ARCADEDB_SESSION_ID);
+    return sessionId != null && !sessionId.isEmpty();
+  }
+
+  @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
-      final JSONObject payload) throws Exception {
-
-    final Deque<String> databaseParam = exchange.getQueryParameters().get("database");
-    if (databaseParam == null || databaseParam.isEmpty())
-      return new ExecutionResponse(400, "{ \"error\" : \"Database parameter is required\"}");
-
-    // Enforce database-level authorization (GHSA-x8mg-6r4p-87pf): this handler does not extend DatabaseAbstractHandler.
-    // Checked before any payload/parameter validation so an unauthorized caller cannot probe the target database.
-    checkAuthorizationOnDatabase(user, databaseParam.getFirst());
+      final Database db, final JSONObject payload) throws Exception {
 
     final String typeName = getQueryParameter(exchange, "type");
     if (typeName == null || typeName.isBlank())
       return new ExecutionResponse(400, "{ \"error\" : \"'type' query parameter is required\"}");
 
-    final DatabaseInternal database = httpServer.getServer().getDatabase(databaseParam.getFirst(), false, false);
+    final DatabaseInternal database = (DatabaseInternal) db;
 
     // Type resolution and the per-type read ACL both live in TimeSeriesGateway, shared with the gRPC
     // TimeSeriesLatest RPC (issue #7305). The ACL matters here more than anywhere else: a TimeSeries type owns
@@ -81,7 +97,7 @@ public class GetTimeSeriesLatestHandler extends AbstractServerHttpHandler {
     try {
       tagFilter = buildTagFilter(exchange, columns);
     } catch (final IllegalArgumentException e) {
-      return TimeSeriesHandlerUtils.tagFilterError(e);
+      return TimeSeriesHandlerUtils.badRequest(e);
     }
 
     // A bounded newest-first scan for a single row (issue #7322), through the same helper the gRPC

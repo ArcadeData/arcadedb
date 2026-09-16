@@ -229,6 +229,25 @@ public class TimeSeriesShard implements AutoCloseable {
   /**
    * Appends samples to the mutable bucket.
    * <p>
+   * <b>Transaction scope (#7410): this method commits its own transaction, whatever the caller has open.</b>
+   * This is the canonical statement of that contract - it is where the behaviour lives, so the entry points
+   * above it ({@link TimeSeriesEngine#appendSamples(long[], Object[][])},
+   * {@link TimeSeriesEngine#appendBatch(long[], Object[][])}, {@code SaveElementStep.saveToTimeSeries},
+   * {@link TimeSeriesGateway#write}) state only what it means for their own callers and link back here for
+   * the mechanism, rather than each carrying its own copy of it to drift out of sync. Drifting out of sync
+   * is what #7410 was.
+   * <p>
+   * The mechanism: the {@code db.begin()}/{@code db.commit()} pair below is <i>nested</i> when a transaction
+   * is already active on this thread, and an ArcadeDB nested transaction is an independent transaction rather
+   * than a savepoint. {@code LocalDatabase.begin()} pushes a <i>new</i> {@code TransactionContext} onto the
+   * thread's stack instead of joining the open one; the matching {@code commit()} takes
+   * {@code getLastTransaction()} - that new context - and runs the full
+   * {@code commit1stPhase}/{@code commit2ndPhase} on it, then pops it. Nothing merges its changes into the
+   * transaction underneath. So the mutable-bucket pages are published here and now, not by the caller's
+   * commit; they are visible to every other reader as soon as this method returns; and the caller's
+   * {@code rollback()} does not take them back. {@code Issue7410AppendTransactionScopeTest} pins it, and
+   * {@code Issue7370GrpcTimeSeriesInTransactionIT} pins the same contract over the wire.
+   * <p>
    * Concurrent calls on the <em>same shard</em> are serialized by {@link #appendLock} so that
    * MVCC page-version conflicts can never arise between two concurrent appends.  Writes to
    * different shards still proceed in parallel.
@@ -476,6 +495,63 @@ public class TimeSeriesShard implements AutoCloseable {
 
       results.addAll(mutableRows);
       TimeSeriesSealedStore.trimToDescendingLimit(results, need);
+      return results;
+    } finally {
+      compactionLock.readLock().unlock();
+    }
+  }
+
+  /**
+   * Scans both layers oldest-first and returns at most {@code limit} rows in ascending timestamp
+   * order (issue #7336).
+   * <p>
+   * The ascending mirror of {@link #scanRangeDescending}: both layers stop as soon as the limit is
+   * satisfied, the sealed layer block by block and the mutable layer page by page. The sealed layer
+   * is walked FIRST here - it is the one holding the oldest rows - and, once it alone has supplied
+   * {@code limit} rows, its newest retained timestamp bounds the mutable walk from above. When that
+   * bound is older than everything the mutable bucket holds, no mutable page is read at all.
+   *
+   * @param limit   maximum number of rows to return; {@code <= 0} means unlimited
+   * @param metrics optional block-level counters, may be {@code null}
+   */
+  public List<Object[]> scanRangeAscending(final long fromTs, final long toTs, final int[] columnIndices,
+                                           final TagFilter tagFilter, final int limit,
+                                           final AggregationMetrics metrics) throws IOException {
+    final int need = limit > 0 ? limit : Integer.MAX_VALUE;
+
+    compactionLock.readLock().lock();
+    try {
+      final List<Object[]> sealedRows = sealedStore.scanRangeAscending(fromTs, toTs, columnIndices, tagFilter, limit,
+          metrics);
+
+      // The sealed head alone can answer the query when it is complete and strictly older than anything still
+      // mutable: no page has to be read. An empty bucket answers Long.MAX_VALUE, so it takes this path too.
+      if (sealedRows.size() >= need && (long) sealedRows.getLast()[0] < mutableBucket.getMinTimestamp())
+        return sealedRows;
+
+      // The sealed rows already found bound the mutable walk from above: no row newer than the newest one held
+      // can contribute. Inclusive, so ties stay eligible.
+      final long mutableToTs = sealedRows.size() >= need ?
+          Math.min(toTs, (long) sealedRows.getLast()[0]) :
+          toTs;
+
+      // The WHOLE limit, never `need - sealedRows.size()`. A late arrival carries an OLD timestamp, so every
+      // row of the answer can come from the mutable layer however many the sealed layer already produced;
+      // asking for the remainder returns too few late arrivals and pads the answer with sealed rows that do
+      // not belong in it. And the remainder is 0 exactly when the sealed layer is full, which this API reads
+      // as UNLIMITED - so the "optimization" is unbounded in the one case it was meant to help.
+      // Pinned by Issue7336AscendingLimitTest.ascendingScanAsksTheMutableLayerForTheWholeLimitNotTheRemainder.
+      final List<Object[]> mutableRows = mutableBucket.scanRangeAscending(fromTs, mutableToTs, columnIndices,
+          tagFilter, limit, metrics);
+      if (mutableRows.isEmpty())
+        return sealedRows;
+      if (sealedRows.isEmpty())
+        return mutableRows;
+
+      final List<Object[]> results = new ArrayList<>(sealedRows.size() + mutableRows.size());
+      results.addAll(sealedRows);
+      results.addAll(mutableRows);
+      TimeSeriesSealedStore.trimToAscendingLimit(results, need);
       return results;
     } finally {
       compactionLock.readLock().unlock();

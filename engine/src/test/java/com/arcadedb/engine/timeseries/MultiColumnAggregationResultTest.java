@@ -30,8 +30,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * another request (e.g. COUNT) but the MIN/MAX request itself received no data. The agreed
  * NaN-as-absent policy (issue #4596) applies here too.
  * <p>
- * Issue #7089 put SUM and AVG under that same policy, so the last test here covers them as well: the only
- * accumulator that still seeds at zero is COUNT.
+ * Issue #7584 extends the same coverage to SUM and AVG. Those two joined the policy in issue #7089, which reseeded
+ * their accumulator from {@code 0.0} to {@link TimeSeriesNaN#ABSENT} without updating the assertion here, so this
+ * class encoded the superseded contract and was red on {@code main} from that commit on. The contract SUM and AVG
+ * answer to now is MIN/MAX's: a request that received no real sample in a bucket reads back absent, because a zero
+ * seed cannot tell "nothing arrived" apart from "it all added up to zero".
  */
 class MultiColumnAggregationResultTest {
 
@@ -80,44 +83,123 @@ class MultiColumnAggregationResultTest {
   }
 
   /**
-   * The zero seed this assertion was written for (issue #4597) went away with issue #7089, deliberately: a SUM
-   * seeded at zero cannot tell "no real sample ever arrived" from "the real samples added up to zero", and the
-   * {@code +=} it fed turned one NaN sample into a NaN total. Since #7089 SUM and AVG carry the same absent
-   * marker MIN and MAX have carried since #7043, and only COUNT - which counts rows, so zero rows IS zero -
-   * still seeds at 0.0. The old expectation outlived the change and turned {@code main} red for every PR
-   * (issue #7495); this is the same scenario, asserting the policy that replaced it.
+   * Every "this request stayed empty" test below writes to ONE request and reads back another, so each one has to
+   * rule out the answer it would get from a bucket that was never touched at all: {@code getValue} returns a plain
+   * {@code 0.0} for an unknown bucket in map mode, and for an unset {@code bucketUsed[idx]} in flat mode. Asserting
+   * the bucket is really there is what makes the absent marker read afterwards evidence about the SEED that
+   * {@code newInitializedValues()} laid down per request index, rather than about the bucket's existence
+   * (claude-review on PR #7662).
    */
-  @Test
-  void anUntouchedSumIsAbsentWhileAnUntouchedCountIsZero() {
-    final List<MultiColumnAggregationRequest> requests = List.of(
-        new MultiColumnAggregationRequest(1, AggregationType.SUM, "sumA"),
-        new MultiColumnAggregationRequest(2, AggregationType.COUNT, "countB"),
-        new MultiColumnAggregationRequest(3, AggregationType.AVG, "avgC"),
-        new MultiColumnAggregationRequest(4, AggregationType.COUNT, "countD"));
-
-    final MultiColumnAggregationResult mapMode = new MultiColumnAggregationResult(requests);
-    mapMode.accumulate(1000L, 1, 7.0);
-    assertUntouchedRequestsAreAbsentExceptCount(mapMode);
-
-    // Flat mode reads the bucket through its own branch of getValue(), so it gets its own pass.
-    final MultiColumnAggregationResult flatMode = new MultiColumnAggregationResult(requests, 1000L, 1000L, 16);
-    flatMode.accumulate(1000L, 1, 7.0);
-    assertThat(flatMode.isFlatMode()).isTrue();
-    assertUntouchedRequestsAreAbsentExceptCount(flatMode);
+  private static void assertBucketExists(final MultiColumnAggregationResult result) {
+    assertThat(result.getBucketTimestamps())
+        .as("the bucket must exist, or an absent answer proves nothing about the per-request seed")
+        .containsExactly(1000L);
   }
 
-  private static void assertUntouchedRequestsAreAbsentExceptCount(final MultiColumnAggregationResult result) {
-    // Only countB got a sample; every other request is untouched in a bucket that exists.
-    assertThat(result.getValue(1000L, 1)).as("COUNT counts the row it got").isEqualTo(1.0);
+  private static List<MultiColumnAggregationRequest> sumThenCount() {
+    return List.of(new MultiColumnAggregationRequest(1, AggregationType.SUM, "sumA"),
+        new MultiColumnAggregationRequest(2, AggregationType.COUNT, "countB"));
+  }
 
-    assertThat(result.getValue(1000L, 0)).as("an untouched SUM is absent, not zero").isNaN();
-    assertThat(TimeSeriesNaN.isAbsent(result.getValue(1000L, 0))).isTrue();
+  private static List<MultiColumnAggregationRequest> avgThenCount() {
+    return List.of(new MultiColumnAggregationRequest(1, AggregationType.AVG, "avgA"),
+        new MultiColumnAggregationRequest(2, AggregationType.COUNT, "countB"));
+  }
+
+  /**
+   * Issue #7584. This assertion used to read {@code isEqualTo(0.0)}, which was the contract before issue #7089 put
+   * SUM under the NaN-as-absent policy; the seed moved to {@link TimeSeriesNaN#ABSENT} and the assertion did not
+   * follow, so the class went red on {@code main}. Absent is the answer the rest of the stack is built on: COUNT is
+   * the aggregate that reports "no rows" as the number zero, and SUM says so by being absent.
+   */
+  @Test
+  void emptySumIsAbsentNotZero() {
+    final MultiColumnAggregationResult result = new MultiColumnAggregationResult(sumThenCount());
+    // only the COUNT request gets data in this bucket; the SUM request stays empty
+    result.accumulate(1000L, 1, 7.0);
+    assertBucketExists(result);
     assertThat(result.getCount(1000L, 0)).isZero();
+    assertThat(result.getValue(1000L, 0)).as("SUM over no real sample is absent, not a total of zero").isNaN();
+    assertThat(result.getValue(1000L, 1)).as("COUNT still counts rows").isEqualTo(1.0);
+  }
 
-    assertThat(result.getValue(1000L, 2)).as("an untouched AVG is absent, not 0/0").isNaN();
-    assertThat(result.getCount(1000L, 2)).isZero();
+  /**
+   * The surviving half of this class's original {@code emptySumAndCountStayZeroNotNaN}: COUNT is the one aggregate
+   * that is NOT under the NaN-as-absent policy. It counts rows the way SQL's {@code COUNT(*)} does, so a bucket in
+   * which the COUNT request itself saw nothing reads back the number {@code 0} - never the absent marker.
+   */
+  @Test
+  void emptyCountStaysZeroNotAbsent() {
+    final MultiColumnAggregationResult result = new MultiColumnAggregationResult(sumThenCount());
+    // only the SUM request gets data in this bucket; the COUNT request stays empty
+    result.accumulate(1000L, 0, 7.0);
+    assertBucketExists(result);
+    assertThat(result.getValue(1000L, 1)).as("COUNT of no rows is 0, not absent").isEqualTo(0.0);
+    assertThat(result.getCount(1000L, 1)).isZero();
+  }
 
-    assertThat(result.getValue(1000L, 3)).as("an untouched COUNT is zero: zero rows IS zero").isEqualTo(0.0);
-    assertThat(result.getCount(1000L, 3)).isZero();
+  /**
+   * The same contract on the pre-allocated path. Flat and map mode answering differently is what issue #7089's
+   * scalar-versus-vectorized divergence was, so both modes are pinned.
+   */
+  @Test
+  void flatModeEmptySumIsAbsentNotZero() {
+    final MultiColumnAggregationResult result = new MultiColumnAggregationResult(sumThenCount(), 0L, 1000L, 16);
+    result.accumulate(1000L, 1, 7.0);
+    assertThat(result.isFlatMode()).isTrue();
+    assertBucketExists(result);
+    assertThat(result.getValue(1000L, 0)).isNaN();
+    assertThat(result.getValue(1000L, 1)).isEqualTo(1.0);
+  }
+
+  /**
+   * AVG divides by the count of REAL samples, so an empty request must survive {@link
+   * MultiColumnAggregationResult#finalizeAvg()} without becoming {@code 0/0} or a zero.
+   */
+  @Test
+  void emptyAvgStaysAbsentThroughFinalize() {
+    final MultiColumnAggregationResult result = new MultiColumnAggregationResult(avgThenCount());
+    result.accumulate(1000L, 1, 7.0);
+    result.finalizeAvg();
+    assertBucketExists(result);
+    assertThat(result.getCount(1000L, 0)).isZero();
+    assertThat(result.getValue(1000L, 0)).as("AVG over no real sample is absent, not zero").isNaN();
+  }
+
+  @Test
+  void flatModeEmptyAvgStaysAbsentThroughFinalize() {
+    final MultiColumnAggregationResult result = new MultiColumnAggregationResult(avgThenCount(), 0L, 1000L, 16);
+    result.accumulate(1000L, 1, 7.0);
+    result.finalizeAvg();
+    assertThat(result.isFlatMode()).isTrue();
+    assertBucketExists(result);
+    assertThat(result.getValue(1000L, 0)).isNaN();
+  }
+
+  /**
+   * The absent answer is the marker, not a blanket rule: a SUM that did receive samples still totals them, and a
+   * NaN sample among real ones is skipped rather than poisoning the total.
+   */
+  @Test
+  void populatedSumTotalsTheRealSamplesAndSkipsTheAbsentOnes() {
+    final MultiColumnAggregationResult result = new MultiColumnAggregationResult(sumThenCount());
+    result.accumulate(1000L, 0, 4.0);
+    result.accumulate(1000L, 0, Double.NaN);
+    result.accumulate(1000L, 0, 2.5);
+    assertThat(result.getValue(1000L, 0)).isEqualTo(6.5);
+    assertThat(result.getCount(1000L, 0)).isEqualTo(2);
+  }
+
+  /**
+   * A SUM that really did total to zero must stay the number zero, which is the distinction the absent marker
+   * exists to make: {@code 0.0} here and NaN in {@link #emptySumIsAbsentNotZero()}.
+   */
+  @Test
+  void aSumOfRealSamplesThatCancelToZeroIsZeroNotAbsent() {
+    final MultiColumnAggregationResult result = new MultiColumnAggregationResult(sumThenCount());
+    result.accumulate(1000L, 0, 3.0);
+    result.accumulate(1000L, 0, -3.0);
+    assertThat(result.getValue(1000L, 0)).isEqualTo(0.0);
+    assertThat(result.getCount(1000L, 0)).isEqualTo(2);
   }
 }

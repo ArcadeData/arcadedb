@@ -19,6 +19,7 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.AggregationType;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
@@ -36,15 +37,26 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
 import java.util.ArrayList;
-import java.util.Deque;
 import java.util.List;
 import java.util.logging.Level;
 
 /**
  * HTTP handler for TimeSeries query endpoint.
  * Endpoint: POST /api/v1/ts/{database}/query
+ * <p>
+ * On {@link DatabaseAbstractHandler} since issue #7402, so a request carrying {@code arcadedb-session-id} reads
+ * through the transaction that session opened - and under the session's lock, on the session's principal, with
+ * the session's idle clock refreshed - instead of on whatever context the Undertow worker happened to carry.
+ * That base class also subsumes the {@code checkAuthorizationOnDatabase} call this handler used to make by
+ * hand: it is the database-level gate of GHSA-x8mg-6r4p-87pf and the per-type principal binding of
+ * GHSA-c23x-pqcj-7hfm in one, which is what that helper existed to stand in for.
+ * <p>
+ * {@link #requiresTransaction()} is false: this is a read, and an auto-commit wrapper around it would only add a
+ * commit with nothing to commit. A consequence of that answer, shared with {@code GET /query}, is that an
+ * unresolvable session id degrades to a session-less read rather than being refused - see
+ * {@link DatabaseAbstractHandler#rejectsUnresolvableSession()}.
  */
-public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
+public class PostTimeSeriesQueryHandler extends DatabaseAbstractHandler {
 
   public PostTimeSeriesQueryHandler(final HttpServer httpServer) {
     super(httpServer);
@@ -56,22 +68,31 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
   }
 
   @Override
+  protected boolean requiresTransaction() {
+    return false;
+  }
+
+  @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
-      final JSONObject payload) throws Exception {
+      final Database db, final JSONObject payload) throws Exception {
 
-    final Deque<String> databaseParam = exchange.getQueryParameters().get("database");
-    if (databaseParam == null || databaseParam.isEmpty())
-      return new ExecutionResponse(400, "{ \"error\" : \"Database parameter is required\"}");
+    // Every member below is resolved through TimeSeriesHandlerUtils so an absent, null or wrongly-typed one is
+    // refused by NAME in the 'error' field, instead of reaching JSONObject's raising getters and being answered as
+    // a bare "Invalid JSON payload" whose specifics production mode conceals in 'detail' (issue #7340).
+    //
+    // A missing body goes through the SAME refusal rather than a second, differently worded one: 'type' is absent
+    // either way, and the caller that reads the message cannot tell - nor care - which branch produced it.
+    if (payload == null)
+      return TimeSeriesHandlerUtils.badRequest(TimeSeriesHandlerUtils.missingMember("type", "a string"));
 
-    // Enforce database-level authorization (GHSA-x8mg-6r4p-87pf): this handler does not extend DatabaseAbstractHandler.
-    // Checked before any payload/parameter validation so an unauthorized caller cannot probe the target database.
-    checkAuthorizationOnDatabase(user, databaseParam.getFirst());
+    final String typeName;
+    try {
+      typeName = TimeSeriesHandlerUtils.requireString(payload, "type", "type");
+    } catch (final IllegalArgumentException e) {
+      return TimeSeriesHandlerUtils.badRequest(e);
+    }
 
-    if (payload == null || !payload.has("type"))
-      return new ExecutionResponse(400, "{ \"error\" : \"'type' parameter is required\"}");
-
-    final String typeName = payload.getString("type");
-    final DatabaseInternal database = httpServer.getServer().getDatabase(databaseParam.getFirst(), false, false);
+    final DatabaseInternal database = (DatabaseInternal) db;
 
     // Type resolution and the per-type read ACL both live in TimeSeriesGateway, shared with the gRPC
     // TimeSeriesQuery RPC (issue #7305). The ACL matters here more than anywhere else: a TimeSeries type owns
@@ -85,22 +106,26 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
     final TimeSeriesEngine engine = resolved.engine();
     final List<ColumnDefinition> columns = resolved.columns();
 
-    final long fromTs = payload.getLong("from", Long.MIN_VALUE);
-    final long toTs = payload.getLong("to", Long.MAX_VALUE);
-
-    // Build tag filter. A tag name that resolves to no TAG column, or a value that could never have been
-    // written, is refused with a 400 naming it rather than dropped (issues #7334, #7394): a dropped term
-    // WIDENS the conjunction, and a query over every row of the range is indistinguishable, to the caller,
-    // from a correct filter that happened to match everything.
+    // A tag name that resolves to no TAG column, or a value that could never have been written, is refused with a
+    // 400 naming it rather than dropped (issues #7334, #7394): a dropped term WIDENS the conjunction, and a query
+    // over every row of the range is indistinguishable, to the caller, from a correct filter that happened to
+    // match everything. The range bounds join the same try because a non-numeric 'from' is the same class of
+    // client error and used to be answered through the concealed 'detail' field (issue #7340).
+    final long fromTs;
+    final long toTs;
     final TagFilter tagFilter;
     try {
+      fromTs = TimeSeriesHandlerUtils.optLong(payload, "from", Long.MIN_VALUE, "from");
+      toTs = TimeSeriesHandlerUtils.optLong(payload, "to", Long.MAX_VALUE, "to");
       tagFilter = buildTagFilter(payload, columns);
     } catch (final IllegalArgumentException e) {
-      return TimeSeriesHandlerUtils.tagFilterError(e);
+      return TimeSeriesHandlerUtils.badRequest(e);
     }
 
-    // Check if aggregation is requested
-    if (payload.has("aggregation"))
+    // Check if aggregation is requested. isNull rather than has: an explicit "aggregation": null means the caller
+    // stated no aggregation, the same reading the optional 'tags' and 'fields' members get, and the same one the
+    // Grafana endpoint gives a target's own "aggregation": null.
+    if (!payload.isNull("aggregation"))
       return executeAggregation(payload, engine, columns, typeName, fromTs, toTs, tagFilter);
 
     return executeRawQuery(payload, engine, columns, typeName, fromTs, toTs, tagFilter);
@@ -110,27 +135,42 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
       final List<ColumnDefinition> columns, final String typeName, final long fromTs, final long toTs,
       final TagFilter tagFilter) throws Exception {
 
-    // Same cap and same semantics as the query/command endpoints: a non-positive value means unlimited. Note
-    // that here the cap governs serialization only - the engine query below materializes the whole range
-    // regardless, so removing the cap does not widen an already unbounded fetch.
+    // Same cap and same semantics as the query/command endpoints: a non-positive value means unlimited.
     // requireIntLimit rather than payload.getInt: the latter narrows with Number.intValue(), so a limit an int
     // cannot hold would wrap to a negative value and be read as unlimited, exactly as on the other endpoints.
     final Object rawLimit = payload.opt("limit");
-    final int limit = rawLimit != null ? requireIntLimit(rawLimit, "limit") : getDefaultRowLimit();
     final boolean callerSuppliedLimit = rawLimit != null;
 
-    // Resolve field projection
-    final int[] columnIndices = resolveColumnIndices(payload, columns);
-
-    final List<Object[]> rows = engine.query(fromTs, toTs, columnIndices, tagFilter);
+    final int limit;
+    final int[] columnIndices;
+    try {
+      limit = callerSuppliedLimit ? requireIntLimit(rawLimit, "limit") : getDefaultRowLimit();
+      // Resolve field projection
+      columnIndices = resolveColumnIndices(payload, columns);
+    } catch (final IllegalArgumentException e) {
+      // Both refusals name the member, and both used to travel to the caller through the generic mapper, which
+      // renders an IllegalArgumentException as "Cannot execute command" and hides the sentence that says WHICH
+      // member was wrong in the 'detail' field production mode conceals (issue #7340).
+      return TimeSeriesHandlerUtils.badRequest(e);
+    }
 
     // The hard ceiling no caller can widen (issue #5719): a caller that states a huge 'limit', or an unlimited
-    // one, is refused rather than served an arbitrarily large response. Checked here, before the JSON is built,
-    // so the ceiling at least keeps the second and larger copy of the range out of the heap - it cannot keep the
-    // first one out, because engine.query() above materializes the whole range before any limit is known. That
-    // is a bound on the fetch, and it belongs in the engine, not in this handler.
+    // one, is refused rather than served an arbitrarily large response.
     final int maxResultRows = getMaxResultRows();
     final int ceiling = applyMaxResultRows(limit, maxResultRows);
+
+    // The bound on the FETCH (issue #7336). Everything this method has to decide - the row count, whether the
+    // response was cut short, and whether the ceiling refuses it - is answered by the rows up to the ceiling
+    // plus ONE: that extra row is what tells a cut answer from a complete one, and nothing beyond it is ever
+    // looked at. engine.query() answered the same questions by merging every shard's full range into one sorted
+    // ArrayList first, so '{"from": 0, "to": 9999999999999, "limit": 10}' over millions of samples cost O(N)
+    // heap and O(N log N) time to serialize ten rows.
+    // A non-positive ceiling means the ceiling is disabled AND the caller asked for everything, which is the one
+    // request that genuinely has no bound; Integer.MAX_VALUE is left alone rather than overflowed, and is
+    // unlimited in practice because no List can hold more.
+    final int fetchLimit = ceiling <= 0 || ceiling == Integer.MAX_VALUE ? 0 : ceiling + 1;
+    final List<Object[]> rows = engine.queryAscending(fromTs, toTs, columnIndices, tagFilter, fetchLimit, null);
+
     if (ceiling != limit && rows.size() > ceiling)
       throw resultSetTooLarge(maxResultRows);
 
@@ -162,9 +202,12 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
     if (truncated && !callerSuppliedLimit)
       // The caller stated no limit, so this truncation is the only one it did not ask for: an operator must be
       // able to find it in the log, exactly as on the query and command endpoints.
+      // The message no longer states the total: the fetch now stops one row past the cap, so the only honest
+      // thing that can be said is that there were more (issue #7336). Counting them is the O(N) walk the cap
+      // exists to avoid, and the remedy the operator needs does not depend on the number.
       LogManager.instance().log(this, Level.WARNING,
-          "Query on time series type '%s' returned %d rows, more than the default HTTP limit of %d: the response has been "
-              + "truncated. Set 'limit' in the request, or raise '%s'.", typeName, rows.size(), limit,
+          "Query on time series type '%s' returned more rows than the default HTTP limit of %d: the response has been "
+              + "truncated to %d rows. Set 'limit' in the request, or raise '%s'.", typeName, limit, count,
           GlobalConfiguration.SERVER_HTTP_QUERY_DEFAULT_LIMIT.getKey());
 
     return new ExecutionResponse(200, result.toString());
@@ -174,38 +217,43 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
       final List<ColumnDefinition> columns, final String typeName, final long fromTs, final long toTs,
       final TagFilter tagFilter) throws Exception {
 
-    final JSONObject aggJson = payload.getJSONObject("aggregation");
-    final long bucketInterval = aggJson.getLong("bucketInterval");
-    final JSONArray requestsJson = aggJson.getJSONArray("requests");
-
+    final long bucketInterval;
     final List<MultiColumnAggregationRequest> requests = new ArrayList<>();
     final JSONArray aggNames = new JSONArray();
 
-    for (int i = 0; i < requestsJson.length(); i++) {
-      final JSONObject req = requestsJson.getJSONObject(i);
-      final String fieldName = req.getString("field");
-      final AggregationType aggType;
-      try {
-        aggType = TimeSeriesHandlerUtils.resolveAggregationType(req, i);
-      } catch (final IllegalArgumentException e) {
-        // An explicit 400 rather than the throw the generic mapper would turn into "Cannot execute command":
-        // that mapper puts the specifics in the 'detail' field, which buildErrorBody conceals in production
-        // mode, so the caller would be told nothing about which field was wrong (issue #7325). This is the same
-        // shape as the "Field '...' not found in type" refusal below.
-        return new ExecutionResponse(400, new JSONObject().put("error", e.getMessage()).toString());
+    // One try around the whole member resolution: every refusal inside it is the same class of client error and
+    // gets the same answer - an explicit 400 whose 'error' field names the member. Letting any of them reach the
+    // generic mapper renders it as "Invalid JSON payload"/"Cannot execute command" with the specifics in the
+    // 'detail' field buildErrorBody conceals in production mode (issues #7325, #7340).
+    try {
+      final JSONObject aggJson = TimeSeriesHandlerUtils.requireObject(payload, "aggregation", "aggregation");
+      bucketInterval = TimeSeriesHandlerUtils.requireLong(aggJson, "bucketInterval", "aggregation.bucketInterval");
+      final JSONArray requestsJson = TimeSeriesHandlerUtils.requireArray(aggJson, "requests", "aggregation.requests");
+
+      for (int i = 0; i < requestsJson.length(); i++) {
+        final String reqPath = "aggregation.requests[" + i + "]";
+        final JSONObject req = TimeSeriesHandlerUtils.requireObjectElement(requestsJson, i, reqPath);
+        final String fieldName = TimeSeriesHandlerUtils.requireString(req, "field", reqPath + ".field");
+        final AggregationType aggType = TimeSeriesHandlerUtils.resolveAggregationType(req, i);
+        final String alias = TimeSeriesHandlerUtils.optString(req, "alias",
+            fieldName + "_" + aggType.name().toLowerCase(), reqPath + ".alias");
+
+        // The shared helper, as the Grafana handler and the gRPC aggregation path already use: this was the last
+        // site outside the gateway still hand-rolling the lookup, and therefore the last place the full-schema vs
+        // non-timestamp index conventions could be confused (claude-review on PR #7323).
+        final int colIndex = TimeSeriesHandlerUtils.findColumnIndex(fieldName, columns);
+
+        if (colIndex < 0)
+          // JSONObject rather than concatenation: fieldName is caller text, and a double quote in it would turn a
+          // hand-built body into one no client can parse (claude-review on PR #7680).
+          return TimeSeriesHandlerUtils.badRequest(
+              new IllegalArgumentException("Field '" + fieldName + "' not found in type"));
+
+        requests.add(new MultiColumnAggregationRequest(colIndex, aggType, alias));
+        aggNames.put(alias);
       }
-      final String alias = req.getString("alias", fieldName + "_" + aggType.name().toLowerCase());
-
-      // The shared helper, as the Grafana handler and the gRPC aggregation path already use: this was the last
-      // site outside the gateway still hand-rolling the lookup, and therefore the last place the full-schema vs
-      // non-timestamp index conventions could be confused (claude-review on PR #7323).
-      final int colIndex = TimeSeriesHandlerUtils.findColumnIndex(fieldName, columns);
-
-      if (colIndex < 0)
-        return new ExecutionResponse(400, "{ \"error\" : \"Field '" + fieldName + "' not found in type\"}");
-
-      requests.add(new MultiColumnAggregationRequest(colIndex, aggType, alias));
-      aggNames.put(alias);
+    } catch (final IllegalArgumentException e) {
+      return TimeSeriesHandlerUtils.badRequest(e);
     }
 
     final MultiColumnAggregationResult aggResult = engine.aggregateMulti(fromTs, toTs, requests, bucketInterval,
@@ -244,14 +292,16 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
   }
 
   private TagFilter buildTagFilter(final JSONObject payload, final List<ColumnDefinition> columns) {
-    if (!payload.has("tags"))
+    if (payload.isNull("tags"))
       return null;
-    return TimeSeriesHandlerUtils.buildTagFilter(payload.getJSONObject("tags"), columns);
+    return TimeSeriesHandlerUtils.buildTagFilter(
+        TimeSeriesHandlerUtils.requireObject(payload, "tags", "tags"), columns);
   }
 
   private int[] resolveColumnIndices(final JSONObject payload, final List<ColumnDefinition> columns) {
-    if (!payload.has("fields"))
+    if (payload.isNull("fields"))
       return null;
-    return TimeSeriesHandlerUtils.resolveColumnIndices(payload.getJSONArray("fields"), columns);
+    return TimeSeriesHandlerUtils.resolveColumnIndices(
+        TimeSeriesHandlerUtils.requireArray(payload, "fields", "fields"), columns, "fields");
   }
 }
