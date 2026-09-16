@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
@@ -45,25 +46,42 @@ import java.util.Map;
 /**
  * HTTP handler for PromQL series lookup.
  * Endpoint: GET /api/v1/ts/{database}/prom/api/v1/series
+ * <p>
+ * On {@link DatabaseAbstractHandler} since issue #7681, for the reasons spelled out on
+ * {@link PostGrafanaQueryHandler}: a request carrying {@code arcadedb-session-id} reads through that session's
+ * transaction, under its lock and on its principal and refreshing its idle timer, and the base class subsumes
+ * the {@code checkAuthorizationOnDatabase} call this handler used to make by hand.
+ *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class GetPromQLSeriesHandler extends AbstractServerHttpHandler {
+public class GetPromQLSeriesHandler extends DatabaseAbstractHandler {
 
   public GetPromQLSeriesHandler(final HttpServer httpServer) {
     super(httpServer);
   }
 
+  /**
+   * A read: an auto-commit wrapper would only add a commit with nothing to commit, so an unresolvable session
+   * id degrades to a session-less read rather than being refused - see
+   * {@link DatabaseAbstractHandler#rejectsUnresolvableSession()}.
+   */
+  @Override
+  protected boolean requiresTransaction() {
+    return false;
+  }
+
+  /**
+   * A session-less read is answered on the IO thread, which is what this handler has always done. A request
+   * that names a session is not: see {@link DatabaseAbstractHandler#carriesSessionId}.
+   */
+  @Override
+  protected boolean mustExecuteOnWorkerThread(final HttpServerExchange exchange) {
+    return carriesSessionId(exchange);
+  }
+
   @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
-      final JSONObject payload) throws Exception {
-
-    final Deque<String> databaseParam = exchange.getQueryParameters().get("database");
-    if (databaseParam == null || databaseParam.isEmpty())
-      return new ExecutionResponse(400, PromQLResponseFormatter.formatError("bad_data", "Database parameter is required"));
-
-    // Enforce database-level authorization (GHSA-x8mg-6r4p-87pf): this handler does not extend DatabaseAbstractHandler.
-    // Checked before any payload/parameter validation so an unauthorized caller cannot probe the target database.
-    checkAuthorizationOnDatabase(user, databaseParam.getFirst());
+      final Database db, final JSONObject payload) throws Exception {
 
     final Deque<String> matchParams = exchange.getQueryParameters().get("match[]");
     if (matchParams == null || matchParams.isEmpty())
@@ -75,7 +93,7 @@ public class GetPromQLSeriesHandler extends AbstractServerHttpHandler {
     final long startMs = startStr != null ? (long) (Double.parseDouble(startStr) * 1000) : Long.MIN_VALUE;
     final long endMs = endStr != null ? (long) (Double.parseDouble(endStr) * 1000) : Long.MAX_VALUE;
 
-    final DatabaseInternal database = httpServer.getServer().getDatabase(databaseParam.getFirst(), false, false);
+    final DatabaseInternal database = (DatabaseInternal) db;
     // Keyed by the label combination, in first-seen order.
     // The order matters: query() used to hand this loop the rows already sorted by timestamp, so the response
     // came out ordered by when each series first appears. forEachRow visits shard by shard, which would have

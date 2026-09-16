@@ -19,6 +19,7 @@
 package com.arcadedb.server.http.handler.openapi;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.server.http.HttpSessionManager;
 
 import io.swagger.v3.oas.models.Operation;
 import io.swagger.v3.oas.models.headers.Header;
@@ -52,7 +53,51 @@ public final class SpecBuilders {
           + GlobalConfiguration.HA_PROXY_LONG_COMMAND_TIMEOUT.getKey() + "' for a restore or an import). It may "
           + "still be running on the leader: check there before retrying";
 
+  /**
+   * The session header, and the four paragraphs every session-aware operation says about it.
+   * <p>
+   * Written once here for the reason {@link #LEADER_FORWARD_TIMEOUT_DESCRIPTION} is: issue #7402 documented
+   * three {@code /api/v1/ts} operations and issue #7681 added ten more across two further contributors, and
+   * three copies of the same paragraph is three chances to answer the question differently.
+   */
+  public static final String SESSION_HEADER = HttpSessionManager.ARCADEDB_SESSION_ID;
+
+  public static final String SESSION_REQUEST_DESCRIPTION = """
+      Session id returned by 'beginTransaction'. Present it to run this call inside that transaction: the \
+      call then runs under the session's lock and principal and refreshes its idle timer. Omit it to run \
+      outside any transaction.""";
+
+  public static final String SESSION_RESPONSE_DESCRIPTION =
+      "Echo of the session id this call ran inside. Absent when the call ran outside a transaction.";
+
+  /**
+   * What a 404 covers on a session-aware READ. A read overrides {@code requiresTransaction()} to false and so
+   * reaches {@code DatabaseAbstractHandler}'s degrading branch, exactly as {@code GET /query} does.
+   */
+  public static final String READ_STALE_SESSION_DESCRIPTION =
+      "Database not found. A session id that no longer resolves is NOT an error here: the read degrades to "
+          + "running outside the transaction and still answers 200.";
+
+  /**
+   * What a 404 covers on a session-aware WRITE, which answers true to {@code rejectsUnresolvableSession()}.
+   * The quoted text is the message {@code AbstractServerHttpHandler} actually sends.
+   */
+  public static final String WRITE_STALE_SESSION_DESCRIPTION =
+      "Database not found, or the session id header names a transaction that no longer resolves "
+          + "(\"Remote transaction session not found or expired\"): a write is refused rather than run outside "
+          + "the transaction the caller believes it is inside.";
+
   private SpecBuilders() {
+  }
+
+  /** The optional {@code arcadedb-session-id} request header, on an operation that honours it. */
+  public static Parameter sessionHeaderParam() {
+    return headerParam(SESSION_HEADER, SESSION_REQUEST_DESCRIPTION, false);
+  }
+
+  /** The {@code arcadedb-session-id} echo a session-aware operation puts on its success response. */
+  public static Header sessionEchoHeader() {
+    return stringHeader(SESSION_RESPONSE_DESCRIPTION);
   }
 
   public static Parameter pathParam(final String name, final String description) {

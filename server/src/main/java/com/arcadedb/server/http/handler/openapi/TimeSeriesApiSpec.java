@@ -18,7 +18,6 @@
  */
 package com.arcadedb.server.http.handler.openapi;
 
-import com.arcadedb.server.http.HttpSessionManager;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.Operation;
 import io.swagger.v3.oas.models.PathItem;
@@ -37,32 +36,12 @@ import java.util.List;
  * the request asked for aggregation.
  */
 public class TimeSeriesApiSpec implements OpenApiContributor {
-  private static final String SESSION_HEADER = HttpSessionManager.ARCADEDB_SESSION_ID;
-
-  // All three operations moved onto DatabaseAbstractHandler in issue #7402, so they honour the session header
-  // the way /api/v1/query and /api/v1/command do. Until then the header was accepted by the transport and
-  // ignored by the handler, and the document said nothing either way - which reads to a client generator as
-  // "this route has nothing to do with transactions" rather than as the gap it was.
-  private static final String SESSION_REQUEST_DESCRIPTION = """
-      Session id returned by 'beginTransaction'. Present it to run this call inside that transaction: the \
-      call then runs under the session's lock and principal and refreshes its idle timer. Omit it to run \
-      outside any transaction.""";
-
-  private static final String SESSION_RESPONSE_DESCRIPTION =
-      "Echo of the session id this call ran inside. Absent when the call ran outside a transaction.";
-
-  // The read routes override requiresTransaction() to false and so reach DatabaseAbstractHandler's degrading
-  // branch, exactly as GET /query does; the write route answers false there but true to
-  // rejectsUnresolvableSession(), so it is the one /api/v1/ts operation whose 404 covers the stale-session
-  // case. The quoted text is the message AbstractServerHttpHandler actually sends.
-  private static final String READ_STALE_SESSION_DESCRIPTION =
-      "Database not found. A session id that no longer resolves is NOT an error here: the read degrades to "
-          + "running outside the transaction and still answers 200.";
-
-  private static final String WRITE_STALE_SESSION_DESCRIPTION =
-      "Database not found, or the session id header names a transaction that no longer resolves "
-          + "(\"Remote transaction session not found or expired\"): a write is refused rather than run outside "
-          + "the transaction the caller believes it is inside.";
+  // The five paragraphs below moved to SpecBuilders in issue #7681, which needed the same text on ten more
+  // operations across GrafanaApiSpec and PrometheusApiSpec. Re-declared here only as short local names.
+  private static final String SESSION_HEADER                   = SpecBuilders.SESSION_HEADER;
+  private static final String SESSION_RESPONSE_DESCRIPTION     = SpecBuilders.SESSION_RESPONSE_DESCRIPTION;
+  private static final String READ_STALE_SESSION_DESCRIPTION   = SpecBuilders.READ_STALE_SESSION_DESCRIPTION;
+  private static final String WRITE_STALE_SESSION_DESCRIPTION  = SpecBuilders.WRITE_STALE_SESSION_DESCRIPTION;
 
   @Override
   public void contribute(final OpenAPI openAPI) {
@@ -89,7 +68,7 @@ public class TimeSeriesApiSpec implements OpenApiContributor {
             answers 400 with the counts of what was written and dropped, so a client can tell a total \
             rejection from a partial one.""");
     post.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
-    post.addParametersItem(SpecBuilders.headerParam(SESSION_HEADER, SESSION_REQUEST_DESCRIPTION, false));
+    post.addParametersItem(SpecBuilders.sessionHeaderParam());
 
     final Parameter precision = SpecBuilders.queryParam("precision",
         "Unit of the timestamps in the body. Defaults to nanoseconds when omitted.", false);
@@ -128,7 +107,7 @@ public class TimeSeriesApiSpec implements OpenApiContributor {
             under 'rows'; with 'aggregation' it carries fixed-interval buckets under 'buckets' and \
             names the computed aggregations under 'aggregations'.""");
     post.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
-    post.addParametersItem(SpecBuilders.headerParam(SESSION_HEADER, SESSION_REQUEST_DESCRIPTION, false));
+    post.addParametersItem(SpecBuilders.sessionHeaderParam());
     post.setRequestBody(SpecBuilders.jsonBody("Query definition", "TimeSeriesQueryRequest", true));
 
     final ApiResponse success = new ApiResponse();
@@ -172,7 +151,7 @@ public class TimeSeriesApiSpec implements OpenApiContributor {
             by tag. Repeat 'tag' once per tag column to name a single series on a type that carries \
             several. 'latest' is null when the type or the selected series holds no sample.""");
     get.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
-    get.addParametersItem(SpecBuilders.headerParam(SESSION_HEADER, SESSION_REQUEST_DESCRIPTION, false));
+    get.addParametersItem(SpecBuilders.sessionHeaderParam());
     get.addParametersItem(SpecBuilders.queryParam("type", "Time-series type name", true));
     // Repeatable since issue #7321: the handler conjoins every occurrence, the way the query endpoint
     // conjoins the pairs of its 'tags' object, so a plain string parameter would understate the contract

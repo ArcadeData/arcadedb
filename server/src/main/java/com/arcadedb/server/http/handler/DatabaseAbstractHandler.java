@@ -300,6 +300,25 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
     }
   }
 
+  /**
+   * Whether this request names a session at all - the one question a {@link #mustExecuteOnWorkerThread(HttpServerExchange)}
+   * override needs in order to keep answering a session-less request on the IO thread while dispatching a
+   * session-scoped one to a worker.
+   * <p>
+   * It has to be asked, because a session-scoped request runs inside {@code HttpSession.execute}, which blocks
+   * on the session lock for up to five seconds. An Undertow IO thread serves many connections, so that wait is
+   * not paid by the caller that queued behind its own session: it is paid by every unrelated connection
+   * multiplexed onto the same thread. Introduced with {@code GET /api/v1/ts/{database}/latest} in issue #7402
+   * and shared from here since issue #7681, which put eight more IO-thread handlers on this base class.
+   * <p>
+   * Only tests the header's presence. A value that turns out not to resolve has already cost the dispatch by
+   * then, which is the cheap half of the trade.
+   */
+  protected boolean carriesSessionId(final HttpServerExchange exchange) {
+    final HeaderValues sessionId = exchange.getRequestHeaders().get(SESSION_ID_HEADER);
+    return sessionId != null && !sessionId.isEmpty();
+  }
+
   protected boolean requiresDatabase() {
     return true;
   }
@@ -389,9 +408,10 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
         // The session id is not resolvable (committed/rolled back, expired, or owned by another principal).
         // A write-capable handler MUST reject it: falling through session-less would run the command in an
         // implicit auto-committing transaction while the client believes it is inside a transaction it can
-        // still roll back. Read-only handlers (GET /query, the two /api/v1/ts read routes) and the transaction
-        // endpoints (/begin, /commit, /rollback) instead degrade to a session-less request, keeping
-        // read-after-commit and idempotent retries of commit/rollback working.
+        // still roll back. Read-only handlers (GET /query, and the nine read routes under /api/v1/ts that
+        // issues #7402 and #7681 moved onto this class) and the transaction endpoints (/begin, /commit,
+        // /rollback) instead degrade to a session-less request, keeping read-after-commit and idempotent
+        // retries of commit/rollback working.
         if (rejectsUnresolvableSession())
           throw new HttpSessionException("Remote transaction '" + sessionId.getFirst() + "' not found or expired");
 
