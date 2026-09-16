@@ -49,6 +49,22 @@ final class TimeSeriesHandlerUtils {
    */
   private static final int MAX_ECHOED_VALUE_LENGTH = 64;
 
+  /**
+   * Longest numeric STRING accepted where an integral member is expected. A signed 19-digit long is 20
+   * characters, so this leaves ample room for a decimal point, an exponent and a run of zeros while keeping an
+   * arbitrarily long digit string out of {@link BigDecimal}'s parser, whose cost grows with the digit count.
+   * The exponent is what makes the value large, not the text, so this is defence in depth rather than the guard
+   * itself - see {@link #readLong} for the one that closes the hole.
+   */
+  private static final int MAX_NUMERIC_TEXT_LENGTH = 40;
+
+  /**
+   * Digits in the largest long, {@code 9223372036854775807}. A value with more integer digits than this cannot
+   * be one, which is the bound {@link BigDecimal#longValueExact()} applies internally - in {@code int}
+   * arithmetic, which is exactly the part {@link #readLong} has to redo.
+   */
+  private static final int LONG_MAX_DIGITS = 19;
+
   private TimeSeriesHandlerUtils() {
   }
 
@@ -206,11 +222,21 @@ final class TimeSeriesHandlerUtils {
    * {@code bucketInterval}, one step earlier: #7675 catches only the half that truncates to zero or below, and
    * {@code 1.5} is not that half.
    * <p>
-   * The check is done on the value's EXACT decimal, via {@link BigDecimal#longValueExact}, rather than by
-   * comparing the narrowed long back against a double: a double comparison cannot tell {@code 9007199254740993}
-   * from its neighbour, which is exactly the range where a millisecond instant lives. What is accepted is
-   * otherwise unchanged - a numeric string is still read as a number, as the class javadoc states - so no request
-   * that named a whole number stops working.
+   * The check is done on the value's EXACT decimal rather than by comparing the narrowed long back against a
+   * double: a double comparison cannot tell {@code 9007199254740993} from its neighbour, which is exactly the
+   * range where a millisecond instant lives. What is accepted is otherwise unchanged - a numeric string is still
+   * read as a number, as the class javadoc states - so no request that named a whole number stops working.
+   * <p>
+   * <b>Why the bound below is re-derived instead of left to {@link BigDecimal#longValueExact()}.</b> That method
+   * bails out early on {@code (precision() - scale) > 19}, computed in {@code int}. A crafted exponent makes the
+   * subtraction OVERFLOW: {@code "1E2147483647"} parses to {@code (unscaled=1, scale=-2147483647)} without
+   * materialising anything, and {@code 1 - (-2147483647)} wraps to {@code -2147483648}, which is not greater
+   * than 19 - so the guard passes and the method goes on to materialise a 2^31-digit integer. The mirror image,
+   * {@code "1E-2147483647"}, drives {@code setScale(0)} into {@code bigTenToThe(2147483647)}. Either is hundreds
+   * of megabytes of allocation from a thirteen-byte request body, on an endpoint whose whole purpose here is
+   * input hardening (claude-review on PR #7730). The scale test and the {@code long} subtraction below run first
+   * and answer both in constant time, so {@code longValueExact()} is only ever reached for a value of at most 19
+   * integer digits.
    */
   private static long readLong(final JSONObject owner, final String name, final String path) {
     final Object received = owner.opt(name);
@@ -234,19 +260,67 @@ final class TimeSeriesHandlerUtils {
         case BigInteger value -> new BigDecimal(value);
         case Number value -> BigDecimal.valueOf(value.longValue());
         // A numeric string, which getLong() has always accepted and which is what a form-encoded client sends.
-        case String text -> new BigDecimal(text.trim());
+        case String text -> parseNumericText(text);
         case null, default -> throw new NumberFormatException("not a number");
       };
     } catch (final NumberFormatException e) {
       throw wrongType(path, "a number", received, e);
     }
 
+    if (exact.signum() == 0)
+      // Zero at any scale is zero, and answering it here keeps the scale tests below off a value they would
+      // report as fractional ("0E-2147483647" is not).
+      return 0L;
+
+    // Trailing zeros first, so 1.000 is the whole number it plainly is. Cheap at any scale: it divides the
+    // UNSCALED value by ten while that stays exact and never materialises the value the scale denotes.
+    final BigDecimal stripped = exact.stripTrailingZeros();
+
+    // A positive scale that survives that strip means the last digit is non-zero and sits after the decimal
+    // point, so the value has a fractional part - the case this issue is about.
+    if (stripped.scale() > 0)
+      throw notAWholeLong(path, received, null);
+
+    // The integer-digit count, in LONG arithmetic: this is the subtraction that overflows above.
+    if ((long) stripped.precision() - (long) stripped.scale() > LONG_MAX_DIGITS)
+      throw notAWholeLong(path, received, null);
+
     try {
-      return exact.longValueExact();
+      return stripped.longValueExact();
     } catch (final ArithmeticException e) {
-      throw new IllegalArgumentException("'" + path + "' must be a whole number between " + Long.MIN_VALUE + " and "
-          + Long.MAX_VALUE + ": received " + describe(received), e);
+      // 19 integer digits is not quite the same bound as Long.MAX_VALUE: the last few values up to 10^19 - 1
+      // pass the digit count and land here.
+      throw notAWholeLong(path, received, e);
     }
+  }
+
+  /**
+   * Parses a numeric member that arrived as a STRING, which {@code JSONObject.getLong} has always accepted.
+   * <p>
+   * Length-capped before the parse, because {@link BigDecimal}'s cost grows with the digit count and the body
+   * limit is the only other bound on it. The cap rejects nothing a whole number a long can hold needs - see
+   * {@link #MAX_NUMERIC_TEXT_LENGTH} - and it is NOT what makes an extreme exponent safe, since those are short.
+   * <p>
+   * An over-long string is signalled the same way an unparseable one is, so it is reported as "must be a
+   * number" with the echo truncated: the two are the same answer to the caller, and #7340's message for a member
+   * that did not arrive as a number stays the one message.
+   */
+  private static BigDecimal parseNumericText(final String text) {
+    final String trimmed = text.trim();
+    if (trimmed.length() > MAX_NUMERIC_TEXT_LENGTH)
+      throw new NumberFormatException("longer than " + MAX_NUMERIC_TEXT_LENGTH + " characters");
+
+    return new BigDecimal(trimmed);
+  }
+
+  /**
+   * Refusal of a number that is not a whole one, or is one no long can hold. The two share a message because
+   * they are the same thing to the caller: the number it sent is not the number it would have been answered for.
+   */
+  private static IllegalArgumentException notAWholeLong(final String path, final Object received,
+      final Throwable cause) {
+    return new IllegalArgumentException("'" + path + "' must be a whole number between " + Long.MIN_VALUE + " and "
+        + Long.MAX_VALUE + ": received " + describe(received), cause);
   }
 
   static IllegalArgumentException missingMember(final String path, final String kind) {

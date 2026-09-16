@@ -64,6 +64,9 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
 
   private static final HttpString SESSION_EXPIRED_HEADER = new HttpString(SESSION_EXPIRED);
 
+  /** A session id is a UUID, 36 characters. See {@link #sanitizedSessionId}. */
+  private static final int MAX_ECHOED_SESSION_ID_LENGTH = 64;
+
   protected DatabaseAbstractHandler(final HttpServer httpServer) {
     super(httpServer);
   }
@@ -397,6 +400,27 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
     }
   }
 
+  /**
+   * The id to echo in {@link #SESSION_EXPIRED}, reduced to the shape a session id actually has (issue #7714).
+   * <p>
+   * This is the first value that travels from a REQUEST header into a RESPONSE header, and the only one on this
+   * path the client chose rather than the server. Undertow's parser already refuses CR and LF inside a header
+   * value, so response splitting is not reachable - but a session id is a UUID, and anything that is not one is
+   * a client that is already wrong, so nothing is lost by reducing what is echoed to the characters a UUID is
+   * made of and a length no id exceeds. That also keeps an arbitrary caller-chosen string out of whatever reads
+   * these headers downstream, which is a log scraper as often as it is a client (claude-review on PR #7730).
+   */
+  private static String sanitizedSessionId(final String sessionId) {
+    final int length = Math.min(sessionId.length(), MAX_ECHOED_SESSION_ID_LENGTH);
+    final StringBuilder sanitized = new StringBuilder(length);
+    for (int i = 0; i < length; i++) {
+      final char c = sessionId.charAt(i);
+      sanitized.append((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+          || c == '-' || c == '_' ? c : '?');
+    }
+    return sanitized.toString();
+  }
+
   protected HttpSession setTransactionInThreadLocal(final HttpServerExchange exchange, final Database database,
       final ServerSecurityUser user) {
     final HeaderValues sessionId = exchange.getRequestHeaders().get(HttpSessionManager.ARCADEDB_SESSION_ID);
@@ -415,7 +439,7 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
 
         // The degrade is deliberate but must not be silent: the caller believes it is inside a transaction and is
         // about to be answered from outside one (issue #7714). See SESSION_EXPIRED.
-        exchange.getResponseHeaders().put(SESSION_EXPIRED_HEADER, sessionId.getFirst());
+        exchange.getResponseHeaders().put(SESSION_EXPIRED_HEADER, sanitizedSessionId(sessionId.getFirst()));
 
         return null;
       }
