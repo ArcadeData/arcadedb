@@ -27,24 +27,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Issue #7694: the one absent-SUM/AVG contract, driven through every entry point that can decide it.
  * <p>
- * Two PRs merged 32 seconds apart answered the same question in opposite directions and left {@code main} red.
- * PR #7662 (issue #7584) pinned "a SUM that holds no real sample is {@link TimeSeriesNaN#ABSENT}"; PR #7676
- * (issue #7506) seeded SUM at the additive identity so that a request <i>nothing was ever offered</i> in a bucket
- * could answer the empty sum, keeping absent only for a request that was offered samples and found none real.
+ * A SUM or AVG request holding no real sample in a bucket answers {@link TimeSeriesNaN#ABSENT}, whether it was
+ * offered only absent samples or offered none at all. Issue #7506 briefly made those two cases differ, seeding SUM
+ * at the additive identity so a request nothing was ever offered could answer the empty sum; #7694 removed the
+ * distinction, because no query produces that state (only the single-request
+ * {@link MultiColumnAggregationResult#accumulate(long, int, double)} constructs it, as the tests below do, and it
+ * has no caller in {@code src/main}) and because it disagreed with SQL, where {@code SUM} is NULL over an empty
+ * group and over an all-NULL group alike.
  * <p>
- * #7694 decided for absent, and this class is that decision written down. Three things decided it:
- * <ol>
- *   <li>Nothing can reach the state the distinction describes. Every accumulation path offers each request a
- *       value for every row, segment or block it sees - {@code accumulateRow} and {@code accumulateBlockStats}
- *       take one entry per request, and both {@code accumulateSingleStat} call sites sit inside a
- *       {@code for (int r = 0; r < reqCount; r++)} loop - so a bucket that exists has been offered to all of its
- *       requests. The single-request {@link MultiColumnAggregationResult#accumulate(long, int, double)} this
- *       class uses to construct the state has no caller outside tests.</li>
- *   <li>SQL, which {@link TimeSeriesNaN} names as the model for SUM and AVG, answers NULL for {@code SUM} over an
- *       empty group and for {@code SUM} over an all-NULL group alike. It draws no distinction either.</li>
- *   <li>All four readers of {@code getValue()} render absent as their protocol's null, which is a gap on a chart.
- *       A zero is a measurement, and for SUM a plausible one.</li>
- * </ol>
  * Every entry point issue #7506's coverage table listed is still driven below; what changed is the answer each one
  * asserts. The #7089 half - a request that was offered samples and found none real - is unchanged, and is kept here
  * alongside so the two can no longer drift apart.

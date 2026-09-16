@@ -510,14 +510,15 @@ public final class MultiColumnAggregationResult {
    * side-channel is needed to recover it. SUM/AVG follow since issue #7089: a zero seed cannot tell "nothing real
    * arrived" from "it all added up to zero", and the {@code +=} it fed turned one NaN sample into a NaN total.
    * <p>
-   * SUM stays on the absent seed too, and does NOT seed at the additive identity (issue #7694). Issue #7506 moved
-   * it there so that a request nothing was ever offered in a bucket - one a sibling request over another column
-   * brought into existence - could answer the empty sum rather than an absence. Nothing can reach that state: every
-   * accumulation path in this package offers each request a value for every row, segment or block it sees, so a
-   * bucket that exists has been offered to all of them. Buying an unreachable distinction cost the seed its
-   * agreement with SQL's {@code SUM}, which is NULL over an empty group and over an all-NULL one alike, and left
-   * two contracts in the tree at once. COUNT is the one exception, and the only accumulator seeded with a number:
-   * it counts rows the way {@code COUNT(*)} does.
+   * SUM keeps the absent seed too, rather than the additive identity issue #7506 gave it (issue #7694). That seed
+   * existed so a request nothing was ever offered in a bucket could answer the empty sum instead of an absence -
+   * a state no QUERY produces: every call site in {@code src/main} goes through {@link #accumulateRow} or
+   * {@link #accumulateBlockStats}, which take one value per request, or loops {@link #accumulateSingleStat} over
+   * all of them, so a bucket that exists has been offered to every request. The single-request
+   * {@link #accumulate(long, int, double)} can still construct it, and the tests do; what it cannot do is come
+   * from a query. The distinction also disagreed with SQL's {@code SUM}, which is NULL over an empty group and
+   * over an all-NULL one alike. COUNT is the one accumulator seeded with a number, counting rows as
+   * {@code COUNT(*)} does.
    */
   private double[] newInitializedValues() {
     final double[] vals = new double[requestCount];

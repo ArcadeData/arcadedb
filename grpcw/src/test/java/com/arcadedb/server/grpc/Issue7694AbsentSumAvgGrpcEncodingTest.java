@@ -103,6 +103,9 @@ class Issue7694AbsentSumAvgGrpcEncodingTest {
     assertThat(values.get(0).getKindCase()).as("a real total of zero is data, not a gap")
         .isEqualTo(GrpcValue.KindCase.DOUBLE_VALUE);
     assertThat(values.get(0).getDoubleValue()).isEqualTo(0.0);
+    // getDoubleValue() answers 0.0 for an UNSET oneof too, so the kind has to be asserted first or this pair
+    // would pass against the very regression the class exists to catch (CodeRabbit on PR #7718).
+    assertThat(values.get(1).getKindCase()).isEqualTo(GrpcValue.KindCase.DOUBLE_VALUE);
     assertThat(values.get(1).getDoubleValue()).isEqualTo(0.0);
   }
 

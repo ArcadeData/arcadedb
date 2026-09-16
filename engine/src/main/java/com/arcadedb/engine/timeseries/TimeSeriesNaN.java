@@ -43,12 +43,12 @@ package com.arcadedb.engine.timeseries;
  * it - which is why the SUM fold is keyed on that count rather than on the accumulator's value. {@code COUNT} is the one aggregate that does not
  * skip: it counts rows, as SQL's {@code COUNT(*)} does, and the SQL push-down maps it from {@code count(*)}.
  * <p>
- * A window that was offered no sample at all and one whose samples were all absent get the SAME answer, {@link
- * #ABSENT}, and no accumulator in this package distinguishes them (issue #7694). Issue #7506 briefly seeded SUM at
- * the additive identity so that the two could be told apart; the distinction was unreachable - every aggregation
- * path offers each request a value for every row it sees - and it put the engine at odds with the SQL semantics
- * this policy is modelled on, where {@code SUM} over an empty group and over an all-NULL group are both NULL.
- * {@code COUNT} remains the one aggregate that answers the number zero for no rows.
+ * A window offered no sample at all and one whose samples were all absent get the SAME answer, {@link #ABSENT},
+ * and no accumulator tells them apart (issue #7694). Issue #7506 briefly seeded SUM at the additive identity so
+ * that they could be: no query reaches that state - see {@code MultiColumnAggregationResult.newInitializedValues}
+ * for which paths rule it out - and it disagreed with the SQL semantics this policy is modelled on, where
+ * {@code SUM} over an empty group and over an all-NULL group are both NULL. {@code COUNT} remains the one
+ * aggregate that answers the number zero for no rows.
  * <p>
  * The PromQL layer is deliberately NOT under this policy for {@code sum}/{@code avg}: Prometheus propagates NaN
  * through those, and a PromQL query is expected to answer what Prometheus would.
