@@ -73,8 +73,13 @@ class Issue7657TimeSeriesWriteSpecStatesNonAtomicityTest {
         .as("the write route states its non-atomicity the way the batch route does")
         .containsIgnoringCase("not atomic");
     assertThat(description)
-        .as("and says what that means for a caller who rolls back: the samples stay")
-        .containsIgnoringCase("rollback");
+        .as("and says when the samples become durable: as they are appended, not at anyone's commit")
+        .containsIgnoringCase("commits its own storage transaction as it is appended");
+    assertThat(description)
+        .as("and which way a rollback goes. Keyword-matching 'rollback' alone would accept the opposite "
+            + "contract - 'not atomic because a rollback removes prior samples' contains every keyword the "
+            + "correct text does (CodeRabbit, cycle 1) - so the direction is what is asserted")
+        .containsIgnoringCase("does not take the appended samples back");
   }
 
   /**
@@ -92,10 +97,13 @@ class Issue7657TimeSeriesWriteSpecStatesNonAtomicityTest {
         .doesNotContainIgnoringCase("run this call inside that transaction");
     assertThat(writeSession)
         .as("it says what the header does buy instead - the session's lock, principal and idle-timer refresh")
-        .containsIgnoringCase("idle");
+        .containsIgnoringCase("refreshes its idle timer");
     assertThat(writeSession)
-        .as("and it names the consequence at the point a client would rely on the opposite")
-        .containsIgnoringCase("not");
+        .as("and it denies the one thing a client would otherwise assume, in those words")
+        .containsIgnoringCase("does NOT put the samples in that transaction");
+    assertThat(writeSession)
+        .as("and says which way a rollback goes, so the assertion cannot be satisfied by the opposite claim")
+        .containsIgnoringCase("rolling the transaction back does not remove them");
   }
 
   /**
@@ -110,6 +118,35 @@ class Issue7657TimeSeriesWriteSpecStatesNonAtomicityTest {
   }
 
   /** Both routes asserted here are POST operations; {@code /latest} is the only GET of the three. */
+  /**
+   * The SQL half of the same statement, on {@code POST /api/v1/command/{database}} - the route
+   * {@code INSERT INTO <timeseries type>} actually arrives on.
+   * <p>
+   * Added because nothing asserted it (CodeRabbit, cycle 1): {@code CoreApiSpecTest} guards the ordering
+   * constraint that keeps this sentence ahead of the ndjson restriction, but not that the sentence is attached
+   * at all, so dropping the concatenation would have left the whole suite green.
+   */
+  @Test
+  void commandOperationSaysInsertIntoATimeSeriesTypeIsNotAtomic() {
+    final OpenAPI core = new OpenAPI();
+    core.setPaths(new Paths());
+    core.setComponents(new Components());
+    new CoreApiSpec().contribute(core);
+
+    final String description = core.getPaths().get("/api/v1/command/{database}").getPost().getDescription();
+
+    assertThat(description)
+        .as("#7657: the one INSERT target that is not atomic with its own transaction is named on the route "
+            + "that runs it")
+        .containsIgnoringCase("INSERT INTO a TIMESERIES type is NOT atomic");
+    assertThat(description)
+        .as("with the direction of the rollback spelled out, not merely the word")
+        .containsIgnoringCase("a rollback does not take them back");
+    assertThat(description)
+        .as("and the reassurance that nothing else changed, which is why the exception is worth stating")
+        .containsIgnoringCase("Every other INSERT target behaves normally");
+  }
+
   private String sessionHeaderOf(final String path) {
     final Operation operation = openAPI.getPaths().get(path).getPost();
     return operation.getParameters().stream()
