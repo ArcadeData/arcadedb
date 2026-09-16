@@ -69,12 +69,16 @@ import java.util.logging.Level;
 public record LeaderDial(String address, boolean https, HttpClient client, String refusal) {
 
   /**
-   * A {@code Duration} of zero or less is rejected by {@code HttpClient.Builder.connectTimeout}. Clamping to
-   * 1 ms rather than falling back to the JDK default is deliberate, matching
-   * {@code LeaderCommandForwarder.Transport}'s own clamp: 0 must not become a back door to the unbounded
-   * behaviour {@link #newConnectTimeoutBoundedClient} exists to remove.
+   * A {@code Duration} of zero or less is rejected by both {@code HttpClient.Builder.connectTimeout} and
+   * {@code HttpRequest.Builder.timeout}. Clamping to 1 ms rather than falling back to a default is
+   * deliberate, matching {@code LeaderCommandForwarder.Transport}'s own clamp: 0 must not become a back door
+   * to the unbounded behaviour {@link #newConnectTimeoutBoundedClient} and the response deadlines in
+   * {@code RaftReplicatedDatabase}/{@code PostBatchHandler} (issues #7526/#7527/#7542/#7543) exist to remove.
+   * Public and shared from here rather than one copy per site (claude-review finding on PR #7650), since
+   * {@link #newConnectTimeoutBoundedClient} is already the shared home for the connect-timeout half of the
+   * same reasoning.
    */
-  private static final long MIN_CONNECT_TIMEOUT_MS = 1L;
+  public static final long MIN_FORWARD_TIMEOUT_MS = 1L;
 
   /**
    * Builds the plain-HTTP client a follower-to-leader forward dials on, with
@@ -90,7 +94,7 @@ public record LeaderDial(String address, boolean https, HttpClient client, Strin
   public static HttpClient newConnectTimeoutBoundedClient(final ContextConfiguration configuration) {
     final long configured = configuration.getValueAsLong(GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT);
     return HttpClient.newBuilder()
-        .connectTimeout(Duration.ofMillis(Math.max(configured, MIN_CONNECT_TIMEOUT_MS)))
+        .connectTimeout(Duration.ofMillis(Math.max(configured, MIN_FORWARD_TIMEOUT_MS)))
         .build();
   }
 

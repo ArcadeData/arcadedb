@@ -312,13 +312,6 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   /**
-   * A {@code Duration} of zero or less is rejected by {@code HttpRequest.Builder.timeout}. Clamping to 1 ms
-   * rather than falling back to a default is deliberate, matching {@code LeaderCommandForwarder.Transport}'s
-   * own clamp: 0 must not become a back door to the unbounded behaviour issues #7527/#7543 exist to remove.
-   */
-  private static final long MIN_FORWARD_TIMEOUT_MS = 1L;
-
-  /**
    * Registry of leader-side exception class names to a factory that rebuilds the same type from its
    * message, used by {@link #reconstructLeaderException} on forwarded-command errors. Reconstructing
    * the exact type (rather than collapsing to a common supertype) preserves retry semantics for
@@ -3603,14 +3596,14 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       resolvedTimeoutMs = configuredCommandTimeout;
     else {
       resolvedTimeoutMs = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_PROXY_COMMAND_TIMEOUT);
-      if (resolvedTimeoutMs < MIN_FORWARD_TIMEOUT_MS && commandTimeoutClampWarned.compareAndSet(false, true))
+      if (resolvedTimeoutMs < LeaderDial.MIN_FORWARD_TIMEOUT_MS && commandTimeoutClampWarned.compareAndSet(false, true))
         LogManager.instance().log(this, Level.WARNING,
             "%s is set to %,d, which does not switch the bound off - a write forwarded to the leader is never "
                 + "unbounded. It is clamped to %,d ms instead, so forwarded writes on this node will fail almost "
                 + "immediately. Set a positive value in milliseconds. This notice is logged only once.",
-            GlobalConfiguration.HA_PROXY_COMMAND_TIMEOUT.getKey(), resolvedTimeoutMs, MIN_FORWARD_TIMEOUT_MS);
+            GlobalConfiguration.HA_PROXY_COMMAND_TIMEOUT.getKey(), resolvedTimeoutMs, LeaderDial.MIN_FORWARD_TIMEOUT_MS);
     }
-    final long deadlineMs = Math.max(resolvedTimeoutMs, MIN_FORWARD_TIMEOUT_MS);
+    final long deadlineMs = Math.max(resolvedTimeoutMs, LeaderDial.MIN_FORWARD_TIMEOUT_MS);
 
     final HttpRequest.Builder builder = HttpRequest.newBuilder()
         .uri(URI.create(leaderUrl))

@@ -238,12 +238,6 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    * connection is retired instead, because a bulk upload's remainder is not worth a keep-alive.
    */
   private static final int        MAX_ABANDONED_BODY_DRAIN   = 64 * 1024;
-  /**
-   * A {@code Duration} of zero or less is rejected by {@code HttpRequest.Builder.timeout}. Clamping to 1 ms
-   * rather than falling back to a default is deliberate, matching {@code LeaderCommandForwarder.Transport}'s
-   * own clamp: 0 must not become a back door to the unbounded behaviour issues #7526/#7542 exist to remove.
-   */
-  private static final long       MIN_FORWARD_TIMEOUT_MS     = 1L;
 
   /**
    * Emits the "a peer relayed a batch here and this node is not the leader either" notice only once (issue
@@ -1627,13 +1621,13 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // whole exchange.
     final long configuredBatchTimeout = httpServer.getServer().getConfiguration()
         .getValueAsLong(GlobalConfiguration.HA_PROXY_BATCH_READ_TIMEOUT);
-    if (configuredBatchTimeout < MIN_FORWARD_TIMEOUT_MS && batchTimeoutClampWarned.compareAndSet(false, true))
+    if (configuredBatchTimeout < LeaderDial.MIN_FORWARD_TIMEOUT_MS && batchTimeoutClampWarned.compareAndSet(false, true))
       LogManager.instance().log(this, Level.WARNING,
           "%s is set to %,d, which does not switch the bound off - a batch forwarded to the leader is never "
               + "unbounded. It is clamped to %,d ms instead, so forwarded batches on this node will fail almost "
               + "immediately. Set a positive value in milliseconds. This notice is logged only once.",
-          GlobalConfiguration.HA_PROXY_BATCH_READ_TIMEOUT.getKey(), configuredBatchTimeout, MIN_FORWARD_TIMEOUT_MS);
-    final long deadlineMs = Math.max(configuredBatchTimeout, MIN_FORWARD_TIMEOUT_MS);
+          GlobalConfiguration.HA_PROXY_BATCH_READ_TIMEOUT.getKey(), configuredBatchTimeout, LeaderDial.MIN_FORWARD_TIMEOUT_MS);
+    final long deadlineMs = Math.max(configuredBatchTimeout, LeaderDial.MIN_FORWARD_TIMEOUT_MS);
 
     // The body travels through the same guarded stream the leader-side load would use, so a cut upload cannot
     // relay a replay of its own bytes on to the leader either (issue #6180).
