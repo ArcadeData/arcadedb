@@ -24,10 +24,12 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.database.Document;
 import com.arcadedb.schema.Property;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -44,6 +46,17 @@ public class Projection extends SimpleNode {
   public List<ProjectionItem> items;
   // runtime
   private Set<String> excludes;
+  /**
+   * Alias to source column name, for the projection items that are plain, unqualified column references
+   * ({@code d}, or {@code d AS x} - not {@code d.sub}, not an expression, not a nested projection). Lets a row
+   * this projection produces report the schema type of the column each value came from, which its Java class does
+   * not always say (issue #7638, and see {@link com.arcadedb.query.sql.executor.Result#getPropertyType}).
+   * <p>
+   * Computed once and never mutated afterwards, alongside {@link #excludes} and for the same reason: a
+   * {@link Projection} is cached per statement and shared by every row and every thread executing it, so this must
+   * not become per-row work, and the map handed to a row must be safe to read concurrently.
+   */
+  private Map<String, String> sourceColumns;
 
   public Projection(final List<ProjectionItem> items, final boolean distinct) {
     this.items = items;
@@ -145,6 +158,15 @@ public class Projection extends SimpleNode {
       }
     }
 
+    // Two reference writes, so a column-list projection's non-element row can still say which column each value
+    // came from (issue #7638). Skipped entirely when there is nothing to say - an untyped source, or a projection
+    // with no plain column reference in it.
+    if (!sourceColumns.isEmpty()) {
+      final Document sourceElement = record.isElement() ? record.toElement() : null;
+      if (sourceElement != null && sourceElement.getType() != null)
+        result.setProjectionSource(sourceElement.getType(), sourceColumns);
+    }
+
     for (final String key : record.getMetadataKeys()) {
       if (!result.getMetadataKeys().contains(key))
         result.setMetadata(key, record.getMetadata(key));
@@ -165,6 +187,26 @@ public class Projection extends SimpleNode {
 
       if (excludes == null)
         excludes = Collections.emptySet();
+    }
+
+    if (sourceColumns == null) {
+      Map<String, String> resolved = null;
+      for (final ProjectionItem item : items) {
+        if (item.exclude || item.isAll() || item.nestedProjection != null)
+          continue;
+
+        final Expression expression = item.getExpression();
+        // isBaseIdentifier() is exactly "a bare column name and nothing else": no traversal, no method, no
+        // arithmetic - so getDefaultAlias() names the source column, and the value published under the item's
+        // alias IS that column's value (ProjectionItem.convert only unwraps iterators and result sets).
+        if (expression == null || !expression.isBaseIdentifier())
+          continue;
+
+        if (resolved == null)
+          resolved = new HashMap<>(items.size());
+        resolved.put(item.getProjectionAliasAsString(), expression.getDefaultAlias().getStringValue());
+      }
+      sourceColumns = resolved != null ? Collections.unmodifiableMap(resolved) : Collections.emptyMap();
     }
   }
 

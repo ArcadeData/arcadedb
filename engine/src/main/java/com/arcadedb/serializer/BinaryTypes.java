@@ -105,6 +105,28 @@ public class BinaryTypes {
     return storageType == TYPE_COMPRESSED_RID ? TYPE_RID : storageType;
   }
 
+  /**
+   * The binary type a {@code java.util.Date}/{@code Calendar} is stored as: the one the schema declares when the
+   * column is temporal, {@code fallback} otherwise.
+   * <p>
+   * The temporal test is not ceremony. A {@code Date} can legitimately sit in a column declared STRING (a
+   * lenient set that has not been coerced yet) or in one with no declaration at all, and answering that column's
+   * binary type would hand {@code serializeValue} a value it cannot write. The four {@code java.time} branches
+   * above take that risk because their values cannot arrive on a non-temporal column by the same route; this one
+   * is reached for every {@code Date} in the system, so it checks (issue #7638).
+   *
+   * @param propertyType the schema declaration for the property being written, or null when it has none
+   * @param fallback     the type to use when the schema says nothing temporal
+   */
+  private static byte temporalTypeFromSchema(final Property propertyType, final byte fallback) {
+    if (propertyType == null)
+      return fallback;
+    return switch (propertyType.getType()) {
+      case DATE, DATETIME, DATETIME_SECOND, DATETIME_MICROS, DATETIME_NANOS -> propertyType.getType().getBinaryType();
+      default -> fallback;
+    };
+  }
+
   public static byte getTypeFromValue(final Object value, final Property propertyType) {
     final byte type;
 
@@ -149,10 +171,16 @@ public class BinaryTypes {
         type = DateUtils.getBestBinaryTypeForPrecision(DateUtils.getPrecision(instant.getNano()));
     } else if (value instanceof LocalDate)
       type = TYPE_DATE;
-    else if (value instanceof Calendar) // CAN'T DETERMINE IF DATE OR DATETIME, USE DATETIME
-      type = TYPE_DATETIME;
-    else if (value instanceof Date) // CAN'T DETERMINE IF DATE OR DATETIME, USE DATETIME
-      type = TYPE_DATETIME;
+    else if (value instanceof Calendar || value instanceof Date)
+      // A java.util.Date (or Calendar) CANNOT SAY ON ITS OWN WHETHER IT IS A DATE OR A DATETIME, so the schema is
+      // asked exactly as it is for the four java.time branches above, and DATETIME is the answer only when nothing
+      // declared otherwise. Ignoring the declaration here is what made arcadedb.dateImplementation=java.util.Date
+      // unusable: the write path coerces a value into a DATE column's configured Java class (see
+      // Type.getJavaImplementation), so under that setting EVERY value written to a DATE column arrived here as a
+      // java.util.Date and was stored as a DATETIME - epoch millis under a DATE declaration. The column then read
+      // back as the dateTimeImplementation (a LocalDateTime by default), so the configured dateImplementation was
+      // never honoured on read and the value carried a spurious time of day out to JSON (issue #7638)
+      type = temporalTypeFromSchema(propertyType, TYPE_DATETIME);
     else if (value instanceof BigDecimal)
       type = TYPE_DECIMAL;
     else if (value instanceof Boolean)
