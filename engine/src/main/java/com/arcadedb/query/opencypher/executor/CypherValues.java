@@ -188,7 +188,13 @@ public final class CypherValues {
    * server log that naming every key would.
    */
   private static String abbreviate(final String name) {
-    return name.length() <= MAX_DESCRIBED_NAME_LENGTH ? name : name.substring(0, MAX_DESCRIBED_NAME_LENGTH) + "...";
+    if (name.length() <= MAX_DESCRIBED_NAME_LENGTH)
+      return name;
+    // Never cut between the halves of a surrogate pair: a name holding an astral character would otherwise end in a
+    // lone surrogate, which renders as a replacement character wherever the message is read.
+    final int end = Character.isHighSurrogate(name.charAt(MAX_DESCRIBED_NAME_LENGTH - 1))
+        ? MAX_DESCRIBED_NAME_LENGTH - 1 : MAX_DESCRIBED_NAME_LENGTH;
+    return name.substring(0, end) + "...";
   }
 
   /**
