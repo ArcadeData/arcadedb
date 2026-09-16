@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import org.junit.jupiter.api.Test;
 
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
@@ -195,6 +196,49 @@ class Issue7724AggregationBucketCeilingTest extends TestHelper {
     assertThat(flat.isOverBucketCeiling()).as("equal to the ceiling is not over it").isFalse();
     flat.accumulate(91_000L, 0, 1.0);
     assertThat(flat.isOverBucketCeiling()).isTrue();
+  }
+
+  /**
+   * Issue #7717, on the layer that had no counters: a read answered entirely from the MUTABLE bucket must
+   * report the pages it examined and the rows it materialised.
+   * <p>
+   * Not an edge case - it is every read of a type whose compaction interval has not elapsed - and reporting
+   * zero work for it would make the counters worse than absent, because an operator would read "this query
+   * touched nothing" from a query that touched everything. The sealed half was counted from the start; the
+   * ascending mutable scan was not, while its descending twin always had been (CodeRabbit on PR #7728).
+   */
+  @Test
+  void aReadAnsweredFromTheMutableBucketAloneStillReportsItsWork() throws Exception {
+    database.command("sql", "CREATE TIMESERIES TYPE Unsealed TIMESTAMP ts FIELDS (value DOUBLE) SHARDS 1");
+    final TimeSeriesEngine engine = ((LocalTimeSeriesType) database.getSchema().getType("Unsealed")).getEngine();
+
+    // Deliberately NOT compacted: every sample is still in the mutable bucket.
+    database.transaction(() -> {
+      for (int i = 0; i < SAMPLES; i++)
+        database.command("sql", "INSERT INTO Unsealed SET ts = :ts, value = :v",
+            Map.of("ts", i * BUCKET, "v", (double) i));
+    });
+
+    final AggregationMetrics metrics = new AggregationMetrics();
+    database.begin();
+    final int rows;
+    try {
+      final Iterator<Object[]> it = engine.iterateQuery(0L, SAMPLES * BUCKET, null, null, metrics);
+      int counted = 0;
+      while (it.hasNext()) {
+        it.next();
+        counted++;
+      }
+      rows = counted;
+    } finally {
+      database.commit();
+    }
+
+    assertThat(rows).as("the rows really were read").isEqualTo(SAMPLES);
+    assertThat(metrics.getScannedPages()).as("the mutable pages it examined").isPositive();
+    assertThat(metrics.getMaterializedRows()).as("the rows it turned into objects").isEqualTo(SAMPLES);
+    assertThat(metrics.getSlowPathBlocks() + metrics.getFastPathBlocks())
+        .as("nothing was sealed, so no block was read").isZero();
   }
 
   // ---- helpers ----
