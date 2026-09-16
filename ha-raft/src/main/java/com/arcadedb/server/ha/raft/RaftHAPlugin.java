@@ -141,7 +141,9 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
       // writers on one page and drives the "Concurrent modification on page ..." retry storms.
       server.setDatabaseWrapper(db -> {
         warnIfSingleBucketTypes(db);
-        return new RaftReplicatedDatabase(server, db, raftHAServer);
+        // Shared client, not one built per database (review finding on PR #7650): see RaftHAServer's
+        // forwardHttpClient field javadoc.
+        return new RaftReplicatedDatabase(server, db, raftHAServer, raftHAServer.getForwardHttpClient());
       });
 
       // Re-wrap any databases that were already loaded before this plugin started

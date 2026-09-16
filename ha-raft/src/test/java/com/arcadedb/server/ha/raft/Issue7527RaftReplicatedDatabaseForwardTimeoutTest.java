@@ -21,7 +21,9 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.TransactionException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
@@ -87,18 +89,19 @@ class Issue7527RaftReplicatedDatabaseForwardTimeoutTest {
     return raft;
   }
 
-  private static NeedRetryException invokeAndUnwrap(final RaftReplicatedDatabase db, final ContextConfiguration cfg) throws Exception {
+  private static <T extends ArcadeDBException> T invokeAndUnwrap(final RaftReplicatedDatabase db,
+      final ContextConfiguration cfg, final Class<T> expectedType) throws Exception {
     try {
       forwardMethod().invoke(db, "sql", "insert into V set a = 1", null, new Object[0], cfg);
       throw new AssertionError("expected the forward to throw");
     } catch (final InvocationTargetException e) {
-      assertThat(e.getCause()).isInstanceOf(NeedRetryException.class);
-      return (NeedRetryException) e.getCause();
+      assertThat(e.getCause()).isInstanceOf(expectedType);
+      return expectedType.cast(e.getCause());
     }
   }
 
   @Test
-  void aLeaderThatAcceptsAndNeverAnswersIsGivenUpOnWithNeedRetryException() throws Exception {
+  void aLeaderThatAcceptsAndNeverAnswersIsGivenUpOnWithANonRetryableException() throws Exception {
     try (final StalledLeader leader = new StalledLeader()) {
       final ContextConfiguration cfg = new ContextConfiguration();
       cfg.setValue(GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT, 5_000L);
@@ -107,10 +110,16 @@ class Issue7527RaftReplicatedDatabaseForwardTimeoutTest {
       final RaftReplicatedDatabase db = databaseWith(serverWith(cfg), raftPointingAt(leader.address()));
 
       final StallAwareStopwatch watch = StallAwareStopwatch.start();
-      final NeedRetryException e = invokeAndUnwrap(db, cfg);
+      // TransactionException, NOT NeedRetryException (review finding on PR #7650): the leader accepted the
+      // connection, so it may already have applied this non-idempotent write before the response was lost -
+      // the outcome is unknown, and NeedRetryException here would let RemoteDatabase.transaction's automatic
+      // retry double-apply an already-committed write. A connect failure (the other tests below) has no such
+      // ambiguity: the command provably never left this node.
+      final TransactionException e = invokeAndUnwrap(db, cfg, TransactionException.class);
       watch.assertGaveUpWithin(GAVE_UP_BOUND_MS,
           "a 1s forward deadline from the unbounded wait a leader that never answers used to produce");
 
+      assertThat(e).isNotInstanceOf(NeedRetryException.class);
       assertThat(e.getMessage()).contains(leader.address());
       assertThat(leader.acceptedConnections()).isGreaterThanOrEqualTo(1);
     }
@@ -131,7 +140,9 @@ class Issue7527RaftReplicatedDatabaseForwardTimeoutTest {
     final RaftReplicatedDatabase db = databaseWith(serverWith(cfg), raftPointingAt(unreachable));
 
     final StallAwareStopwatch watch = StallAwareStopwatch.start();
-    final NeedRetryException e = invokeAndUnwrap(db, cfg);
+    // NeedRetryException is correct here: a refused/unreachable connection means the command never left this
+    // node, so retrying is provably safe - unlike the response-timeout case above.
+    final NeedRetryException e = invokeAndUnwrap(db, cfg, NeedRetryException.class);
     watch.assertGaveUpWithin(GAVE_UP_BOUND_MS, "the configured connect timeout, not an OS-level connect refusal delay");
 
     assertThat(e.getMessage()).contains(unreachable);
@@ -153,7 +164,7 @@ class Issue7527RaftReplicatedDatabaseForwardTimeoutTest {
       final RaftReplicatedDatabase db = databaseWith(serverWith(cfg), raftPointingAt(leader.address()));
 
       final StallAwareStopwatch watch = StallAwareStopwatch.start();
-      invokeAndUnwrap(db, cfg);
+      invokeAndUnwrap(db, cfg, TransactionException.class);
       watch.assertGaveUpWithin(GAVE_UP_BOUND_MS,
           "the short arcadedb.command.timeout, proving it was used instead of the much longer fallback");
     }

@@ -2114,10 +2114,12 @@ public enum GlobalConfiguration {
       reusing it). Defaults to one hour, the same order of magnitude as arcadedb.ha.proxyLongCommandTimeout's \
       restore/import budget, because arcadedb.command.timeout defaults to 0 (unbounded) and this is what stands \
       between an ordinary forwarded write and an indefinite wait when nobody has opted into a tighter one. A \
-      blown deadline is reported as a retryable NeedRetryException - the same type a reconstructed leader-side \
-      timeout already carries - so the caller's existing retry loop resends it to whichever node is leader by \
-      then, rather than surfacing an IO error for what may just be a slow or momentarily partitioned leader. \
-      0 or a negative value does not disable it. Re-read on every forward.""",
+      blown deadline is reported as a non-retryable TransactionException, not NeedRetryException: the leader \
+      already had the connection when the deadline fired, so it may have applied this non-idempotent write \
+      before the answer was lost, and retrying blindly could double-apply it. A refused or unreachable \
+      connection is the other half of "cannot be reached" and IS reported as NeedRetryException, because \
+      there the command provably never left this node. 0 or a negative value does not disable it. Re-read on \
+      every forward.""",
       Long.class, 3_600_000L),
 
   HA_PROXY_BATCH_READ_TIMEOUT("arcadedb.ha.proxyBatchReadTimeout", SCOPE.SERVER,

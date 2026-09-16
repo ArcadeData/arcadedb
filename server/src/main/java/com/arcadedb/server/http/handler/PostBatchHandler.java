@@ -1671,7 +1671,8 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       LogManager.instance().log(this, Level.WARNING, "Cannot connect to leader at %s to forward /batch: %s", url, e.getMessage());
       return new ExecutionResponse(504, new JSONObject()
           .put("error", "Cannot connect to the leader at " + url + " within "
-              + GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT.getKey() + "; the leader may be down or unreachable")
+              + dial.client().connectTimeout().map(Duration::toMillis).orElse(-1L) + "ms ("
+              + GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT.getKey() + "); the leader may be down or unreachable")
           .toString());
     } catch (final ConnectException e) {
       // The OTHER half of "cannot be reached": the host actively refused the connection (ECONNREFUSED) rather
