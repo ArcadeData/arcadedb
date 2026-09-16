@@ -52,6 +52,18 @@ public class CoreApiSpec implements OpenApiContributor {
    */
   private static final Set<String> BOOKMARKLESS_STATUSES = Set.of("401", "404");
 
+  // Placed BEFORE NDJSON_READ_ONLY_DESCRIPTION in the command description, never after it: CoreApiSpecTest
+  // requires the text from "only a statement provably read-only may stream" onward to be identical across GET
+  // query, POST query and POST command (#7569, #7571), and a suffix added here would diverge them.
+  // INSERT INTO a TIMESERIES type is the one statement this endpoint runs that the session header above does
+  // not govern, so it is said here rather than on the header - a reader who never sends a session id still has
+  // to know the samples are already durable. The engine-side statement of the same contract lives on
+  // TimeSeriesShard.appendSamples (#7410, decided as final by #7657); /api/v1/ts/{database}/write says it too.
+  private static final String TIMESERIES_INSERT_DESCRIPTION =
+      "INSERT INTO a TIMESERIES type is NOT atomic with the transaction that contains it: the samples are "
+          + "committed as they are appended and a rollback does not take them back. Every other INSERT target "
+          + "behaves normally.";
+
   private static final String SESSION_REQUEST_DESCRIPTION = """
       Session id returned by 'beginTransaction'. Present it on every call that must run inside that \
       transaction, and on the commit or rollback that ends it. Omit it to run outside a transaction.""";
@@ -288,7 +300,8 @@ public class CoreApiSpec implements OpenApiContributor {
 
     final Operation postOp = new Operation();
     postOp.setSummary("Execute command");
-    postOp.setDescription("Executes a database command. " + NDJSON_READ_ONLY_DESCRIPTION);
+    postOp.setDescription("Executes a database command. " + TIMESERIES_INSERT_DESCRIPTION + " "
+        + NDJSON_READ_ONLY_DESCRIPTION);
     postOp.setOperationId("executeCommand");
     postOp.addTagsItem("Command");
     postOp.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
