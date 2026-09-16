@@ -39,6 +39,15 @@ public class DeleteApiTokenHandler extends AbstractServerHttpHandler {
   }
 
   @Override
+  protected boolean mustExecuteOnWorkerThread() {
+    // deleteApiToken() below reaches the same Raft submit-and-wait with compare-and-set retries as
+    // DeleteGroupHandler on a replicated database (issue #7621). Running that on the Undertow IO thread
+    // stalls every other connection on the same selector, including kubelet readiness/liveness probes
+    // (issue #7133).
+    return true;
+  }
+
+  @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
       final JSONObject payload) {
     checkRootUser(user);

@@ -190,7 +190,10 @@ public final class HealthMonitor {
   // whether we already escalated to a one-shot reformat, and whether we have given up (logged once).
   private          int                      crashRestartStreak          = 0;
   private          boolean                  crashLoopReformatTried       = false;
-  private          boolean                  crashLoopEscalated           = false;
+  // Volatile: written only on this monitor's own single-threaded tick executor, but read from an HTTP
+  // worker thread via isCrashLoopEscalated() - the liveness probe (issue #7622) - so a plain field would
+  // not guarantee the writing thread's update is ever seen by a reader on another one.
+  private volatile boolean                  crashLoopEscalated           = false;
   // Log-writer recovery (#7037): in-place restarts fired in the current failure episode, since when the writer
   // has been observed healthy again after them (-1 = not yet, or no episode), when the "deferred" line was last
   // logged, and whether the budget for this episode is spent (logged once).
@@ -259,6 +262,17 @@ public final class HealthMonitor {
       current.shutdownNow();
       executor = null;
     }
+  }
+
+  /**
+   * Whether {@link #handleUnhealthyState} has given up automatically restarting this division: the crash
+   * loop persisted past every remedy the threshold allows, a SEVERE alert already went out, and only a
+   * healthy lifecycle tick (which cannot happen while restarts are stopped) clears it. Read from other
+   * threads via {@link RaftHAServer#isCrashLoopEscalated()} to fail the Kubernetes liveness probe once this
+   * is {@code true} (issue #7622), so the pod restart the SEVERE alert calls for happens automatically.
+   */
+  boolean isCrashLoopEscalated() {
+    return crashLoopEscalated;
   }
 
   /**

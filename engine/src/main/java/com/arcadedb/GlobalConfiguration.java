@@ -2095,13 +2095,45 @@ public enum GlobalConfiguration {
   HA_PROXY_CONNECT_TIMEOUT("arcadedb.ha.proxyConnectTimeout", SCOPE.SERVER,
       """
       Connect timeout in milliseconds for a follower dialling the leader, used by LeaderCommandForwarder (and \
-      by LeaderProxy, which nothing currently constructs). Bounds the half of the failure the response deadline \
-      cannot see: a leader whose host accepts no connection. Read once when the HTTP client is built, because a java.net.http.HttpClient's connect \
-      timeout is fixed at build time - a change needs a restart. RaftHAPlugin also reads it, as the budget for \
-      one whole peer authentication-session RPC rather than only that RPC's connect phase: those are small \
-      requests on a LAN with a client waiting on a 401-or-200, so the connect budget is the right order of \
-      magnitude for the lot.""",
+      by LeaderProxy, which nothing currently constructs), by the SQL write forward in RaftReplicatedDatabase \
+      and by the /api/v1/batch relay in PostBatchHandler (issues #7526/#7527/#7542/#7543). Bounds the half of \
+      the failure the response deadline cannot see: a leader whose host accepts no connection. Read once when \
+      the HTTP client is built, because a java.net.http.HttpClient's connect timeout is fixed at build time - a \
+      change needs a restart. RaftHAPlugin also reads it, as the budget for one whole peer authentication-session \
+      RPC rather than only that RPC's connect phase: those are small requests on a LAN with a client waiting on \
+      a 401-or-200, so the connect budget is the right order of magnitude for the lot.""",
       Long.class, 5000L),
+
+  HA_PROXY_COMMAND_TIMEOUT("arcadedb.ha.proxyCommandTimeout", SCOPE.SERVER,
+      """
+      Fallback milliseconds a follower waits for the leader to answer a SQL/DDL write it forwarded via \
+      RaftReplicatedDatabase (issues #7527/#7543), used only when the command carries no \
+      arcadedb.command.timeout of its own - that per-command budget wins when it is set, because a forwarded \
+      command's legitimate duration is bounded by the query, not by a fixed administrative deadline (the \
+      distinction arcadedb.ha.proxyReadTimeout cannot make, which is why this is a separate setting rather than \
+      reusing it). Defaults to one hour, the same order of magnitude as arcadedb.ha.proxyLongCommandTimeout's \
+      restore/import budget, because arcadedb.command.timeout defaults to 0 (unbounded) and this is what stands \
+      between an ordinary forwarded write and an indefinite wait when nobody has opted into a tighter one. A \
+      blown deadline is reported as a retryable NeedRetryException - the same type a reconstructed leader-side \
+      timeout already carries - so the caller's existing retry loop resends it to whichever node is leader by \
+      then, rather than surfacing an IO error for what may just be a slow or momentarily partitioned leader. \
+      0 or a negative value does not disable it. Re-read on every forward.""",
+      Long.class, 3_600_000L),
+
+  HA_PROXY_BATCH_READ_TIMEOUT("arcadedb.ha.proxyBatchReadTimeout", SCOPE.SERVER,
+      """
+      Milliseconds a follower waits for the leader to answer a /api/v1/batch load it relayed via \
+      PostBatchHandler (issues #7526/#7542), before giving up and answering the client HTTP 503. Deliberately \
+      its own setting rather than arcadedb.ha.proxyReadTimeout: a bulk load's legitimate duration is a function \
+      of the payload the client is still streaming, so the same generous order of magnitude as \
+      arcadedb.server.httpStreamingReadTimeout (the budget this node grants the INCOMING side of the same load) \
+      applies here to the OUTGOING hop instead - a short control-plane deadline would abort large loads that are \
+      working correctly. On the streaming encoding this bounds only the wait for the leader's first response \
+      line, since the JDK client returns as soon as headers arrive and the upload keeps publishing after that; \
+      on the non-streaming path it bounds the whole exchange. 0 or a negative value does not disable it - an \
+      outgoing forward must never be unbounded - it is clamped to 1 ms instead, so set a positive value. \
+      Re-read on every forward.""",
+      Long.class, 600_000L),
 
   HA_PROXY_MAX_BODY_SIZE("arcadedb.ha.proxyMaxBodySize", SCOPE.SERVER,
       "Maximum request body size in bytes that the leader proxy will buffer and forward. Larger requests fall back to HTTP 400.",
