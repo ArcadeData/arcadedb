@@ -135,9 +135,11 @@ public class GrafanaApiSpec implements OpenApiContributor {
         "Bucketed aggregation. Omit for raw samples.");
     aggregation.addProperty("bucketInterval", SpecBuilders.integer(
         "Bucket width in the same unit as the timestamps. Derived from 'maxDataPoints' and the "
-            + "time range when omitted."));
+            + "time range when omitted. When stated it must be positive: a value of zero or less is refused "
+            + "with an error frame for this target rather than replaced by a derived interval."));
     aggregation.addProperty("requests", SpecBuilders.arrayOf(
-        aggregationRequest, "Aggregations to compute"));
+        aggregationRequest,
+        "Aggregations to compute. Must name at least one; an empty array is refused with an error frame."));
 
     final Schema<Object> target = SpecBuilders.object("One panel query");
     target.addProperty("refId", SpecBuilders.string(
@@ -148,7 +150,8 @@ public class GrafanaApiSpec implements OpenApiContributor {
     target.addProperty("fields", SpecBuilders.arrayOf(
         SpecBuilders.string("Field name"),
         "Fields to project on a raw (non-aggregated) query. All fields when omitted. Ignored when "
-            + "'aggregation' is present."));
+            + "'aggregation' is present. A name that is no column of the type is refused with an error frame "
+            + "for this target rather than ignored."));
 
     final Schema<Object> schema = SpecBuilders.object("Grafana panel query");
     schema.addProperty("targets", SpecBuilders.arrayOf(target, "Queries to execute"));

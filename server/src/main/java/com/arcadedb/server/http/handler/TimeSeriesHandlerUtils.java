@@ -355,16 +355,17 @@ final class TimeSeriesHandlerUtils {
   /**
    * Resolves a {@code fields} projection to the column indices the engine takes.
    * <p>
-   * Only the JSON SHAPE of the projection is checked here. A well-formed name that matches no column is DROPPED
-   * by {@link TimeSeriesGateway#resolveColumnIndices}, not refused - see its Javadoc, and
-   * {@code TimeSeriesGatewayProjectionTest}, which pins that. So {@code "fields": ["temprature"]} still answers
-   * 200 with a timestamp-only row rather than naming the typo, which is the same widening #7334 refused for a tag
-   * name and is tracked separately.
+   * The JSON SHAPE of the projection is checked here; what the names MEAN is
+   * {@link TimeSeriesGateway#requireColumnIndices}, which every protocol's projection now shares. A well-formed
+   * name that matches no column of the type is REFUSED there (issue #7675) rather than dropped, so
+   * {@code "fields": ["temprature"]} names the typo instead of answering 200 with a timestamp-only row, and a
+   * projection where nothing resolves can no longer collapse to the empty array the engine reads as "every
+   * column". That is the same widening #7334 refused for a tag name, on the sibling member.
    *
    * @param path the projection's request path, e.g. {@code fields} or {@code targets[0].fields}, used to name an
    *             element that is not a string (issue #7340)
    *
-   * @throws IllegalArgumentException if an element is absent, null or not a string
+   * @throws IllegalArgumentException if an element is absent, null or not a string, or names no column of the type
    */
   static int[] resolveColumnIndices(final JSONArray fieldsJson, final List<ColumnDefinition> columns,
       final String path) {
@@ -375,7 +376,7 @@ final class TimeSeriesHandlerUtils {
     for (int f = 0; f < fieldsJson.length(); f++)
       fields.add(requireStringElement(fieldsJson, f, path + "[" + f + "]"));
 
-    return TimeSeriesGateway.resolveColumnIndices(fields, columns);
+    return TimeSeriesGateway.requireColumnIndices(fields, columns);
   }
 
   static int findColumnIndex(final String fieldName, final List<ColumnDefinition> columns) {

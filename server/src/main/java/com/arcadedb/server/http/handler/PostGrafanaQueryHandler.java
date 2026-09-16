@@ -260,14 +260,30 @@ public class PostGrafanaQueryHandler extends AbstractServerHttpHandler {
       final JSONObject aggJson = TimeSeriesHandlerUtils.requireObject(target, "aggregation", aggPath);
       final JSONArray requestsJson = TimeSeriesHandlerUtils.requireArray(aggJson, "requests", aggPath + ".requests");
 
-      // Determine bucket interval: explicit or auto-calculated from maxDataPoints
-      long resolvedInterval = TimeSeriesHandlerUtils.optLong(aggJson, "bucketInterval", 0,
-          aggPath + ".bucketInterval");
-      if (resolvedInterval <= 0 && maxDataPoints > 0 && fromTs != Long.MIN_VALUE && toTs != Long.MAX_VALUE)
-        resolvedInterval = Math.max(1, (toTs - fromTs) / maxDataPoints);
-      if (resolvedInterval <= 0)
-        resolvedInterval = 60000; // fallback: 1 minute
+      // Determine bucket interval: explicit or auto-calculated from maxDataPoints.
+      //
+      // The two are not the same member (issue #7675). ABSENT is genuinely optional here and means "derive one",
+      // which is what maxDataPoints and the 60000 fallback are for, and that stays. A bucketInterval the caller
+      // DID state and stated as <= 0 is a client error, and substituting 60000 for it answered a panel drawn at
+      // a resolution nobody asked for - the same input /ts/query used to collapse into a single bucket and gRPC
+      // has always refused. isNull() rather than a sentinel: it is the only way to tell "stated 0" from "not
+      // stated", and it is the reading every optional member on these endpoints already gets.
+      final long resolvedInterval;
+      if (aggJson.isNull("bucketInterval")) {
+        long derived = 0;
+        if (maxDataPoints > 0 && fromTs != Long.MIN_VALUE && toTs != Long.MAX_VALUE)
+          derived = Math.max(1, (toTs - fromTs) / maxDataPoints);
+        resolvedInterval = derived > 0 ? derived : 60000; // fallback: 1 minute
+      } else {
+        resolvedInterval = TimeSeriesGateway.requireBucketInterval(
+            TimeSeriesHandlerUtils.requireLong(aggJson, "bucketInterval", aggPath + ".bucketInterval"),
+            aggPath + ".bucketInterval");
+      }
       bucketInterval = resolvedInterval;
+
+      // As on /ts/query: an empty array used to answer a bucket per interval whose 'values' array was empty,
+      // which a Grafana panel renders as a frame with a time column and nothing to plot (issue #7675).
+      TimeSeriesGateway.requireAggregationRequests(requestsJson.length(), aggPath + ".requests");
 
       for (int i = 0; i < requestsJson.length(); i++) {
         // Every refusal below is an IllegalArgumentException naming the member, rendered as this target's error

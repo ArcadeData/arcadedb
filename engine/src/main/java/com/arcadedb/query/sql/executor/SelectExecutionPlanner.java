@@ -3161,6 +3161,15 @@ public class SelectExecutionPlanner {
       return false;
     }
 
+    // parseInterval() alone is not the whole contract: SQLFunctionTimeBucket.execute() applies a
+    // 'must be a positive amount of time' guard to its RESULT (issue #6388), and this push-down read the
+    // parser directly, so it skipped that guard. '0s' parses to 0, and the engine reads a non-positive
+    // bucketIntervalMs as "one bucket over the whole range" - so the SAME query answered one row when it was
+    // pushed down and threw when it was not. Bailing out here is what makes the two plans agree: the normal
+    // aggregation path then evaluates ts.timeBucket() per row and raises that existing refusal (issue #7675).
+    if (bucketIntervalMs <= 0)
+      return false;
+
     // Extract tag filter from WHERE clause for push-down
     final TagFilter tagFilter = extractTagFilter(info.flattenedWhereClause, columns, tsType.getTimestampColumn(), context);
 

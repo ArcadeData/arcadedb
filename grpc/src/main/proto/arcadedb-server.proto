@@ -877,7 +877,12 @@ message TimeSeriesAggregationRequest {
 }
 
 message TimeSeriesAggregation {
+  // Bucket width in milliseconds. Must be POSITIVE: a non-positive value is refused with INVALID_ARGUMENT
+  // rather than read as one bucket over the whole range, which is what the engine's own API means by it. The
+  // two HTTP time-series endpoints enforce the same rule on their own `bucketInterval` member (issue #7675).
   int64 bucket_interval_ms = 1;
+  // At least one aggregation to compute. An empty list is refused with INVALID_ARGUMENT, on this RPC and on
+  // both HTTP endpoints (issue #7675).
   repeated TimeSeriesAggregationRequest requests = 2;
 }
 
@@ -889,7 +894,11 @@ message TimeSeriesQueryRequest {
   // unset means unbounded in that direction.
   optional int64 from_timestamp = 4;
   optional int64 to_timestamp   = 5;
-  // Column projection; empty means every column. The timestamp column is always included and always first.
+  // Column projection; empty means every column. The timestamp column is always included and always first, so
+  // naming it here selects nothing further and is not an error. A name that matches NO column of the type is
+  // refused with INVALID_ARGUMENT before the first streamed message, rather than dropped (issue #7675): a
+  // dropped name narrowed the projection silently, and a projection where nothing resolved widened to every
+  // column. The two HTTP endpoints refuse the same input on their own `fields` member.
   repeated string fields = 6;
   TimeSeriesTagFilter tags = 7;
   // Maximum rows - or aggregation buckets - returned across the whole stream. Non-positive means no limit of
