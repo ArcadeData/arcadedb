@@ -94,4 +94,28 @@ public abstract class AbstractExporterFormat {
           "Could not delete the export lock file '%s': later exports to the same target will be refused until it is removed",
           null, lock);
   }
+
+  /**
+   * Creates {@code file}'s parent directory if it does not exist yet, tolerating a concurrent creation by another
+   * export racing to the same parent - the same class of hazard {@link #claimExportFile} closes for the target
+   * file itself, one level up (issue #7644 follow-up).
+   * <p>
+   * {@code File.mkdirs()} is a check-then-create that is not atomic across threads or processes: the first
+   * {@code EXPORT DATABASE} of a database whose {@code exports/} directory does not exist yet is exactly the
+   * case {@code Operation.EXPORT} admits several of at once (issue #7450), so several callers can see the
+   * directory absent, race to create it, and one of them gets {@code mkdirs() == false} even though the
+   * directory exists by the time it checks - not because anything is actually wrong. {@link Files#createDirectories}
+   * does not have that failure mode: it treats an already-existing directory as success rather than as a race
+   * it lost.
+   */
+  protected final void ensureParentDirectory(final File file) {
+    final File parent = file.getParentFile();
+    if (parent == null)
+      return;
+    try {
+      Files.createDirectories(parent.toPath());
+    } catch (final IOException e) {
+      throw new ExportException("The export file '%s' cannot be created".formatted(file), e);
+    }
+  }
 }
