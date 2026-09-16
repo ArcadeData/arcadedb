@@ -59,7 +59,17 @@ public final class TimeSeriesReadMetrics {
   public static final String SURFACE_GRAFANA           = "grafana";
   public static final String SURFACE_PROM_LABEL_VALUES = "prom-label-values";
   public static final String SURFACE_PROM_SERIES       = "prom-series";
+  public static final String SURFACE_PROM_QUERY        = "prom-query";
+  public static final String SURFACE_PROM_QUERY_RANGE  = "prom-query-range";
   public static final String SURFACE_GRPC              = "grpc";
+
+  /**
+   * The {@code type} tag for a read whose types are not one: a PromQL expression resolves its own selectors,
+   * and one expression can span several metrics, so the handler that publishes has no single type to name.
+   * A constant rather than a list, because the tag has to stay low-cardinality - and rather than the
+   * expression text, which is caller-controlled and would be an unbounded-tag leak of the #5025 kind.
+   */
+  public static final String TYPE_EXPRESSION           = "(expression)";
 
   /**
    * Every value the {@code surface} tag can carry. Enumerated rather than left implicit because it is what
@@ -68,7 +78,8 @@ public final class TimeSeriesReadMetrics {
    * fills the cache across all of them rather than across one.
    */
   static final String[] SURFACES = { SURFACE_TS_QUERY, SURFACE_TS_LATEST, SURFACE_GRAFANA,
-      SURFACE_PROM_LABEL_VALUES, SURFACE_PROM_SERIES, SURFACE_GRPC };
+      SURFACE_PROM_LABEL_VALUES, SURFACE_PROM_SERIES, SURFACE_PROM_QUERY, SURFACE_PROM_QUERY_RANGE,
+      SURFACE_GRPC };
 
   private static final String BLOCKS_METER   = "arcadedb.timeseries.read.blocks";
   private static final String PAGES_METER    = "arcadedb.timeseries.read.pages";

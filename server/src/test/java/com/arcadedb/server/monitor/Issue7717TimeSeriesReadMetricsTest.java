@@ -226,6 +226,25 @@ class Issue7717TimeSeriesReadMetricsTest {
   }
 
   /**
+   * Every surface the sink declares is reachable and reports under its own tag. The two PromQL evaluation
+   * routes are the ones this pins in particular: they read through {@code PromQLEvaluator} into
+   * {@code iterateQuery}, which took no counters at all until it was given some, so they were the only
+   * {@code /ts} reads the sink could not see (CodeRabbit on PR #7728).
+   */
+  @Test
+  void everyDeclaredSurfaceReportsUnderItsOwnTag() {
+    for (final String surface : TimeSeriesReadMetrics.SURFACES) {
+      final AggregationMetrics metrics = new AggregationMetrics();
+      metrics.addSlowPathBlock();
+      TimeSeriesReadMetrics.publish(metrics, "surface-sweep", TimeSeriesReadMetrics.TYPE_EXPRESSION, surface);
+
+      assertThat(Search.in(registry).name("arcadedb.timeseries.read.blocks").tag("db", "surface-sweep")
+          .tag("surface", surface).tag("outcome", "slow-path").counter())
+          .as("surface %s must have a series of its own", surface).isNotNull();
+    }
+  }
+
+  /**
    * A database literally named {@code other} - the string the collapse uses - must not be mistaken for the
    * collapsed tuple and handed a free pass past the ceiling. A guard reading only the db half did exactly that,
    * so once the cache was full that one database's types grew it without bound: the meter-cardinality leak of
