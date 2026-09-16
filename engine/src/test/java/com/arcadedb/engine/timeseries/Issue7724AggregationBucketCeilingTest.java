@@ -278,6 +278,54 @@ class Issue7724AggregationBucketCeilingTest extends TestHelper {
         .as("nothing was sealed, so no block was read").isZero();
   }
 
+  /**
+   * How far past the ceiling the MUTABLE walk goes, pinned as a number rather than argued about.
+   * <p>
+   * {@code TimeSeriesBucket.iterateRange} prefetches: {@code next()} hands back the current row and then calls
+   * {@code advance()} to find the following one, so the row that trips the ceiling is always followed by one
+   * more row being located before the loop's next check breaks it. The overshoot is therefore two rows - the
+   * one that tripped it and the one prefetched - and NOT, as it might look, the rest of the bucket:
+   * {@code advance()} returns at the first in-range row it finds rather than scanning on, and it never
+   * evaluates the tag filter, so rows the caller will later reject cannot make it scan further either.
+   * <p>
+   * Two rows is a smaller overshoot than the sealed layer already accepts by design, where the check is once
+   * per BLOCK and the block in hand is decompressed in full. Pinned here so that if the walk is ever
+   * restructured - onto a visitor, say - a regression that made the overshoot grow with the bucket would fail
+   * this rather than quietly cost a scan.
+   */
+  @Test
+  void theMutableWalkStopsTwoRowsPastTheCeilingRatherThanScanningOn() throws Exception {
+    database.command("sql", "CREATE TIMESERIES TYPE Overshoot TIMESTAMP ts FIELDS (value DOUBLE) SHARDS 1");
+    final TimeSeriesEngine engine = ((LocalTimeSeriesType) database.getSchema().getType("Overshoot")).getEngine();
+
+    // Uncompacted on purpose: every one of the 600 samples is in the mutable bucket, so an unbounded walk
+    // would materialise all of them and the difference is not subtle.
+    database.transaction(() -> {
+      for (int i = 0; i < SAMPLES; i++)
+        database.command("sql", "INSERT INTO Overshoot SET ts = :ts, value = :v",
+            Map.of("ts", i * BUCKET, "v", (double) i));
+    });
+
+    final List<MultiColumnAggregationRequest> requests =
+        List.of(new MultiColumnAggregationRequest(1, AggregationType.SUM, "s"));
+
+    final int ceiling = 5;
+    final AggregationMetrics bounded = new AggregationMetrics();
+    database.begin();
+    try {
+      engine.aggregateMulti(0L, SAMPLES * BUCKET, requests, BUCKET, null, bounded, ceiling);
+    } finally {
+      database.commit();
+    }
+
+    assertThat(bounded.getMaterializedRows())
+        .as("the row that trips the ceiling plus the one prefetched, and nothing beyond")
+        .isEqualTo(ceiling + 2);
+    assertThat(bounded.getMaterializedRows())
+        .as("nowhere near the %d samples an unbounded walk would have read", SAMPLES)
+        .isLessThan(SAMPLES / 10);
+  }
+
   // ---- helpers ----
 
   private static int blocksTouched(final AggregationMetrics metrics) {
