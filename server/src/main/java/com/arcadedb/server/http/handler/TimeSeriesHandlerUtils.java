@@ -246,6 +246,13 @@ final class TimeSeriesHandlerUtils {
    * input hardening (claude-review on PR #7730). The scale test and the {@code long} subtraction below run first
    * and answer both in constant time, so {@code longValueExact()} is only ever reached for a value of at most 19
    * integer digits.
+   * <p>
+   * Both spellings reach this the same way, whether the member arrived as a JSON number or as a string:
+   * {@code getBigDecimal} reads the lexeme either way. As it happens the JSON layer's own numeric limits turn an
+   * exponent that extreme away first, so the two tests below are not what a caller meets today - they are what
+   * keeps the guarantee from resting on a dependency's internal limit, which is not part of any contract this
+   * code can rely on. That is also why the test bounds assert that the value is refused rather than which of the
+   * two refused it.
    */
   private static long readLong(final JSONObject owner, final String name, final String path) {
     final Object received = owner.opt(name);
