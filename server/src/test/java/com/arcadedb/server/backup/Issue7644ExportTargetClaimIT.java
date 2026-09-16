@@ -182,6 +182,25 @@ class Issue7644ExportTargetClaimIT extends BaseGraphServerTest {
   }
 
   /**
+   * The parent directory has to be created from the RESOLVED path. Each format resolves {@code file://} off
+   * {@code settings.file} only after its own early checks, so creating the parent from the unresolved string left
+   * the real directory missing and the claim - a {@code Files.createFile} in it - failed on a directory the export
+   * believed it had just created (review of PR #7649).
+   */
+  @Test
+  @Timeout(60)
+  void anExportCreatesTheResolvedParentDirectoryBeforeClaimingIt() throws Exception {
+    final HttpResponse<String> response = postSql("EXPORT DATABASE file://nested-7644.jsonl.tgz");
+
+    assertThat(response.statusCode()).as("the export must create 'exports/' itself: %s", response.body()).isEqualTo(200);
+    assertThat(new File(exportDir, "nested-7644.jsonl.tgz")).exists();
+    assertThat(new File(exportDir, "nested-7644.jsonl.tgz" + ".exporting")).doesNotExist();
+
+    // AND NOTHING WAS CREATED UNDER A LITERAL 'file:' PARENT, WHICH IS WHAT RESOLVING THE PATH TOO LATE PRODUCED
+    assertThat(new File("./file:")).doesNotExist();
+  }
+
+  /**
    * The lock is released even when the export FAILS after claiming it, so a failed export does not permanently
    * block every later one to the same target.
    */

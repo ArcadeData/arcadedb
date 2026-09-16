@@ -32,6 +32,7 @@ import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.Locale;
 import java.util.logging.Level;
 
 public abstract class AbstractExporterFormat {
@@ -84,10 +85,19 @@ public abstract class AbstractExporterFormat {
     // claim in - and that other export deletes it on the way out, taking this one's finished archive with it. The
     // suffix is a reserved name, and saying so is both cheaper and safer than a lock namespace that merely makes
     // the collision less likely (review of PR #7649).
-    if (exportFile.getName().endsWith(LOCK_SUFFIX))
+    //
+    // CASE-INSENSITIVELY, because the filesystem underneath may be: on macOS and Windows "x.EXPORTING" and
+    // "x.exporting" are the same file, so a case-sensitive refusal would pass a target that still aliases a lock.
+    if (exportFile.getName().toLowerCase(Locale.ROOT).endsWith(LOCK_SUFFIX))
       throw new ExportException(
           "The export file '%s' cannot end with '%s': the suffix is reserved for the exporter's own lock files".formatted(
               exportFile, LOCK_SUFFIX));
+
+    // FROM THE RESOLVED PATH, HERE, RATHER THAN FROM settings.file AT THE TOP OF EACH FORMAT: with a 'file://'
+    // target those two differ, and creating the parent of the unresolved one leaves the real directory missing, so
+    // the sidecar below could not be created and the export failed on a directory it had just "created" (review of
+    // PR #7649).
+    ensureParentDirectory(exportFile);
 
     final File lock = new File(exportFile.getPath() + LOCK_SUFFIX);
     try {
