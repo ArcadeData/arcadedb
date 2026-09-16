@@ -839,9 +839,12 @@ public class RemoteHttpComponent extends RWLockContext {
     // differs from the promoted reason by so much as a character is still printed.
     final StringBuilder envelope = new StringBuilder(" (httpErrorCode=").append(statusCode)
         .append(" httpErrorDescription=").append(httpErrorDescription);
-    if (!promoted || !explanation.equals(reason))
+    // A field the server did not fill in is omitted rather than printed as "reason=null": the envelope exists
+    // to say what the server answered, and a literal null says only that this arm was reached, which the
+    // absence of a typed exception already said.
+    if (reason != null && !reason.equals(explanation))
       envelope.append(" reason=").append(reason);
-    if (!promoted || !explanation.equals(detail))
+    if (detail != null && !detail.equals(explanation))
       envelope.append(" detail=").append(detail);
     envelope.append(" exception=").append(exception).append(')');
 
