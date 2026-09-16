@@ -769,8 +769,16 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         final int resultCols = rawCols.length + 1;
 
         // Rows inside a block are ascending, so the first `need` matches found are the oldest ones in it.
+        // `need` and not `need - results.size()`: blocks are ordered by minTimestamp but are not disjoint, so
+        // this block can hold rows older than every row already retained, and the remainder would take too few.
         int taken = 0;
         for (int i = start; i < end && taken < need; i++) {
+          // Once `need` rows are held, a row newer than the newest of them cannot enter the answer, and the
+          // rest of the block is newer still. `cutoffTs` is the value from before this block, so it can only
+          // over-estimate - rows added since are older and would lower it - which makes this break conservative.
+          // It keeps a block from materialising `need` rows when a handful of its oldest already lose.
+          if (results.size() >= need && ts[i] > cutoffTs)
+            break;
           if (tagMatch == BlockMatchResult.SLOW_PATH && !matchesRawColumns(rawCols, i, tagFilter, columnIndices))
             continue;
           final Object[] row = new Object[resultCols];
