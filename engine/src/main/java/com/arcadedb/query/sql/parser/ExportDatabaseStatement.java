@@ -25,6 +25,8 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.engine.MaintenanceCoordinator;
 import com.arcadedb.engine.MaintenanceCoordinator.Operation;
 import com.arcadedb.engine.MaintenanceCoordinator.Reservation;
+import com.arcadedb.engine.OperationProgress;
+import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -92,37 +94,48 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
     // THE SLOT. ON A DATABASE WITH NO COORDINATOR BOUND - AN EMBEDDED PROCESS WITH NO SERVER IN IT - THIS RESERVES
     // NOTHING AND THE STATEMENT BEHAVES EXACTLY AS IT DID BEFORE.
     try (final Reservation slot = MaintenanceCoordinator.reserve(context.getDatabase(), Operation.EXPORT)) {
-      final Class<?> clazz = Class.forName("com.arcadedb.integration.exporter.Exporter");
-      final Object exporter = clazz.getConstructor(Database.class, String.class).newInstance(context.getDatabase(), fileName);
+      // PUBLISH LIVE PROGRESS (issue #7645), MIRRORING BackupDatabaseStatement: an export runs behind the same
+      // reflective boundary (integration module) and takes as long as a backup of the same database, so it is
+      // just as worth watching in the progress endpoint, console and Studio while it runs. Always retired in the
+      // finally, so a running export is never left visible after it ends.
+      final OperationProgress progress = OperationProgressRegistry.instance()
+          .register(context.getDatabase().getName(), "export database");
+      progress.onProgress("Exporting database", 1, 1, 0, -1);
+      try {
+        final Class<?> clazz = Class.forName("com.arcadedb.integration.exporter.Exporter");
+        final Object exporter = clazz.getConstructor(Database.class, String.class).newInstance(context.getDatabase(), fileName);
 
-      clazz.getMethod("setOverwrite", Boolean.TYPE).invoke(exporter, overwrite == BooleanExpression.TRUE);
+        clazz.getMethod("setOverwrite", Boolean.TYPE).invoke(exporter, overwrite == BooleanExpression.TRUE);
 
-      String formatExport = format.getStringValue();
-      if ((formatExport.startsWith("'") && formatExport.endsWith("'")) ||//
-          formatExport.startsWith("\"") && formatExport.endsWith("\"")) {
-        formatExport = formatExport.substring(1, formatExport.length() - 1);
+        String formatExport = format.getStringValue();
+        if ((formatExport.startsWith("'") && formatExport.endsWith("'")) ||//
+            formatExport.startsWith("\"") && formatExport.endsWith("\"")) {
+          formatExport = formatExport.substring(1, formatExport.length() - 1);
+        }
+        clazz.getMethod("setFormat", String.class).invoke(exporter, formatExport);
+
+        // TRANSFORM SETTINGS
+        final Map<String, String> settingsToString = new HashMap<>();
+        for (final Map.Entry<Expression, Expression> entry : settings.entrySet()) {
+          final Object executedValue = entry.getValue().execute((Identifiable) null, context);
+          settingsToString.put(entry.getKey().toString(), executedValue != null ? executedValue.toString() : entry.getValue().toString());
+        }
+        clazz.getMethod("setSettings", Map.class).invoke(exporter, settingsToString);
+
+        if (context.getDatabase().isTransactionActive())
+          context.getDatabase().rollbackAllNested();
+
+        final Map<String, Object> exportResult = (Map<String, Object>) clazz.getMethod("exportDatabase").invoke(exporter);
+
+        result.setPropertiesFromMap(exportResult);
+
+      } catch (final ClassNotFoundException | NoSuchMethodException | IllegalAccessException | InstantiationException e) {
+        throw new CommandExecutionException("Error on exporting database, exporter libs not found in classpath", e);
+      } catch (final InvocationTargetException e) {
+        throw new CommandExecutionException("Error on exporting database", e.getTargetException());
+      } finally {
+        OperationProgressRegistry.instance().unregister(progress);
       }
-      clazz.getMethod("setFormat", String.class).invoke(exporter, formatExport);
-
-      // TRANSFORM SETTINGS
-      final Map<String, String> settingsToString = new HashMap<>();
-      for (final Map.Entry<Expression, Expression> entry : settings.entrySet()) {
-        final Object executedValue = entry.getValue().execute((Identifiable) null, context);
-        settingsToString.put(entry.getKey().toString(), executedValue != null ? executedValue.toString() : entry.getValue().toString());
-      }
-      clazz.getMethod("setSettings", Map.class).invoke(exporter, settingsToString);
-
-      if (context.getDatabase().isTransactionActive())
-        context.getDatabase().rollbackAllNested();
-
-      final Map<String, Object> exportResult = (Map<String, Object>) clazz.getMethod("exportDatabase").invoke(exporter);
-
-      result.setPropertiesFromMap(exportResult);
-
-    } catch (final ClassNotFoundException | NoSuchMethodException | IllegalAccessException | InstantiationException e) {
-      throw new CommandExecutionException("Error on exporting database, exporter libs not found in classpath", e);
-    } catch (final InvocationTargetException e) {
-      throw new CommandExecutionException("Error on exporting database", e.getTargetException());
     }
 
     result.setProperty("result", "OK");
