@@ -51,7 +51,14 @@ public enum DivergenceCause {
    * An unexpected error while applying a committed entry for the database, which leaves its in-memory state
    * unknown (issue #4797).
    */
-  APPLY_ERROR("an unexpected error while applying a committed entry");
+  APPLY_ERROR("an unexpected error while applying a committed entry"),
+
+  /**
+   * A snapshot install completed without bringing the database to the snapshot's index, so this node holds a copy
+   * it knows is behind and clamps its reads at an honest floor until a resync refreshes it (issue #6760). Nothing
+   * failed while applying anything: the install is what did not finish the job (CodeRabbit on PR #7747).
+   */
+  SNAPSHOT_INSTALL_INCOMPLETE("a snapshot install that did not bring this database up to the snapshot's index");
 
   private final String description;
 

@@ -4618,7 +4618,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // nothing is known about.
       final long floor = Math.max(0L, readPersistedAppliedIndex(dbName));
       staleDatabaseAppliedFloors.put(dbName, floor);
-      markStateDiverged(dbName);
+      // Named, because the alert quotes it: nothing failed while APPLYING anything here, the install is what did
+      // not finish the job, and an operator sent to look for an apply error would find none (issue #7741).
+      markStateDiverged(dbName, DivergenceCause.SNAPSHOT_INSTALL_INCOMPLETE);
       LogManager.instance().log(this, Level.SEVERE,
           "Snapshot install did not bring database '%s' to snapshotIndex=%d: keeping it marked diverged and "
               + "clamping its LINEARIZABLE / read-your-writes reads at appliedIndex=%d until a resync succeeds. "

@@ -248,6 +248,31 @@ class Issue7743NullMeasurementIsAbsentTest extends TestHelper {
     }
   }
 
+  /**
+   * The other NaN, and why the translation is keyed on the COUNT of real contributors rather than on the value
+   * (CodeRabbit on PR #7747): a SUM over {@code +Infinity} and {@code -Infinity} is NaN with real samples behind
+   * it - an undefined TOTAL, which IEEE keeps and so does {@link TimeSeriesNaN#sum} - not an absence. Turning
+   * that into NULL would report "nothing was measured" about two measurements.
+   */
+  @Test
+  void anArithmeticNaNOverRealSamplesIsNotTurnedIntoNull() throws Exception {
+    final TimeSeriesEngine engine = create("Undefined", "DOUBLE");
+    engine.appendSamples(new long[] { BASE_TS, BASE_TS + 1_000 },
+        new Object[][] { new Object[] { Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY } });
+
+    try (final ResultSet rs = database.query("sql", groupedQuery("Undefined"))) {
+      final Result row = rs.next();
+      assertThat(row.<Object>getProperty("s")).as("an undefined total is an answer, not an absence").isNotNull();
+      assertThat(((Number) row.getProperty("s")).doubleValue()).isNaN();
+      assertThat(((Number) row.getProperty("c")).longValue()).isEqualTo(2);
+    }
+
+    engine.compactAll();
+    try (final ResultSet rs = database.query("sql", groupedQuery("Undefined"))) {
+      assertThat(rs.next().<Object>getProperty("s")).as("and the sealed layer agrees").isNotNull();
+    }
+  }
+
   private static String groupedQuery(final String typeName) {
     // ts.timeBucket takes the INTERVAL first and the timestamp column second, and the planner pushes the
     // aggregation down only when GROUP BY names the bucket alias.

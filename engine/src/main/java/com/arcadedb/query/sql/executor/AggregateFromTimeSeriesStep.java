@@ -122,7 +122,13 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
                 // The JSON boundary is unaffected: JSONObject.put(String, Object) already routed the NaN to its
                 // NaN-aware overload and wrote null (issue #7584). This makes the embedded SQL caller see the
                 // same thing the HTTP one always did, without depending on that coupling.
-                row.setProperty(outputAlias, TimeSeriesNaN.isAbsent(value) ? null : value);
+                //
+                // The COUNT of real contributors is what separates the two NaNs, and the accumulator keys on it
+                // for the same reason (TimeSeriesNaN.sum): a SUM over +Infinity and -Infinity is NaN with real
+                // samples behind it - an undefined TOTAL, which IEEE keeps and so do we - while an absent bucket
+                // is NaN with nothing behind it. Only the second is NULL (CodeRabbit on PR #7747).
+                row.setProperty(outputAlias,
+                    TimeSeriesNaN.isAbsent(value) && aggResult.getCount(bucketTs, i) == 0 ? null : value);
               }
               rowCount++;
               return row;
