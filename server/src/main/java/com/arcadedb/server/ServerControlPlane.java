@@ -405,6 +405,14 @@ public class ServerControlPlane {
    * an {@code import database} of the same database was running, and the drop deleted the directory out from under
    * whichever of those was reading or writing it. {@link Operation#DROP} conflicts with everything, the same as
    * {@link Operation#RESTORE}, because a drop destroys the directory unconditionally and with no replacement.
+   * <p>
+   * The existence check runs AFTER the slot is taken, not before (review of PR #7649): {@code beginExclusive}
+   * refuses an ACTIVE conflict but does not wait, so a check made first can still go stale before the slot is
+   * granted - a second {@code drop database} of the same name could pass the pre-check while the first drop is
+   * running, then acquire the slot right after that first call has already deleted and deregistered the database,
+   * and reach {@link ArcadeDBServer#getDatabase} for a name that no longer exists instead of the documented
+   * {@link IllegalArgumentException}. Checking under the slot is the same ordering {@link #restoreDatabase} and
+   * {@link #restoreBackup} already use for their own existence checks, for the same reason.
    *
    * @throws IllegalArgumentException     when no database by that name is registered on this server
    * @throws OperationInProgressException when a backup, restore, import or export of the same database is running
@@ -412,11 +420,11 @@ public class ServerControlPlane {
   public void dropDatabase(final String databaseName) {
     requireDatabaseName(databaseName);
 
-    if (!server.existsDatabase(databaseName))
-      throw new IllegalArgumentException("Database '" + databaseName + "' does not exist");
-
     beginExclusive(databaseName, Operation.DROP);
     try {
+      if (!server.existsDatabase(databaseName))
+        throw new IllegalArgumentException("Database '" + databaseName + "' does not exist");
+
       dropDatabaseClusterWide(server.getDatabase(databaseName), databaseName);
     } finally {
       server.getBackupCoordinator().end(databaseName, Operation.DROP);
