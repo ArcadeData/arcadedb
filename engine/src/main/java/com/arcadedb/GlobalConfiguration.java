@@ -2104,7 +2104,10 @@ public enum GlobalConfiguration {
       the HTTP client is built, because a java.net.http.HttpClient's connect timeout is fixed at build time - a \
       change needs a restart. RaftHAPlugin also reads it, as the budget for one whole peer authentication-session \
       RPC rather than only that RPC's connect phase: those are small requests on a LAN with a client waiting on \
-      a 401-or-200, so the connect budget is the right order of magnitude for the lot.""",
+      a 401-or-200, so the connect budget is the right order of magnitude for the lot. Since issue #7741 it also \
+      governs the HTTPS clients TrustedHttpClientCache builds, which is BOTH the leader forward on a TLS cluster \
+      (where it previously did nothing, a hardcoded 5s) AND the peer-capability probe that shares that cache; the \
+      probe's plain-HTTP client is a JVM-wide static and keeps its own 5s.""",
       Long.class, 5000L),
 
   HA_PROXY_COMMAND_TIMEOUT("arcadedb.ha.proxyCommandTimeout", SCOPE.SERVER,

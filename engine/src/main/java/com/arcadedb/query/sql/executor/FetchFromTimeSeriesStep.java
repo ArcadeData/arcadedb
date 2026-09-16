@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.TagFilter;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
+import com.arcadedb.engine.timeseries.TimeSeriesNaN;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.LocalTimeSeriesType;
@@ -164,10 +165,11 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
               // read paths already encode it this way (AbstractServerHttpHandler.putSampleValue).
               //
               // Only NaN, not every non-finite: an infinity IS a value in SQL arithmetic, and the JSON layer
-              // folds it in only because JSON cannot write one.
-              if (value instanceof Double d && Double.isNaN(d))
-                value = null;
-              else if (value instanceof Float f && Float.isNaN(f))
+              // folds it in only because JSON cannot write one. Asked of TimeSeriesNaN rather than spelled out
+              // here, so the two SQL boundaries cannot drift apart from the storage layer's own definition of
+              // absence (claude-review on PR #7747). A non-floating Number can never be NaN, so the widened
+              // instanceof costs nothing but covers Float without a second arm.
+              if (value instanceof Number n && TimeSeriesNaN.isAbsent(n.doubleValue()))
                 value = null;
 
               result.setProperty(col.getName(), value);

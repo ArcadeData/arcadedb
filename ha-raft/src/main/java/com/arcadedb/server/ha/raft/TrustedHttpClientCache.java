@@ -121,6 +121,13 @@ final class TrustedHttpClientCache {
    * <p>
    * Read when the client is BUILT, not per request: a {@code java.net.http.HttpClient}'s connect timeout is fixed
    * at build time, so a change takes effect on the next rebuild - a truststore rotation, or a restart.
+   * <p>
+   * <b>Both users of this cache get it</b>, the leader forward and the peer-capability probe, because the cache is
+   * one class held twice by {@code RaftHAServer} and the budget is the same question either way: how long to wait
+   * for a peer that is not accepting connections. The probe's PLAIN-HTTP sibling, {@code PeerCapabilityQuery.HTTP},
+   * is a JVM-wide static built before any server exists and keeps its own 5s - so an operator who lowers the
+   * setting speeds up the probe on a TLS cluster and not on a plaintext one. The setting's description says so
+   * rather than this being left for a reader to discover (claude-review on PR #7747).
    */
   static Duration connectTimeoutOf(final ContextConfiguration configuration) {
     return Duration.ofMillis(Math.max(configuration.getValueAsLong(GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT),

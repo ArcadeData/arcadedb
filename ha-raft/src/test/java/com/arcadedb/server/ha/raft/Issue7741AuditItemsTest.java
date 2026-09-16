@@ -159,8 +159,7 @@ class Issue7741AuditItemsTest {
   @Test
   void theAlertNamesAnUndecodableEntryAsSuchRatherThanAsAWalGap() {
     final JSONArray alerts = new JSONArray();
-    ClusterAlerts.addLocalResyncAlert(new LocalResyncState(false, false, List.of("db-A"), -1, Map.of(),
-        Map.of("db-A", DivergenceCause.UNDECODABLE_LOG_ENTRY)), null, alerts);
+    ClusterAlerts.addLocalResyncAlert(new LocalResyncState(false, false, -1, Map.of(), Map.of("db-A", DivergenceCause.UNDECODABLE_LOG_ENTRY)), null, alerts);
 
     final JSONObject alert = alerts.getJSONObject(0);
     assertThat(alert.getString("severity")).isEqualTo(ClusterAlerts.SEVERITY_CRITICAL);
@@ -175,8 +174,7 @@ class Issue7741AuditItemsTest {
   @Test
   void aWalGapIsStillDescribedAsAWalGap() {
     final JSONArray alerts = new JSONArray();
-    ClusterAlerts.addLocalResyncAlert(new LocalResyncState(false, false, List.of("db-A"), -1, Map.of(),
-        Map.of("db-A", DivergenceCause.WAL_VERSION_GAP)), null, alerts);
+    ClusterAlerts.addLocalResyncAlert(new LocalResyncState(false, false, -1, Map.of(), Map.of("db-A", DivergenceCause.WAL_VERSION_GAP)), null, alerts);
 
     assertThat(alerts.getJSONObject(0).getString("message")).contains("WAL version gap");
   }
@@ -185,7 +183,7 @@ class Issue7741AuditItemsTest {
   @Test
   void twoCausesAreBothNamedAndNeitherIsRepeated() {
     final JSONArray alerts = new JSONArray();
-    ClusterAlerts.addLocalResyncAlert(new LocalResyncState(false, false, List.of("db-A", "db-B", "db-C"), -1, Map.of(),
+    ClusterAlerts.addLocalResyncAlert(new LocalResyncState(false, false, -1, Map.of(),
         Map.of("db-A", DivergenceCause.WAL_VERSION_GAP, "db-B", DivergenceCause.UNDECODABLE_LOG_ENTRY,
             "db-C", DivergenceCause.WAL_VERSION_GAP)), null, alerts);
 
@@ -199,7 +197,7 @@ class Issue7741AuditItemsTest {
   void aReadFloorWithNoQuarantineNamesNoCause() {
     final JSONArray alerts = new JSONArray();
     ClusterAlerts.addLocalResyncAlert(
-        new LocalResyncState(false, false, List.of(), 100L, Map.of(), Map.of()), null, alerts);
+        new LocalResyncState(false, false, 100L, Map.of(), Map.of()), null, alerts);
 
     assertThat(alerts.getJSONObject(0).getString("message"))
         .contains("quarantined pending a resync")
