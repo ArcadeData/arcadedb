@@ -248,6 +248,21 @@ public class TimeSeriesShard implements AutoCloseable {
    * {@code rollback()} does not take them back. {@code Issue7410AppendTransactionScopeTest} pins it, and
    * {@code Issue7370GrpcTimeSeriesInTransactionIT} pins the same contract over the wire.
    * <p>
+   * <b>Decision (#7657): it stays this way, and the reason is {@link #appendLock} rather than a preference.</b>
+   * #7410 left open whether the append should instead join the caller's transaction, so that
+   * {@code INSERT INTO <timeseries type>} became atomic with its own statement. It should not. Every append
+   * writes page 0 - the header holds the sample count and the min/max timestamps - so two appends to one shard
+   * always want the same page version, and the serialization described in the next paragraph is the only
+   * reason they never contend for it. An append that wrote through the caller's transaction could not be
+   * serialized that way: the commit would belong to the caller, and a shard cannot hold a lock until an
+   * arbitrary user transaction ends without making one client's open transaction block every other writer of
+   * that shard. Both would then stage the same page, and one would lose its <i>whole</i> transaction to a
+   * {@link ConcurrentModificationException} that is not the shard's to retry - the loop below retries a commit
+   * this method owns. {@code Issue7657AppendStaysSelfCommittingTest} measures it. What it means for users is
+   * documented where they meet it: the {@code /api/v1/ts/{database}/write} and
+   * {@code /api/v1/command/{database}} entries of the OpenAPI document, and {@code TimeSeriesWriteSummary} in
+   * the gRPC proto.
+   * <p>
    * Concurrent calls on the <em>same shard</em> are serialized by {@link #appendLock} so that
    * MVCC page-version conflicts can never arise between two concurrent appends.  Writes to
    * different shards still proceed in parallel.
