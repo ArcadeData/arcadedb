@@ -210,6 +210,18 @@ public class SaveElementStep extends AbstractExecutionStep {
     return result;
   }
 
+  /**
+   * Writes one row of an {@code INSERT INTO <timeseries type>} to the type's engine.
+   * <p>
+   * <b>This write is not atomic with the statement's transaction (#7410).</b>
+   * {@link TimeSeriesEngine#appendSamples(long[], Object[][])} commits its own shard transaction, and an
+   * ArcadeDB nested {@code begin/commit} is an independent transaction rather than a savepoint, so the sample
+   * is durable and globally visible as soon as this method returns. A {@code ROLLBACK} of the transaction
+   * containing the INSERT takes the statement's DOCUMENT/VERTEX rows back and leaves the time-series samples
+   * in place. This differs from every other target type an INSERT can have, which is why it is spelled out
+   * here rather than left to the engine javadoc; {@code Issue7410AppendTransactionScopeTest} pins it through
+   * this entry point.
+   */
   private void saveToTimeSeries(final LocalTimeSeriesType tsType, final TimeSeriesEngine engine, final Document doc,
       final CommandContext context) {
     final List<ColumnDefinition> columns = tsType.getTsColumns();

@@ -229,6 +229,15 @@ public class TimeSeriesShard implements AutoCloseable {
   /**
    * Appends samples to the mutable bucket.
    * <p>
+   * <b>Transaction scope (#7410): this method commits its own transaction, whatever the caller has open.</b>
+   * The {@code db.begin()}/{@code db.commit()} pair below is nested when a transaction is already active on
+   * this thread, and an ArcadeDB nested transaction is an independent transaction rather than a savepoint:
+   * {@code LocalDatabase.begin()} pushes a new {@code TransactionContext} instead of joining the open one, and
+   * the matching {@code commit()} runs the full two-phase commit on it. So the mutable-bucket pages are
+   * published here and now - not by the caller's commit - and the caller's {@code rollback()} does not take
+   * them back. {@link TimeSeriesGateway#write} and {@link TimeSeriesEngine#appendSamples(long[], Object[][])}
+   * document the consequence for their own callers; {@code Issue7410AppendTransactionScopeTest} pins it.
+   * <p>
    * Concurrent calls on the <em>same shard</em> are serialized by {@link #appendLock} so that
    * MVCC page-version conflicts can never arise between two concurrent appends.  Writes to
    * different shards still proceed in parallel.
