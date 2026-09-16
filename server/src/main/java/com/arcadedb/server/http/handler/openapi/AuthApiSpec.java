@@ -126,6 +126,8 @@ public class AuthApiSpec implements OpenApiContributor {
     schema.addProperty("token", SpecBuilders.string(
         "Session token prefixed 'AU-', presented as a bearer token"));
     schema.addProperty("user", SpecBuilders.string("Authenticated user name"));
+    // PostLoginHandler writes both in the same expression on the only path that answers 200 (issue #7578).
+    schema.setRequired(List.of("token", "user"));
     return schema;
   }
 
@@ -136,23 +138,44 @@ public class AuthApiSpec implements OpenApiContributor {
     session.addProperty("createdAt", SpecBuilders.integer("Creation time as epoch milliseconds"));
     session.addProperty("lastUpdate", SpecBuilders.integer("Last use as epoch milliseconds"));
     session.addProperty("elapsedMs", SpecBuilders.integer("Milliseconds since last use"));
-    session.addProperty("sourceIp", SpecBuilders.string("Client address"));
-    session.addProperty("userAgent", SpecBuilders.string("Client user agent"));
-    session.addProperty("country", SpecBuilders.string("Country reported by the proxy, when available"));
-    session.addProperty("city", SpecBuilders.string("City reported by the proxy, when available"));
+    // Present on every row but NULLABLE, which is a different statement from optional and the one that matches
+    // what GetSessionsHandler does: it writes each of these four unconditionally, and a value the request did
+    // not carry lands as an explicit JSON null rather than as a missing key (issue #7578).
+    session.addProperty("sourceIp", nullableString("Client address, as this server saw it"));
+    session.addProperty("userAgent", nullableString("Client user agent. Null when the request carried none"));
+    session.addProperty("country", nullableString(
+        "Country reported by the proxy. Null when no proxy reported one"));
+    session.addProperty("city", nullableString("City reported by the proxy. Null when no proxy reported one"));
     session.addProperty("issuer", SpecBuilders.string(
         "Name of the cluster node that issued the session, when this node holds a copy of it; absent for a session this node issued"));
+    // 'issuer' is the one member GetSessionsHandler guards; the other nine are written for every session,
+    // including the ones whose value is null because the proxy reported none (issue #7578).
+    session.setRequired(List.of("token", "user", "createdAt", "lastUpdate", "elapsedMs", "sourceIp", "userAgent",
+        "country", "city"));
 
     final Schema<Object> schema = SpecBuilders.object("Active authentication sessions");
-    schema.addProperty("result", SpecBuilders.arrayOf(session, "Active sessions"));
+    schema.addProperty("result", SpecBuilders.arrayOf(session,
+        "Active sessions. Empty when this server holds none"));
     schema.addProperty("count", SpecBuilders.integer("Number of active sessions"));
+    schema.setRequired(List.of("result", "count"));
+    return schema;
+  }
+
+  /** A member written on every row whose value may be JSON null - present, but not always carrying a value. */
+  private Schema<String> nullableString(final String description) {
+    final Schema<String> schema = SpecBuilders.string(description);
+    schema.setNullable(true);
     return schema;
   }
 
   private Schema<?> createClusterAuthSessionRequestSchema() {
     final Schema<Object> schema = SpecBuilders.object("A session token and the action to apply to it");
     schema.addProperty("token", SpecBuilders.string("The session token, 'AU-<server name>-<uuid>'"));
-    schema.addProperty("action", SpecBuilders.string("'validate' (default) or 'revoke'"));
+    final Schema<String> action = SpecBuilders.string("""
+        What to do with the token. 'validate' answers with the session the issuer holds; 'revoke' drops it. \
+        Defaults to 'validate'. Anything else is refused with a 400 naming it.""");
+    action.setEnum(List.of("validate", "revoke"));
+    schema.addProperty("action", action);
     schema.setRequired(List.of("token"));
     return schema;
   }
@@ -161,6 +184,8 @@ public class AuthApiSpec implements OpenApiContributor {
     final Schema<Object> schema = SpecBuilders.object("The session as held by the node that issued it");
     schema.addProperty("user", SpecBuilders.string("The principal the session belongs to"));
     schema.addProperty("createdAt", SpecBuilders.integer("Creation time, epoch milliseconds"));
+    // Both written in one chained expression on the only path that answers 200 (issue #7578).
+    schema.setRequired(List.of("user", "createdAt"));
     return schema;
   }
 }

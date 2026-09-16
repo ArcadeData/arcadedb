@@ -280,6 +280,33 @@ public final class SpecBuilders {
     return schema;
   }
 
+  /**
+   * An open map whose keys are not known ahead of time but whose VALUES all have one shape - a tag map of
+   * strings, a file-name-to-checksum map, a database-name-to-group-list map.
+   * <p>
+   * The typed sibling of {@link #freeFormObject(String)}, and the one to reach for whenever the description
+   * would have said "as name to value pairs": that phrasing names the value type, and a generator can emit
+   * {@code Map&lt;String, T&gt;} from it instead of {@code Map&lt;String, Object&gt;} (issue #7577).
+   */
+  public static Schema<Object> mapOf(final Schema<?> values, final String description) {
+    final Schema<Object> schema = object(description);
+    schema.setAdditionalProperties(values);
+    return schema;
+  }
+
+  /**
+   * Any JSON value at all: a scalar, an array, an object, or null.
+   * <p>
+   * Spelled as a schema with no {@code type} rather than as {@code type: object}, because that is what OpenAPI
+   * means by "unconstrained" - a column of a Grafana frame or of a time-series row holds a number, a string or
+   * null, and calling that an object tells a generator the one thing it is not (issue #7577).
+   */
+  public static Schema<Object> anyValue(final String description) {
+    final Schema<Object> schema = new Schema<>();
+    schema.setDescription(description);
+    return schema;
+  }
+
   public static Schema<?> ref(final String componentName) {
     return new Schema<>().$ref("#/components/schemas/" + componentName);
   }
@@ -289,7 +316,10 @@ public final class SpecBuilders {
     body.setDescription(description);
     body.setRequired(required);
     final MediaType mediaType = new MediaType();
-    mediaType.setSchema(componentName == null ? new Schema<>().type("object") : ref(componentName));
+    // A body with no named component is an object whose members this document does not enumerate, which is an
+    // OPEN map - not a bare 'type: object', which carries no information at all and which a strict generator
+    // turns into an empty model (issue #7577).
+    mediaType.setSchema(componentName == null ? freeFormObject(null) : ref(componentName));
     body.setContent(new Content().addMediaType(JSON, mediaType));
     return body;
   }
@@ -308,7 +338,8 @@ public final class SpecBuilders {
     final ApiResponse response = new ApiResponse();
     response.setDescription(description);
     final MediaType mediaType = new MediaType();
-    mediaType.setSchema(componentName == null ? new Schema<>().type("object") : ref(componentName));
+    // Same rule as jsonBody: an un-named response body is an open map, not an empty model (issue #7577).
+    mediaType.setSchema(componentName == null ? freeFormObject(null) : ref(componentName));
     response.setContent(new Content().addMediaType(JSON, mediaType));
     return response;
   }
