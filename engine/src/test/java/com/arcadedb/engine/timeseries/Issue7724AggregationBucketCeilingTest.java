@@ -241,6 +241,43 @@ class Issue7724AggregationBucketCeilingTest extends TestHelper {
         .as("nothing was sealed, so no block was read").isZero();
   }
 
+  /**
+   * The same requirement on the AGGREGATION path: {@code aggregateMulti} reads its mutable half through
+   * {@code TimeSeriesBucket.iterateRange}, a different method from the {@code scanRange} the test above
+   * covers, and it reported nothing for the same reason. An aggregation answered mostly from uncompacted data
+   * is not unusual - it is what every dashboard sees between compactions - so under-reporting there would
+   * make the dashboard's own read look free.
+   */
+  @Test
+  void anAggregationOverUncompactedDataReportsItsMutableWork() throws Exception {
+    database.command("sql", "CREATE TIMESERIES TYPE UnsealedAgg TIMESTAMP ts FIELDS (value DOUBLE) SHARDS 1");
+    final TimeSeriesEngine engine = ((LocalTimeSeriesType) database.getSchema().getType("UnsealedAgg")).getEngine();
+
+    database.transaction(() -> {
+      for (int i = 0; i < SAMPLES; i++)
+        database.command("sql", "INSERT INTO UnsealedAgg SET ts = :ts, value = :v",
+            Map.of("ts", i * BUCKET, "v", (double) i));
+    });
+
+    final List<MultiColumnAggregationRequest> requests =
+        List.of(new MultiColumnAggregationRequest(1, AggregationType.SUM, "s"));
+
+    final AggregationMetrics metrics = new AggregationMetrics();
+    database.begin();
+    final MultiColumnAggregationResult result;
+    try {
+      result = engine.aggregateMulti(0L, SAMPLES * BUCKET, requests, BUCKET, null, metrics, 0);
+    } finally {
+      database.commit();
+    }
+
+    assertThat(result.getBucketTimestamps()).as("the samples really were aggregated").hasSize(SAMPLES);
+    assertThat(metrics.getScannedPages()).as("the mutable pages the aggregation examined").isPositive();
+    assertThat(metrics.getMaterializedRows()).as("the rows it turned into objects").isEqualTo(SAMPLES);
+    assertThat(metrics.getSlowPathBlocks() + metrics.getFastPathBlocks())
+        .as("nothing was sealed, so no block was read").isZero();
+  }
+
   // ---- helpers ----
 
   private static int blocksTouched(final AggregationMetrics metrics) {
