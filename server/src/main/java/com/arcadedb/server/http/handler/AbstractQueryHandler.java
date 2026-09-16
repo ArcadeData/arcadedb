@@ -32,6 +32,7 @@ import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.parser.ExplainResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalEdgeType;
 import com.arcadedb.schema.LocalVertexType;
@@ -72,6 +73,17 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
    * Name of the response field telling whether the cap cut the result short.
    */
   public static final String TRUNCATED_FIELD = "truncated";
+
+  /**
+   * What an {@code EXPLAIN} (or {@code PROFILE}) request is told when it asks for the streaming encoding.
+   * <p>
+   * One constant rather than one message per handler, because the two ndjson-capable query operations have to
+   * refuse it identically: {@code POST /command} and {@code POST /query} reached it through
+   * {@code PostCommandHandler}, {@code GET /query} did not reach it at all and streamed the plan row instead
+   * (issue #7575).
+   */
+  protected static final String EXPLAIN_NOT_STREAMABLE =
+      "EXPLAIN produces a plan, not a row stream: request it with 'Accept: application/json'";
 
   /**
    * Upper bound on how much of a command is echoed in the truncation warning, so a large payload cannot flood
@@ -932,5 +944,42 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       throw new IllegalArgumentException("The streaming encoding is available only for a read-only statement, "
           + "because its rows reach the client before the statement has finished: run this one with "
           + "'Accept: application/json'");
+  }
+
+  /**
+   * Refuses a streamed {@code EXPLAIN}, the result-set counterpart of {@link #requireStreamableStatement}.
+   * <p>
+   * Checked on the result set rather than on the command text because only the result set says so: the statement
+   * can be nested in a script. The plan belongs in the buffered envelope's {@code explain} and
+   * {@code explainPlan} properties, which a stream of rows and a stats trailer has nowhere to put - so a streamed
+   * EXPLAIN would either carry the plan as a row that no {@code NdJsonQueryEvent} consumer knows how to read, or
+   * drop the one thing the caller asked for.
+   *
+   * @throws IllegalArgumentException when the result set is an EXPLAIN plan rather than rows
+   */
+  protected static void requireStreamableResultSet(final ResultSet qResult) {
+    if (qResult instanceof ExplainResultSet)
+      throw new IllegalArgumentException(EXPLAIN_NOT_STREAMABLE);
+  }
+
+  /**
+   * Drains the single row an {@link ExplainResultSet} carries and returns the plan it describes.
+   * <p>
+   * Draining is what makes the buffered {@code result} array empty: the plan travels in the envelope, and leaving
+   * the row in would put the same information in two places in two shapes. {@code GET /query} used to skip this
+   * branch entirely, so its answer was that row serialized as if it were a record (issue #7575).
+   */
+  protected static ExecutionPlan drainExplainResultSet(final ResultSet qResult) {
+    final ExecutionPlan plan = qResult.getExecutionPlan().orElseThrow(
+        () -> new IllegalStateException("EXPLAIN produced no execution plan"));
+    while (qResult.hasNext())
+      qResult.next();
+    return plan;
+  }
+
+  /** Lifts a plan into the buffered response envelope, as text and as the structured form. */
+  protected static void reportExplainPlan(final JSONObject response, final ExecutionPlan plan) {
+    response.put("explain", plan.prettyPrint(0, 2));
+    response.put("explainPlan", plan.toResult().toJSON());
   }
 }

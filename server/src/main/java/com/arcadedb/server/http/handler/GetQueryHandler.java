@@ -20,7 +20,9 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.parser.ExplainResultSet;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.monitor.QueryProfile;
@@ -97,8 +99,24 @@ public class GetQueryHandler extends AbstractQueryHandler {
         final int limit = resolveLimit(requestLimit, planLimit);
         profile.addEngineNanos(System.nanoTime() - engineStart);
 
+        // Issue #7575. EXPLAIN is the one statement whose answer is a plan rather than rows, and this handler
+        // had no branch for it in either arm: a streamed one put the plan row on the wire as an
+        // NdJsonQueryEvent 'record' no consumer knows how to read, and a buffered one serialized it as if it
+        // were a record, so the 'explain'/'explainPlan' envelope properties the POST operations produce were
+        // unreachable from here. Both arms now do what POST does, through the same three methods on
+        // AbstractQueryHandler, so the three ndjson-capable query operations cannot drift apart again.
+        if (streaming)
+          requireStreamableResultSet(qResult);
+
         final long serializationStart = System.nanoTime();
-        if (streaming) {
+        if (qResult instanceof ExplainResultSet) {
+          final ExecutionPlan executionPlan = drainExplainResultSet(qResult);
+          final SerializationOutcome outcome = serializeResultSetBounded(database, serializer, limit,
+              getMaxResultRows(), response, qResult, includeTypeHints);
+          reportLimits(response, limit, outcome);
+          reportExplainPlan(response, executionPlan);
+          profile.addSerializationNanos(System.nanoTime() - serializationStart);
+        } else if (streaming) {
           // The response is written here, row by row, and the method returns null below so the request pipeline
           // does not send a second one (issue #7306).
           final SerializationOutcome outcome = streamResultSetAsNdJson(exchange, database, serializer, limit,

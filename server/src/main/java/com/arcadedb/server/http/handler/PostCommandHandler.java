@@ -275,29 +275,22 @@ public class PostCommandHandler extends AbstractQueryHandler {
         final int limit = resolveLimit(requestLimit, planLimit);
         final SerializationOutcome outcome;
 
-        if (streaming && qResult instanceof ExplainResultSet)
+        if (streaming)
           // The same rule as the 'profileExecution' refusal above, for the spelling that carries no request
-          // field: EXPLAIN returns no rows at all, so streaming it would be an empty stream that told the
-          // caller nothing about the plan it asked for. Checked here because only the result set says so - the
-          // statement can be nested in a script.
-          throw new IllegalArgumentException("EXPLAIN produces a plan, not a row stream: request it with "
-              + "'Accept: application/json'");
+          // field. Shared with GET /query since issue #7575, which used to reach neither this refusal nor the
+          // buffered branch below and answered the plan row as if it were a record.
+          requireStreamableResultSet(qResult);
 
         if (qResult instanceof ExplainResultSet) {
-          // EXPLAIN (or SQL PROFILE): extract plan, then drain the single record
-          // so serializeResultSet produces an empty result structure
-          final var executionPlan = qResult.getExecutionPlan().get();
-          final String explainText = executionPlan.prettyPrint(0, 2);
-          while (qResult.hasNext()) {
-            qResult.next();
-          }
+          // EXPLAIN (or SQL PROFILE): extract the plan, then drain the single record so serializeResultSet
+          // produces an empty result structure and the plan travels only in the envelope.
+          final var executionPlan = drainExplainResultSet(qResult);
           profile.addEngineNanos(System.nanoTime() - engineStart);
 
           final long serializationStart = System.nanoTime();
           outcome = serializeResultSetBounded(database, serializer, limit, maxResultRows, response, qResult,
               includeTypeHints);
-          response.put("explain", explainText);
-          response.put("explainPlan", executionPlan.toResult().toJSON());
+          reportExplainPlan(response, executionPlan);
           profile.addSerializationNanos(System.nanoTime() - serializationStart);
         } else {
           if (detailedProfile && qResult != null) {
