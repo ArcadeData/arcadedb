@@ -158,6 +158,31 @@ public class HttpSession implements QuerySession {
   }
 
   public HttpSession execute(final ServerSecurityUser user, final Callable callback) throws Exception {
+    return execute(user, callback, true);
+  }
+
+  /**
+   * {@link #execute(ServerSecurityUser, Callable)} with control over what a failure does to the session's
+   * transaction (issue #7734).
+   * <p>
+   * {@code rollbackOnFailure} is true for every request that runs INSIDE the caller's transaction, which is what
+   * the single-argument form means and what it has always done: the command failed part way, so the transaction
+   * it was running in cannot be trusted and is rolled back before the exception leaves.
+   * <p>
+   * It is false for a route whose documented contract is that it does not participate in that transaction at all
+   * - the three {@code /api/v1/ts} routes since issue #7402, which resolve the session for its lock, principal
+   * and idle clock but write through {@code TimeSeriesShard.appendSamples}' own nested begin/commit or read
+   * without touching it. For those the rollback was pure collateral damage: a 400 from a body the line-protocol
+   * parser refused before a single byte reached the engine, or a 413 from a read answering "too many rows",
+   * destroyed a transaction the client had opened with {@code /begin} and still believed it owned - and left the
+   * session registered, so its later {@code /commit} reported nothing lost.
+   * <p>
+   * The session lock, the registration re-validation and the idle-clock refresh are identical either way. Only
+   * the {@code catch} arm differs, so a handler that declares itself independent cannot accidentally get a
+   * WEAKER lock or a stale {@code lastUpdate} out of the choice.
+   */
+  public HttpSession execute(final ServerSecurityUser user, final Callable callback, final boolean rollbackOnFailure)
+      throws Exception {
     if (!this.user.equals(user))
       throw new SecurityException("Cannot use the requested transaction because in use by a different user");
 
@@ -183,7 +208,8 @@ public class HttpSession implements QuerySession {
         // ALREADY HOLDS `lock` HERE, AND ReentrantLock.lockInterruptibly() CHECKS Thread.interrupted() BEFORE
         // ITS REENTRANT FAST PATH - IF THIS THREAD'S INTERRUPT FLAG IS SET, cancel() WOULD THROW
         // InterruptedException AND SILENTLY SKIP THE ROLLBACK
-        rollbackIfActive();
+        if (rollbackOnFailure)
+          rollbackIfActive();
         throw e;
       } finally {
         lock.unlock();

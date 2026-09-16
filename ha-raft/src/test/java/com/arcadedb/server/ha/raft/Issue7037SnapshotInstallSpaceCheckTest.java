@@ -35,6 +35,7 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -166,7 +167,9 @@ class Issue7037SnapshotInstallSpaceCheckTest {
           db.newDocument("Doc").set("id", i).set("payload", "x".repeat(200)).save();
       });
 
-      final long estimate = SnapshotHttpHandler.estimateUncompressedBytes((DatabaseInternal) db, null);
+      // List.of(): this fixture has no TimeSeries type, so the sealed set the ship would stream is empty. Named
+      // rather than listed off the filesystem (issue #7726), which says what the file set under test IS.
+      final long estimate = SnapshotHttpHandler.estimateUncompressedBytes((DatabaseInternal) db, null, List.of());
 
       // The archive ships the registered page files (not the WAL, which the install discards), so that is the floor.
       long pageFiles = 0L;

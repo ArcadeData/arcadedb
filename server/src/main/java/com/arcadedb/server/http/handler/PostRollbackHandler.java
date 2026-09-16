@@ -57,4 +57,21 @@ public class PostRollbackHandler extends DatabaseAbstractHandler {
   protected boolean requiresTransaction() {
     return false;
   }
+
+  /**
+   * Dispatched to a worker thread whenever the request names a session (issue #7684), which for this route is
+   * every request that does anything: the base class then runs it inside {@code HttpSession.execute}, which
+   * waits up to five seconds on the session lock, and an Undertow IO thread parked on that wait starves every
+   * unrelated connection multiplexed onto it.
+   * <p>
+   * The per-REQUEST form is overridden rather than the handler-wide one, which is what {@code PostBeginHandler}
+   * and {@code PostCommitHandler} answer {@code true} to: the handler-wide answer also gates reading the request
+   * body ({@code AbstractServerHttpHandler} parses the payload only for a handler that returns true), and
+   * {@code /rollback} takes no body. Keeping the dispatch decision out of the body decision leaves the wire
+   * contract of this route exactly where it was.
+   */
+  @Override
+  protected boolean mustExecuteOnWorkerThread(final HttpServerExchange exchange) {
+    return carriesSessionId(exchange);
+  }
 }

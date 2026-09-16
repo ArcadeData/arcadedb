@@ -766,18 +766,13 @@ public class SnapshotHttpHandler implements HttpHandler {
    * estimate rather than a promise - a fallback-path file can still grow before it is read - which is all the
    * follower's up-front space check needs (issue #7037). Package-private for unit testing.
    * <p>
-   * This form lists the sealed stores LIVE, for a caller that holds no captured set. The ship itself always has
-   * one and calls the three-argument form below; see there for why the two can differ.
-   */
-  static long estimateUncompressedBytes(final DatabaseInternal db, final PageSnapshot snapshot) {
-    return estimateUncompressedBytes(db, snapshot, listSealedStoresOrFail(new File(db.getDatabasePath()), db.getName()));
-  }
-
-  /**
-   * The form {@link #serveSnapshotZip} calls, sized over the sealed set it is about to stream rather than over a
-   * fresh listing of the directory (issue #7671). On the window path those differ: the archive carries the set
-   * captured at t0, so announcing the live one would describe an archive nobody sends - the same mistake #7456
-   * corrected for the configuration files, one file set further on.
+   * {@code sealedFiles} is the sealed set the ship is ABOUT TO STREAM, never a fresh listing of the directory
+   * (issue #7671). On the window path those differ: the archive carries the set captured at t0, so announcing the
+   * live one would describe an archive nobody sends - the same mistake #7456 corrected for the configuration
+   * files, one file set further on. It is therefore a required argument rather than one this method can default:
+   * a convenience overload that listed the directory itself existed here and, once {@code serveSnapshotZip} always
+   * had a captured set to pass, nothing but tests called it - so it was removed, because the only thing it could
+   * still do was hand a future caller the answer #7671 is about (issue #7726).
    */
   static long estimateUncompressedBytes(final DatabaseInternal db, final PageSnapshot snapshot,
       final List<File> sealedFiles) {

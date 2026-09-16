@@ -155,7 +155,9 @@ class Issue7456SnapshotShipConfigurationFromWindowTest {
             .as("the fixture must actually move the on-disk size, or the assertion below proves nothing")
             .isGreaterThan(schemaBytesAtT0);
 
-        final long announced = SnapshotHttpHandler.estimateUncompressedBytes(db, snapshot);
+        // List.of() names what the assertion below already says in a comment: this fixture HAS no sealed stores
+        // (no TimeSeries type), so the set the ship would stream is empty (issue #7726).
+        final long announced = SnapshotHttpHandler.estimateUncompressedBytes(db, snapshot, List.of());
         final long windowBytes = snapshot.getFiles().stream().mapToLong(PageSnapshot.SnapshotFile::size).sum();
         final long configBytes = snapshot.getConfigurationFiles().stream()
             .mapToLong(PageSnapshot.SnapshotConfigFile::size).sum();

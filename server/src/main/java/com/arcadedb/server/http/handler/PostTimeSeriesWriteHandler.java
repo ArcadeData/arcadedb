@@ -109,6 +109,17 @@ public class PostTimeSeriesWriteHandler extends DatabaseAbstractHandler {
   }
 
   /**
+   * False, which is the same statement the class javadoc above makes: an append is NOT part of the caller's
+   * transaction, so a failure on this route must not roll it back (issue #7734). {@code LineProtocolParser.parse}
+   * refuses an unterminated or over-long quoted field value before {@code TimeSeriesGateway.write} is reached,
+   * so a 400 from a malformed body used to destroy a transaction not one byte of the request had touched.
+   */
+  @Override
+  protected boolean participatesInSessionTransaction() {
+    return false;
+  }
+
+  /**
    * Returns the body and keeps NOTHING: the request pipeline attaches the returned text to the exchange under
    * {@link #RAW_PAYLOAD}, which is where {@link #execute} reads it back.
    * <p>
