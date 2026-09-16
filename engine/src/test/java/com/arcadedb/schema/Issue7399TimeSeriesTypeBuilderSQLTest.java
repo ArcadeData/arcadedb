@@ -128,18 +128,21 @@ class Issue7399TimeSeriesTypeBuilderSQLTest extends TestHelper {
   }
 
   @Test
-  void downsamplingTiersRenderAsASecondStatementBecauseCreateHasNoClauseForThem() {
+  void downsamplingTiersRenderInsideTheCreateSoThereIsNoSecondStatement() {
+    // This used to render two statements - a CREATE and an ALTER ... ADD DOWNSAMPLING POLICY - because the create
+    // grammar had no downsampling clause, which left a window where the CREATE landed and the ALTER did not.
+    // CREATE TIMESERIES TYPE carries the policy since issue #7689.
     final List<String> statements = builder("Tiered")
         .withField("value", Type.DOUBLE)
         .withDownsamplingTiers(List.of(new DownsamplingTier(7L * 86_400_000L, 3_600_000L)))
         .toSQL();
 
-    assertThat(statements).hasSize(2);
-    assertThat(statements.get(0)).startsWith("CREATE TIMESERIES TYPE `Tiered`");
-    assertThat(statements.get(1))
-        .isEqualTo("ALTER TIMESERIES TYPE `Tiered` ADD DOWNSAMPLING POLICY AFTER 7 DAYS GRANULARITY 1 HOURS");
-    assertParses(statements.get(0));
-    assertParses(statements.get(1));
+    assertThat(statements).hasSize(1);
+    assertThat(statements.getFirst())
+        .startsWith("CREATE TIMESERIES TYPE `Tiered`")
+        .endsWith(" DOWNSAMPLING POLICY AFTER 7 DAYS GRANULARITY 1 HOURS")
+        .doesNotContain("ALTER");
+    assertParses(statements.getFirst());
   }
 
   @Test
@@ -181,19 +184,23 @@ class Issue7399TimeSeriesTypeBuilderSQLTest extends TestHelper {
   }
 
   @Test
-  void aColumnWithAnExplicitCodecHasNoSQLExpression() {
-    // withColumn() carries a codec the grammar cannot name, so the builder refuses to render rather than emitting
-    // DDL that would silently recreate the column with the DEFAULT codec (issue #5475's failure, re-entered).
+  void aColumnWithAnExplicitCodecRendersThatCodecRatherThanBeingRefused() {
+    // This used to throw: the grammar could not name a codec, so rendering the column without it would have
+    // silently recreated it with the DEFAULT codec (issue #5475's failure, re-entered). CREATE TIMESERIES TYPE
+    // carries a CODEC clause since issue #7689, so the codec renders and survives the round trip instead.
     final TimeSeriesTypeBuilder builder = builder("ExplicitCodec")
         .withColumn(new ColumnDefinition("value", Type.DOUBLE, ColumnDefinition.ColumnRole.FIELD, TimeSeriesCodec.NONE));
 
-    assertThatThrownBy(builder::toSQL)
-        .isInstanceOf(SchemaException.class)
-        .hasMessageContaining("value")
-        .hasMessageContaining("NONE");
+    final String sql = builder.toSQL().getFirst();
+    assertThat(sql).contains("`value` DOUBLE CODEC NONE");
+    assertParses(sql);
 
-    // The same builder still creates the type in place: the restriction is the SQL rendering's, not the builder's.
+    // Both paths agree on the codec, which is the parity the remote builder rides on.
     assertThat(builder.create().getTsColumn("value").getCompressionHint()).isEqualTo(TimeSeriesCodec.NONE);
+
+    database.command("sql", sql.replace("`ExplicitCodec`", "`ExplicitCodecViaSQL`"));
+    assertThat(((TimeSeriesType) database.getSchema().getType("ExplicitCodecViaSQL")).getTsColumn("value")
+        .getCompressionHint()).isEqualTo(TimeSeriesCodec.NONE);
   }
 
   @Test
