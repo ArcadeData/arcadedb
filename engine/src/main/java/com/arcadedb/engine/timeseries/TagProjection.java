@@ -67,8 +67,7 @@ final class TagProjection {
     if (columnIndices == null || tagFilter == null)
       return new TagProjection(columnIndices, null);
 
-    assert isAscendingAndDistinct(columnIndices) :
-        "A TimeSeries projection must be ascending and duplicate-free: " + Arrays.toString(columnIndices);
+    requireAscendingAndDistinct(columnIndices);
 
     int missing = 0;
     for (final TagFilter.Condition cond : tagFilter.getConditions())
@@ -123,18 +122,21 @@ final class TagProjection {
   }
 
   /**
-   * The precondition {@link #narrow} depends on, checked under {@code -ea} only (claude-review on PR #7747).
+   * Enforces the precondition {@link #narrow} depends on (claude-review on PR #7747).
    * <p>
-   * An assertion and not a refusal, because it is a contract between engine paths rather than anything a user can
-   * reach: every caller resolves its projection by walking the schema in order. What it buys is that a future one
-   * that does not FAILS in a test run instead of silently relabelling which value belongs to which requested
-   * column - which is what the widened narrow() would do, since it reads the decompressor's schema order.
+   * A real check and not an {@code assert}, although this is a contract between engine paths rather than anything
+   * a user can reach: assertions are off in every default production JVM, and the failure mode a violation
+   * produces is the silent kind - the widened {@link #narrow} reads the decompressor's schema order, so an
+   * unsorted projection would hand back values attributed to the WRONG columns rather than fail. The check is a
+   * handful of int comparisons over a tiny array, once per scan and not once per row, which is not a price worth
+   * trading for that.
    */
-  private static boolean isAscendingAndDistinct(final int[] columnIndices) {
+  private static void requireAscendingAndDistinct(final int[] columnIndices) {
     for (int i = 1; i < columnIndices.length; i++)
       if (columnIndices[i] <= columnIndices[i - 1])
-        return false;
-    return true;
+        throw new IllegalArgumentException(
+            "A TimeSeries projection must be ascending and duplicate-free, and this one is not: "
+                + Arrays.toString(columnIndices));
   }
 
   private static boolean contains(final int[] array, final int length, final int value) {
