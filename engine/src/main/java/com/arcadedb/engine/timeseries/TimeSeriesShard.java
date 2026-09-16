@@ -371,15 +371,31 @@ public class TimeSeriesShard implements AutoCloseable {
    */
   public Iterator<Object[]> iterateRange(final long fromTs, final long toTs, final int[] columnIndices,
                                          final TagFilter tagFilter) throws IOException {
+    return iterateRange(fromTs, toTs, columnIndices, tagFilter, null);
+  }
+
+  /**
+   * {@link #iterateRange(long, long, int[], TagFilter)}, counting what the walk did into {@code metrics}
+   * (issue #7717). {@code null} means "do not count".
+   * <p>
+   * BOTH layers: the sealed blocks and the mutable pages. That distinction is worth stating because it was
+   * briefly otherwise - the mutable half goes through {@code TimeSeriesBucket.scanRange}, which kept no
+   * counters until it was given some - and a read answered entirely from the mutable bucket is not an edge
+   * case. It is every read of a type whose compaction interval has not elapsed yet, and reporting zero work
+   * for it would make the counters worse than absent (CodeRabbit on PR #7728).
+   */
+  public Iterator<Object[]> iterateRange(final long fromTs, final long toTs, final int[] columnIndices,
+                                         final TagFilter tagFilter, final AggregationMetrics metrics)
+      throws IOException {
     final Iterator<Object[]> sealedIter;
     final Iterator<Object[]> mutableIter;
     compactionLock.readLock().lock();
     try {
-      sealedIter = sealedStore.iterateRange(fromTs, toTs, columnIndices, tagFilter);
+      sealedIter = sealedStore.iterateRange(fromTs, toTs, columnIndices, tagFilter, metrics);
       // Eagerly materialize the mutable iterator under the lock.
       // A lazy iterator would risk reading stale (cleared) pages if compaction
       // acquires the write lock and clears the bucket before next() is called.
-      final List<Object[]> mutableRows = mutableBucket.scanRange(fromTs, toTs, columnIndices);
+      final List<Object[]> mutableRows = mutableBucket.scanRange(fromTs, toTs, columnIndices, metrics);
       mutableIter = mutableRows.iterator();
     } finally {
       compactionLock.readLock().unlock();
