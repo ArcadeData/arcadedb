@@ -483,6 +483,57 @@ public class TimeSeriesShard implements AutoCloseable {
   }
 
   /**
+   * Scans both layers oldest-first and returns at most {@code limit} rows in ascending timestamp
+   * order (issue #7336).
+   * <p>
+   * The ascending mirror of {@link #scanRangeDescending}: both layers stop as soon as the limit is
+   * satisfied, the sealed layer block by block and the mutable layer page by page. The sealed layer
+   * is walked FIRST here - it is the one holding the oldest rows - and, once it alone has supplied
+   * {@code limit} rows, its newest retained timestamp bounds the mutable walk from above. When that
+   * bound is older than everything the mutable bucket holds, no mutable page is read at all.
+   *
+   * @param limit   maximum number of rows to return; {@code <= 0} means unlimited
+   * @param metrics optional block-level counters, may be {@code null}
+   */
+  public List<Object[]> scanRangeAscending(final long fromTs, final long toTs, final int[] columnIndices,
+                                           final TagFilter tagFilter, final int limit,
+                                           final AggregationMetrics metrics) throws IOException {
+    final int need = limit > 0 ? limit : Integer.MAX_VALUE;
+
+    compactionLock.readLock().lock();
+    try {
+      final List<Object[]> sealedRows = sealedStore.scanRangeAscending(fromTs, toTs, columnIndices, tagFilter, limit,
+          metrics);
+
+      // The sealed head alone can answer the query when it is complete and strictly older than anything still
+      // mutable: no page has to be read. An empty bucket answers Long.MAX_VALUE, so it takes this path too.
+      if (sealedRows.size() >= need && (long) sealedRows.getLast()[0] < mutableBucket.getMinTimestamp())
+        return sealedRows;
+
+      // The sealed rows already found bound the mutable walk from above: no row newer than the newest one held
+      // can contribute. Inclusive, so ties stay eligible.
+      final long mutableToTs = sealedRows.size() >= need ?
+          Math.min(toTs, (long) sealedRows.getLast()[0]) :
+          toTs;
+
+      final List<Object[]> mutableRows = mutableBucket.scanRangeAscending(fromTs, mutableToTs, columnIndices,
+          tagFilter, limit, metrics);
+      if (mutableRows.isEmpty())
+        return sealedRows;
+      if (sealedRows.isEmpty())
+        return mutableRows;
+
+      final List<Object[]> results = new ArrayList<>(sealedRows.size() + mutableRows.size());
+      results.addAll(sealedRows);
+      results.addAll(mutableRows);
+      TimeSeriesSealedStore.trimToAscendingLimit(results, need);
+      return results;
+    } finally {
+      compactionLock.readLock().unlock();
+    }
+  }
+
+  /**
    * Maximum number of samples per sealed block. Keeps decompression cost bounded.
    */
   static final int SEALED_BLOCK_SIZE = 65_536;
