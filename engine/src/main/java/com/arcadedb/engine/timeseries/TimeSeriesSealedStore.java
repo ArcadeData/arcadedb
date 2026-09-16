@@ -528,6 +528,17 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       final int tsColIdx = findTimestampColumnIndex();
       final int dirSize = blockDirectory.size();
 
+      // Loop-invariant for the whole walk, so built once rather than per block: a projection does not vary from
+      // block to block, and neither does the timestamp column (claude-review on PR #7730).
+      BitSet projection = null;
+      int projectionWidth = 0;
+      if (combinationsOnly && columnIndices != null) {
+        projection = new BitSet();
+        for (final int idx : columnIndices)
+          projection.set(idx);
+        projectionWidth = columnIndices.length;
+      }
+
       // Binary search: find first block whose maxTimestamp >= fromTs
       int startBlockIdx = 0;
       if (dirSize > 0) {
@@ -563,7 +574,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
         if (combinationsOnly) {
           // The whole point of issue #7710: one row off the directory entry, with no file read and no decode.
-          final Object[] combination = declaredSingleCombination(entry, columnIndices, fromTs, toTs);
+          final Object[] combination = declaredSingleCombination(entry, projection, projectionWidth, tsColIdx,
+              fromTs, toTs);
           if (combination != null) {
             if (metrics != null)
               metrics.addSkippedBlock();
@@ -2850,37 +2862,38 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * (see {@link BlockEntry#tagDistinctValues}) so it cannot say which.</li>
    * </ul>
    *
-   * @param columnIndices the projection in NON-timestamp indices; {@code null} means every column, which is never
-   *                      answerable from the declaration because a value column has none
+   * @param projection the projected NON-timestamp column indices, as the set {@link #walkBlocks} built ONCE for
+   *                   the whole walk - it does not vary per block, and neither does {@code tsColIdx}, in a method
+   *                   whose entire purpose is to do no per-block work (claude-review on PR #7730). {@code null}
+   *                   means every column, which is never answerable from the declaration because a value column
+   *                   has none
+   * @param width      how many columns {@code projection} selects, i.e. the row's width minus the timestamp
    */
-  private Object[] declaredSingleCombination(final BlockEntry entry, final int[] columnIndices, final long fromTs,
-      final long toTs) {
-    if (columnIndices == null || entry.sampleCount == 0)
+  private Object[] declaredSingleCombination(final BlockEntry entry, final BitSet projection, final int width,
+      final int tsColIdx, final long fromTs, final long toTs) {
+    if (projection == null || entry.sampleCount == 0)
       return null;
     if (entry.minTimestamp < fromTs || entry.maxTimestamp > toTs)
       return null;
-    if (entry.tagDistinctValues == null)
-      return null;
 
-    final Object[] row = new Object[columnIndices.length + 1];
+    final Object[] row = new Object[width + 1];
     row[0] = entry.minTimestamp;
 
     // Walked in SCHEMA order, the order decompressColumns fills a projected row in - not in the order the
     // projection was written, which is a different thing whenever a caller hands the indices over unsorted.
-    final BitSet wanted = new BitSet();
-    for (final int idx : columnIndices)
-      wanted.set(idx);
-
     int nonTsIdx = 0;
     int slot = 1;
-    final int tsColIdx = findTimestampColumnIndex();
     for (int c = 0; c < columns.size(); c++) {
       if (c == tsColIdx)
         continue;
-      if (!wanted.get(nonTsIdx++))
+      if (!projection.get(nonTsIdx++))
         continue;
 
-      if (c >= entry.tagDistinctValues.length || !declaredValuesAreExactFor(columns.get(c)))
+      // Read inside the loop, not before it: a type with NO tag columns declares nothing, and its blocks carry a
+      // null here - yet such a block holds exactly one (empty) combination and needs no read at all. Checking the
+      // array up front turned the simplest case of all into a full decompression (claude-review on PR #7730).
+      if (entry.tagDistinctValues == null || c >= entry.tagDistinctValues.length
+          || !declaredValuesAreExactFor(columns.get(c)))
         return null;
 
       final String[] declared = entry.tagDistinctValues[c];
