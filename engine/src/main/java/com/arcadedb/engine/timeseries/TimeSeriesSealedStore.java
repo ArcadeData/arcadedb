@@ -955,6 +955,12 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     directoryLock.readLock().lock();
     try {
       for (final BlockEntry entry : blockDirectory) {
+        if (result.isOverBucketCeiling())
+          // The answer already carries more buckets than the caller will accept, so every remaining block is
+          // work whose only possible outcome is a refusal (issue #7724). Asked once per block rather than once
+          // per row, which bounds the overshoot to the block in hand and costs one comparison per block.
+          break;
+
         if (entry.maxTimestamp < fromTs || entry.minTimestamp > toTs) {
           if (metrics != null)
             metrics.addSkippedBlock();

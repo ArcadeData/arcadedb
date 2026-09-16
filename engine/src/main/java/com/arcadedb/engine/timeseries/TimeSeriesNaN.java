@@ -71,6 +71,41 @@ public final class TimeSeriesNaN {
   }
 
   /**
+   * The double a value read from the MUTABLE layer contributes to an aggregate, unboxed exactly the way the
+   * SEALED layer's codecs unbox the same value on the way in (issue #7725).
+   * <p>
+   * The mutable and the sealed layer answer the same samples, so they have to answer them alike: whether a
+   * sample has been compacted yet is not a question a caller asked. The two used to differ in two ways, both
+   * silent. A {@link Boolean} is not a {@link Number} - {@code BOOLEAN} has been an integer column since issue
+   * #5475 - so the mutable path read every boolean sample as a real {@code 0.0} while the sealed path, whose
+   * {@code SIMPLE8B} column went through {@link ColumnDefinition#integerValueOf(Object)}, read the same samples
+   * as 1 and 0. And anything else that is not a measurement became a real {@code 0.0} as well, which under this
+   * class's policy is a MEASUREMENT of zero: it enters the SUM and drags the AVG toward it, where
+   * {@link #ABSENT} would have been skipped by every aggregate.
+   * <p>
+   * {@code null} is zero rather than absent on purpose, and that is not a policy choice made here: it is what
+   * the sealed layer stores for it. Both {@link ColumnDefinition#integerValueOf(Object)} and
+   * {@link ColumnDefinition#numericValueOf(Object)} write a null out as zero, so a null sample reads back as a
+   * real zero once compacted, and the mutable layer answering {@link #ABSENT} for it would recreate the very
+   * disagreement this method exists to remove.
+   * <p>
+   * The remaining arm - a value that is neither null, a boolean nor a number - is a column the sealed layer
+   * cannot read as a number at all ({@code DICTIONARY} and {@code DELTA_OF_DELTA} have no numeric decoder, and
+   * {@code decompressDoubleColumnFromBytes} throws on them). Such a request is refused before it reaches either
+   * layer, by {@link TimeSeriesGateway#requireAggregatableColumn}; this answers {@link #ABSENT} so that a path
+   * that ever slips past the refusal reports a gap rather than inventing a zero.
+   */
+  public static double asMeasurement(final Object value) {
+    if (value == null)
+      return 0.0;
+    if (value instanceof final Number n)
+      return n.doubleValue();
+    if (value instanceof final Boolean b)
+      return b ? 1.0 : 0.0;
+    return ABSENT;
+  }
+
+  /**
    * Folds one sample into a running MIN. {@code accumulator} starts at {@link #ABSENT}; a NaN sample is skipped,
    * and the first real sample replaces the absent accumulator outright.
    */

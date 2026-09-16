@@ -78,6 +78,26 @@ public final class ColumnDefinition {
   }
 
   /**
+   * Whether an aggregate other than COUNT can read this column as a number on BOTH storage layers (issue #7725).
+   * <p>
+   * Asked of the CODEC rather than of the data type, because the codec is exactly what decides the answer: the
+   * sealed layer reads an aggregation column through {@code decompressDoubleColumnFromBytes}, which decodes
+   * {@code GORILLA_XOR} and {@code SIMPLE8B} and throws on everything else. So a {@code STRING} field, a TAG of
+   * any declared type (a tag is always {@code DICTIONARY}, even a {@code LONG} one) and the timestamp column
+   * itself are all unreadable there, whatever their {@link Type} suggests.
+   * <p>
+   * Before this existed the two layers disagreed about such a column instead of refusing it: the mutable path
+   * answered a real {@code 0.0} per sample and the sealed path threw, so the same request answered 200 with
+   * zeros until compaction ran and 500 afterwards.
+   */
+  public boolean isNumericallyAggregatable() {
+    return switch (getCompressionHint()) {
+      case GORILLA_XOR, SIMPLE8B -> true;
+      default -> false;
+    };
+  }
+
+  /**
    * Whether this data type can be stored in a TimeSeries row.
    * <p>
    * A TimeSeries row is a fixed-stride record and a sealed block column is one of three primitive

@@ -21,6 +21,7 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.timeseries.AggregationMetrics;
 import com.arcadedb.engine.timeseries.AggregationType;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.MultiColumnAggregationRequest;
@@ -33,6 +34,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.monitor.TimeSeriesReadMetrics;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
@@ -126,14 +128,14 @@ public class PostTimeSeriesQueryHandler extends DatabaseAbstractHandler {
     // stated no aggregation, the same reading the optional 'tags' and 'fields' members get, and the same one the
     // Grafana endpoint gives a target's own "aggregation": null.
     if (!payload.isNull("aggregation"))
-      return executeAggregation(payload, engine, columns, typeName, fromTs, toTs, tagFilter);
+      return executeAggregation(payload, engine, database.getName(), columns, typeName, fromTs, toTs, tagFilter);
 
-    return executeRawQuery(payload, engine, columns, typeName, fromTs, toTs, tagFilter);
+    return executeRawQuery(payload, engine, database.getName(), columns, typeName, fromTs, toTs, tagFilter);
   }
 
   private ExecutionResponse executeRawQuery(final JSONObject payload, final TimeSeriesEngine engine,
-      final List<ColumnDefinition> columns, final String typeName, final long fromTs, final long toTs,
-      final TagFilter tagFilter) throws Exception {
+      final String databaseName, final List<ColumnDefinition> columns, final String typeName, final long fromTs,
+      final long toTs, final TagFilter tagFilter) throws Exception {
 
     // Same cap and same semantics as the query/command endpoints: a non-positive value means unlimited.
     // requireIntLimit rather than payload.getInt: the latter narrows with Number.intValue(), so a limit an int
@@ -169,7 +171,16 @@ public class PostTimeSeriesQueryHandler extends DatabaseAbstractHandler {
     // request that genuinely has no bound; Integer.MAX_VALUE is left alone rather than overflowed, and is
     // unlimited in practice because no List can hold more.
     final int fetchLimit = ceiling <= 0 || ceiling == Integer.MAX_VALUE ? 0 : ceiling + 1;
-    final List<Object[]> rows = engine.queryAscending(fromTs, toTs, columnIndices, tagFilter, fetchLimit, null);
+
+    // What the read actually did, published to whatever the server's metrics subsystem feeds (issue #7717).
+    // null - and therefore free - whenever metrics are off.
+    final AggregationMetrics readMetrics = TimeSeriesReadMetrics.start();
+    final List<Object[]> rows;
+    try {
+      rows = engine.queryAscending(fromTs, toTs, columnIndices, tagFilter, fetchLimit, readMetrics);
+    } finally {
+      TimeSeriesReadMetrics.publish(readMetrics, databaseName, typeName, TimeSeriesReadMetrics.SURFACE_TS_QUERY);
+    }
 
     if (ceiling != limit && rows.size() > ceiling)
       throw resultSetTooLarge(maxResultRows);
@@ -214,8 +225,8 @@ public class PostTimeSeriesQueryHandler extends DatabaseAbstractHandler {
   }
 
   private ExecutionResponse executeAggregation(final JSONObject payload, final TimeSeriesEngine engine,
-      final List<ColumnDefinition> columns, final String typeName, final long fromTs, final long toTs,
-      final TagFilter tagFilter) throws Exception {
+      final String databaseName, final List<ColumnDefinition> columns, final String typeName, final long fromTs,
+      final long toTs, final TagFilter tagFilter) throws Exception {
 
     final long bucketInterval;
     final List<MultiColumnAggregationRequest> requests = new ArrayList<>();
@@ -249,6 +260,10 @@ public class PostTimeSeriesQueryHandler extends DatabaseAbstractHandler {
           return TimeSeriesHandlerUtils.badRequest(
               new IllegalArgumentException("Field '" + fieldName + "' not found in type"));
 
+        // Refused here rather than inside the engine, where it used to surface as zeros before compaction and a
+        // 500 after it (issue #7725). The catch below renders it as the same named 400 as the refusals above.
+        TimeSeriesGateway.requireAggregatableColumn(columns.get(colIndex), aggType);
+
         requests.add(new MultiColumnAggregationRequest(colIndex, aggType, alias));
         aggNames.put(alias);
       }
@@ -256,16 +271,26 @@ public class PostTimeSeriesQueryHandler extends DatabaseAbstractHandler {
       return TimeSeriesHandlerUtils.badRequest(e);
     }
 
-    final MultiColumnAggregationResult aggResult = engine.aggregateMulti(fromTs, toTs, requests, bucketInterval,
-        tagFilter);
-
-    final List<Long> timestamps = aggResult.getBucketTimestamps();
-
     // The same ceiling the raw branch enforces (issue #5719). This branch reads no 'limit' at all, so the
     // ceiling is the only bound there is: a small 'bucketInterval' over a wide range produces one response row
     // per bucket, which is the same unbounded response the raw branch was refused for. The engine's own
     // MAX_FLAT_BUCKETS only chooses between a flat array and a map, it is not a response-size bound.
     final int maxResultRows = getMaxResultRows();
+
+    // Carried INTO the scan, so a request that will be refused stops costing the whole range first (issue
+    // #7724). The engine stops one block past the ceiling, which leaves a result the check below necessarily
+    // refuses - it is over the ceiling by construction - so the refusal and its wording are unchanged and only
+    // its price differs.
+    final AggregationMetrics readMetrics = TimeSeriesReadMetrics.start();
+    final MultiColumnAggregationResult aggResult;
+    try {
+      aggResult = engine.aggregateMulti(fromTs, toTs, requests, bucketInterval, tagFilter, readMetrics, maxResultRows);
+    } finally {
+      TimeSeriesReadMetrics.publish(readMetrics, databaseName, typeName, TimeSeriesReadMetrics.SURFACE_TS_QUERY);
+    }
+
+    final List<Long> timestamps = aggResult.getBucketTimestamps();
+
     if (maxResultRows > 0 && timestamps.size() > maxResultRows)
       throw resultSetTooLarge(maxResultRows);
 

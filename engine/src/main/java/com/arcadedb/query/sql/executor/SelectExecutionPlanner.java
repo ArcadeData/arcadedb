@@ -3136,6 +3136,11 @@ public class SelectExecutionPlanner {
           columnIndex = findColumnIndex(columns, fieldName);
           if (columnIndex < 0)
             return false; // field not found in timeseries columns
+          if (!columns.get(columnIndex).isNumericallyAggregatable())
+            // A column no storage layer reads as a number - a STRING field, any TAG, the timestamp itself. The
+            // push-down would answer it inconsistently (issue #7725), so decline it and let the generic
+            // aggregation path have the query, which is what every other unsupported shape above does too.
+            return false;
         }
 
         final String alias = item.getProjectionAliasAsString();
