@@ -117,7 +117,6 @@ class Issue7657TimeSeriesWriteSpecStatesNonAtomicityTest {
         .containsIgnoringCase("run this call inside that transaction");
   }
 
-  /** Both routes asserted here are POST operations; {@code /latest} is the only GET of the three. */
   /**
    * The SQL half of the same statement, on {@code POST /api/v1/command/{database}} - the route
    * {@code INSERT INTO <timeseries type>} actually arrives on.
@@ -147,6 +146,7 @@ class Issue7657TimeSeriesWriteSpecStatesNonAtomicityTest {
         .containsIgnoringCase("Every other INSERT target behaves normally");
   }
 
+  /** Both routes asserted here are POST operations; {@code /latest} is the only GET of the three. */
   private String sessionHeaderOf(final String path) {
     final Operation operation = openAPI.getPaths().get(path).getPost();
     return operation.getParameters().stream()

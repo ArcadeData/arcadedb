@@ -55,8 +55,8 @@ public class CoreApiSpec implements OpenApiContributor {
   // Placed BEFORE NDJSON_READ_ONLY_DESCRIPTION in the command description, never after it: CoreApiSpecTest
   // requires the text from "only a statement provably read-only may stream" onward to be identical across GET
   // query, POST query and POST command (#7569, #7571), and a suffix added here would diverge them.
-  // INSERT INTO a TIMESERIES type is the one statement this endpoint runs that the session header above does
-  // not govern, so it is said here rather than on the header - a reader who never sends a session id still has
+  // INSERT INTO a TIMESERIES type is the one statement this endpoint runs that SESSION_REQUEST_DESCRIPTION
+  // does not govern, so it is said here rather than on the header - a reader who never sends a session id still has
   // to know the samples are already durable. The engine-side statement of the same contract lives on
   // TimeSeriesShard.appendSamples (#7410, decided as final by #7657); /api/v1/ts/{database}/write says it too.
   private static final String TIMESERIES_INSERT_DESCRIPTION =
