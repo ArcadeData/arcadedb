@@ -38,6 +38,7 @@ import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.Set;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantLock;
@@ -370,25 +371,11 @@ public class TimeSeriesShard implements AutoCloseable {
    */
   public Iterator<Object[]> iterateRange(final long fromTs, final long toTs, final int[] columnIndices,
                                          final TagFilter tagFilter) throws IOException {
-    return iterateRange(fromTs, toTs, columnIndices, tagFilter, null);
-  }
-
-  /**
-   * {@link #iterateRange(long, long, int[], TagFilter)}, counting what the SEALED walk did into
-   * {@code metrics} (issue #7717). {@code null} means "do not count".
-   * <p>
-   * The sealed half only: the mutable half is read by {@code TimeSeriesBucket.scanRange}, which keeps no
-   * counters of its own. So the block numbers - which are the ones that say whether the push-downs are
-   * working - are complete, while the mutable page numbers are not reported on this path.
-   */
-  public Iterator<Object[]> iterateRange(final long fromTs, final long toTs, final int[] columnIndices,
-                                         final TagFilter tagFilter, final AggregationMetrics metrics)
-      throws IOException {
     final Iterator<Object[]> sealedIter;
     final Iterator<Object[]> mutableIter;
     compactionLock.readLock().lock();
     try {
-      sealedIter = sealedStore.iterateRange(fromTs, toTs, columnIndices, tagFilter, metrics);
+      sealedIter = sealedStore.iterateRange(fromTs, toTs, columnIndices, tagFilter);
       // Eagerly materialize the mutable iterator under the lock.
       // A lazy iterator would risk reading stale (cleared) pages if compaction
       // acquires the write lock and clears the bucket before next() is called.
@@ -485,32 +472,36 @@ public class TimeSeriesShard implements AutoCloseable {
   }
 
   /**
-   * Visits the distinct TAG COMBINATIONS both layers carry in the range, rather than the samples that carry them
-   * (issue #7710).
+   * Adds the distinct values of one TAG column, over both layers, to {@code out} (issue #7660).
    * <p>
-   * The rows are the ones {@link #forEachRow} produces for the same projection, except that a sealed block which
-   * declares ONE combination is answered with a single synthetic row off its directory entry - see
-   * {@link TimeSeriesSealedStore#forEachTagCombination} for exactly when, and for why a block declaring more than
-   * one is read instead. The mutable bucket carries no such declaration and is always scanned, which is why the
-   * saving lives in the sealed layer.
+   * The sealed layer answers a block from its directory entry wherever it can, so the cost there is the number of
+   * BLOCKS rather than the number of samples - see {@link TimeSeriesSealedStore#collectDistinctTagValues} for why
+   * that entry is exact. The mutable bucket carries no such declaration and is scanned, on a projection of the one
+   * column so that nothing else is decoded or boxed; it is bounded by the compaction interval rather than by the
+   * series, which is why the sealed layer is where the saving lives.
    * <p>
-   * A caller folding these rows into a set of combinations, each with the earliest timestamp it was observed at,
-   * reaches the same answer {@link #forEachRow} would give it - without reading the samples.
+   * A {@code null} tag value contributes nothing. That is not a policy invented here: it is what the PromQL label
+   * endpoint has always done with the {@code null} a mutable row hands it, and the sealed layer never hands one out
+   * for a {@code STRING} TAG because {@code compressColumn} writes a null tag as the empty string.
+   *
+   * @param metrics optional counters, may be {@code null}. Mutable rows are counted in {@code materializedRows},
+   *                exactly as {@link #forEachRow} counts them
    */
-  public boolean forEachTagCombination(final long fromTs, final long toTs, final int[] columnIndices,
-      final AggregationMetrics metrics, final TimeSeriesRowVisitor visitor) throws IOException {
+  void collectDistinctTagValues(final int schemaColumnIndex, final int nonTsColumnIndex, final Set<String> out,
+      final AggregationMetrics metrics) throws IOException {
     compactionLock.readLock().lock();
     try {
-      if (!sealedStore.forEachTagCombination(fromTs, toTs, columnIndices, metrics, visitor))
-        return false;
+      sealedStore.collectDistinctTagValues(schemaColumnIndex, nonTsColumnIndex, out, metrics);
 
-      for (final Object[] row : mutableBucket.scanRange(fromTs, toTs, columnIndices)) {
+      final int[] projection = { nonTsColumnIndex };
+      for (final Object[] row : mutableBucket.scanRange(Long.MIN_VALUE, Long.MAX_VALUE, projection)) {
+        // row is { timestamp, the one projected column }: the layout TimeSeriesBucket.readRow() builds for any
+        // projection, and the reason the value is read from slot 1 rather than from the column's schema index.
+        if (row.length > 1 && row[1] != null)
+          out.add(row[1].toString());
         if (metrics != null)
           metrics.addMaterializedRows(1);
-        if (!visitor.visit(row))
-          return false;
       }
-      return true;
     } finally {
       compactionLock.readLock().unlock();
     }
@@ -540,13 +531,13 @@ public class TimeSeriesShard implements AutoCloseable {
 
       // The mutable tail alone can answer the query when it is complete and strictly newer than
       // anything already sealed: no block has to be decompressed.
-      if (mutableRows.size() >= need && (long) mutableRows.get(mutableRows.size() - 1)[0] > sealedStore.getGlobalMaxTimestamp())
+      if (mutableRows.size() >= need && (long) mutableRows.getLast()[0] > sealedStore.getGlobalMaxTimestamp())
         return mutableRows;
 
       // The mutable rows already found bound the sealed walk from below: no sealed block older than
       // the oldest row held can contribute (issue #5416). Inclusive, so ties stay eligible.
       final long sealedFromTs = mutableRows.size() >= need ?
-          Math.max(fromTs, (long) mutableRows.get(mutableRows.size() - 1)[0]) :
+          Math.max(fromTs, (long) mutableRows.getLast()[0]) :
           fromTs;
 
       final List<Object[]> results = sealedStore.scanRangeDescending(sealedFromTs, toTs, columnIndices, tagFilter,
