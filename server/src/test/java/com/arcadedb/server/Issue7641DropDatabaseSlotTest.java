@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -170,7 +171,7 @@ class Issue7641DropDatabaseSlotTest {
     when(server.getDatabase(DB_NAME)).thenReturn(database);
     when(database.getWrappedDatabaseInstance()).thenReturn(embedded);
     when(database.getEmbedded()).thenReturn(embedded);
-    org.mockito.Mockito.doThrow(new RuntimeException("boom")).when(embedded).drop();
+    doThrow(new RuntimeException("boom")).when(embedded).drop();
 
     final ServerControlPlane controlPlane = new ServerControlPlane(server);
 
