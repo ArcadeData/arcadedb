@@ -186,6 +186,48 @@ class Issue7710TagCombinationsFromBlockMetadataTest extends TestHelper {
   }
 
   /**
+   * A metric with NO tag columns carries exactly one combination - the empty one - which every block answers
+   * from its {@code sampleCount} and {@code minTimestamp} alone. {@code GetPromQLSeriesHandler} spells that
+   * projection out by name, so it is not a corner case nobody reaches; and a block with no TAG column declares
+   * no distinct values at all, which is why the declaration has to be consulted per projected column rather than
+   * required up front (claude-review on PR #7730).
+   */
+  @Test
+  void answersAMetricWithNoTagColumnsWithoutReadingABlock() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final List<ColumnDefinition> columns = List.of(
+        new ColumnDefinition("ts", Type.LONG, ColumnDefinition.ColumnRole.TIMESTAMP),
+        new ColumnDefinition("value", Type.DOUBLE, ColumnDefinition.ColumnRole.FIELD));
+
+    database.begin();
+    final TimeSeriesEngine engine = new TimeSeriesEngine(db, "ts_no_tags", columns, 1);
+    database.commit();
+    try {
+      database.begin();
+      engine.appendSamples(new long[] { 1000L, 2000L, 3000L }, new Object[] { 1.0, 2.0, 3.0 });
+      database.commit();
+      seal(engine);
+
+      final AggregationMetrics metrics = new AggregationMetrics();
+      final List<Object[]> visited = new ArrayList<>();
+      // The projection GetPromQLSeriesHandler builds for a type with no TAG columns: nothing but the timestamp.
+      engine.forEachTagCombination(Long.MIN_VALUE, Long.MAX_VALUE, new int[0], metrics, row -> {
+        visited.add(row);
+        return true;
+      });
+
+      assertThat(visited).hasSize(1);
+      assertThat(visited.getFirst()).as("just the timestamp: one series, identified by its metric name alone")
+          .hasSize(1);
+      assertThat((long) visited.getFirst()[0]).isEqualTo(1000L);
+      assertThat(metrics.getMaterializedRows())
+          .as("a block that cannot disagree with itself needs no read").isZero();
+    } finally {
+      engine.close();
+    }
+  }
+
+  /**
    * A tag column carrying an explicit non-dictionary codec declares its distinct values as TEXT while a scan of
    * it hands back the boxed value, so its declaration cannot stand in for the scan: the block is read instead of
    * being answered with a {@code String} where the caller would have seen an {@code Integer}.

@@ -19,13 +19,12 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
-
-import java.time.Duration;
+import org.junit.jupiter.api.Timeout;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 /**
  * Issue #7715: an integral member of a time-series request used to be NARROWED with {@code Number.longValue()},
@@ -142,12 +141,16 @@ class Issue7715FractionalIntegralMemberTest {
    * {@code 1E-2147483647} is the mirror image, through {@code setScale(0)}. Both must be refused in constant
    * time (claude-review on PR #7730).
    * <p>
-   * Bounded with {@code assertTimeoutPreemptively} rather than by eye: the failure mode is an allocation storm,
-   * not a wrong answer, so a test that merely asserted the refusal would pass by hanging the build first. The
-   * bound is a TRIPWIRE between a constant-time refusal and materialising hundreds of megabytes - it is not a
-   * latency claim, which is why it is generous enough that a loaded CI machine cannot trip it.
+   * Bounded rather than merely asserted, because the failure mode is an allocation storm and not a wrong answer:
+   * a test that only checked the refusal would "pass" by hanging the build first. The bound is measured with
+   * {@link StallAwareStopwatch}, NOT with a raw wall clock - a stop-the-world pause late in a full-suite run
+   * pauses the guarded code right along with any plain timer, which is the coin flip CLAUDE.md forbids (#6260).
+   * It is a TRIPWIRE between a constant-time refusal and materialising hundreds of megabytes, so widening it is
+   * free and only narrowing it could break. {@code @Timeout} sits above it as a hang detector, sized so that it
+   * can only fire when the thing under test never returns at all.
    */
   @Test
+  @Timeout(300)
   void refusesAnExtremeExponentWithoutMaterialisingIt() {
     for (final String spelling : new String[] { "1E2147483647", "1E-2147483647", "-1E2147483647",
         "1E+2147483646", "9E2147483647" }) {
@@ -157,12 +160,13 @@ class Issue7715FractionalIntegralMemberTest {
       // extreme exponent away as "must be a number" before BigDecimal sees it, and the scale and precision
       // tests in readLong answer it as "must be a whole number" if it ever gets past them. Which one fires is
       // an implementation detail of a dependency; that it is refused without materialising the value is not.
-      assertTimeoutPreemptively(Duration.ofSeconds(10), () ->
-          assertThatThrownBy(
-              () -> TimeSeriesHandlerUtils.requireLong(owner, "bucketInterval", "aggregation.bucketInterval"))
-              .isInstanceOf(IllegalArgumentException.class)
-              .hasMessageStartingWith("'aggregation.bucketInterval' must be a "),
-          "'" + spelling + "' must be refused in constant time, not by materialising the value it names");
+      final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
+      assertThatThrownBy(
+          () -> TimeSeriesHandlerUtils.requireLong(owner, "bucketInterval", "aggregation.bucketInterval"))
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageStartingWith("'aggregation.bucketInterval' must be a ");
+      stopwatch.assertGaveUpWithin(10_000,
+          "a constant-time refusal of '" + spelling + "' from materialising the value its exponent names");
     }
   }
 
@@ -172,20 +176,24 @@ class Issue7715FractionalIntegralMemberTest {
    * request carried rather than as the double {@code JSONObject.opt} would narrow it to.
    */
   @Test
+  @Timeout(300)
   void refusesAnExtremeExponentWrittenAsAJsonNumber() {
     final JSONObject payload = new JSONObject("{\"bucketInterval\":1E2147483647,\"from\":1E-2147483647}");
 
-    assertTimeoutPreemptively(Duration.ofSeconds(10), () -> {
-      assertThatThrownBy(
-          () -> TimeSeriesHandlerUtils.requireLong(payload, "bucketInterval", "aggregation.bucketInterval"))
-          .isInstanceOf(IllegalArgumentException.class)
-          .hasMessageStartingWith("'aggregation.bucketInterval' must be a ");
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
 
-      assertThatThrownBy(() -> TimeSeriesHandlerUtils.optLong(payload, "from", -1L, "from"))
-          .as("10^-2147483647 is refused, not answered as the 0.0 a double would have made of it")
-          .isInstanceOf(IllegalArgumentException.class)
-          .hasMessageStartingWith("'from' must be a ");
-    });
+    assertThatThrownBy(
+        () -> TimeSeriesHandlerUtils.requireLong(payload, "bucketInterval", "aggregation.bucketInterval"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageStartingWith("'aggregation.bucketInterval' must be a ");
+
+    assertThatThrownBy(() -> TimeSeriesHandlerUtils.optLong(payload, "from", -1L, "from"))
+        .as("10^-2147483647 is refused, not answered as the 0.0 a double would have made of it")
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageStartingWith("'from' must be a ");
+
+    stopwatch.assertGaveUpWithin(10_000,
+        "a constant-time refusal of an extreme exponent from materialising the value it names");
   }
 
   /**
