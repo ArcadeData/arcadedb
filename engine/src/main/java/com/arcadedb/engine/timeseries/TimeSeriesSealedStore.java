@@ -804,6 +804,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     while (rows.size() > need)
       rows.removeLast();
   }
+
   /**
    * Sorts the rows by descending timestamp and drops everything past {@code need}.
    */

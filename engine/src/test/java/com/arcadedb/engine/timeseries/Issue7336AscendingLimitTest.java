@@ -163,8 +163,59 @@ class Issue7336AscendingLimitTest extends TestHelper {
   }
 
   /**
-   * A sample that arrives late carries an OLD timestamp and lives in the mutable layer while the sealed layer
-   * already holds newer rows. An ascending bound that stopped at the sealed head would never see it.
+   * The mutable layer has to be asked for the WHOLE limit, not for the remainder the sealed layer left
+   * unfilled. Late arrivals carry OLD timestamps, so an answer can be made entirely of mutable rows even when
+   * the sealed layer already produced rows of its own - which is why {@code TimeSeriesShard.scanRangeAscending}
+   * passes {@code limit} down rather than {@code need - sealedRows.size()}.
+   * <p>
+   * One shard on purpose: the parameter under test lives in the shard, and round-robin routing would otherwise
+   * split the late arrivals across shards and let the engine's merge paper over a wrong per-shard bound.
+   */
+  @Test
+  void ascendingScanAsksTheMutableLayerForTheWholeLimitNotTheRemainder() throws Exception {
+    database.command("sql",
+        "CREATE TIMESERIES TYPE Late TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE) SHARDS 1");
+    final TimeSeriesEngine late = ((LocalTimeSeriesType) database.getSchema().getType("Late")).getEngine();
+
+    final int sealed = 10;
+    final long[] sealedTs = new long[sealed];
+    final Object[] sealedHosts = new Object[sealed];
+    final Object[] sealedValues = new Object[sealed];
+    for (int i = 0; i < sealed; i++) {
+      sealedTs[i] = BASE_TS + i * STEP_MS;
+      sealedHosts[i] = "host_0";
+      sealedValues[i] = (double) i;
+    }
+    late.appendBatch(sealedTs, new Object[][] { sealedHosts, sealedValues });
+    late.compactAll();
+
+    // Six late arrivals, all OLDER than anything sealed, still in the mutable layer.
+    final int lateCount = 6;
+    final long[] lateTs = new long[lateCount];
+    final Object[] lateHosts = new Object[lateCount];
+    final Object[] lateValues = new Object[lateCount];
+    for (int i = 0; i < lateCount; i++) {
+      lateTs[i] = BASE_TS - (lateCount - i) * STEP_MS;
+      lateHosts[i] = "host_0";
+      lateValues[i] = (double) -(lateCount - i);
+    }
+    late.appendBatch(lateTs, new Object[][] { lateHosts, lateValues });
+
+    // The range is narrowed so the sealed layer contributes exactly two rows, leaving a remainder of three.
+    // Asking the mutable layer for that remainder returns only the three oldest late arrivals and then pads the
+    // answer with the two sealed rows - the wrong set, because the five oldest are all late arrivals.
+    final List<Object[]> rows = late.queryAscending(Long.MIN_VALUE, BASE_TS + STEP_MS, null, null, 5, null);
+
+    assertThat(rows).hasSize(5);
+    for (int i = 0; i < 5; i++) {
+      assertThat((long) rows.get(i)[0]).isEqualTo(BASE_TS - (lateCount - i) * STEP_MS);
+      assertThat(((Number) rows.get(i)[2]).doubleValue()).isEqualTo(-(double) (lateCount - i));
+    }
+  }
+
+  /**
+   * The simpler shape of the same hazard, through the sharded fixture: a late arrival older than everything
+   * sealed must still lead the ascending answer.
    */
   @Test
   void ascendingScanSeesAnOlderRowStillInTheMutableLayer() throws Exception {

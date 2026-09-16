@@ -516,6 +516,12 @@ public class TimeSeriesShard implements AutoCloseable {
           Math.min(toTs, (long) sealedRows.getLast()[0]) :
           toTs;
 
+      // The WHOLE limit, never `need - sealedRows.size()`. A late arrival carries an OLD timestamp, so every
+      // row of the answer can come from the mutable layer however many the sealed layer already produced;
+      // asking for the remainder returns too few late arrivals and pads the answer with sealed rows that do
+      // not belong in it. And the remainder is 0 exactly when the sealed layer is full, which this API reads
+      // as UNLIMITED - so the "optimization" is unbounded in the one case it was meant to help.
+      // Pinned by Issue7336AscendingLimitTest.ascendingScanAsksTheMutableLayerForTheWholeLimitNotTheRemainder.
       final List<Object[]> mutableRows = mutableBucket.scanRangeAscending(fromTs, mutableToTs, columnIndices,
           tagFilter, limit, metrics);
       if (mutableRows.isEmpty())
