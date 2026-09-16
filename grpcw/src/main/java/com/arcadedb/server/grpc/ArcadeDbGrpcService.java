@@ -3804,7 +3804,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // What the read actually did, published to whatever the server's metrics subsystem feeds (issue #7717),
     // under the same surface tag its HTTP sibling uses. Without this the new counters would answer for
     // GET /ts/{db}/latest and stay silent for the RPC that asks the identical question, which is the sort of
-    // half-instrumented surface that makes a dashboard lie (claude-review on PR #7728).
+    // half-instrumented surface that makes a dashboard lie.
     final AggregationMetrics readMetrics = TimeSeriesReadMetrics.start();
     final Object[] latest;
     try {

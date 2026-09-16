@@ -201,7 +201,6 @@ class Issue7717TimeSeriesReadMetricsTest {
   void theMeterCacheIsBounded() {
     // Across EVERY surface, not one: the collapse keeps the surface half of the tuple, so overflowing a single
     // surface would leave the other five untested and the bound would look tighter than it is
-    // (claude-review on PR #7728).
     for (int i = 0; i < TimeSeriesReadMetrics.MAX_METER_SETS + 500; i++) {
       final AggregationMetrics metrics = new AggregationMetrics();
       metrics.addSkippedBlock();
@@ -230,7 +229,7 @@ class Issue7717TimeSeriesReadMetricsTest {
    * A database literally named {@code other} - the string the collapse uses - must not be mistaken for the
    * collapsed tuple and handed a free pass past the ceiling. A guard reading only the db half did exactly that,
    * so once the cache was full that one database's types grew it without bound: the meter-cardinality leak of
-   * issues #5025 and #6805, reintroduced by the sentinel (claude-review on PR #7728).
+   * issues #5025 and #6805, reintroduced by the sentinel.
    */
   @Test
   void aDatabaseNamedLikeTheOverflowTagIsStillBounded() {
