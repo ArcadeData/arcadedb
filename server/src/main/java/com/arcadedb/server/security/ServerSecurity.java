@@ -76,15 +76,11 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   // publish it in one atomic reference swap so a read never observes a clear()->repopulate empty window.
   private volatile     Map<String, ServerSecurityUser> users                = new ConcurrentHashMap<>();
 
-  // Whether the document of that kind currently in force on this node was installed by a REPLICATED entry
-  // rather than read from this node's own configuration directory at startup (issue #7693). Only then is its
-  // fingerprint comparable with a precondition another node computed, so only then may the compare-and-set of
-  // issue #7509 refuse an entry - see isSuperseded. Written on the Raft apply thread, read there too; volatile
-  // rather than synchronized because applyReplicated* must never take this monitor (it would deadlock with the
-  // submitter blocked on the very entry it is applying).
-  private volatile     boolean                         usersCameFromTheCluster;
-  private volatile     boolean                         groupsCameFromTheCluster;
-  private volatile     boolean                         apiTokensCameFromTheCluster;
+  // The fingerprint of the last REPLICATED document this node installed, per document kind (issue #7693). Read
+  // by isSuperseded to decide whether this node's own document is one the cluster installed and therefore
+  // comparable with a precondition another node computed; written by applyReplicated* on the Raft apply thread,
+  // which never takes this monitor (it would deadlock with the submitter blocked on the very entry it applies).
+  private final        ReplicatedSecurityFingerprintRepository replicatedFingerprints;
   private final        int                             checkConfigReloadEveryMs;
   private              CredentialsValidator            credentialsValidator = new DefaultCredentialsValidator();
   private static final SecureRandom                    RANDOM               = new SecureRandom();
@@ -186,6 +182,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     });
 
     apiTokenConfig = new ApiTokenConfiguration(configPath);
+
+    replicatedFingerprints = new ReplicatedSecurityFingerprintRepository(configPath);
 
     try {
       secretKeyFactory = SecretKeyFactory.getInstance(algorithm);
@@ -1149,9 +1147,11 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     this.users = newUsers;
 
     // From here on this node's user list IS the cluster's, so the compare-and-set of issue #7509 can judge an
-    // entry against it (issue #7693). Set BEFORE the persistence failure is reported below, for the same reason
-    // the swap happens before it: the list is in force on this node whether or not it reached disk.
-    this.usersCameFromTheCluster = true;
+    // entry against it (issue #7693). Recorded BEFORE the persistence failure is reported below, for the same
+    // reason the swap happens before it: the list is in force on this node whether or not it reached disk. And
+    // if it did NOT reach disk, the restart reads the previous file, whose fingerprint no longer matches what is
+    // recorded here - so that node correctly goes back to "cannot judge" rather than judging with a stale list.
+    replicatedFingerprints.record(ReplicatedSecurityFingerprintRepository.USERS, usersFingerprint());
 
     // A peer applying a replicated drop or password change must also revoke the login tokens it had already
     // issued to that principal, or the credentials the operator revoked keep working on this node until the
@@ -1183,7 +1183,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * @return true when the list was installed, false when the precondition no longer held
    */
   public boolean applyReplicatedUsers(final String usersJsonArray, final String expectedFingerprint) {
-    if (isSuperseded("user list", expectedFingerprint, usersFingerprint(), usersCameFromTheCluster))
+    if (isSuperseded("user list", ReplicatedSecurityFingerprintRepository.USERS, expectedFingerprint,
+        usersFingerprint()))
       return false;
 
     applyReplicatedUsers(usersJsonArray);
@@ -1195,35 +1196,39 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * one in force (issue #7509). A null {@code expected} is an unconditional install - a seed, or an entry from a
    * node that predates the precondition - and is never refused.
    * <p>
-   * <b>{@code documentCameFromTheCluster} is what makes the refusal uniform</b> (issue #7693). The refusal has to
-   * be the SAME on every node or it does not prevent a lost update, it manufactures a divergence: the entry
-   * installs on the nodes that accept it and not on the ones that refuse, and the same credentials then resolve
-   * differently depending on which node answers. The fingerprints are only comparable once every node holds the
-   * same document, and until the first replicated entry of that kind lands they do NOT: each node bootstraps its
-   * own {@code root} with an independently salted password hash, so three nodes of a statically configured
-   * cluster - one that never ran the {@code addPeer}/{@code connect cluster} seed - start with three different
-   * user documents and therefore three different fingerprints. The first {@code create user} on such a cluster
-   * matched only on the submitter and was refused by the other two, which is exactly the symptom issue #7693
-   * reports: the user appears on one node and the cluster never converges.
+   * <b>Whether this node's document came from the cluster is what makes the refusal uniform</b> (issue #7693).
+   * The refusal has to be the SAME on every node or it does not prevent a lost update, it manufactures a
+   * divergence: the entry installs on the nodes that accept it and not on the ones that refuse, and the same
+   * credentials then resolve differently depending on which node answers. The fingerprints are only comparable
+   * once every node holds the same document, and until the first replicated entry of that kind lands they do NOT:
+   * each node bootstraps its own {@code root} with an independently salted password hash, so three nodes of a
+   * statically configured cluster - one that never ran the {@code addPeer}/{@code connect cluster} seed - start
+   * with three different user documents and therefore three different fingerprints. The first {@code create user}
+   * on such a cluster matched only on the submitter and was refused by the other two, which is exactly the symptom
+   * issue #7693 reports: the user appears on one node and the cluster never converges.
    * <p>
-   * So a node that has not yet installed a replicated document of this kind does not get a vote: its own document
-   * is not the cluster's, it has nothing meaningful to compare against, and it installs. That is uniform by
-   * construction, because no node has installed one - and from the first entry onwards every node holds the same
-   * document, so the compare-and-set is live and answers identically everywhere, which is what #7509 needs.
+   * So a node whose document is not one the cluster installed does not get a vote: it has nothing meaningful to
+   * compare against, and it installs. That is uniform by construction on a cluster that has never replicated one -
+   * no node has - and from the first entry onwards every node holds the same document, so the compare-and-set is
+   * live and answers identically everywhere, which is what #7509 needs.
+   * <p>
+   * The question is answered against {@link ReplicatedSecurityFingerprintRepository}, which survives a restart and
+   * is compared with the document actually in force rather than trusted as a flag. See its javadoc for why both
+   * halves of that matter.
    */
-  private boolean isSuperseded(final String document, final String expected, final String current,
-      final boolean documentCameFromTheCluster) {
+  private boolean isSuperseded(final String document, final String documentKey, final String expected,
+      final String current) {
     if (expected == null || expected.equals(current))
       return false;
 
-    if (!documentCameFromTheCluster) {
+    if (!current.equals(replicatedFingerprints.get(documentKey))) {
       LogManager.instance().log(this, Level.INFO,
           "Installing a replicated %s whose precondition does not match this node's own document (expected "
-              + "fingerprint %s, current %s). This node has not yet applied a replicated %s, so the document it "
-              + "holds is its own bootstrap rather than the cluster's and cannot be compared against: refusing "
-              + "here while another node accepts would diverge the cluster's security state (issue #7693). The "
-              + "concurrency check of issue #7509 engages from this entry on",
-          document, expected, current, document);
+              + "fingerprint %s, current %s). The document in force here is not one this node installed from the "
+              + "cluster - it is its own bootstrap, or a locally edited file - so it cannot be compared against: "
+              + "refusing here while another node accepts would diverge the cluster's security state (issue "
+              + "#7693). The concurrency check of issue #7509 engages from this entry on",
+          document, expected, current);
       return false;
     }
 
@@ -1503,7 +1508,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     final Exception persistFailure = groupRepository.applyReplicated(root);
 
     // See applyReplicatedUsers: this node's group document is the cluster's from here on (issue #7693).
-    this.groupsCameFromTheCluster = true;
+    replicatedFingerprints.record(ReplicatedSecurityFingerprintRepository.GROUPS, groupsFingerprint());
 
     // Scheduled BEFORE the persistence failure is reported, and unconditionally: applyReplicated() publishes the
     // document in memory first, so this node authorizes against it from now on whether or not the write
@@ -1530,7 +1535,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * @return true when the document was installed, false when the precondition no longer held
    */
   public boolean applyReplicatedGroups(final String groupsJson, final String expectedFingerprint) {
-    if (isSuperseded("group document", expectedFingerprint, groupsFingerprint(), groupsCameFromTheCluster))
+    if (isSuperseded("group document", ReplicatedSecurityFingerprintRepository.GROUPS, expectedFingerprint,
+        groupsFingerprint()))
       return false;
 
     applyReplicatedGroups(groupsJson);
@@ -1741,7 +1747,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     final Exception persistFailure = apiTokenConfig.applyReplicated(apiTokensJson);
 
     // See applyReplicatedUsers: this node's API-token document is the cluster's from here on (issue #7693).
-    this.apiTokensCameFromTheCluster = true;
+    replicatedFingerprints.record(ReplicatedSecurityFingerprintRepository.API_TOKENS, apiTokensFingerprint());
     if (persistFailure != null) {
       LogManager.instance().log(this, Level.SEVERE,
           "Could not write the replicated API-token document to '%s'. The new token set IS in effect on this node "
@@ -1761,7 +1767,8 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * @return true when the document was installed, false when the precondition no longer held
    */
   public boolean applyReplicatedApiTokens(final String apiTokensJson, final String expectedFingerprint) {
-    if (isSuperseded("API-token document", expectedFingerprint, apiTokensFingerprint(), apiTokensCameFromTheCluster))
+    if (isSuperseded("API-token document", ReplicatedSecurityFingerprintRepository.API_TOKENS, expectedFingerprint,
+        apiTokensFingerprint()))
       return false;
 
     applyReplicatedApiTokens(apiTokensJson);

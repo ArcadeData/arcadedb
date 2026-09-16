@@ -158,6 +158,49 @@ class Issue7693FirstReplicatedSecurityEntryTest {
     assertThat(nodeB.getUser("alice")).isNotNull();
   }
 
+  /**
+   * The restart case, raised by claude-review on PR #7748. An in-memory "this node has converged" flag is reset by
+   * every restart, so a node that had long since converged would go back to "cannot judge" on each start and
+   * install the very next entry unconditionally - the identical bypass, on a far more common trigger (a routine
+   * restart, a rolling upgrade) than the never-seeded cluster the rule exists for. What is recorded is therefore
+   * on disk, and this pins that a restarted node still refuses a stale precondition.
+   */
+  @Test
+  void aRestartedNodeStillRefusesAStalePrecondition() {
+    final String firstEntry = usersOf(nodeA, "alice");
+    final String staleFingerprint = nodeA.usersFingerprint();
+    nodeA.applyReplicatedUsers(firstEntry, staleFingerprint);
+    nodeB.applyReplicatedUsers(firstEntry, staleFingerprint);
+
+    nodeB = restart(nodeB, "b");
+
+    assertThat(nodeB.getUser("alice")).as("the restarted node read back the document the entry installed").isNotNull();
+    assertThat(nodeB.applyReplicatedUsers(usersOf(nodeA, "bob"), staleFingerprint))
+        .as("the restart must not hand this node a free pass to install an entry its peers refuse")
+        .isFalse();
+  }
+
+  /**
+   * And the other half of recording a FINGERPRINT rather than a boolean: what is stored is compared with the
+   * document actually in force, so a node whose file was edited locally - or restored from a backup - goes back to
+   * installing unconditionally. That is the safe direction, because it cannot refuse an entry its peers accept.
+   */
+  @Test
+  void aLocallyEditedDocumentGoesBackToInstallingUnconditionally() {
+    final String firstEntry = usersOf(nodeA, "alice");
+    final String staleFingerprint = nodeA.usersFingerprint();
+    nodeA.applyReplicatedUsers(firstEntry, staleFingerprint);
+    nodeB.applyReplicatedUsers(firstEntry, staleFingerprint);
+
+    // A local mutation, the shape an operator editing server-users.jsonl leaves behind.
+    nodeB.createUser(user(nodeB, "edited-in-locally", "localpassword"));
+    nodeB = restart(nodeB, "b");
+
+    assertThat(nodeB.applyReplicatedUsers(usersOf(nodeA, "bob"), staleFingerprint))
+        .as("the document in force is no longer the one the cluster installed, so this node cannot judge")
+        .isTrue();
+  }
+
   /** The same first-entry rule for the two documents issue #7373 added, which share {@code isSuperseded}. */
   @Test
   void theFirstReplicatedGroupAndTokenDocumentsAreInstalledOnEveryNode() {
@@ -168,9 +211,21 @@ class Issue7693FirstReplicatedSecurityEntryTest {
     assertThat(nodeB.applyReplicatedApiTokens(tokens.toString(), "a-fingerprint-node-b-has-never-had")).isTrue();
   }
 
+  /** Stops {@code security} and opens a fresh one over the same configuration directory: a node restart. */
+  private static ServerSecurity restart(final ServerSecurity security, final String name) {
+    security.stopService();
+    final ServerSecurity restarted = open(name);
+    restarted.loadUsers();
+    return restarted;
+  }
+
   private static ServerSecurity node(final String name) {
+    assertThat(new File(ROOT_PATH + "/" + name + "/config").mkdirs()).isTrue();
+    return open(name);
+  }
+
+  private static ServerSecurity open(final String name) {
     final String configPath = ROOT_PATH + "/" + name + "/config";
-    assertThat(new File(configPath).mkdirs()).isTrue();
 
     final ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue(GlobalConfiguration.SERVER_ROOT_PATH, ROOT_PATH + "/" + name);
