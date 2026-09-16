@@ -19,6 +19,7 @@
 package com.arcadedb.server.http.handler.openapi;
 
 import com.arcadedb.server.http.HttpSessionManager;
+import com.arcadedb.server.http.handler.DatabaseAbstractHandler;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.Operation;
 import io.swagger.v3.oas.models.PathItem;
@@ -45,6 +46,21 @@ public class CoreApiSpec implements OpenApiContributor {
   /** Media type of the streaming query encoding (issue #7306). */
   private static final String NDJSON = "application/x-ndjson";
   private static final String SESSION_HEADER = HttpSessionManager.ARCADEDB_SESSION_ID;
+
+  // Issue #7714. The header is sent by DatabaseAbstractHandler itself, so EVERY operation whose
+  // rejectsUnresolvableSession() is false carries it - not just the two /api/v1/ts read routes where the issue
+  // was raised. GET /query degrades, and so do /begin, /commit and /rollback, whose degrade is what makes an
+  // idempotent retry of a commit work. Documented on all of them, because a client generated from this contract
+  // would otherwise not know to look for the one signal that says an answer came from OUTSIDE the transaction it
+  // named (claude-review on PR #7730). The operations that REFUSE a stale id instead - POST /query and
+  // /command, whose requiresTransaction() is true - never send it, and do not name it here.
+  private static final String SESSION_EXPIRED_HEADER = DatabaseAbstractHandler.SESSION_EXPIRED;
+
+  private static final String SESSION_EXPIRED_DESCRIPTION =
+      "Present only when the request named a session id this server could not resolve (committed, rolled back, "
+          + "expired, or owned by another principal). It carries that id, and says this answer was produced "
+          + "OUTSIDE the transaction the caller named. The call is not refused, which is what keeps a "
+          + "read-after-commit and an idempotent retry working.";
   private static final String COMMIT_INDEX_HEADER = "X-ArcadeDB-Commit-Index";
   /**
    * The statuses of the query and command operations that are decided BEFORE the read-your-writes bookmark
@@ -567,6 +583,11 @@ public class CoreApiSpec implements OpenApiContributor {
     responses.addApiResponse("404", SpecBuilders.errorResponse(sessionAware
         ? STALE_SESSION_404_DESCRIPTION
         : "Database not found"));
+    if (!sessionAware)
+      // The GET operation is the degrading one: it overrides requiresTransaction() to false, so a stale id runs
+      // session-less and says so in this header rather than answering 404 (issue #7714).
+      responses.get("200").addHeaderObject(SESSION_EXPIRED_HEADER,
+          SpecBuilders.stringHeader(SESSION_EXPIRED_DESCRIPTION));
     responses.addApiResponse("413", SpecBuilders.errorResponse(
         "The result exceeds 'arcadedb.server.httpQueryMaxResultRows': narrow or page the query"));
     responses.addApiResponse("500", SpecBuilders.errorResponse("Internal server error"));
@@ -590,6 +611,9 @@ public class CoreApiSpec implements OpenApiContributor {
 
     final ApiResponse successResponse = new ApiResponse();
     successResponse.setDescription("Transaction operation completed successfully");
+    // All three transaction operations degrade rather than refuse an id they cannot resolve, which is what makes
+    // an idempotent retry of a commit or a rollback a no-op instead of an error (issue #7714).
+    successResponse.addHeaderObject(SESSION_EXPIRED_HEADER, SpecBuilders.stringHeader(SESSION_EXPIRED_DESCRIPTION));
     responses.addApiResponse("204", successResponse);
 
     responses.addApiResponse("400", SpecBuilders.errorResponse("Bad request"));

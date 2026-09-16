@@ -21,6 +21,7 @@ package com.arcadedb.server.http;
 import com.arcadedb.Constants;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
+import com.arcadedb.server.http.handler.DatabaseAbstractHandler;
 import com.arcadedb.server.http.handler.OpenApiSpecGenerator;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.PathItem;
@@ -41,6 +42,7 @@ import java.net.http.HttpResponse;
 import java.net.http.HttpResponse.BodyHandlers;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -663,6 +665,60 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
             .containsKey(IdempotencyCache.HEADER_REQUEST_ID);
       });
     }));
+  }
+
+  /**
+   * Issue #7714: {@code DatabaseAbstractHandler} sends {@code arcadedb-session-expired} on every operation whose
+   * {@code rejectsUnresolvableSession()} is false - the ones that run a request naming a session this server
+   * cannot resolve rather than refusing it. That header is the ONLY thing distinguishing an answer produced
+   * inside the caller's transaction from one produced outside it, so an operation that can send it and does not
+   * declare it leaves a generated client unable to tell the two apart.
+   * <p>
+   * The list is spelled out rather than derived, because the spec is all this test can see: it is the set of
+   * operations whose handler answers false there, and a handler that joins them has to be added here too. The
+   * operations that REFUSE a stale id instead - {@code executeQueryPost} and {@code executeCommand}, whose
+   * {@code requiresTransaction()} is true - answer 404 and must NOT declare it.
+   */
+  @Test
+  void everyDegradingOperationDeclaresTheSessionExpiredHeader() throws Exception {
+    final OpenAPI openAPI = new OpenAPIV3Parser().readContents(getOpenApiSpec()).getOpenAPI();
+
+    final List<String> degrading = List.of("executeQueryGet", "beginTransaction", "commitTransaction",
+        "rollbackTransaction", "queryTimeSeries", "getTimeSeriesLatest");
+    final List<String> refusing = List.of("executeQueryPost", "executeCommand");
+
+    final Map<String, Operation> operations = new LinkedHashMap<>();
+    openAPI.getPaths().forEach((path, item) -> item.readOperations()
+        .forEach(op -> operations.put(op.getOperationId(), op)));
+
+    for (final String operationId : degrading) {
+      final Operation op = operations.get(operationId);
+      assertThat(op).as("'%s' is not in the spec at all", operationId).isNotNull();
+
+      final boolean declared = op.getResponses().values().stream()
+          .anyMatch(response -> response.getHeaders() != null
+              && response.getHeaders().containsKey(DatabaseAbstractHandler.SESSION_EXPIRED));
+
+      assertThat(declared)
+          .as("'%s' runs a request naming an unresolvable session instead of refusing it, so it can send the "
+              + "%s header - and a client generated from this spec cannot see a header the spec does not name",
+              operationId, DatabaseAbstractHandler.SESSION_EXPIRED)
+          .isTrue();
+    }
+
+    for (final String operationId : refusing) {
+      final Operation op = operations.get(operationId);
+      assertThat(op).as("'%s' is not in the spec at all", operationId).isNotNull();
+
+      final boolean declared = op.getResponses().values().stream()
+          .anyMatch(response -> response.getHeaders() != null
+              && response.getHeaders().containsKey(DatabaseAbstractHandler.SESSION_EXPIRED));
+
+      assertThat(declared)
+          .as("'%s' REFUSES an unresolvable session with 404, so it never sends %s and must not promise it",
+              operationId, DatabaseAbstractHandler.SESSION_EXPIRED)
+          .isFalse();
+    }
   }
 
   /**
