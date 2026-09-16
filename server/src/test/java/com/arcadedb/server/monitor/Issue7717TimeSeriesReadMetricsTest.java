@@ -226,6 +226,33 @@ class Issue7717TimeSeriesReadMetricsTest {
     }
   }
 
+  /**
+   * A database literally named {@code other} - the string the collapse uses - must not be mistaken for the
+   * collapsed tuple and handed a free pass past the ceiling. A guard reading only the db half did exactly that,
+   * so once the cache was full that one database's types grew it without bound: the meter-cardinality leak of
+   * issues #5025 and #6805, reintroduced by the sentinel (claude-review on PR #7728).
+   */
+  @Test
+  void aDatabaseNamedLikeTheOverflowTagIsStillBounded() {
+    for (int i = 0; i < TimeSeriesReadMetrics.MAX_METER_SETS + 100; i++) {
+      final AggregationMetrics metrics = new AggregationMetrics();
+      metrics.addSkippedBlock();
+      TimeSeriesReadMetrics.publish(metrics, "filler-" + i, "Readings", TimeSeriesReadMetrics.SURFACE_TS_QUERY);
+    }
+    final int afterFilling = TimeSeriesReadMetrics.cachedMeterSetCount();
+
+    // A real database that happens to be called "other", with many types of its own.
+    for (int i = 0; i < 500; i++) {
+      final AggregationMetrics metrics = new AggregationMetrics();
+      metrics.addSkippedBlock();
+      TimeSeriesReadMetrics.publish(metrics, "other", "Type-" + i, TimeSeriesReadMetrics.SURFACE_TS_QUERY);
+    }
+
+    assertThat(TimeSeriesReadMetrics.cachedMeterSetCount())
+        .as("a database sharing the sentinel string must collapse like any other, not bypass the ceiling")
+        .isEqualTo(afterFilling);
+  }
+
   private static double blocks(final String database, final String outcome) {
     return Search.in(registry).name("arcadedb.timeseries.read.blocks").tag("db", database)
         .tag("outcome", outcome).counter().count();

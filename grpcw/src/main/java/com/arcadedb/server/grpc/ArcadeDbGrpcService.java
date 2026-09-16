@@ -3801,7 +3801,17 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final List<ColumnDefinition> columns = resolved.columns();
     final TagFilter tagFilter = TimeSeriesGateway.buildTagFilter(GrpcTimeSeriesSupport.toTagMap(req.getTags()),
         columns);
-    final Object[] latest = TimeSeriesGateway.latest(resolved.engine(), tagFilter);
+    // What the read actually did, published to whatever the server's metrics subsystem feeds (issue #7717),
+    // under the same surface tag its HTTP sibling uses. Without this the new counters would answer for
+    // GET /ts/{db}/latest and stay silent for the RPC that asks the identical question, which is the sort of
+    // half-instrumented surface that makes a dashboard lie (claude-review on PR #7728).
+    final AggregationMetrics readMetrics = TimeSeriesReadMetrics.start();
+    final Object[] latest;
+    try {
+      latest = TimeSeriesGateway.latest(resolved.engine(), tagFilter, readMetrics);
+    } finally {
+      TimeSeriesReadMetrics.publish(readMetrics, db.getName(), req.getType(), TimeSeriesReadMetrics.SURFACE_TS_LATEST);
+    }
 
     final TimeSeriesLatestResponse.Builder response = TimeSeriesLatestResponse.newBuilder()
         .setType(req.getType())

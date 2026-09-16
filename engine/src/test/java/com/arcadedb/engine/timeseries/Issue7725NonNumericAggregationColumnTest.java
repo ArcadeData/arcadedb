@@ -180,6 +180,47 @@ class Issue7725NonNumericAggregationColumnTest extends TestHelper {
   }
 
   /**
+   * The width guard, reached through the one public entry point that can: {@code aggregate()} takes a raw
+   * column index and never validates it, so an index past the row's width lands on the guard.
+   * <p>
+   * This is a deliberate behaviour change beyond what #7725 reported, and the one place the fix is not purely
+   * "make the two layers agree": such a request used to contribute a real {@code 0.0} per row, so SUM answered
+   * the number zero and AVG answered zero for a column that was never read at all. Absence is what "this row
+   * carries no such column" means, and {@link TimeSeriesNaN#ABSENT} is how the rest of the stack says it - so
+   * SUM is absent rather than a total of zero, and COUNT still counts the rows, which is what distinguishes
+   * "no measurement" from "no rows".
+   */
+  @Test
+  void aColumnIndexPastTheRowWidthIsAbsentRatherThanAZeroSample() throws Exception {
+    database.command("sql", "CREATE TIMESERIES TYPE Narrow TIMESTAMP ts FIELDS (value DOUBLE) SHARDS 1");
+    final TimeSeriesEngine engine = ((LocalTimeSeriesType) database.getSchema().getType("Narrow")).getEngine();
+
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO Narrow SET ts = 0, value = 3.0");
+      database.command("sql", "INSERT INTO Narrow SET ts = 1000, value = 4.0");
+    });
+
+    database.begin();
+    try {
+      // Column 9 does not exist: the row carries the timestamp and one field, so row.length is 2.
+      final AggregationResult sum = engine.aggregate(Long.MIN_VALUE, Long.MAX_VALUE, 9, AggregationType.SUM, HOUR, null);
+      assertThat(sum.size()).isEqualTo(1);
+      assertThat(sum.getValue(0)).as("a column the row does not carry is a gap, not a total of zero").isNaN();
+
+      final AggregationResult count = engine.aggregate(Long.MIN_VALUE, Long.MAX_VALUE, 9, AggregationType.COUNT, HOUR,
+          null);
+      assertThat(count.getValue(0)).as("COUNT counts rows, so it is unaffected").isEqualTo(2.0);
+
+      // The counter-case: the column that IS there still answers a number.
+      final AggregationResult real = engine.aggregate(Long.MIN_VALUE, Long.MAX_VALUE, 0, AggregationType.SUM, HOUR,
+          null);
+      assertThat(real.getValue(0)).isEqualTo(7.0);
+    } finally {
+      database.commit();
+    }
+  }
+
+  /**
    * The SQL push-down declines a column it cannot read rather than refusing the query: the generic aggregation
    * path answers it instead. Pinned by the PLAN, because both paths answer the query and only one of them is
    * what this is about.
