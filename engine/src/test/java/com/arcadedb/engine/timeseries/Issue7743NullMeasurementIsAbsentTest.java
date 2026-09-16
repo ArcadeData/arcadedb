@@ -166,6 +166,24 @@ class Issue7743NullMeasurementIsAbsentTest extends TestHelper {
     assertAggregates("Longs", 10.0d, 5.0d, 0.0d, 2);
   }
 
+  /**
+   * A DOUBLE column explicitly sealed with {@code DICTIONARY}, which is a supported pairing (issue #7689): the
+   * codec stores the text form, so the null used to compact to {@code "0.0"} and now compacts to {@code "NaN"} -
+   * which {@code ColumnDefinition.boxString} parses straight back to the marker. Fixed as a side effect rather
+   * than by its own code path, so it gets its own test (claude-review on PR #7747).
+   */
+  @Test
+  void aDictionaryEncodedDoubleColumnCarriesTheMarkerToo() throws Exception {
+    database.command("sql",
+        "CREATE TIMESERIES TYPE Dict TIMESTAMP ts FIELDS (value DOUBLE CODEC DICTIONARY) SHARDS 1");
+    final TimeSeriesEngine engine = ((LocalTimeSeriesType) database.getSchema().getType("Dict")).getEngine();
+    appendRealAndNull(engine);
+
+    assertAggregates("Dict", 10.0d, 10.0d, 10.0d, 2);
+    engine.compactAll();
+    assertAggregates("Dict", 10.0d, 10.0d, 10.0d, 2);
+  }
+
   /** An explicit NaN and a null are now the same thing, which is what made the NaN the working case. */
   @Test
   void anExplicitNaNAndANullAreIndistinguishable() throws Exception {
