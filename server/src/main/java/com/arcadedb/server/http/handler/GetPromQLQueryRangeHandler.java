@@ -29,7 +29,6 @@ import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
-
 /**
  * HTTP handler for PromQL range queries.
  * Endpoint: GET /api/v1/ts/{database}/prom/api/v1/query_range
