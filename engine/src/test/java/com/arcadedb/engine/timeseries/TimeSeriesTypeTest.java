@@ -37,7 +37,7 @@ class TimeSeriesTypeTest extends TestHelper {
 
   @Test
   void createTimeSeriesType() {
-    final LocalTimeSeriesType type = database.getSchema().buildTimeSeriesType()
+    final LocalTimeSeriesType type = (LocalTimeSeriesType) database.getSchema().buildTimeSeriesType()
         .withName("SensorData")
         .withTimestamp("ts")
         .withTag("sensor_id", Type.STRING)
@@ -67,7 +67,7 @@ class TimeSeriesTypeTest extends TestHelper {
 
   @Test
   void timeSeriesTypeJSON() {
-    final LocalTimeSeriesType type = database.getSchema().buildTimeSeriesType()
+    final LocalTimeSeriesType type = (LocalTimeSeriesType) database.getSchema().buildTimeSeriesType()
         .withName("Metrics")
         .withTimestamp("ts")
         .withTag("host", Type.STRING)
@@ -126,7 +126,7 @@ class TimeSeriesTypeTest extends TestHelper {
 
   @Test
   void columnDefinitions() {
-    final LocalTimeSeriesType type = database.getSchema().buildTimeSeriesType()
+    final LocalTimeSeriesType type = (LocalTimeSeriesType) database.getSchema().buildTimeSeriesType()
         .withName("AllTypes")
         .withTimestamp("ts")
         .withTag("region", Type.STRING)
@@ -154,7 +154,7 @@ class TimeSeriesTypeTest extends TestHelper {
   void defaultShardCountMatchesAsyncWorkerThreads() {
     final int expectedShards = database.getConfiguration().getValueAsInteger(GlobalConfiguration.ASYNC_WORKER_THREADS);
 
-    final LocalTimeSeriesType type = database.getSchema().buildTimeSeriesType()
+    final LocalTimeSeriesType type = (LocalTimeSeriesType) database.getSchema().buildTimeSeriesType()
         .withName("DefaultShards")
         .withTimestamp("ts")
         .withField("value", Type.DOUBLE)

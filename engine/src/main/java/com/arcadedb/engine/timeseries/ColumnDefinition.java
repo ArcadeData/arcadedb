@@ -224,7 +224,12 @@ public final class ColumnDefinition {
     };
   }
 
-  private static TimeSeriesCodec defaultCodecFor(final Type dataType, final ColumnRole role) {
+  /**
+   * The codec a column of this data type and role gets when none is named. Public because a caller that has to
+   * decide whether a {@link ColumnDefinition} carries an EXPLICIT codec has no other way to ask: the codec is always
+   * populated, so "explicit" is only visible as "differs from this" (issue #7399).
+   */
+  public static TimeSeriesCodec defaultCodecFor(final Type dataType, final ColumnRole role) {
     if (role == ColumnRole.TIMESTAMP)
       return TimeSeriesCodec.DELTA_OF_DELTA;
     if (role == ColumnRole.TAG)

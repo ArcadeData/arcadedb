@@ -43,7 +43,7 @@ import java.util.logging.Level;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class LocalTimeSeriesType extends LocalDocumentType {
+public class LocalTimeSeriesType extends LocalDocumentType implements TimeSeriesType {
 
   public static final String KIND_CODE = "t";
 
@@ -201,6 +201,7 @@ public class LocalTimeSeriesType extends LocalDocumentType {
     }
   }
 
+  @Override
   public String getTimestampColumn() {
     return timestampColumn;
   }
@@ -209,6 +210,7 @@ public class LocalTimeSeriesType extends LocalDocumentType {
     this.timestampColumn = timestampColumn;
   }
 
+  @Override
   public String getPrecision() {
     return precision;
   }
@@ -217,6 +219,7 @@ public class LocalTimeSeriesType extends LocalDocumentType {
     this.precision = precision;
   }
 
+  @Override
   public int getShardCount() {
     return shardCount;
   }
@@ -225,6 +228,7 @@ public class LocalTimeSeriesType extends LocalDocumentType {
     this.shardCount = shardCount;
   }
 
+  @Override
   public long getRetentionMs() {
     return retentionMs;
   }
@@ -233,6 +237,7 @@ public class LocalTimeSeriesType extends LocalDocumentType {
     this.retentionMs = retentionMs;
   }
 
+  @Override
   public long getCompactionBucketIntervalMs() {
     return compactionBucketIntervalMs;
   }
@@ -241,6 +246,7 @@ public class LocalTimeSeriesType extends LocalDocumentType {
     this.compactionBucketIntervalMs = compactionBucketIntervalMs;
   }
 
+  @Override
   public List<ColumnDefinition> getTsColumns() {
     return tsColumns;
   }
@@ -258,6 +264,7 @@ public class LocalTimeSeriesType extends LocalDocumentType {
    * name is discarded without a word (issue #7567). The list is filled once, by {@link TimeSeriesTypeBuilder#create()}
    * or by {@link #fromJSON(JSONObject)}, and there is no supported way to extend it afterwards.
    */
+  @Override
   public ColumnDefinition getTsColumn(final String columnName) {
     // Indexed over the ArrayList rather than an enhanced for: this runs on the DDL path for every property
     // validation and a column list is a handful of entries, so the iterator allocation buys nothing.
@@ -273,6 +280,7 @@ public class LocalTimeSeriesType extends LocalDocumentType {
    * Whether {@code columnName} is one of this type's declared time-series columns. See {@link #getTsColumn(String)}
    * for why a schema property outside that set can never hold a value.
    */
+  @Override
   public boolean isDeclaredColumn(final String columnName) {
     return getTsColumn(columnName) != null;
   }
@@ -281,6 +289,7 @@ public class LocalTimeSeriesType extends LocalDocumentType {
    * The declared column names, in declaration order, for error messages that have to tell the user what the type
    * actually accepts.
    */
+  @Override
   public List<String> getTsColumnNames() {
     final List<String> names = new ArrayList<>(tsColumns.size());
     for (int i = 0; i < tsColumns.size(); i++)
@@ -288,6 +297,7 @@ public class LocalTimeSeriesType extends LocalDocumentType {
     return names;
   }
 
+  @Override
   public List<DownsamplingTier> getDownsamplingTiers() {
     return downsamplingTiers;
   }

@@ -438,9 +438,14 @@ public class RemoteSchema implements Schema {
     throw new UnsupportedOperationException("buildEdgeType() is not supported in remote database. Use SQL CREATE EDGE TYPE instead.");
   }
 
+  /**
+   * A builder that accumulates the same state as the embedded one and renders it as {@code CREATE TIMESERIES TYPE}
+   * DDL at {@code create()} (issue #7399). One body of builder code therefore runs against an embedded
+   * {@code Database} and against a {@link RemoteDatabase} unchanged.
+   */
   @Override
   public TimeSeriesTypeBuilder buildTimeSeriesType() {
-    throw new UnsupportedOperationException("buildTimeSeriesType() is not supported in remote database. Use SQL CREATE TIMESERIES TYPE instead.");
+    return new RemoteTimeSeriesTypeBuilder(remoteDatabase, this);
   }
 
   @Deprecated
@@ -843,8 +848,8 @@ public class RemoteSchema implements Schema {
               record.hasProperty("lightweight") && (Boolean) record.getProperty("lightweight"),
               record.hasProperty("unique") && (Boolean) record.getProperty("unique"));
           break;
-        case LocalTimeSeriesType.KIND_CODE: // timeseries: represented as document type for remote schema navigation
-          type = new RemoteDocumentType(remoteDatabase, record);
+        case LocalTimeSeriesType.KIND_CODE:
+          type = new RemoteTimeSeriesType(remoteDatabase, record);
           break;
         default:
           LogManager.instance().log(this, Level.WARNING,
