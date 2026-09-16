@@ -250,8 +250,7 @@ public class ClusterAlerts {
             + "Service has taken it out of rotation. "
             + (holdingStaleData
                 ? "It is holding at least one database it knows is behind the committed Raft log - "
-                    + quarantineCauses(state) + ", or clamped at a read floor because a snapshot install did "
-                    + "not bring it up to date - so reads that require linearizability are refused rather than "
+                    + staleDataReason(state) + " - so reads that require linearizability are refused rather than "
                     + "served stale. This does not clear by itself until a resync succeeds."
                 : "A snapshot download from the leader is queued or running; the node rejoins the ready set "
                     + "when it completes.")
@@ -271,6 +270,25 @@ public class ClusterAlerts {
   }
 
   /**
+   * Why this node is holding data back: the quarantine causes it recorded, the read floor it is clamped at, or
+   * both (issue #7741).
+   * <p>
+   * Only what is TRUE of this node, rather than the two possibilities joined by "or" that the message used to
+   * list: a node quarantined on an incomplete snapshot install read as though it had two separate problems,
+   * because the read-floor clause describes that same install (claude-review on PR #7747).
+   */
+  private static String staleDataReason(final LocalResyncState state) {
+    final boolean quarantined = !state.divergenceCauses().isEmpty();
+    final boolean clamped = state.snapshotAppliedFloor() >= 0 || !state.databaseAppliedFloors().isEmpty();
+
+    if (quarantined && clamped)
+      return quarantineCauses(state) + ", and clamped at a read floor until a resync refreshes it";
+    if (quarantined)
+      return quarantineCauses(state);
+    return "clamped at a read floor because a snapshot install did not bring it up to date";
+  }
+
+  /**
    * The quarantine causes this node actually recorded, as the tail of "quarantined after ..." (issue #7741).
    * <p>
    * Distinct and sorted by the enum's own order, so a node quarantined for two different reasons says both once
@@ -283,6 +301,8 @@ public class ClusterAlerts {
   private static String quarantineCauses(final LocalResyncState state) {
     final Set<DivergenceCause> causes = new TreeSet<>(state.divergenceCauses().values());
     if (causes.isEmpty())
+      // Unreachable through staleDataReason, which only asks when there IS a cause; kept so a future caller
+      // cannot get a sentence with a dangling "after".
       return "quarantined pending a resync";
 
     final StringBuilder sb = new StringBuilder("quarantined after ");

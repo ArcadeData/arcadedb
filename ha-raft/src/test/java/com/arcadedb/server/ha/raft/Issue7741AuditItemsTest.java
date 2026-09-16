@@ -200,8 +200,27 @@ class Issue7741AuditItemsTest {
         new LocalResyncState(false, false, 100L, Map.of(), Map.of()), null, alerts);
 
     assertThat(alerts.getJSONObject(0).getString("message"))
-        .contains("quarantined pending a resync")
-        .doesNotContain("WAL version gap");
+        .contains("clamped at a read floor")
+        .doesNotContain("quarantined");
+  }
+
+  /**
+   * And a node that is BOTH says each thing once. The message used to name the quarantine's cause and then offer
+   * the read floor as an alternative - "A, or clamped at a read floor because a snapshot install did not bring it
+   * up to date" - which for a quarantine caused BY an incomplete install described one event as two
+   * (claude-review on PR #7747).
+   */
+  @Test
+  void aQuarantineAndAReadFloorAreEachSaidOnce() {
+    final JSONArray alerts = new JSONArray();
+    ClusterAlerts.addLocalResyncAlert(new LocalResyncState(false, false, -1, Map.of("db-A", 7L),
+        Map.of("db-A", DivergenceCause.SNAPSHOT_INSTALL_INCOMPLETE)), null, alerts);
+
+    final String message = alerts.getJSONObject(0).getString("message");
+    assertThat(message).contains("quarantined after a snapshot install").contains("clamped at a read floor");
+    assertThat(message.split("snapshot install", -1).length - 1)
+        .as("the install is the cause AND the reason for the floor: said once")
+        .isEqualTo(1);
   }
 
   // ---- helpers ----
