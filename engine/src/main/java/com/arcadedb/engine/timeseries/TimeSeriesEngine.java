@@ -367,11 +367,24 @@ public class TimeSeriesEngine implements AutoCloseable {
    */
   public Iterator<Object[]> iterateQuery(final long fromTs, final long toTs, final int[] columnIndices,
       final TagFilter tagFilter) throws IOException {
+    return iterateQuery(fromTs, toTs, columnIndices, tagFilter, null);
+  }
+
+  /**
+   * {@link #iterateQuery(long, long, int[], TagFilter)}, counting what the sealed walk did into
+   * {@code metrics} (issue #7717). {@code null} means "do not count" and costs nothing, as everywhere else.
+   * <p>
+   * This is the read the PromQL evaluation endpoints reach - {@code /prom/api/v1/query} and
+   * {@code /query_range} both resolve their selectors through here - and until it took a metrics parameter
+   * those two surfaces were the only {@code /ts} reads the sink could not see.
+   */
+  public Iterator<Object[]> iterateQuery(final long fromTs, final long toTs, final int[] columnIndices,
+      final TagFilter tagFilter, final AggregationMetrics metrics) throws IOException {
     final PriorityQueue<PeekableIterator> heap = new PriorityQueue<>(
         Math.max(1, shardCount), Comparator.comparingLong(it -> (long) it.peek()[0]));
 
     for (final TimeSeriesShard shard : shards) {
-      final Iterator<Object[]> it = shard.iterateRange(fromTs, toTs, columnIndices, tagFilter);
+      final Iterator<Object[]> it = shard.iterateRange(fromTs, toTs, columnIndices, tagFilter, metrics);
       if (it.hasNext())
         heap.add(new PeekableIterator(it));
     }
@@ -540,6 +553,14 @@ public class TimeSeriesEngine implements AutoCloseable {
 
   /**
    * Aggregates across all shards.
+   * <p>
+   * <b>Validates nothing.</b> {@code columnIndex} is used as given: a column no storage layer can read as a
+   * number answers {@link TimeSeriesNaN#ABSENT} per row rather than being refused, and an index the row does
+   * not reach does the same. The refusal that makes an unreadable column a named error instead of a silent gap
+   * is {@link TimeSeriesGateway#requireAggregatableColumn}, which every caller-facing surface applies before it
+   * builds a request; a caller reaching this method directly wants the same check first, or it gets the gap.
+   * No production surface calls this - the three wire protocols and the SQL push-down all go through
+   * {@link #aggregateMulti} - so this note is for whoever adds the first one (issue #7725).
    *
    * @param columnIndex 0-based index among non-timestamp columns (i.e. column 0 = first non-ts column).
    *                    This differs from {@link MultiColumnAggregationRequest#columnIndex()} which uses
@@ -559,10 +580,11 @@ public class TimeSeriesEngine implements AutoCloseable {
       final long bucketTs = bucketIntervalMs > 0 ? Math.floorDiv(ts, bucketIntervalMs) * bucketIntervalMs : singleBucketTs;
       final double value;
 
-      if (columnIndex + 1 < row.length && row[columnIndex + 1] instanceof Number)
-        value = ((Number) row[columnIndex + 1]).doubleValue();
-      else
-        value = 0.0;
+      // Same unboxing as the multi-column path, for the reason TimeSeriesNaN.asMeasurement gives: the value
+      // an aggregate sees must not depend on whether the sample has been compacted yet (issue #7725). Note the
+      // +1 - this method's columnIndex counts non-timestamp columns, unlike
+      // MultiColumnAggregationRequest.columnIndex().
+      value = columnIndex + 1 < row.length ? TimeSeriesNaN.asMeasurement(row[columnIndex + 1]) : TimeSeriesNaN.ABSENT;
 
       accumulateToBucket(result, bucketTs, value, aggType);
     }
@@ -597,6 +619,42 @@ public class TimeSeriesEngine implements AutoCloseable {
   public MultiColumnAggregationResult aggregateMulti(final long fromTs, final long toTs,
       final List<MultiColumnAggregationRequest> requests, final long bucketIntervalMs,
       final TagFilter tagFilter, final AggregationMetrics metrics) throws IOException {
+    return aggregateMulti(fromTs, toTs, requests, bucketIntervalMs, tagFilter, metrics, 0);
+  }
+
+  /**
+   * Aggregates multiple columns in a single pass, stopping as soon as the answer carries more than
+   * {@code bucketCeiling} buckets (issue #7724).
+   * <p>
+   * The three aggregation surfaces - {@code /ts/query}, the Grafana query route and the gRPC bucket stream -
+   * all refuse a response whose bucket count exceeds a configured maximum, and all of them used to enforce that
+   * on the RESULT: the whole range was scanned, the whole bucket set was built, and only then was it thrown
+   * away. So the cheapest shape of an abusive request - a one-millisecond bucket interval over a year, which a
+   * dashboard can re-issue every few seconds - made the server do the entire scan every time.
+   * <p>
+   * The bound is carried into the scan instead. The sealed layer asks before each block and the mutable layer
+   * before each row, so the work stops within one block of the ceiling being passed, and what comes back is a
+   * result that is INCOMPLETE BY CONSTRUCTION.
+   * <p>
+   * <b>How far past the ceiling it goes.</b> On the sealed side, one block: the block in hand is decompressed
+   * in full before the next check. On the mutable side, two ROWS - {@code TimeSeriesBucket.iterateRange}
+   * prefetches, so the row that trips the ceiling is followed by one more being located before the loop
+   * breaks. It is two rows and not the rest of the bucket, because that prefetch returns at the first in-range
+   * row it finds and never evaluates the tag filter, so rows this loop will later reject cannot draw it
+   * further either. {@code Issue7724AggregationBucketCeilingTest} pins the number so a restructuring cannot
+   * quietly turn it into a scan. That is safe precisely because the scan stops only once the
+   * count is already ABOVE the ceiling: the caller's own after-the-fact check therefore fires on it and refuses
+   * it, in the same words as before, so no partial answer can escape. The alternative shape - refusing up front
+   * on {@code (toTs - fromTs) / bucketIntervalMs}, as the issue proposed - would refuse requests that succeed
+   * today, because that arithmetic counts the buckets the RANGE spans and the result carries only the buckets a
+   * sample landed in: a year-wide range at a one-millisecond interval over ten samples spans thirty-one billion
+   * and returns ten.
+   *
+   * @param bucketCeiling the largest bucket count the caller will accept, {@code <= 0} for no ceiling
+   */
+  public MultiColumnAggregationResult aggregateMulti(final long fromTs, final long toTs,
+      final List<MultiColumnAggregationRequest> requests, final long bucketIntervalMs,
+      final TagFilter tagFilter, final AggregationMetrics metrics, final int bucketCeiling) throws IOException {
     final int reqCount = requests.size();
 
     // Determine actual data range to size flat arrays correctly.
@@ -690,6 +748,17 @@ public class TimeSeriesEngine implements AutoCloseable {
             try {
               final MultiColumnAggregationResult shardResult =
                   new MultiColumnAggregationResult(requests, firstBucket, bucketIntervalMs, maxBuckets);
+              // Each shard stops at the ceiling on its own. Buckets only ever union across shards, so a shard
+              // that has passed it guarantees the merged total has too (issue #7724).
+              //
+              // The ceiling is given to each shard WHOLE rather than divided by their number, which makes this
+              // path's worst case O(shards x ceiling) instead of O(ceiling): every shard may scan its way to
+              // the ceiling before any of them stops. That is deliberate. Dividing would be unsound, not merely
+              // tighter - the buckets of different shards overlap, so a shard legitimately holding more than
+              // ceiling/N of them is not evidence that the UNION is over the ceiling, and stopping it would
+              // refuse a request whose real answer fits. The bound stays a bound either way, and it is the one
+              // that cannot refuse an answer the caller was entitled to.
+              shardResult.setBucketCeiling(bucketCeiling);
               shard.getSealedStore().aggregateMultiBlocks(fromTs, toTs, requests, bucketIntervalMs, shardResult, shardMetrics, tagFilter);
               return shardResult;
             } catch (final IOException e) {
@@ -720,21 +789,19 @@ public class TimeSeriesEngine implements AutoCloseable {
         // compaction read locks acquired above, so compaction cannot clear mutable data now)
         final double[] rowValues = new double[reqCount];
         for (final TimeSeriesShard shard : shards) {
-          final Iterator<Object[]> mutableIter = shard.getMutableBucket().iterateRange(fromTs, toTs, null);
+          if (result.isOverBucketCeiling())
+            break;
+          final Iterator<Object[]> mutableIter = shard.getMutableBucket().iterateRange(fromTs, toTs, null, metrics);
           while (mutableIter.hasNext()) {
+            if (result.isOverBucketCeiling())
+              break;
             final Object[] row = mutableIter.next();
             if (tagFilter != null && !tagFilter.matches(row))
               continue;
             final long ts = (long) row[0];
             final long bucketTs = Math.floorDiv(ts, bucketIntervalMs) * bucketIntervalMs;
-            for (int r = 0; r < reqCount; r++) {
-              if (isCount[r])
-                rowValues[r] = 1.0;
-              else if (columnIndices[r] < row.length && row[columnIndices[r]] instanceof Number n)
-                rowValues[r] = n.doubleValue();
-              else
-                rowValues[r] = 0.0;
-            }
+            for (int r = 0; r < reqCount; r++)
+              rowValues[r] = mutableSample(row, columnIndices[r], isCount[r]);
             result.accumulateRow(bucketTs, rowValues);
           }
         }
@@ -753,34 +820,33 @@ public class TimeSeriesEngine implements AutoCloseable {
       final MultiColumnAggregationResult result = maxBuckets > 0
           ? new MultiColumnAggregationResult(requests, firstBucket, bucketIntervalMs, maxBuckets)
           : new MultiColumnAggregationResult(requests);
+      result.setBucketCeiling(bucketCeiling);
 
       final double[] rowValues = new double[reqCount];
 
       final long singleBucketTs = singleBucketAnchor(fromTs);
 
       for (final TimeSeriesShard shard : shards) {
+        if (result.isOverBucketCeiling())
+          break;
         // Hold the compaction read lock for sealed+mutable reads to prevent data loss
         // if compaction completes between reading the two layers.
         shard.getCompactionLock().readLock().lock();
         try {
           shard.getSealedStore().aggregateMultiBlocks(fromTs, toTs, requests, bucketIntervalMs, result, metrics, tagFilter);
 
-          final Iterator<Object[]> mutableIter = shard.getMutableBucket().iterateRange(fromTs, toTs, null);
+          final Iterator<Object[]> mutableIter = shard.getMutableBucket().iterateRange(fromTs, toTs, null, metrics);
           while (mutableIter.hasNext()) {
+            if (result.isOverBucketCeiling())
+              break;
             final Object[] row = mutableIter.next();
             if (tagFilter != null && !tagFilter.matches(row))
               continue;
             final long ts = (long) row[0];
             final long bucketTs = bucketIntervalMs > 0 ? Math.floorDiv(ts, bucketIntervalMs) * bucketIntervalMs : singleBucketTs;
 
-            for (int r = 0; r < reqCount; r++) {
-              if (isCount[r])
-                rowValues[r] = 1.0;
-              else if (columnIndices[r] < row.length && row[columnIndices[r]] instanceof Number n)
-                rowValues[r] = n.doubleValue();
-              else
-                rowValues[r] = 0.0;
-            }
+            for (int r = 0; r < reqCount; r++)
+              rowValues[r] = mutableSample(row, columnIndices[r], isCount[r]);
 
             result.accumulateRow(bucketTs, rowValues);
           }
@@ -794,6 +860,26 @@ public class TimeSeriesEngine implements AutoCloseable {
         metrics.addOverflowBuckets(result.getOverflowBucketCount());
       return result;
     }
+  }
+
+  /**
+   * The value one MUTABLE row contributes to one aggregation request, unboxed the way the sealed layer unboxes
+   * the same sample (issue #7725).
+   * <p>
+   * A COUNT contributes one per row without reading the column at all, matching the sealed layer, which does
+   * not even resolve a schema index for such a request. Everything else goes through
+   * {@link TimeSeriesNaN#asMeasurement(Object)}, whose javadoc carries the reason the two layers have to agree.
+   * <p>
+   * The width guard answers {@link TimeSeriesNaN#ABSENT} rather than zero for a request whose column index the
+   * row does not reach: absence is what "this row carries no such column" means, and an aggregate skips it.
+   * It should not be reachable - a mutable row carries the timestamp followed by every non-timestamp column in
+   * schema order, so its length is the schema's - and it is kept because the alternative to a gap here is an
+   * {@link ArrayIndexOutOfBoundsException} out of a read path.
+   */
+  private static double mutableSample(final Object[] row, final int columnIndex, final boolean isCount) {
+    if (isCount)
+      return 1.0;
+    return columnIndex < row.length ? TimeSeriesNaN.asMeasurement(row[columnIndex]) : TimeSeriesNaN.ABSENT;
   }
 
   /**

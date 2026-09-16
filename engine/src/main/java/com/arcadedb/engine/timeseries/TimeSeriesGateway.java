@@ -287,7 +287,16 @@ public final class TimeSeriesGateway {
    * this method and nothing else, so the two protocols cannot answer different rows (issue #7305).
    */
   public static Object[] latest(final TimeSeriesEngine engine, final TagFilter tagFilter) throws IOException {
-    final List<Object[]> newest = engine.queryDescending(Long.MIN_VALUE, Long.MAX_VALUE, null, tagFilter, 1, null);
+    return latest(engine, tagFilter, null);
+  }
+
+  /**
+   * {@link #latest(TimeSeriesEngine, TagFilter)}, counting what the scan did into {@code metrics} (issue
+   * #7717). {@code null} means "do not count", and is the path on which no counter is touched.
+   */
+  public static Object[] latest(final TimeSeriesEngine engine, final TagFilter tagFilter,
+      final AggregationMetrics metrics) throws IOException {
+    final List<Object[]> newest = engine.queryDescending(Long.MIN_VALUE, Long.MAX_VALUE, null, tagFilter, 1, metrics);
     return newest.isEmpty() ? null : newest.getFirst();
   }
 
@@ -538,6 +547,29 @@ public final class TimeSeriesGateway {
         return i;
     }
     return -1;
+  }
+
+  /**
+   * Refuses an aggregation over a column no storage layer can read as a number, naming the column and saying
+   * why (issue #7725).
+   * <p>
+   * Called by every surface that turns a caller-supplied field name into a {@link MultiColumnAggregationRequest}
+   * - the two HTTP aggregation endpoints and the gRPC bucket stream - BEFORE the engine is asked for anything,
+   * which is what makes this a 400 naming the field rather than the 500 the sealed layer's decoder used to
+   * raise. The SQL planner asks {@link ColumnDefinition#isNumericallyAggregatable()} directly instead: there the
+   * right answer is to decline the push-down and let the generic aggregation path run, not to refuse the query.
+   * <p>
+   * COUNT is exempt because it never reads the column: both layers count rows, and the sealed layer does not
+   * even resolve a schema index for such a request.
+   *
+   * @throws IllegalArgumentException when {@code column} cannot carry {@code type}
+   */
+  public static void requireAggregatableColumn(final ColumnDefinition column, final AggregationType type) {
+    if (type == AggregationType.COUNT || column.isNumericallyAggregatable())
+      return;
+    throw new IllegalArgumentException("Aggregation " + type.name() + " cannot be applied to column '"
+        + column.getName() + "': a " + column.getRole().name() + " column of type " + column.getDataType().name()
+        + " is not stored as a number");
   }
 
   /**

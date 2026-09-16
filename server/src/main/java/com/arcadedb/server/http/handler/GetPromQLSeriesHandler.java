@@ -20,6 +20,7 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.timeseries.AggregationMetrics;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.engine.timeseries.TimeSeriesGateway;
@@ -33,6 +34,7 @@ import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.monitor.TimeSeriesReadMetrics;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
@@ -71,12 +73,17 @@ public class GetPromQLSeriesHandler extends DatabaseAbstractHandler {
   }
 
   /**
-   * A session-less read is answered on the IO thread, which is what this handler has always done. A request
-   * that names a session is not: see {@link DatabaseAbstractHandler#carriesSessionId}.
+   * A full-range scan of every sample of every type the {@code match[]} selector resolves to, so never on an
+   * Undertow IO thread (issue #7722), for the reason {@code GetPromQLLabelValuesHandler} gives at its own
+   * override: the work is bounded by the size of the series, not by anything in the request, and an IO thread
+   * parked on it stops serving every other connection it multiplexes.
+   * <p>
+   * Handler-wide, superseding the per-request override of issue #7681 for the reason given there: the
+   * session-less request is the one Grafana and Prometheus actually send.
    */
   @Override
-  protected boolean mustExecuteOnWorkerThread(final HttpServerExchange exchange) {
-    return carriesSessionId(exchange);
+  protected boolean mustExecuteOnWorkerThread() {
+    return true;
   }
 
   @Override
@@ -163,39 +170,49 @@ public class GetPromQLSeriesHandler extends DatabaseAbstractHandler {
         // and it never calls back into the engine.
         final StringBuilder key = new StringBuilder(64);
 
-        engine.forEachTagCombination(startMs, endMs, columnIndices, null, row -> {
-          key.setLength(0);
-          // The metric name is length-prefixed for the same reason its tags are: two match[] patterns naming
-          // different metrics share this map.
-          key.append(vs.metricName().length()).append(':').append(vs.metricName());
-          for (int t = 0; t < tagNames.length; t++)
-            if (t + 1 < row.length && row[t + 1] != null) {
-              final String name = tagNames[t];
-              final String value = row[t + 1].toString();
-              // An empty value is an ABSENT label in Prometheus, so it takes no part in the series identity:
-              // see PromQLResponseFormatter.isLabelValuePresent (issue #7712). Skipped HERE and not only when
-              // the labels map is built, because otherwise a sample whose host is null and one carrying no host
-              // at all would spell two keys and be reported as two series that render identically.
-              if (!PromQLResponseFormatter.isLabelValuePresent(value))
-                continue;
-              // LENGTH-PREFIXED, not separated by a character the value is assumed not to carry. A tag value is
-              // ingested from a remote-write client, so "realistically never contains this byte" is an assumption
-              // about somebody else's data; a length prefix makes the concatenation unambiguous whatever the
-              // value holds, and two distinct combinations cannot spell one key. Costs one int per tag.
-              key.append(name.length()).append(':').append(name)
-                  .append(value.length()).append(':').append(value);
-            }
+        // What the scan actually did, published to whatever the server's metrics subsystem feeds (issue #7717).
+        // null - and therefore free - whenever metrics are off. It counts what forEachTagCombination did, which
+        // for a block answered from its directory entry is a SKIPPED block and no materialised row at all - the
+        // saving of issue #7710 is therefore visible in these metrics rather than hidden by them.
+        final AggregationMetrics readMetrics = TimeSeriesReadMetrics.start();
+        try {
+          engine.forEachTagCombination(startMs, endMs, columnIndices, readMetrics, row -> {
+            key.setLength(0);
+            // The metric name is length-prefixed for the same reason its tags are: two match[] patterns naming
+            // different metrics share this map.
+            key.append(vs.metricName().length()).append(':').append(vs.metricName());
+            for (int t = 0; t < tagNames.length; t++)
+              if (t + 1 < row.length && row[t + 1] != null) {
+                final String name = tagNames[t];
+                final String value = row[t + 1].toString();
+                // An empty value is an ABSENT label in Prometheus, so it takes no part in the series identity:
+                // see PromQLResponseFormatter.isLabelValuePresent (issue #7712). Skipped HERE and not only when
+                // the labels map is built, because otherwise a sample whose host is null and one carrying no
+                // host at all would spell two keys and be reported as two series that render identically.
+                if (!PromQLResponseFormatter.isLabelValuePresent(value))
+                  continue;
+                // LENGTH-PREFIXED, not separated by a character the value is assumed not to carry. A tag value is
+                // ingested from a remote-write client, so "realistically never contains this byte" is an assumption
+                // about somebody else's data; a length prefix makes the concatenation unambiguous whatever the
+                // value holds, and two distinct combinations cannot spell one key. Costs one int per tag.
+                key.append(name.length()).append(':').append(name)
+                    .append(value.length()).append(':').append(value);
+              }
 
-          final long timestamp = (long) row[0];
-          final String combination = key.toString();
-          final ObservedSeries seen = seriesByKey.get(combination);
-          if (seen != null)
-            seen.earliest = Math.min(seen.earliest, timestamp);
-          else
-            seriesByKey.put(combination,
-                new ObservedSeries(labelsOf(vs.metricName(), tagNames, row), timestamp));
-          return true;
-        });
+            final long timestamp = (long) row[0];
+            final String combination = key.toString();
+            final ObservedSeries seen = seriesByKey.get(combination);
+            if (seen != null)
+              seen.earliest = Math.min(seen.earliest, timestamp);
+            else
+              seriesByKey.put(combination,
+                  new ObservedSeries(labelsOf(vs.metricName(), tagNames, row), timestamp));
+            return true;
+          });
+        } finally {
+          TimeSeriesReadMetrics.publish(readMetrics, database.getName(), typeName,
+              TimeSeriesReadMetrics.SURFACE_PROM_SERIES);
+        }
       } catch (final IllegalArgumentException ignored) {
         // Skip malformed match patterns
       }

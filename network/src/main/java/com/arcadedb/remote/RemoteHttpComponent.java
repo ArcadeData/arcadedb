@@ -820,9 +820,35 @@ public class RemoteHttpComponent extends RWLockContext {
       return new RemoteException("Empty payload received");
     }
 
+    // The server's own sentence FIRST, then the envelope (issue #7716). A refusal the server was careful to
+    // word - which tag did not resolve, which projection member names nothing - used to sit in the middle of a
+    // diagnostic envelope, so an application logging getMessage() led with "Error on executing remote command"
+    // and a caller reading a truncated log line never reached the reason. The envelope is kept: the status code
+    // and the absence of a typed exception are what tell a maintainer this arm was the one taken.
+    // Whichever of the two the server actually filled in - the TimeSeries endpoints answer 'error', the generic
+    // mapper answers 'detail' - promoted to the front of the message.
+    final String explanation = reason != null && !reason.isEmpty() ? reason : detail;
+    final boolean promoted = explanation != null && !explanation.isEmpty();
+    // The envelope then carries only what the leading sentence did NOT already say. Repeating the promoted text
+    // verbatim under 'reason=' stated the same diagnosis twice in one message, which is exactly the readability
+    // this was meant to buy back.
+    //
+    // A server that filled in BOTH fields with the same text therefore drops both, leaving the sentence alone.
+    // That is deliberate and not a case falling through the cracks: printing "reason=X detail=X" after having
+    // already said X states it three times. The fields are dropped only when they ADD nothing - a detail that
+    // differs from the promoted reason by so much as a character is still printed.
+    final StringBuilder envelope = new StringBuilder(" (httpErrorCode=").append(statusCode)
+        .append(" httpErrorDescription=").append(httpErrorDescription);
+    // A field the server did not fill in is omitted rather than printed as "reason=null" or a bare "reason=":
+    // the envelope exists to say what the server answered, and neither a literal null nor an empty value says
+    // anything the absence of a typed exception had not already said.
+    if (reason != null && !reason.isEmpty() && !reason.equals(explanation))
+      envelope.append(" reason=").append(reason);
+    if (detail != null && !detail.isEmpty() && !detail.equals(explanation))
+      envelope.append(" detail=").append(detail);
+    envelope.append(" exception=").append(exception).append(')');
+
     return new RemoteException(
-        "Error on executing remote command '" + operation + "' (httpErrorCode=" + statusCode
-            + " httpErrorDescription=" + httpErrorDescription + " reason=" + reason + " detail=" + detail + " exception="
-            + exception + ")");
+        "Error on executing remote command '" + operation + "'" + (promoted ? ": " + explanation : "") + envelope);
   }
 }

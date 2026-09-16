@@ -20,6 +20,7 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.timeseries.AggregationMetrics;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.TagFilter;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
@@ -28,6 +29,7 @@ import com.arcadedb.engine.timeseries.TimeSeriesGateway.TypeResolution;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.monitor.TimeSeriesReadMetrics;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
@@ -100,7 +102,15 @@ public class GetTimeSeriesLatestHandler extends DatabaseAbstractHandler {
     // A bounded newest-first scan for a single row (issue #7322), through the same helper the gRPC
     // TimeSeriesLatest RPC calls (issue #7305) so the two protocols cannot answer different rows. The helper
     // owns the tie-break for samples sharing the newest timestamp; see its javadoc.
-    final Object[] lastRow = TimeSeriesGateway.latest(engine, tagFilter);
+    // What the scan actually did, published to whatever the server's metrics subsystem feeds (issue #7717).
+    // null - and therefore free - whenever metrics are off.
+    final AggregationMetrics readMetrics = TimeSeriesReadMetrics.start();
+    final Object[] lastRow;
+    try {
+      lastRow = TimeSeriesGateway.latest(engine, tagFilter, readMetrics);
+    } finally {
+      TimeSeriesReadMetrics.publish(readMetrics, database.getName(), typeName, TimeSeriesReadMetrics.SURFACE_TS_LATEST);
+    }
 
     // Build column names
     final JSONArray colNames = new JSONArray(TimeSeriesGateway.columnNames(columns, null));

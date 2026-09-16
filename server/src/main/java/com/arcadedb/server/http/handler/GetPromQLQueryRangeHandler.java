@@ -20,12 +20,14 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.timeseries.AggregationMetrics;
 import com.arcadedb.engine.timeseries.promql.PromQLEvaluator;
 import com.arcadedb.engine.timeseries.promql.PromQLParser;
 import com.arcadedb.engine.timeseries.promql.PromQLResult;
 import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.monitor.TimeSeriesReadMetrics;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
@@ -60,12 +62,16 @@ public class GetPromQLQueryRangeHandler extends DatabaseAbstractHandler {
   }
 
   /**
-   * A session-less read is answered on the IO thread, which is what this handler has always done. A request
-   * that names a session is not: see {@link DatabaseAbstractHandler#carriesSessionId}.
+   * Evaluates a PromQL expression at every step of a range, so never on an Undertow IO thread (issue #7722),
+   * for the reason {@code GetPromQLQueryHandler} gives at its own override - with strictly more work to do,
+   * since the expression is evaluated once per step rather than once.
+   * <p>
+   * Handler-wide, superseding the per-request override of issue #7681 for the reason given there: the
+   * session-less request is the one Grafana and Prometheus actually send.
    */
   @Override
-  protected boolean mustExecuteOnWorkerThread(final HttpServerExchange exchange) {
-    return carriesSessionId(exchange);
+  protected boolean mustExecuteOnWorkerThread() {
+    return true;
   }
 
   @Override
@@ -106,7 +112,19 @@ public class GetPromQLQueryRangeHandler extends DatabaseAbstractHandler {
       final PromQLEvaluator evaluator = lookbackStr != null && !lookbackStr.isBlank()
           ? new PromQLEvaluator(database, PromQLParser.parseDuration(lookbackStr))
           : new PromQLEvaluator(database);
-      final PromQLResult result = evaluator.evaluateRange(expr, startMs, endMs, stepMs);
+
+      // What the selector scans actually did, published to whatever the server's metrics subsystem feeds
+      // (issue #7717). null - and therefore free - whenever metrics are off. The type tag is a constant: one
+      // expression can select several metrics, so there is no single type to name here.
+      final AggregationMetrics readMetrics = TimeSeriesReadMetrics.start();
+      evaluator.setReadMetrics(readMetrics);
+      final PromQLResult result;
+      try {
+        result = evaluator.evaluateRange(expr, startMs, endMs, stepMs);
+      } finally {
+        TimeSeriesReadMetrics.publish(readMetrics, database.getName(), TimeSeriesReadMetrics.TYPE_EXPRESSION,
+            TimeSeriesReadMetrics.SURFACE_PROM_QUERY_RANGE);
+      }
       return new ExecutionResponse(200, PromQLResponseFormatter.formatSuccess(result));
     } catch (final IllegalArgumentException e) {
       return new ExecutionResponse(400, PromQLResponseFormatter.formatError("bad_data", e.getMessage()));
