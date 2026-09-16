@@ -1384,6 +1384,10 @@ public class MergeStep extends AbstractExecutionStep {
    * without this a map refused by MERGE named the property and nothing else, while the same refusal from CREATE or
    * SET named where the value came from (issue #7729).
    * <p>
+   * Reading the raw map back here is safe because {@link #evaluateProperties} builds and returns a new map and
+   * never writes to the one it is given - it could not, since a pattern is re-evaluated per matched row and an
+   * in-place replacement of an {@code Expression} by its first row's value would break every row after it.
+   * <p>
    * Only a map, or a list that might contain one, can ever be refused, so only those pay the lookup - a scalar
    * property, which is nearly every property ever written, is answered by two {@code instanceof} tests against a
    * reference already in hand. That is what keeps this off the MERGE write path's cost: deferring the lookup to
