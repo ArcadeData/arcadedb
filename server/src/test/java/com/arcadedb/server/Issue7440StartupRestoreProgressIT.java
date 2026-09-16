@@ -115,9 +115,10 @@ class Issue7440StartupRestoreProgressIT extends BaseGraphServerTest {
     archive = produceArchive();
     archiveServer = serveArchiveSlowly(archive);
 
-    // The archive is served from loopback, which the SSRF guard blocks by default. The startup restore reads
-    // this from the static global (it has no ContextConfiguration of its own to resolve against), so set it
-    // there - beginTest() has already run resetAll(), so this is not leaking into another class.
+    // The archive is served from loopback, which the SSRF guard blocks by default. Since issue #7468 the startup
+    // restore resolves this against the server's own ContextConfiguration, which - with no overlay for the key,
+    // and this test sets none - falls through to the static global, so setting it there is still what this test
+    // needs. beginTest() has already run resetAll(), so this is not leaking into another class.
     GlobalConfiguration.SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS.setValue(true);
 
     // A dedicated port, not the shared 2480-2489 range this suite defaults to. This test polls an HTTP endpoint

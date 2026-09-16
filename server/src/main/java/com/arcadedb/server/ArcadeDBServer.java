@@ -26,8 +26,6 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.ComponentFile;
-import com.arcadedb.engine.MaintenanceCoordinator;
-import com.arcadedb.engine.MaintenanceCoordinator.Operation;
 import com.arcadedb.engine.OperationProgress;
 import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.exception.CommandExecutionException;
@@ -1645,16 +1643,16 @@ public class ArcadeDBServer {
 
             switch (commandType) {
             case "restore":
-              // The drop of the database this restore replaces used to live here, outside the method below. It
-              // has moved INSIDE it, so that it happens under the same maintenance slot as the restore itself
-              // (issue #7454): dropping the directory a concurrent backup is reading is the very race #7384
-              // closed for the four client transports, and it is the most destructive half of this command.
+              // DROP THE DATABASE BECAUSE THE RESTORE OPERATION WILL TAKE CARE OF CREATING A NEW DATABASE
+              if (database != null) {
+                ((DatabaseInternal) database).getEmbedded().drop();
+                // Route through removeDatabase so this registry mutation also runs under databasesLock, keeping the
+                // defect-2 invariant consistent (this path is startup-single-threaded, but consistency is cheaper
+                // to keep than to reason about the exception).
+                removeDatabase(dbName);
+              }
               restoreDatabaseFromStartupCommand(dbName, commandParams,
                   configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + dbName);
-              // The handle read at the top of this iteration names a database that no longer exists: the restore
-              // dropped it and rebuilt it. A later command in the same '{...}' list must resolve it again rather
-              // than reuse the dropped instance.
-              database = getDatabase(dbName);
               break;
 
             case "import":
@@ -1715,138 +1713,56 @@ public class ArcadeDBServer {
    * <p>
    * Two steps rather than {@code performRestore}'s three: this command restores straight into the final
    * directory, so there is no temporary directory to swap in, and it does not force a cluster snapshot.
-   * <h2>The maintenance slot (issue #7454)</h2>
-   * Issue #7384 gave every backup, restore and import that goes through {@code ServerControlPlane} a
-   * per-database exclusive slot. This command does not go through the control plane and took nothing, while
-   * {@code httpServer.startService()} runs before {@code loadDefaultDatabases()} in {@link #startInternal()} and
-   * no HTTP command handler gates on server status - so a client that authenticated during the boot window could
-   * have a {@code restore database}, {@code trigger backup} or {@code import database} of this very database
-   * admitted, because the slot was free, and two writers then shared one database directory. It now takes
-   * {@link Operation#RESTORE} for the whole command: the drop of the database being replaced as well as the
-   * extraction, since dropping the directory a backup is reading is the more destructive half.
-   * <p>
-   * It also claims the database NAME for the duration, with
-   * {@link #reserveDatabaseNameForRestore}/{@link #releaseDatabaseNameReservedForRestore}, exactly as
-   * {@code ServerControlPlane.restoreDatabase} and {@code restoreBackup} do (issue #7441). The two protections
-   * are not interchangeable: {@code create database} is not a participant in the maintenance slot at all, so
-   * the claim is the only thing that refuses a client creating this name while the archive is being extracted
-   * into its directory. The claim is taken before the drop, because the window a create can slip through opens
-   * the moment the directory this command is replacing goes away.
-   * <p>
-   * A conflict is <b>refused</b>, not waited out, and the refusal is fatal to startup because
-   * {@code loadDefaultDatabases()}'s caller stops the server and rethrows. That is deliberate. The only way the
-   * slot is held when this runs is a client operation admitted in the boot window just described, and waiting it
-   * out only to drop and restore over its result destroys a completed operation instead of a half-finished one;
-   * refusing leaves both states on disk and names, in the message every other entry point uses, what was
-   * holding the slot. {@code SnapshotInstaller} waits instead, because it applies a committed Raft entry and may
-   * not decline; an operator's startup command may, and a server that refuses to start is the same answer the
-   * {@code restore:} and {@code import:} commands already give every other failure (issue #7484).
    * <p>
    * Package-private rather than private so a test can drive it with a real archive: the alternative is racing a
    * full server boot, which is not a way to observe anything mid-flight.
-   * <h2>The drop is node-local, on a replicated database too (issue #7643)</h2>
-   * {@code restore:} is the operator's per-node boot configuration - every node started with the same
-   * {@code arcadedb.server.defaultDatabases} string runs this same command for itself - and is deliberately NOT
-   * the cluster-wide replace {@code ServerControlPlane.performRestore} performs: it does not force a snapshot
-   * install on the rest of the cluster, on the same node-local premise. Routing the drop through the HA-aware path
-   * {@code ServerControlPlane.dropDatabase} uses would turn one node's boot into a drop of the whole cluster's
-   * database, replayed on every peer in turn as each of them starts with the same command - a worse failure than
-   * the one this method is careful about elsewhere.
    * <p>
-   * What this method does NOT do silently is destroy a replicated database without saying so: dropping this
-   * node's copy of a database other nodes still hold is logged at {@code WARNING}, naming the database, so a node
-   * that has just diverged from its peers at boot leaves a line in the log saying it - the silence was the #7389
-   * failure mode, not the local drop itself.
+   * The archive is fetched under <b>this server's</b> resolved
+   * {@link GlobalConfiguration#SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS}, not the process-wide static one - see the
+   * {@code setAllowLocalUrls} call below and issue #7468. What this command does <b>not</b> run is
+   * {@code ServerControlPlane.validateClientRestoreImportUrl}: that gate exists to refuse a URL a <i>client</i>
+   * supplied, and the {@code restore:} URL comes from the operator's own configuration file.
    *
    * @param databaseName the database being restored, and the key the progress is published under
    * @param url          the archive URL exactly as the operator wrote it after {@code restore:}
    * @param databasePath the directory the archive is restored into
-   *
-   * @throws ServerControlPlane.OperationInProgressException when a backup, restore or import of
-   *                                                         {@code databaseName} is already running on this
-   *                                                         server. Nothing is dropped and nothing is published.
    */
   void restoreDatabaseFromStartupCommand(final String databaseName, final String url, final String databasePath) {
-    // Issue #7454. Taken FIRST, before the drop and before anything is published: a refusal must leave the
-    // database on disk exactly as it found it. Released in the finally at the bottom, which is the only exit.
-    final Operation running = backupCoordinator.begin(databaseName, Operation.RESTORE);
-    if (running != null)
-      throw new ServerControlPlane.OperationInProgressException(
-          MaintenanceCoordinator.refusal(Operation.RESTORE, databaseName, running));
-
+    final OperationProgress progress = OperationProgressRegistry.instance()
+        .register(databaseName, STARTUP_RESTORE_OPERATION);
+    progress.onProgress(RestoreProgress.STEP_EXTRACT, 1, STARTUP_RESTORE_STEPS, 0, -1);
     try {
-      // The SECOND protection a control-plane restore takes, and the one a maintenance slot cannot stand in
-      // for: create database is not a participant in that slot at all, so only this claim refuses a client
-      // creating 'databaseName' while the archive is being extracted into its directory (issue #7441, review
-      // of PR #7642). Taken before the drop, because the window a create has to slip through opens the moment
-      // the directory the command is replacing goes away.
-      //
-      // INSIDE the try, not between begin() and it: this is a synchronized Set.add, but a throw from outside
-      // the try would leak the slot taken above for the life of the server, and the release below tolerates a
-      // claim that was never taken (Set.remove of an absent element). There is still a window between begin()
-      // and this line in which a create could be admitted - closing it would need the two reservations to be
-      // one atomic operation, which they are not. It is two adjacent in-memory calls with no I/O between
-      // them, against the seconds-to-minutes window this method's extraction holds open, so it is accepted
-      // rather than engineered away; a create that lands in it is destroyed by the drop below exactly as
-      // issue #7469 describes for the control-plane restores.
-      reserveDatabaseNameForRestore(databaseName);
+      final Class<?> clazz = Class.forName("com.arcadedb.integration.restore.Restore");
+      final Object restorer = clazz.getConstructor(String.class, String.class).newInstance(url, databasePath);
+      // The local-URL policy the fetch inside FullRestoreFormat runs under, resolved from THIS server's own
+      // ContextConfiguration rather than left to that class's fallback on the static GlobalConfiguration value
+      // (issue #7468). Without this call RestoreSettings.allowLocalUrls stays null, and a per-instance override
+      // of SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS reached the HTTP/gRPC 'restore database' verb - which resolves
+      // it through the same ServerControlPlane.isRestoreImportLocalUrlsAllowed() used here - but not this
+      // server's own boot-time restore, so one server answered the same URL two different ways.
+      // ContextConfiguration.getValueAsBoolean falls through to the static value when nothing is overlaid, so a
+      // deployment that never overrode the setting sees exactly the behaviour it saw before.
+      clazz.getMethod("setAllowLocalUrls", boolean.class)
+          .invoke(restorer, new ServerControlPlane(this).isRestoreImportLocalUrlsAllowed());
+      RestoreProgress.installCallback(clazz, restorer, progress, STARTUP_RESTORE_STEPS);
 
-      // DROP THE DATABASE BECAUSE THE RESTORE OPERATION WILL TAKE CARE OF CREATING A NEW DATABASE.
-      //
-      // NODE-LOCAL, DELIBERATELY (issue #7643): 'restore:' is the operator's per-node boot configuration, not a
-      // cluster snapshot install - unlike ServerControlPlane.performRestore, it does not force one, and every node
-      // booting with the same arcadedb.server.defaultDatabases string is expected to run this same command for
-      // itself. Routing the drop cluster-wide (ServerControlPlane.dropDatabase's path) would make one node's boot
-      // drop the database out from under every peer in turn during a rolling restart, which is a worse outcome
-      // than the one this guards against.
-      //
-      // What is NOT acceptable is doing this silently on a replicated database: a node that diverges from its
-      // peers at boot with nothing in the log saying so is the #7389 failure mode. So a replicated database gets a
-      // WARNING naming exactly what happened, even though the drop itself stays local.
-      if (existsDatabase(databaseName)) {
-        final ServerDatabase existing = getDatabase(databaseName);
-        if (existing.getWrappedDatabaseInstance() instanceof HAReplicatedDatabase)
-          LogManager.instance().log(this, Level.WARNING,
-              "The startup 'restore:' command for database '%s' is dropping this node's copy ONLY: the rest of "
-                  + "the cluster is not told, and every peer keeps its current copy of '%s' until it restores from "
-                  + "the same startup command or is otherwise brought back in sync", null, databaseName, databaseName);
+      clazz.getMethod("restoreDatabase").invoke(restorer);
 
-        ((DatabaseInternal) existing).getEmbedded().drop();
-        // Route through removeDatabase so this registry mutation also runs under databasesLock, keeping the
-        // defect-2 invariant consistent (this path is startup-single-threaded, but consistency is cheaper
-        // to keep than to reason about the exception).
-        removeDatabase(databaseName);
-      }
-
-      final OperationProgress progress = OperationProgressRegistry.instance()
-          .register(databaseName, STARTUP_RESTORE_OPERATION);
-      progress.onProgress(RestoreProgress.STEP_EXTRACT, 1, STARTUP_RESTORE_STEPS, 0, -1);
-      try {
-        final Class<?> clazz = Class.forName("com.arcadedb.integration.restore.Restore");
-        final Object restorer = clazz.getConstructor(String.class, String.class).newInstance(url, databasePath);
-        RestoreProgress.installCallback(clazz, restorer, progress, STARTUP_RESTORE_STEPS);
-
-        clazz.getMethod("restoreDatabase").invoke(restorer);
-
-        progress.onProgress(RestoreProgress.STEP_ACTIVATE, 2, STARTUP_RESTORE_STEPS, 0, -1);
-        getDatabase(databaseName);
-      } catch (final InvocationTargetException e) {
-        throw new CommandExecutionException("Error on restoring database", e.getTargetException());
-      } catch (final ReflectiveOperationException e) {
-        // Everything the block above can throw that is NOT an InvocationTargetException means the optional
-        // arcadedb-integration module is absent or does not match: ClassNotFoundException, NoSuchMethodException,
-        // IllegalAccessException, InstantiationException. Caught by their common supertype so this arm reads the
-        // same as ServerControlPlane.performRestore's; the block reflects on no field, so NoSuchFieldException -
-        // the only other subtype - cannot arise here and nothing new is swallowed.
-        throw new CommandExecutionException("""
-            Error on restoring database, restore libs not found in \
-            classpath""", e);
-      } finally {
-        OperationProgressRegistry.instance().unregister(progress);
-      }
+      progress.onProgress(RestoreProgress.STEP_ACTIVATE, 2, STARTUP_RESTORE_STEPS, 0, -1);
+      getDatabase(databaseName);
+    } catch (final InvocationTargetException e) {
+      throw new CommandExecutionException("Error on restoring database", e.getTargetException());
+    } catch (final ReflectiveOperationException e) {
+      // Everything the block above can throw that is NOT an InvocationTargetException means the optional
+      // arcadedb-integration module is absent or does not match: ClassNotFoundException, NoSuchMethodException,
+      // IllegalAccessException, InstantiationException. Caught by their common supertype so this arm reads the
+      // same as ServerControlPlane.performRestore's; the block reflects on no field, so NoSuchFieldException -
+      // the only other subtype - cannot arise here and nothing new is swallowed.
+      throw new CommandExecutionException("""
+          Error on restoring database, restore libs not found in \
+          classpath""", e);
     } finally {
-      releaseDatabaseNameReservedForRestore(databaseName);
-      backupCoordinator.end(databaseName, Operation.RESTORE);
+      OperationProgressRegistry.instance().unregister(progress);
     }
   }
 
