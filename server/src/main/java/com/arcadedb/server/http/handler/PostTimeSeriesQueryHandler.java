@@ -19,6 +19,7 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.AggregationType;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
@@ -36,15 +37,26 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
 import java.util.ArrayList;
-import java.util.Deque;
 import java.util.List;
 import java.util.logging.Level;
 
 /**
  * HTTP handler for TimeSeries query endpoint.
  * Endpoint: POST /api/v1/ts/{database}/query
+ * <p>
+ * On {@link DatabaseAbstractHandler} since issue #7402, so a request carrying {@code arcadedb-session-id} reads
+ * through the transaction that session opened - and under the session's lock, on the session's principal, with
+ * the session's idle clock refreshed - instead of on whatever context the Undertow worker happened to carry.
+ * That base class also subsumes the {@code checkAuthorizationOnDatabase} call this handler used to make by
+ * hand: it is the database-level gate of GHSA-x8mg-6r4p-87pf and the per-type principal binding of
+ * GHSA-c23x-pqcj-7hfm in one, which is what that helper existed to stand in for.
+ * <p>
+ * {@link #requiresTransaction()} is false: this is a read, and an auto-commit wrapper around it would only add a
+ * commit with nothing to commit. A consequence of that answer, shared with {@code GET /query}, is that an
+ * unresolvable session id degrades to a session-less read rather than being refused - see
+ * {@link DatabaseAbstractHandler#rejectsUnresolvableSession()}.
  */
-public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
+public class PostTimeSeriesQueryHandler extends DatabaseAbstractHandler {
 
   public PostTimeSeriesQueryHandler(final HttpServer httpServer) {
     super(httpServer);
@@ -56,22 +68,19 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
   }
 
   @Override
+  protected boolean requiresTransaction() {
+    return false;
+  }
+
+  @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
-      final JSONObject payload) throws Exception {
-
-    final Deque<String> databaseParam = exchange.getQueryParameters().get("database");
-    if (databaseParam == null || databaseParam.isEmpty())
-      return new ExecutionResponse(400, "{ \"error\" : \"Database parameter is required\"}");
-
-    // Enforce database-level authorization (GHSA-x8mg-6r4p-87pf): this handler does not extend DatabaseAbstractHandler.
-    // Checked before any payload/parameter validation so an unauthorized caller cannot probe the target database.
-    checkAuthorizationOnDatabase(user, databaseParam.getFirst());
+      final Database db, final JSONObject payload) throws Exception {
 
     if (payload == null || !payload.has("type"))
       return new ExecutionResponse(400, "{ \"error\" : \"'type' parameter is required\"}");
 
     final String typeName = payload.getString("type");
-    final DatabaseInternal database = httpServer.getServer().getDatabase(databaseParam.getFirst(), false, false);
+    final DatabaseInternal database = (DatabaseInternal) db;
 
     // Type resolution and the per-type read ACL both live in TimeSeriesGateway, shared with the gRPC
     // TimeSeriesQuery RPC (issue #7305). The ACL matters here more than anywhere else: a TimeSeries type owns
