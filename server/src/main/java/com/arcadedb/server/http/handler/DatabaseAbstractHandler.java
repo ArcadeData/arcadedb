@@ -436,14 +436,30 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
    * these headers downstream, which is a log scraper as often as it is a client (claude-review on PR #7730).
    */
   private static String sanitizedSessionId(final String sessionId) {
-    final int length = Math.min(sessionId.length(), MAX_ECHOED_SESSION_ID_LENGTH);
-    final StringBuilder sanitized = new StringBuilder(length);
-    for (int i = 0; i < length; i++) {
+    // The common case by far is an id that needs nothing done to it - a UUID this server issued, echoed back by
+    // a client whose session has since expired. Scanned first and returned UNCHANGED when it is already clean,
+    // so the ordinary degrade allocates nothing (claude-review on PR #7730).
+    final int length = sessionId.length();
+    if (length <= MAX_ECHOED_SESSION_ID_LENGTH) {
+      int i = 0;
+      while (i < length && isSessionIdChar(sessionId.charAt(i)))
+        i++;
+      if (i == length)
+        return sessionId;
+    }
+
+    final int kept = Math.min(length, MAX_ECHOED_SESSION_ID_LENGTH);
+    final StringBuilder sanitized = new StringBuilder(kept);
+    for (int i = 0; i < kept; i++) {
       final char c = sessionId.charAt(i);
-      sanitized.append((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
-          || c == '-' || c == '_' ? c : '?');
+      sanitized.append(isSessionIdChar(c) ? c : '?');
     }
     return sanitized.toString();
+  }
+
+  /** The alphabet a session id is made of: a UUID's, plus the underscore. See {@link #sanitizedSessionId}. */
+  private static boolean isSessionIdChar(final char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_';
   }
 
   protected HttpSession setTransactionInThreadLocal(final HttpServerExchange exchange, final Database database,

@@ -260,7 +260,11 @@ final class TimeSeriesHandlerUtils {
     // Before the parse, because BigDecimal's cost grows with the digit count and the body limit was the only
     // other bound on it. Only a STRING can be long in the first place - an extreme value written as a JSON
     // number is SHORT, which is why this is defence in depth and not the guard that matters.
-    if (received instanceof String text && text.trim().length() > MAX_NUMERIC_TEXT_LENGTH)
+    // On the RAW length, not the trimmed one: getBigDecimal parses the text as it arrived, and its parser
+    // refuses whitespace outright, so a value that trimming would have brought under the cap is refused a moment
+    // later anyway. Trimming here only made the guard look like it accepted something it does not
+    // (claude-review on PR #7730).
+    if (received instanceof String text && text.length() > MAX_NUMERIC_TEXT_LENGTH)
       throw wrongType(path, "a number", received,
           new NumberFormatException("longer than " + MAX_NUMERIC_TEXT_LENGTH + " characters"));
 
