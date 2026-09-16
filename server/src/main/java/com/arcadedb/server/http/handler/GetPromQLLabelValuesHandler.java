@@ -21,6 +21,7 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
+import com.arcadedb.engine.timeseries.TimeSeriesGateway;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.security.SecurityDatabaseUser;
@@ -85,12 +86,25 @@ public class GetPromQLLabelValuesHandler extends AbstractServerHttpHandler {
         if (!SecurityHelper.canAccessType(database, tsType, SecurityDatabaseUser.ACCESS.READ_RECORD))
           continue;
         final List<ColumnDefinition> columns = tsType.getTsColumns();
-        // The index into the schema doubles as the index into the row below, which holds only because the
-        // TIMESTAMP column is declared first - what every type-creation path happens to do and what nothing in
-        // TimeSeriesTypeBuilder enforces. Carried over from the query()-based code this replaces; see the same
-        // note in GetPromQLSeriesHandler.
-        final int colIdx = findColumnIndex(labelName, columns);
-        if (colIdx < 0)
+        if (!hasTagColumn(labelName, columns))
+          continue;
+
+        // PROJECTION, not the whole row (issue #7371). The answer is made of one column, so that is the only one
+        // the scan decodes. In the sealed layer that is the larger saving: a block stores each column in its own
+        // byte range and TimeSeriesSealedStore.decompressColumns() reads only the ranges the projection names, so
+        // the DOUBLE value column every Prometheus metric carries is not read off disk and not Gorilla-decoded.
+        // In the mutable layer TimeSeriesBucket.readRow() still walks the row - it has to, to find each column's
+        // offset - but calls readColumnValue() only on the projected column, so nothing else is decoded or boxed.
+        // Either way the rows handed to the visitor are Object[2] rather than the full width.
+        //
+        // columnIndices count NON-TIMESTAMP columns, and the projected row is { timestamp, selected columns in
+        // schema order } - the contract TimeSeriesGateway.selectedColumns() spells out and the row layout
+        // TimeSeriesBucket.readRow() builds. The slot is therefore READ from that list rather than assumed to be
+        // the column's schema index, which is what the previous code did and what rested on the TIMESTAMP column
+        // being declared first - true of every type-creation path but enforced by none of them.
+        final int[] columnIndices = TimeSeriesGateway.resolveColumnIndices(List.of(labelName), columns);
+        final int valueSlot = projectedSlotOf(labelName, TimeSeriesGateway.selectedColumns(columns, columnIndices));
+        if (valueSlot < 0)
           continue;
 
         // forEachRow, not query(): the answer is the tag's cardinality - a handful of hosts or regions - while
@@ -101,9 +115,9 @@ public class GetPromQLLabelValuesHandler extends AbstractServerHttpHandler {
         // The visitor runs under the shard's read locks (see TimeSeriesRowVisitor): it folds, it does not compute
         // and it never calls back into the engine.
         final TimeSeriesEngine engine = tsType.getEngine();
-        engine.forEachRow(Long.MIN_VALUE, Long.MAX_VALUE, null, null, null, row -> {
-          if (colIdx < row.length && row[colIdx] != null)
-            values.add(row[colIdx].toString());
+        engine.forEachRow(Long.MIN_VALUE, Long.MAX_VALUE, columnIndices, null, null, row -> {
+          if (valueSlot < row.length && row[valueSlot] != null)
+            values.add(row[valueSlot].toString());
           return true;
         });
       }
@@ -114,9 +128,22 @@ public class GetPromQLLabelValuesHandler extends AbstractServerHttpHandler {
     return new ExecutionResponse(200, PromQLResponseFormatter.formatLabelsResponse(sorted));
   }
 
-  private int findColumnIndex(final String name, final List<ColumnDefinition> columns) {
-    for (int i = 0; i < columns.size(); i++)
-      if (columns.get(i).getRole() == ColumnDefinition.ColumnRole.TAG && columns.get(i).getName().equals(name))
+  /** Whether the type declares a TAG column with this name. A FIELD of the same name is not a label. */
+  private static boolean hasTagColumn(final String name, final List<ColumnDefinition> columns) {
+    for (final ColumnDefinition column : columns)
+      if (column.getRole() == ColumnDefinition.ColumnRole.TAG && column.getName().equals(name))
+        return true;
+    return false;
+  }
+
+  /**
+   * The slot a projected column's value occupies in the scanned row, or {@code -1} when the projection does not
+   * carry it. {@code row[0]} is the timestamp on every read path, and the columns
+   * {@link TimeSeriesGateway#selectedColumns(List, int[])} lists after it follow in the same order.
+   */
+  private static int projectedSlotOf(final String name, final List<ColumnDefinition> projected) {
+    for (int i = 1; i < projected.size(); i++)
+      if (projected.get(i).getName().equals(name))
         return i;
     return -1;
   }
