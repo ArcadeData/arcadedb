@@ -75,6 +75,16 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   // threads) grab the current map lock-free, while loadUsers/applyReplicatedUsers build a fresh map and
   // publish it in one atomic reference swap so a read never observes a clear()->repopulate empty window.
   private volatile     Map<String, ServerSecurityUser> users                = new ConcurrentHashMap<>();
+
+  // Whether the document of that kind currently in force on this node was installed by a REPLICATED entry
+  // rather than read from this node's own configuration directory at startup (issue #7693). Only then is its
+  // fingerprint comparable with a precondition another node computed, so only then may the compare-and-set of
+  // issue #7509 refuse an entry - see isSuperseded. Written on the Raft apply thread, read there too; volatile
+  // rather than synchronized because applyReplicated* must never take this monitor (it would deadlock with the
+  // submitter blocked on the very entry it is applying).
+  private volatile     boolean                         usersCameFromTheCluster;
+  private volatile     boolean                         groupsCameFromTheCluster;
+  private volatile     boolean                         apiTokensCameFromTheCluster;
   private final        int                             checkConfigReloadEveryMs;
   private              CredentialsValidator            credentialsValidator = new DefaultCredentialsValidator();
   private static final SecureRandom                    RANDOM               = new SecureRandom();
@@ -1138,6 +1148,11 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     // Published in a single atomic reference swap so concurrent readers never observe an empty/torn window.
     this.users = newUsers;
 
+    // From here on this node's user list IS the cluster's, so the compare-and-set of issue #7509 can judge an
+    // entry against it (issue #7693). Set BEFORE the persistence failure is reported below, for the same reason
+    // the swap happens before it: the list is in force on this node whether or not it reached disk.
+    this.usersCameFromTheCluster = true;
+
     // A peer applying a replicated drop or password change must also revoke the login tokens it had already
     // issued to that principal, or the credentials the operator revoked keep working on this node until the
     // token idle-expires. Non-blocking, so it is safe on the state-machine apply thread.
@@ -1168,7 +1183,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * @return true when the list was installed, false when the precondition no longer held
    */
   public boolean applyReplicatedUsers(final String usersJsonArray, final String expectedFingerprint) {
-    if (isSuperseded("user list", expectedFingerprint, usersFingerprint()))
+    if (isSuperseded("user list", expectedFingerprint, usersFingerprint(), usersCameFromTheCluster))
       return false;
 
     applyReplicatedUsers(usersJsonArray);
@@ -1179,10 +1194,38 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * Whether a replicated security entry must be refused because the document it was built from is no longer the
    * one in force (issue #7509). A null {@code expected} is an unconditional install - a seed, or an entry from a
    * node that predates the precondition - and is never refused.
+   * <p>
+   * <b>{@code documentCameFromTheCluster} is what makes the refusal uniform</b> (issue #7693). The refusal has to
+   * be the SAME on every node or it does not prevent a lost update, it manufactures a divergence: the entry
+   * installs on the nodes that accept it and not on the ones that refuse, and the same credentials then resolve
+   * differently depending on which node answers. The fingerprints are only comparable once every node holds the
+   * same document, and until the first replicated entry of that kind lands they do NOT: each node bootstraps its
+   * own {@code root} with an independently salted password hash, so three nodes of a statically configured
+   * cluster - one that never ran the {@code addPeer}/{@code connect cluster} seed - start with three different
+   * user documents and therefore three different fingerprints. The first {@code create user} on such a cluster
+   * matched only on the submitter and was refused by the other two, which is exactly the symptom issue #7693
+   * reports: the user appears on one node and the cluster never converges.
+   * <p>
+   * So a node that has not yet installed a replicated document of this kind does not get a vote: its own document
+   * is not the cluster's, it has nothing meaningful to compare against, and it installs. That is uniform by
+   * construction, because no node has installed one - and from the first entry onwards every node holds the same
+   * document, so the compare-and-set is live and answers identically everywhere, which is what #7509 needs.
    */
-  private boolean isSuperseded(final String document, final String expected, final String current) {
+  private boolean isSuperseded(final String document, final String expected, final String current,
+      final boolean documentCameFromTheCluster) {
     if (expected == null || expected.equals(current))
       return false;
+
+    if (!documentCameFromTheCluster) {
+      LogManager.instance().log(this, Level.INFO,
+          "Installing a replicated %s whose precondition does not match this node's own document (expected "
+              + "fingerprint %s, current %s). This node has not yet applied a replicated %s, so the document it "
+              + "holds is its own bootstrap rather than the cluster's and cannot be compared against: refusing "
+              + "here while another node accepts would diverge the cluster's security state (issue #7693). The "
+              + "concurrency check of issue #7509 engages from this entry on",
+          document, expected, current, document);
+      return false;
+    }
 
     LogManager.instance().log(this, Level.WARNING,
         "Refusing a replicated %s: it was built from a document that is no longer in force (expected fingerprint "
@@ -1459,6 +1502,9 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
 
     final Exception persistFailure = groupRepository.applyReplicated(root);
 
+    // See applyReplicatedUsers: this node's group document is the cluster's from here on (issue #7693).
+    this.groupsCameFromTheCluster = true;
+
     // Scheduled BEFORE the persistence failure is reported, and unconditionally: applyReplicated() publishes the
     // document in memory first, so this node authorizes against it from now on whether or not the write
     // succeeded. Scheduling after the throw below would leave the case that needs the refresh most - a narrowed
@@ -1484,7 +1530,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * @return true when the document was installed, false when the precondition no longer held
    */
   public boolean applyReplicatedGroups(final String groupsJson, final String expectedFingerprint) {
-    if (isSuperseded("group document", expectedFingerprint, groupsFingerprint()))
+    if (isSuperseded("group document", expectedFingerprint, groupsFingerprint(), groupsCameFromTheCluster))
       return false;
 
     applyReplicatedGroups(groupsJson);
@@ -1693,6 +1739,9 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    */
   public void applyReplicatedApiTokens(final String apiTokensJson) {
     final Exception persistFailure = apiTokenConfig.applyReplicated(apiTokensJson);
+
+    // See applyReplicatedUsers: this node's API-token document is the cluster's from here on (issue #7693).
+    this.apiTokensCameFromTheCluster = true;
     if (persistFailure != null) {
       LogManager.instance().log(this, Level.SEVERE,
           "Could not write the replicated API-token document to '%s'. The new token set IS in effect on this node "
@@ -1712,7 +1761,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * @return true when the document was installed, false when the precondition no longer held
    */
   public boolean applyReplicatedApiTokens(final String apiTokensJson, final String expectedFingerprint) {
-    if (isSuperseded("API-token document", expectedFingerprint, apiTokensFingerprint()))
+    if (isSuperseded("API-token document", expectedFingerprint, apiTokensFingerprint(), apiTokensCameFromTheCluster))
       return false;
 
     applyReplicatedApiTokens(apiTokensJson);

@@ -2088,23 +2088,64 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   private static WALFile.WALTransaction walTransactionOfCommittedEntry(final RaftLogEntryCodec.DecodedEntry decoded,
       final long entryIndex) {
+    return walTransactionOfCommittedEntry(decoded, decoded.walData(), entryIndex, RaftLogEntryType.TX_ENTRY, null);
+  }
+
+  /**
+   * The same decode for a WAL payload a committed entry of any type carries, over an EXPLICIT {@code walData}
+   * (issue #7695).
+   * <p>
+   * A {@code SCHEMA_ENTRY} can carry a whole batch of buffered WAL entries - the {@code recordFileChanges()} path
+   * through {@code RaftReplicatedDatabase}'s schema WAL buffer - and {@code applySchemaEntry} decoded them with a
+   * bare {@link #deserializeWalTransaction} call, which is the very bypass the one-payload form above exists to
+   * close: a {@link ReplicationException} from a misaligned page count or delta range, or a
+   * {@code BufferUnderflowException} from a payload shorter than the 24-byte header, left {@code applyWithRetry}
+   * without ever reaching {@link #handleUnexpectedApplyError}, so the database was not quarantined, no targeted
+   * snapshot resync was triggered, and the corrupt entry was skipped on this node with nothing saying so.
+   *
+   * @param which names the failing payload within a multi-payload entry, so the log line points at one buffered
+   *              WAL entry of the batch rather than at "the entry". Null for an entry that carries exactly one
+   */
+  private static WALFile.WALTransaction walTransactionOfCommittedEntry(final RaftLogEntryCodec.DecodedEntry decoded,
+      final byte[] walData, final long entryIndex, final RaftLogEntryType type, final String which) {
     try {
-      return deserializeWalTransaction(decoded.walData());
+      return deserializeWalTransaction(walData);
     } catch (final RuntimeException e) {
-      throw decodeFailure(decoded, entryIndex, "decode the WAL payload of", e);
+      throw decodeFailure(decoded, entryIndex, "decode the WAL payload of", type, which, e);
     }
   }
 
   private static RaftLogEntryDecodeException decodeFailure(final RaftLogEntryCodec.DecodedEntry decoded,
       final long entryIndex, final String what, final RuntimeException cause) {
-    return new RaftLogEntryDecodeException(
-        "Cannot " + what + " the committed transaction entry for database '" + decoded.databaseName() + "' at index "
-            + entryIndex + ": " + cause.getMessage(), RaftLogEntryType.TX_ENTRY, decoded.databaseName(), cause);
+    return decodeFailure(decoded, entryIndex, what, RaftLogEntryType.TX_ENTRY, null, cause);
   }
 
   /**
-   * The local database a transaction entry targets. The one seam the apply of a transaction entry resolves a database
-   * through, so a unit test can drive {@link #applyTransaction} against a database it opened itself.
+   * The decode failure of a committed entry, typed as the entry that carried it (issue #7695). The type is what
+   * routes the failure: {@link RaftLogEntryDecodeException} carries it to the per-database quarantine of issue
+   * #7138 together with the database name, and a reader of the log needs to know WHICH kind of entry could not be
+   * read - a transaction, or a DDL statement's buffered WAL - because the two say different things about what
+   * the resync has to replace.
+   */
+  private static RaftLogEntryDecodeException decodeFailure(final RaftLogEntryCodec.DecodedEntry decoded,
+      final long entryIndex, final String what, final RaftLogEntryType type, final String which,
+      final RuntimeException cause) {
+    return new RaftLogEntryDecodeException(
+        "Cannot " + what + " the committed " + entryDescription(type) + " entry for database '"
+            + decoded.databaseName() + "' at index " + entryIndex + (which == null ? "" : " (" + which + ")") + ": "
+            + cause.getMessage(), type, decoded.databaseName(), cause);
+  }
+
+  /** How a decode failure names the entry it could not read. */
+  private static String entryDescription(final RaftLogEntryType type) {
+    return type == RaftLogEntryType.SCHEMA_ENTRY ? "schema" : "transaction";
+  }
+
+  /**
+   * The local database an entry targets. The one seam an apply resolves a database through, so a unit test can
+   * drive {@link #applyTransaction} - or {@link #applySchemaEntry}, which went through {@code server.getDatabase}
+   * directly until issue #7695 needed a harness that could reach its buffered-WAL loop - against a database it
+   * opened itself.
    */
   // @VisibleForTesting
   DatabaseInternal databaseFor(final String databaseName) {
@@ -2226,7 +2267,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * Like {@link #applyTxEntry}, the originator skips this because schema changes were already
    * applied locally during the transaction.
    */
-  private void applySchemaEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long entryIndex,
+  // @VisibleForTesting - the database is resolved through the databaseFor() seam below so a test can drive this
+  // against a database it opened itself, the way applyTxEntry's null-server harness already can (issue #7695).
+  void applySchemaEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long entryIndex,
       final boolean originatedLocally) {
     // Same origin-tracking as applyTxEntry: skip if this node originated the entry in the
     // current lifecycle (schema changes were already applied locally during the transaction).
@@ -2235,7 +2278,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return;
     }
 
-    final DatabaseInternal db = (DatabaseInternal) server.getDatabase(decoded.databaseName());
+    final DatabaseInternal db = databaseFor(decoded.databaseName());
 
     HALog.log(this, HALog.DETAILED,
         "Applying schema entry to database '%s' (entryIndex=%d): filesToAdd=%d, filesToRemove=%d, schemaPayload=%s",
@@ -2348,7 +2391,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
           final Map<Integer, Integer> bucketDelta = bucketDeltas != null && i < bucketDeltas.size()
               ? bucketDeltas.get(i)
               : Collections.emptyMap();
-          final WALFile.WALTransaction walTx = deserializeWalTransaction(walData);
+          // Wrapped, not bare (issue #7695): a ReplicationException from a misaligned page count or delta range,
+          // or a BufferUnderflowException from a payload shorter than the header, would otherwise leave
+          // applyWithRetry through its ReplicationException arm - which rethrows unchanged as a resync signal -
+          // and skip the per-database quarantine entirely, so the corrupt entry was dropped on this node and
+          // nothing said so. Named per buffered entry: a schema entry carries a batch of them.
+          final WALFile.WALTransaction walTx = walTransactionOfCommittedEntry(decoded, walData, entryIndex,
+              RaftLogEntryType.SCHEMA_ENTRY, "buffered WAL entry " + (i + 1) + " of " + walEntries.size());
           if (walTx.pages != null)
             for (final WALFile.WALPage page : walTx.pages)
               walTouchedFileIds.add(page.fileId);

@@ -69,6 +69,18 @@ public class PostTimeSeriesQueryHandler extends DatabaseAbstractHandler {
     return true;
   }
 
+  /**
+   * False: this route reads, and a read detaches from the session rather than committing or rolling it back
+   * (issue #7402 states that invariant; issue #7734 makes it hold on the failure path too). The reachable case
+   * is {@code resultSetTooLarge}, thrown when the caller's {@code limit} is above - or absent and therefore
+   * lowered to - {@code arcadedb.server.httpQueryMaxResultRows}: a 413 on a READ must not destroy the caller's
+   * WRITE transaction.
+   */
+  @Override
+  protected boolean participatesInSessionTransaction() {
+    return false;
+  }
+
   @Override
   protected boolean requiresTransaction() {
     return false;

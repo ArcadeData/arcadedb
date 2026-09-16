@@ -66,6 +66,16 @@ public class GetTimeSeriesLatestHandler extends DatabaseAbstractHandler {
     return carriesSessionId(exchange);
   }
 
+  /**
+   * False, for the same reason the other two {@code /api/v1/ts} routes answer it: this endpoint reads one row and
+   * detaches from the session, so a failure on it must not roll back the transaction the caller opened with
+   * {@code /begin} (issues #7402 and #7734).
+   */
+  @Override
+  protected boolean participatesInSessionTransaction() {
+    return false;
+  }
+
   @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
       final Database db, final JSONObject payload) throws Exception {
