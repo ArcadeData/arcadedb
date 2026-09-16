@@ -44,9 +44,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * applied index), the database is quarantined for a targeted resync, the node stays up, and entries
  * for other databases keep being applied.
  * <p>
- * The harness uses a {@code null} server so {@code applyTxEntry}'s {@code server.getDatabase(...)}
- * lookup throws a {@link NullPointerException} - a representative "unexpected error" for that
- * database - without standing up a full cluster.
+ * The harness stands up no cluster: an empty WAL payload makes {@code applyTxEntry} fail on the first
+ * thing it does - reading the entry's WAL transaction id - which is a representative "unexpected error"
+ * for that database. (It used to fail one step later, on {@code server.getDatabase(...)} against the
+ * {@code null} server, until issue #6965 moved the WAL read in front of it; issue #7495 is what made that
+ * failure reach the per-database quarantine again, and {@code Issue7495TruncatedWalEntryQuarantineTest}
+ * covers the {@code null}-server error on its own.)
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -54,8 +57,8 @@ class ArcadeStateMachinePerDatabaseHaltTest {
 
   private static TransactionContext txEntryForDatabase(final ArcadeStateMachine sm, final String databaseName,
       final long term, final long index) {
-    // walData content is irrelevant: server.getDatabase() is dereferenced before the WAL is read, so
-    // with a null server the apply fails there. An empty payload keeps the entry minimal.
+    // An empty payload is too short to hold the entry's WAL transaction id, which applyTxEntry reads
+    // first, so the apply fails there without needing a server or a database (issue #7495).
     final ByteString payload = RaftLogEntryCodec.encodeTxEntry(databaseName, new byte[0], Collections.emptyMap());
     final LogEntryProto logEntry = LogEntryProto.newBuilder()
         .setTerm(term)
