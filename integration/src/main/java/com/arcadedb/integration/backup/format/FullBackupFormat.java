@@ -343,6 +343,13 @@ public class FullBackupFormat extends AbstractBackupFormat {
         // The cost is one failed backup in a rare race, which is visible and repeatable: a re-run opens its window
         // AFTER the drop, so the second attempt is coherent. The alternative cost is a backup nobody can trust.
         // The partial archive does not survive either - backupDatabase deletes it on the way out.
+        //
+        // ONLY FileNotFoundException, and that is not a gap: it is what BOTH archive writers raise for a name they
+        // cannot open, because each reaches the file through `new FileInputStream` (ZipStreamArchiveWriter.addFile,
+        // ParallelZipArchiveWriter.addFile) - a missing file, a directory wearing the name, and a file another
+        // process holds open on Windows all arrive here. Any OTHER IOException is a real I/O failure, and it
+        // already fails the backup by propagating out of this method - just without the sentence below saying
+        // which store it was (claude-review on PR #7746).
         throw new BackupException("TimeSeries sealed store '" + sealedFile.getName()
             + "' could not be read after being listed for this backup: the archive would declare its type without "
             + "its data (" + e.getMessage() + ")", e);
