@@ -161,11 +161,16 @@ public final class CypherValues {
               + " read and returned but never copied into another one");
     } else if (valueOrigin instanceof Expression expression) {
       final String text = expression.getText();
-      if (namesAValue(text))
+      if (namesAValue(text)) {
         // A bare parameter reads as one wherever it was written, so "$p" is reported the same way CREATE and MERGE
-        // report it - they resolve it to its name before getting here, SET does not.
-        message.append(text.charAt(0) == '$' ? ", supplied by parameter " : ", produced by the expression ")
-            .append(text);
+        // report it - they resolve it to its name before getting here, SET does not. It is a NAME, so it is bounded
+        // like every other name; an expression is not, and is named whole or not at all, because half an expression
+        // names nothing.
+        if (text.charAt(0) == '$')
+          message.append(", supplied by parameter $").append(describeName(text.substring(1)));
+        else
+          message.append(", produced by the expression ").append(text);
+      }
     } else if (valueOrigin instanceof String parameterName)
       message.append(", supplied by parameter $").append(describeName(parameterName));
 
