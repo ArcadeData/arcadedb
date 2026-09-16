@@ -213,7 +213,10 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
     }
 
     builder.withField("value", Type.DOUBLE);
-    return builder.create();
+    // The builder was constructed with this embedded DatabaseInternal, so its create() is the local one and the
+    // type it returns is a LocalTimeSeriesType. The cast is what the widened TimeSeriesType return type (issue
+    // #7399) costs a caller that needs the engine, which this one does.
+    return (LocalTimeSeriesType) builder.create();
   }
 
   private static String findLabelValue(final List<Label> labels, final String tagName) {
