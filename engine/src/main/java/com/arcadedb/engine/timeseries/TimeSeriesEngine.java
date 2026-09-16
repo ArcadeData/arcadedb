@@ -52,6 +52,13 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public class TimeSeriesEngine implements AutoCloseable {
 
+  /**
+   * A projection of NO columns: every read path builds a row as {@code columnIndices.length + 1} slots with the
+   * timestamp in slot 0, so this asks for the timestamp alone and decodes not one value column. Used by
+   * {@link #hasRowsInRange}, which only needs to know whether a row exists.
+   */
+  private static final int[]           EMPTY_PROJECTION = new int[0];
+
   private final DatabaseInternal       database;
   private final String                 typeName;
   private final List<ColumnDefinition> columns;
@@ -485,6 +492,28 @@ public class TimeSeriesEngine implements AutoCloseable {
    */
   public void collectDistinctTagValues(final String tagColumnName, final Set<String> out,
       final AggregationMetrics metrics) throws IOException {
+    collectDistinctTagValues(tagColumnName, Long.MIN_VALUE, Long.MAX_VALUE, out, metrics);
+  }
+
+  /**
+   * The same, bounded to the values carried by a row in {@code [fromTs, toTs]} (issue #7709).
+   * <p>
+   * Prometheus documents {@code /label/{name}/values} as answering over the requested time range, and the endpoint
+   * ignored {@code start}/{@code end} entirely: a Grafana picker scoped to the last hour was offered every value
+   * the type had ever held that retention had not yet expired, while the sibling {@code /series} endpoint - which
+   * does read them - disagreed with it about what a range means.
+   * <p>
+   * The bound is nearly free on the sealed layer because the answer is resolved block by block: a block outside
+   * the range is dropped on its directory entry without being touched, a block wholly inside it still answers from
+   * its declaration, and only the at most two blocks that STRADDLE a bound are decompressed and filtered per row.
+   * {@code Long.MIN_VALUE}/{@code Long.MAX_VALUE} - what the 3-argument overload passes - take exactly the path
+   * they took before, so an unscoped request answers what it always did.
+   *
+   * @param fromTs lower bound, inclusive
+   * @param toTs   upper bound, inclusive
+   */
+  public void collectDistinctTagValues(final String tagColumnName, final long fromTs, final long toTs,
+      final Set<String> out, final AggregationMetrics metrics) throws IOException {
     int schemaColumnIndex = -1;
     int nonTsColumnIndex = -1;
 
@@ -506,7 +535,23 @@ public class TimeSeriesEngine implements AutoCloseable {
           "TimeSeries type '" + typeName + "' declares no TAG column named '" + tagColumnName + "'");
 
     for (final TimeSeriesShard shard : shards)
-      shard.collectDistinctTagValues(schemaColumnIndex, nonTsColumnIndex, out, metrics);
+      shard.collectDistinctTagValues(schemaColumnIndex, nonTsColumnIndex, fromTs, toTs, out, metrics);
+  }
+
+  /**
+   * Whether any row of this type falls in {@code [fromTs, toTs]} (issue #7709).
+   * <p>
+   * Folded over {@link #forEachRow} with a visitor that stops on the first row, rather than given a walk of its
+   * own: the sealed layer already drops a block whose directory entry puts it outside the range, so the answer
+   * costs one block read at most - and a "no" costs none at all.
+   * <p>
+   * This is what scopes {@code /label/__name__/values} to the requested range, which is a metric name rather than
+   * a tag value and so has no declaration to read.
+   */
+  public boolean hasRowsInRange(final long fromTs, final long toTs, final AggregationMetrics metrics)
+      throws IOException {
+    // forEachRow answers false when the visitor stopped it, which here means it had a row to offer.
+    return !forEachRow(fromTs, toTs, EMPTY_PROJECTION, null, metrics, row -> false);
   }
 
   /**

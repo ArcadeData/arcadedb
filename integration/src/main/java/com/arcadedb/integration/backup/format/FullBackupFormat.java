@@ -53,6 +53,7 @@ import java.security.SecureRandom;
 import java.security.spec.KeySpec;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -216,16 +217,46 @@ public class FullBackupFormat extends AbstractBackupFormat {
    * point in time being archived. Files DROPPED after t0 are still readable, because their physical deletion is
    * deferred until the window closes.
    * <p>
-   * The sealed stores are still read straight off the filesystem, and never were covered by the read lock, which is
-   * why the caller's compaction pause is held until they have been read (issue #7280).
+   * <b>The TimeSeries sealed stores ARE listed under the read lock, together with the window (issue #7705).</b>
+   * This javadoc used to say they never were and did not need to be, which was the same reasoning issue #7671
+   * corrected on the HA snapshot ship. The window cannot carry them - {@code TimeSeriesSealedStore} opens
+   * {@code <base>.ts.sealed} with raw {@code FileChannel} I/O and never registers it with the {@code FileManager},
+   * so it is in neither {@code getFiles()} nor the deferred-deletion protection a dropped page file gets - and the
+   * compaction pause excludes a compaction, not schema DDL. So a {@code DROP TYPE} of a TIMESERIES type landing
+   * between t0 and a LIVE listing produced an archive whose {@code schema.json}, captured at t0, declares the type
+   * while its sealed segments are absent: the #6356 / #6839 "type whose sealed store fails to load" state, in a
+   * backup rather than on a follower.
+   * <p>
+   * The lock is held for the barrier plus one {@code File.listFiles}, and released before a byte of the archive is
+   * written, so the availability issue #6114 bought is untouched: DDL still runs alongside the backup. The
+   * caller's compaction pause is still held until the listed stores have been READ, which is a different
+   * guarantee (#7280) - the pairing with {@code schema.json} is what the lock buys, and a compaction landing
+   * whole inside the span is what the pause buys.
    */
   private long backupFromSnapshot(final BackupArchiveWriter archive, final TimeSeriesCompactionPause pause)
       throws Exception {
     long origSize = 0L;
-    try (final PageSnapshot snapshot = database.getPageManager().openSnapshot(database)) {
+    // ONE READ-LOCKED FRAME AROUND BOTH HALVES OF THE CAPTURE, AND NOTHING ELSE (issue #7705, after #7671). A
+    // window that never reaches the try-with-resources below is never closed by it, so a listing that throws
+    // closes it here and suppresses a close failure rather than replacing the exception that says what went wrong.
+    final SnapshotImage image = database.executeInReadLock(() -> {
+      final PageSnapshot window = database.getPageManager().openSnapshot(database);
+      try {
+        return new SnapshotImage(window, listSealedStoresOrFail());
+      } catch (final RuntimeException e) {
+        try {
+          window.close();
+        } catch (final RuntimeException closeFailure) {
+          e.addSuppressed(closeFailure);
+        }
+        throw e;
+      }
+    });
+
+    try (final PageSnapshot snapshot = image.snapshot()) {
       for (final PageSnapshot.SnapshotConfigFile config : snapshot.getConfigurationFiles())
         origSize += compressEntry(archive, config.fileName(), config.lastModified(), config.newInputStream());
-      origSize += compressSealedStores(archive);
+      origSize += compressSealedStores(archive, image.sealedFiles());
       // RELEASED HERE AND NOT AT THE END: THE SPAN THAT HAS TO EXCLUDE A COMPACTION ENDS WITH THE LAST SEALED
       // BYTE READ, BECAUSE THE PAGE IMAGE IS ALREADY FIXED AT THE WINDOW'S t0 NO MATTER WHEN ITS BYTES ARE
       // STREAMED. HOLDING IT FOR THE WHOLE BACKUP WOULD POSTPONE TIMESERIES COMPACTION FOR THE WHOLE BACKUP,
@@ -257,7 +288,11 @@ public class FullBackupFormat extends AbstractBackupFormat {
     // THE CALLER'S PAUSE IS NOT RELEASED EARLY ON THIS PATH, UNLIKE THE SNAPSHOT ONE: HERE THE PAGE IMAGE IS THE
     // ON-DISK ONE THE FLUSH SUSPENSION IS FREEZING, SO IT IS ONLY FIXED FOR AS LONG AS THE SUSPENSION LASTS AND
     // THE PAUSE HAS TO SPAN THE WHOLE CALLBACK - WHICH THIS PATH ALREADY THROTTLES WRITERS FOR ANYWAY
-    origSize += compressSealedStores(archive);
+    // The fallback lists live, under the read lock the callback already holds - which is the same "one
+    // observation" guarantee the window path gets from its own frame (issue #7705). There is no t0 here: the page
+    // image is the on-disk one the flush suspension is freezing, so the listing is coherent with it for as long as
+    // both are held, and both are.
+    origSize += compressSealedStores(archive, listSealedStoresOrFail());
 
     final Collection<ComponentFile> files = database.getFileManager().getFiles();
 
@@ -277,22 +312,79 @@ public class FullBackupFormat extends AbstractBackupFormat {
    * <p>
    * The restore side needs no counterpart: {@code FullRestoreFormat} extracts every archive entry by name into
    * the database directory, so a {@code .ts.sealed} entry lands where the reopened database looks for it.
+   * <p>
+   * {@code sealedFiles} is the set CAPTURED WITH the page image rather than one listed here, and a name in it that
+   * cannot be read fails the backup - see the catch below for both, and {@link #backupFromSnapshot} for the frame
+   * that captures them (issue #7705).
    */
-  private long compressSealedStores(final BackupArchiveWriter archive) throws IOException {
+  private long compressSealedStores(final BackupArchiveWriter archive, final List<File> sealedFiles)
+      throws IOException {
     long origSize = 0L;
-    for (final File sealedFile : TimeSeriesSealedStore.listSealedFiles(new File(database.getDatabasePath())))
+    for (final File sealedFile : sealedFiles)
       try {
-        origSize += compressFile(archive, sealedFile);
+        // NO exists() PRE-CHECK: the open inside compressFile IS the check, so there is no window between asking
+        // and reading in which the file can still go away silently.
+        origSize += compressFile(archive, sealedFile, false);
       } catch (final FileNotFoundException e) {
-        // THE LISTING AND THE READ ARE NOT ONE OPERATION. NEITHER A COMPACTION NOR RETENTION NOR DOWNSAMPLING CAN
-        // REPLACE THE FILE HERE - THE PAUSE IS HELD, AND runSealedMaintenanceReplicated TAKES THE SAME SHARD
-        // WRITE LOCK A COMPACTION DOES. (THIS COMMENT USED TO SAY THE MAINTENANCE PATHS DID NOT; THEY DO, VERIFIED
-        // ON PR #7474.) WHAT IS LEFT IS A STORE THAT WENT AWAY ENTIRELY BETWEEN THE TWO - A REPAIR OF A TYPE
-        // WHOSE ENGINE NEVER LOADED TAKES NO SHARD LOCK (ISSUE #7475), AND AN OPERATOR CAN ALWAYS MOVE A FILE -
-        // WHICH IS NOT WORTH FAILING A BACKUP OVER
-        logger.logLine(2, "- File '%s' disappeared while being archived, skipped", sealedFile.getName());
+        // THE LISTING AND THE READ ARE NOT ONE OPERATION, AND A STORE THAT WENT AWAY BETWEEN THEM NOW FAILS THE
+        // BACKUP (issue #7705). Neither a compaction nor retention nor downsampling can replace the file here -
+        // the pause is held, and runSealedMaintenanceReplicated takes the same shard write lock a compaction does
+        // (verified on PR #7474). What is left is a store that went away ENTIRELY: a DROP TYPE that landed after
+        // the listing, or a repair of a type whose engine never loaded, which takes no shard lock (#7475).
+        //
+        // This used to be skipped with a log line, on the argument that an operator can always move a file and
+        // that it is not worth failing a backup over. That argument does not survive the listing moving inside the
+        // read lock. Every name in `sealedFiles` belonged to a type the schema.json IN THIS VERY ARCHIVE declares,
+        // captured in the same frame; skipping one therefore produces an archive that contradicts its own schema -
+        // the #6356 / #6839 state, arriving by construction rather than by corruption - and reports success, so
+        // the operator learns of it from a restore rather than from the tool. The ship reached the same conclusion
+        // for the same reason in #7671.
+        //
+        // The cost is one failed backup in a rare race, which is visible and repeatable: a re-run opens its window
+        // AFTER the drop, so the second attempt is coherent. The alternative cost is a backup nobody can trust.
+        // The partial archive does not survive either - backupDatabase deletes it on the way out.
+        //
+        // ONLY FileNotFoundException, and that is not a gap: it is what BOTH archive writers raise for a name they
+        // cannot open, because each reaches the file through `new FileInputStream` (ZipStreamArchiveWriter.addFile,
+        // ParallelZipArchiveWriter.addFile) - a missing file, a directory wearing the name, and a file another
+        // process holds open on Windows all arrive here. Any OTHER IOException is a real I/O failure, and it
+        // already fails the backup by propagating out of this method - just without the sentence below saying
+        // which store it was (claude-review on PR #7746).
+        throw new BackupException("TimeSeries sealed store '" + sealedFile.getName()
+            + "' could not be read after being listed for this backup: the archive would declare its type without "
+            + "its data (" + e.getMessage() + ")", e);
       }
     return origSize;
+  }
+
+  /**
+   * The sealed-store listing both backup paths use, which refuses to answer "this database has none" for a
+   * directory it could NOT read (issue #7705, the same refusal #7671 gave the ship).
+   * <p>
+   * {@link TimeSeriesSealedStore#listSealedFiles(File)} maps an unreadable directory to an EMPTY array, which is
+   * the right answer for a caller that only wants to iterate whatever is there and the wrong one here: a listing
+   * that failed - a permission change, a transient I/O error - would let the backup archive a {@code schema.json}
+   * declaring a TIMESERIES type with no sealed-store entry beside it, and report success. Refusing costs one
+   * re-run; answering "none" costs a restore that cannot open the type.
+   */
+  private List<File> listSealedStoresOrFail() {
+    final File[] sealedFiles = TimeSeriesSealedStore.listSealedFilesOrNull(new File(database.getDatabasePath()));
+    if (sealedFiles == null)
+      throw new BackupException("Cannot list the directory of database '" + database.getName()
+          + "' to archive its TimeSeries sealed stores: a backup taken on the assumption that there are none would "
+          + "declare every TIMESERIES type without its data");
+    return List.of(sealedFiles);
+  }
+
+  /**
+   * The page window and the TimeSeries sealed-store listing as ONE observation (issue #7705).
+   * <p>
+   * They are one value because {@code schema.json} comes from the window's t0 barrier and a {@code .ts.sealed} set
+   * listed at any later moment can disagree with it - see {@link #backupFromSnapshot} for what listing them
+   * together buys and what it does not. {@code sealedFiles} is immutable and never {@code null}; it is empty for a
+   * database with no TimeSeries type.
+   */
+  private record SnapshotImage(PageSnapshot snapshot, List<File> sealedFiles) {
   }
 
   /**
@@ -302,9 +394,10 @@ public class FullBackupFormat extends AbstractBackupFormat {
    * <p>
    * Called OUTSIDE {@code executeInReadLock} and outside the flush suspension, and both matter.
    * <p>
-   * Outside the read lock - which since #6114 only the suspend-and-freeze FALLBACK still takes, so this argument
-   * now constrains that path alone - because compaction's own order is compaction-write-lock first and database read lock
-   * second (Phase 0/4a/4c take the write lock and then commit, and {@code LocalDatabase.commit()} runs under the
+   * Outside the read lock - which the fallback takes for its whole callback and which the window path takes for
+   * the capture alone since #7705, so this argument constrains both again - because compaction's own order is
+   * compaction-write-lock first and database read lock second (Phase 0/4a/4c take the write lock and then commit,
+   * and {@code LocalDatabase.commit()} runs under the
    * database READ lock). Taking them the other way round here would close a cycle with any waiting DDL: the
    * database lock is a {@code ReentrantReadWriteLock}, so a queued writer stops new readers from barging, which
    * would leave the compaction unable to commit, this backup unable to take the compaction lock it is waiting
@@ -353,8 +446,27 @@ public class FullBackupFormat extends AbstractBackupFormat {
   }
 
   private long compressFile(final BackupArchiveWriter archive, final File inputFile) throws IOException {
+    return compressFile(archive, inputFile, true);
+  }
+
+  /**
+   * The same, with the SKIP made a caller's decision rather than this method's (issue #7705).
+   * <p>
+   * {@code skippable} is what the page files and the configuration want: a file that is not there is simply left
+   * out of the archive - {@code configuration.json} only exists once a setting has been persisted, and a component
+   * file can be dropped while the enumeration runs. It is not what a TimeSeries sealed store wants, whose absence
+   * the archive's own {@code schema.json} contradicts; {@link #compressSealedStores} passes {@code false} and says
+   * why there.
+   * <p>
+   * With {@code skippable} false there is no {@code exists()} PRE-CHECK at all: the open inside
+   * {@link BackupArchiveWriter#addFile} is the check, so there is no window between asking and reading in which
+   * the file can go away silently, and a name that is present but unopenable fails here rather than being reported
+   * as "not found".
+   */
+  private long compressFile(final BackupArchiveWriter archive, final File inputFile, final boolean skippable)
+      throws IOException {
     logger.log(2, "- File '%s'...", inputFile.getName());
-    if (inputFile.exists()) {
+    if (!skippable || inputFile.exists()) {
       final BackupArchiveWriter.EntryStats stats = archive.addFile(inputFile);
       final long origSize = stats.uncompressedSize();
       final long compressedSize = stats.compressedSize();
