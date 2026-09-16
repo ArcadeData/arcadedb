@@ -72,6 +72,26 @@ public interface Result {
    */
   Record getElementProperty(String name);
 
+  /**
+   * The schema {@link Type} declared for the column this property was read from, or {@code null} when there is no
+   * such column: a computed expression, an aggregate, a value from an untyped source, or a row that simply never
+   * recorded one.
+   * <p>
+   * It exists because a value's Java class does not always say what the column declared. A {@code java.util.Date}
+   * is the materialised form of a DATE column under {@code arcadedb.dateImplementation=java.util.Date} and of a
+   * DATETIME column under the matching {@code dateTimeImplementation}, and a column-list projection
+   * ({@code SELECT d FROM T}) produces a non-element row whose consumers therefore had nothing to ask - so a
+   * genuine DATE was serialized with a spurious time of day (issue #7638). Answering {@code null} is always safe:
+   * the caller falls back to whatever it did before.
+   *
+   * @param name the property name as this row publishes it, i.e. the projection alias
+   *
+   * @return the declared type of the source column, or null
+   */
+  default Type getPropertyType(final String name) {
+    return null;
+  }
+
   Set<String> getPropertyNames();
 
   Optional<RID> getIdentity();

@@ -20,7 +20,9 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.*;
 import com.arcadedb.database.Record;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Type;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -42,6 +44,17 @@ public class ResultInternal implements Result {
   // Tracks properties explicitly removed via removeProperty so they do not fall through to the
   // backing element. Null until first removal (lazy init to avoid allocation overhead).
   protected Set<String> tombstones;
+  /**
+   * The type of the record a column-list projection read, plus that projection's alias-to-source-column map, so
+   * this row can answer {@link #getPropertyType(String)} for a plain projected column (issue #7638).
+   * <p>
+   * Two reference writes per row, and deliberately NOT a resolved {@code Type} per property: the map is built once
+   * per statement and shared by every row the projection produces, and the schema lookup happens only if someone
+   * asks - which today only a serializer does. Resolving eagerly would put a property lookup and a map insertion
+   * on the projection's hot path for an answer almost every row throws away.
+   */
+  protected DocumentType        projectionSourceType;
+  protected Map<String, String> projectionSourceColumns;
 
   public ResultInternal() {
     // Memory optimization: Use smaller initial capacity to reduce memory footprint
@@ -187,6 +200,39 @@ public class ResultInternal implements Result {
     if (!(result instanceof Record) && result instanceof Identifiable identifiable && identifiable.getIdentity() != null)
       result = (T) identifiable.getIdentity();
     return result;
+  }
+
+  /**
+   * Records where a column-list projection read its columns from, so {@link #getPropertyType(String)} can answer
+   * for them (issue #7638). Both arguments describe the projection as a whole, not this row.
+   *
+   * @param sourceType    the type of the record the projection read, or null when it read no typed record
+   * @param sourceColumns alias to source column name, for the projection items that are plain column references.
+   *                      Built once per statement and shared by every row, so it must never be mutated here
+   */
+  public ResultInternal setProjectionSource(final DocumentType sourceType, final Map<String, String> sourceColumns) {
+    this.projectionSourceType = sourceType;
+    this.projectionSourceColumns = sourceColumns;
+    return this;
+  }
+
+  @Override
+  public Type getPropertyType(final String name) {
+    if (element != null) {
+      // A row that still has its record answers from the schema directly - the projection map is for the rows that
+      // do not, and a name the element declares is the more specific answer anyway.
+      final DocumentType elementType = element.getType();
+      final Property declared = elementType != null ? elementType.getPolymorphicPropertyIfExists(name) : null;
+      if (declared != null)
+        return declared.getType();
+    }
+    if (projectionSourceType == null || projectionSourceColumns == null)
+      return null;
+    final String sourceColumn = projectionSourceColumns.get(name);
+    if (sourceColumn == null)
+      return null;
+    final Property property = projectionSourceType.getPolymorphicPropertyIfExists(sourceColumn);
+    return property != null ? property.getType() : null;
   }
 
   /**
