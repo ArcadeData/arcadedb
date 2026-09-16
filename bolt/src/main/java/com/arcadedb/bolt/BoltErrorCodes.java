@@ -48,6 +48,16 @@ public final class BoltErrorCodes {
   // refusal reached a driver as the generic DatabaseError it reads as an unexplained server fault, and the reporter
   // of issue #7629 saw exactly that. See issues #7629 and #7729.
   public static final String TYPE_ERROR            = "Neo.ClientError.Statement.TypeError";
+  // The record the caller addressed does not exist (ErrorCategory.NOT_FOUND, a RecordNotFoundException). Neo4j's
+  // own title for "you named an entity that is not there"; it is a permanent client error, so it must not fall
+  // into the generic DatabaseError a driver logs as an internal server fault and, on a managed transaction,
+  // cannot distinguish from a broken database (issue #7624).
+  public static final String ENTITY_NOT_FOUND_ERROR = "Neo.ClientError.Statement.EntityNotFound";
+  // The request is well formed but asks for something invalid - a constraint violation, a bad parameter value, a
+  // write on an idempotent-only path (ErrorCategory.VALIDATION). Neo4j's own title for a statement performing
+  // operations with invalid arguments. Same reasoning as ENTITY_NOT_FOUND_ERROR: permanent and the caller's, not
+  // the server's (issue #7624).
+  public static final String ARGUMENT_ERROR        = "Neo.ClientError.Statement.ArgumentError";
 
   // Transaction errors
   public static final String TRANSACTION_ERROR = "Neo.ClientError.Transaction.TransactionNotFound";
