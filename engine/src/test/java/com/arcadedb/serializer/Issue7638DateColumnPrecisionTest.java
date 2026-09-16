@@ -295,6 +295,49 @@ class Issue7638DateColumnPrecisionTest extends TestHelper {
     }
   }
 
+  /**
+   * The scope of the {@code serializeDocument()} change, pinned deliberately rather than left implied. A
+   * {@code java.util.Date} on a SCHEMALESS property used to skip {@code formatTemporalForPrecision} entirely and
+   * reach {@code JSONObject}'s {@code Date} branch, which renders in the JVM's DEFAULT zone. It is now formatted
+   * UTC-anchored - which is what {@code serializeResult()} has done for the identical value since #7610, and what
+   * the write side does ({@code Type#convertToDate} anchors to UTC), so the old answer was the outlier: the same
+   * document disagreed with itself between the document endpoint and a query, and the document one moved with the
+   * machine's time zone.
+   * <p>
+   * Both surfaces are asserted from a non-UTC default zone, so a regression to zone-dependent rendering fails here
+   * rather than only on a CI machine that happens not to run in UTC.
+   */
+  @Test
+  void anUndeclaredDatePropertyIsAlsoUtcAnchored() {
+    final TimeZone previousZone = TimeZone.getDefault();
+    try {
+      TimeZone.setDefault(TimeZone.getTimeZone("America/Los_Angeles"));
+
+      // 2026-06-12T02:30:00Z - a UTC instant that falls on the PREVIOUS day in the default zone, so a
+      // system-zone rendering cannot accidentally agree with a UTC one
+      final Date instant = new Date(1781231400000L);
+      database.transaction(() -> {
+        database.getSchema().createDocumentType("Issue7638Schemaless");
+        database.newDocument("Issue7638Schemaless").set("whenever", instant).save();
+      });
+
+      database.transaction(() -> {
+        final JsonSerializer serializer = new JsonSerializer(database);
+        try (final ResultSet rs = database.query("sql", "SELECT FROM Issue7638Schemaless")) {
+          final Result row = rs.next();
+          assertThat(serializer.serializeDocument(row.toElement()).getString("whenever"))
+              .as("the document endpoint must not render an undeclared Date in the machine's time zone")
+              .isEqualTo("2026-06-12 02:30:00");
+          assertThat(serializer.serializeResult(database, row).getString("whenever"))
+              .as("and it must answer exactly what a query already answered for the same value")
+              .isEqualTo("2026-06-12 02:30:00");
+        }
+      });
+    } finally {
+      TimeZone.setDefault(previousZone);
+    }
+  }
+
   private void withDateImplementation(final Class<?> implementation, final Runnable body) {
     final BinarySerializer serializer = ((DatabaseInternal) database).getSerializer();
     final Object previous = serializer.getDateImplementation();

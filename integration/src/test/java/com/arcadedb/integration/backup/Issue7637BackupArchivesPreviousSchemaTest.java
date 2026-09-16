@@ -27,6 +27,7 @@ import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -157,13 +158,12 @@ class Issue7637BackupArchivesPreviousSchemaTest {
    * newer than the archived {@code schema.json}, describing a page set the archive does not contain. The window
    * has to serve the copy as it stood at t0, which is genuinely older than the archived primary.
    * <p>
-   * Snapshot path only: the frozen-files path freezes the database for the duration, so there is no "after t0" for
-   * a DDL to land in.
+   * A plain {@code @Test} and not a parameterized one: this is the snapshot path only, because the frozen-files
+   * path freezes the database for the duration and so has no "after t0" for a DDL to land in.
    */
-  @ParameterizedTest
-  @ValueSource(booleans = { true })
-  void theArchivedPreviousSchemaIsTheT0OneNotALaterGeneration(final boolean snapshot) throws Exception {
-    GlobalConfiguration.PAGE_SNAPSHOT_ENABLED.setValue(snapshot);
+  @Test
+  void theArchivedPreviousSchemaIsTheT0OneNotALaterGeneration() throws Exception {
+    GlobalConfiguration.PAGE_SNAPSHOT_ENABLED.setValue(true);
     final String previousAtT0;
     try (final Database database = createDatabase()) {
       previousAtT0 = Files.readString(previousSchemaFileOf(database).toPath(), StandardCharsets.UTF_8);
