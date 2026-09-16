@@ -27,6 +27,7 @@ import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.PageSnapshot;
 import com.arcadedb.engine.timeseries.TimeSeriesCompactionPause;
 import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.PageSnapshotException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.CodeUtils;
@@ -413,8 +414,7 @@ public class SnapshotHttpHandler implements HttpHandler {
         image = db.executeInReadLock(() -> {
           final PageSnapshot window = db.getPageManager().openSnapshot(db);
           try {
-            return new SnapshotImage(window,
-                List.of(TimeSeriesSealedStore.listSealedFiles(new File(db.getDatabasePath()))));
+            return new SnapshotImage(window, listSealedStoresOrFail(new File(db.getDatabasePath()), databaseName));
           } catch (final RuntimeException e) {
             // A WINDOW THAT NEVER REACHES A STREAMER IS NEVER CLOSED BY ONE: the finally below only covers the
             // image this block returns
@@ -609,7 +609,7 @@ public class SnapshotHttpHandler implements HttpHandler {
     // window (see streamThroughPointInTimeImage)
     final List<File> sealedFiles = image != null ?
         image.sealedFiles() :
-        List.of(TimeSeriesSealedStore.listSealedFiles(new File(db.getDatabasePath())));
+        listSealedStoresOrFail(new File(db.getDatabasePath()), databaseName);
     final long writeTimeoutMs = httpServer.getServer().getConfiguration().getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_WRITE_TIMEOUT);
     final AtomicBoolean completed = new AtomicBoolean(false);
 
@@ -745,8 +745,7 @@ public class SnapshotHttpHandler implements HttpHandler {
    * one and calls the three-argument form below; see there for why the two can differ.
    */
   static long estimateUncompressedBytes(final DatabaseInternal db, final PageSnapshot snapshot) {
-    return estimateUncompressedBytes(db, snapshot,
-        List.of(TimeSeriesSealedStore.listSealedFiles(new File(db.getDatabasePath()))));
+    return estimateUncompressedBytes(db, snapshot, listSealedStoresOrFail(new File(db.getDatabasePath()), db.getName()));
   }
 
   /**
@@ -786,6 +785,33 @@ public class SnapshotHttpHandler implements HttpHandler {
       total += sealedFile.length();
 
     return total + Long.BYTES; // the last-tx-id marker
+  }
+
+  /**
+   * The sealed-store listing this handler uses, which refuses to answer "this database has none" for a directory
+   * it could not read (claude-review on PR #7708).
+   * <p>
+   * {@link TimeSeriesSealedStore#listSealedFiles(File)} maps an unreadable directory to an EMPTY array, which is
+   * the right answer for a caller that only wants to iterate whatever is there. For this one it is the very
+   * failure #7671 is about, reached by a different road: a listing that failed - a permission change, a transient
+   * I/O error, a directory that went away - would let the ship archive a {@code schema.json} declaring a
+   * TIMESERIES type with no sealed-store entry beside it, and the completeness manifest of #4831 would certify
+   * that archive, exactly as a {@code DROP TYPE} race used to. So the {@code ...OrNull} variant is used instead,
+   * for the reason its own javadoc gives, and the same way {@code PostVerifyDatabaseHandler.collectSealedStores}
+   * uses it (#7338).
+   * <p>
+   * Refusing costs one retried transfer. Answering "none" costs a follower that installs a database whose schema
+   * it cannot load, and reports success.
+   * <p>
+   * Package-private and static so the refusal can be driven from a test without an HTTP exchange.
+   */
+  static List<File> listSealedStoresOrFail(final File databaseDirectory, final String databaseName) {
+    final File[] sealedFiles = TimeSeriesSealedStore.listSealedFilesOrNull(databaseDirectory);
+    if (sealedFiles == null)
+      throw new DatabaseOperationException("Cannot list the directory of database '" + databaseName
+          + "' to archive its TimeSeries sealed stores: a snapshot taken on the assumption that there are none "
+          + "would declare every TIMESERIES type without its data");
+    return List.of(sealedFiles);
   }
 
   /**

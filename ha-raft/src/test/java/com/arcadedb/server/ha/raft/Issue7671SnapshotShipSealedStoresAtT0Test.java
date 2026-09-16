@@ -302,6 +302,37 @@ class Issue7671SnapshotShipSealedStoresAtT0Test {
   }
 
   /**
+   * A directory the ship cannot list is not a database with no sealed stores, and #7671's invariant does not
+   * survive the two being confused: {@code TimeSeriesSealedStore.listSealedFiles} maps an unreadable directory to
+   * an EMPTY array, so a transient listing failure would have produced an archive whose {@code schema.json}
+   * declares a TIMESERIES type with no sealed-store entry beside it - the same hole a {@code DROP TYPE} race used
+   * to open, reached without any DDL at all (claude-review on PR #7708).
+   */
+  @Test
+  void aDirectoryThatCannotBeListedFailsTheShipInsteadOfReadingAsNoSealedStores() {
+    assertThatThrownBy(() -> SnapshotHttpHandler.listSealedStoresOrFail(
+        new File(DATABASE_PATH, "a-directory-that-does-not-exist"), "unlistable-db"))
+        .as("an unlistable directory must not be archived as a database that simply has no sealed stores")
+        .hasMessageContaining("unlistable-db")
+        .hasMessageContaining("TimeSeries sealed stores");
+  }
+
+  /**
+   * The counterweight to the refusal above, which would otherwise be satisfied by a method that always throws: a
+   * directory the ship CAN list answers its sealed stores and nothing else.
+   */
+  @Test
+  void aReadableDirectoryStillAnswersItsSealedStores() throws Exception {
+    try (final Database database = createDatabaseWithSealedStore()) {
+      final DatabaseInternal db = (DatabaseInternal) database;
+
+      assertThat(SnapshotHttpHandler.listSealedStoresOrFail(new File(db.getDatabasePath()), database.getName()))
+          .isNotEmpty()
+          .allMatch(file -> file.getName().endsWith(TimeSeriesSealedStore.FILE_EXTENSION));
+    }
+  }
+
+  /**
    * Opens a window exactly as the ship does, takes the sealed set it captured, and closes the window again - so the
    * assertions above are about the set the ship WOULD have streamed rather than about a listing the test made up.
    */
@@ -322,24 +353,35 @@ class Issue7671SnapshotShipSealedStoresAtT0Test {
     }
   }
 
+  /**
+   * The caller's try-with-resources only owns a database this method RETURNED, so a failure after
+   * {@code create()} would leave one open in {@code DatabaseFactory.ACTIVE_INSTANCES} while {@link #clean()}
+   * deletes its path - and the next test fails in {@code create()} with "Found active instance of database ...
+   * already in use", blaming itself for a fixture that broke somewhere else (CodeRabbit on PR #7708).
+   */
   private Database createDatabaseWithSealedStore() throws Exception {
     final Database database = new DatabaseFactory(DATABASE_PATH).create();
-    database.command("sql",
-        "CREATE TIMESERIES TYPE " + TYPE + " TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE) SHARDS 1");
+    try {
+      database.command("sql",
+          "CREATE TIMESERIES TYPE " + TYPE + " TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE) SHARDS 1");
 
-    final long[] timestamps = new long[SAMPLES];
-    final Object[] hosts = new Object[SAMPLES];
-    final Object[] values = new Object[SAMPLES];
-    for (int i = 0; i < SAMPLES; i++) {
-      timestamps[i] = BASE_TS + i * 1_000L;
-      hosts[i] = "host_" + (i % 4);
-      values[i] = (double) i;
+      final long[] timestamps = new long[SAMPLES];
+      final Object[] hosts = new Object[SAMPLES];
+      final Object[] values = new Object[SAMPLES];
+      for (int i = 0; i < SAMPLES; i++) {
+        timestamps[i] = BASE_TS + i * 1_000L;
+        hosts[i] = "host_" + (i % 4);
+        values[i] = (double) i;
+      }
+      final var engine = ((LocalTimeSeriesType) database.getSchema().getType(TYPE)).getEngine();
+      engine.appendBatch(timestamps, new Object[][] { hosts, values });
+      engine.compactAll();
+
+      ((DatabaseInternal) database).getPageManager().waitAllPagesOfDatabaseAreFlushed(database);
+      return database;
+    } catch (final Throwable t) {
+      database.close();
+      throw t;
     }
-    final var engine = ((LocalTimeSeriesType) database.getSchema().getType(TYPE)).getEngine();
-    engine.appendBatch(timestamps, new Object[][] { hosts, values });
-    engine.compactAll();
-
-    ((DatabaseInternal) database).getPageManager().waitAllPagesOfDatabaseAreFlushed(database);
-    return database;
   }
 }
