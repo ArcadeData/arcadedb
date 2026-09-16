@@ -154,21 +154,51 @@ class Issue7410AppendTransactionScopeTest extends TestHelper {
 
   /** Counts the control rows, from outside any transaction of this test's making. */
   private long countOfWitnesses() {
-    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS cnt FROM Witness")) {
-      return ((Number) rs.next().getProperty("cnt")).longValue();
-    }
+    return rowCountOf("Witness");
   }
 
   /** Counts the samples of the SQL-created series, through the SQL reader a user would use. */
   private long countOfReadings() {
-    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS cnt FROM Reading")) {
-      return ((Number) rs.next().getProperty("cnt")).longValue();
-    }
+    return rowCountOf("Reading");
   }
 
-  /** Every sample timestamp the engine holds, merge-sorted across shards, over a range wider than any test writes. */
-  private static List<Long> timestampsOf(final TimeSeriesEngine engine) throws Exception {
-    return engine.query(0L, 1_000_000L, null, null).stream().map(row -> (Long) row[0]).toList();
+  /**
+   * Counts the rows of a type by walking them.
+   * <p>
+   * Not {@code SELECT count(*)}: per {@code engine/CLAUDE.md} that form routes to {@code CountFromTypeStep}
+   * and sums {@code LocalBucket.count()}, which is a cached counter plus the transaction delta rather than a
+   * scan - "the wrong tool when you are verifying correctness in a test" (code review of this PR). Walking
+   * the rows is ground truth for both a DOCUMENT type and a TIMESERIES one.
+   */
+  private long rowCountOf(final String typeName) {
+    long count = 0;
+    try (final ResultSet rs = database.query("sql", "SELECT FROM " + typeName)) {
+      while (rs.hasNext()) {
+        rs.next();
+        count++;
+      }
+    }
+    return count;
+  }
+
+  /**
+   * Every sample timestamp the engine holds, merge-sorted across shards, over a range wider than any test
+   * writes.
+   * <p>
+   * The read is wrapped in a transaction of its own, as {@code Issue4957AppendBatchTransactionTest} does.
+   * It happens to work unwrapped after a {@code rollback()} - {@code popIfNotLastTransaction()} leaves the
+   * sole {@code TransactionContext} on the thread's stack rather than popping it, and neither
+   * {@code getTransaction()} nor {@code TransactionContext.getPage()} gates on {@code isActive()}, so the
+   * read falls through to the {@code PageManager} - but that is an internal detail and not a contract these
+   * tests should depend on for their correctness (code review of this PR).
+   */
+  private List<Long> timestampsOf(final TimeSeriesEngine engine) throws Exception {
+    database.begin();
+    try {
+      return engine.query(0L, 1_000_000L, null, null).stream().map(row -> (Long) row[0]).toList();
+    } finally {
+      database.commit();
+    }
   }
 
   /**
