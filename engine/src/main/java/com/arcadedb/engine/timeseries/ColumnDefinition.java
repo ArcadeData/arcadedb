@@ -36,16 +36,38 @@ public final class ColumnDefinition {
   private final Type            dataType;
   private final ColumnRole      role;
   private final TimeSeriesCodec compressionHint;
+  private final boolean         explicitCodec;
 
+  /**
+   * A column whose codec is DERIVED from its data type and role, through {@link #defaultCodecFor}.
+   * <p>
+   * This is what {@code withTimestamp}/{@code withTag}/{@code withField} build, and what a {@code CREATE
+   * TIMESERIES TYPE} column with no {@code CODEC} clause parses to. A renderer must NOT name the resolved codec
+   * back, or it would freeze today's default table into the statement - see {@link #isExplicitCodec()}.
+   */
   public ColumnDefinition(final String name, final Type dataType, final ColumnRole role) {
-    this(name, dataType, role, defaultCodecFor(dataType, role));
+    this.name = name;
+    this.dataType = dataType;
+    this.role = role;
+    this.compressionHint = defaultCodecFor(dataType, role);
+    this.explicitCodec = false;
   }
 
+  /**
+   * A column whose codec was NAMED by the caller: a {@code CODEC} clause, a {@code "compression"} entry in an
+   * export or in {@code schema.json}, or an application handing a {@link ColumnDefinition} to
+   * {@code withColumn}. The codec travels with the column from here on, default table or not.
+   * <p>
+   * {@code null} is read as "none named" rather than stored: the codec is resolved from the default table and the
+   * column is indistinguishable from the 3-argument one. Nothing in {@code src/main} passes it, and the
+   * alternative is a column whose codec is {@code null} on every read path that asks for it.
+   */
   public ColumnDefinition(final String name, final Type dataType, final ColumnRole role, final TimeSeriesCodec compressionHint) {
     this.name = name;
     this.dataType = dataType;
     this.role = role;
-    this.compressionHint = compressionHint;
+    this.compressionHint = compressionHint != null ? compressionHint : defaultCodecFor(dataType, role);
+    this.explicitCodec = compressionHint != null;
   }
 
   public String getName() {
@@ -62,6 +84,25 @@ public final class ColumnDefinition {
 
   public TimeSeriesCodec getCompressionHint() {
     return compressionHint;
+  }
+
+  /**
+   * Whether this column's codec was NAMED by whoever built it, rather than derived from the default table
+   * (issue #7703).
+   * <p>
+   * The codec is always populated, so before this flag existed the only way to ask was "does it differ from
+   * {@link #defaultCodecFor}?" - which answers NO for a column that named the very codec the table happens to
+   * return today. A renderer that omits the clause on that answer emits DDL the receiving build re-derives, and
+   * a build whose default table has since moved resolves a DIFFERENT codec: the restored type is not the
+   * exported one, and nothing says so. That is exactly the failure issue #5475 fixed, re-entered through the
+   * DDL door, and {@link #legacyCodecFor} exists because the table has already changed once.
+   * <p>
+   * The distinction is a property of the COLUMN rather than a mode on the renderer, so it survives every hop a
+   * column definition makes - export to import, {@code schema.json} to builder, builder to SQL - without a
+   * caller having to remember to turn it on.
+   */
+  public boolean isExplicitCodec() {
+    return explicitCodec;
   }
 
   /**

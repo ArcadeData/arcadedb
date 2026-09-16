@@ -651,10 +651,18 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * {@code BOOLEAN}) and a numeric string comes back normalised. A block is therefore answered from its declaration
    * only for a {@code STRING} TAG column stored with {@code DICTIONARY}, and read otherwise. Either way what lands
    * in {@code out} is exactly what a full scan of that block would have put there.
+   * <p>
+   * {@code fromTs}/{@code toTs} bound the answer to the values carried by a row IN THAT RANGE (issue #7709), and
+   * cost nothing on the blocks that do not straddle a bound: a block outside the range is dropped on its directory
+   * entry without being touched, a block inside it still answers from its declaration, and only the at most two
+   * blocks holding a bound are decompressed and filtered per row. {@code Long.MIN_VALUE}/{@code Long.MAX_VALUE}
+   * ask for the whole series and take exactly the path they took before the bounds existed.
    *
    * @param schemaColumnIndex the column's index in the full schema, timestamp column included
    * @param nonTsColumnIndex  the same column's index among the NON-timestamp columns, which is how a projection is
    *                          spelled on every read path
+   * @param fromTs            lower bound, inclusive
+   * @param toTs              upper bound, inclusive
    * @param out               receives the values; a {@code null} is never added, and the sealed layer never
    *                          produces one for a {@code STRING} TAG because {@link #compressColumn} writes a null
    *                          tag as the empty string
@@ -662,8 +670,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    *                          counted as a SKIPPED block, because it is not decompressed; a block that had to be
    *                          read counts as a slow-path block plus its rows
    */
-  void collectDistinctTagValues(final int schemaColumnIndex, final int nonTsColumnIndex, final Set<String> out,
-      final AggregationMetrics metrics) throws IOException {
+  void collectDistinctTagValues(final int schemaColumnIndex, final int nonTsColumnIndex, final long fromTs,
+      final long toTs, final Set<String> out, final AggregationMetrics metrics) throws IOException {
     directoryLock.readLock().lock();
     try {
       final boolean declarationIsExact = declaredDistinctValuesAreExact(columns.get(schemaColumnIndex));
@@ -671,28 +679,59 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       final int[] projection = { nonTsColumnIndex };
 
       for (final BlockEntry entry : blockDirectory) {
-        final String[] declared = declarationIsExact && entry.tagDistinctValues != null
+        // Outside the range entirely: the directory entry alone settles it, so the block is neither read nor
+        // declared from (issue #7709).
+        if (entry.maxTimestamp < fromTs || entry.minTimestamp > toTs) {
+          if (metrics != null)
+            metrics.addSkippedBlock();
+          continue;
+        }
+
+        // A block WHOLLY inside the range still answers from its declaration, because the declaration is the set
+        // of the rows it holds and the range holds all of them. A block STRADDLING a bound cannot: the declaration
+        // says nothing about which of its rows carry which value, and there are at most two such blocks per
+        // request - the one holding `fromTs` and the one holding `toTs`.
+        final boolean whollyInsideRange = entry.minTimestamp >= fromTs && entry.maxTimestamp <= toTs;
+        final String[] declared = whollyInsideRange && declarationIsExact && entry.tagDistinctValues != null
             && schemaColumnIndex < entry.tagDistinctValues.length ? entry.tagDistinctValues[schemaColumnIndex] : null;
 
         if (declared != null) {
-          // The whole point of the issue: O(cardinality) off the directory entry, with no file read and no decode.
+          // The whole point of issue #7660: O(cardinality) off the directory entry, with no file read and no decode.
           Collections.addAll(out, declared);
           if (metrics != null)
             metrics.addSkippedBlock();
           continue;
         }
 
-        // No usable declaration - a block written before the tag metadata section existed, or a TAG column whose
-        // boxing the declaration cannot reproduce. Read that one column of that one block, nothing more.
+        // No usable declaration - a block written before the tag metadata section existed, a TAG column whose
+        // boxing the declaration cannot reproduce, or a block straddling a range bound. Read that one column of
+        // that one block, nothing more, plus the timestamps when a row-level bound has to be applied.
         final Object[][] decompressed = decompressColumns(entry, projection, tsColIdx);
         if (decompressed.length == 0)
           continue;
-        for (final Object value : decompressed[0])
+        final int rowCount = decompressed[0].length;
+
+        // A block's rows are in ascending timestamp order, so the range clips to a contiguous slice found by
+        // binary search - the same lowerBound/upperBound the aggregation path clips with - rather than by testing
+        // every row. A block wholly inside the range needs no timestamps decoded at all.
+        int from = 0;
+        int to = rowCount;
+        if (!whollyInsideRange) {
+          final long[] timestamps = decompressTimestamps(entry, tsColIdx);
+          final int decoded = Math.min(rowCount, timestamps.length);
+          from = lowerBound(timestamps, 0, decoded, fromTs);
+          to = upperBound(timestamps, 0, decoded, toTs);
+        }
+
+        for (int i = from; i < to; i++) {
+          final Object value = decompressed[0][i];
           if (value != null)
             out.add(value.toString());
+        }
         if (metrics != null) {
           metrics.addSlowPathBlock();
-          metrics.addMaterializedRows(decompressed[0].length);
+          // The whole column was decoded, whatever the range then kept, so that is what is counted.
+          metrics.addMaterializedRows(rowCount);
         }
       }
     } finally {

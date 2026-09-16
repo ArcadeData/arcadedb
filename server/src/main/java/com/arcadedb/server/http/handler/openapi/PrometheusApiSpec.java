@@ -201,13 +201,18 @@ public class PrometheusApiSpec implements OpenApiContributor {
     final Operation get = SpecBuilders.operation("promQLLabelValues", "PromQL",
         "List the values of one label",
         """
-            Lists every value of one label name, sorted. Compatible with the Prometheus \
-            /api/v1/label/{name}/values endpoint. Querying '__name__' returns every time-series type \
-            name instead of scanning a tag column. Takes no filtering parameters: unlike Prometheus \
-            itself, this endpoint does not accept 'start', 'end', or 'match[]'.""");
+            Lists the values of one label name, sorted, over the requested time range. Compatible with \
+            the Prometheus /api/v1/label/{name}/values endpoint. Querying '__name__' returns the \
+            time-series type names instead of scanning a tag column, restricted to the types holding a \
+            sample in the range. 'start' and 'end' are optional and default to the whole series; unlike \
+            Prometheus itself, this endpoint does not accept 'match[]'.""");
     get.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
     get.addParametersItem(SpecBuilders.sessionHeaderParam());
     get.addParametersItem(SpecBuilders.pathParam("name", "Label name"));
+    get.addParametersItem(SpecBuilders.queryParam("start",
+        "Inclusive range start as a Unix timestamp in seconds, fractional seconds allowed", false));
+    get.addParametersItem(SpecBuilders.queryParam("end",
+        "Inclusive range end as a Unix timestamp in seconds, fractional seconds allowed", false));
     get.setResponses(promQlResponses("Sorted label values", "PromQLLabelsResponse"));
 
     final PathItem pathItem = new PathItem();
