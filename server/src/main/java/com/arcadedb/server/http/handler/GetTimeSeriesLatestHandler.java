@@ -28,10 +28,8 @@ import com.arcadedb.engine.timeseries.TimeSeriesGateway.TypeResolution;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
-import com.arcadedb.server.http.HttpSessionManager;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
-import io.undertow.util.HeaderValues;
 
 import java.util.List;
 
@@ -63,8 +61,7 @@ public class GetTimeSeriesLatestHandler extends DatabaseAbstractHandler {
    */
   @Override
   protected boolean mustExecuteOnWorkerThread(final HttpServerExchange exchange) {
-    final HeaderValues sessionId = exchange.getRequestHeaders().get(HttpSessionManager.ARCADEDB_SESSION_ID);
-    return sessionId != null && !sessionId.isEmpty();
+    return carriesSessionId(exchange);
   }
 
   @Override
