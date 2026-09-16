@@ -287,6 +287,50 @@ public class TimeSeriesEngine implements AutoCloseable {
   }
 
   /**
+   * Queries all shards oldest-first and returns at most {@code limit} rows in ascending timestamp
+   * order (issue #7336).
+   * <p>
+   * The bound belongs to the FETCH, which is what separates this method from {@link #query} followed by a
+   * {@code subList}: every shard stops walking blocks as soon as its own limit is satisfied, so the oldest
+   * {@code n} rows of a wide range cost O(shards x blocks touched) instead of O(series). {@link #iterateQuery}
+   * is not a substitute - its own javadoc says so - because the sealed layer it merges materialises every
+   * matching row before the first one is handed out.
+   * <p>
+   * The upper bound is tightened to the newest row held so far as soon as {@code limit} rows are collected, for
+   * the reason {@link #queryDescending} tightens the lower one (issue #5416): samples are routed to shards
+   * round-robin, so a tag can be absent from a shard entirely, and without the running bound such a shard has
+   * nothing to build its own cut-off from.
+   *
+   * @param limit   maximum number of rows to return; {@code <= 0} means unlimited
+   * @param metrics optional block-level counters, may be {@code null}. Shards are visited
+   *                sequentially on the calling thread, so a single instance is safe here.
+   *
+   * @return rows sorted by ascending timestamp, at most {@code limit} of them
+   */
+  public List<Object[]> queryAscending(final long fromTs, final long toTs, final int[] columnIndices,
+      final TagFilter tagFilter, final int limit, final AggregationMetrics metrics) throws IOException {
+    final int need = limit > 0 ? limit : Integer.MAX_VALUE;
+
+    final List<Object[]> merged = new ArrayList<>();
+    long upperBound = toTs;
+    for (final TimeSeriesShard shard : shards) {
+      final List<Object[]> shardRows = shard.scanRangeAscending(fromTs, upperBound, columnIndices, tagFilter, limit,
+          metrics);
+      if (shardRows.isEmpty())
+        continue;
+      merged.addAll(shardRows);
+      if (merged.size() >= need) {
+        TimeSeriesSealedStore.trimToAscendingLimit(merged, need);
+        // Inclusive: rows sharing the cut-off timestamp are still eligible, ties are broken by the merge.
+        upperBound = Math.min(upperBound, (long) merged.getLast()[0]);
+      }
+    }
+
+    TimeSeriesSealedStore.trimToAscendingLimit(merged, need);
+    return merged;
+  }
+
+  /**
    * Returns a merge-sorted iterator across all shards, using a min-heap to merge the per-shard iterators by
    * timestamp.
    * <p>

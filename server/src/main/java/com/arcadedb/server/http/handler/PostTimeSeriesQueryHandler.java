@@ -110,9 +110,7 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
       final List<ColumnDefinition> columns, final String typeName, final long fromTs, final long toTs,
       final TagFilter tagFilter) throws Exception {
 
-    // Same cap and same semantics as the query/command endpoints: a non-positive value means unlimited. Note
-    // that here the cap governs serialization only - the engine query below materializes the whole range
-    // regardless, so removing the cap does not widen an already unbounded fetch.
+    // Same cap and same semantics as the query/command endpoints: a non-positive value means unlimited.
     // requireIntLimit rather than payload.getInt: the latter narrows with Number.intValue(), so a limit an int
     // cannot hold would wrap to a negative value and be read as unlimited, exactly as on the other endpoints.
     final Object rawLimit = payload.opt("limit");
@@ -122,15 +120,23 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
     // Resolve field projection
     final int[] columnIndices = resolveColumnIndices(payload, columns);
 
-    final List<Object[]> rows = engine.query(fromTs, toTs, columnIndices, tagFilter);
-
     // The hard ceiling no caller can widen (issue #5719): a caller that states a huge 'limit', or an unlimited
-    // one, is refused rather than served an arbitrarily large response. Checked here, before the JSON is built,
-    // so the ceiling at least keeps the second and larger copy of the range out of the heap - it cannot keep the
-    // first one out, because engine.query() above materializes the whole range before any limit is known. That
-    // is a bound on the fetch, and it belongs in the engine, not in this handler.
+    // one, is refused rather than served an arbitrarily large response.
     final int maxResultRows = getMaxResultRows();
     final int ceiling = applyMaxResultRows(limit, maxResultRows);
+
+    // The bound on the FETCH (issue #7336). Everything this method has to decide - the row count, whether the
+    // response was cut short, and whether the ceiling refuses it - is answered by the rows up to the ceiling
+    // plus ONE: that extra row is what tells a cut answer from a complete one, and nothing beyond it is ever
+    // looked at. engine.query() answered the same questions by merging every shard's full range into one sorted
+    // ArrayList first, so '{"from": 0, "to": 9999999999999, "limit": 10}' over millions of samples cost O(N)
+    // heap and O(N log N) time to serialize ten rows.
+    // A non-positive ceiling means the ceiling is disabled AND the caller asked for everything, which is the one
+    // request that genuinely has no bound; Integer.MAX_VALUE is left alone rather than overflowed, and is
+    // unlimited in practice because no List can hold more.
+    final int fetchLimit = ceiling <= 0 || ceiling == Integer.MAX_VALUE ? 0 : ceiling + 1;
+    final List<Object[]> rows = engine.queryAscending(fromTs, toTs, columnIndices, tagFilter, fetchLimit, null);
+
     if (ceiling != limit && rows.size() > ceiling)
       throw resultSetTooLarge(maxResultRows);
 
@@ -162,9 +168,12 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
     if (truncated && !callerSuppliedLimit)
       // The caller stated no limit, so this truncation is the only one it did not ask for: an operator must be
       // able to find it in the log, exactly as on the query and command endpoints.
+      // The message no longer states the total: the fetch now stops one row past the cap, so the only honest
+      // thing that can be said is that there were more (issue #7336). Counting them is the O(N) walk the cap
+      // exists to avoid, and the remedy the operator needs does not depend on the number.
       LogManager.instance().log(this, Level.WARNING,
-          "Query on time series type '%s' returned %d rows, more than the default HTTP limit of %d: the response has been "
-              + "truncated. Set 'limit' in the request, or raise '%s'.", typeName, rows.size(), limit,
+          "Query on time series type '%s' returned more rows than the default HTTP limit of %d: the response has been "
+              + "truncated to %d rows. Set 'limit' in the request, or raise '%s'.", typeName, limit, count,
           GlobalConfiguration.SERVER_HTTP_QUERY_DEFAULT_LIMIT.getKey());
 
     return new ExecutionResponse(200, result.toString());
