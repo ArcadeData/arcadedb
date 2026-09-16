@@ -24,6 +24,7 @@ import com.arcadedb.engine.timeseries.TagFilter;
 import com.arcadedb.engine.timeseries.TimeSeriesGateway;
 import com.arcadedb.engine.timeseries.TimeSeriesGateway.TypeResolution;
 import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.ArrayList;
@@ -50,6 +51,177 @@ final class TimeSeriesHandlerUtils {
   }
 
   /**
+   * Resolves a member that must be present and must be a JSON object, naming it by its full request path when it
+   * is not (issue #7340).
+   * <p>
+   * The whole {@code require*}/{@code opt*} family below exists for one reason: {@link JSONObject}'s raising
+   * getters signal an absent, null or wrongly-typed member with a {@link JSONException}, which
+   * {@code AbstractServerHttpHandler}'s mapper answers as {@code 400 "Invalid JSON payload"} with the specifics in
+   * the {@code detail} field - and {@code buildErrorBody} CONCEALS {@code detail} whenever the server runs in
+   * production mode. A caller that omitted {@code field} was told only that its payload was invalid, not which
+   * member was missing. These helpers translate the same failures into an {@link IllegalArgumentException} the
+   * two endpoints render on the surface they answer errors on: a 400 whose {@code error} field is always sent, or
+   * a per-target Grafana error frame. That is the shape #7325 introduced for {@code type}, applied to the members
+   * it left out of scope.
+   * <p>
+   * Each helper DELEGATES to the matching {@link JSONObject} getter rather than re-deciding what is acceptable, so
+   * what the endpoints accept is unchanged and only the refusal differs. In particular {@code getString} still
+   * renders a JSON number as its text and {@code getLong} still parses a numeric string; widening or narrowing
+   * that here would change which requests succeed, which this issue does not ask for.
+   *
+   * @param path the member's dotted path as the caller wrote it, e.g. {@code targets[0].aggregation}
+   */
+  static JSONObject requireObject(final JSONObject owner, final String name, final String path) {
+    if (owner.isNull(name))
+      throw missingMember(path, "a JSON object");
+    try {
+      return owner.getJSONObject(name);
+    } catch (final JSONException e) {
+      throw wrongType(path, "a JSON object", owner.opt(name), e);
+    }
+  }
+
+  /**
+   * Resolves a member that must be present and must be a JSON array. See {@link #requireObject}.
+   */
+  static JSONArray requireArray(final JSONObject owner, final String name, final String path) {
+    if (owner.isNull(name))
+      throw missingMember(path, "a JSON array");
+    try {
+      return owner.getJSONArray(name);
+    } catch (final JSONException e) {
+      throw wrongType(path, "a JSON array", owner.opt(name), e);
+    }
+  }
+
+  /**
+   * Resolves a member that must be present and must be a string. See {@link #requireObject}.
+   */
+  static String requireString(final JSONObject owner, final String name, final String path) {
+    if (owner.isNull(name))
+      throw missingMember(path, "a string");
+    try {
+      return owner.getString(name);
+    } catch (final JSONException e) {
+      throw wrongType(path, "a string", owner.opt(name), e);
+    }
+  }
+
+  /**
+   * Resolves a member that must be present and must be a number. See {@link #requireObject}.
+   */
+  static long requireLong(final JSONObject owner, final String name, final String path) {
+    if (owner.isNull(name))
+      throw missingMember(path, "a number");
+    return readLong(owner, name, path);
+  }
+
+  /**
+   * Resolves an optional member that must be a number when it IS present. An absent or JSON-null member yields
+   * {@code defaultValue}; one that arrives as something a number cannot be read from is a client error, refused by
+   * name rather than through the concealed {@code detail} field.
+   */
+  static long optLong(final JSONObject owner, final String name, final long defaultValue, final String path) {
+    if (owner.isNull(name))
+      return defaultValue;
+    return readLong(owner, name, path);
+  }
+
+  /**
+   * Resolves an optional member that must be an integer when it IS present. See {@link #optLong}.
+   * <p>
+   * Read as a long and range-checked rather than through {@code JSONObject.getInt}, which narrows with
+   * {@code Number.intValue()}: a value an int cannot hold would WRAP instead of being refused, and the caller
+   * would silently get a different number than it sent. That is the same trap
+   * {@code AbstractServerHttpHandler.requireIntLimit} exists for on the 'limit' member.
+   */
+  static int optInt(final JSONObject owner, final String name, final int defaultValue, final String path) {
+    if (owner.isNull(name))
+      return defaultValue;
+
+    final long value = readLong(owner, name, path);
+    if (value < Integer.MIN_VALUE || value > Integer.MAX_VALUE)
+      throw new IllegalArgumentException("'" + path + "' must be an integer between " + Integer.MIN_VALUE + " and "
+          + Integer.MAX_VALUE + ": received " + value);
+
+    return (int) value;
+  }
+
+  /**
+   * Resolves an optional member that must be a string when it IS present. See {@link #optLong}.
+   */
+  static String optString(final JSONObject owner, final String name, final String defaultValue, final String path) {
+    if (owner.isNull(name))
+      return defaultValue;
+    try {
+      return owner.getString(name);
+    } catch (final JSONException e) {
+      throw wrongType(path, "a string", owner.opt(name), e);
+    }
+  }
+
+  /**
+   * Resolves an array element that must be a JSON object, naming it by its indexed request path.
+   *
+   * @param index must be within {@code array}'s bounds, which every caller guarantees by iterating over
+   *              {@link JSONArray#length()}
+   */
+  static JSONObject requireObjectElement(final JSONArray array, final int index, final String path) {
+    if (array.isNull(index))
+      throw missingMember(path, "a JSON object");
+    try {
+      return array.getJSONObject(index);
+    } catch (final JSONException e) {
+      throw wrongType(path, "a JSON object", array.get(index), e);
+    }
+  }
+
+  /**
+   * Resolves an array element that must be a string. See {@link #requireObjectElement}.
+   */
+  static String requireStringElement(final JSONArray array, final int index, final String path) {
+    if (array.isNull(index))
+      throw missingMember(path, "a string");
+    try {
+      return array.getString(index);
+    } catch (final JSONException e) {
+      throw wrongType(path, "a string", array.get(index), e);
+    }
+  }
+
+  private static long readLong(final JSONObject owner, final String name, final String path) {
+    try {
+      return owner.getLong(name);
+    } catch (final JSONException e) {
+      throw wrongType(path, "a number", owner.opt(name), e);
+    }
+  }
+
+  static IllegalArgumentException missingMember(final String path, final String kind) {
+    return new IllegalArgumentException("'" + path + "' is required and must be " + kind);
+  }
+
+  private static IllegalArgumentException wrongType(final String path, final String kind, final Object received,
+      final Throwable cause) {
+    return new IllegalArgumentException("'" + path + "' must be " + kind + ": received " + describe(received), cause);
+  }
+
+  /**
+   * Renders what arrived for an error message. A container is reported by KIND rather than by content, so a
+   * refusal cannot echo a multi-megabyte payload back at the caller, and a primitive is truncated for the same
+   * reason.
+   */
+  private static String describe(final Object received) {
+    if (received instanceof JSONObject)
+      return "a JSON object";
+    if (received instanceof JSONArray)
+      return "a JSON array";
+    if (received instanceof String text)
+      return "'" + truncate(text) + "'";
+    return truncate(String.valueOf(received));
+  }
+
+  /**
    * Resolves the aggregation function named by one {@code aggregation.requests[]} entry, matching the
    * {@link AggregationType} names case-insensitively after trimming.
    * <p>
@@ -71,6 +243,15 @@ final class TimeSeriesHandlerUtils {
    * @throws IllegalArgumentException if {@code type} is absent, null, not a string, or matches no aggregation type
    */
   static AggregationType resolveAggregationType(final JSONObject request, final int index) {
+    return resolveAggregationType(request, "aggregation.requests[" + index + "].type");
+  }
+
+  /**
+   * As {@link #resolveAggregationType(JSONObject, int)}, for the endpoint whose requests are nested under a target
+   * and whose members are therefore named by a longer path, e.g. {@code targets[0].aggregation.requests[0].type}
+   * (issue #7340). The path a caller reads has to be the one it can look up in its own payload.
+   */
+  static AggregationType resolveAggregationType(final JSONObject request, final String path) {
     final Object rawType = request.opt("type");
     if (rawType instanceof String name) {
       final String trimmed = name.trim();
@@ -78,25 +259,25 @@ final class TimeSeriesHandlerUtils {
         try {
           return AggregationType.valueOf(trimmed.toUpperCase(Locale.ENGLISH));
         } catch (final IllegalArgumentException e) {
-          throw unknownAggregationType(index, rawType, e);
+          throw unknownAggregationType(path, rawType, e);
         }
       }
     }
-    throw unknownAggregationType(index, rawType, null);
+    throw unknownAggregationType(path, rawType, null);
   }
 
   /**
    * Refusal of an aggregation function name, worded identically on both time-series HTTP endpoints so the two
    * surfaces report the same thing. Names the field, lists every accepted value, and echoes what arrived.
    */
-  private static IllegalArgumentException unknownAggregationType(final int index, final Object rawType,
+  private static IllegalArgumentException unknownAggregationType(final String path, final Object rawType,
       final Throwable cause) {
     final StringJoiner accepted = new StringJoiner(", ");
     for (final AggregationType type : AggregationType.values())
       accepted.add(type.name());
 
     return new IllegalArgumentException(
-        "'aggregation.requests[" + index + "].type' is required and must be one of " + accepted
+        "'" + path + "' is required and must be one of " + accepted
             + (rawType == null ? "" : ": received '" + truncate(String.valueOf(rawType)) + "'"), cause);
   }
 
@@ -171,13 +352,28 @@ final class TimeSeriesHandlerUtils {
     return filter;
   }
 
-  static int[] resolveColumnIndices(final JSONArray fieldsJson, final List<ColumnDefinition> columns) {
+  /**
+   * Resolves a {@code fields} projection to the column indices the engine takes.
+   * <p>
+   * Only the JSON SHAPE of the projection is checked here. A well-formed name that matches no column is DROPPED
+   * by {@link TimeSeriesGateway#resolveColumnIndices}, not refused - see its Javadoc, and
+   * {@code TimeSeriesGatewayProjectionTest}, which pins that. So {@code "fields": ["temprature"]} still answers
+   * 200 with a timestamp-only row rather than naming the typo, which is the same widening #7334 refused for a tag
+   * name and is tracked separately.
+   *
+   * @param path the projection's request path, e.g. {@code fields} or {@code targets[0].fields}, used to name an
+   *             element that is not a string (issue #7340)
+   *
+   * @throws IllegalArgumentException if an element is absent, null or not a string
+   */
+  static int[] resolveColumnIndices(final JSONArray fieldsJson, final List<ColumnDefinition> columns,
+      final String path) {
     if (fieldsJson == null || fieldsJson.length() == 0)
       return null;
 
     final List<String> fields = new ArrayList<>(fieldsJson.length());
     for (int f = 0; f < fieldsJson.length(); f++)
-      fields.add(fieldsJson.getString(f));
+      fields.add(requireStringElement(fieldsJson, f, path + "[" + f + "]"));
 
     return TimeSeriesGateway.resolveColumnIndices(fields, columns);
   }
@@ -187,18 +383,18 @@ final class TimeSeriesHandlerUtils {
   }
 
   /**
-   * Renders a rejected tag filter as the 400 the TimeSeries read endpoints answer with, carrying the reason in
-   * {@code error} (issue #7334).
+   * Renders a refused request as the 400 the TimeSeries read endpoints answer with, carrying the reason in
+   * {@code error} (issues #7334, #7340).
    * <p>
    * Answered explicitly rather than by letting the exception reach the generic handler mapper, which does map an
    * {@link IllegalArgumentException} to a 400 but puts its text in {@code detail} - a field {@code buildErrorBody}
-   * CONCEALS outside development mode. The whole point of this refusal is that the caller reads which tag did not
-   * resolve and what the type actually declares, so the message has to be in the field that is always sent.
+   * CONCEALS outside development mode. The whole point of these refusals is that the caller reads which tag did
+   * not resolve, or which member was missing, so the message has to be in the field that is always sent.
    * <p>
    * Built with {@link JSONObject} rather than string concatenation because the message echoes caller text, which
    * can carry a double quote or a backslash that raw concatenation would turn into invalid JSON.
    */
-  static ExecutionResponse tagFilterError(final IllegalArgumentException e) {
+  static ExecutionResponse badRequest(final IllegalArgumentException e) {
     return new ExecutionResponse(400, new JSONObject().put("error", e.getMessage()).toString());
   }
 
@@ -208,19 +404,19 @@ final class TimeSeriesHandlerUtils {
    * share the "is not a TimeSeries type" message, which sent an operator chasing the wrong cause (issue #6356
    * follow-up, claude-review on PR #6779).
    * <p>
-   * The engine-unavailable body is built with {@link JSONObject} rather than string concatenation because the
-   * reason embeds a file path that could contain a double quote or a backslash, which raw concatenation would
-   * turn into invalid JSON.
+   * All three bodies are built with {@link JSONObject} rather than string concatenation, because all three embed
+   * text the CALLER supplied - the type name it asked for, and for the unavailable case a file path - and a double
+   * quote or a backslash in any of it would turn raw concatenation into a body no client can parse. The first two
+   * still concatenated after the third was fixed (claude-review on PR #7680).
    */
   static ExecutionResponse resolutionError(final String typeName, final TypeResolution resolved) {
-    return switch (resolved.failure()) {
-      case NOT_FOUND -> new ExecutionResponse(400,
-          "{ \"error\" : \"Type '" + typeName + "' does not exist\"}");
-      case NOT_TIME_SERIES -> new ExecutionResponse(400,
-          "{ \"error\" : \"Type '" + typeName + "' is not a TimeSeries type\"}");
-      case ENGINE_UNAVAILABLE -> new ExecutionResponse(400, new JSONObject().put("error",
-          "TimeSeries type '" + typeName + "' has no storage engine available: " + resolved.unavailableReason())
-          .toString());
+    final String message = switch (resolved.failure()) {
+      case NOT_FOUND -> "Type '" + typeName + "' does not exist";
+      case NOT_TIME_SERIES -> "Type '" + typeName + "' is not a TimeSeries type";
+      case ENGINE_UNAVAILABLE ->
+          "TimeSeries type '" + typeName + "' has no storage engine available: " + resolved.unavailableReason();
     };
+
+    return new ExecutionResponse(400, new JSONObject().put("error", message).toString());
   }
 }

@@ -97,7 +97,7 @@ public class GetTimeSeriesLatestHandler extends DatabaseAbstractHandler {
     try {
       tagFilter = buildTagFilter(exchange, columns);
     } catch (final IllegalArgumentException e) {
-      return TimeSeriesHandlerUtils.tagFilterError(e);
+      return TimeSeriesHandlerUtils.badRequest(e);
     }
 
     // A bounded newest-first scan for a single row (issue #7322), through the same helper the gRPC

@@ -199,6 +199,191 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
   }
 
   /**
+   * Issue #7340: every OTHER required member of an aggregation request is refused the way #7325 made {@code type}
+   * be refused - a message that names the member by its request path, carried in the {@code error} field.
+   * <p>
+   * They used to reach {@code JSONObject}'s raising getters unguarded, whose {@code JSONException} the generic
+   * handler mapper answers as {@code 400 "Invalid JSON payload"} with the specifics in {@code detail} - and
+   * {@code buildErrorBody} CONCEALS {@code detail} whenever the server runs in production mode. A caller that
+   * omitted {@code field} therefore received a body that did not say which member was missing.
+   */
+  @Test
+  void aggregationRefusesEveryAbsentRequiredMemberByName() throws Exception {
+    testEachServer(serverIndex -> {
+      createTypeAndIngestData(serverIndex);
+
+      // 'aggregation.bucketInterval' absent.
+      JSONObject request = aggregationRequest("AVG");
+      request.getJSONObject("aggregation").remove("bucketInterval");
+      assertThat(postTsQueryError(serverIndex, request).getString("error"))
+          .contains("aggregation.bucketInterval").contains("is required");
+
+      // 'aggregation.requests' absent.
+      request = aggregationRequest("AVG");
+      request.getJSONObject("aggregation").remove("requests");
+      assertThat(postTsQueryError(serverIndex, request).getString("error"))
+          .contains("aggregation.requests").contains("is required");
+
+      // 'aggregation.requests[0].field' absent.
+      request = aggregationRequest("AVG");
+      request.getJSONObject("aggregation").getJSONArray("requests").getJSONObject(0).remove("field");
+      assertThat(postTsQueryError(serverIndex, request).getString("error"))
+          .contains("aggregation.requests[0].field").contains("is required");
+    });
+  }
+
+  /**
+   * Issue #7340: the same members are refused by name when they ARRIVE but carry the wrong JSON type, which is the
+   * other half of what {@code getNotNullElement} and the converters used to signal as a bare {@code JSONException}.
+   */
+  @Test
+  void aggregationRefusesAWronglyTypedRequiredMemberByName() throws Exception {
+    testEachServer(serverIndex -> {
+      createTypeAndIngestData(serverIndex);
+
+      // 'aggregation' itself is not an object.
+      JSONObject request = new JSONObject();
+      request.put("type", "weather");
+      request.put("aggregation", "AVG");
+      assertThat(postTsQueryError(serverIndex, request).getString("error"))
+          .contains("aggregation").contains("must be a JSON object");
+
+      // 'aggregation.requests' is not an array.
+      request = aggregationRequest("AVG");
+      request.getJSONObject("aggregation").put("requests", new JSONObject());
+      assertThat(postTsQueryError(serverIndex, request).getString("error"))
+          .contains("aggregation.requests").contains("must be a JSON array");
+
+      // 'aggregation.requests[0]' is not an object.
+      request = aggregationRequest("AVG");
+      final JSONArray notObjects = new JSONArray();
+      notObjects.put("AVG");
+      request.getJSONObject("aggregation").put("requests", notObjects);
+      assertThat(postTsQueryError(serverIndex, request).getString("error"))
+          .contains("aggregation.requests[0]").contains("must be a JSON object");
+
+      // 'aggregation.bucketInterval' is not a number.
+      request = aggregationRequest("AVG");
+      request.getJSONObject("aggregation").put("bucketInterval", new JSONArray());
+      assertThat(postTsQueryError(serverIndex, request).getString("error"))
+          .contains("aggregation.bucketInterval").contains("must be a number");
+    });
+  }
+
+  /**
+   * claude-review on PR #7680: the refusals that quote the caller's own text back at it have to stay PARSEABLE
+   * when that text contains a double quote. Two of them were still hand-built strings, so a type named
+   * {@code we"ather} produced a body no client can read - which on an error path is worse than the error, because
+   * the caller cannot even see what went wrong.
+   * <p>
+   * {@code postTsQueryError} parses the body with {@code new JSONObject(...)}, so an unparseable body fails this
+   * test before any assertion on its content runs.
+   */
+  @Test
+  void refusalsStayParseableWhenTheCallersTextCarriesADoubleQuote() throws Exception {
+    testEachServer(serverIndex -> {
+      createTypeAndIngestData(serverIndex);
+
+      // 'Type ... does not exist' - was concatenated.
+      final JSONObject unknownType = new JSONObject();
+      unknownType.put("type", "we\"ather");
+      assertThat(postTsQueryError(serverIndex, unknownType).getString("error"))
+          .contains("we\"ather").contains("does not exist");
+
+      // 'Type ... is not a TimeSeries type' - was concatenated.
+      command(serverIndex, "CREATE DOCUMENT TYPE `notts7680`");
+      final JSONObject notTs = new JSONObject();
+      notTs.put("type", "notts7680");
+      assertThat(postTsQueryError(serverIndex, notTs).getString("error"))
+          .contains("notts7680").contains("is not a TimeSeries type");
+
+      // 'Field ... not found in type' - was concatenated.
+      final JSONObject aggRequest = new JSONObject();
+      aggRequest.put("field", "tem\"perature");
+      aggRequest.put("type", "AVG");
+
+      final JSONArray requests = new JSONArray();
+      requests.put(aggRequest);
+
+      final JSONObject aggregation = new JSONObject();
+      aggregation.put("bucketInterval", 5000L);
+      aggregation.put("requests", requests);
+
+      final JSONObject badField = new JSONObject();
+      badField.put("type", "weather");
+      badField.put("aggregation", aggregation);
+
+      assertThat(postTsQueryError(serverIndex, badField).getString("error"))
+          .contains("tem\"perature").contains("not found in type");
+    });
+  }
+
+  /**
+   * Issue #7340: the members the raw branch reads are refused by name too. {@code type} had a presence guard but
+   * not a type guard, and {@code tags}/{@code fields}/{@code limit} had neither - all four answered through the
+   * concealed {@code detail} field.
+   */
+  @Test
+  void rawQueryRefusesAWronglyTypedMemberByName() throws Exception {
+    testEachServer(serverIndex -> {
+      createTypeAndIngestData(serverIndex);
+
+      // An absent 'type' and a wrongly-typed one are the same client error and now get the SAME sentence: the
+      // handler used to carry a second, differently worded pre-guard for the absent case only.
+      assertThat(postTsQueryError(serverIndex, new JSONObject()).getString("error"))
+          .isEqualTo("'type' is required and must be a string");
+
+      JSONObject request = new JSONObject();
+      request.put("type", new JSONArray());
+      assertThat(postTsQueryError(serverIndex, request).getString("error"))
+          .contains("'type'").contains("must be a string");
+
+      request = new JSONObject();
+      request.put("type", "weather");
+      request.put("tags", new JSONArray());
+      assertThat(postTsQueryError(serverIndex, request).getString("error"))
+          .contains("'tags'").contains("must be a JSON object");
+
+      request = new JSONObject();
+      request.put("type", "weather");
+      request.put("fields", new JSONObject());
+      assertThat(postTsQueryError(serverIndex, request).getString("error"))
+          .contains("'fields'").contains("must be a JSON array");
+
+      request = new JSONObject();
+      request.put("type", "weather");
+      final JSONArray notStrings = new JSONArray();
+      notStrings.put(new JSONObject());
+      request.put("fields", notStrings);
+      assertThat(postTsQueryError(serverIndex, request).getString("error"))
+          .contains("fields[0]").contains("must be a string");
+
+      request = new JSONObject();
+      request.put("type", "weather");
+      request.put("from", "yesterday");
+      assertThat(postTsQueryError(serverIndex, request).getString("error"))
+          .contains("'from'").contains("must be a number");
+
+      request = new JSONObject();
+      request.put("type", "weather");
+      request.put("limit", "ten");
+      assertThat(postTsQueryError(serverIndex, request).getString("error"))
+          .as("the limit refusal has to be readable too, not hidden in the concealed 'detail' field")
+          .contains("limit");
+
+      // An explicitly null optional member states that the caller did not supply it, the same reading 'tags' and
+      // 'fields' get - not a malformed request.
+      request = new JSONObject();
+      request.put("type", "weather");
+      request.put("from", (Object) null);
+      request.put("tags", (Object) null);
+      request.put("fields", (Object) null);
+      request.put("aggregation", (Object) null);
+      assertThat(postTsQuery(serverIndex, request).getInt("count")).isEqualTo(3);
+    });
+  }
+
+  /**
    * Builds a bucketed aggregation over the ingested "weather" type whose single request carries the given
    * function name, or no "type" member at all when it is null.
    */

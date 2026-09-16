@@ -356,6 +356,139 @@ class GrafanaTimeSeriesHandlerIT extends BaseGraphServerTest {
   }
 
   /**
+   * Issue #7340: {@code targets[t].type} is the member this endpoint reads before anything else, and it used to
+   * reach {@code getString} unguarded - so a target that omitted it, or sent it as something other than a string,
+   * threw out of the per-target loop and failed the WHOLE request. One malformed panel blanked the panels that
+   * were fine, which is exactly the half of #7325 this endpoint needed fixing for.
+   */
+  @Test
+  void grafanaRefusesABadTargetTypeAsAnErrorFrameAndKeepsServingTheOthers() throws Exception {
+    testEachServer(serverIndex -> {
+      createTypeAndIngestData(serverIndex);
+
+      final JSONObject noType = aggregationTarget("A", "AVG");
+      noType.remove("type");
+
+      final JSONArray targets = new JSONArray();
+      targets.put(noType);
+      targets.put(aggregationTarget("B", "AVG"));
+
+      final JSONObject request = new JSONObject();
+      request.put("from", 1000L);
+      request.put("to", 3000L);
+      request.put("targets", targets);
+
+      final JSONObject results = postGrafanaQuery(serverIndex, request).getJSONObject("results");
+
+      assertThat(results.getJSONObject("A").getString("error"))
+          .contains("targets[0].type").contains("is required");
+      assertThat(results.getJSONObject("B").getJSONArray("frames").length())
+          .as("a target missing 'type' must not blank the targets that were fine")
+          .isEqualTo(1);
+    });
+  }
+
+  /**
+   * Issue #7340: the remaining required members of a target's aggregation are each named in that target's error
+   * frame, instead of reaching the generic mapper as a {@code JSONException} whose specifics production mode
+   * conceals.
+   */
+  @Test
+  void grafanaAggregationRefusesEveryBadRequiredMemberAsAnErrorFrame() throws Exception {
+    testEachServer(serverIndex -> {
+      createTypeAndIngestData(serverIndex);
+
+      // 'targets[0].aggregation.requests' absent.
+      JSONObject target = aggregationTarget("A", "AVG");
+      target.getJSONObject("aggregation").remove("requests");
+      assertThat(errorFrameFor(serverIndex, target))
+          .contains("targets[0].aggregation.requests").contains("is required");
+
+      // 'targets[0].aggregation.requests[0].field' absent.
+      target = aggregationTarget("A", "AVG");
+      target.getJSONObject("aggregation").getJSONArray("requests").getJSONObject(0).remove("field");
+      assertThat(errorFrameFor(serverIndex, target))
+          .contains("targets[0].aggregation.requests[0].field").contains("is required");
+
+      // 'targets[0].aggregation.requests[0]' is not an object.
+      target = aggregationTarget("A", "AVG");
+      final JSONArray notObjects = new JSONArray();
+      notObjects.put("AVG");
+      target.getJSONObject("aggregation").put("requests", notObjects);
+      assertThat(errorFrameFor(serverIndex, target))
+          .contains("targets[0].aggregation.requests[0]").contains("must be a JSON object");
+
+      // 'targets[0].aggregation' is not an object.
+      target = aggregationTarget("A", "AVG");
+      target.put("aggregation", "AVG");
+      assertThat(errorFrameFor(serverIndex, target))
+          .contains("targets[0].aggregation").contains("must be a JSON object");
+
+      // 'targets[0].fields' is not an array - read on the raw branch, so no 'aggregation' member here.
+      target = aggregationTarget("A", "AVG");
+      target.remove("aggregation");
+      target.put("fields", new JSONObject());
+      assertThat(errorFrameFor(serverIndex, target))
+          .contains("targets[0].fields").contains("must be a JSON array");
+
+      // 'targets[0].tags' is not an object.
+      target = aggregationTarget("A", "AVG");
+      target.put("tags", new JSONArray());
+      assertThat(errorFrameFor(serverIndex, target))
+          .contains("targets[0].tags").contains("must be a JSON object");
+    });
+  }
+
+  /**
+   * Issue #7340: the request envelope is a different matter from one target. A {@code targets} member that is not
+   * an array, or an element of it that is not an object, leaves no {@code refId} to key an error frame by, so
+   * those are refused as a 400 for the whole request - with the reason in {@code error}, which production mode
+   * always sends, rather than in the concealed {@code detail}.
+   */
+  @Test
+  void grafanaRefusesAMalformedTargetsEnvelopeWithANamedBadRequest() throws Exception {
+    testEachServer(serverIndex -> {
+      createTypeAndIngestData(serverIndex);
+
+      JSONObject request = new JSONObject();
+      request.put("targets", new JSONObject());
+      assertThat(postGrafanaQueryError(serverIndex, request).getString("error"))
+          .contains("'targets'").contains("must be a JSON array");
+
+      final JSONArray notObjects = new JSONArray();
+      notObjects.put("weather");
+      request = new JSONObject();
+      request.put("targets", notObjects);
+      assertThat(postGrafanaQueryError(serverIndex, request).getString("error"))
+          .contains("targets[0]").contains("must be a JSON object");
+
+      request = new JSONObject();
+      request.put("targets", new JSONArray());
+      request.put("from", "yesterday");
+      assertThat(postGrafanaQueryError(serverIndex, request).getString("error"))
+          .contains("'from'").contains("must be a number");
+    });
+  }
+
+  /**
+   * Posts a single-target request and returns that target's error-frame message, asserting the request as a whole
+   * still answered 200 - the point of a per-target refusal.
+   */
+  private String errorFrameFor(final int serverIndex, final JSONObject target) throws Exception {
+    final JSONArray targets = new JSONArray();
+    targets.put(target);
+
+    final JSONObject request = new JSONObject();
+    request.put("from", 1000L);
+    request.put("to", 3000L);
+    request.put("targets", targets);
+
+    final JSONObject refA = postGrafanaQuery(serverIndex, request).getJSONObject("results").getJSONObject("A");
+    assertThat(refA.getJSONArray("frames").length()).isEqualTo(0);
+    return refA.getString("error");
+  }
+
+  /**
    * Builds a target that aggregates the ingested "weather" type with the given function name.
    */
   private static JSONObject aggregationTarget(final String refId, final String aggregationType) {
@@ -421,6 +554,20 @@ class GrafanaTimeSeriesHandlerIT extends BaseGraphServerTest {
   private int postGrafanaQueryRaw(final int serverIndex, final JSONObject request) throws Exception {
     final HttpURLConnection connection = openPost(serverIndex, "/api/v1/ts/graph/grafana/query", request);
     return connection.getResponseCode();
+  }
+
+  /**
+   * Issue #7340: the 400 body of a request this endpoint refused as a whole. Separate from
+   * {@link #postGrafanaQuery} because that one asserts a 200 - a refusal has to be read from the error stream,
+   * and the message has to be in {@code error} rather than the {@code detail} production mode conceals.
+   */
+  private JSONObject postGrafanaQueryError(final int serverIndex, final JSONObject request) throws Exception {
+    final HttpURLConnection connection = openPost(serverIndex, "/api/v1/ts/graph/grafana/query", request);
+    assertThat(connection.getResponseCode()).isEqualTo(400);
+
+    try (final InputStream is = connection.getErrorStream()) {
+      return new JSONObject(new String(is.readAllBytes(), StandardCharsets.UTF_8));
+    }
   }
 
   private HttpURLConnection openGet(final int serverIndex, final String path) throws Exception {
