@@ -135,6 +135,61 @@ class Issue7574MisplacedBatchControlKeyTest {
     assertThat(emptyFrom.tempId).isEqualTo("p1");
   }
 
+  /**
+   * A control key carrying a NON-STRING value. The empty-elision above tests {@code instanceof String}, so a
+   * number or a boolean skips it and reaches the refusal - which is the behaviour we want and the branch a
+   * later edit could most easily invert by loosening the test to "is falsy". Pinned because it is an easy case
+   * to get wrong and nothing else covers it (claude-review on PR #7749).
+   */
+  @Test
+  void jsonlRefusesAMisplacedControlKeyCarryingANumberOrABoolean() {
+    assertThatThrownBy(() -> drain(
+        "{\"@type\":\"edge\",\"@class\":\"Knows\",\"@from\":\"p1\",\"@to\":\"p2\",\"@id\":7}\n"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("'@id'")
+        .hasMessageContaining("vertex line");
+
+    assertThatThrownBy(() -> drain(
+        "{\"@type\":\"vertex\",\"@class\":\"Person\",\"@id\":\"p1\",\"@from\":false}\n"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("'@from'")
+        .hasMessageContaining("edge line");
+
+    // Zero and false are values a client SENT, not values it left unset: only the two JSON spellings of
+    // "carries nothing" are ignored, and neither of these is one of them.
+    assertThatThrownBy(() -> drain(
+        "{\"@type\":\"edge\",\"@class\":\"Knows\",\"@from\":\"p1\",\"@to\":\"p2\",\"@id\":0}\n"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("'@id'");
+  }
+
+  /**
+   * Whitespace is a value too. The elision is {@code isEmpty()}, not {@code isBlank()}, so a single space is
+   * refused - a client that sent one meant to send something, and silently dropping it is the defect this issue
+   * is about.
+   */
+  @Test
+  void jsonlRefusesAMisplacedControlKeyCarryingWhitespace() {
+    assertThatThrownBy(() -> drain(
+        "{\"@type\":\"vertex\",\"@class\":\"Person\",\"@id\":\"p1\",\"@from\":\" \"}\n"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("'@from'");
+  }
+
+  /**
+   * The '@' prefix rule of #7570 still owns a MIS-CASED control key: '@ID' is not '@id', so it is refused as an
+   * unknown control key rather than reaching the misplacement check. Pinned so a future case-insensitive match
+   * cannot be added to one rule without the other noticing.
+   */
+  @Test
+  void aMisCasedControlKeyIsStillAnUnknownControlKeyNotAMisplacedOne() {
+    assertThatThrownBy(() -> drain(
+        "{\"@type\":\"edge\",\"@class\":\"Knows\",\"@from\":\"p1\",\"@to\":\"p2\",\"@ID\":\"e1\"}\n"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Unknown control key")
+        .hasMessageContaining("'@ID'");
+  }
+
   /** Nothing about the well-formed payloads changes. */
   @Test
   void jsonlStillAcceptsEachControlKeyOnItsOwnKindOfLine() throws Exception {
