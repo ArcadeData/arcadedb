@@ -450,15 +450,28 @@ final class TimeSeriesHandlerUtils {
 
     /**
      * The row cap to hand {@code TimeSeriesEngine.queryAscending} for the next read: what the response can still
-     * carry, plus the one row that proves it carried more. {@code 0} - which that method reads as unlimited - only
-     * when the ceiling is disabled and there is genuinely no bound.
+     * carry, plus the one row that proves it carried more. {@code 0} - which that method reads as unlimited - when
+     * the ceiling is disabled and there is genuinely no bound.
      * <p>
      * A caller stops at the first {@link #charge} that returns {@code false}, so {@code used} never passes
-     * {@code ceiling} while this is read again: the subtraction stays non-negative and the {@code + 1} cannot
-     * overflow a positive {@code int} ceiling.
+     * {@code ceiling} while this is read again and the subtraction stays non-negative. The {@code + 1} still has
+     * one arithmetic edge: a ceiling configured AT {@code Integer.MAX_VALUE} would wrap it to a negative value
+     * that {@code queryAscending} reads as unlimited - the right answer by the wrong route, and one that reads
+     * like a bug the first time anyone audits it. It is named instead, exactly as {@code PostTimeSeriesQueryHandler}
+     * names it for the same arithmetic: such a ceiling IS unlimited in practice, because no {@code List} can hold
+     * that many rows (claude-review on PR #7720).
+     * <p>
+     * The off-by-one is what separates a complete response from a truncated one, so it is pinned rather than
+     * merely argued: {@code Issue7663GrafanaPrometheusRowCeilingIT}'s
+     * {@code theGrafanaRawBranchServesExactlyTheCeilingAndRefusesOneMore} and
+     * {@code thePrometheusReadServesExactlyTheCeilingAndRefusesOneMore} fail if this arithmetic moves in either
+     * direction, and {@code RowBudgetTest} covers the edges directly.
      */
     int fetchLimit() {
-      return ceiling <= 0 ? 0 : ceiling - used + 1;
+      if (ceiling <= 0)
+        return 0;
+      final int remaining = ceiling - used;
+      return remaining == Integer.MAX_VALUE ? 0 : remaining + 1;
     }
 
     /**

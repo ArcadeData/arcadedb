@@ -2913,10 +2913,16 @@ public class SelectExecutionPlanner {
     // no DISTINCT and a WHERE clause the engine reproduces exactly.
     if (info.limit == null || info.distinct || info.groupBy != null || info.aggregateProjection != null)
       return 0;
-    if (!isTimeSeriesWhereFullyPushedDown(tsType, info, context))
-      return 0;
 
+    // Same guard, and for the same reason, as the ascending twin below: isTimeSeriesWhereFullyPushedDown
+    // evaluates the right-hand side of a tag equality at PLANNING time against a null record, and a cap is an
+    // optimisation that must never be the reason a query that used to run now fails. Reachability here is
+    // narrower - this method needs an explicit ORDER BY <ts> DESC - but the exposure is the same shared helper,
+    // and an asymmetric guard between two methods calling it reads as an oversight (claude-review on PR #7720).
     try {
+      if (!isTimeSeriesWhereFullyPushedDown(tsType, info, context))
+        return 0;
+
       final int limitValue = info.limit.getValue(context);
       if (limitValue < 0)
         return 0;
@@ -2925,7 +2931,8 @@ public class SelectExecutionPlanner {
         return 0;
       return Math.addExact(skipValue, limitValue);
     } catch (final RuntimeException e) {
-      // SKIP/LIMIT depend on runtime state (or overflow): fall back to an uncapped descending scan.
+      // SKIP/LIMIT depend on runtime state (or overflow), or a predicate would not evaluate against a null
+      // record: fall back to an uncapped descending scan.
       return 0;
     }
   }
@@ -2956,6 +2963,10 @@ public class SelectExecutionPlanner {
     // LET and $expand dereference, DISTINCT collapses, an aggregate folds the whole input into its output.
     if (info.expand || info.unwind != null || info.perRecordLetClause != null || info.globalLetPresent)
       return 0;
+    // The DISTINCT/GROUP BY/aggregate trio is checked again inside isTimeSeriesTimestampOrderByAsc, and the
+    // overlap is deliberate rather than dead: a query with no ORDER BY at all never reaches that method, so
+    // without this line the three would go unchecked on exactly the shape - a bare LIMIT n - this method was
+    // added to serve (claude-review on PR #7720).
     if (info.distinct || info.groupBy != null || info.aggregateProjection != null)
       return 0;
 
