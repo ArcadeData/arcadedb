@@ -101,8 +101,8 @@ public class CsvRowSource implements GraphImporter.RecordSource {
    * as itself only by accident - {@code '|'} made every character its own field, {@code '.'} annihilated the row,
    * {@code '$'} and {@code '^'} split nothing at all, and eight more threw {@code PatternSyntaxException} about a
    * pattern nobody wrote. The first four were the worse half, because a shredded header means every
-   * {@code get(attribute)} misses and the import yields property-less vertices in silence. The full table is in
-   * {@code docs/7267-csvrowsource-regex-delimiter.md}.
+   * {@code get(attribute)} misses and the import yields property-less vertices in silence. The full table is
+   * in PR #7286.
    * <p>
    * {@code indexOf} is also cheaper than what it replaces: {@code String.split} takes its regex-free fast path only
    * for a single <i>non-metacharacter</i> char and compiles a {@code Pattern} per call - per row of a bulk import -
