@@ -18,8 +18,8 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.engine.timeseries.AggregationMetrics;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.engine.timeseries.TimeSeriesGateway;
@@ -29,7 +29,6 @@ import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
-import com.arcadedb.server.monitor.TimeSeriesReadMetrics;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
@@ -43,50 +42,49 @@ import java.util.Set;
 /**
  * HTTP handler for listing PromQL label values.
  * Endpoint: GET /api/v1/ts/{database}/prom/api/v1/label/{name}/values
+ * <p>
+ * On {@link DatabaseAbstractHandler} since issue #7681, for the reasons spelled out on
+ * {@link PostGrafanaQueryHandler}: a request carrying {@code arcadedb-session-id} reads through that session's
+ * transaction, under its lock and on its principal and refreshing its idle timer, and the base class subsumes
+ * the {@code checkAuthorizationOnDatabase} call this handler used to make by hand.
+ *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class GetPromQLLabelValuesHandler extends AbstractServerHttpHandler {
+public class GetPromQLLabelValuesHandler extends DatabaseAbstractHandler {
 
   public GetPromQLLabelValuesHandler(final HttpServer httpServer) {
     super(httpServer);
   }
 
   /**
-   * A full-range scan of every sample of every type the label appears on, so never on an Undertow IO thread
-   * (issue #7722).
-   * <p>
-   * The work is unbounded in the size of the SERIES rather than in the size of the request: the endpoint takes
-   * no bound the caller could narrow, and the {@code start}/{@code end} the Prometheus API defines for it are
-   * accepted and ignored here, so there is no request the server can answer cheaply. An IO thread serves many
-   * connections at once, and the cost of parking one is not paid by the caller whose scan it is - it is paid by
-   * every unrelated connection multiplexed onto the same thread.
-   * <p>
-   * This route is on Grafana's variable-refresh path, so a dashboard with one templated variable issues it on
-   * every load and on every refresh interval.
+   * A read: an auto-commit wrapper would only add a commit with nothing to commit, so an unresolvable session
+   * id degrades to a session-less read rather than being refused - see
+   * {@link DatabaseAbstractHandler#rejectsUnresolvableSession()}.
    */
   @Override
-  protected boolean mustExecuteOnWorkerThread() {
-    return true;
+  protected boolean requiresTransaction() {
+    return false;
+  }
+
+  /**
+   * A session-less read is answered on the IO thread, which is what this handler has always done. A request
+   * that names a session is not: see {@link DatabaseAbstractHandler#carriesSessionId}.
+   */
+  @Override
+  protected boolean mustExecuteOnWorkerThread(final HttpServerExchange exchange) {
+    return carriesSessionId(exchange);
   }
 
   @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
-      final JSONObject payload) throws Exception {
-
-    final Deque<String> databaseParam = exchange.getQueryParameters().get("database");
-    if (databaseParam == null || databaseParam.isEmpty())
-      return new ExecutionResponse(400, PromQLResponseFormatter.formatError("bad_data", "Database parameter is required"));
-
-    // Enforce database-level authorization (GHSA-x8mg-6r4p-87pf): this handler does not extend DatabaseAbstractHandler.
-    // Checked before any payload/parameter validation so an unauthorized caller cannot probe the target database.
-    checkAuthorizationOnDatabase(user, databaseParam.getFirst());
+      final Database db, final JSONObject payload) throws Exception {
 
     final Deque<String> nameParam = exchange.getQueryParameters().get("name");
     if (nameParam == null || nameParam.isEmpty())
       return new ExecutionResponse(400, PromQLResponseFormatter.formatError("bad_data", "Label name parameter is required"));
 
     final String labelName = nameParam.getFirst();
-    final DatabaseInternal database = httpServer.getServer().getDatabase(databaseParam.getFirst(), false, false);
+    final DatabaseInternal database = (DatabaseInternal) db;
 
     final Set<String> values = new LinkedHashSet<>();
 
@@ -135,29 +133,13 @@ public class GetPromQLLabelValuesHandler extends AbstractServerHttpHandler {
         // The visitor runs under the shard's read locks (see TimeSeriesRowVisitor): it folds, it does not compute
         // and it never calls back into the engine.
         final TimeSeriesEngine engine = tsType.getEngine();
-        // What the scan actually did, published to whatever the server's metrics subsystem feeds (issue #7717):
-        // on this route above all, because whether the sealed layer answers a block from its declared tag values
-        // or has to decompress it is the difference between a label picker that costs nothing and one that reads
-        // the series. null - and therefore free - whenever metrics are off.
-        final AggregationMetrics readMetrics = TimeSeriesReadMetrics.start();
-        try {
-          engine.forEachRow(Long.MIN_VALUE, Long.MAX_VALUE, columnIndices, null, readMetrics, row -> {
-            if (valueSlot < row.length && row[valueSlot] != null)
-              values.add(row[valueSlot].toString());
-            return true;
-          });
-        } finally {
-          TimeSeriesReadMetrics.publish(readMetrics, database.getName(), tsType.getName(),
-              TimeSeriesReadMetrics.SURFACE_PROM_LABEL_VALUES);
-        }
+        engine.forEachRow(Long.MIN_VALUE, Long.MAX_VALUE, columnIndices, null, null, row -> {
+          if (valueSlot < row.length && row[valueSlot] != null)
+            values.add(row[valueSlot].toString());
+          return true;
+        });
       }
     }
-
-    // An empty label value is an ABSENT label in Prometheus, never one of the label's values: see
-    // PromQLResponseFormatter.isLabelValuePresent (issue #7712). Removed here, at the point the answer is
-    // rendered, rather than inside the fold - the engine must keep reporting what the samples hold, and the
-    // same tag column still answers "" through the generic /ts surface.
-    values.removeIf(value -> !PromQLResponseFormatter.isLabelValuePresent(value));
 
     final List<String> sorted = new ArrayList<>(values);
     Collections.sort(sorted);

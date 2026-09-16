@@ -18,43 +18,63 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
-import java.util.Deque;
-
 /**
  * Grafana health-check endpoint.
  * Endpoint: GET /api/v1/ts/{database}/grafana/health
+ * <p>
+ * On {@link DatabaseAbstractHandler} since issue #7681, for the reasons spelled out on
+ * {@link PostGrafanaQueryHandler}: a request carrying {@code arcadedb-session-id} is answered inside that
+ * session - under its lock, on its principal, refreshing the idle timer that decides when its transaction is
+ * rolled back underneath it - and the base class subsumes the {@code checkAuthorizationOnDatabase} call this
+ * handler used to make by hand.
+ * <p>
+ * Resolving the database is now the base class's job, which is also what this handler's own body used to do
+ * one line later purely to make a missing database throw. The one difference that follows: a health check
+ * against a database that does not exist is refused BEFORE the session is resolved rather than after, which is
+ * the same 404 it answered before.
  */
-public class GetGrafanaHealthHandler extends AbstractServerHttpHandler {
+public class GetGrafanaHealthHandler extends DatabaseAbstractHandler {
 
   public GetGrafanaHealthHandler(final HttpServer httpServer) {
     super(httpServer);
   }
 
+  /**
+   * A health check reads nothing, so an auto-commit wrapper around it would only add a commit with nothing to
+   * commit. A consequence of that answer, shared with every other read on this prefix, is that an unresolvable
+   * session id degrades to a session-less check rather than being refused - see
+   * {@link DatabaseAbstractHandler#rejectsUnresolvableSession()}.
+   */
+  @Override
+  protected boolean requiresTransaction() {
+    return false;
+  }
+
+  /**
+   * A session-less health check is short enough to answer on the IO thread, which is what this handler has
+   * always done. A request that names a session is not: see {@link DatabaseAbstractHandler#carriesSessionId}.
+   */
+  @Override
+  protected boolean mustExecuteOnWorkerThread(final HttpServerExchange exchange) {
+    return carriesSessionId(exchange);
+  }
+
   @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
-      final JSONObject payload) throws Exception {
-
-    final Deque<String> databaseParam = exchange.getQueryParameters().get("database");
-    if (databaseParam == null || databaseParam.isEmpty())
-      return new ExecutionResponse(400, "{ \"error\" : \"Database parameter is required\"}");
-
-    final String databaseName = databaseParam.getFirst();
-
-    // Enforce database-level authorization (GHSA-x8mg-6r4p-87pf): this handler does not extend
-    // DatabaseAbstractHandler. Also prevents this endpoint from being a cross-database existence oracle.
-    checkAuthorizationOnDatabase(user, databaseName);
-
-    // Verify the database exists (will throw if not)
-    httpServer.getServer().getDatabase(databaseName, false, false);
+      final Database db, final JSONObject payload) throws Exception {
 
     final JSONObject result = new JSONObject();
     result.put("status", "ok");
-    result.put("database", databaseName);
+    // The name as the caller spelled it in the path, which is what this response has always echoed. Taken from
+    // the parameter rather than from db.getName() so the echo cannot start disagreeing with the request if the
+    // server ever resolves a name through an alias.
+    result.put("database", exchange.getQueryParameters().get("database").getFirst());
 
     return new ExecutionResponse(200, result.toString());
   }

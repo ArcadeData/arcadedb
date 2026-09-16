@@ -22,6 +22,7 @@ import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.Operation;
 import io.swagger.v3.oas.models.PathItem;
 import io.swagger.v3.oas.models.media.Schema;
+import io.swagger.v3.oas.models.responses.ApiResponse;
 
 import java.util.List;
 
@@ -29,6 +30,12 @@ import java.util.List;
  * Documents the Grafana data source endpoints. Query results use the Grafana DataFrame envelope:
  * one entry per request refId, each holding frames whose schema names the fields and whose data
  * holds one column-major array per field.
+ * <p>
+ * All three operations moved onto {@code DatabaseAbstractHandler} in issue #7681, so they honour the session
+ * header the way {@code /api/v1/query} and the {@code /api/v1/ts} operations of issue #7402 do. Until then the
+ * header was accepted by the transport and ignored by the handler, and the document said nothing either way -
+ * which reads to a client generator as "this route has nothing to do with transactions" rather than as the gap
+ * it was. All three are reads, so a session id that no longer resolves degrades rather than being refused.
  */
 public class GrafanaApiSpec implements OpenApiContributor {
 
@@ -49,9 +56,13 @@ public class GrafanaApiSpec implements OpenApiContributor {
         "Test the data source connection",
         "Answers the Grafana data source health check for one database.");
     get.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
-    get.setResponses(SpecBuilders.standardResponses("200",
-        SpecBuilders.jsonResponse("Data source reachable", "GrafanaHealth"),
-        "400", "401", "403", "404", "500"));
+    get.addParametersItem(SpecBuilders.sessionHeaderParam());
+
+    final ApiResponse health = SpecBuilders.jsonResponse("Data source reachable", "GrafanaHealth");
+    health.addHeaderObject(SpecBuilders.SESSION_HEADER, SpecBuilders.sessionEchoHeader());
+    get.setResponses(SpecBuilders.standardResponses("200", health, "400", "401", "403", "404", "500"));
+    get.getResponses().addApiResponse("404",
+        SpecBuilders.errorResponse(SpecBuilders.READ_STALE_SESSION_DESCRIPTION));
 
     final PathItem pathItem = new PathItem();
     pathItem.setGet(get);
@@ -66,9 +77,16 @@ public class GrafanaApiSpec implements OpenApiContributor {
             with its value fields and its tag fields (both carrying a name and a data type), and \
             the aggregation functions the server supports.""");
     get.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
-    get.setResponses(SpecBuilders.standardResponses("200",
-        SpecBuilders.jsonResponse("Queryable metadata", "GrafanaMetadata"),
-        "400", "401", "403", "404", "500"));
+    get.addParametersItem(SpecBuilders.sessionHeaderParam());
+
+    // Worth presenting here more than anywhere else on this prefix: what this operation reports is the SCHEMA,
+    // and a type created inside the caller's open transaction is visible to that transaction and to nothing
+    // else. Answered from outside the session, a panel that had just created a type was told it does not exist.
+    final ApiResponse metadata = SpecBuilders.jsonResponse("Queryable metadata", "GrafanaMetadata");
+    metadata.addHeaderObject(SpecBuilders.SESSION_HEADER, SpecBuilders.sessionEchoHeader());
+    get.setResponses(SpecBuilders.standardResponses("200", metadata, "400", "401", "403", "404", "500"));
+    get.getResponses().addApiResponse("404",
+        SpecBuilders.errorResponse(SpecBuilders.READ_STALE_SESSION_DESCRIPTION));
 
     final PathItem pathItem = new PathItem();
     pathItem.setGet(get);
@@ -87,10 +105,14 @@ public class GrafanaApiSpec implements OpenApiContributor {
             'maxDataPoints' helps derive a bucket interval when 'aggregation.bucketInterval' is \
             omitted.""");
     post.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
+    post.addParametersItem(SpecBuilders.sessionHeaderParam());
     post.setRequestBody(SpecBuilders.jsonBody("Grafana panel query", "GrafanaQueryRequest", true));
-    post.setResponses(SpecBuilders.standardResponses("200",
-        SpecBuilders.jsonResponse("DataFrames keyed by target refId", "GrafanaQueryResponse"),
-        "400", "401", "403", "404", "500"));
+
+    final ApiResponse frames = SpecBuilders.jsonResponse("DataFrames keyed by target refId", "GrafanaQueryResponse");
+    frames.addHeaderObject(SpecBuilders.SESSION_HEADER, SpecBuilders.sessionEchoHeader());
+    post.setResponses(SpecBuilders.standardResponses("200", frames, "400", "401", "403", "404", "500"));
+    post.getResponses().addApiResponse("404",
+        SpecBuilders.errorResponse(SpecBuilders.READ_STALE_SESSION_DESCRIPTION));
 
     final PathItem pathItem = new PathItem();
     pathItem.setPost(post);

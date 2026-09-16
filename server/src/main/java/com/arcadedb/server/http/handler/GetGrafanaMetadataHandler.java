@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.AggregationType;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
@@ -31,31 +32,46 @@ import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
-import java.util.Deque;
-
 /**
  * Grafana metadata endpoint — discovers TimeSeries types, fields, and tags.
  * Endpoint: GET /api/v1/ts/{database}/grafana/metadata
+ * <p>
+ * On {@link DatabaseAbstractHandler} since issue #7681, for the reasons spelled out on
+ * {@link PostGrafanaQueryHandler}. It matters more here than on a plain read: what this endpoint reports is
+ * the SCHEMA, and a type created inside the caller's open transaction is visible to that transaction and to
+ * nothing else. Answered from outside the session, a panel that had just created a type was told the type
+ * does not exist.
  */
-public class GetGrafanaMetadataHandler extends AbstractServerHttpHandler {
+public class GetGrafanaMetadataHandler extends DatabaseAbstractHandler {
 
   public GetGrafanaMetadataHandler(final HttpServer httpServer) {
     super(httpServer);
   }
 
+  /**
+   * A read: an auto-commit wrapper would only add a commit with nothing to commit, and an unresolvable session
+   * id therefore degrades rather than being refused - see
+   * {@link DatabaseAbstractHandler#rejectsUnresolvableSession()}.
+   */
+  @Override
+  protected boolean requiresTransaction() {
+    return false;
+  }
+
+  /**
+   * A session-less schema walk is short enough to answer on the IO thread, which is what this handler has
+   * always done. A request that names a session is not: see {@link DatabaseAbstractHandler#carriesSessionId}.
+   */
+  @Override
+  protected boolean mustExecuteOnWorkerThread(final HttpServerExchange exchange) {
+    return carriesSessionId(exchange);
+  }
+
   @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
-      final JSONObject payload) throws Exception {
+      final Database db, final JSONObject payload) throws Exception {
 
-    final Deque<String> databaseParam = exchange.getQueryParameters().get("database");
-    if (databaseParam == null || databaseParam.isEmpty())
-      return new ExecutionResponse(400, "{ \"error\" : \"Database parameter is required\"}");
-
-    // Enforce database-level authorization (GHSA-x8mg-6r4p-87pf): this handler does not extend DatabaseAbstractHandler.
-    // Checked before any payload/parameter validation so an unauthorized caller cannot probe the target database.
-    checkAuthorizationOnDatabase(user, databaseParam.getFirst());
-
-    final DatabaseInternal database = httpServer.getServer().getDatabase(databaseParam.getFirst(), false, false);
+    final DatabaseInternal database = (DatabaseInternal) db;
 
     final JSONArray typesArray = new JSONArray();
 
