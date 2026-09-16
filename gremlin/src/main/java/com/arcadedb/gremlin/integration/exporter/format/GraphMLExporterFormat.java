@@ -43,8 +43,7 @@ public class GraphMLExporterFormat extends AbstractExporterFormat {
   @Override
   public void exportDatabase() throws Exception {
     final File file = new File(settings.file);
-    if (file.exists() && !settings.overwriteFile)
-      throw new ExportException("The export file '%s' already exist and '-o' setting is false".formatted(settings.file));
+    refuseExistingTarget(file);
 
     ensureParentDirectory(file);
 

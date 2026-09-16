@@ -35,6 +35,8 @@ import java.time.format.DateTimeFormatter;
 import java.util.logging.Level;
 
 public abstract class AbstractExporterFormat {
+  /** The sidecar {@link #claimExportFile(File)} writes its claim to, and therefore a name no export may target. */
+  protected static final String            LOCK_SUFFIX = ".exporting";
   protected final        ExporterSettings  settings;
   protected final        ExporterContext   context;
   protected final        DatabaseInternal  database;
@@ -67,17 +69,42 @@ public abstract class AbstractExporterFormat {
    * {@code claimBackupFile} does exactly that for backups): the target legitimately pre-exists here whenever
    * {@code overwriteFile} is set, so claiming the PATH - not the absence of a file at it - is what is needed, and
    * that is what a lock file gives independently of {@code overwriteFile}.
+   * <p>
+   * The no-overwrite refusal is re-applied HERE, under the claim, and not only at the top of each format's
+   * {@code exportDatabase}: checked before the claim only, export A could find the target missing, export B could
+   * claim it, write a complete archive and release, and export A would then truncate B's finished archive despite
+   * {@code overwriteFile} being false. Only a check that runs while this export holds the claim means anything
+   * against a concurrent one (review of PR #7649).
    *
    * @return the lock file; release it with {@link #releaseExportFile(File)} from a {@code finally}
    */
   protected final File claimExportFile(final File exportFile) {
-    final File lock = new File(exportFile.getPath() + ".exporting");
+    // A TARGET NAMED LIKE A LOCK IS REFUSED RATHER THAN CLAIMED: claimExportFile("x") creates "x.exporting", so an
+    // export whose own target IS "x.exporting" would open for writing the very file another export is holding its
+    // claim in - and that other export deletes it on the way out, taking this one's finished archive with it. The
+    // suffix is a reserved name, and saying so is both cheaper and safer than a lock namespace that merely makes
+    // the collision less likely (review of PR #7649).
+    if (exportFile.getName().endsWith(LOCK_SUFFIX))
+      throw new ExportException(
+          "The export file '%s' cannot end with '%s': the suffix is reserved for the exporter's own lock files".formatted(
+              exportFile, LOCK_SUFFIX));
+
+    final File lock = new File(exportFile.getPath() + LOCK_SUFFIX);
     try {
       Files.createFile(lock.toPath());
     } catch (final FileAlreadyExistsException e) {
       throw new ExportException("Another export to '%s' is already in progress".formatted(exportFile));
     } catch (final IOException e) {
       throw new ExportException("Export target '%s' cannot be claimed".formatted(exportFile), e);
+    }
+
+    // AFTER the claim, and releasing it on refusal: this is the check that is race-free, and a caller that never
+    // got the claim back must not be left owing a release it cannot make.
+    try {
+      refuseExistingTarget(exportFile);
+    } catch (final RuntimeException e) {
+      releaseExportFile(lock);
+      throw e;
     }
     return lock;
   }
@@ -93,6 +120,22 @@ public abstract class AbstractExporterFormat {
       LogManager.instance().log(this, Level.WARNING,
           "Could not delete the export lock file '%s': later exports to the same target will be refused until it is removed",
           null, lock);
+  }
+
+  /**
+   * Refuses {@code exportFile} when it already exists and the caller did not ask for an overwrite.
+   * <p>
+   * Called TWICE on purpose, and the second call is the one that counts. The first is a cheap fast-fail before any
+   * lock file is created, for the ordinary case of an operator naming an archive that is already there. The second
+   * runs INSIDE the claim {@link #claimExportFile} takes, and only that one is race-free: checked before the claim
+   * only, export A could find the target missing, export B could then claim it, write a complete archive and
+   * release, and export A would go on to truncate B's finished archive despite {@code overwriteFile} being false
+   * (review of PR #7649). The check is meaningful against a concurrent export only while this export holds the
+   * target's claim.
+   */
+  protected final void refuseExistingTarget(final File exportFile) {
+    if (exportFile.exists() && !settings.overwriteFile)
+      throw new ExportException("The export file '%s' already exist and '-o' setting is false".formatted(settings.file));
   }
 
   /**

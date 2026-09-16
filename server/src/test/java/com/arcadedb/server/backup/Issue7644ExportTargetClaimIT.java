@@ -161,6 +161,27 @@ class Issue7644ExportTargetClaimIT extends BaseGraphServerTest {
   }
 
   /**
+   * An export may not target a name that IS a lock file: {@code claimExportFile("x")} writes its claim to
+   * {@code x.exporting}, so an export to {@code x.exporting} would open for writing the very file another export
+   * is holding its claim in - and that export deletes it on release, taking this one's finished archive with it.
+   * The suffix is refused as a reserved name instead (review of PR #7649).
+   */
+  @Test
+  @Timeout(60)
+  void anExportCannotTargetTheLockSuffixItself() throws Exception {
+    final HttpResponse<String> response = postSql("EXPORT DATABASE file://reserved-7644.jsonl.tgz.exporting");
+
+    assertThat(response.statusCode()).as("a target named like a lock file must be refused: %s", response.body())
+        .isNotEqualTo(200);
+    assertThat(response.body()).contains("reserved");
+
+    // AND THE REFUSAL LEFT NOTHING BEHIND - NEITHER THE TARGET NOR A CLAIM ON IT
+    assertThat(new File(exportDir, "reserved-7644.jsonl.tgz.exporting")).doesNotExist();
+    assertThat(new File(exportDir, "reserved-7644.jsonl.tgz.exporting.exporting")).doesNotExist();
+    assertThat(getServer(0).getBackupCoordinator().isInProgress(getDatabaseName())).isFalse();
+  }
+
+  /**
    * The lock is released even when the export FAILS after claiming it, so a failed export does not permanently
    * block every later one to the same target.
    */
