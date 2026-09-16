@@ -203,9 +203,11 @@ public class PrometheusApiSpec implements OpenApiContributor {
         """
             Lists the values of one label name, sorted, over the requested time range. Compatible with \
             the Prometheus /api/v1/label/{name}/values endpoint. Querying '__name__' returns the \
-            time-series type names instead of scanning a tag column, restricted to the types holding a \
-            sample in the range. 'start' and 'end' are optional and default to the whole series; unlike \
-            Prometheus itself, this endpoint does not accept 'match[]'.""");
+            time-series type names instead of scanning a tag column. 'start' and 'end' are optional and \
+            default to the whole series: when either is supplied, the answer is restricted to the values - \
+            and, for '__name__', the types - carried by a sample in that range; with neither, every \
+            time-series type is named, one holding no sample at all included. Unlike Prometheus itself, \
+            this endpoint does not accept 'match[]'.""");
     get.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
     get.addParametersItem(SpecBuilders.sessionHeaderParam());
     get.addParametersItem(SpecBuilders.pathParam("name", "Label name"));
