@@ -1338,7 +1338,7 @@ public class MergeStep extends AbstractExecutionStep {
         if (value != null) {
           keyValues.add(entry.getKey());
           keyValues.add(CypherValues.coerceAndValidatePropertyValue(value, entry.getKey(),
-              originOf(rawProperties, entry.getKey())));
+              originOf(rawProperties, entry.getKey(), value)));
         }
       }
       edgeProperties = keyValues.toArray();
@@ -1372,8 +1372,8 @@ public class MergeStep extends AbstractExecutionStep {
     for (final Map.Entry<String, Object> entry : properties.entrySet()) {
       final Object value = entry.getValue();
       if (value != null)
-        document.set(entry.getKey(),
-            CypherValues.coerceAndValidatePropertyValue(value, entry.getKey(), originOf(rawProperties, entry.getKey())));
+        document.set(entry.getKey(), CypherValues.coerceAndValidatePropertyValue(value, entry.getKey(),
+            originOf(rawProperties, entry.getKey(), value)));
     }
   }
 
@@ -1384,12 +1384,14 @@ public class MergeStep extends AbstractExecutionStep {
    * without this a map refused by MERGE named the property and nothing else, while the same refusal from CREATE or
    * SET named where the value came from (issue #7729).
    * <p>
-   * One map lookup per property written. That is deliberately not deferred to the failure path: deferring it needs
-   * either a supplier allocated per call or a second map built per row, and both cost more on the path that
-   * succeeds - which is every path but one - than the lookup does.
+   * Only a map, or a list that might contain one, can ever be refused, so only those pay the lookup - a scalar
+   * property, which is nearly every property ever written, is answered by two {@code instanceof} tests against a
+   * reference already in hand. That is what keeps this off the MERGE write path's cost: deferring the lookup to
+   * the failure path itself would need either a supplier allocated per call or a second map built per row, and
+   * both cost more on the path that succeeds than this does.
    */
-  private static Object originOf(final Map<String, Object> rawProperties, final String property) {
-    if (rawProperties == null)
+  private static Object originOf(final Map<String, Object> rawProperties, final String property, final Object value) {
+    if (rawProperties == null || !(value instanceof Map || value instanceof List))
       return null;
     final Object raw = rawProperties.get(property);
     if (raw instanceof CypherASTBuilder.ParameterReference parameter)
