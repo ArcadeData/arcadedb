@@ -410,15 +410,32 @@ public class SnapshotHttpHandler implements HttpHandler {
         // #7671: ONE READ-LOCKED FRAME AROUND BOTH HALVES OF THE CAPTURE, AND NOTHING ELSE. The lock is released
         // before a single byte goes to the follower, so DDL still runs alongside the transfer (#7456); what it
         // excludes is a schema change landing BETWEEN the window's t0 and the sealed listing, which is the one
-        // ordering neither the t0 barrier nor the compaction pause provides
+        // ordering neither the t0 barrier nor the compaction pause provides.
+        //
+        // A LISTING THAT FAILS HERE LEAVES THE HANDLER BY A DIFFERENT DOOR FROM EVERY OTHER FAILURE ON THIS PATH,
+        // AND THAT IS DELIBERATE (claude-review on PR #7708). listSealedStoresOrFail throws a
+        // DatabaseOperationException, which is not a PageSnapshotException, so it is not caught below and does not
+        // fall back - the fallback lists the same directory and would fail the same way - and it never reaches
+        // serveSnapshotZip's swallow, because that code never runs. It propagates out of handleRequest, which
+        // declares `throws Exception` and does not catch around handleSnapshot, so Undertow ends the exchange.
+        // Every release still happens on the way out: handleSnapshot's `try (pause)` closes the compaction pause,
+        // its finally unlocks the per-database suspend lock, and the outer finally releases the concurrency
+        // semaphore. The follower sees a response with no manifest, which is the #4831 check's whole job, and
+        // retries - the same recovery as a transfer that dies mid-stream, reached before any bytes were sent
         image = db.executeInReadLock(() -> {
           final PageSnapshot window = db.getPageManager().openSnapshot(db);
           try {
             return new SnapshotImage(window, listSealedStoresOrFail(new File(db.getDatabasePath()), databaseName));
           } catch (final RuntimeException e) {
             // A WINDOW THAT NEVER REACHES A STREAMER IS NEVER CLOSED BY ONE: the finally below only covers the
-            // image this block returns
-            window.close();
+            // image this block returns. SUPPRESSED RATHER THAN REPLACED - a close that fails on the way out must
+            // not become the exception the operator reads, because the one that got us here is the one that says
+            // what went wrong (claude-review on PR #7708)
+            try {
+              window.close();
+            } catch (final RuntimeException closeFailure) {
+              e.addSuppressed(closeFailure);
+            }
             throw e;
           }
         });
