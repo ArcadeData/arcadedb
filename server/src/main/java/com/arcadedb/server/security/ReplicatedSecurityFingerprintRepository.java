@@ -62,6 +62,14 @@ import java.util.logging.Level;
  * A write failure is not fatal and never fails an apply. The cost of losing it is one entry installed
  * unconditionally after the next restart, which is exactly the pre-#7509 behaviour; the cost of failing the apply
  * would be a node that stops applying committed security entries because a marker file could not be written.
+ * <p>
+ * <b>The first upgrade to a version carrying this file is the same one-entry window, by construction</b>
+ * (claude-review on PR #7748). This file is new, so an already-converged cluster comes up with nothing recorded on
+ * any node, and the first security entry after the upgrade installs without the compare-and-set of issue #7509 -
+ * once per document kind. It is uniform (every node is in the same state, so none refuses what another installs)
+ * and it is self-closing (that entry records the fingerprint everywhere), but for that one entry a concurrent
+ * change on two nodes can still lose one of them, as it did before #7509. Nothing has to be done about it; it is
+ * recorded here so it is not rediscovered as a surprise.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
