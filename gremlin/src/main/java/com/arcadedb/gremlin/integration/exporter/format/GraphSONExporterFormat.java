@@ -43,9 +43,10 @@ public class GraphSONExporterFormat extends AbstractExporterFormat {
   @Override
   public void exportDatabase() throws Exception {
     final File file = new File(settings.file);
+    // NO ensureParentDirectory HERE: 'file' is the UNRESOLVED settings.file, which for a 'file://' target names a
+    // different (bogus) parent than the archive actually goes in. claimExportFile creates the real one, from the
+    // resolved path, right before it takes the claim in it.
     refuseExistingTarget(file);
-
-    ensureParentDirectory(file);
 
     if (database.isTransactionActive())
       throw new ExportException("Transaction in progress found");
