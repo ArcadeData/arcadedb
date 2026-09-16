@@ -58,6 +58,9 @@ public class AiApiSpec implements OpenApiContributor {
     openAPI.getComponents().addSchemas("AiChatList", createChatListSchema());
     openAPI.getComponents().addSchemas("AiChat", createChatSchema());
     openAPI.getComponents().addSchemas("AiChatDeleted", createChatDeletedSchema());
+    openAPI.getComponents().addSchemas("AiChatStreamEvent", createChatStreamEventSchema());
+    openAPI.getComponents().addSchemas("AiCommand", createCommandSchema());
+    openAPI.getComponents().addSchemas("AiToolCall", createToolCallSchema());
   }
 
   private PathItem createConfigPath() {
@@ -144,18 +147,35 @@ public class AiApiSpec implements OpenApiContributor {
             'response', 'commands', and 'chatId' fields as POST /api/v1/ai/chat's JSON response. For \
             a single non-streaming JSON reply instead, use POST /api/v1/ai/chat.
 
+            The gateway's own 'session' and 'tool_call' events are NOT forwarded: this server consumes \
+            both - the first to learn where to post tool results, the second to run the tool - and emits \
+            a 'tool_start'/'tool_end' pair around each run in their place. See AiChatStreamEvent.
+
             The assistant is a remote dependency: 503 means the gateway was unreachable and 504 that \
             it did not answer in time. Both are retryable. A rejected subscription token answers 502, \
             remapped from the gateway's own 401 or 403 so it cannot be mistaken for this request's own \
             authentication failing.""");
     post.setRequestBody(SpecBuilders.jsonBody("Chat message", "AiChatRequest", true));
 
+    // Issue #7573. This used to be one 'type: string' whose whole specification was five event names in a
+    // sentence, so no client could be generated for the stream at all - and two of the five names were wrong:
+    // 'session' and 'tool_call' are the GATEWAY's events, which this server consumes and answers itself. What
+    // reaches the caller is the pair it synthesizes around each tool it runs, plus the terminal event.
     final MediaType sseMediaType = new MediaType();
-    sseMediaType.setSchema(new Schema<>().type("string").description(
-        "Server-Sent Events stream: 'session', 'tool_call', 'tool_start', 'tool_end', 'done'"));
+    sseMediaType.setSchema(SpecBuilders.ref("AiChatStreamEvent"));
+    sseMediaType.setExample("""
+        data: {"type":"tool_start","tool":"query","args":{"database":"demo","query":"SELECT FROM Person"}}
+
+        data: {"type":"tool_end","tool":"query","args":{"database":"demo","query":"SELECT FROM Person"}}
+
+        data: {"type":"done","response":"There are 42 people.","commands":[],"chatId":"c-17"}
+        """);
     final ApiResponse ok = new ApiResponse();
-    ok.setDescription(
-        "Server-Sent Events stream of 'session', 'tool_call', 'tool_start', 'tool_end', and 'done' events.");
+    ok.setDescription("""
+        Server-Sent Events stream. Each event is one 'data: ' line carrying a JSON object, followed by a blank \
+        line; the schema below is the schema of that object. A complete stream ends with a 'done' event, and \
+        exactly one: a stream that ends without it was cut short, and the reply it would have carried was never \
+        persisted.""");
     ok.setContent(new Content().addMediaType("text/event-stream", sseMediaType));
 
     final ApiResponses responses = chatResponses();
@@ -284,6 +304,8 @@ public class AiApiSpec implements OpenApiContributor {
         "Protocol version this server prefers"));
     schema.addProperty("supportedProtocolVersions", SpecBuilders.arrayOf(
         SpecBuilders.integer("Protocol version"), "Every version this server accepts"));
+    // GetAiConfigHandler writes all four on every answer, including when 'configured' is false (issue #7578).
+    schema.setRequired(List.of("configured", "gatewayUrl", "currentProtocolVersion", "supportedProtocolVersions"));
     return schema;
   }
 
@@ -297,6 +319,7 @@ public class AiApiSpec implements OpenApiContributor {
   private Schema<?> createActivateResponseSchema() {
     final Schema<Object> schema = SpecBuilders.object("Activation result");
     schema.addProperty("activated", SpecBuilders.bool("Always true on a 200"));
+    schema.setRequired(List.of("activated"));
     return schema;
   }
 
@@ -320,11 +343,14 @@ public class AiApiSpec implements OpenApiContributor {
         "Chat this exchange belongs to, for continuing the conversation"));
     schema.addProperty("response", SpecBuilders.string("Assistant message"));
     schema.addProperty("commands", SpecBuilders.arrayOf(
-        SpecBuilders.object("A proposed command"),
+        SpecBuilders.ref("AiCommand"),
         "SQL commands the assistant proposes. Absent when it proposes none."));
     schema.addProperty("toolCalls", SpecBuilders.arrayOf(
-        SpecBuilders.object("A tool invocation"),
+        SpecBuilders.ref("AiToolCall"),
         "Tools the assistant invoked while answering. Absent when it invoked none."));
+    // The two arrays are written only when the assistant produced something to put in them; the reply itself
+    // and the chat it belongs to are on every 200 (issue #7578).
+    schema.setRequired(List.of("chatId", "response"));
     return schema;
   }
 
@@ -338,12 +364,18 @@ public class AiApiSpec implements OpenApiContributor {
         "Protocol version this server prefers"));
     schema.addProperty("supportedProtocolVersions", SpecBuilders.arrayOf(
         SpecBuilders.integer("Protocol version"), "Every version this server accepts"));
+    // Only 'error' is on every 400 from these two operations. The other three are written together, and only
+    // on the protocol-version branch, which is what 'code' identifies (issue #7578).
+    schema.setRequired(List.of("error"));
     return schema;
   }
 
   private Schema<?> createAnalyzeProfilerRequestSchema() {
     final Schema<Object> schema = SpecBuilders.object("Profiler analysis request");
-    schema.addProperty("profilerData", SpecBuilders.object("Profiler snapshot to analyse"));
+    schema.addProperty("profilerData", SpecBuilders.freeFormObject("""
+        Profiler snapshot to analyse. An open map: the server forwards it to the assistant as it stands and \
+        derives the schema of every database named inside it, rather than reading a fixed set of keys out of \
+        it - so the shape follows whatever the profiler produced."""));
     schema.setRequired(List.of("profilerData"));
     return schema;
   }
@@ -352,27 +384,33 @@ public class AiApiSpec implements OpenApiContributor {
     final Schema<Object> schema = SpecBuilders.object("Profiler analysis");
     schema.addProperty("response", SpecBuilders.string("Assistant analysis"));
     schema.addProperty("commands", SpecBuilders.arrayOf(
-        SpecBuilders.object("A proposed command"),
+        SpecBuilders.ref("AiCommand"),
         "Commands the assistant proposes. Absent when it proposes none."));
+    schema.setRequired(List.of("response"));
     return schema;
   }
 
   private Schema<?> createChatListSchema() {
     final Schema<Object> schema = SpecBuilders.object("Stored chats");
     schema.addProperty("chats", SpecBuilders.arrayOf(
-        SpecBuilders.ref("AiChat"), "Stored chat transcripts, metadata only (no 'messages')"));
+        SpecBuilders.ref("AiChat"), "Stored chat transcripts, metadata only (no 'messages'). Empty when this "
+            + "user has stored none"));
+    schema.setRequired(List.of("chats"));
     return schema;
   }
 
   private Schema<?> createChatSchema() {
     final Schema<Object> message = SpecBuilders.object("One chat message");
-    message.addProperty("role", SpecBuilders.string("'user' or the assistant role"));
+    final Schema<String> role = SpecBuilders.string("Who wrote the message");
+    role.setEnum(List.of("user", "assistant"));
+    message.addProperty("role", role);
     message.addProperty("content", SpecBuilders.string("Message text"));
     message.addProperty("timestamp", SpecBuilders.string("ISO-8601 instant"));
     message.addProperty("commands", SpecBuilders.arrayOf(
-        SpecBuilders.object("A proposed command"),
+        SpecBuilders.ref("AiCommand"),
         "SQL commands the assistant proposed with this reply. Present only on an assistant message "
             + "that proposed at least one."));
+    message.setRequired(List.of("role", "content", "timestamp"));
 
     final Schema<Object> schema = SpecBuilders.object(
         "One chat transcript. GET /api/v1/ai/chats returns this shape without 'messages'; "
@@ -384,12 +422,97 @@ public class AiApiSpec implements OpenApiContributor {
     schema.addProperty("updated", SpecBuilders.string("ISO-8601 instant of the last change"));
     schema.addProperty("messages", SpecBuilders.arrayOf(message,
         "Messages, oldest first. Omitted from the /chats list response."));
+    // 'messages' is the one member the list response drops, which is the whole difference between the two
+    // shapes this schema describes (issue #7578).
+    schema.setRequired(List.of("id", "title", "database", "created", "updated"));
     return schema;
   }
 
   private Schema<?> createChatDeletedSchema() {
     final Schema<Object> schema = SpecBuilders.object("Deletion result");
     schema.addProperty("deleted", SpecBuilders.bool("Always true on a 200"));
+    schema.setRequired(List.of("deleted"));
+    return schema;
+  }
+
+  /**
+   * One event of the streaming chat response (issue #7573).
+   * <p>
+   * Modelled on {@code CoreApiSpec.createNdJsonQueryEventSchema}, with one difference the transport forces:
+   * an NDJSON line names its kind by which of three keys is present, while an SSE event names it in a
+   * {@code type} member, so the discriminator is a property with a closed value set rather than a choice of
+   * keys. The fields of every kind are declared side by side and the description says which kind carries
+   * which, because a {@code oneOf} keyed on {@code type} would refuse the forward-compatibility case below.
+   * <p>
+   * The value set is closed for what THIS server synthesizes and open for what it relays: the default arm of
+   * the handler's switch forwards any event kind the gateway sends on unchanged, so a client must ignore a
+   * {@code type} it does not know rather than fail on it. That is stated here instead of being left for a
+   * client author to discover when the gateway gains an event.
+   */
+  private Schema<?> createChatStreamEventSchema() {
+    final Schema<String> type = SpecBuilders.string("""
+        Which event this is. 'tool_start' and 'tool_end' bracket one tool the server ran locally, and 'done' \
+        terminates a complete stream. The gateway's own 'session' and 'tool_call' events never appear: the \
+        server consumes both and synthesizes the pair above in their place. Any OTHER value is an event the \
+        gateway added and this server relays unchanged - ignore what you do not recognise rather than failing \
+        on it.""");
+    type.setEnum(List.of("tool_start", "tool_end", "done"));
+
+    final Schema<Object> schema = SpecBuilders.object("""
+        One event of the chat stream. 'type' says which one; the other members below belong to the kinds their \
+        descriptions name, and an event carries only its own.""");
+    schema.addProperty("type", type);
+    schema.addProperty("tool", SpecBuilders.string(
+        "Name of the tool being run, on 'tool_start' and 'tool_end'. The same name appears on both, which is "
+            + "how a consumer pairs them"));
+    schema.addProperty("args", SpecBuilders.freeFormObject("""
+        Arguments the assistant passed to the tool, echoed identically on 'tool_start' and 'tool_end'. An open \
+        map: the keys are the tool's own parameters."""));
+    schema.addProperty("error", SpecBuilders.string("""
+        Why the tool failed, on 'tool_end' only, and only when it did. Its absence is what says the run \
+        succeeded - the stream does not carry the tool's result, which goes back to the gateway rather than to \
+        the caller."""));
+    schema.addProperty("response", SpecBuilders.string(
+        "The assistant's reply, on 'done'. The same value POST /api/v1/ai/chat returns under this name"));
+    schema.addProperty("commands", SpecBuilders.arrayOf(SpecBuilders.ref("AiCommand"),
+        "SQL commands the assistant proposes, on 'done'. Absent or empty when it proposes none"));
+    schema.addProperty("chatId", SpecBuilders.string("""
+        Chat this exchange belongs to, on 'done'. Added by this server, not by the gateway, and the chat is \
+        persisted before this event is written - so a client that has seen it can read the chat back \
+        immediately."""));
+    // Only 'type' is on every event: everything else belongs to one kind, and an event relayed from the
+    // gateway carries neither its fields nor ours.
+    schema.setRequired(List.of("type"));
+    return schema;
+  }
+
+  /**
+   * One SQL command the assistant proposes. Was a bare {@code type: object} at all four of its occurrences,
+   * which a strict generator emits as an empty model - so the command a caller is meant to review and run was
+   * unreachable through typed access (issue #7577).
+   */
+  private Schema<?> createCommandSchema() {
+    final Schema<Object> schema = SpecBuilders.object(
+        "One command the assistant proposes. Proposed only: the server never runs it, the caller does");
+    schema.addProperty("command", SpecBuilders.string("The statement text"));
+    schema.addProperty("language", SpecBuilders.string(
+        "Query language the statement is written in. Treated as 'sql' when absent"));
+    schema.addProperty("purpose", SpecBuilders.string(
+        "One line saying what the statement is for, shown above it. Absent when the assistant gave none"));
+    schema.setRequired(List.of("command"));
+    return schema;
+  }
+
+  /** One tool the assistant invoked, as relayed in the buffered reply. */
+  private Schema<?> createToolCallSchema() {
+    final Schema<Object> schema = SpecBuilders.object(
+        "One tool invocation, reported after the fact. The same pair of members the stream's 'tool_start' "
+            + "carries");
+    schema.addProperty("tool", SpecBuilders.string("Name of the tool that was run"));
+    schema.addProperty("args", SpecBuilders.freeFormObject(
+        "Arguments it was run with, keyed by the tool's own parameter names"));
+    schema.addProperty("error", SpecBuilders.string("Why it failed. Absent on a run that succeeded"));
+    schema.setRequired(List.of("tool"));
     return schema;
   }
 }
