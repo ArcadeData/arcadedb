@@ -154,6 +154,12 @@ public final class TimeSeriesReadMetrics {
    * Turns publishing on or off. Called by {@code ArcadeDBServer} when it installs and dismantles the metrics
    * subsystem; disabling also drops the cache, because a cached meter is bound to the registries that backed
    * it when it was built and recording into one whose registry is gone discards the sample silently.
+   * <p>
+   * Disabling stops NEW resolutions, not a request already holding a resolved {@link MeterSet}: the cache is
+   * cleared but the meters themselves are not deregistered, so a read in flight when the server dismantles its
+   * metrics can still record into the old registry. That is tolerated rather than prevented - the alternative
+   * is a read barrier on a path whose whole point is that it is cheap - and it is harmless, because the
+   * registry being torn down is discarded with the sample. The sibling recorders make the same trade.
    */
   public static void setEnabled(final boolean value) {
     enabled = value;
