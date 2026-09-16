@@ -605,7 +605,15 @@ public class TimeSeriesEngine implements AutoCloseable {
    * <p>
    * The bound is carried into the scan instead. The sealed layer asks before each block and the mutable layer
    * before each row, so the work stops within one block of the ceiling being passed, and what comes back is a
-   * result that is INCOMPLETE BY CONSTRUCTION. That is safe precisely because the scan stops only once the
+   * result that is INCOMPLETE BY CONSTRUCTION.
+   * <p>
+   * <b>How far past the ceiling it goes.</b> On the sealed side, one block: the block in hand is decompressed
+   * in full before the next check. On the mutable side, two ROWS - {@code TimeSeriesBucket.iterateRange}
+   * prefetches, so the row that trips the ceiling is followed by one more being located before the loop
+   * breaks. It is two rows and not the rest of the bucket, because that prefetch returns at the first in-range
+   * row it finds and never evaluates the tag filter, so rows this loop will later reject cannot draw it
+   * further either. {@code Issue7724AggregationBucketCeilingTest} pins the number so a restructuring cannot
+   * quietly turn it into a scan. That is safe precisely because the scan stops only once the
    * count is already ABOVE the ceiling: the caller's own after-the-fact check therefore fires on it and refuses
    * it, in the same words as before, so no partial answer can escape. The alternative shape - refusing up front
    * on {@code (toTs - fromTs) / bucketIntervalMs}, as the issue proposed - would refuse requests that succeed
