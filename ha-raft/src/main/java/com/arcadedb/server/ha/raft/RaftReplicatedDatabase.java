@@ -3420,17 +3420,43 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
             forceSnapshot);
   }
 
+  /**
+   * Drops this database across the cluster and does not return until this node's OWN copy is gone, not merely
+   * once the drop entry is Raft-committed.
+   * <p>
+   * {@code submitAndWait}'s return is the committed log index, not proof of a local apply: the state machine
+   * applies entries asynchronously on every node, leader included - there is no local-commit fast path here the
+   * way a transaction has one, so unlike {@link #replicateAndConclude} there is no leader/follower split to make,
+   * every caller waits the same way. Without the wait, {@code ServerControlPlane.dropDatabase}'s {@code finally}
+   * released {@link com.arcadedb.engine.MaintenanceCoordinator.Operation#DROP} as soon as the entry committed,
+   * which can be before {@code ArcadeStateMachine.applyDropDatabaseEntry} has actually deleted the directory here
+   * - so a backup, restore, import or export admitted into the now-free slot could start reading or writing a
+   * directory the apply thread was still in the middle of deleting. Exactly the #5503 async-apply gap, on the
+   * drop path this time (issue #7641, review of PR #7649).
+   * <p>
+   * {@code throwOnTimeout=true}: a timeout here means this node cannot prove its own copy is gone, and the
+   * caller's slot is about to be released regardless (the {@code finally} in {@code ServerControlPlane}) - so
+   * silently returning would hand out the "drop finished" guarantee on nothing but hope. Throwing surfaces a
+   * clear failure instead of a directory that might still be there when the next operation starts.
+   */
   @Override
   public void dropInReplicas() {
+    final long committedLogIndex;
     try {
       final RaftHAServer raft = requireRaftServer();
-      raft.getTransactionBroker().replicateDropDatabase(getName());
+      committedLogIndex = raft.getTransactionBroker().replicateDropDatabase(getName());
+      raft.waitForAppliedIndex(getName(), committedLogIndex, true);
     } catch (final TransactionException e) {
       throw e;
     } catch (final Exception e) {
-      throw new TransactionException("Error sending drop-database entry via Raft for database '" + getName() + "'", e);
+      // Covers both phases behind one message deliberately: a caller cannot act differently on "the entry never
+      // committed" versus "it committed but this node cannot prove it applied the delete locally" - either way
+      // the drop is not confirmed done on this node, and ServerControlPlane.dropDatabase's finally is about to
+      // release the DROP slot regardless.
+      throw new TransactionException("Error dropping database '" + getName() + "' via Raft", e);
     }
-    LogManager.instance().log(this, Level.INFO, "Database '%s' drop-database entry committed via Raft", getName());
+    LogManager.instance().log(this, Level.INFO, "Database '%s' drop-database entry applied locally at index %d", getName(),
+        committedLogIndex);
   }
 
   /**
