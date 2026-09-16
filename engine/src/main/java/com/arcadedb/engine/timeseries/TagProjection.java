@@ -37,6 +37,13 @@ import java.util.Arrays;
  * <p>
  * Both index arrays are in the non-timestamp schema order the sealed decompressor emits columns in, which is what
  * makes the narrowed row identical to the one an unfiltered scan of the same projection would have produced.
+ * <p>
+ * <b>The projection is expected ASCENDING and without duplicates</b>, which is what every caller builds - the
+ * column resolvers in {@code TimeSeriesGateway} walk the schema in order - and what the decompressors already
+ * assume: they emit the selected columns in schema order whatever order they were asked in, so a row built from
+ * an unsorted projection maps its values to the wrong names on EVERY read path, filtered or not. Nothing here
+ * re-sorts the caller's array or refuses it: a widened scan set is sorted because the decompressor's own order is
+ * what {@link #narrow} has to read, and an already-covering projection is handed back untouched.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

@@ -122,10 +122,23 @@ class Issue7743NullMeasurementIsAbsentTest extends TestHelper {
     }
   }
 
+  /** The ENGINE boundary, where absence is the NaN marker; the SQL boundary spells the same thing NULL. */
   private static List<Double> measurements(final TimeSeriesEngine engine) throws IOException {
     return engine.query(Long.MIN_VALUE, Long.MAX_VALUE, null, null).stream()
         .map(row -> ((Number) row[1]).doubleValue())
         .toList();
+  }
+
+  /** And the SQL boundary on the same rows: a null measurement reads back as SQL NULL, not as NaN. */
+  @Test
+  void aProjectedNullMeasurementReadsBackAsSqlNull() throws Exception {
+    final TimeSeriesEngine engine = create("Projected", "DOUBLE");
+    appendRealAndNull(engine);
+
+    try (final ResultSet rs = database.query("sql", "SELECT value FROM Projected ORDER BY ts")) {
+      assertThat(rs.next().<Object>getProperty("value")).isEqualTo(10.0d);
+      assertThat(rs.next().<Object>getProperty("value")).as("no measurement is NULL, not NaN and not 0.0").isNull();
+    }
   }
 
   /** A FLOAT column carries the marker too, and its narrower codec round-trips it. */
@@ -189,7 +202,66 @@ class Issue7743NullMeasurementIsAbsentTest extends TestHelper {
     }
   }
 
+  /**
+   * At the SQL boundary "absent" is spelled {@code NULL} and nothing else - not NaN, which is the STORAGE
+   * spelling. Asserted strictly on purpose (claude-review on PR #7747): a helper that accepted either would let
+   * the marker leak into a result property without failing anything.
+   */
   private static boolean isAbsent(final Object value) {
-    return value == null || (value instanceof Number n && TimeSeriesNaN.isAbsent(n.doubleValue()));
+    return value == null;
+  }
+
+  // ---- the aggregation push-down, which is a different plan for the same question ----
+
+  /**
+   * The query shape the issue reports, and the one that is PUSHED DOWN: {@code GROUP BY} on the time-bucket alias
+   * routes through {@code AggregateFromTimeSeriesStep} instead of the generic aggregators, so it reads the
+   * engine's numbers directly rather than the rows. Both layers, because compaction must not change the answer.
+   */
+  @Test
+  void theGroupedPushDownAnswersTheRealSamplesOnBothLayers() throws Exception {
+    final TimeSeriesEngine engine = create("Grouped", "DOUBLE");
+    appendRealAndNull(engine);
+
+    assertGroupedAggregates("Grouped", 10.0d, 10.0d, 10.0d);
+    engine.compactAll();
+    assertGroupedAggregates("Grouped", 10.0d, 10.0d, 10.0d);
+  }
+
+  /**
+   * A pushed-down bucket that measured nothing answers {@code NULL}, the same word the generic aggregation and
+   * the raw-row projection answer - not the raw NaN marker (claude-review on PR #7747). A client that read NaN
+   * from one plan and NULL from the other would be reading the PLAN rather than the data, which is the very
+   * divergence this PR exists to remove.
+   */
+  @Test
+  void aPushedDownBucketWithNoRealSampleAnswersNullRatherThanTheMarker() throws Exception {
+    final TimeSeriesEngine engine = create("GroupedAllNull", "DOUBLE");
+    engine.appendSamples(new long[] { BASE_TS, BASE_TS + 1_000 }, new Object[][] { new Object[] { null, null } });
+    engine.compactAll();
+
+    try (final ResultSet rs = database.query("sql", groupedQuery("GroupedAllNull"))) {
+      final Result row = rs.next();
+      assertThat(isAbsent(row.getProperty("s"))).as("SUM over no real sample").isTrue();
+      assertThat(isAbsent(row.getProperty("a"))).as("AVG over no real sample").isTrue();
+      assertThat(isAbsent(row.getProperty("mn"))).as("MIN over no real sample, NOT a phantom 0.0").isTrue();
+    }
+  }
+
+  private static String groupedQuery(final String typeName) {
+    // ts.timeBucket takes the INTERVAL first and the timestamp column second, and the planner pushes the
+    // aggregation down only when GROUP BY names the bucket alias.
+    return "SELECT ts.timeBucket('1h', ts) AS b, sum(value) AS s, avg(value) AS a, min(value) AS mn, count(*) AS c"
+        + " FROM " + typeName + " GROUP BY b";
+  }
+
+  private void assertGroupedAggregates(final String typeName, final double sum, final double avg, final double min) {
+    try (final ResultSet rs = database.query("sql", groupedQuery(typeName))) {
+      final Result row = rs.next();
+      assertThat(((Number) row.getProperty("s")).doubleValue()).as("sum").isEqualTo(sum);
+      assertThat(((Number) row.getProperty("a")).doubleValue()).as("avg").isEqualTo(avg);
+      assertThat(((Number) row.getProperty("mn")).doubleValue()).as("min").isEqualTo(min);
+      assertThat(((Number) row.getProperty("c")).longValue()).as("count counts ROWS").isEqualTo(2);
+    }
   }
 }

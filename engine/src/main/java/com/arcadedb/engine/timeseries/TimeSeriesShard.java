@@ -193,20 +193,29 @@ public class TimeSeriesShard implements AutoCloseable {
     // The failure at initHeaderPage() a few lines above already propagates without closing, for the same reason.
     this.sealedStore = new TimeSeriesSealedStore(shardPath, columns);
 
-    // Crash recovery: if a compaction was interrupted, truncate any partial sealed blocks
-    database.begin();
+    // Crash recovery: if a compaction was interrupted, truncate any partial sealed blocks.
+    //
+    // On `database` and not on getWrappedDatabaseInstance(), unlike the header-page write above: this is a LOCAL
+    // repair of this node's own files. The sealed file is truncated on disk, which no WAL entry can carry, so
+    // shipping the page write that goes with it would tell followers about half a repair that only happened here.
+    //
+    // Its own transaction, tracked, for the reason the two blocks above track theirs: a failed commit() has
+    // already popped it, and a shard is commonly constructed from inside a caller's transaction - the comment on
+    // initHeaderPage says so - which is the transaction a bare isTransactionActive() would have rolled back
+    // (issue #7732, claude-review on PR #7747).
+    final OwnTransaction recovery = OwnTransaction.begin(database);
     try {
       if (mutableBucket.isCompactionInProgress()) {
         final long watermark = mutableBucket.getCompactionWatermark();
         sealedStore.truncateToBlockCount(watermark);
         mutableBucket.setCompactionInProgress(false);
-        database.commit();
+        recovery.commit();
       } else {
-        database.rollback();
+        // Nothing to repair: the transaction opened to ask the question is closed with the question.
+        recovery.rollbackIfMine();
       }
     } catch (final Exception e) {
-      if (database.isTransactionActive())
-        database.rollback();
+      recovery.rollbackIfMine();
       // The sealed store is this shard's own file handle and nothing else will close it, so it must be. The
       // mutable bucket must NOT be, for the reason spelled out above the sealed-store construction: it is
       // schema-registered, the schema owns closing it, and PaginatedComponentFile.close() is permanent. This

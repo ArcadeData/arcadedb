@@ -2043,11 +2043,17 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // needed for that, so it holds whatever happened to the leadership, the Raft client or the context in between.
     final LocalCommit local = localCommits.claim(databaseName, walTransactionIdOfCommittedEntry(decoded, entryIndex),
         decoded.walData());
+    RuntimeException applyFailure = null;
     try {
       if (local != null)
         publishLocalCommit(local, decoded, entryIndex);
       else
         applyReplicatedTransaction(decoded, entryIndex);
+    } catch (final RuntimeException e) {
+      // Kept only so the release below can attach its own failure to this one instead of dropping it; rethrown
+      // unchanged, so the apply path sees exactly what it saw before.
+      applyFailure = e;
+      throw e;
     } finally {
       // Applied, published or reconciled, the local copy of every page of this entry now carries its version, so the
       // reservation taken at append time has done its job. A no-op on a follower, whose ledger is empty.
@@ -2060,9 +2066,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
       try {
         pageVersions.release(databaseName, pages, decoded.walData());
       } catch (final RuntimeException e) {
-        LogManager.instance().log(this, Level.WARNING,
-            "Cannot release the page-version reservations of the Raft entry at index %d (db=%s): %s. The stale-reservation "
-                + "sweep clears them; the entry's own outcome is unaffected", e, entryIndex, databaseName, e.getMessage());
+        // Attached to the apply's own failure when there is one, so the pair is diagnosable from a single stack
+        // trace, and logged when the apply succeeded and there is nothing to attach it to.
+        if (applyFailure != null)
+          applyFailure.addSuppressed(e);
+        else
+          LogManager.instance().log(this, Level.WARNING,
+              "Cannot release the page-version reservations of the Raft entry at index %d (db=%s): %s. The stale-reservation "
+                  + "sweep clears them; the entry's own outcome is unaffected", e, entryIndex, databaseName, e.getMessage());
       }
     }
   }

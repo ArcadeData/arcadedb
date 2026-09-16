@@ -49,14 +49,21 @@ class Issue7584AbsentSumAvgSqlPushDownTest extends TestHelper {
   /**
    * Every sample in the single bucket is absent, so the push-down's SUM and AVG are absent too - and the JSON a
    * client receives carries {@code null}, not a measurement of zero.
+   * <p>
+   * The RESULT PROPERTY is {@code null} as well since issue #7743: the step translates the marker at the SQL
+   * boundary rather than handing the raw NaN out and relying on {@link JSONObject#put(String, Object)} to map it
+   * on the way to the client. The coupling this class was written to pin is therefore no longer load-bearing -
+   * it is still asserted below, because the serializer must keep answering {@code null} whichever value reaches
+   * it - and the embedded SQL caller now reads the same word the HTTP one always did, and the same word the
+   * generic aggregation answers for a group it had nothing to average.
    */
   @Test
   void anAllAbsentBucketPushesDownAsAbsentAndSerializesToJsonNull() {
     createTypeWithSamples(new long[] { 1_000L, 2_000L }, new Object[] { Double.NaN, Double.NaN });
 
     final Result row = singleRow();
-    assertThat(row.<Double>getProperty("s")).as("SUM over no real sample is absent").isNaN();
-    assertThat(row.<Double>getProperty("a")).as("AVG over no real sample is absent").isNaN();
+    assertThat(row.<Double>getProperty("s")).as("SUM over no real sample is absent, spelled NULL in SQL").isNull();
+    assertThat(row.<Double>getProperty("a")).as("AVG over no real sample is absent, spelled NULL in SQL").isNull();
 
     final JSONObject json = row.toJSON();
     assertThat(json.isNull("s")).as("the absent SUM must serialize to JSON null, never to 0").isTrue();
