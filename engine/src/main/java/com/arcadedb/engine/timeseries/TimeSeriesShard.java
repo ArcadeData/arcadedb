@@ -230,13 +230,23 @@ public class TimeSeriesShard implements AutoCloseable {
    * Appends samples to the mutable bucket.
    * <p>
    * <b>Transaction scope (#7410): this method commits its own transaction, whatever the caller has open.</b>
-   * The {@code db.begin()}/{@code db.commit()} pair below is nested when a transaction is already active on
-   * this thread, and an ArcadeDB nested transaction is an independent transaction rather than a savepoint:
-   * {@code LocalDatabase.begin()} pushes a new {@code TransactionContext} instead of joining the open one, and
-   * the matching {@code commit()} runs the full two-phase commit on it. So the mutable-bucket pages are
-   * published here and now - not by the caller's commit - and the caller's {@code rollback()} does not take
-   * them back. {@link TimeSeriesGateway#write} and {@link TimeSeriesEngine#appendSamples(long[], Object[][])}
-   * document the consequence for their own callers; {@code Issue7410AppendTransactionScopeTest} pins it.
+   * This is the canonical statement of that contract - it is where the behaviour lives, so the entry points
+   * above it ({@link TimeSeriesEngine#appendSamples(long[], Object[][])},
+   * {@link TimeSeriesEngine#appendBatch(long[], Object[][])}, {@code SaveElementStep.saveToTimeSeries},
+   * {@link TimeSeriesGateway#write}) state only what it means for their own callers and link back here for
+   * the mechanism, rather than each carrying its own copy of it to drift out of sync. Drifting out of sync
+   * is what #7410 was.
+   * <p>
+   * The mechanism: the {@code db.begin()}/{@code db.commit()} pair below is <i>nested</i> when a transaction
+   * is already active on this thread, and an ArcadeDB nested transaction is an independent transaction rather
+   * than a savepoint. {@code LocalDatabase.begin()} pushes a <i>new</i> {@code TransactionContext} onto the
+   * thread's stack instead of joining the open one; the matching {@code commit()} takes
+   * {@code getLastTransaction()} - that new context - and runs the full
+   * {@code commit1stPhase}/{@code commit2ndPhase} on it, then pops it. Nothing merges its changes into the
+   * transaction underneath. So the mutable-bucket pages are published here and now, not by the caller's
+   * commit; they are visible to every other reader as soon as this method returns; and the caller's
+   * {@code rollback()} does not take them back. {@code Issue7410AppendTransactionScopeTest} pins it, and
+   * {@code Issue7370GrpcTimeSeriesInTransactionIT} pins the same contract over the wire.
    * <p>
    * Concurrent calls on the <em>same shard</em> are serialized by {@link #appendLock} so that
    * MVCC page-version conflicts can never arise between two concurrent appends.  Writes to

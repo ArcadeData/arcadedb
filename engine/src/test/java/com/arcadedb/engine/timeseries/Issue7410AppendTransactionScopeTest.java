@@ -33,10 +33,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Regression test for issue #7410: {@link TimeSeriesEngine#appendSamples} documented that, inside an enclosing
  * transaction, "the shard's internal begin/commit nests into that transaction, so the mutable-bucket page writes
  * are published and replicated by the enclosing commit as a single, in-order transaction". The code never did
- * that. {@code TimeSeriesShard.appendSamples} wraps the mutable-bucket write in its own {@code db.begin()} /
- * {@code db.commit()}, and an ArcadeDB nested transaction is an independent transaction rather than a savepoint:
- * {@code LocalDatabase.begin()} pushes a <i>new</i> {@code TransactionContext} when one is already active instead
- * of joining the open one, and the matching {@code commit()} runs the full two-phase commit on it.
+ * that: {@code TimeSeriesShard.appendSamples} commits its own transaction whatever the caller has open, for the
+ * reason its javadoc now gives in full - an ArcadeDB nested {@code begin/commit} is an independent transaction
+ * rather than a savepoint.
  * <p>
  * These are characterization tests: they pin the behaviour the corrected javadoc now states, one per entry point
  * that reaches the shard append. They fail against the <i>old documented</i> contract, not against the code - the
@@ -153,22 +152,29 @@ class Issue7410AppendTransactionScopeTest extends TestHelper {
         .isEqualTo(1L);
   }
 
+  /** Counts the control rows, from outside any transaction of this test's making. */
   private long countOfWitnesses() {
     try (final ResultSet rs = database.query("sql", "SELECT count(*) AS cnt FROM Witness")) {
       return ((Number) rs.next().getProperty("cnt")).longValue();
     }
   }
 
+  /** Counts the samples of the SQL-created series, through the SQL reader a user would use. */
   private long countOfReadings() {
     try (final ResultSet rs = database.query("sql", "SELECT count(*) AS cnt FROM Reading")) {
       return ((Number) rs.next().getProperty("cnt")).longValue();
     }
   }
 
+  /** Every sample timestamp the engine holds, merge-sorted across shards, over a range wider than any test writes. */
   private static List<Long> timestampsOf(final TimeSeriesEngine engine) throws Exception {
     return engine.query(0L, 1_000_000L, null, null).stream().map(row -> (Long) row[0]).toList();
   }
 
+  /**
+   * Builds a two-shard engine directly, as {@code Issue4957AppendBatchTransactionTest} does. The constructor
+   * initialises each shard's header page in a transaction of its own, so it is wrapped in one here.
+   */
   private TimeSeriesEngine createEngine(final String typeName) throws Exception {
     final List<ColumnDefinition> cols = List.of(
         new ColumnDefinition("ts", Type.LONG, ColumnDefinition.ColumnRole.TIMESTAMP),

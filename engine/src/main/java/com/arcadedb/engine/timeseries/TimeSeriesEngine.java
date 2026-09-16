@@ -131,18 +131,13 @@ public class TimeSeriesEngine implements AutoCloseable {
    * which provides 1:1 slot-to-shard affinity.
    * <p>
    * <b>Transaction scope (#7410): the append commits its own transaction, whatever the caller has open.</b>
-   * {@link TimeSeriesShard#appendSamples(TimeSeriesRowSource)} wraps the mutable-bucket write in its own
-   * {@code db.begin()}/{@code db.commit()}, and an ArcadeDB nested transaction is an independent transaction,
-   * not a savepoint: {@code LocalDatabase.begin()} pushes a <i>new</i> {@code TransactionContext} when one is
-   * already active instead of joining the open one, and the matching {@code commit()} runs the full
-   * {@code commit1stPhase}/{@code commit2ndPhase} on it. So when this method is called inside an enclosing
-   * transaction (as on the SQL INSERT path) the samples are durable and globally visible as soon as it
-   * returns; they are <b>not</b> published by the enclosing commit, and a rollback of the enclosing
-   * transaction does <b>not</b> take them back. Earlier revisions of this javadoc asserted the opposite -
-   * that the inner {@code begin/commit} nested into the caller's transaction and was published with it as a
-   * single, in-order transaction - which the code has never done. {@link TimeSeriesGateway#write} documents
-   * the same scope from the ingest side ("this call is not atomic"), and
-   * {@code Issue7410AppendTransactionScopeTest} pins it for this entry point.
+   * Called inside an enclosing transaction (as on the SQL INSERT path), the samples are durable and globally
+   * visible as soon as this method returns; they are <b>not</b> published by the enclosing commit, and a
+   * rollback of the enclosing transaction does <b>not</b> take them back. Earlier revisions of this javadoc
+   * asserted the opposite - that the shard's {@code begin/commit} nested into the caller's transaction and
+   * was published with it as a single, in-order transaction - which the code has never done. The mechanism,
+   * and the canonical statement of this contract, is on
+   * {@link TimeSeriesShard#appendSamples(TimeSeriesRowSource)}.
    * <p>
    * <b>Threading:</b> the append runs on the calling thread and must stay there when a transaction is open.
    * Routing it onto another thread would give the shard write its own fresh {@code DatabaseContext}, so the
@@ -202,10 +197,10 @@ public class TimeSeriesEngine implements AutoCloseable {
    * shards write in parallel when multiple CPU cores are available.
    * <p>
    * <b>Transaction scope (#7410):</b> this method does not make the batch atomic with the caller's
-   * transaction, on either path. Each shard write commits its own transaction - see the transaction-scope
-   * note on {@link #appendSamples(long[], Object[][])} - so by the time this method returns, every sub-batch
-   * it wrote is already durable and a rollback of the enclosing transaction will not take it back. What
-   * "one transaction per shard instead of one per sample" buys is fewer commits, not atomicity.
+   * transaction, on either path. Each shard write commits its own transaction - see
+   * {@link TimeSeriesShard#appendSamples(TimeSeriesRowSource)} - so by the time this method returns, every
+   * sub-batch it wrote is already durable and a rollback of the enclosing transaction will not take it back.
+   * What "one transaction per shard instead of one per sample" buys is fewer commits, not atomicity.
    * <p>
    * <b>Threading (#4957):</b> the parallel dispatch is only used when NO transaction is active on the
    * calling thread. With an enclosing transaction open, each TS-Shard thread would run the shard's
