@@ -3535,7 +3535,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       final TimeSeriesEngine engine, final List<ColumnDefinition> columns, final long fromTs, final long toTs,
       final TagFilter tagFilter, final int batchSize) throws Exception {
 
-    final int[] columnIndices = TimeSeriesGateway.resolveColumnIndices(req.getFieldsList(), columns);
+    // requireColumnIndices, not resolveColumnIndices: a 'fields' name that matches no column is refused rather
+    // than dropped (issue #7675), so a typo cannot silently narrow the projection - or, when NO name resolves,
+    // widen it to every column. The IllegalArgumentException reaches the client as INVALID_ARGUMENT, and it is
+    // raised BEFORE the first streamed message, so a client is never handed a plausible wrong set of columns.
+    final int[] columnIndices = TimeSeriesGateway.requireColumnIndices(req.getFieldsList(), columns);
     final List<String> columnNames = TimeSeriesGateway.columnNames(columns, columnIndices);
 
     // Same bounding contract as executeQuery: an explicit positive limit at or below the configured cap is the
@@ -3644,12 +3648,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       final TagFilter tagFilter, final int batchSize) throws Exception {
 
     final TimeSeriesAggregation aggregation = req.getAggregation();
-    if (aggregation.getBucketIntervalMs() <= 0)
-      throw Status.INVALID_ARGUMENT
-          .withDescription("TimeSeriesAggregation.bucket_interval_ms must be positive").asRuntimeException();
-    if (aggregation.getRequestsCount() == 0)
-      throw Status.INVALID_ARGUMENT
-          .withDescription("TimeSeriesAggregation needs at least one request").asRuntimeException();
+    // Both refusals moved into TimeSeriesGateway (issue #7675): the RULE is now the one the two HTTP endpoints
+    // enforce as well, and the member is still named in THIS protocol's spelling. The status a client reads is
+    // unchanged - GrpcErrorMapper classifies an IllegalArgumentException as VALIDATION, which maps to
+    // INVALID_ARGUMENT - so what moved is where the rule lives, not what this RPC answers.
+    TimeSeriesGateway.requireBucketInterval(aggregation.getBucketIntervalMs(),
+        "TimeSeriesAggregation.bucket_interval_ms");
+    TimeSeriesGateway.requireAggregationRequests(aggregation.getRequestsCount(), "TimeSeriesAggregation.requests");
 
     final List<MultiColumnAggregationRequest> requests = new ArrayList<>(aggregation.getRequestsCount());
     final List<String> aliases = new ArrayList<>(aggregation.getRequestsCount());

@@ -683,9 +683,23 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
   void everyDegradingOperationDeclaresTheSessionExpiredHeader() throws Exception {
     final OpenAPI openAPI = new OpenAPIV3Parser().readContents(getOpenApiSpec()).getOpenAPI();
 
-    final List<String> degrading = List.of("executeQueryGet", "beginTransaction", "commitTransaction",
-        "rollbackTransaction", "queryTimeSeries", "getTimeSeriesLatest");
-    final List<String> refusing = List.of("executeQueryPost", "executeCommand");
+    final List<String> degrading = List.of(
+        // Core: GET /query degrades, and so do the three transaction endpoints, whose degrade is what makes an
+        // idempotent retry of a commit a no-op rather than an error.
+        "executeQueryGet", "beginTransaction", "commitTransaction", "rollbackTransaction",
+        // The /api/v1/ts reads, where #7714 was raised.
+        "queryTimeSeries", "getTimeSeriesLatest",
+        // And the Grafana and Prometheus reads that issue #7681 bound to the session, which reach the same
+        // branch of DatabaseAbstractHandler and therefore send the same header.
+        "checkGrafanaHealth", "getGrafanaMetadata", "queryGrafana", "prometheusRemoteRead",
+        "promQLQuery", "promQLQueryRange", "promQLLabels", "promQLLabelValues", "promQLSeries");
+
+    final List<String> refusing = List.of(
+        // requiresTransaction() is true, so a stale id is a 404 and this header is never sent.
+        "executeQueryPost", "executeCommand",
+        // Both writes answer TRUE to rejectsUnresolvableSession() - a write must not run outside the
+        // transaction its caller believes it is inside - so neither may promise a header it cannot send.
+        "writeTimeSeries", "prometheusRemoteWrite");
 
     final Map<String, Operation> operations = new LinkedHashMap<>();
     openAPI.getPaths().forEach((path, item) -> item.readOperations()

@@ -36,6 +36,14 @@ import java.util.List;
  * Remote read and write exchange Snappy-compressed protobuf messages, which no JSON schema can
  * describe, so their bodies are declared as opaque binary and the framing lives in the description.
  * The query API answers in the Prometheus HTTP API envelope, which takes four distinct shapes.
+ * <p>
+ * All seven operations moved onto {@code DatabaseAbstractHandler} in issue #7681, so they honour the session
+ * header the way {@code /api/v1/query} and the {@code /api/v1/ts} operations of issue #7402 do. Prometheus
+ * itself will never send it - it has no notion of an ArcadeDB session - so the caller this documents is a
+ * hand-written client or an ArcadeDB client wrapper speaking the same wire format. {@code remote_write} is the
+ * one write among them, and the only one whose 404 covers a stale session: see
+ * {@link SpecBuilders#WRITE_STALE_SESSION_DESCRIPTION} against
+ * {@link SpecBuilders#READ_STALE_SESSION_DESCRIPTION}.
  */
 public class PrometheusApiSpec implements OpenApiContributor {
 
@@ -68,6 +76,7 @@ public class PrometheusApiSpec implements OpenApiContributor {
             write. Answers 204 with no body once the samples are applied; an empty write request also \
             answers 204.""");
     post.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
+    post.addParametersItem(SpecBuilders.sessionHeaderParam());
     post.setRequestBody(SpecBuilders.rawBody(
         "Snappy-compressed protobuf WriteRequest, per the Prometheus remote-write specification",
         PROTOBUF, "binary"));
@@ -78,8 +87,11 @@ public class PrometheusApiSpec implements OpenApiContributor {
         "Bad request: database parameter missing, body empty, or not Snappy-compressed"));
     responses.addApiResponse("401", SpecBuilders.errorResponse("Unauthorized"));
     responses.addApiResponse("403", SpecBuilders.errorResponse("Forbidden"));
-    responses.addApiResponse("404", SpecBuilders.errorResponse("Database not found"));
+    responses.addApiResponse("404", SpecBuilders.errorResponse(SpecBuilders.WRITE_STALE_SESSION_DESCRIPTION));
     responses.addApiResponse("500", SpecBuilders.errorResponse("Internal server error"));
+    // No arcadedb-session-expired here: remote-write answers true to rejectsUnresolvableSession(), so it
+    // REFUSES a stale id with 404 and never runs outside the transaction the caller named (issue #7714).
+    responses.get("204").addHeaderObject(SpecBuilders.SESSION_HEADER, SpecBuilders.sessionEchoHeader());
     post.setResponses(responses);
 
     final PathItem pathItem = new PathItem();
@@ -95,6 +107,7 @@ public class PrometheusApiSpec implements OpenApiContributor {
             Snappy block format. Answers with a Snappy-compressed protobuf ReadResponse. Configure \
             this endpoint as a remote_read target in prometheus.yml.""");
     post.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
+    post.addParametersItem(SpecBuilders.sessionHeaderParam());
     post.setRequestBody(SpecBuilders.rawBody(
         "Snappy-compressed protobuf ReadRequest, per the Prometheus remote-read specification",
         PROTOBUF, "binary"));
@@ -104,6 +117,9 @@ public class PrometheusApiSpec implements OpenApiContributor {
     final MediaType mediaType = new MediaType();
     mediaType.setSchema(new Schema<>().type("string").format("binary"));
     success.setContent(new Content().addMediaType(PROTOBUF, mediaType));
+    success.addHeaderObject(SpecBuilders.SESSION_HEADER, SpecBuilders.sessionEchoHeader());
+    // Degrades rather than refuses a session it cannot resolve, so it can say so (issue #7714).
+    success.addHeaderObject(SpecBuilders.SESSION_EXPIRED_HEADER, SpecBuilders.sessionExpiredHeader());
 
     final ApiResponses responses = new ApiResponses();
     responses.addApiResponse("200", success);
@@ -111,7 +127,7 @@ public class PrometheusApiSpec implements OpenApiContributor {
         "Bad request: database parameter missing, body empty, or not Snappy-compressed"));
     responses.addApiResponse("401", SpecBuilders.errorResponse("Unauthorized"));
     responses.addApiResponse("403", SpecBuilders.errorResponse("Forbidden"));
-    responses.addApiResponse("404", SpecBuilders.errorResponse("Database not found"));
+    responses.addApiResponse("404", SpecBuilders.errorResponse(SpecBuilders.READ_STALE_SESSION_DESCRIPTION));
     responses.addApiResponse("500", SpecBuilders.errorResponse("Internal server error"));
     post.setResponses(responses);
 
@@ -128,6 +144,7 @@ public class PrometheusApiSpec implements OpenApiContributor {
             /api/v1/query endpoint, so Grafana's Prometheus data source and promtool can target it \
             directly.""");
     get.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
+    get.addParametersItem(SpecBuilders.sessionHeaderParam());
     get.addParametersItem(SpecBuilders.queryParam("query", "PromQL expression", true));
     get.addParametersItem(SpecBuilders.queryParam("time",
         "Evaluation instant as a Unix timestamp in seconds, fractional seconds allowed. Defaults to now.",
@@ -150,6 +167,7 @@ public class PrometheusApiSpec implements OpenApiContributor {
             Prometheus /api/v1/query_range endpoint. 'step' must be positive; a non-positive step \
             answers 400.""");
     get.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
+    get.addParametersItem(SpecBuilders.sessionHeaderParam());
     get.addParametersItem(SpecBuilders.queryParam("query", "PromQL expression", true));
     get.addParametersItem(SpecBuilders.queryParam("start",
         "Inclusive range start as a Unix timestamp in seconds, fractional seconds allowed", true));
@@ -175,6 +193,7 @@ public class PrometheusApiSpec implements OpenApiContributor {
             Compatible with the Prometheus /api/v1/labels endpoint. Takes no filtering parameters: \
             unlike Prometheus itself, this endpoint does not accept 'start', 'end', or 'match[]'.""");
     get.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
+    get.addParametersItem(SpecBuilders.sessionHeaderParam());
     get.setResponses(promQlResponses("Sorted label names", "PromQLLabelsResponse"));
 
     final PathItem pathItem = new PathItem();
@@ -191,6 +210,7 @@ public class PrometheusApiSpec implements OpenApiContributor {
             name instead of scanning a tag column. Takes no filtering parameters: unlike Prometheus \
             itself, this endpoint does not accept 'start', 'end', or 'match[]'.""");
     get.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
+    get.addParametersItem(SpecBuilders.sessionHeaderParam());
     get.addParametersItem(SpecBuilders.pathParam("name", "Label name"));
     get.setResponses(promQlResponses("Sorted label values", "PromQLLabelsResponse"));
 
@@ -208,6 +228,7 @@ public class PrometheusApiSpec implements OpenApiContributor {
             '__name__' label. A selector that fails to parse is skipped rather than rejected, so a \
             mix of valid and malformed 'match[]' values still returns the matches from the valid ones.""");
     get.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
+    get.addParametersItem(SpecBuilders.sessionHeaderParam());
     final Parameter match = SpecBuilders.repeatableQueryParam("match[]",
         "Series selector. Repeatable: every occurrence is evaluated and the results are unioned.", true);
     get.addParametersItem(match);
@@ -227,13 +248,18 @@ public class PrometheusApiSpec implements OpenApiContributor {
    * a client written against the Prometheus API can parse both outcomes with one reader.
    */
   private ApiResponses promQlResponses(final String successDescription, final String successSchema) {
+    final ApiResponse success = SpecBuilders.jsonResponse(successDescription, successSchema);
+    success.addHeaderObject(SpecBuilders.SESSION_HEADER, SpecBuilders.sessionEchoHeader());
+    // Degrades rather than refuses a session it cannot resolve, so it can say so (issue #7714).
+    success.addHeaderObject(SpecBuilders.SESSION_EXPIRED_HEADER, SpecBuilders.sessionExpiredHeader());
+
     final ApiResponses responses = new ApiResponses();
-    responses.addApiResponse("200", SpecBuilders.jsonResponse(successDescription, successSchema));
+    responses.addApiResponse("200", success);
     responses.addApiResponse("400",
         SpecBuilders.jsonResponse("Bad request, in the Prometheus error envelope", "PromQLErrorResponse"));
     responses.addApiResponse("401", SpecBuilders.errorResponse("Unauthorized"));
     responses.addApiResponse("403", SpecBuilders.errorResponse("Forbidden"));
-    responses.addApiResponse("404", SpecBuilders.errorResponse("Database not found"));
+    responses.addApiResponse("404", SpecBuilders.errorResponse(SpecBuilders.READ_STALE_SESSION_DESCRIPTION));
     responses.addApiResponse("500", SpecBuilders.errorResponse("Internal server error"));
     return responses;
   }
