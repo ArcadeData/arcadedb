@@ -155,6 +155,21 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
                 value = DateUtils.dateTime(context.getDatabase(), (Long) value, ChronoUnit.MILLIS, LocalDateTime.class,
                     ChronoUnit.MILLIS);
 
+              // The absent marker becomes SQL NULL at the SQL boundary (issue #7743). NaN is what the storage
+              // layers use for "no measurement here" - it is what a null field value is stored as on a
+              // floating-point column - and NULL is what SQL calls the same thing: sum() and avg() skip it,
+              // min() does not return it, and count(*) still counts the row. Handing the NaN through instead
+              // would make a plain SELECT sum(value) answer NaN for a series with one gap in it, while the
+              // aggregation push-down over the very same rows answers the total of the real samples. The HTTP
+              // read paths already encode it this way (AbstractServerHttpHandler.putSampleValue).
+              //
+              // Only NaN, not every non-finite: an infinity IS a value in SQL arithmetic, and the JSON layer
+              // folds it in only because JSON cannot write one.
+              if (value instanceof Double d && Double.isNaN(d))
+                value = null;
+              else if (value instanceof Float f && Float.isNaN(f))
+                value = null;
+
               result.setProperty(col.getName(), value);
             }
 

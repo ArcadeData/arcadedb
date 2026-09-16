@@ -1666,11 +1666,11 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       return new ExecutionResponse(504, new JSONObject()
           .put("error", "Cannot connect to the leader at " + url + " within "
               + dial.client().connectTimeout().map(Duration::toMillis).orElse(-1L) + "ms ("
-              // Naming the setting is only accurate on the plain-HTTP path: the HTTPS one dials on
-              // RaftHAServer.forwardHttpsClients (TrustedHttpClientCache), whose connect timeout is a
-              // hardcoded 5s that arcadedb.ha.proxyConnectTimeout does not govern (claude-review finding on
-              // PR #7650) - naming it there would point an operator at a knob that does nothing here.
-              + (dial.https() ? "the configured connect timeout" : GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT.getKey())
+              // The setting governs BOTH dials since issue #7741: the HTTPS one is built by
+              // TrustedHttpClientCache, which reads the same arcadedb.ha.proxyConnectTimeout the plain client
+              // does, so naming it here is accurate whichever transport this forward took. It used to be a
+              // hardcoded 5s on the HTTPS path, which is why this arm once had to hedge.
+              + GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT.getKey()
               + "); the leader may be down or unreachable")
           .toString());
     } catch (final ConnectException e) {

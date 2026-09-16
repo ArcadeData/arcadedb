@@ -32,6 +32,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 
 /**
  * Computes cluster-level health alerts surfaced to operators (Studio HA panel, {@code GET /api/v1/cluster}).
@@ -218,10 +219,15 @@ public class ClusterAlerts {
    * array fires instead of reading {@code 200}/{@code RUNNING}/{@code alerts: []} on the node that is actually
    * down. Before this the four components of {@link ArcadeStateMachine#isResyncInProgress()} reached neither.
    * <p>
-   * {@code critical} when the node is known to hold data that is behind - a database quarantined on a WAL
-   * version gap, or a read floor outstanding after a download that did not land - because that state does not
-   * clear on its own timetable and can survive restarts. A snapshot download merely queued or running is
-   * {@code warning}: it is the ordinary recovery path and is expected to finish.
+   * {@code critical} when the node is known to hold data that is behind - a quarantined database, or a read
+   * floor outstanding after a download that did not land - because that state does not clear on its own
+   * timetable and can survive restarts. A snapshot download merely queued or running is {@code warning}: it is
+   * the ordinary recovery path and is expected to finish.
+   * <p>
+   * The message names the quarantine's CAUSE rather than assuming one (issue #7741). It used to read "after a
+   * WAL version gap" whatever had happened, so an operator whose node had quarantined a database on an entry it
+   * could not decode - a corrupt local log segment, since issue #7495 - was pointed at the leader for a fault
+   * on their own disk.
    * <p>
    * Node-scoped in the same sense as the lagging-follower alert - whether this node serves traffic is not a
    * per-tenant fact - so {@code visibleDatabases} reduces only the database <em>names</em> in the payload, never
@@ -243,9 +249,9 @@ public class ClusterAlerts {
         .put("message", "This node is not ready to serve traffic: /api/v1/ready answers 503 and a Kubernetes "
             + "Service has taken it out of rotation. "
             + (holdingStaleData
-                ? "It is holding at least one database it knows is behind the committed Raft log - quarantined "
-                    + "after a WAL version gap, or clamped at a read floor because a snapshot install did not "
-                    + "bring it up to date - so reads that require linearizability are refused rather than "
+                ? "It is holding at least one database it knows is behind the committed Raft log - "
+                    + quarantineCauses(state) + ", or clamped at a read floor because a snapshot install did "
+                    + "not bring it up to date - so reads that require linearizability are refused rather than "
                     + "served stale. This does not clear by itself until a resync succeeds."
                 : "A snapshot download from the leader is queued or running; the node rejoins the ready set "
                     + "when it completes.")
@@ -259,8 +265,47 @@ public class ClusterAlerts {
             .put("snapshotDownloadQueued", state.snapshotDownloadQueued())
             .put("snapshotDownloadInProgress", state.snapshotDownloadInProgress())
             .put("divergedDatabases", namesArray(visible(state.divergedDatabases(), visibleDatabases)))
+            .put("divergenceCauses", causesObject(state, visibleDatabases))
             .put("snapshotAppliedFloor", state.snapshotAppliedFloor())
             .put("databaseAppliedFloors", visibleFloors(state.databaseAppliedFloors(), visibleDatabases))));
+  }
+
+  /**
+   * The quarantine causes this node actually recorded, as the tail of "quarantined after ..." (issue #7741).
+   * <p>
+   * Distinct and sorted by the enum's own order, so a node quarantined for two different reasons says both once
+   * rather than once per database, and the sentence is stable between polls. Not filtered by what the caller may
+   * see: the causes carry no database name, and the alert itself is node-scoped - whether this node serves
+   * traffic is not a per-tenant fact - so hiding them would leave a caller with a {@code critical} alert and no
+   * reason for it. A state with the flag set but no cause recorded is the read-floor-only case, whose own clause
+   * follows in the message.
+   */
+  private static String quarantineCauses(final LocalResyncState state) {
+    final Set<DivergenceCause> causes = new TreeSet<>(state.divergenceCauses().values());
+    if (causes.isEmpty())
+      return "quarantined pending a resync";
+
+    final StringBuilder sb = new StringBuilder("quarantined after ");
+    int i = 0;
+    for (final DivergenceCause cause : causes) {
+      if (i > 0)
+        sb.append(i == causes.size() - 1 ? " and after " : ", ");
+      sb.append(cause.getDescription());
+      ++i;
+    }
+    return sb.toString();
+  }
+
+  /**
+   * {@code {database: cause}} for the databases the caller may see, so a status poll can attribute a cause to a
+   * name where the sentence above only counts them. Empty when nothing is quarantined.
+   */
+  static JSONObject causesObject(final LocalResyncState state, final Set<String> visibleDatabases) {
+    final JSONObject causes = new JSONObject();
+    for (final Map.Entry<String, DivergenceCause> entry : state.divergenceCauses().entrySet())
+      if (visibleDatabases == null || visibleDatabases.contains(entry.getKey()))
+        causes.put(entry.getKey(), entry.getValue().name());
+    return causes;
   }
 
   /**

@@ -265,14 +265,19 @@ class Issue5416DescendingTailTest extends TestHelper {
     for (final Object[] row : withTag)
       assertThat(row[1]).isEqualTo("host_1");
 
-    // Asking only for the value column drops it, and a filter on a column that is not returned can
-    // never match. Same contract as the ascending scan.
+    // Asking only for the value column drops the tag from the ROW, and the filter is applied all the same: it is
+    // evaluated before the projection, against the page and against the decompressed block columns, so a
+    // condition on a column the caller did not ask for is an ordinary condition (issue #7733). It used to answer
+    // nothing here while a sealed fast-path block answered the rows, so the same query gave different answers as
+    // compaction ran. Same contract on both scan directions.
     final List<Object[]> withoutTag = shard.scanRangeDescending(Long.MIN_VALUE, Long.MAX_VALUE, new int[] { 1 },
         TagFilter.eq(0, "host_1"), 3, null);
     final List<Object[]> ascendingWithoutTag = shard.scanRange(Long.MIN_VALUE, Long.MAX_VALUE, new int[] { 1 },
         TagFilter.eq(0, "host_1"));
-    assertThat(withoutTag).isEmpty();
-    assertThat(ascendingWithoutTag).isEmpty();
+    assertThat(withoutTag).hasSize(3);
+    for (final Object[] row : withoutTag)
+      assertThat(row).as("and the row still carries only the projection: {timestamp, value}").hasSize(2);
+    assertThat(ascendingWithoutTag).isNotEmpty();
   }
 
   @Test

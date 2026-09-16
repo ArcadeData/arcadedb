@@ -23,7 +23,10 @@ import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.DownsamplingTier;
+import com.arcadedb.engine.timeseries.OwnTransaction;
+import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.query.sql.parser.Identifier;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -242,24 +245,43 @@ public class TimeSeriesTypeBuilder {
   }
 
   /**
-   * Appends {@code CODEC <name>} when the column's codec was NAMED, and nothing at all when it was derived from
-   * the default table (issue #7703).
+   * Appends {@code CODEC <name>} when the column carries a codec that is NOT the default for its data type and
+   * role, and nothing at all when it carries the default.
    * <p>
-   * The test used to be "differs from {@link ColumnDefinition#defaultCodecFor}", because a column always carries a
-   * codec and that was the only way to ask. It omits the clause for a column that named the very codec the table
-   * returns today, which is right for {@code withTag}/{@code withField} - naming a derived codec would pin today's
-   * table into the statement, and a type recreated from that DDL after the table moves would get the old codec
-   * rather than the new one the same builder code gets embedded - and wrong for a RESTORE, which names the codec
-   * precisely because it is not re-derivable (issue #5475): rendered against a build whose table has since changed,
-   * the omission silently substitutes the new default for the exported codec.
-   * <p>
-   * {@link ColumnDefinition#isExplicitCodec()} separates the two cases, so both get what they need from one rule.
+   * The clause is omitted for a default because the column is always constructed with one - "explicit" is only
+   * visible as "differs from {@link ColumnDefinition#defaultCodecFor}" - and naming it anyway would pin today's
+   * default table into every rendered statement, so a type recreated from that DDL after the table changes would
+   * get the old codec rather than the new one the same builder code gets embedded.
    */
   private static void appendCodec(final StringBuilder sql, final ColumnDefinition column) {
     if (column == null)
       return;
-    if (column.isExplicitCodec())
-      sql.append(" CODEC ").append(column.getCompressionHint().name());
+    final TimeSeriesCodec codec = column.getCompressionHint();
+    if (codec != null && codec != ColumnDefinition.defaultCodecFor(column.getDataType(), column.getRole()))
+      sql.append(" CODEC ").append(codec.name());
+  }
+
+  /**
+   * The columns in the order a created type carries them: the TIMESTAMP column, then the TAGs, then the FIELDs,
+   * each group keeping its declaration order (issue #7740). This is the order {@link #renderCreate()} emits and
+   * the order the server's {@code CREATE TIMESERIES TYPE} builds, so the embedded and the remote path produce
+   * the same type from the same builder body.
+   * <p>
+   * The three roles are the whole of {@link ColumnDefinition.ColumnRole}, so every column lands in exactly one
+   * of the groups and nothing can be dropped by reordering.
+   */
+  private List<ColumnDefinition> canonicalColumns() {
+    final List<ColumnDefinition> ordered = new ArrayList<>(columns.size());
+    addColumnsOfRole(ordered, ColumnDefinition.ColumnRole.TIMESTAMP);
+    addColumnsOfRole(ordered, ColumnDefinition.ColumnRole.TAG);
+    addColumnsOfRole(ordered, ColumnDefinition.ColumnRole.FIELD);
+    return ordered;
+  }
+
+  private void addColumnsOfRole(final List<ColumnDefinition> out, final ColumnDefinition.ColumnRole role) {
+    for (final ColumnDefinition col : columns)
+      if (col.getRole() == role)
+        out.add(col);
   }
 
   /**
@@ -316,14 +338,20 @@ public class TimeSeriesTypeBuilder {
   }
 
   /**
-   * Back-quotes an identifier so a name that collides with a keyword still parses. A name that itself contains a
-   * back-quote is refused: there is no escape for it in the grammar, and silently concatenating it would let a
-   * caller-supplied name close the quote and continue the statement.
+   * Back-quotes an identifier so a name that collides with a keyword still parses, escaping what has to be
+   * escaped inside the quotes (issue #7740).
+   * <p>
+   * {@link Identifier#quote(String)} is the escaping, not a copy of it: the grammar's
+   * {@code QUOTED_IDENTIFIER : BACKTICK ( ~[`\\] | '\\' . )+ BACKTICK} gives a backslash its escaping meaning, so
+   * the two characters that have to be escaped are the back-quote AND the backslash - a name ending with one
+   * would otherwise swallow the closing quote. Refusing the back-quote and passing the backslash through, which
+   * is what this used to do, is the very defect #5849 fixed in {@code MCPToolUtils.quoteIdentifier}: it rendered
+   * {@code a\b} as a name the server stored as {@code ab}, so {@code create()} failed with "Type with name
+   * 'a\b' was not found" over a fully built type under a name the caller never asked for, while the embedded
+   * path accepted the name.
    */
   private static String quote(final String identifier) {
-    if (identifier.indexOf('`') >= 0)
-      throw new SchemaException("Identifier '" + identifier + "' cannot be used in SQL: it contains a back-quote");
-    return "`" + identifier + "`";
+    return Identifier.quote(identifier);
   }
 
   /**
@@ -354,6 +382,18 @@ public class TimeSeriesTypeBuilder {
       if (!ColumnDefinition.isStorableType(col.getDataType()))
         throw new SchemaException("Column '" + col.getName() + "' of type " + col.getDataType()
             + " cannot be used in a TIMESERIES type. Supported types: " + ColumnDefinition.storableTypeNames());
+
+    // Checked here rather than only on the SQL path (issue #7740): the rule is the type's, not the grammar's.
+    // withColumn() is looped over export JSON by JsonlImporterFormat, and a second TIMESTAMP column built a type
+    // whose getTimestampColumn() - the last one seen - disagreed with findTimestampColumnIndex() - the first -
+    // for every read afterwards. A remote create() refused the same input and an embedded one did not.
+    int timestampColumns = 0;
+    for (final ColumnDefinition col : columns)
+      if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+        ++timestampColumns;
+    if (timestampColumns > 1)
+      throw new SchemaException(
+          "A TIMESERIES type has exactly one TIMESTAMP column, and this builder carries " + timestampColumns);
   }
 
   /**
@@ -363,13 +403,9 @@ public class TimeSeriesTypeBuilder {
     // A non-default per-column codec used to be refused here: the grammar could not name one, so rendering the
     // column without it would have silently recreated it with the default (issue #5475's failure). CREATE
     // TIMESERIES TYPE carries a CODEC clause since issue #7689, so the codec renders instead.
-    int timestampColumns = 0;
-    for (final ColumnDefinition col : columns)
-      if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
-        ++timestampColumns;
-    if (timestampColumns > 1)
-      throw new SchemaException(
-          "CREATE TIMESERIES TYPE declares exactly one TIMESTAMP column, and this builder carries " + timestampColumns);
+    //
+    // The single-TIMESTAMP rule used to live here too and now lives in validate(), which toSQL() runs first:
+    // the grammar having one slot for it is a consequence of the type having one, not the reason (issue #7740).
   }
 
   /**
@@ -399,11 +435,18 @@ public class TimeSeriesTypeBuilder {
     type.setCompactionBucketIntervalMs(compactionBucketIntervalMs);
     type.setDownsamplingTiers(downsamplingTiers);
 
-    for (final ColumnDefinition col : columns)
+    // Canonical order, not declaration order (issue #7740): the SQL rendering has one slot for the timestamp,
+    // one for the TAGS and one for the FIELDS, so a remote create() regroups the columns and an embedded one
+    // that replayed insertion order gave the same builder body two different types - [cpu, ts, host] here and
+    // [ts, host, cpu] over the wire - and with them two different sets of column indices. The server's own
+    // CreateTimeSeriesTypeStatement reads the clauses in this order, so this is the order that agrees with it.
+    final List<ColumnDefinition> ordered = canonicalColumns();
+
+    for (final ColumnDefinition col : ordered)
       type.addTsColumn(col);
 
     // Register properties for each column
-    for (final ColumnDefinition col : columns)
+    for (final ColumnDefinition col : ordered)
       type.createProperty(col.getName(), col.getDataType());
 
     // Wrap engine initialization + type registration in recordFileChanges so that, under HA, the
@@ -413,13 +456,14 @@ public class TimeSeriesTypeBuilder {
     // recordFileChanges simply runs the callback and persists the schema.
     schema.recordFileChanges(() -> {
       final DatabaseInternal db = databaseInternal.getWrappedDatabaseInstance();
-      db.begin();
+      final OwnTransaction tx = OwnTransaction.begin(db);
       try {
         type.initEngine();
-        db.commit();
+        tx.commit();
       } catch (final Exception e) {
-        if (db.isTransactionActive())
-          db.rollback();
+        // Only this callback's own transaction: DDL is commonly issued from inside one, and a failed commit()
+        // has already taken ours off the thread's stack (issue #7732).
+        tx.rollbackIfMine();
         throw new SchemaException("Failed to initialize TimeSeries engine for type '" + typeName + "'", e);
       }
 

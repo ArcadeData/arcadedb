@@ -415,8 +415,33 @@ public class TimeSeriesBucket extends PaginatedComponent {
    */
   public List<Object[]> scanRange(final long fromTs, final long toTs, final int[] columnIndices,
       final AggregationMetrics metrics) throws IOException {
+    return scanRange(fromTs, toTs, columnIndices, null, metrics);
+  }
+
+  /**
+   * {@link #scanRange(long, long, int[], AggregationMetrics)} with the tag filter applied HERE, straight off the
+   * page, instead of by the caller against the row this hands back (issue #7733).
+   * <p>
+   * The two are not the same test whenever {@code columnIndices} is a projection: a row built from a subset of the
+   * columns cannot answer a condition on a column outside it, so a caller filtering the returned row had to drop
+   * every row - the query answered nothing at all - while the sealed layer's fast path answered the matching rows
+   * for the very same query. Evaluated against the page there is no such thing as a column the filter cannot see:
+   * {@link #matchesTagFilter} walks the row's stored columns by their schema position, which the projection does
+   * not change. Filtering here is also what the descending and ascending scans have always done, so this puts the
+   * unlimited scan on the same footing, and it is cheaper besides - a rejected row is never materialised.
+   *
+   * @param tagFilter optional tag filter, evaluated on the page; a condition on a column outside
+   *                  {@code columnIndices} is applied like any other
+   */
+  public List<Object[]> scanRange(final long fromTs, final long toTs, final int[] columnIndices,
+      final TagFilter tagFilter, final AggregationMetrics metrics) throws IOException {
     final List<Object[]> results = new ArrayList<>();
     final int dataPageCount = getDataPageCount();
+
+    final TagMatcher[] matchers = tagFilter == null ? null : buildTagMatchers(tagFilter);
+    if (tagFilter != null && matchers == null)
+      // A condition no value in the dictionary can satisfy: nothing can match.
+      return results;
 
     for (int pageNum = 1; pageNum <= dataPageCount; pageNum++) {
       final BasePage page = database.getTransaction().getPage(new PageId(database, fileId, pageNum), pageSize);
@@ -444,6 +469,8 @@ public class TimeSeriesBucket extends PaginatedComponent {
         final long ts = page.readLong(rowOffset);
 
         if (ts < fromTs || ts > toTs)
+          continue;
+        if (matchers != null && !matchesTagFilter(page, rowOffset, matchers))
           continue;
 
         final Object[] sample = readRow(page, rowOffset, columnIndices);
@@ -482,9 +509,9 @@ public class TimeSeriesBucket extends PaginatedComponent {
     final int need = limit > 0 ? limit : Integer.MAX_VALUE;
     final int dataPageCount = getDataPageCount();
 
-    final TagMatcher[] matchers = tagFilter == null ? null : buildTagMatchers(tagFilter, columnIndices);
+    final TagMatcher[] matchers = tagFilter == null ? null : buildTagMatchers(tagFilter);
     if (tagFilter != null && matchers == null)
-      // A condition on a column the caller did not ask for: nothing can match.
+      // A condition no value in the dictionary can satisfy: nothing can match.
       return new ArrayList<>();
 
     // Bounded queries keep the current best rows in a min-heap on the timestamp, so the cut-off is
@@ -588,9 +615,9 @@ public class TimeSeriesBucket extends PaginatedComponent {
     final int need = limit > 0 ? limit : Integer.MAX_VALUE;
     final int dataPageCount = getDataPageCount();
 
-    final TagMatcher[] matchers = tagFilter == null ? null : buildTagMatchers(tagFilter, columnIndices);
+    final TagMatcher[] matchers = tagFilter == null ? null : buildTagMatchers(tagFilter);
     if (tagFilter != null && matchers == null)
-      // A condition on a column the caller did not ask for: nothing can match.
+      // A condition no value in the dictionary can satisfy: nothing can match.
       return new ArrayList<>();
 
     // Bounded queries keep the current best rows in a max-heap on the timestamp, so the cut-off is
@@ -693,17 +720,24 @@ public class TimeSeriesBucket extends PaginatedComponent {
   /**
    * Prepares the filter for the scan, or returns {@code null} when it can never match.
    * <p>
-   * Mirrors {@link TagFilter#matchesMapped(Object[], int[])}: a condition on a column that the
-   * caller did not request cannot be satisfied, because the row handed back would not carry it.
+   * The projection plays no part in this (issue #7733). The matchers are evaluated by
+   * {@link #matchesTagFilter} against the PAGE, which carries every column whatever the caller asked to be
+   * handed back, and the projection is applied afterwards by {@link #readRow}. A condition on a column outside
+   * the projection is therefore an ordinary condition, not an unsatisfiable one: refusing it here made
+   * {@code fields:[value], tags:{host:web1}} answer zero rows on the mutable layer and on sealed slow-path
+   * blocks, while sealed fast-path blocks - which decide on the block's tag metadata and never consult the
+   * projection - answered the matching ones. One query, three answers, chosen by how far compaction had got.
+   * <p>
+   * {@code null} still means "nothing can match", but now for the one reason that is true of the data rather
+   * than of the request: a dictionary-encoded condition whose every candidate is a value the dictionary has
+   * never seen.
    */
-  private TagMatcher[] buildTagMatchers(final TagFilter tagFilter, final int[] columnIndices) {
+  private TagMatcher[] buildTagMatchers(final TagFilter tagFilter) {
     final List<TagFilter.Condition> conditions = tagFilter.getConditions();
     final TagMatcher[] matchers = new TagMatcher[conditions.size()];
 
     for (int i = 0; i < conditions.size(); i++) {
       final TagFilter.Condition cond = conditions.get(i);
-      if (columnIndices != null && !isInArray(cond.columnIndex(), columnIndices))
-        return null;
 
       if (cond.columnIndex() >= 0 && cond.columnIndex() < dictEncoded.length && dictEncoded[cond.columnIndex()]) {
         // Resolve the candidates to ids once. A candidate the dictionary has never seen cannot appear

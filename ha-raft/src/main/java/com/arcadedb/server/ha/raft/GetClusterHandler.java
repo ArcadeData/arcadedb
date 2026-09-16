@@ -306,6 +306,9 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
         .put("snapshotDownloadQueued", state.snapshotDownloadQueued())
         .put("snapshotDownloadInProgress", state.snapshotDownloadInProgress())
         .put("divergedDatabases", ClusterAlerts.namesArray(ClusterAlerts.visible(state.divergedDatabases(), visibleDatabases)))
+        // Why each of them was quarantined (issue #7741): the names alone read as a replication problem even
+        // when the cause is this node's own unreadable log segment.
+        .put("divergenceCauses", ClusterAlerts.causesObject(state, visibleDatabases))
         .put("snapshotAppliedFloor", state.snapshotAppliedFloor())
         .put("databaseAppliedFloors", ClusterAlerts.visibleFloors(state.databaseAppliedFloors(), visibleDatabases));
   }
