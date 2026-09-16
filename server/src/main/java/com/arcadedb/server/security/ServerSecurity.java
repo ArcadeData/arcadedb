@@ -1193,50 +1193,68 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
 
   /**
    * Whether a replicated security entry must be refused because the document it was built from is no longer the
-   * one in force (issue #7509). A null {@code expected} is an unconditional install - a seed, or an entry from a
-   * node that predates the precondition - and is never refused.
+   * one the cluster installed (issue #7509). A null {@code expected} is an unconditional install - a seed, or an
+   * entry from a node that predates the precondition - and is never refused.
    * <p>
-   * <b>Whether this node's document came from the cluster is what makes the refusal uniform</b> (issue #7693).
-   * The refusal has to be the SAME on every node or it does not prevent a lost update, it manufactures a
-   * divergence: the entry installs on the nodes that accept it and not on the ones that refuse, and the same
-   * credentials then resolve differently depending on which node answers. The fingerprints are only comparable
-   * once every node holds the same document, and until the first replicated entry of that kind lands they do NOT:
-   * each node bootstraps its own {@code root} with an independently salted password hash, so three nodes of a
-   * statically configured cluster - one that never ran the {@code addPeer}/{@code connect cluster} seed - start
-   * with three different user documents and therefore three different fingerprints. The first {@code create user}
-   * on such a cluster matched only on the submitter and was refused by the other two, which is exactly the symptom
-   * issue #7693 reports: the user appears on one node and the cluster never converges.
+   * <b>The decision has to be identical on every node</b> (issue #7693), or it does not prevent a lost update, it
+   * manufactures a divergence: the entry installs on the nodes that accept it and not on the ones that refuse, and
+   * the same credentials then resolve differently depending on which node answers. So it is made from two values
+   * that are the same everywhere and nowhere else:
+   * <ul>
+   * <li>{@code expected}, which rides in the replicated entry;</li>
+   * <li>the fingerprint of the last replicated document this node INSTALLED, held in
+   * {@link ReplicatedSecurityFingerprintRepository}. Every node installs the same payloads in the same order, so
+   * they all hold the same value - and it survives a restart, because it is on disk.</li>
+   * </ul>
+   * Neither is the document currently in force, and that is the point. Comparing against the LIVE document was the
+   * defect #7693 reports and, in its second form, what claude-review and CodeRabbit both caught on PR #7748:
+   * <ul>
+   * <li>before the first replicated entry the live documents differ by construction - each node bootstraps its own
+   * {@code root} with an independently salted password hash, so three nodes of a statically configured cluster (one
+   * that never ran the {@code addPeer} / {@code connect cluster} seed) hold three different user documents. The
+   * first {@code create user} matched only on the submitter and was refused by the other two: the user appeared on
+   * one node and the cluster never converged;</li>
+   * <li>after it, a node whose file has drifted locally - hand-edited, restored from a backup, or written by a
+   * {@code loadUsers()} reload - would answer differently from its peers about an entry both can read perfectly
+   * well, which puts the divergence back on a node that is merely out of date rather than mid-race.</li>
+   * </ul>
+   * With no recorded fingerprint there is nothing to compare, and the entry installs. That is uniform too, because
+   * a cluster that has never replicated a document of this kind has no node with one.
    * <p>
-   * So a node whose document is not one the cluster installed does not get a vote: it has nothing meaningful to
-   * compare against, and it installs. That is uniform by construction on a cluster that has never replicated one -
-   * no node has - and from the first entry onwards every node holds the same document, so the compare-and-set is
-   * live and answers identically everywhere, which is what #7509 needs.
-   * <p>
-   * The question is answered against {@link ReplicatedSecurityFingerprintRepository}, which survives a restart and
-   * is compared with the document actually in force rather than trusted as a flag. See its javadoc for why both
-   * halves of that matter.
+   * The cost of taking the recorded fingerprint as the baseline is that a node whose live document has drifted
+   * cannot get a change of its own accepted: it submits the fingerprint of what it holds, every node compares that
+   * with what the cluster installed, and the retry loop in {@code createUserClusterWide} and its siblings fails
+   * loudly after {@link #SECURITY_CAS_MAX_ATTEMPTS}. That is the right failure. A node out of step with the cluster
+   * must not be able to push its own copy over everyone else's, which is the whole of issue #6808.
+   *
+   * @param current the document in force, used only to make the log line diagnosable - never to decide
    */
   private boolean isSuperseded(final String document, final String documentKey, final String expected,
       final String current) {
-    if (expected == null || expected.equals(current))
+    if (expected == null)
       return false;
 
-    if (!current.equals(replicatedFingerprints.get(documentKey))) {
-      LogManager.instance().log(this, Level.INFO,
-          "Installing a replicated %s whose precondition does not match this node's own document (expected "
-              + "fingerprint %s, current %s). The document in force here is not one this node installed from the "
-              + "cluster - it is its own bootstrap, or a locally edited file - so it cannot be compared against: "
-              + "refusing here while another node accepts would diverge the cluster's security state (issue "
-              + "#7693). The concurrency check of issue #7509 engages from this entry on",
-          document, expected, current);
+    final String replicated = replicatedFingerprints.get(documentKey);
+    if (replicated == null) {
+      if (!expected.equals(current))
+        LogManager.instance().log(this, Level.INFO,
+            "Installing a replicated %s whose precondition does not match this node's own document (expected "
+                + "fingerprint %s, current %s). This node has never installed a replicated %s, so what it holds is "
+                + "its own bootstrap rather than the cluster's and there is nothing to compare against: refusing "
+                + "here while another node accepts would diverge the cluster's security state (issue #7693). The "
+                + "concurrency check of issue #7509 engages from this entry on",
+            document, expected, current, document);
       return false;
     }
 
+    if (expected.equals(replicated))
+      return false;
+
     LogManager.instance().log(this, Level.WARNING,
-        "Refusing a replicated %s: it was built from a document that is no longer in force (expected fingerprint "
-            + "%s, current %s). Installing it would revert a change this node has already applied; the node that "
-            + "submitted it retries against the current document",
-        document, expected, current);
+        "Refusing a replicated %s: it was built from a document that is no longer the one the cluster installed "
+            + "(expected fingerprint %s, last replicated %s, currently in force %s). Installing it would revert a "
+            + "change this node has already applied; the node that submitted it retries against the current document",
+        document, expected, replicated, current);
     return true;
   }
 

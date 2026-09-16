@@ -457,8 +457,12 @@ class Issue7402TimeSeriesHttpSessionIT extends BaseGraphServerTest {
         .getValueAsInteger(GlobalConfiguration.SERVER_HTTP_QUERY_MAX_RESULT_ROWS);
     getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_HTTP_QUERY_MAX_RESULT_ROWS, 1);
 
-    final String session = beginSession(rootAuth());
+    // The session is opened INSIDE the try, so a failure to open it still restores the ceiling on the way out:
+    // this server is shared with every test that runs after this one, and leaving the ceiling at 1 would answer
+    // 413 to reads that have nothing to do with this test (CodeRabbit).
+    String session = null;
     try {
+      session = beginSession(rootAuth());
       command(rootAuth(), session, "INSERT INTO " + DOC_TYPE + " SET name = 'witness'");
       assertThat(countDocuments(rootAuth(), session)).isEqualTo(1L);
 
@@ -474,7 +478,8 @@ class Issue7402TimeSeriesHttpSessionIT extends BaseGraphServerTest {
           .isEqualTo(1L);
     } finally {
       getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_HTTP_QUERY_MAX_RESULT_ROWS, ceiling);
-      rollback(rootAuth(), session);
+      if (session != null)
+        rollback(rootAuth(), session);
     }
   }
 

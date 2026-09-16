@@ -181,12 +181,14 @@ class Issue7693FirstReplicatedSecurityEntryTest {
   }
 
   /**
-   * And the other half of recording a FINGERPRINT rather than a boolean: what is stored is compared with the
-   * document actually in force, so a node whose file was edited locally - or restored from a backup - goes back to
-   * installing unconditionally. That is the safe direction, because it cannot refuse an entry its peers accept.
+   * And the reason the baseline is the RECORDED fingerprint rather than the document in force (CodeRabbit on PR
+   * #7748). A node whose file has drifted locally - hand-edited, restored from a backup - still answers the same
+   * way its peers do about the same entry. Comparing against the live document instead would have this node
+   * install a stale entry that every converged peer refuses, which restores users, grants or tokens the cluster
+   * had already moved past: the identical divergence, reached from a node that is merely out of date.
    */
   @Test
-  void aLocallyEditedDocumentGoesBackToInstallingUnconditionally() {
+  void aLocallyEditedDocumentDoesNotEscapeTheConcurrencyCheck() {
     final String firstEntry = usersOf(nodeA, "alice");
     final String staleFingerprint = nodeA.usersFingerprint();
     nodeA.applyReplicatedUsers(firstEntry, staleFingerprint);
@@ -196,9 +198,14 @@ class Issue7693FirstReplicatedSecurityEntryTest {
     nodeB.createUser(user(nodeB, "edited-in-locally", "localpassword"));
     nodeB = restart(nodeB, "b");
 
-    assertThat(nodeB.applyReplicatedUsers(usersOf(nodeA, "bob"), staleFingerprint))
-        .as("the document in force is no longer the one the cluster installed, so this node cannot judge")
-        .isTrue();
+    final String supersededEntry = usersOf(nodeA, "bob");
+    assertThat(nodeA.applyReplicatedUsers(supersededEntry, staleFingerprint))
+        .as("the converged peer refuses it").isFalse();
+    assertThat(nodeB.applyReplicatedUsers(supersededEntry, staleFingerprint))
+        .as("and the drifted node refuses it identically, rather than installing what its peers rejected")
+        .isFalse();
+    assertThat(nodeB.getUser("alice"))
+        .as("the change the stale entry would have reverted is still in force here too").isNotNull();
   }
 
   /** The same first-entry rule for the two documents issue #7373 added, which share {@code isSuperseded}. */
@@ -209,6 +216,33 @@ class Issue7693FirstReplicatedSecurityEntryTest {
 
     final JSONObject tokens = new JSONObject(nodeA.getApiTokensJsonPayload());
     assertThat(nodeB.applyReplicatedApiTokens(tokens.toString(), "a-fingerprint-node-b-has-never-had")).isTrue();
+  }
+
+  /**
+   * And the rest of the rule for those two: once a replicated document HAS landed, a stale precondition is refused
+   * there as well, and the refusal survives a restart. The three documents share {@code isSuperseded} but each
+   * carries its own recorded fingerprint, so a users entry landing must not make the group document judgeable
+   * (or the other way round).
+   */
+  @Test
+  void aRestartedNodeStillRefusesAStaleGroupOrTokenPrecondition() {
+    final String groupsDocument = nodeA.getGroupsJsonPayload();
+    final String staleGroups = nodeA.groupsFingerprint();
+    final String tokensDocument = nodeA.getApiTokensJsonPayload();
+    final String staleTokens = nodeA.apiTokensFingerprint();
+
+    nodeB.applyReplicatedGroups(groupsDocument, null);
+    nodeB.applyReplicatedApiTokens(tokensDocument, null);
+
+    // A users entry lands too: the three documents must stay independent of one another.
+    nodeB.applyReplicatedUsers(usersOf(nodeA, "alice"), null);
+
+    nodeB = restart(nodeB, "b");
+
+    assertThat(nodeB.applyReplicatedGroups(groupsDocument, staleGroups + "-stale"))
+        .as("a group precondition that is not the one the cluster installed is refused after a restart").isFalse();
+    assertThat(nodeB.applyReplicatedApiTokens(tokensDocument, staleTokens + "-stale"))
+        .as("and so is an API-token one").isFalse();
   }
 
   /** Stops {@code security} and opens a fresh one over the same configuration directory: a node restart. */
