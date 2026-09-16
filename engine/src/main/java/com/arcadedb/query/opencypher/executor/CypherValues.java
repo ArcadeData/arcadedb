@@ -40,8 +40,8 @@ public final class CypherValues {
   /** How long an expression's text may be before a message stops naming it; see {@link #namesAValue}. */
   private static final int MAX_ECHOED_EXPRESSION_LENGTH = 100;
 
-  /** How much of one key a message shows; see {@link #describeKeys}. */
-  private static final int MAX_DESCRIBED_KEY_LENGTH = 40;
+  /** How much of any one caller-supplied name a message shows; see {@link #describeName}. */
+  private static final int MAX_DESCRIBED_NAME_LENGTH = 40;
 
   private CypherValues() {
   }
@@ -148,7 +148,7 @@ public final class CypherValues {
       message.append(" inside the list");
     message.append(" assigned to ");
     if (propertyName != null)
-      message.append("property '").append(sanitize(propertyName)).append("'");
+      message.append("property '").append(describeName(propertyName)).append("'");
     else
       message.append("a property");
 
@@ -167,22 +167,33 @@ public final class CypherValues {
         message.append(text.charAt(0) == '$' ? ", supplied by parameter " : ", produced by the expression ")
             .append(text);
     } else if (valueOrigin instanceof String parameterName)
-      message.append(", supplied by parameter $").append(parameterName);
+      message.append(", supplied by parameter $").append(describeName(parameterName));
 
     return message.append(".").toString();
   }
 
   /**
-   * Caps one key's own length. Bounding how MANY keys a message names is only half the bound: a single key is
-   * caller-supplied text too, and one long enough would carry the same weight into the client response and the
-   * server log that naming every key would.
+   * How every caller-supplied name reaches the message: a map key, the property being written, the parameter that
+   * supplied the value. All three are the same kind of text and travel to the same two places, so all three are
+   * bounded and cleaned the same way rather than each clause deciding for itself - which is how the parameter
+   * clause came to be the one that did neither.
    */
-  private static String abbreviate(final String key) {
-    return key.length() <= MAX_DESCRIBED_KEY_LENGTH ? key : key.substring(0, MAX_DESCRIBED_KEY_LENGTH) + "...";
+  private static String describeName(final String name) {
+    return sanitize(abbreviate(name));
   }
 
   /**
-   * Replaces control characters with a space. A property name or a map key is caller-supplied text - Cypher's
+   * Caps one name's own length. Bounding how MANY keys a message names is only half the bound: a single name is
+   * caller-supplied text too, and one long enough would carry the same weight into the client response and the
+   * server log that naming every key would.
+   */
+  private static String abbreviate(final String name) {
+    return name.length() <= MAX_DESCRIBED_NAME_LENGTH ? name : name.substring(0, MAX_DESCRIBED_NAME_LENGTH) + "...";
+  }
+
+  /**
+   * Replaces control characters with a space. A property name, a map key and a parameter name are all
+   * caller-supplied text - Cypher's
    * backtick-quoted identifiers accept a newline inside one - and this message is written to the server log as a
    * line, so an unescaped newline would let a caller forge log entries below the real one (CWE-117). The expression
    * clause needs no such treatment: {@link #namesAValue} already admits nothing but letters, digits and
@@ -249,7 +260,7 @@ public final class CypherValues {
         keys.add("... " + (map.size() - MAX_DESCRIBED_KEYS) + " more");
         break;
       }
-      keys.add(sanitize(abbreviate(String.valueOf(key))));
+      keys.add(describeName(String.valueOf(key)));
     }
     return keys.toString();
   }
