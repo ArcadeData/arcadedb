@@ -208,12 +208,14 @@ public class PostGrafanaQueryHandler extends DatabaseAbstractHandler {
       return executeAggregation(target, targetPath, engine, database.getName(), typeName, columns, fromTs, toTs,
           maxDataPoints, tagFilter, budget);
 
-    return executeRawQuery(target, targetPath, engine, columns, fromTs, toTs, tagFilter, budget);
+    return executeRawQuery(target, targetPath, engine, database.getName(), typeName, columns, fromTs, toTs,
+        tagFilter, budget);
   }
 
   private JSONObject executeRawQuery(final JSONObject target, final String targetPath,
-      final TimeSeriesEngine engine, final List<ColumnDefinition> columns, final long fromTs, final long toTs,
-      final TagFilter tagFilter, final TimeSeriesHandlerUtils.RowBudget budget) throws Exception {
+      final TimeSeriesEngine engine, final String databaseName, final String typeName,
+      final List<ColumnDefinition> columns, final long fromTs, final long toTs, final TagFilter tagFilter,
+      final TimeSeriesHandlerUtils.RowBudget budget) throws Exception {
 
     // The try covers the PROJECTION ONLY, never engine.queryAscending below. An IllegalArgumentException raised
     // inside the engine is a broken engine invariant, not a caller mistake, and folding it into an error frame
@@ -233,8 +235,16 @@ public class PostGrafanaQueryHandler extends DatabaseAbstractHandler {
     // was looked at, so a panel over a wide range cost O(matching rows) heap whatever it went on to draw. The
     // bounded ascending fetch stops each shard as soon as its own bound is satisfied, and the one row past the
     // budget is what proves the response would have exceeded the ceiling.
-    final List<Object[]> rows = engine.queryAscending(fromTs, toTs, columnIndices, tagFilter, budget.fetchLimit(),
-        null);
+    // What the read actually did, published under the same surface as this endpoint's aggregation branch
+    // (issue #7717). Its absence here was the last read on the /ts surface reporting nothing: the branch is a
+    // mutable-and-sealed ascending scan, which is exactly the shape the counters describe.
+    final AggregationMetrics readMetrics = TimeSeriesReadMetrics.start();
+    final List<Object[]> rows;
+    try {
+      rows = engine.queryAscending(fromTs, toTs, columnIndices, tagFilter, budget.fetchLimit(), readMetrics);
+    } finally {
+      TimeSeriesReadMetrics.publish(readMetrics, databaseName, typeName, TimeSeriesReadMetrics.SURFACE_GRAFANA);
+    }
     // Thrown rather than rendered as this target's error frame: a 413 is a refusal of the REQUEST, and a frame
     // would answer 200 with a truncated series a dashboard cannot tell from a complete one.
     if (!budget.charge(rows.size()))

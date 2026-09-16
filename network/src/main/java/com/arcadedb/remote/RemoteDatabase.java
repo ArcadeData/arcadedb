@@ -52,6 +52,7 @@ import com.arcadedb.remote.timeseries.TimeSeriesQuery;
 import com.arcadedb.remote.timeseries.TimeSeriesQueryResult;
 import com.arcadedb.remote.timeseries.TimeSeriesWriteSummary;
 import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.Pair;
 
@@ -1057,6 +1058,11 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       throw new RemoteException("Request interrupted", e);
+    } catch (final JSONException e) {
+      // Before the RuntimeException clause, for the reason postToTimeSeriesEndpoint gives at its own. Reachable
+      // on this method from the partial-write branch above, which parses the 400 body to tell a rejected
+      // request from a partially applied one.
+      throw new RemoteException("Error on time series write", e);
     } catch (final RuntimeException e) {
       throw e;
     } catch (final Exception e) {
@@ -1197,6 +1203,9 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       throw new RemoteException("Request interrupted", e);
+    } catch (final JSONException e) {
+      // Before the RuntimeException clause, for the reason postToTimeSeriesEndpoint gives at its own.
+      throw new RemoteException("Error on time series latest", e);
     } catch (final RuntimeException e) {
       throw e;
     } catch (final Exception e) {
@@ -1225,6 +1234,14 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       throw new RemoteException("Request interrupted", e);
+    } catch (final JSONException e) {
+      // A body this client could not parse is a transport failure, not one of the server's typed exceptions, so
+      // it keeps the "Error on time series <endpoint>" context the generic clause below used to give it.
+      // Placed BEFORE the RuntimeException clause on purpose: JSONException extends RuntimeException, so
+      // without this it would ride the
+      // pass-through meant for the reconstructed server types and reach the caller as a bare parser error.
+      // RemoteHttpComponent wraps the same failure the same way.
+      throw new RemoteException("Error on time series " + endpoint, e);
     } catch (final RuntimeException e) {
       // Unchanged, for the reason vectorOperation gives at its own generic clause: manageException reconstructs
       // the server's exception type, and SecurityException, NoSuchElementException and SchemaException are
