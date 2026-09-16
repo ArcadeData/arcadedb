@@ -38,14 +38,15 @@ package com.arcadedb.engine.timeseries;
  * absence of a measurement, and a sum over 999 real samples and one absent one is the sum of the 999 - the way SQL's
  * {@code SUM} and {@code AVG} skip NULL. So {@link #sum(double, long, double)} is the same fold shape, {@code AVG}
  * divides the folded sum by the number of samples that were REAL ({@link #countIfPresent(long, double)}), and a
- * window whose every sample was absent answers {@link #ABSENT} for all four. A window that was offered no sample at
- * all is a different question, and only SUM answers it differently: the empty sum is the additive identity, so a SUM
- * accumulator seeded with zero and never offered anything stays zero (issue #7506).
- * <p>
- * A NaN the arithmetic itself produces
+ * window whose every sample was absent answers {@link #ABSENT} for all four. A NaN the arithmetic itself produces
  * over real samples ({@code +Infinity + -Infinity}) is a different thing - an undefined total, kept as IEEE keeps
  * it - which is why the SUM fold is keyed on that count rather than on the accumulator's value. {@code COUNT} is the one aggregate that does not
  * skip: it counts rows, as SQL's {@code COUNT(*)} does, and the SQL push-down maps it from {@code count(*)}.
+ * <p>
+ * A window that was offered no sample at all is a different question from one whose samples were all absent, and
+ * only SUM answers the two differently: the empty sum is the additive identity, so a SUM accumulator seeded with
+ * zero and never offered anything stays zero, while one absent sample is enough to make it {@link #ABSENT}
+ * (issue #7506).
  * <p>
  * The PromQL layer is deliberately NOT under this policy for {@code sum}/{@code avg}: Prometheus propagates NaN
  * through those, and a PromQL query is expected to answer what Prometheus would.

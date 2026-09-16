@@ -512,13 +512,11 @@ public final class MultiColumnAggregationResult {
    * side-channel is needed to recover it. SUM/AVG follow since issue #7089: a zero seed cannot tell "nothing real
    * arrived" from "it all added up to zero", and the {@code +=} it fed turned one NaN sample into a NaN total.
    * <p>
-   * SUM is the exception, and seeds at the additive identity instead (issue #7506). The empty sum is zero, so a
-   * request that was never offered a sample in this bucket - because a sibling request over another column is what
-   * created it - answers 0 rather than leaking an absence it was never told about. That no longer costs the #7089
-   * answer, because {@link TimeSeriesNaN#sum} turns the seed absent as soon as an absent sample reaches it: a
-   * bucket whose samples were all NaN still reports {@link TimeSeriesNaN#ABSENT}, and only a request nothing ever
-   * offered anything to keeps the zero. AVG does not follow, since an empty average is undefined rather than zero,
-   * and neither do MIN/MAX, which have no identity element to fall back on (issue #4597).
+   * SUM seeds at the additive identity instead, because the empty sum is zero and a request nothing was ever
+   * offered in this bucket - one a sibling request over another column brought into existence - has no absence to
+   * report (issue #7506). The seed does not cost the #7089 answer: {@link TimeSeriesNaN#sum} turns it absent on the
+   * first absent sample, so an all-NaN bucket still reads {@link TimeSeriesNaN#ABSENT}. AVG keeps the absent seed,
+   * an empty average being undefined rather than zero, and so do MIN/MAX, which have no identity element at all.
    */
   private double[] newInitializedValues() {
     final double[] vals = new double[requestCount];
