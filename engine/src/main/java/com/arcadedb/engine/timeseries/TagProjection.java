@@ -32,8 +32,7 @@ import java.util.Arrays;
  * <p>
  * The filter columns are read as well, and the row is narrowed to the projection only once it has passed. Nothing
  * is read that neither side needs, and a query whose projection already covers the filter - the common one - pays
- * nothing at all: {@link #widened()} is false, {@link #scanIndices()} IS the caller's array and {@link #narrow}
- * hands the row straight back.
+ * nothing at all: {@link #scanIndices()} IS the caller's array and {@link #narrow} hands the row straight back.
  * <p>
  * Both index arrays are in the non-timestamp schema order the sealed decompressor emits columns in, which is what
  * makes the narrowed row identical to the one an unfiltered scan of the same projection would have produced.
@@ -106,11 +105,6 @@ final class TagProjection {
   /** The columns the scan must materialise: the projection plus whatever the filter needs on top of it. */
   int[] scanIndices() {
     return scanIndices;
-  }
-
-  /** Whether the scan reads more columns than the caller asked for, and rows therefore need narrowing. */
-  boolean widened() {
-    return keep != null;
   }
 
   /**

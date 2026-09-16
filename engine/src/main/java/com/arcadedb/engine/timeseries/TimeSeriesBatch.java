@@ -44,8 +44,10 @@ import java.util.List;
  * engine.appendBatch(batch);
  * </pre>
  * Column indexes are ordinals among the <b>non-timestamp</b> columns of the type, the same order
- * used by the {@code Object[][]} form of the append API. A column left untouched on a row keeps its
- * zero value, matching how the {@code Object[][]} path stores a {@code null}.
+ * used by the {@code Object[][]} form of the append API. A column left untouched on a row reads back as
+ * what a {@code null} reads back as on that column - the absent marker where it can carry one, zero
+ * elsewhere - which is the same thing the {@code Object[][]} path stores for a {@code null} (issue #7743,
+ * see {@link #rawNull}).
  * <p>
  * A batch is a plain buffer with no synchronization: fill it on one thread, then append it.
  * {@link #clear()} makes it reusable across batches without reallocating the column arrays.

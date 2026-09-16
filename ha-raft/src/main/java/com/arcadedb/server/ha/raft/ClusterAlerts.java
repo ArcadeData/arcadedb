@@ -289,7 +289,8 @@ public class ClusterAlerts {
     int i = 0;
     for (final DivergenceCause cause : causes) {
       if (i > 0)
-        sb.append(i == causes.size() - 1 ? " and after " : ", ");
+        // "A, B and C": the "after" is said once, at the head, however many causes follow it.
+        sb.append(i == causes.size() - 1 ? " and " : ", ");
       sb.append(cause.getDescription());
       ++i;
     }

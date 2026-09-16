@@ -4840,23 +4840,36 @@ public class ArcadeStateMachine extends BaseStateMachine {
    *
    * @param snapshotDownloadQueued     a snapshot download is flagged but has not started
    * @param snapshotDownloadInProgress a snapshot download is running
-   * @param divergedDatabases          databases quarantined and awaiting a resync (issues #4740, #4797), sorted
    * @param snapshotAppliedFloor       the node-wide stale-snapshot read floor, or {@code -1} when there is none
    *                                   (issue #6111)
    * @param databaseAppliedFloors      per-database read floors left by a snapshot install that could not bring
    *                                   them up to date, keyed by database name (issue #6760)
-   * @param divergenceCauses           why each of {@code divergedDatabases} was quarantined (issue #7741), same
-   *                                   keys, unordered
+   * @param divergenceCauses           the databases quarantined and awaiting a resync (issues #4740, #4797), each
+   *                                   with WHY it was quarantined (issue #7741)
    */
   public record LocalResyncState(boolean snapshotDownloadQueued, boolean snapshotDownloadInProgress,
-                                 List<String> divergedDatabases, long snapshotAppliedFloor,
-                                 Map<String, Long> databaseAppliedFloors,
+                                 long snapshotAppliedFloor, Map<String, Long> databaseAppliedFloors,
                                  Map<String, DivergenceCause> divergenceCauses) {
 
     public LocalResyncState {
-      divergedDatabases = List.copyOf(divergedDatabases);
       databaseAppliedFloors = Map.copyOf(databaseAppliedFloors);
       divergenceCauses = Map.copyOf(divergenceCauses);
+    }
+
+    /**
+     * The quarantined databases, sorted so a status poll payload is stable between ticks on an unchanged node.
+     * <p>
+     * DERIVED from {@link #divergenceCauses} rather than carried beside it (claude-review on PR #7747): the two
+     * were the same set spelled twice, and a future caller updating one and not the other would have published a
+     * name with no cause or a cause with no name. Computed per call, which costs an allocation only on a node
+     * that is actually holding something back - the same trade {@link #getLocalResyncState} makes.
+     */
+    public List<String> divergedDatabases() {
+      if (divergenceCauses.isEmpty())
+        return List.of();
+      final List<String> names = new ArrayList<>(divergenceCauses.keySet());
+      Collections.sort(names);
+      return names;
     }
 
     /**
@@ -4865,7 +4878,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
      * here rather than re-deriving it.
      */
     public boolean inProgress() {
-      return snapshotDownloadQueued || snapshotDownloadInProgress || !divergedDatabases.isEmpty()
+      return snapshotDownloadQueued || snapshotDownloadInProgress || !divergenceCauses.isEmpty()
           || snapshotAppliedFloor >= 0 || !databaseAppliedFloors.isEmpty();
     }
   }
@@ -4884,20 +4897,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // A healthy node - the overwhelming majority of calls, since the readiness probe polls this - copies
     // nothing: both immutable empties are shared constants and the record's own copyOf calls return them
     // unchanged. Only a node that actually has something in flight pays for the copies.
-    final List<String> diverged;
-    final Map<String, DivergenceCause> causes;
-    if (divergedDatabases.isEmpty()) {
-      diverged = List.of();
-      causes = Map.of();
-    } else {
-      causes = new HashMap<>(divergedDatabases);
-      diverged = new ArrayList<>(causes.keySet());
-      // Sorted so a status poll payload is stable between ticks on an unchanged node.
-      Collections.sort(diverged);
-    }
+    final Map<String, DivergenceCause> causes = divergedDatabases.isEmpty()
+        ? Map.of() : new HashMap<>(divergedDatabases);
     final Map<String, Long> floors = staleDatabaseAppliedFloors.isEmpty()
         ? Map.of() : new HashMap<>(staleDatabaseAppliedFloors);
-    return new LocalResyncState(needsSnapshotDownload.get(), snapshotDownloadInProgress.get(), diverged,
+    return new LocalResyncState(needsSnapshotDownload.get(), snapshotDownloadInProgress.get(),
         staleSnapshotAppliedFloor.get(), floors, causes);
   }
 
