@@ -126,6 +126,12 @@ public enum Type {
    * {@link #widenFloat}.
    */
   private static final float               EXACT_INTEGRAL_FLOAT = 1 << 24;
+  /**
+   * The largest magnitude at which every {@code long} is exactly representable as a {@code double}: 2^53 itself
+   * qualifies, and above it consecutive doubles are more than one apart, so distinct longs collapse onto the same
+   * double. See {@link #isExactAsDouble}.
+   */
+  private static final long                EXACT_INTEGRAL_DOUBLE = 1L << 53;
 
   static {
     for (final Type type : values()) {
@@ -1327,6 +1333,56 @@ public enum Type {
     return new BigDecimal(Float.toString(value));
   }
 
+  /**
+   * Answers whether the given {@code long} survives a round trip through {@code double}. Above 2^53 it does not:
+   * the mantissa runs out and consecutive doubles are two or more apart, so a whole band of distinct longs share
+   * one double and a comparison performed in {@code double} reports them equal (issue #7628). Callers that need an
+   * exact answer for such a long promote both operands to {@link BigDecimal} instead of to {@code double}.
+   *
+   * @param value the long to test
+   *
+   * @return {@code true} when {@code (long) (double) value == value} for every long of this magnitude
+   */
+  public static boolean isExactAsDouble(final long value) {
+    return value >= -EXACT_INTEGRAL_DOUBLE && value <= EXACT_INTEGRAL_DOUBLE;
+  }
+
+  /**
+   * Builds the {@link BigDecimal} that reads the same in decimal as the given floating point operand, so an
+   * integral operand too large for {@code double} can be compared against it exactly. A {@code Float} goes through
+   * {@link #floatToBigDecimal} and everything else through {@code BigDecimal.valueOf(double)}, both of which read
+   * the shortest decimal that round-trips the value rather than its binary expansion - the same decimal
+   * {@link #widenFloat} reads, so the exact path and the {@code double} path order the same pairs the same way.
+   *
+   * @param value the operand, which must be finite
+   *
+   * @return the decimal that reads the same
+   */
+  public static BigDecimal floatingToBigDecimal(final Number value) {
+    if (value instanceof Float float1)
+      return floatToBigDecimal(float1);
+    if (value instanceof BigDecimal bigDecimal)
+      return bigDecimal;
+    return BigDecimal.valueOf(value.doubleValue());
+  }
+
+  /**
+   * Answers whether the given floating point operand has an exact {@link BigDecimal} form. NaN and the infinities
+   * do not, so a comparison involving one of them stays in {@code double}, where {@code Double.compare} already
+   * orders them totally.
+   *
+   * @param value the operand
+   *
+   * @return {@code true} when the value is finite
+   */
+  public static boolean isFinite(final Number value) {
+    if (value instanceof Float float1)
+      return !float1.isNaN() && !float1.isInfinite();
+    if (value instanceof Double double1)
+      return !double1.isNaN() && !double1.isInfinite();
+    return true;
+  }
+
   public static Number[] castComparableNumber(Number left, Number right) {
     // CHECK FOR CONVERSION
     if (left instanceof Short) {
@@ -1367,12 +1423,25 @@ public enum Type {
       if (right instanceof Float float1) {
         // Narrowing a long to float loses precision above 2^24 (issue #7614), e.g. 16777217L would collapse
         // onto the same float as 16777216L. Both operands meet at double instead, which holds every long
-        // exactly up to 2^53 - the same promotion BinaryComparator.compareWideningLong already applies.
-        left = left.doubleValue();
-        right = widenFloat(float1);
-      } else if (right instanceof Double)
-        left = left.doubleValue();
-      else if (right instanceof BigDecimal)
+        // exactly up to 2^53 - the same promotion BinaryComparator.compareWideningLong already applies. Past
+        // that bound double runs out of mantissa too and the same collapse returns one band higher, so a long
+        // that big meets the float in BigDecimal instead (issue #7628).
+        if (isExactAsDouble(left.longValue()) || !Float.isFinite(float1)) {
+          left = left.doubleValue();
+          right = widenFloat(float1);
+        } else {
+          left = BigDecimal.valueOf(left.longValue());
+          right = floatToBigDecimal(float1);
+        }
+      } else if (right instanceof Double double1) {
+        // Same 2^53 bound as the Float branch above (issue #7628)
+        if (isExactAsDouble(left.longValue()) || !Double.isFinite(double1))
+          left = left.doubleValue();
+        else {
+          left = BigDecimal.valueOf(left.longValue());
+          right = BigDecimal.valueOf(double1);
+        }
+      } else if (right instanceof BigDecimal)
         left = new BigDecimal(left.longValue());
       else if (right instanceof Integer || right instanceof Byte || right instanceof Short)
         right = right.longValue();
@@ -1385,11 +1454,21 @@ public enum Type {
         left = floatToBigDecimal(left.floatValue());
       else if (right instanceof Byte || right instanceof Short)
         right = right.floatValue();
-      else if (right instanceof Integer || right instanceof Long) {
-        // Symmetric case of the INTEGER/LONG branches above: narrowing the integral operand to float would
-        // lose precision above 2^24 (issue #7614), so both meet at double instead.
+      else if (right instanceof Integer) {
+        // Symmetric case of the INTEGER branch above: narrowing the integral operand to float would lose
+        // precision above 2^24 (issue #7614), so both meet at double instead, which holds every int exactly.
         left = widenFloat(left.floatValue());
         right = right.doubleValue();
+      } else if (right instanceof Long) {
+        // Symmetric case of the LONG branch above: double for a long inside 2^53, BigDecimal past it (#7614/#7628)
+        final float float1 = left.floatValue();
+        if (isExactAsDouble(right.longValue()) || !Float.isFinite(float1)) {
+          left = widenFloat(float1);
+          right = right.doubleValue();
+        } else {
+          left = floatToBigDecimal(float1);
+          right = BigDecimal.valueOf(right.longValue());
+        }
       }
 
     } else if (left instanceof Double) {
@@ -1398,7 +1477,16 @@ public enum Type {
         left = BigDecimal.valueOf(left.doubleValue());
       else if (right instanceof Float float1)
         right = widenFloat(float1);
-      else if (right instanceof Byte || right instanceof Short || right instanceof Integer || right instanceof Long)
+      else if (right instanceof Long long1) {
+        // Symmetric case of the LONG branch above (issue #7628)
+        final double double1 = left.doubleValue();
+        if (isExactAsDouble(long1) || !Double.isFinite(double1))
+          right = right.doubleValue();
+        else {
+          left = BigDecimal.valueOf(double1);
+          right = BigDecimal.valueOf(long1);
+        }
+      } else if (right instanceof Byte || right instanceof Short || right instanceof Integer)
         right = right.doubleValue();
 
     } else if (left instanceof BigDecimal) {
