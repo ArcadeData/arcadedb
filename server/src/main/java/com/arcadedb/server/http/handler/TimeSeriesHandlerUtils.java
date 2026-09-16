@@ -404,19 +404,19 @@ final class TimeSeriesHandlerUtils {
    * share the "is not a TimeSeries type" message, which sent an operator chasing the wrong cause (issue #6356
    * follow-up, claude-review on PR #6779).
    * <p>
-   * The engine-unavailable body is built with {@link JSONObject} rather than string concatenation because the
-   * reason embeds a file path that could contain a double quote or a backslash, which raw concatenation would
-   * turn into invalid JSON.
+   * All three bodies are built with {@link JSONObject} rather than string concatenation, because all three embed
+   * text the CALLER supplied - the type name it asked for, and for the unavailable case a file path - and a double
+   * quote or a backslash in any of it would turn raw concatenation into a body no client can parse. The first two
+   * still concatenated after the third was fixed (claude-review on PR #7680).
    */
   static ExecutionResponse resolutionError(final String typeName, final TypeResolution resolved) {
-    return switch (resolved.failure()) {
-      case NOT_FOUND -> new ExecutionResponse(400,
-          "{ \"error\" : \"Type '" + typeName + "' does not exist\"}");
-      case NOT_TIME_SERIES -> new ExecutionResponse(400,
-          "{ \"error\" : \"Type '" + typeName + "' is not a TimeSeries type\"}");
-      case ENGINE_UNAVAILABLE -> new ExecutionResponse(400, new JSONObject().put("error",
-          "TimeSeries type '" + typeName + "' has no storage engine available: " + resolved.unavailableReason())
-          .toString());
+    final String message = switch (resolved.failure()) {
+      case NOT_FOUND -> "Type '" + typeName + "' does not exist";
+      case NOT_TIME_SERIES -> "Type '" + typeName + "' is not a TimeSeries type";
+      case ENGINE_UNAVAILABLE ->
+          "TimeSeries type '" + typeName + "' has no storage engine available: " + resolved.unavailableReason();
     };
+
+    return new ExecutionResponse(400, new JSONObject().put("error", message).toString());
   }
 }

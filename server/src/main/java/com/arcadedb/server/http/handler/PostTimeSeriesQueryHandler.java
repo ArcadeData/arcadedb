@@ -226,7 +226,10 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
         final int colIndex = TimeSeriesHandlerUtils.findColumnIndex(fieldName, columns);
 
         if (colIndex < 0)
-          return new ExecutionResponse(400, "{ \"error\" : \"Field '" + fieldName + "' not found in type\"}");
+          // JSONObject rather than concatenation: fieldName is caller text, and a double quote in it would turn a
+          // hand-built body into one no client can parse (claude-review on PR #7680).
+          return TimeSeriesHandlerUtils.badRequest(
+              new IllegalArgumentException("Field '" + fieldName + "' not found in type"));
 
         requests.add(new MultiColumnAggregationRequest(colIndex, aggType, alias));
         aggNames.put(alias);

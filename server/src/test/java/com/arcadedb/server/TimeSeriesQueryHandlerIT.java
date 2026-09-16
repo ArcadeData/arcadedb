@@ -271,6 +271,54 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
   }
 
   /**
+   * claude-review on PR #7680: the refusals that quote the caller's own text back at it have to stay PARSEABLE
+   * when that text contains a double quote. Two of them were still hand-built strings, so a type named
+   * {@code we"ather} produced a body no client can read - which on an error path is worse than the error, because
+   * the caller cannot even see what went wrong.
+   * <p>
+   * {@code postTsQueryError} parses the body with {@code new JSONObject(...)}, so an unparseable body fails this
+   * test before any assertion on its content runs.
+   */
+  @Test
+  void refusalsStayParseableWhenTheCallersTextCarriesADoubleQuote() throws Exception {
+    testEachServer(serverIndex -> {
+      createTypeAndIngestData(serverIndex);
+
+      // 'Type ... does not exist' - was concatenated.
+      final JSONObject unknownType = new JSONObject();
+      unknownType.put("type", "we\"ather");
+      assertThat(postTsQueryError(serverIndex, unknownType).getString("error"))
+          .contains("we\"ather").contains("does not exist");
+
+      // 'Type ... is not a TimeSeries type' - was concatenated.
+      command(serverIndex, "CREATE DOCUMENT TYPE `notts7680`");
+      final JSONObject notTs = new JSONObject();
+      notTs.put("type", "notts7680");
+      assertThat(postTsQueryError(serverIndex, notTs).getString("error"))
+          .contains("notts7680").contains("is not a TimeSeries type");
+
+      // 'Field ... not found in type' - was concatenated.
+      final JSONObject aggRequest = new JSONObject();
+      aggRequest.put("field", "tem\"perature");
+      aggRequest.put("type", "AVG");
+
+      final JSONArray requests = new JSONArray();
+      requests.put(aggRequest);
+
+      final JSONObject aggregation = new JSONObject();
+      aggregation.put("bucketInterval", 5000L);
+      aggregation.put("requests", requests);
+
+      final JSONObject badField = new JSONObject();
+      badField.put("type", "weather");
+      badField.put("aggregation", aggregation);
+
+      assertThat(postTsQueryError(serverIndex, badField).getString("error"))
+          .contains("tem\"perature").contains("not found in type");
+    });
+  }
+
+  /**
    * Issue #7340: the members the raw branch reads are refused by name too. {@code type} had a presence guard but
    * not a type guard, and {@code tags}/{@code fields}/{@code limit} had neither - all four answered through the
    * concealed {@code detail} field.

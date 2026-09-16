@@ -85,10 +85,13 @@ public class PostGrafanaQueryHandler extends AbstractServerHttpHandler {
     final int maxDataPoints;
     final JSONArray targets;
     try {
+      // 'targets' first, so that a request which is malformed in more than one way is told about the member the
+      // whole endpoint is built around before it is told about a range bound. That is also the order the handler
+      // used to check in (claude-review on PR #7680).
+      targets = TimeSeriesHandlerUtils.requireArray(payload, "targets", "targets");
       fromTs = TimeSeriesHandlerUtils.optLong(payload, "from", Long.MIN_VALUE, "from");
       toTs = TimeSeriesHandlerUtils.optLong(payload, "to", Long.MAX_VALUE, "to");
       maxDataPoints = TimeSeriesHandlerUtils.optInt(payload, "maxDataPoints", 0, "maxDataPoints");
-      targets = TimeSeriesHandlerUtils.requireArray(payload, "targets", "targets");
     } catch (final IllegalArgumentException e) {
       return TimeSeriesHandlerUtils.badRequest(e);
     }
