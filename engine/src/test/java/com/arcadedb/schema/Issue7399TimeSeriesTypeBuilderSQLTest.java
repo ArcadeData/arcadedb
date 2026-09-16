@@ -226,9 +226,20 @@ class Issue7399TimeSeriesTypeBuilderSQLTest extends TestHelper {
   }
 
   @Test
-  void aPrecisionIsRenderedCaseInsensitively() {
+  void aLowerCasePrecisionIsCanonicalizedOnEveryPathThatCreatesTheType() {
+    // The SQL path upper-cases the token it parses, so a type created through DDL always reports the canonical
+    // form. A builder that stored the caller's spelling verbatim therefore reported "nanosecond" when it created
+    // the type in place and "NANOSECOND" when the same builder code ran against a remote schema - a divergence in
+    // exactly the invariant the remote builder exists to establish. All three paths are pinned together here.
     assertThat(builder("LowerCasePrecision").withField("value", Type.DOUBLE).withPrecision("nanosecond").toSQL().getFirst())
         .contains("PRECISION NANOSECOND");
+
+    assertThat(builder("LowerCaseCreated").withField("value", Type.DOUBLE).withPrecision("nanosecond").create()
+        .getPrecision()).isEqualTo("NANOSECOND");
+
+    for (final String sql : builder("LowerCaseViaSQL").withField("value", Type.DOUBLE).withPrecision("nanosecond").toSQL())
+      database.command("sql", sql);
+    assertThat(((TimeSeriesType) database.getSchema().getType("LowerCaseViaSQL")).getPrecision()).isEqualTo("NANOSECOND");
   }
 
   @Test

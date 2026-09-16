@@ -87,8 +87,19 @@ public class TimeSeriesTypeBuilder {
     return this;
   }
 
+  /**
+   * Declares the timestamp precision. The value is upper-cased, because that is the only form any other path
+   * produces: {@code SQLASTBuilder} upper-cases the token it parses out of {@code PRECISION ...}, so a type created
+   * by SQL - which includes every type a remote builder creates, since it renders DDL - already reports the
+   * canonical form. Storing the caller's spelling verbatim made the same builder code report {@code "nanosecond"}
+   * embedded and {@code "NANOSECOND"} remotely (issue #7399), a divergence in exactly the invariant the remote
+   * builder exists to establish.
+   * <p>
+   * The value is NOT validated here: {@link #toSQL()} is where an unrenderable precision has to fail, and rejecting
+   * one at declaration time would refuse it for the embedded path too, which accepts it today.
+   */
   public TimeSeriesTypeBuilder withPrecision(final String precision) {
-    this.precision = precision;
+    this.precision = precision != null ? precision.toUpperCase(Locale.ENGLISH) : null;
     return this;
   }
 
@@ -192,11 +203,12 @@ public class TimeSeriesTypeBuilder {
 
     sql.append(" TIMESTAMP ").append(quote(timestampColumn));
     if (precision != null) {
-      final String normalized = precision.toUpperCase(Locale.ENGLISH);
-      if (!SQL_PRECISIONS.contains(normalized))
+      // Already upper-cased by withPrecision; what is checked here is membership, because the grammar names
+      // exactly four and anything else has no expression at all.
+      if (!SQL_PRECISIONS.contains(precision))
         throw new SchemaException("Precision '" + precision + "' has no CREATE TIMESERIES TYPE expression. Supported: "
             + String.join(", ", SQL_PRECISIONS));
-      sql.append(" PRECISION ").append(normalized);
+      sql.append(" PRECISION ").append(precision);
     }
 
     appendColumnList(sql, " TAGS (", ColumnDefinition.ColumnRole.TAG);

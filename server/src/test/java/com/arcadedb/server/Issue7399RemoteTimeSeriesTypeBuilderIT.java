@@ -167,6 +167,24 @@ class Issue7399RemoteTimeSeriesTypeBuilderIT extends BaseGraphServerTest {
   }
 
   @Test
+  void aLowerCasePrecisionReadsBackTheSameEmbeddedAndRemotely() {
+    // The parity recipe above declares an already-canonical "MICROSECOND", so it would not notice the builder
+    // storing the caller's spelling verbatim on one side and the SQL-canonicalized form on the other.
+    final TimeSeriesType viaEmbedded = embedded().getSchema().buildTimeSeriesType()
+        .withName("LowerCaseEmbedded").withTimestamp("ts").withPrecision("nanosecond")
+        .withField("value", Type.DOUBLE).withShards(1).create();
+
+    try (final RemoteDatabase database = remote()) {
+      final TimeSeriesType viaRemote = database.getSchema().buildTimeSeriesType()
+          .withName("LowerCaseRemote").withTimestamp("ts").withPrecision("nanosecond")
+          .withField("value", Type.DOUBLE).withShards(1).create();
+
+      assertThat(viaEmbedded.getPrecision()).isEqualTo("NANOSECOND");
+      assertThat(viaRemote.getPrecision()).isEqualTo(viaEmbedded.getPrecision());
+    }
+  }
+
+  @Test
   void aTypeBuiltRemotelyAcceptsSamples() {
     // A declaration the server stored but cannot ingest into would pass every assertion above. This one writes.
     try (final RemoteDatabase database = remote()) {
