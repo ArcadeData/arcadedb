@@ -1740,6 +1740,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // Same reasoning for the forward client: a forward still in flight holds this close() until it unwinds,
     // bounded by that request's own timeout, and leaving it open would leak a selector thread per server.
     forwardHttpsClients.close();
+    // Same leak this method already prevents for capabilityHttpsClients/forwardHttpsClients, for the plain-HTTP
+    // forward client every RaftReplicatedDatabase this server wraps a database with shares (review finding on
+    // PR #7650): a fresh RaftHAServer - and a fresh forwardHttpClient - is built on every
+    // RaftHAPlugin.startService(), and an unclosed one outlives it.
+    forwardHttpClient.close();
     stalledResyncExecutor.shutdownNow();
     channelRecoveryExecutor.shutdownNow();
     if (transactionBroker != null) {
