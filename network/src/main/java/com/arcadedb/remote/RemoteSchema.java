@@ -423,24 +423,24 @@ public class RemoteSchema implements Schema {
   @Deprecated
   @Override
   public TypeBuilder<DocumentType> buildDocumentType() {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("buildDocumentType() is not supported in remote database. Use SQL CREATE DOCUMENT TYPE instead.");
   }
 
   @Deprecated
   @Override
   public TypeBuilder<VertexType> buildVertexType() {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("buildVertexType() is not supported in remote database. Use SQL CREATE VERTEX TYPE instead.");
   }
 
   @Deprecated
   @Override
   public TypeBuilder<EdgeType> buildEdgeType() {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("buildEdgeType() is not supported in remote database. Use SQL CREATE EDGE TYPE instead.");
   }
 
   @Override
   public TimeSeriesTypeBuilder buildTimeSeriesType() {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("buildTimeSeriesType() is not supported in remote database. Use SQL CREATE TIMESERIES TYPE instead.");
   }
 
   @Deprecated
