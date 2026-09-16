@@ -53,7 +53,6 @@ import java.nio.channels.ClosedChannelException;
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 import java.nio.file.Files;
-import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.util.ArrayList;
@@ -412,8 +411,8 @@ public class SnapshotHttpHandler implements HttpHandler {
         // excludes is a schema change landing BETWEEN the window's t0 and the sealed listing, which is the one
         // ordering neither the t0 barrier nor the compaction pause provides.
         //
-        // A LISTING THAT FAILS HERE LEAVES THE HANDLER BY A DIFFERENT DOOR FROM EVERY OTHER FAILURE ON THIS PATH,
-        // AND THAT IS DELIBERATE (claude-review on PR #7708). listSealedStoresOrFail throws a
+        // A LISTING THAT FAILS HERE - AND ONLY HERE, ON THIS BRANCH - LEAVES THE HANDLER BY A DIFFERENT DOOR FROM
+        // EVERY OTHER FAILURE ON IT (claude-review on PR #7708). listSealedStoresOrFail throws a
         // DatabaseOperationException, which is not a PageSnapshotException, so it is not caught below and does not
         // fall back - the fallback lists the same directory and would fail the same way - and it never reaches
         // serveSnapshotZip's swallow, because that code never runs. It propagates out of handleRequest, which
@@ -421,7 +420,16 @@ public class SnapshotHttpHandler implements HttpHandler {
         // Every release still happens on the way out: handleSnapshot's `try (pause)` closes the compaction pause,
         // its finally unlocks the per-database suspend lock, and the outer finally releases the concurrency
         // semaphore. The follower sees a response with no manifest, which is the #4831 check's whole job, and
-        // retries - the same recovery as a transfer that dies mid-stream, reached before any bytes were sent
+        // retries - the same recovery as a transfer that dies mid-stream, reached before any bytes were sent.
+        //
+        // THE FALLBACK BRANCH DOES NOT SHARE THAT DOOR, and an earlier revision of this comment claimed it did.
+        // There serveSnapshotZip runs as the callback of suspendFlushAndExecute, which wraps it in
+        // CodeUtils.executeIgnoringExceptions("Error during suspend flush", true) - so the identical failure is
+        // LOGGED AT SEVERE AND SWALLOWED one frame earlier, under that generic line rather than the message
+        // naming the database. The follower's recovery is the same (no manifest, so it rejects and retries); what
+        // differs is what an operator greps for with arcadedb.pageSnapshotEnabled=false. Making the two uniform
+        // would mean hoisting the fallback's listing out of serveSnapshotZip and handing it to the streamer, and
+        // the streamer is handed a null image on that branch precisely so a caller can tell the paths apart
         image = db.executeInReadLock(() -> {
           final PageSnapshot window = db.getPageManager().openSnapshot(db);
           try {
@@ -864,7 +872,12 @@ public class SnapshotHttpHandler implements HttpHandler {
         // NO exists() PRE-CHECK: the open below is the check, so there is no window between asking and reading in
         // which the file can still go away silently
         addFileToZip(zipOut, sealedFile, manifest, false);
-      } catch (final FileNotFoundException | NoSuchFileException e) {
+      } catch (final FileNotFoundException e) {
+        // ONLY FileNotFoundException, WHICH IS THE ONLY "GONE" THIS CALL CAN RAISE: addFileToZip reaches the file
+        // through Files.isSymbolicLink, which answers false rather than throwing on an I/O error, and then
+        // FileInputStream. A NoSuchFileException arm here would read as a second way for a store to vanish and
+        // there is none (claude-review on PR #7708). Any other IOException - a real disk error - already fails
+        // the ship, just without this sentence
         throw new FileNotFoundException("TimeSeries sealed store '" + sealedFile.getName()
             + "' went away after the snapshot's point in time: the archive would declare its type without its data ("
             + e.getMessage() + ")");
