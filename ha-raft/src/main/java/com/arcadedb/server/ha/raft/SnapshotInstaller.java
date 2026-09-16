@@ -240,6 +240,16 @@ public final class SnapshotInstaller {
   static volatile Runnable recoveryBarrierForTesting = null;
 
   /**
+   * Test-only barrier invoked inside {@link #acquireNewDatabase}, right after the early
+   * {@code releaseInstallInFlight} of the existsDatabase race and before delegating to {@link #install}.
+   * {@code null} in production (the only cost is a single reference read per acquisition that hits that
+   * race). The PR-#7650-review regression test sets it to register a different, concurrent install on the
+   * same key at exactly that point, proving the outer {@code finally} does not release that install's own
+   * registration too.
+   */
+  static volatile Runnable existsDatabaseRaceBarrierForTesting = null;
+
+  /**
    * The effective per-entry cap. {@code arcadedb.ha.snapshotMaxEntrySize} declared and documented exactly this
    * limit but had no reader anywhere in the tree, so the only way to change it was to recompile this class
    * (issue #7121). A non-positive configured value falls back to the compiled default rather than disabling the
@@ -580,6 +590,14 @@ public final class SnapshotInstaller {
     if (!tryAcquireInstallInFlightExclusive(inFlightKey))
       throw new IOException("Concurrent acquisition already in progress for '" + databaseName
           + "'; acquisitions for the same database must not overlap (possible HA coordination bug)");
+    // Whether THIS invocation still owns the registration just taken. Set false the moment it releases early
+    // (the existsDatabase race below), so the outer finally does not release again: a plain "idempotent,
+    // no-op if already released" release is only actually a no-op if nothing else has registered inFlightKey
+    // in the meantime - which an early release does not guarantee. A second install starting in that window
+    // registers its own entry, and an unconditional second release here would decrement THAT install's count
+    // instead of finding the key already gone, clearing the guard while it is still writing its staging
+    // directory (review finding on PR #7650).
+    boolean ownsRegistration = true;
 
     try {
       // Clean any leftover staging from a previous failed attempt, then create a fresh reserved staging dir.
@@ -601,8 +619,14 @@ public final class SnapshotInstaller {
       // Re-check right before publishing: the database may have been created concurrently while we downloaded.
       if (server.existsDatabase(databaseName)) {
         deleteDirectoryIfExists(staging);
-        // Release our guard before delegating so install()'s own guard does not see a spurious overlap.
+        // Release our guard before delegating so install()'s own guard does not see a spurious overlap, and
+        // record that we no longer own it so the outer finally does not release it a second time.
         releaseInstallInFlight(inFlightKey);
+        ownsRegistration = false;
+        // Test-only: lets a test register a DIFFERENT install on inFlightKey right here, in the window this
+        // release just opened, to prove the outer finally below does not clear that install's own guard.
+        if (existsDatabaseRaceBarrierForTesting != null)
+          existsDatabaseRaceBarrierForTesting.run();
         install(databaseName, dbPath.toString(), leaderHttpAddrSupplier, leaderHttpsAddrSupplier, clusterToken, server);
         return;
       }
@@ -649,8 +673,11 @@ public final class SnapshotInstaller {
 
       HALog.log(SnapshotInstaller.class, HALog.BASIC, "New database '%s' acquired from leader", databaseName);
     } finally {
-      // Idempotent: a no-op if we already released the key before delegating to install() above.
-      releaseInstallInFlight(inFlightKey);
+      // Only what THIS invocation still owns: the existsDatabase branch above already released its own
+      // registration, and by now a different install may hold inFlightKey - releasing again would decrement
+      // that install's count instead of being the no-op it looks like (review finding on PR #7650).
+      if (ownsRegistration)
+        releaseInstallInFlight(inFlightKey);
       // Defensive: on success the staging dir was renamed away; on failure it was deleted. This is a no-op
       // in both cases but guarantees no reserved staging dir is ever leaked.
       deleteDirectoryIfExists(staging);

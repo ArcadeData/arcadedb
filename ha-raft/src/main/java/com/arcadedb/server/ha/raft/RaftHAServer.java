@@ -27,6 +27,7 @@ import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.ha.raft.ratis.RatisRefusedEntryErrorFilter;
 import com.arcadedb.server.ha.raft.ratis.RatisSnapshotDigestWarningFilter;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.http.handler.LeaderDial;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.client.RaftClientConfigKeys;
@@ -154,6 +155,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   private final    ArcadeDBServer          arcadeServer;
   private final    ContextConfiguration    configuration;
+  // One client for every database this node replicates, not one per database (review finding on PR #7650):
+  // RaftHAPlugin's server.setDatabaseWrapper callback builds a new RaftReplicatedDatabase per database, and
+  // each java.net.http.HttpClient owns its own default executor/selector thread when built without one - an
+  // O(databases-per-node) cost for what LeaderDial.newConnectTimeoutBoundedClient's other two call sites
+  // (PostBatchHandler, LeaderCommandForwarder.Transport) already keep at one-per-server.
+  private final    HttpClient              forwardHttpClient;
   private volatile ArcadeStateMachine      stateMachine;
   private final    ClusterMonitor          clusterMonitor;
   private final    Quorum                  quorum;
@@ -346,6 +353,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   public RaftHAServer(final ArcadeDBServer arcadeServer, final ContextConfiguration configuration) {
     this.arcadeServer = arcadeServer;
     this.configuration = configuration;
+    this.forwardHttpClient = LeaderDial.newConnectTimeoutBoundedClient(configuration);
 
     final String serverList = configuration.getValueAsString(GlobalConfiguration.HA_SERVER_LIST);
     final String clusterName = configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_NAME);
@@ -2861,6 +2869,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   public boolean isCrashLoopEscalated() {
     final HealthMonitor monitor = healthMonitor;
     return monitor != null && monitor.isCrashLoopEscalated();
+  }
+
+  /**
+   * The connect-timeout-bounded client every {@link RaftReplicatedDatabase} this node wraps a database with
+   * dials the leader on - one per node, not one per database (review finding on PR #7650): see the field
+   * javadoc on {@link #forwardHttpClient}.
+   */
+  HttpClient getForwardHttpClient() {
+    return forwardHttpClient;
   }
 
   /**

@@ -441,22 +441,39 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   private final ArcadeDBServer server;
   private final LocalDatabase  proxied;
   private final RaftHAServer   raftHAServer;
-  // Built once, here, rather than a static field shared JVM-wide: two embedded servers in one JVM (tests) can
-  // configure HA_PROXY_CONNECT_TIMEOUT differently, and a java.net.http.HttpClient's connect timeout is fixed
-  // at build time regardless (issues #7527/#7543).
   private final HttpClient     httpClient;
 
   public RaftReplicatedDatabase(final ArcadeDBServer server, final LocalDatabase proxied, final RaftHAServer raftHAServer) {
+    this(server, proxied, raftHAServer, null);
+  }
+
+  /**
+   * @param sharedHttpClient the connect-timeout-bounded client to dial the leader on, or {@code null} to build
+   *                         one locally instead. {@code RaftHAPlugin} passes {@link RaftHAServer#getForwardHttpClient()}
+   *                         here - ONE client shared by every database this node replicates, not one per
+   *                         database (review finding on PR #7650): {@code server.setDatabaseWrapper} constructs
+   *                         a {@code RaftReplicatedDatabase} per database, and each unshared
+   *                         {@code java.net.http.HttpClient} owns its own default executor/selector thread. A
+   *                         {@code null} server, or one whose {@code getConfiguration()} answers null, is not a
+   *                         production state - some unit tests drive this class directly with a bare
+   *                         {@code mock()} of {@code ArcadeDBServer}, the same tolerance {@code requireRaftServer()}
+   *                         and others in this file already extend to a partially-stubbed server; those callers
+   *                         pass {@code null} for this parameter too (via the three-arg constructor) and get a
+   *                         locally-built client, same as before this parameter existed.
+   */
+  public RaftReplicatedDatabase(final ArcadeDBServer server, final LocalDatabase proxied, final RaftHAServer raftHAServer,
+      final HttpClient sharedHttpClient) {
     this.server = server;
     this.proxied = proxied;
     this.raftHAServer = raftHAServer;
-    // A null server, or one whose getConfiguration() answers null, is not a production state - some unit tests
-    // drive this class directly with a bare mock() of ArcadeDBServer, the same tolerance requireRaftServer()
-    // and others in this file already extend to a partially-stubbed server.
-    final ContextConfiguration configForClient = server != null ? server.getConfiguration() : null;
-    this.httpClient = configForClient != null
-        ? LeaderDial.newConnectTimeoutBoundedClient(configForClient)
-        : HttpClient.newHttpClient();
+    if (sharedHttpClient != null)
+      this.httpClient = sharedHttpClient;
+    else {
+      final ContextConfiguration configForClient = server != null ? server.getConfiguration() : null;
+      this.httpClient = configForClient != null
+          ? LeaderDial.newConnectTimeoutBoundedClient(configForClient)
+          : HttpClient.newHttpClient();
+    }
     this.proxied.setWrappedDatabaseInstance(this);
   }
 
@@ -3630,9 +3647,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     }
     builder.header("X-ArcadeDB-Forwarded-User", proxiedUser);
 
+    // Captured once so the catch blocks below can report the connect timeout THIS forward actually dialled
+    // with, not necessarily this instance's own plain-HTTP httpClient (an HTTPS-scheme forward uses
+    // dial.client() instead, whose connect timeout is a different setting entirely).
+    final HttpClient dialClient = leaderHttpsAddress != null ? dial.client() : httpClient;
     try {
-      final HttpResponse<String> response = (leaderHttpsAddress != null ? dial.client() : httpClient)
-          .send(builder.build(), HttpResponse.BodyHandlers.ofString());
+      final HttpResponse<String> response = dialClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
       if (response.statusCode() != 200)
         throw reconstructLeaderException(response.statusCode(), response.body());
 
@@ -3650,8 +3670,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // know to resend a NeedRetryException to whichever node is leader by then, which is the right answer for
       // a leader that cannot be reached at all.
       throw new NeedRetryException(
-          "Cannot connect to the leader at " + leaderUrl + " within " + GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT.getKey()
-              + "; the leader may be down or partitioned", e);
+          "Cannot connect to the leader at " + leaderUrl + " within "
+              + dialClient.connectTimeout().map(Duration::toMillis).orElse(-1L) + "ms ("
+              + GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT.getKey() + "); the leader may be down or partitioned", e);
     } catch (final ConnectException e) {
       // The OTHER half of "cannot be reached": the host actively refused the connection (ECONNREFUSED) rather
       // than never answering the SYN, which arrives immediately rather than after the connect timeout and so
@@ -3662,9 +3683,19 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       throw new NeedRetryException("Cannot connect to the leader at " + leaderUrl + ": " + e.getMessage(), e);
     } catch (final HttpTimeoutException e) {
       // The leader accepted the connection but did not answer within the deadline computed above - the
-      // failure #7527/#7543 were filed about. Same NeedRetryException reasoning as the connect-timeout arm.
-      throw new NeedRetryException(
-          "The leader at " + leaderUrl + " did not answer within " + deadlineMs + "ms", e);
+      // failure #7527/#7543 were filed about. Deliberately TransactionException, NOT NeedRetryException,
+      // unlike the connect-timeout/refused arms above (review finding on PR #7650): a connect failure means
+      // the command never left this node, so retrying is provably safe, but a response timeout means the
+      // leader may already have applied a non-idempotent write before the answer was lost - the outcome is
+      // unknown, not "safe to retry". NeedRetryException here would resend it through
+      // RemoteDatabase.transaction's automatic retry (NeedRetryException -> HTTP 503 ->
+      // RemoteHttpComponent.reconstructException -> NeedRetryException again) and could double-apply an
+      // already-committed write. TransactionCommittedRemotelyException is the codebase's established shape
+      // for a KNOWN outcome; this one is unknown, so it stays a plain TransactionException like the generic
+      // arm below - an error the caller sees and must decide about, not one anything retries for it.
+      throw new TransactionException(
+          "The leader at " + leaderUrl + " did not answer within " + deadlineMs
+              + "ms; whether the command reached the leader is unknown - it must not be blindly retried", e);
     } catch (final Exception e) {
       throw new TransactionException("Error forwarding command to leader at " + leaderUrl, e);
     }
