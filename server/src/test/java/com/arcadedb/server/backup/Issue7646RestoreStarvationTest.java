@@ -76,9 +76,12 @@ class Issue7646RestoreStarvationTest {
       assertThat(coordinator.begin("db", Operation.EXPORT)).as("export #%d arriving after the restore is waiting", i)
           .isEqualTo(Operation.RESTORE);
 
-    // THE SAME GUARD REFUSES A FRESH BACKUP OR IMPORT TOO - A WAITING RESTORE OUTRANKS EVERY OTHER NEW RESERVATION
+    // THE SAME GUARD REFUSES EVERY OTHER KIND TOO - A WAITING RESTORE OUTRANKS EVERY NEW RESERVATION THAT IS NOT
+    // ITSELF A RESTORE, INCLUDING A DROP (issue #7641's kind, which destroys the very directory the restore is
+    // queued to replace, so it is the last one that should be let past a restore that is already waiting)
     assertThat(coordinator.begin("db", Operation.BACKUP)).isEqualTo(Operation.RESTORE);
     assertThat(coordinator.begin("db", Operation.IMPORT)).isEqualTo(Operation.RESTORE);
+    assertThat(coordinator.begin("db", Operation.DROP)).isEqualTo(Operation.RESTORE);
 
     // NOW THE ONLY EXPORT LEFT RELEASES, AND NOTHING NEW COULD HAVE JOINED IT
     coordinator.end("db", Operation.EXPORT);
