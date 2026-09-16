@@ -499,18 +499,22 @@ public class TimeSeriesShard implements AutoCloseable {
    * A {@code null} tag value contributes nothing. That is not a policy invented here: it is what the PromQL label
    * endpoint has always done with the {@code null} a mutable row hands it, and the sealed layer never hands one out
    * for a {@code STRING} TAG because {@code compressColumn} writes a null tag as the empty string.
+   * <p>
+   * {@code fromTs}/{@code toTs} bound both layers (issue #7709): the sealed layer drops a block on its directory
+   * entry and filters only the at most two that straddle a bound, and the mutable bucket already took a range, so
+   * it only needed the bounds passing through instead of {@code Long.MIN_VALUE}/{@code Long.MAX_VALUE}.
    *
    * @param metrics optional counters, may be {@code null}. Mutable rows are counted in {@code materializedRows},
    *                exactly as {@link #forEachRow} counts them
    */
-  void collectDistinctTagValues(final int schemaColumnIndex, final int nonTsColumnIndex, final Set<String> out,
-      final AggregationMetrics metrics) throws IOException {
+  void collectDistinctTagValues(final int schemaColumnIndex, final int nonTsColumnIndex, final long fromTs,
+      final long toTs, final Set<String> out, final AggregationMetrics metrics) throws IOException {
     compactionLock.readLock().lock();
     try {
-      sealedStore.collectDistinctTagValues(schemaColumnIndex, nonTsColumnIndex, out, metrics);
+      sealedStore.collectDistinctTagValues(schemaColumnIndex, nonTsColumnIndex, fromTs, toTs, out, metrics);
 
       final int[] projection = { nonTsColumnIndex };
-      for (final Object[] row : mutableBucket.scanRange(Long.MIN_VALUE, Long.MAX_VALUE, projection)) {
+      for (final Object[] row : mutableBucket.scanRange(fromTs, toTs, projection)) {
         // row is { timestamp, the one projected column }: the layout TimeSeriesBucket.readRow() builds for any
         // projection, and the reason the value is read from slot 1 rather than from the column's schema index.
         if (row.length > 1 && row[1] != null)

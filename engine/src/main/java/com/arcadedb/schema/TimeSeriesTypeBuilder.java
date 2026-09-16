@@ -23,7 +23,6 @@ import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.DownsamplingTier;
-import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
 import com.arcadedb.exception.SchemaException;
 
 import java.util.ArrayList;
@@ -243,20 +242,24 @@ public class TimeSeriesTypeBuilder {
   }
 
   /**
-   * Appends {@code CODEC <name>} when the column carries a codec that is NOT the default for its data type and
-   * role, and nothing at all when it carries the default.
+   * Appends {@code CODEC <name>} when the column's codec was NAMED, and nothing at all when it was derived from
+   * the default table (issue #7703).
    * <p>
-   * The clause is omitted for a default because the column is always constructed with one - "explicit" is only
-   * visible as "differs from {@link ColumnDefinition#defaultCodecFor}" - and naming it anyway would pin today's
-   * default table into every rendered statement, so a type recreated from that DDL after the table changes would
-   * get the old codec rather than the new one the same builder code gets embedded.
+   * The test used to be "differs from {@link ColumnDefinition#defaultCodecFor}", because a column always carries a
+   * codec and that was the only way to ask. It omits the clause for a column that named the very codec the table
+   * returns today, which is right for {@code withTag}/{@code withField} - naming a derived codec would pin today's
+   * table into the statement, and a type recreated from that DDL after the table moves would get the old codec
+   * rather than the new one the same builder code gets embedded - and wrong for a RESTORE, which names the codec
+   * precisely because it is not re-derivable (issue #5475): rendered against a build whose table has since changed,
+   * the omission silently substitutes the new default for the exported codec.
+   * <p>
+   * {@link ColumnDefinition#isExplicitCodec()} separates the two cases, so both get what they need from one rule.
    */
   private static void appendCodec(final StringBuilder sql, final ColumnDefinition column) {
     if (column == null)
       return;
-    final TimeSeriesCodec codec = column.getCompressionHint();
-    if (codec != null && codec != ColumnDefinition.defaultCodecFor(column.getDataType(), column.getRole()))
-      sql.append(" CODEC ").append(codec.name());
+    if (column.isExplicitCodec())
+      sql.append(" CODEC ").append(column.getCompressionHint().name());
   }
 
   /**

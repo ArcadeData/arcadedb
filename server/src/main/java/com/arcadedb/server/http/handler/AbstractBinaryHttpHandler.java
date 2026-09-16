@@ -84,6 +84,24 @@ public abstract class AbstractBinaryHttpHandler extends DatabaseAbstractHandler 
     return exchange.getAttachment(RAW_BINARY_PAYLOAD);
   }
 
+  /**
+   * The body these routes bind their idempotency key to (issue #7704).
+   * <p>
+   * {@link #parseRequestPayload} answers {@code null} for the STRING payload by construction, and the key folded
+   * in only that: so two {@code remote_write} requests carrying different samples under one {@code X-Request-Id}
+   * hashed to the same key, the second was a cache hit replayed the first's {@code 204}, and its samples were
+   * never appended. Handing the pipeline the bytes restores on these routes the very protection the body was
+   * added to the key to provide.
+   * <p>
+   * Read from the exchange, not from a field, for the reason the attachment exists at all: a handler is a
+   * singleton, and this is called between {@code parseRequestPayload} and {@code execute} on a request another
+   * thread may be interleaved with.
+   */
+  @Override
+  protected byte[] idempotencyBodyBytes(final HttpServerExchange exchange) {
+    return rawBytes(exchange);
+  }
+
   @Override
   protected String parseRequestPayload(final HttpServerExchange e) {
     if (!e.isInIoThread() && !e.isBlocking())

@@ -95,10 +95,26 @@ public class GetPromQLSeriesHandler extends DatabaseAbstractHandler {
       return new ExecutionResponse(400,
           PromQLResponseFormatter.formatError("bad_data", "Missing required parameter: match[]"));
 
+    // Parsed with the range endpoint's own parser rather than a bare Double.parseDouble (issue #7709, found while
+    // giving /label/{name}/values the same bounds). The bare call let a malformed `start` leave this method as a
+    // NumberFormatException, which the pipeline maps to a 500 - so a Grafana panel with a typo in its time
+    // variable got "internal server error" where Prometheus answers 400 bad_data - and it accepted `Infinity` and
+    // `9e15` without a murmur, which is the unbounded-span hazard issue #6807 closed on /query_range.
     final String startStr = getQueryParameter(exchange, "start");
     final String endStr = getQueryParameter(exchange, "end");
-    final long startMs = startStr != null ? (long) (Double.parseDouble(startStr) * 1000) : Long.MIN_VALUE;
-    final long endMs = endStr != null ? (long) (Double.parseDouble(endStr) * 1000) : Long.MAX_VALUE;
+    final long startMs;
+    final long endMs;
+    try {
+      startMs = startStr != null && !startStr.isBlank()
+          ? GetPromQLQueryRangeHandler.parseTimestampMs("start", startStr) : Long.MIN_VALUE;
+      endMs = endStr != null && !endStr.isBlank()
+          ? GetPromQLQueryRangeHandler.parseTimestampMs("end", endStr) : Long.MAX_VALUE;
+    } catch (final IllegalArgumentException e) {
+      return new ExecutionResponse(400, PromQLResponseFormatter.formatError("bad_data", e.getMessage()));
+    }
+    if (startMs > endMs)
+      return new ExecutionResponse(400,
+          PromQLResponseFormatter.formatError("bad_data", "end timestamp must not be before start timestamp"));
 
     final DatabaseInternal database = (DatabaseInternal) db;
     // Keyed by the label combination, in first-seen order.

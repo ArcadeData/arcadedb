@@ -563,7 +563,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         // neither exists yet). The relative path already carries the name, so nothing changes in practice -
         // but the identity of a request must never depend on a value chosen for meter cardinality.
         idempotencyKey = buildIdempotencyKey(rawRequestId, exchange.getRequestMethod().toString(),
-            exchange.getRelativePath(), rawDatabaseParameter(exchange), payloadAsString);
+            exchange.getRelativePath(), rawDatabaseParameter(exchange), payloadAsString,
+            idempotencyBodyBytes(exchange));
         final String currentPrincipal = user != null ? user.getName() : null;
 
         final IdempotencyCache.Reservation reservation = httpServer.getIdempotencyCache().reserve(idempotencyKey);
@@ -1126,13 +1127,43 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   }
 
   /**
+   * The bytes of THIS request's body, for handlers whose payload is not text (issue #7704). {@code null} here
+   * means "this route has no binary body", and is what every text route answers.
+   * <p>
+   * The key below binds to the body precisely so a client reusing one {@code X-Request-Id} across two distinct
+   * writes cannot be answered with the first write's cached response. It folded in {@code payloadAsString}, which
+   * {@link AbstractBinaryHttpHandler#parseRequestPayload} returns as {@code null} BY CONSTRUCTION - the body is
+   * bytes, and {@code execute} reads them back off the exchange. So on the two Prometheus routes
+   * ({@code /prom/write} and {@code /prom/read}) the key was the request id, method, path and database and
+   * nothing else, and two remote-write requests carrying DIFFERENT samples under one correlation id hashed the
+   * same: the second was replayed the first's {@code 204} and its samples were never appended. Exactly the defect
+   * the body was added to prevent, absent on the routes whose body is not text.
+   */
+  protected byte[] idempotencyBodyBytes(final HttpServerExchange exchange) {
+    return null;
+  }
+
+  /**
    * Builds the idempotency cache key for a POST request. The key is a SHA-256 over the client
    * {@code X-Request-Id} joined with the HTTP method, path, database and request body, so two unrelated
    * requests that reuse the same correlation id (a common proxy / client practice) never collide and
    * replay each other's response. Package-private for direct unit testing.
+   * <p>
+   * A route carries its body EITHER as text or as bytes, never as both, and both arms feed the same digest
+   * (issue #7704). Digesting a multi-megabyte remote-write body is the deliberate choice over letting those
+   * routes opt out of the replay cache the way a streaming route does (#7311): the digest is only computed when
+   * the caller actually sent an {@code X-Request-Id}, which is the caller asking for replay protection, and
+   * SHA-256 over a body the server is about to decompress and parse anyway is not the expensive part of that
+   * request. Opting out would answer a client that asked to be protected by silently not protecting it.
    */
   static String buildIdempotencyKey(final String requestId, final String method, final String path,
       final String database, final String body) {
+    return buildIdempotencyKey(requestId, method, path, database, body, null);
+  }
+
+  /** The same, for a route whose body is bytes. Package-private for direct unit testing. */
+  static String buildIdempotencyKey(final String requestId, final String method, final String path,
+      final String database, final String body, final byte[] binaryBody) {
     final MessageDigest md = SHA_256_DIGEST.get();
     md.reset();
     final Charset cs = DatabaseFactory.getDefaultCharset();
@@ -1142,6 +1173,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     updateDigest(md, database, cs);
     if (body != null)
       md.update(body.getBytes(cs));
+    // The NUL separator between the two body forms, so a text body and a byte body carrying the same bytes cannot
+    // produce the same digest. An EMPTY byte body hashes as no byte body, exactly as an empty string hashes as no
+    // text one: nothing downstream distinguishes them either.
+    md.update((byte) 0);
+    if (binaryBody != null)
+      md.update(binaryBody);
     final byte[] digest = md.digest();
     final StringBuilder sb = new StringBuilder(digest.length * 2);
     for (final byte b : digest) {
