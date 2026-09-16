@@ -69,70 +69,47 @@ public class PostGrafanaQueryHandler extends AbstractServerHttpHandler {
     // Checked before any payload/parameter validation so an unauthorized caller cannot probe the target database.
     checkAuthorizationOnDatabase(user, databaseParam.getFirst());
 
-    if (payload == null || !payload.has("targets"))
-      return new ExecutionResponse(400, "{ \"error\" : \"'targets' array is required\"}");
+    // A missing body goes through the SAME refusal an absent 'targets' member gets below, rather than a second,
+    // differently worded one: 'targets' is absent either way (issue #7340).
+    if (payload == null)
+      return TimeSeriesHandlerUtils.badRequest(TimeSeriesHandlerUtils.missingMember("targets", "a JSON array"));
 
     final DatabaseInternal database = httpServer.getServer().getDatabase(databaseParam.getFirst(), false, false);
 
-    final long fromTs = payload.getLong("from", Long.MIN_VALUE);
-    final long toTs = payload.getLong("to", Long.MAX_VALUE);
-    final int maxDataPoints = payload.getInt("maxDataPoints", 0);
+    // The request ENVELOPE is refused as a whole, because nothing in it belongs to one target: a 'targets' that is
+    // not an array, or a range bound that is not a number, leaves no refId to key an error frame by. The reason
+    // travels in 'error' rather than through the generic mapper, whose 'detail' field buildErrorBody conceals in
+    // production mode (issue #7340).
+    final long fromTs;
+    final long toTs;
+    final int maxDataPoints;
+    final JSONArray targets;
+    try {
+      fromTs = TimeSeriesHandlerUtils.optLong(payload, "from", Long.MIN_VALUE, "from");
+      toTs = TimeSeriesHandlerUtils.optLong(payload, "to", Long.MAX_VALUE, "to");
+      maxDataPoints = TimeSeriesHandlerUtils.optInt(payload, "maxDataPoints", 0, "maxDataPoints");
+      targets = TimeSeriesHandlerUtils.requireArray(payload, "targets", "targets");
+    } catch (final IllegalArgumentException e) {
+      return TimeSeriesHandlerUtils.badRequest(e);
+    }
 
-    final JSONArray targets = payload.getJSONArray("targets");
     final JSONObject results = new JSONObject();
 
     for (int t = 0; t < targets.length(); t++) {
-      final JSONObject target = targets.getJSONObject(t);
-      final String refId = target.getString("refId", "A");
-      final String typeName = target.getString("type");
+      final String targetPath = "targets[" + t + "]";
 
-      if (!database.getSchema().existsType(typeName)) {
-        results.put(refId, buildErrorFrame("Type '" + typeName + "' does not exist"));
-        continue;
-      }
-
-      final DocumentType docType = database.getSchema().getType(typeName);
-      if (!(docType instanceof LocalTimeSeriesType tsType)) {
-        results.put(refId, buildErrorFrame("Type '" + typeName + "' is not a TimeSeries type"));
-        continue;
-      }
-      // Gated accessor (per-type ACL): a denial fails the whole request with 403 rather than being folded into
-      // an error frame, which a Grafana panel would render as a data problem instead of an access problem. Placed
-      // before the availability branch below because that frame carries getEngineUnavailableReason(), i.e. a path
-      // on disk, which a caller denied on this type must not receive; the accessor returns null in exactly the
-      // cases isEngineAvailable() was false, so it replaces that test rather than following it.
-      final TimeSeriesEngine engine = tsType.getEngine(SecurityDatabaseUser.ACCESS.READ_RECORD);
-      if (engine == null) {
-        // Distinct from "not a TimeSeries type" (issue #6356 follow-up, claude-review on PR #6779): this type IS
-        // one, its storage just failed to load - the old shared message sent an operator chasing the wrong cause.
-        results.put(refId, buildErrorFrame(
-            "TimeSeries type '" + typeName + "' has no storage engine available: " + tsType.getEngineUnavailableReason()));
-        continue;
-      }
-      final List<ColumnDefinition> columns = tsType.getTsColumns();
-
-      // Build tag filter. A name that resolves to no TAG column is refused (issue #7334) - it used to be
-      // dropped, which turned a typo into a query over every series of the type, and a Grafana panel showing a
-      // plausible wrong series is the worst possible answer. Rendered as this target's error frame rather than
-      // as a 400 for the whole request, the same per-target treatment #7325 gave the aggregation name: one
-      // mistyped tag must not blank the panels that are fine.
-      final TagFilter tagFilter;
+      final JSONObject target;
+      final String refId;
       try {
-        tagFilter = target.has("tags")
-            ? TimeSeriesHandlerUtils.buildTagFilter(target.getJSONObject("tags"), columns)
-            : null;
+        target = TimeSeriesHandlerUtils.requireObjectElement(targets, t, targetPath);
+        refId = TimeSeriesHandlerUtils.optString(target, "refId", "A", targetPath + ".refId");
       } catch (final IllegalArgumentException e) {
-        results.put(refId, buildErrorFrame(e.getMessage()));
-        continue;
+        // These two are the envelope again rather than the target: without a target object and a refId string
+        // there is no key to hang an error frame on, so the whole request is refused (issue #7340).
+        return TimeSeriesHandlerUtils.badRequest(e);
       }
 
-      final JSONObject frameResult;
-      if (target.has("aggregation"))
-        frameResult = executeAggregation(target, engine, columns, fromTs, toTs, maxDataPoints, tagFilter);
-      else
-        frameResult = executeRawQuery(target, engine, columns, fromTs, toTs, tagFilter);
-
-      results.put(refId, frameResult);
+      results.put(refId, buildTargetFrame(database, target, targetPath, fromTs, toTs, maxDataPoints));
     }
 
     final JSONObject response = new JSONObject();
@@ -140,13 +117,90 @@ public class PostGrafanaQueryHandler extends AbstractServerHttpHandler {
     return new ExecutionResponse(200, response.toString());
   }
 
-  private JSONObject executeRawQuery(final JSONObject target, final TimeSeriesEngine engine,
-      final List<ColumnDefinition> columns, final long fromTs, final long toTs,
+  /**
+   * Answers one target, as the frame that goes under its {@code refId}. Every problem with what the TARGET states
+   * is caught here and returned as that target's error frame, so one malformed panel cannot blank the panels that
+   * are fine (issues #7325, #7334, #7340).
+   * <p>
+   * The catches are deliberately narrow, around the member resolution alone. An {@link IllegalArgumentException}
+   * raised INSIDE the engine - {@code MultiColumnAggregationResult.mergeFrom} raises one when two shards' flat
+   * windows disagree - is a broken engine invariant and not a caller mistake: it propagates to the handler mapper
+   * as a server error rather than being rendered as a 200 frame whose message carries internal bucket geometry.
+   *
+   * @param targetPath this target's request path, e.g. {@code targets[0]}, so a refusal names the member the
+   *                   caller actually wrote (issue #7340)
+   */
+  private JSONObject buildTargetFrame(final DatabaseInternal database, final JSONObject target,
+      final String targetPath, final long fromTs, final long toTs, final int maxDataPoints) throws Exception {
+
+    final String typeName;
+    try {
+      typeName = TimeSeriesHandlerUtils.requireString(target, "type", targetPath + ".type");
+    } catch (final IllegalArgumentException e) {
+      // Everything the target itself states is answered as THIS target's error frame, never as a failure of the
+      // request: one mistyped member must not blank the panels that are fine (issues #7325, #7334, #7340). 'type'
+      // was the last read of a target that still escaped the per-target loop and failed the whole request.
+      return buildErrorFrame(e.getMessage());
+    }
+
+    if (!database.getSchema().existsType(typeName))
+      return buildErrorFrame("Type '" + typeName + "' does not exist");
+
+    final DocumentType docType = database.getSchema().getType(typeName);
+    if (!(docType instanceof LocalTimeSeriesType tsType))
+      return buildErrorFrame("Type '" + typeName + "' is not a TimeSeries type");
+
+    // Gated accessor (per-type ACL): a denial fails the whole request with 403 rather than being folded into
+    // an error frame, which a Grafana panel would render as a data problem instead of an access problem. Placed
+    // before the availability branch below because that frame carries getEngineUnavailableReason(), i.e. a path
+    // on disk, which a caller denied on this type must not receive; the accessor returns null in exactly the
+    // cases isEngineAvailable() was false, so it replaces that test rather than following it.
+    //
+    // It throws SecurityException, NOT IllegalArgumentException, so none of the narrow catches in this method
+    // folds a 403 into a frame: the denial reaches the handler mapper and answers 403 for the request.
+    final TimeSeriesEngine engine = tsType.getEngine(SecurityDatabaseUser.ACCESS.READ_RECORD);
+    if (engine == null)
+      // Distinct from "not a TimeSeries type" (issue #6356 follow-up, claude-review on PR #6779): this type IS
+      // one, its storage just failed to load - the old shared message sent an operator chasing the wrong cause.
+      return buildErrorFrame(
+          "TimeSeries type '" + typeName + "' has no storage engine available: " + tsType.getEngineUnavailableReason());
+
+    final List<ColumnDefinition> columns = tsType.getTsColumns();
+
+    // Build tag filter. A name that resolves to no TAG column is refused (issue #7334) - it used to be
+    // dropped, which turned a typo into a query over every series of the type, and a Grafana panel showing a
+    // plausible wrong series is the worst possible answer.
+    final TagFilter tagFilter;
+    try {
+      tagFilter = target.isNull("tags") ? null
+          : TimeSeriesHandlerUtils.buildTagFilter(
+              TimeSeriesHandlerUtils.requireObject(target, "tags", targetPath + ".tags"), columns);
+    } catch (final IllegalArgumentException e) {
+      return buildErrorFrame(e.getMessage());
+    }
+
+    if (!target.isNull("aggregation"))
+      return executeAggregation(target, targetPath, engine, columns, fromTs, toTs, maxDataPoints, tagFilter);
+
+    return executeRawQuery(target, targetPath, engine, columns, fromTs, toTs, tagFilter);
+  }
+
+  private JSONObject executeRawQuery(final JSONObject target, final String targetPath,
+      final TimeSeriesEngine engine, final List<ColumnDefinition> columns, final long fromTs, final long toTs,
       final TagFilter tagFilter) throws Exception {
 
-    final int[] columnIndices = target.has("fields")
-        ? TimeSeriesHandlerUtils.resolveColumnIndices(target.getJSONArray("fields"), columns)
-        : null;
+    // The try covers the PROJECTION ONLY, never engine.query below. An IllegalArgumentException raised inside the
+    // engine is a broken engine invariant, not a caller mistake, and folding it into an error frame would answer
+    // 200 with internal state in the message - a server fault rendered to a dashboard as a data problem.
+    final int[] columnIndices;
+    try {
+      columnIndices = target.isNull("fields") ? null
+          : TimeSeriesHandlerUtils.resolveColumnIndices(
+              TimeSeriesHandlerUtils.requireArray(target, "fields", targetPath + ".fields"), columns,
+              targetPath + ".fields");
+    } catch (final IllegalArgumentException e) {
+      return buildErrorFrame(e.getMessage());
+    }
 
     final List<Object[]> rows = engine.query(fromTs, toTs, columnIndices, tagFilter);
 
@@ -184,43 +238,53 @@ public class PostGrafanaQueryHandler extends AbstractServerHttpHandler {
     return buildFrame(schemaFields, valuesArray);
   }
 
-  private JSONObject executeAggregation(final JSONObject target, final TimeSeriesEngine engine,
-      final List<ColumnDefinition> columns, final long fromTs, final long toTs,
+  private JSONObject executeAggregation(final JSONObject target, final String targetPath,
+      final TimeSeriesEngine engine, final List<ColumnDefinition> columns, final long fromTs, final long toTs,
       final int maxDataPoints, final TagFilter tagFilter) throws Exception {
 
-    final JSONObject aggJson = target.getJSONObject("aggregation");
-    final JSONArray requestsJson = aggJson.getJSONArray("requests");
-
-    // Determine bucket interval: explicit or auto-calculated from maxDataPoints
-    long bucketInterval = aggJson.getLong("bucketInterval", 0);
-    if (bucketInterval <= 0 && maxDataPoints > 0 && fromTs != Long.MIN_VALUE && toTs != Long.MAX_VALUE)
-      bucketInterval = Math.max(1, (toTs - fromTs) / maxDataPoints);
-    if (bucketInterval <= 0)
-      bucketInterval = 60000; // fallback: 1 minute
+    final String aggPath = targetPath + ".aggregation";
 
     final List<MultiColumnAggregationRequest> requests = new ArrayList<>();
     final List<String> aliases = new ArrayList<>();
+    final long bucketInterval;
 
-    for (int i = 0; i < requestsJson.length(); i++) {
-      final JSONObject req = requestsJson.getJSONObject(i);
-      final String fieldName = req.getString("field");
-      final AggregationType aggType;
-      try {
-        aggType = TimeSeriesHandlerUtils.resolveAggregationType(req, i);
-      } catch (final IllegalArgumentException e) {
-        // An error frame, like every other per-target refusal here: this used to be the one that escaped the
-        // target loop, so a mistyped aggregation on one panel failed the whole request and blanked the panels
-        // that were fine (issue #7325).
-        return buildErrorFrame(e.getMessage());
+    // The try covers the REQUEST the caller stated and nothing else - engine.aggregateMulti runs below it. An
+    // IllegalArgumentException from inside the engine (MultiColumnAggregationResult.mergeFrom raises one when two
+    // shards' flat windows disagree) is a broken engine invariant, not a caller mistake: folding it into an error
+    // frame would answer 200 and put internal bucket geometry in a panel, which is how a server fault gets
+    // mistaken for a data problem. The sibling /ts/query handler keeps the same split.
+    try {
+      final JSONObject aggJson = TimeSeriesHandlerUtils.requireObject(target, "aggregation", aggPath);
+      final JSONArray requestsJson = TimeSeriesHandlerUtils.requireArray(aggJson, "requests", aggPath + ".requests");
+
+      // Determine bucket interval: explicit or auto-calculated from maxDataPoints
+      long resolvedInterval = TimeSeriesHandlerUtils.optLong(aggJson, "bucketInterval", 0,
+          aggPath + ".bucketInterval");
+      if (resolvedInterval <= 0 && maxDataPoints > 0 && fromTs != Long.MIN_VALUE && toTs != Long.MAX_VALUE)
+        resolvedInterval = Math.max(1, (toTs - fromTs) / maxDataPoints);
+      if (resolvedInterval <= 0)
+        resolvedInterval = 60000; // fallback: 1 minute
+      bucketInterval = resolvedInterval;
+
+      for (int i = 0; i < requestsJson.length(); i++) {
+        // Every refusal below is an IllegalArgumentException naming the member, rendered as this target's error
+        // frame (issues #7325, #7340).
+        final String reqPath = aggPath + ".requests[" + i + "]";
+        final JSONObject req = TimeSeriesHandlerUtils.requireObjectElement(requestsJson, i, reqPath);
+        final String fieldName = TimeSeriesHandlerUtils.requireString(req, "field", reqPath + ".field");
+        final AggregationType aggType = TimeSeriesHandlerUtils.resolveAggregationType(req, reqPath + ".type");
+        final String alias = TimeSeriesHandlerUtils.optString(req, "alias",
+            fieldName + "_" + aggType.name().toLowerCase(), reqPath + ".alias");
+
+        final int colIndex = TimeSeriesHandlerUtils.findColumnIndex(fieldName, columns);
+        if (colIndex < 0)
+          return buildErrorFrame("Field '" + fieldName + "' not found in type");
+
+        requests.add(new MultiColumnAggregationRequest(colIndex, aggType, alias));
+        aliases.add(alias);
       }
-      final String alias = req.getString("alias", fieldName + "_" + aggType.name().toLowerCase());
-
-      final int colIndex = TimeSeriesHandlerUtils.findColumnIndex(fieldName, columns);
-      if (colIndex < 0)
-        return buildErrorFrame("Field '" + fieldName + "' not found in type");
-
-      requests.add(new MultiColumnAggregationRequest(colIndex, aggType, alias));
-      aliases.add(alias);
+    } catch (final IllegalArgumentException e) {
+      return buildErrorFrame(e.getMessage());
     }
 
     final MultiColumnAggregationResult aggResult = engine.aggregateMulti(fromTs, toTs, requests, bucketInterval,

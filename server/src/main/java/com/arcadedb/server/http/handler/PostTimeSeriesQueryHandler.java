@@ -67,10 +67,22 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
     // Checked before any payload/parameter validation so an unauthorized caller cannot probe the target database.
     checkAuthorizationOnDatabase(user, databaseParam.getFirst());
 
-    if (payload == null || !payload.has("type"))
-      return new ExecutionResponse(400, "{ \"error\" : \"'type' parameter is required\"}");
+    // Every member below is resolved through TimeSeriesHandlerUtils so an absent, null or wrongly-typed one is
+    // refused by NAME in the 'error' field, instead of reaching JSONObject's raising getters and being answered as
+    // a bare "Invalid JSON payload" whose specifics production mode conceals in 'detail' (issue #7340).
+    //
+    // A missing body goes through the SAME refusal rather than a second, differently worded one: 'type' is absent
+    // either way, and the caller that reads the message cannot tell - nor care - which branch produced it.
+    if (payload == null)
+      return TimeSeriesHandlerUtils.badRequest(TimeSeriesHandlerUtils.missingMember("type", "a string"));
 
-    final String typeName = payload.getString("type");
+    final String typeName;
+    try {
+      typeName = TimeSeriesHandlerUtils.requireString(payload, "type", "type");
+    } catch (final IllegalArgumentException e) {
+      return TimeSeriesHandlerUtils.badRequest(e);
+    }
+
     final DatabaseInternal database = httpServer.getServer().getDatabase(databaseParam.getFirst(), false, false);
 
     // Type resolution and the per-type read ACL both live in TimeSeriesGateway, shared with the gRPC
@@ -85,22 +97,26 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
     final TimeSeriesEngine engine = resolved.engine();
     final List<ColumnDefinition> columns = resolved.columns();
 
-    final long fromTs = payload.getLong("from", Long.MIN_VALUE);
-    final long toTs = payload.getLong("to", Long.MAX_VALUE);
-
-    // Build tag filter. A tag name that resolves to no TAG column, or a value that could never have been
-    // written, is refused with a 400 naming it rather than dropped (issues #7334, #7394): a dropped term
-    // WIDENS the conjunction, and a query over every row of the range is indistinguishable, to the caller,
-    // from a correct filter that happened to match everything.
+    // A tag name that resolves to no TAG column, or a value that could never have been written, is refused with a
+    // 400 naming it rather than dropped (issues #7334, #7394): a dropped term WIDENS the conjunction, and a query
+    // over every row of the range is indistinguishable, to the caller, from a correct filter that happened to
+    // match everything. The range bounds join the same try because a non-numeric 'from' is the same class of
+    // client error and used to be answered through the concealed 'detail' field (issue #7340).
+    final long fromTs;
+    final long toTs;
     final TagFilter tagFilter;
     try {
+      fromTs = TimeSeriesHandlerUtils.optLong(payload, "from", Long.MIN_VALUE, "from");
+      toTs = TimeSeriesHandlerUtils.optLong(payload, "to", Long.MAX_VALUE, "to");
       tagFilter = buildTagFilter(payload, columns);
     } catch (final IllegalArgumentException e) {
-      return TimeSeriesHandlerUtils.tagFilterError(e);
+      return TimeSeriesHandlerUtils.badRequest(e);
     }
 
-    // Check if aggregation is requested
-    if (payload.has("aggregation"))
+    // Check if aggregation is requested. isNull rather than has: an explicit "aggregation": null means the caller
+    // stated no aggregation, the same reading the optional 'tags' and 'fields' members get, and the same one the
+    // Grafana endpoint gives a target's own "aggregation": null.
+    if (!payload.isNull("aggregation"))
       return executeAggregation(payload, engine, columns, typeName, fromTs, toTs, tagFilter);
 
     return executeRawQuery(payload, engine, columns, typeName, fromTs, toTs, tagFilter);
@@ -116,11 +132,20 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
     // requireIntLimit rather than payload.getInt: the latter narrows with Number.intValue(), so a limit an int
     // cannot hold would wrap to a negative value and be read as unlimited, exactly as on the other endpoints.
     final Object rawLimit = payload.opt("limit");
-    final int limit = rawLimit != null ? requireIntLimit(rawLimit, "limit") : getDefaultRowLimit();
     final boolean callerSuppliedLimit = rawLimit != null;
 
-    // Resolve field projection
-    final int[] columnIndices = resolveColumnIndices(payload, columns);
+    final int limit;
+    final int[] columnIndices;
+    try {
+      limit = callerSuppliedLimit ? requireIntLimit(rawLimit, "limit") : getDefaultRowLimit();
+      // Resolve field projection
+      columnIndices = resolveColumnIndices(payload, columns);
+    } catch (final IllegalArgumentException e) {
+      // Both refusals name the member, and both used to travel to the caller through the generic mapper, which
+      // renders an IllegalArgumentException as "Cannot execute command" and hides the sentence that says WHICH
+      // member was wrong in the 'detail' field production mode conceals (issue #7340).
+      return TimeSeriesHandlerUtils.badRequest(e);
+    }
 
     final List<Object[]> rows = engine.query(fromTs, toTs, columnIndices, tagFilter);
 
@@ -174,38 +199,40 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
       final List<ColumnDefinition> columns, final String typeName, final long fromTs, final long toTs,
       final TagFilter tagFilter) throws Exception {
 
-    final JSONObject aggJson = payload.getJSONObject("aggregation");
-    final long bucketInterval = aggJson.getLong("bucketInterval");
-    final JSONArray requestsJson = aggJson.getJSONArray("requests");
-
+    final long bucketInterval;
     final List<MultiColumnAggregationRequest> requests = new ArrayList<>();
     final JSONArray aggNames = new JSONArray();
 
-    for (int i = 0; i < requestsJson.length(); i++) {
-      final JSONObject req = requestsJson.getJSONObject(i);
-      final String fieldName = req.getString("field");
-      final AggregationType aggType;
-      try {
-        aggType = TimeSeriesHandlerUtils.resolveAggregationType(req, i);
-      } catch (final IllegalArgumentException e) {
-        // An explicit 400 rather than the throw the generic mapper would turn into "Cannot execute command":
-        // that mapper puts the specifics in the 'detail' field, which buildErrorBody conceals in production
-        // mode, so the caller would be told nothing about which field was wrong (issue #7325). This is the same
-        // shape as the "Field '...' not found in type" refusal below.
-        return new ExecutionResponse(400, new JSONObject().put("error", e.getMessage()).toString());
+    // One try around the whole member resolution: every refusal inside it is the same class of client error and
+    // gets the same answer - an explicit 400 whose 'error' field names the member. Letting any of them reach the
+    // generic mapper renders it as "Invalid JSON payload"/"Cannot execute command" with the specifics in the
+    // 'detail' field buildErrorBody conceals in production mode (issues #7325, #7340).
+    try {
+      final JSONObject aggJson = TimeSeriesHandlerUtils.requireObject(payload, "aggregation", "aggregation");
+      bucketInterval = TimeSeriesHandlerUtils.requireLong(aggJson, "bucketInterval", "aggregation.bucketInterval");
+      final JSONArray requestsJson = TimeSeriesHandlerUtils.requireArray(aggJson, "requests", "aggregation.requests");
+
+      for (int i = 0; i < requestsJson.length(); i++) {
+        final String reqPath = "aggregation.requests[" + i + "]";
+        final JSONObject req = TimeSeriesHandlerUtils.requireObjectElement(requestsJson, i, reqPath);
+        final String fieldName = TimeSeriesHandlerUtils.requireString(req, "field", reqPath + ".field");
+        final AggregationType aggType = TimeSeriesHandlerUtils.resolveAggregationType(req, i);
+        final String alias = TimeSeriesHandlerUtils.optString(req, "alias",
+            fieldName + "_" + aggType.name().toLowerCase(), reqPath + ".alias");
+
+        // The shared helper, as the Grafana handler and the gRPC aggregation path already use: this was the last
+        // site outside the gateway still hand-rolling the lookup, and therefore the last place the full-schema vs
+        // non-timestamp index conventions could be confused (claude-review on PR #7323).
+        final int colIndex = TimeSeriesHandlerUtils.findColumnIndex(fieldName, columns);
+
+        if (colIndex < 0)
+          return new ExecutionResponse(400, "{ \"error\" : \"Field '" + fieldName + "' not found in type\"}");
+
+        requests.add(new MultiColumnAggregationRequest(colIndex, aggType, alias));
+        aggNames.put(alias);
       }
-      final String alias = req.getString("alias", fieldName + "_" + aggType.name().toLowerCase());
-
-      // The shared helper, as the Grafana handler and the gRPC aggregation path already use: this was the last
-      // site outside the gateway still hand-rolling the lookup, and therefore the last place the full-schema vs
-      // non-timestamp index conventions could be confused (claude-review on PR #7323).
-      final int colIndex = TimeSeriesHandlerUtils.findColumnIndex(fieldName, columns);
-
-      if (colIndex < 0)
-        return new ExecutionResponse(400, "{ \"error\" : \"Field '" + fieldName + "' not found in type\"}");
-
-      requests.add(new MultiColumnAggregationRequest(colIndex, aggType, alias));
-      aggNames.put(alias);
+    } catch (final IllegalArgumentException e) {
+      return TimeSeriesHandlerUtils.badRequest(e);
     }
 
     final MultiColumnAggregationResult aggResult = engine.aggregateMulti(fromTs, toTs, requests, bucketInterval,
@@ -244,14 +271,16 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
   }
 
   private TagFilter buildTagFilter(final JSONObject payload, final List<ColumnDefinition> columns) {
-    if (!payload.has("tags"))
+    if (payload.isNull("tags"))
       return null;
-    return TimeSeriesHandlerUtils.buildTagFilter(payload.getJSONObject("tags"), columns);
+    return TimeSeriesHandlerUtils.buildTagFilter(
+        TimeSeriesHandlerUtils.requireObject(payload, "tags", "tags"), columns);
   }
 
   private int[] resolveColumnIndices(final JSONObject payload, final List<ColumnDefinition> columns) {
-    if (!payload.has("fields"))
+    if (payload.isNull("fields"))
       return null;
-    return TimeSeriesHandlerUtils.resolveColumnIndices(payload.getJSONArray("fields"), columns);
+    return TimeSeriesHandlerUtils.resolveColumnIndices(
+        TimeSeriesHandlerUtils.requireArray(payload, "fields", "fields"), columns, "fields");
   }
 }
