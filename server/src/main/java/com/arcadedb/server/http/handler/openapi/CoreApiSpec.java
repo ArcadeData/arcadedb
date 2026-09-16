@@ -1240,8 +1240,11 @@ public class CoreApiSpec implements OpenApiContributor {
     schema.addProperty("error", SpecBuilders.string("""
         Why the load failed. Carries the offending location, such as a line number or a temporary id, \
         because a batch failure echoes client input rather than engine internals."""));
-    schema.addProperty("exception", SpecBuilders.string(
-        "Exception class name, for distinguishing failure classes programmatically"));
+    schema.addProperty("exception", SpecBuilders.string("""
+        Exception class name, for distinguishing failure classes programmatically. On the 400 it is always \
+        present; on the 408 it is absent when nothing threw - a body that simply ended before its announced \
+        length, or a malformed record that turned out to be a cut upload. Key on the status for that \
+        distinction, not on this member."""));
     schema.addProperty("requestId", SpecBuilders.string("""
         Correlation id echoing X-Request-Id, for cross-referencing the failure against the server \
         log. Absent when the request carried no correlation id."""));
@@ -1255,10 +1258,17 @@ public class CoreApiSpec implements OpenApiContributor {
         True when earlier chunks are durably committed. Retrying the whole payload then duplicates \
         the already-committed vertices, because temporary ids are not keys."""));
     addLoadAccounting(schema);
-    // Every batch failure reports what it had attempted - that is the whole point of this shape - so the five
-    // below plus the three accounting numbers are unconditional. 'requestId' is echoed only when the request
-    // carried a correlation id (issue #7578).
-    schema.setRequired(List.of("error", "exception", "verticesCreated", "edgesCreated", "partialCommit",
+    // Every batch failure reports what it had attempted - that is the whole point of this shape - so the four
+    // below plus the three accounting numbers are unconditional.
+    //
+    // 'exception' is NOT among them, and that is the correction claude-review caught on PR #7749: it is
+    // unconditional on the 400, but this schema is bound to the 408 as well, and two of the three paths that
+    // answer 408 have no exception to name - a body that simply ended before its announced length, and a
+    // malformed record that turned out to be a cut upload rather than a bad line. partialPayloadResponse writes
+    // the member only when there is a class to write, so requiring it here would have been the very lie #7578
+    // exists to remove, in the direction #7578 warns about. 'requestId' is echoed only when the request carried
+    // a correlation id.
+    schema.setRequired(List.of("error", "verticesCreated", "edgesCreated", "partialCommit",
         "bytesRead", "linesRead", "linesSkipped"));
     return schema;
   }

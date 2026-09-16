@@ -535,7 +535,7 @@ public class FullTextIndexMetadata extends IndexMetadata {
     final String upper = similarity.toUpperCase();
     if (!SIMILARITIES.contains(upper))
       throw new IllegalArgumentException(
-          "Unknown full-text similarity '" + similarity + "'. Valid values: " + SIMILARITY_BM25 + ", " + SIMILARITY_CLASSIC);
+          "Unknown full-text similarity '" + similarity + "'. Valid values: " + String.join(", ", SIMILARITIES));
     this.similarity = upper;
   }
 
