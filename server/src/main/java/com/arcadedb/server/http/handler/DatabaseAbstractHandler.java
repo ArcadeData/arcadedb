@@ -48,8 +48,13 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
 
   /**
    * Response header naming a session id this server could not resolve, on a request that ran ANYWAY (issue
-   * #7714). It carries the id the request sent, so a client can tell "your transaction is gone, this answer was
-   * produced outside it" apart from "your transaction answered this".
+   * #7714). A client can tell "your transaction is gone, this answer was produced outside it" apart from "your
+   * transaction answered this".
+   * <p>
+   * The value is the id the request sent, SANITIZED and bounded - see {@link #sanitizedSessionId}, which reduces
+   * it to the characters a session id is made of and caps its length. For an id this server issued that is the
+   * id verbatim; for anything else it is a bounded rendering of it, and a client comparing the two must expect
+   * that (CodeRabbit on PR #7730).
    * <p>
    * The degrade itself is deliberate and is not changing: it is what keeps a read-after-commit and an idempotent
    * retry of {@code /commit} working, and refusing instead would turn a currently-succeeding retry into an error

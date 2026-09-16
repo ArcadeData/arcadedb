@@ -49,14 +49,20 @@ final class TimeSeriesHandlerUtils {
   private static final int MAX_ECHOED_VALUE_LENGTH = 64;
 
   /**
-   * Longest numeric STRING accepted where an integral member is expected. A signed 19-digit long is 20
-   * characters, so this leaves ample room for a decimal point, an exponent and a run of zeros while keeping an
-   * arbitrarily long digit string out of {@link BigDecimal}'s parser, whose cost grows with the digit count.
-   * The exponent is what makes the value large, not the text, so this is defence in depth rather than the guard
-   * itself - see {@link #readLong} for the one that closes the hole. Applies to a member that arrived as a
-   * STRING: a JSON number is bounded by the same body limit and cannot be long without also being many digits.
+   * Longest numeric STRING accepted where an integral member is expected. It keeps a pathological digit run out
+   * of {@link BigDecimal}'s parser, whose cost grows superlinearly with the digit count, and that is ALL it is
+   * for: the exponent is what makes a value large, not the text, so the guards in {@link #readLong} are what
+   * close the hole this issue is about.
+   * <p>
+   * Sized so it cannot refuse a value the caller could legitimately mean. A whole number a long can hold needs
+   * at most 20 significant characters, and this leaves more than an order of magnitude of headroom on top for
+   * leading zeros, a sign, a decimal point and a run of trailing ones - so a zero-padded {@code 1} is still read
+   * as {@code 1} (CodeRabbit on PR #7730). It is a bound on absurd TEXT, not a statement about which numbers are
+   * representable, and it is deliberately NOT measured on the significant digits alone: leading zeros cost the
+   * parser exactly as much as significant ones, so measuring only the latter would drop the protection while
+   * keeping the refusal.
    */
-  private static final int MAX_NUMERIC_TEXT_LENGTH = 40;
+  private static final int MAX_NUMERIC_TEXT_LENGTH = 256;
 
   /**
    * Digits in the largest long, {@code 9223372036854775807}. A value with more integer digits than this cannot
