@@ -47,7 +47,7 @@ public final class BoltErrorCodes {
   // the value the caller asked to store is not storable, which Neo4j reports under this title. Without it the
   // refusal reached a driver as the generic DatabaseError it reads as an unexplained server fault, and the reporter
   // of issue #7629 saw exactly that. See issues #7629 and #7729.
-  public static final String TYPE_ERROR           = "Neo.ClientError.Statement.TypeError";
+  public static final String TYPE_ERROR            = "Neo.ClientError.Statement.TypeError";
 
   // Transaction errors
   public static final String TRANSACTION_ERROR = "Neo.ClientError.Transaction.TransactionNotFound";
