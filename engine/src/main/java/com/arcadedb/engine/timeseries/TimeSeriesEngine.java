@@ -418,6 +418,35 @@ public class TimeSeriesEngine implements AutoCloseable {
   }
 
   /**
+   * Hands {@code visitor} the distinct TAG COMBINATIONS the type carries in the range, instead of the samples
+   * that carry them (issue #7710). Returns {@code false} when the visitor asked to stop.
+   * <p>
+   * The read path for the OTHER discovery question - {@code GET /prom/api/v1/series} asks which
+   * {@code {host, region, ...}} tuples a metric has, and a tuple is the answer's unit, not a row. Nothing on disk
+   * records a tuple: a sealed block's directory entry declares the distinct values of each TAG column SEPARATELY,
+   * and the cross product of two such sets over-counts. But a block that declares every projected tag column as a
+   * single value holds exactly one tuple, and for Prometheus data - where one block usually holds one series -
+   * that is the common shape. Such a block is answered from the entry alone, with no read and no decode; every
+   * other block is scanned exactly as {@link #forEachRow} would scan it.
+   * <p>
+   * The rows have {@link #forEachRow}'s layout for the same projection, so a caller that folds them into a set of
+   * combinations - each with the earliest timestamp it was observed at - gets the answer a full scan would give.
+   * A caller that needs the ROWS, or a tag filter, wants {@link #forEachRow}: this method takes no filter, for the
+   * reason {@link TimeSeriesSealedStore#forEachTagCombination} gives.
+   *
+   * @param columnIndices the projection, in NON-timestamp column indices; every entry should name a TAG column,
+   *                      since a block can only be answered from its declaration for columns that have one
+   * @param metrics       optional block-level counters, may be {@code null}
+   */
+  public boolean forEachTagCombination(final long fromTs, final long toTs, final int[] columnIndices,
+      final AggregationMetrics metrics, final TimeSeriesRowVisitor visitor) throws IOException {
+    for (final TimeSeriesShard shard : shards)
+      if (!shard.forEachTagCombination(fromTs, toTs, columnIndices, metrics, visitor))
+        return false;
+    return true;
+  }
+
+  /**
    * Queries all shards newest-first and returns at most {@code limit} rows in descending timestamp
    * order (issue #5414).
    * <p>

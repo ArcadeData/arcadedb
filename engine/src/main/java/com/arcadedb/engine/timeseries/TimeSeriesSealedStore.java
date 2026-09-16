@@ -477,6 +477,50 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    */
   public boolean forEachRow(final long fromTs, final long toTs, final int[] columnIndices, final TagFilter tagFilter,
       final AggregationMetrics metrics, final TimeSeriesRowVisitor visitor) throws IOException {
+    return walkBlocks(fromTs, toTs, columnIndices, tagFilter, metrics, visitor, false);
+  }
+
+  /**
+   * Visits the distinct TAG COMBINATIONS the sealed blocks carry in the range, rather than the samples that carry
+   * them (issue #7710).
+   * <p>
+   * The rows handed to {@code visitor} have the layout {@link #forEachRow} produces for the same projection -
+   * {@code { timestamp, projected columns in schema order }} - and fold to the SAME answer for a caller whose
+   * answer is a set of combinations plus, per combination, the earliest timestamp it was observed at. They are
+   * not the same rows: a block whose directory entry declares EVERY projected TAG column as a single value holds
+   * exactly one combination, so it is answered with ONE synthetic row carrying the block's own
+   * {@code minTimestamp} - no file read, no decode - instead of one row per sample.
+   * <p>
+   * What stops the cross product being taken for an answer is that a single-valued declaration per column is the
+   * only shape from which the tuple follows: a block declaring {@code host in {h1, h2}} and
+   * {@code region in {eu, us}} is consistent with two combinations or with four, and the entry cannot say which,
+   * so such a block is READ. The same goes for a block only partially covered by the range, whose earliest
+   * IN-RANGE timestamp is not its {@code minTimestamp}, and for a projected column whose declaration is not
+   * spelled the way a scan spells it ({@link #declaredValuesAreExactFor}).
+   * <p>
+   * No tag filter: the one caller enumerates a metric's series and applies no filter, and a filter would have to
+   * be evaluated against a declaration whose values are TEXT while a condition holds the boxed value.
+   *
+   * @param columnIndices the projection, in NON-timestamp column indices; every entry must name a TAG column for
+   *                      any block to be answered from its declaration
+   * @param metrics       optional counters, may be {@code null}. A block answered from its directory entry counts
+   *                      as SKIPPED, because it is not decompressed
+   *
+   * @return {@code false} when the visitor asked to stop
+   */
+  public boolean forEachTagCombination(final long fromTs, final long toTs, final int[] columnIndices,
+      final AggregationMetrics metrics, final TimeSeriesRowVisitor visitor) throws IOException {
+    return walkBlocks(fromTs, toTs, columnIndices, null, metrics, visitor, true);
+  }
+
+  /**
+   * The block walk both {@link #forEachRow} and {@link #forEachTagCombination} are: one binary search into the
+   * directory, one early termination, one read lock over all the file I/O. {@code combinationsOnly} decides only
+   * whether a block that can be answered from its directory entry is read anyway.
+   */
+  private boolean walkBlocks(final long fromTs, final long toTs, final int[] columnIndices,
+      final TagFilter tagFilter, final AggregationMetrics metrics, final TimeSeriesRowVisitor visitor,
+      final boolean combinationsOnly) throws IOException {
     // Hold the read lock for all file I/O to prevent stale offsets after
     // atomic file replacement by concurrent writers (truncate/downsample).
     directoryLock.readLock().lock();
@@ -515,6 +559,18 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           if (metrics != null)
             metrics.addSkippedBlock();
           continue;
+        }
+
+        if (combinationsOnly) {
+          // The whole point of issue #7710: one row off the directory entry, with no file read and no decode.
+          final Object[] combination = declaredSingleCombination(entry, columnIndices, fromTs, toTs);
+          if (combination != null) {
+            if (metrics != null)
+              metrics.addSkippedBlock();
+            if (!visitor.visit(combination))
+              return false;
+            continue;
+          }
         }
 
         final long[] ts = decompressTimestamps(entry, tsColIdx);
@@ -1268,27 +1324,25 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
     // Decompress all qualifying blocks and aggregate per (bucketTs, tagKey)
     // Use List<String> as map key (not null-byte-joined String) since tag values may contain null bytes.
-    final Map<List<String>, Map<Long, double[]>> groupedData = new HashMap<>(); // tagKey -> (bucketTs -> [sum0, count0, sum1, count1, ...])
+    // The key holds the value in its STORED form, not its text: the row rebuilt from it below is handed straight
+    // back to compressColumn, which reads a SIMPLE8B or GORILLA_XOR column's value as a Number (issue #7711).
+    final Map<List<Object>, Map<Long, double[]>> groupedData = new HashMap<>(); // tagKey -> (bucketTs -> [sum0, count0, sum1, count1, ...])
     final int numFields = numericColIndices.size();
     final int accSize = numFields * 2; // sum + count per numeric field
 
     for (final BlockEntry entry : toDownsample) {
       final long[] timestamps = decompressTimestamps(entry, tsColIdx);
 
-      // Decompress tag columns
+      // Decompress tag columns THROUGH THE CODEC EACH WAS WRITTEN WITH (issue #7711). This used to decode only a
+      // DICTIONARY column and yield an array of nulls for anything else - not a failure to read but a discard:
+      // the grouping key below turns every null into "", so every distinct value of a tag column carrying an
+      // explicit SIMPLE8B or GORILLA_XOR codec collapsed into ONE group and the rewritten blocks carried "" where
+      // the tag value had been. The recomputed distinct-value declaration was built from those same rewritten
+      // rows, so it agreed with the damage and checkDictionaryColumn could not see it either.
       final Object[][] tagData = new Object[tagColIndices.size()][];
       for (int t = 0; t < tagColIndices.size(); t++) {
         final int ci = tagColIndices.get(t);
-        final byte[] compressed = readBytes(entry.columnOffsets[ci], entry.columnSizes[ci]);
-        tagData[t] = switch (columns.get(ci).getCompressionHint()) {
-          case DICTIONARY -> {
-            final String[] vals = DictionaryCodec.decode(compressed);
-            final Object[] boxed = new Object[vals.length];
-            System.arraycopy(vals, 0, boxed, 0, vals.length);
-            yield boxed;
-          }
-          default -> new Object[entry.sampleCount];
-        };
+        tagData[t] = decodeColumn(columns.get(ci), readBytes(entry.columnOffsets[ci], entry.columnSizes[ci]));
       }
 
       // Decompress numeric columns
@@ -1302,10 +1356,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       for (int i = 0; i < timestamps.length; i++) {
         final long bucketTs = Math.floorDiv(timestamps[i], granularityMs) * granularityMs;
 
-        // Build tag key as List<String> to avoid ambiguity with null bytes in tag values
-        final List<String> tagKey = new ArrayList<>(tagData.length);
-        for (final Object[] tagCol : tagData)
-          tagKey.add(tagCol[i] != null ? tagCol[i].toString() : "");
+        // Build tag key as a List to avoid ambiguity with null bytes in tag values. Each element is the value
+        // CANONICALISED the way its column stores it, so two rows that would be written identically are one
+        // group: without that a DICTIONARY column's null and "" - which compressColumn writes the same way -
+        // would produce two groups whose rewritten rows are indistinguishable.
+        final List<Object> tagKey = new ArrayList<>(tagData.length);
+        for (int t = 0; t < tagData.length; t++)
+          tagKey.add(canonicalStoredValue(columns.get(tagColIndices.get(t)), tagData[t][i]));
 
         final Map<Long, double[]> buckets = groupedData.computeIfAbsent(tagKey, k -> new HashMap<>());
         final double[] acc = buckets.computeIfAbsent(bucketTs, k -> new double[accSize]);
@@ -1323,8 +1380,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
     // Build new downsampled samples from grouped data
     final List<Object[]> newSamples = new ArrayList<>();
-    for (final Map.Entry<List<String>, Map<Long, double[]>> tagEntry : groupedData.entrySet()) {
-      final List<String> tagParts = tagEntry.getKey();
+    for (final Map.Entry<List<Object>, Map<Long, double[]>> tagEntry : groupedData.entrySet()) {
+      final List<Object> tagParts = tagEntry.getKey();
       for (final Map.Entry<Long, double[]> bucketEntry : tagEntry.getValue().entrySet()) {
         final long bucketTs = bucketEntry.getKey();
         final double[] acc = bucketEntry.getValue();
@@ -1333,8 +1390,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         // ordered by column index
         final Object[] row = new Object[columns.size()];
         row[tsColIdx] = bucketTs;
+        // tagParts has one entry per tag column by construction, in the same order.
         for (int t = 0; t < tagColIndices.size(); t++)
-          row[tagColIndices.get(t)] = t < tagParts.size() ? tagParts.get(t) : "";
+          row[tagColIndices.get(t)] = tagParts.get(t);
         for (int n = 0; n < numFields; n++) {
           final double count = acc[n * 2 + 1];
           // A bucket that held no real sample is downsampled to the absent marker, not to a zero that would read
@@ -2777,6 +2835,84 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   /**
+   * The ONE row a block contributes to a tag-combination fold, or {@code null} when the block has to be read
+   * (issue #7710).
+   * <p>
+   * A row comes back only when all of the following hold, because each is a way for the directory entry to be
+   * consistent with more than one answer:
+   * <ul>
+   * <li>the block lies ENTIRELY inside the range - otherwise the earliest in-range timestamp of the combination
+   * is not the block's {@code minTimestamp}, which is the timestamp this row carries;</li>
+   * <li>the block holds at least one sample;</li>
+   * <li>every projected column is a TAG column whose declaration is spelled the way a scan spells it
+   * ({@link #declaredValuesAreExactFor}) and lists EXACTLY ONE value. Two columns declaring two values each are
+   * consistent with two combinations and with four, and {@code tagDistinctValues} is per column
+   * (see {@link BlockEntry#tagDistinctValues}) so it cannot say which.</li>
+   * </ul>
+   *
+   * @param columnIndices the projection in NON-timestamp indices; {@code null} means every column, which is never
+   *                      answerable from the declaration because a value column has none
+   */
+  private Object[] declaredSingleCombination(final BlockEntry entry, final int[] columnIndices, final long fromTs,
+      final long toTs) {
+    if (columnIndices == null || entry.sampleCount == 0)
+      return null;
+    if (entry.minTimestamp < fromTs || entry.maxTimestamp > toTs)
+      return null;
+    if (entry.tagDistinctValues == null)
+      return null;
+
+    final Object[] row = new Object[columnIndices.length + 1];
+    row[0] = entry.minTimestamp;
+
+    // Walked in SCHEMA order, the order decompressColumns fills a projected row in - not in the order the
+    // projection was written, which is a different thing whenever a caller hands the indices over unsorted.
+    final BitSet wanted = new BitSet();
+    for (final int idx : columnIndices)
+      wanted.set(idx);
+
+    int nonTsIdx = 0;
+    int slot = 1;
+    final int tsColIdx = findTimestampColumnIndex();
+    for (int c = 0; c < columns.size(); c++) {
+      if (c == tsColIdx)
+        continue;
+      if (!wanted.get(nonTsIdx++))
+        continue;
+
+      if (c >= entry.tagDistinctValues.length || !declaredValuesAreExactFor(columns.get(c)))
+        return null;
+
+      final String[] declared = entry.tagDistinctValues[c];
+      if (declared == null || declared.length != 1)
+        return null;
+
+      row[slot++] = declared[0];
+    }
+
+    // A projection naming a column the schema does not have would leave a slot unfilled, which would read as a
+    // null tag rather than as the mismatch it is.
+    return slot == row.length ? row : null;
+  }
+
+  /**
+   * Whether {@link BlockEntry#tagDistinctValues} for this column holds the values a SCAN of the block produces,
+   * so one of them may be handed to a visitor in place of the value it would have decoded.
+   * <p>
+   * True only for a {@code STRING} TAG column stored with {@code DICTIONARY}. The declaration is always TEXT -
+   * every writer builds it with {@code val != null ? val.toString() : ""} - while {@link #decompressColumns} puts
+   * a dictionary entry through {@link ColumnDefinition#boxString} and a {@code SIMPLE8B} one through
+   * {@link ColumnDefinition#boxRaw}, either of which can hand back something a string is not. For a {@code STRING}
+   * column {@code boxString} returns its argument unchanged, and only there are the two the same. A TAG column
+   * that was not given an explicit codec is always a dictionary one
+   * ({@link ColumnDefinition#defaultCodecFor}), so this is the ordinary case rather than a special one.
+   */
+  private static boolean declaredValuesAreExactFor(final ColumnDefinition column) {
+    return column.getRole() == ColumnDefinition.ColumnRole.TAG && column.getDataType() == Type.STRING
+        && column.getCompressionHint() == TimeSeriesCodec.DICTIONARY;
+  }
+
+  /**
    * Checks if a row at index i matches all tag filter conditions.
    */
   private static boolean matchesTagConditions(final String[][] tagCols,
@@ -3183,39 +3319,71 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       }
 
       final byte[] compressed = readBytes(entry.columnOffsets[c], entry.columnSizes[c]);
-      final ColumnDefinition col = columns.get(c);
 
-      // Boxing goes through the column definition so a sealed block hands back the same Java type the
-      // mutable row does for the same declared column (issue #5475).
-      final Object[] decompressed = switch (col.getCompressionHint()) {
-        case GORILLA_XOR -> {
-          final double[] vals = GorillaXORCodec.decode(compressed);
-          final Object[] boxed = new Object[vals.length];
-          for (int i = 0; i < vals.length; i++)
-            boxed[i] = col.boxDouble(vals[i]);
-          yield boxed;
-        }
-        case SIMPLE8B -> {
-          final long[] vals = Simple8bCodec.decode(compressed);
-          final Object[] boxed = new Object[vals.length];
-          for (int i = 0; i < vals.length; i++)
-            boxed[i] = col.boxRaw(vals[i]);
-          yield boxed;
-        }
-        case DICTIONARY -> {
-          final String[] vals = DictionaryCodec.decode(compressed);
-          final Object[] boxed = new Object[vals.length];
-          for (int i = 0; i < vals.length; i++)
-            boxed[i] = col.boxString(vals[i]);
-          yield boxed;
-        }
-        default -> new Object[entry.sampleCount];
-      };
-
-      result.add(decompressed);
+      result.add(decodeColumn(columns.get(c), compressed));
       nonTsIdx++;
     }
     return result.toArray(new Object[0][]);
+  }
+
+  /**
+   * Decodes one non-timestamp column's bytes through the codec it was WRITTEN with, boxing each value into the
+   * column's declared Java type so a sealed block hands back what the mutable row does for the same column
+   * (issue #5475).
+   * <p>
+   * This is the single place that knows how to reverse {@link #compressColumn}, and it is deliberately the
+   * mirror image of it: the same three codecs, and an exception - not an empty array - for anything else. A
+   * silent {@code default} arm is what made {@link #downsampleBlocks} REWRITE every value of a tag column it
+   * could not decode as the empty string (issue #7711); no reader may quietly answer a column it did not read.
+   * Nothing can be sealed under {@code DELTA_OF_DELTA} or {@code NONE} outside the timestamp column, which every
+   * caller resolves separately, so the throw is unreachable for any block this build could have written - it is
+   * there so the next codec added to the enum cannot land here by omission.
+   *
+   * @throws IllegalStateException if the column's codec has no decoder here
+   */
+  private static Object[] decodeColumn(final ColumnDefinition col, final byte[] compressed) throws IOException {
+    return switch (col.getCompressionHint()) {
+      case GORILLA_XOR -> {
+        final double[] vals = GorillaXORCodec.decode(compressed);
+        final Object[] boxed = new Object[vals.length];
+        for (int i = 0; i < vals.length; i++)
+          boxed[i] = col.boxDouble(vals[i]);
+        yield boxed;
+      }
+      case SIMPLE8B -> {
+        final long[] vals = Simple8bCodec.decode(compressed);
+        final Object[] boxed = new Object[vals.length];
+        for (int i = 0; i < vals.length; i++)
+          boxed[i] = col.boxRaw(vals[i]);
+        yield boxed;
+      }
+      case DICTIONARY -> {
+        final String[] vals = DictionaryCodec.decode(compressed);
+        final Object[] boxed = new Object[vals.length];
+        for (int i = 0; i < vals.length; i++)
+          boxed[i] = col.boxString(vals[i]);
+        yield boxed;
+      }
+      default -> throw new IllegalStateException(
+          "Column '" + col.getName() + "' is stored with codec " + col.getCompressionHint()
+              + ", which has no decoder: the column cannot be read");
+    };
+  }
+
+  /**
+   * The value as {@link #compressColumn} would write it, which is what makes it usable as a grouping key: two
+   * values that canonicalise the same are one group, because the rows rebuilt from them would be one row on disk
+   * (issue #7711).
+   * <p>
+   * Only a dictionary column needs normalising - it stores text, and writes both {@code null} and {@code ""} as
+   * the empty string. A numeric codec stores the number itself, so the decoded value IS the stored one and has to
+   * be handed back unchanged: rendering it as text here would put a {@code String} into a column
+   * {@link ColumnDefinition#integerValueOf} reads as a {@link Number}.
+   */
+  private static Object canonicalStoredValue(final ColumnDefinition col, final Object value) {
+    if (col.getCompressionHint() == TimeSeriesCodec.DICTIONARY)
+      return value != null ? value.toString() : "";
+    return value;
   }
 
   private byte[] readBytes(final long offset, final int size) throws IOException {

@@ -46,6 +46,24 @@ import java.util.logging.Level;
 public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler {
   private static final HttpString SESSION_ID_HEADER = new HttpString(HttpSessionManager.ARCADEDB_SESSION_ID);
 
+  /**
+   * Response header naming a session id this server could not resolve, on a request that ran ANYWAY (issue
+   * #7714). It carries the id the request sent, so a client can tell "your transaction is gone, this answer was
+   * produced outside it" apart from "your transaction answered this".
+   * <p>
+   * The degrade itself is deliberate and is not changing: it is what keeps a read-after-commit and an idempotent
+   * retry of {@code /commit} working, and refusing instead would turn a currently-succeeding retry into an error
+   * for every client that does one. What it should not be is SILENT. Until now the only signal was the ABSENCE
+   * of {@code arcadedb-session-id} in the response - inferable, but only by a client that knew to look for
+   * something that is not there. This header is the positive statement, it is additive, and a client that ignores
+   * it sees exactly what it saw before.
+   *
+   * @see #rejectsUnresolvableSession()
+   */
+  public static final String SESSION_EXPIRED = "arcadedb-session-expired";
+
+  private static final HttpString SESSION_EXPIRED_HEADER = new HttpString(SESSION_EXPIRED);
+
   protected DatabaseAbstractHandler(final HttpServer httpServer) {
     super(httpServer);
   }
@@ -394,6 +412,10 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
         // read-after-commit and idempotent retries of commit/rollback working.
         if (rejectsUnresolvableSession())
           throw new HttpSessionException("Remote transaction '" + sessionId.getFirst() + "' not found or expired");
+
+        // The degrade is deliberate but must not be silent: the caller believes it is inside a transaction and is
+        // about to be answered from outside one (issue #7714). See SESSION_EXPIRED.
+        exchange.getResponseHeaders().put(SESSION_EXPIRED_HEADER, sessionId.getFirst());
 
         return null;
       }

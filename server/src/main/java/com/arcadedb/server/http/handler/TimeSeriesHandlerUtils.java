@@ -27,6 +27,8 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -66,8 +68,11 @@ final class TimeSeriesHandlerUtils {
    * <p>
    * Each helper DELEGATES to the matching {@link JSONObject} getter rather than re-deciding what is acceptable, so
    * what the endpoints accept is unchanged and only the refusal differs. In particular {@code getString} still
-   * renders a JSON number as its text and {@code getLong} still parses a numeric string; widening or narrowing
-   * that here would change which requests succeed, which this issue does not ask for.
+   * renders a JSON number as its text, and a numeric STRING is still read as a number; widening or narrowing that
+   * here would change which requests succeed, which issue #7340 did not ask for.
+   * <p>
+   * The one place that does NOT simply delegate is {@link #readLong}, which refuses a number the long it is
+   * narrowed to would not faithfully represent instead of truncating it (issue #7715). See its javadoc.
    *
    * @param path the member's dotted path as the caller wrote it, e.g. {@code targets[0].aggregation}
    */
@@ -189,11 +194,58 @@ final class TimeSeriesHandlerUtils {
     }
   }
 
+  /**
+   * Reads a member that must be an INTEGRAL number, refusing one the long it is narrowed to would not faithfully
+   * represent (issue #7715).
+   * <p>
+   * {@link JSONObject#getLong} narrows with {@code Number.longValue()}, which does not fail on a value a long
+   * cannot hold: a fractional {@code 1.5} arrives as {@code 1} and a magnitude past {@link Long#MAX_VALUE}
+   * saturates or wraps. Every member read through here is a millisecond instant or a bucket width - quantities
+   * whose whole point is the exact number the caller computed - so a silently different number is answered with a
+   * {@code 200} to a question the caller did not ask. That is the same defect #7675 refused for a non-positive
+   * {@code bucketInterval}, one step earlier: #7675 catches only the half that truncates to zero or below, and
+   * {@code 1.5} is not that half.
+   * <p>
+   * The check is done on the value's EXACT decimal, via {@link BigDecimal#longValueExact}, rather than by
+   * comparing the narrowed long back against a double: a double comparison cannot tell {@code 9007199254740993}
+   * from its neighbour, which is exactly the range where a millisecond instant lives. What is accepted is
+   * otherwise unchanged - a numeric string is still read as a number, as the class javadoc states - so no request
+   * that named a whole number stops working.
+   */
   private static long readLong(final JSONObject owner, final String name, final String path) {
+    final Object received = owner.opt(name);
+
+    final BigDecimal exact;
     try {
-      return owner.getLong(name);
-    } catch (final JSONException e) {
-      throw wrongType(path, "a number", owner.opt(name), e);
+      exact = switch (received) {
+        // elementToObject() hands back an Integer or a Long for a JSON integer, and a Double as soon as the text
+        // carries a '.' or an exponent - so the Double branch is where a fractional bucketInterval lands.
+        case Double value -> {
+          if (value.isNaN() || value.isInfinite())
+            throw new NumberFormatException("not a finite number");
+          yield BigDecimal.valueOf(value);
+        }
+        case Float value -> {
+          if (value.isNaN() || value.isInfinite())
+            throw new NumberFormatException("not a finite number");
+          yield new BigDecimal(value.toString());
+        }
+        case BigDecimal value -> value;
+        case BigInteger value -> new BigDecimal(value);
+        case Number value -> BigDecimal.valueOf(value.longValue());
+        // A numeric string, which getLong() has always accepted and which is what a form-encoded client sends.
+        case String text -> new BigDecimal(text.trim());
+        case null, default -> throw new NumberFormatException("not a number");
+      };
+    } catch (final NumberFormatException e) {
+      throw wrongType(path, "a number", received, e);
+    }
+
+    try {
+      return exact.longValueExact();
+    } catch (final ArithmeticException e) {
+      throw new IllegalArgumentException("'" + path + "' must be a whole number between " + Long.MIN_VALUE + " and "
+          + Long.MAX_VALUE + ": received " + describe(received), e);
     }
   }
 
