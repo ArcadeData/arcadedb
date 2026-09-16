@@ -3665,7 +3665,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       throw new NeedRetryException(
           "Cannot connect to the leader at " + leaderUrl + " within "
               + dialClient.connectTimeout().map(Duration::toMillis).orElse(-1L) + "ms ("
-              + GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT.getKey() + "); the leader may be down or partitioned", e);
+              // Naming the setting is only accurate on the plain-HTTP path: the HTTPS one dials on
+              // RaftHAServer.forwardHttpsClients (TrustedHttpClientCache), whose connect timeout is a
+              // hardcoded 5s that arcadedb.ha.proxyConnectTimeout does not govern (claude-review finding on
+              // PR #7650) - naming it there would point an operator at a knob that does nothing here.
+              + (leaderHttpsAddress != null ? "the configured connect timeout" : GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT.getKey())
+              + "); the leader may be down or partitioned", e);
     } catch (final ConnectException e) {
       // The OTHER half of "cannot be reached": the host actively refused the connection (ECONNREFUSED) rather
       // than never answering the SYN, which arrives immediately rather than after the connect timeout and so
