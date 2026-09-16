@@ -19,11 +19,14 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.query.sql.executor.WorkGuard;
 import com.arcadedb.schema.DocumentType;
 
@@ -46,28 +49,37 @@ public final class PropagateChainOp implements CountOp {
   private final int                inequalityIdxA;
   private final int                inequalityIdxB;
   private final RID                anchorRid;
+  private final VertexInternal     anchorVertex;
 
   public PropagateChainOp(final String[] nodeLabels, final String[] edgeTypes,
       final Vertex.DIRECTION[] directions,
       final int inequalityIdxA, final int inequalityIdxB) {
-    this(nodeLabels, edgeTypes, directions, inequalityIdxA, inequalityIdxB, null);
+    this(nodeLabels, edgeTypes, directions, inequalityIdxA, inequalityIdxB, null, null);
   }
 
   /**
-   * @param anchorRid the one vertex position 0 is already bound to, or null when position 0 is a label whose buckets
-   *                  are enumerated. A seeded anchor is what keeps the push-down for a <b>correlated</b> body: the
-   *                  outer row bound the start of the chain, so the same propagation runs from that single node
-   *                  instead of from every vertex carrying a label (issue #5758).
+   * @param anchorRid    the one vertex position 0 is already bound to, or null when position 0 is a label whose
+   *                     buckets are enumerated. A seeded anchor is what keeps the push-down for a <b>correlated</b>
+   *                     body: the outer row bound the start of the chain, so the same propagation runs from that
+   *                     single node instead of from every vertex carrying a label (issue #5758).
+   * @param anchorVertex that vertex as the outer row already holds it, or null. The OLTP walk expands it directly
+   *                     instead of loading {@code anchorRid} again - once per outer row, and a vertex with large
+   *                     properties is a multi-page read. The walk still reads the copy the transaction caches for
+   *                     that RID when there is one, as a lookup would, so a handle taken before a write in the same
+   *                     transaction does not hide the adjacency the write produced.
    */
   public PropagateChainOp(final String[] nodeLabels, final String[] edgeTypes,
       final Vertex.DIRECTION[] directions,
-      final int inequalityIdxA, final int inequalityIdxB, final RID anchorRid) {
+      final int inequalityIdxA, final int inequalityIdxB, final RID anchorRid, final VertexInternal anchorVertex) {
+    if (anchorVertex != null && !anchorVertex.getIdentity().equals(anchorRid))
+      throw new IllegalArgumentException("Anchor vertex " + anchorVertex.getIdentity() + " is not " + anchorRid);
     this.nodeLabels = nodeLabels;
     this.edgeTypes = edgeTypes;
     this.directions = directions;
     this.inequalityIdxA = inequalityIdxA;
     this.inequalityIdxB = inequalityIdxB;
     this.anchorRid = anchorRid;
+    this.anchorVertex = anchorVertex;
   }
 
   @Override
@@ -702,7 +714,9 @@ public final class PropagateChainOp implements CountOp {
       // A seeded anchor is an anchor set of one, and its label - if the body wrote one - filters it (issue #5758).
       if (!anchorMatchesLabel(db, nodeLabels[0], anchorRid.getBucketId()))
         return 0;
-      current.put(anchorRid, 1L);
+      if (anchorVertex == null)
+        // With the row's own vertex the first hop expands that handle and never reads this level.
+        current.put(anchorRid, 1L);
     } else {
       for (final Iterator<? extends Identifiable> it = CSRCountUtils.iterateAnchors(db, nodeLabels[0]); it.hasNext(); ) {
         guard.check();
@@ -710,23 +724,30 @@ public final class PropagateChainOp implements CountOp {
       }
     }
 
-    for (int hop = 0; hop < edgeTypes.length; hop++) {
+    // The last level is only summed, never collected: its total is the sum of the path counts that reach it, which
+    // is what adding them into one more map and then summing that map computed. A one-hop body - COUNT { (n)-[:T]-() }
+    // run once per outer row - then allocates nothing per neighbour.
+    final long[] total = {0};
+    final int lastHop = edgeTypes.length - 1;
+    for (int hop = 0; hop <= lastHop; hop++) {
       guard.check();
       final IntHashSet targetBuckets = CSRCountUtils.buildValidBuckets(db, nodeLabels[hop + 1]);
 
-      final RidLongHashMap next = new RidLongHashMap();
+      final RidLongHashMap next = hop < lastHop ? new RidLongHashMap() : null;
       final int h = hop;
-      current.forEach((bucketId, offset, pathCount) -> {
-        guard.check();
-        final RID rid = db.newRID(bucketId, offset);
-        expandNeighbors(db, provider, rid, directions[h], edgeTypes[h], targetBuckets,
-            neighborRid -> next.add(neighborRid, pathCount));
-      });
+      if (hop == 0 && anchorVertex != null)
+        // The seeded level is the anchor alone, with one path, and the outer row already holds it.
+        expandNeighbors(db, provider, anchorVertex, directions[0], edgeTypes[0], targetBuckets,
+            next == null ? neighborRid -> total[0]++ : neighborRid -> next.add(neighborRid, 1L));
+      else
+        current.forEach((bucketId, offset, pathCount) -> {
+          guard.check();
+          final RID rid = db.newRID(bucketId, offset);
+          expandNeighbors(db, provider, rid, directions[h], edgeTypes[h], targetBuckets,
+              next == null ? neighborRid -> total[0] += pathCount : neighborRid -> next.add(neighborRid, pathCount));
+        });
       current = next;
     }
-
-    final long[] total = {0};
-    current.forEach((bucketId, offset, value) -> total[0] += value);
 
     // Subtract self-loop paths for inequality
     if (inequalityIdxA >= 0 && inequalityIdxB >= 0)
@@ -758,7 +779,34 @@ public final class PropagateChainOp implements CountOp {
       }
     }
     // OLTP fallback
-    final Vertex v = (Vertex) db.lookupByRID(vertexRid, true);
+    expandLoaded((Vertex) db.lookupByRID(vertexRid, true), direction, edgeType, targetBuckets, consumer);
+  }
+
+  /** The same expansion, from a vertex the caller already holds. */
+  private static void expandNeighbors(final Database db, final GraphTraversalProvider provider,
+      final VertexInternal vertex, final Vertex.DIRECTION direction, final String edgeType,
+      final IntHashSet targetBuckets, final Consumer<RID> consumer) {
+    if (provider != null && provider.getNodeId(vertex.getIdentity()) >= 0) {
+      expandNeighbors(db, provider, vertex.getIdentity(), direction, edgeType, targetBuckets, consumer);
+      return;
+    }
+    expandLoaded(currentCopy(db, vertex), direction, edgeType, targetBuckets, consumer);
+  }
+
+  /**
+   * The copy a lookup by RID returns: the one the transaction caches, which {@link Database#lookupByRID} answers
+   * first, or else the vertex itself. The row may hold an object taken before a write in this transaction replaced
+   * the cached copy, and only the cached one carries the adjacency that write produced.
+   */
+  private static Vertex currentCopy(final Database db, final VertexInternal vertex) {
+    if (!(db instanceof DatabaseInternal internal))
+      return (Vertex) db.lookupByRID(vertex.getIdentity(), true);
+    final TransactionContext tx = internal.getTransactionIfExists();
+    return tx != null && tx.getRecordFromCache(vertex.getIdentity()) instanceof Vertex cached ? cached : vertex;
+  }
+
+  private static void expandLoaded(final Vertex v, final Vertex.DIRECTION direction, final String edgeType,
+      final IntHashSet targetBuckets, final Consumer<RID> consumer) {
     for (final RID neighborRid : v.getConnectedVertexRIDs(direction, edgeType)) {
       if (targetBuckets == null || targetBuckets.contains(neighborRid.getBucketId()))
         consumer.accept(neighborRid);
