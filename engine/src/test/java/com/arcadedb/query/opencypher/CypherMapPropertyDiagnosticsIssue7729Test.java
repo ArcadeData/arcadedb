@@ -172,11 +172,12 @@ class CypherMapPropertyDiagnosticsIssue7729Test {
   }
 
   @Test
-  void aParameterSourcedMapNamesTheEntryItWasRefusedFor() {
+  void aParameterSourcedMapNamesTheEntryAndTheParameterItCameFrom() {
     assertThatThrownBy(() -> database.transaction(
         () -> database.command("opencypher", "MATCH (t:T) SET t += $p", Map.of("p", Map.of("payload", Map.of("k", 1))))))
         .isInstanceOf(InvalidPropertyTypeException.class)
-        .hasMessageContaining("property 'payload'");
+        .hasMessageContaining("property 'payload'")
+        .hasMessageContaining("$p");
   }
 
   @Test
@@ -188,11 +189,23 @@ class CypherMapPropertyDiagnosticsIssue7729Test {
   }
 
   @Test
-  void mergeCreationBranchNamesThePropertyItRefused() {
+  void mergeCreationBranchNamesThePropertyAndTheParameterItRefused() {
+    // MERGE used to name only the property, because evaluateProperties() hands back the evaluated values alone.
+    // The pattern's own property map is still in scope at the write, so the origin is read back out of it there.
     assertThatThrownBy(() -> database.transaction(
         () -> database.command("opencypher", "MERGE (n:R {id: 9, m: $m})", Map.of("m", Map.of("k", 1)))))
         .isInstanceOf(InvalidPropertyTypeException.class)
-        .hasMessageContaining("property 'm'");
+        .hasMessageContaining("property 'm'")
+        .hasMessageContaining("$m");
+  }
+
+  @Test
+  void mergeEdgeCreationBranchAlsoNamesTheParameter() {
+    assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher",
+        "MATCH (n:R), (t:T) MERGE (n)-[r:REL {m: $m}]->(t)", Map.of("m", Map.of("k", 1)))))
+        .isInstanceOf(InvalidPropertyTypeException.class)
+        .hasMessageContaining("property 'm'")
+        .hasMessageContaining("$m");
   }
 
   @Test
