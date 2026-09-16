@@ -130,12 +130,20 @@ public class TimeSeriesEngine implements AutoCloseable {
    * they may be routed to the same shard. For contention-free writes, use the async API
    * which provides 1:1 slot-to-shard affinity.
    * <p>
-   * <b>Threading:</b> the append runs on the calling thread. When invoked inside an enclosing
-   * transaction (as on the SQL INSERT path), the shard's internal {@code begin/commit} nests into
-   * that transaction, so the mutable-bucket page writes are published and replicated by the
-   * enclosing commit as a single, in-order transaction. Routing the append onto another thread to
-   * make it a top-level transaction must be avoided: it would publish the shard pages out of band
-   * with the enclosing commit and, under HA, reorder the page versions on the Raft log.
+   * <b>Transaction scope (#7410): the append commits its own transaction, whatever the caller has open.</b>
+   * Called inside an enclosing transaction (as on the SQL INSERT path), the samples are durable and globally
+   * visible as soon as this method returns; they are <b>not</b> published by the enclosing commit, and a
+   * rollback of the enclosing transaction does <b>not</b> take them back. Earlier revisions of this javadoc
+   * asserted the opposite - that the shard's {@code begin/commit} nested into the caller's transaction and
+   * was published with it as a single, in-order transaction - which the code has never done. The mechanism,
+   * and the canonical statement of this contract, is on
+   * {@link TimeSeriesShard#appendSamples(TimeSeriesRowSource)}.
+   * <p>
+   * <b>Threading:</b> the append runs on the calling thread and must stay there when a transaction is open.
+   * Routing it onto another thread would give the shard write its own fresh {@code DatabaseContext}, so the
+   * shard transactions would commit in an order the caller no longer controls - and, under HA, reach the Raft
+   * log in that order. See {@link #appendBatch(TimeSeriesRowSource)} for the same rule applied to the
+   * per-shard fan-out, and issue #4957 for the fix that introduced it.
    * <p>
    * <b>Dictionary column constraint:</b> columns using {@code DICTIONARY} compression
    * (typically TAG columns) must not exceed {@link com.arcadedb.engine.timeseries.codec.DictionaryCodec#MAX_DICTIONARY_SIZE}
@@ -149,7 +157,8 @@ public class TimeSeriesEngine implements AutoCloseable {
   /**
    * Appends the samples of a primitive row source to a single shard, chosen round-robin.
    * <p>
-   * Same routing and threading contract as {@link #appendSamples(long[], Object[][])}; the source
+   * Same routing, threading and transaction-scope contract as {@link #appendSamples(long[], Object[][])} -
+   * in particular, it commits its own transaction rather than joining an enclosing one (#7410). The source
    * hands over the raw bits the row format stores, so a caller holding primitive samples never
    * allocates an object per value (issue #5474).
    */
@@ -187,12 +196,22 @@ public class TimeSeriesEngine implements AutoCloseable {
    * shard's write is dispatched to the shared {@code shardExecutor} so all active
    * shards write in parallel when multiple CPU cores are available.
    * <p>
+   * <b>Transaction scope (#7410):</b> this method does not make the batch atomic with the caller's
+   * transaction, on either path. Each shard write commits its own transaction - see
+   * {@link TimeSeriesShard#appendSamples(TimeSeriesRowSource)} - so by the time this method returns, every
+   * sub-batch it wrote is already durable and a rollback of the enclosing transaction will not take it back.
+   * What "one transaction per shard instead of one per sample" buys is fewer commits, not atomicity.
+   * <p>
    * <b>Threading (#4957):</b> the parallel dispatch is only used when NO transaction is active on the
-   * calling thread. With an enclosing transaction open, each TS-Shard thread would run with its own fresh
-   * {@code DatabaseContext}/transaction, publishing the shard pages out of band with the enclosing commit
-   * and, under HA, reordering the page versions on the Raft log - exactly the hazard documented on
-   * {@link #appendSamples}. In that case the per-shard sub-batches are written sequentially on the calling
-   * thread, preserving the batched-transaction saving (at most S nested-TX cycles) without the parallelism.
+   * calling thread. With an enclosing transaction open, each TS-Shard thread would run the shard's
+   * {@code begin/commit} in its own fresh {@code DatabaseContext}, concurrently with the other shards', so
+   * the order in which the shard transactions commit - and, under HA, the order their page versions reach
+   * the Raft log - would no longer be the calling thread's. (The original note gave the reason as the shard
+   * pages being published "out of band with the enclosing commit"; per #7410 that happens on both paths,
+   * since the shard commit never was the enclosing one. The cross-thread dispatch is what the in-thread
+   * fallback actually removes, and what {@code Issue4957AppendBatchTransactionTest} pins.) In that case the
+   * per-shard sub-batches are written sequentially on the calling thread, preserving the batched-transaction
+   * saving (at most S shard transactions) without the parallelism.
    * <p>
    * Data layout: {@code allColumnValues[colIndex][sampleIndex]}.
    *
@@ -227,9 +246,11 @@ public class TimeSeriesEngine implements AutoCloseable {
     // which is the same assignment the per-sample increment produced, computed without a second pass.
     final long base = appendCounter.getAndAdd(n);
 
-    // #4957: with an enclosing transaction on the calling thread the shard writes MUST stay in-thread
-    // (see the threading note in the javadoc); routing them to shardExecutor would publish the pages
-    // out of band with the enclosing commit. The per-shard grouping is kept in both cases.
+    // #4957: with an enclosing transaction on the calling thread the shard writes MUST stay in-thread (see
+    // the threading note in the javadoc); routing them to shardExecutor would let each shard's own
+    // begin/commit run concurrently in a foreign DatabaseContext, in an order this thread no longer sets.
+    // It does NOT make the batch part of the enclosing transaction either way (#7410). The per-shard
+    // grouping is kept in both cases.
     final boolean inThread = database.isTransactionActive();
 
     final List<CompletableFuture<Void>> futures = inThread ? null : new ArrayList<>(shardCount);

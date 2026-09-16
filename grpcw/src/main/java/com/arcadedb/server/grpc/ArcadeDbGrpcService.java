@@ -3431,7 +3431,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    * disappear with the caller's transaction, because they never did: {@code TimeSeriesShard.appendSamples}
    * opens its own {@code begin}/{@code commit} around the mutable-bucket write, and an ArcadeDB nested
    * transaction is an independent transaction rather than a savepoint, so an append made inside a caller's
-   * transaction is already durable and already visible to every other reader. Issue #7410 tracks that.
+   * transaction is already durable and already visible to every other reader. Issue #7410 corrected
+   * {@code TimeSeriesEngine}'s javadoc, which used to claim the opposite; #7657 tracks whether the behaviour
+   * itself should change.
    */
   @Override
   public void timeSeriesQuery(final TimeSeriesQueryRequest req, final StreamObserver<TimeSeriesQueryResult> resp) {
