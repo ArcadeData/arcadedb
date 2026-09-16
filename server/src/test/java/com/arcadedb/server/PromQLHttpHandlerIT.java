@@ -276,6 +276,76 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * Issue #7712: a null tag reads back as {@code ""} on every layer - {@code TimeSeriesBucket} returns it for a
+   * zero-length STRING, the tag dictionary maps null and {@code ""} onto one id, and the sealed store writes a
+   * null tag as {@code ""} - and {@code ""} was then offered as a label VALUE. In Prometheus an empty label value
+   * means the label is ABSENT, so a Grafana picker fed this showed a blank entry that selects nothing.
+   * <p>
+   * The type is created by the FIRST series, which is the one carrying the label: a later series that omits it
+   * leaves the column null, which is how a real remote-write client produces this.
+   */
+  @Test
+  void labelValuesDoNotOfferTheEmptyStringForASeriesMissingTheLabel() throws Exception {
+    testEachServer(serverIndex -> {
+      ingestSeriesWithAndWithoutTheLabel(serverIndex);
+
+      final JSONArray data = getPromQLLabelValues(serverIndex, "absent_host").getJSONArray("data");
+
+      final List<String> values = new ArrayList<>();
+      for (int i = 0; i < data.length(); i++)
+        values.add(data.getString(i));
+
+      assertThat(values).as("the empty string is not one of a label's values in Prometheus")
+          .containsExactly("h1");
+    });
+  }
+
+  /**
+   * Issue #7712: the other half. A series is identified by its NON-empty labels, so it is one series whether the
+   * label arrived empty or did not arrive at all, and it is never reported carrying an empty label.
+   */
+  @Test
+  void seriesReportsNoEmptyLabelAndMergesTheSeriesThatOnlyDifferByOne() throws Exception {
+    testEachServer(serverIndex -> {
+      ingestSeriesWithAndWithoutTheLabel(serverIndex);
+
+      final JSONArray data = getPromQL(serverIndex, "series",
+          "match%5B%5D=" + encode("prom_absent_label")).getJSONArray("data");
+
+      final List<String> hosts = new ArrayList<>();
+      for (int i = 0; i < data.length(); i++) {
+        final JSONObject series = data.getJSONObject(i);
+        assertThat(series.getString("__name__")).isEqualTo("prom_absent_label");
+        assertThat(series.has("absent_host") && series.getString("absent_host").isEmpty())
+            .as("an empty label value is an absent label, so it must not be reported at all").isFalse();
+        hosts.add(series.has("absent_host") ? series.getString("absent_host") : "<absent>");
+      }
+
+      assertThat(hosts).as("the explicitly empty label and the missing one are the SAME series")
+          .containsExactlyInAnyOrder("h1", "<absent>");
+    });
+  }
+
+  /**
+   * Three writes of one metric: one series carrying the label, one carrying it EMPTY, and one not carrying it at
+   * all. The last two are the same series in the Prometheus data model.
+   */
+  private void ingestSeriesWithAndWithoutTheLabel(final int serverIndex) throws Exception {
+    postPromWrite(serverIndex, new WriteRequest(List.of(
+        new TimeSeries(
+            List.of(new Label("__name__", "prom_absent_label"), new Label("absent_host", "h1")),
+            List.of(new Sample(1.0, 1000), new Sample(2.0, 2000))))));
+    postPromWrite(serverIndex, new WriteRequest(List.of(
+        new TimeSeries(
+            List.of(new Label("__name__", "prom_absent_label"), new Label("absent_host", "")),
+            List.of(new Sample(3.0, 3000))))));
+    postPromWrite(serverIndex, new WriteRequest(List.of(
+        new TimeSeries(
+            List.of(new Label("__name__", "prom_absent_label")),
+            List.of(new Sample(4.0, 4000))))));
+  }
+
   @Test
   void errorMissingQuery() throws Exception {
     testEachServer(serverIndex -> {

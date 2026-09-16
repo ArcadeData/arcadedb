@@ -19,7 +19,6 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.engine.timeseries.AggregationMetrics;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.engine.timeseries.TimeSeriesGateway;
@@ -33,7 +32,6 @@ import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
-import com.arcadedb.server.monitor.TimeSeriesReadMetrics;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
@@ -53,17 +51,6 @@ public class GetPromQLSeriesHandler extends AbstractServerHttpHandler {
 
   public GetPromQLSeriesHandler(final HttpServer httpServer) {
     super(httpServer);
-  }
-
-  /**
-   * A full-range scan of every sample of every type the {@code match[]} selector resolves to, so never on an
-   * Undertow IO thread (issue #7722), for the reason {@code GetPromQLLabelValuesHandler} gives at its own
-   * override: the work is bounded by the size of the series, not by anything in the request, and an IO thread
-   * parked on it stops serving every other connection it multiplexes.
-   */
-  @Override
-  protected boolean mustExecuteOnWorkerThread() {
-    return true;
   }
 
   @Override
@@ -115,10 +102,13 @@ public class GetPromQLSeriesHandler extends AbstractServerHttpHandler {
         if (!SecurityHelper.canAccessType(database, tsType, SecurityDatabaseUser.ACCESS.READ_RECORD))
           continue;
 
-        // forEachRow, not query(): the answer is the number of distinct label COMBINATIONS the metric carries,
-        // while query() merges every shard's full range into one ArrayList and sorts it by timestamp - a sort this
-        // loop does not use. start/end default to the full range here, so `?match[]=cpu` with no time range used
-        // to read a whole series into memory to enumerate a handful of label sets (issue #7354).
+        // forEachTagCombination, not forEachRow and not query(): the answer is the number of distinct label
+        // COMBINATIONS the metric carries, while query() merges every shard's full range into one ArrayList and
+        // sorts it by timestamp - a sort this loop does not use. start/end default to the full range here, so
+        // `?match[]=cpu` with no time range used to read a whole series into memory to enumerate a handful of
+        // label sets (issue #7354), and then still to read every SAMPLE of it to enumerate a handful of tuples
+        // (issue #7710). A sealed block that declares one combination now answers with one row off its directory
+        // entry; the fold below is unchanged, because those rows have the layout the scan produces.
         final TimeSeriesEngine engine = tsType.getEngine();
         final List<ColumnDefinition> columns = tsType.getTsColumns();
 
@@ -155,41 +145,39 @@ public class GetPromQLSeriesHandler extends AbstractServerHttpHandler {
         // and it never calls back into the engine.
         final StringBuilder key = new StringBuilder(64);
 
-        // What the scan actually did, published to whatever the server's metrics subsystem feeds (issue #7717).
-        // null - and therefore free - whenever metrics are off.
-        final AggregationMetrics readMetrics = TimeSeriesReadMetrics.start();
-        try {
-          engine.forEachRow(startMs, endMs, columnIndices, null, readMetrics, row -> {
-            key.setLength(0);
-            // The metric name is length-prefixed for the same reason its tags are: two match[] patterns naming
-            // different metrics share this map.
-            key.append(vs.metricName().length()).append(':').append(vs.metricName());
-            for (int t = 0; t < tagNames.length; t++)
-              if (t + 1 < row.length && row[t + 1] != null) {
-                // LENGTH-PREFIXED, not separated by a character the value is assumed not to carry. A tag value is
-                // ingested from a remote-write client, so "realistically never contains this byte" is an assumption
-                // about somebody else's data; a length prefix makes the concatenation unambiguous whatever the
-                // value holds, and two distinct combinations cannot spell one key. Costs one int per tag.
-                final String name = tagNames[t];
-                final String value = row[t + 1].toString();
-                key.append(name.length()).append(':').append(name)
-                    .append(value.length()).append(':').append(value);
-              }
+        engine.forEachTagCombination(startMs, endMs, columnIndices, null, row -> {
+          key.setLength(0);
+          // The metric name is length-prefixed for the same reason its tags are: two match[] patterns naming
+          // different metrics share this map.
+          key.append(vs.metricName().length()).append(':').append(vs.metricName());
+          for (int t = 0; t < tagNames.length; t++)
+            if (t + 1 < row.length && row[t + 1] != null) {
+              final String name = tagNames[t];
+              final String value = row[t + 1].toString();
+              // An empty value is an ABSENT label in Prometheus, so it takes no part in the series identity:
+              // see PromQLResponseFormatter.isLabelValuePresent (issue #7712). Skipped HERE and not only when
+              // the labels map is built, because otherwise a sample whose host is null and one carrying no host
+              // at all would spell two keys and be reported as two series that render identically.
+              if (!PromQLResponseFormatter.isLabelValuePresent(value))
+                continue;
+              // LENGTH-PREFIXED, not separated by a character the value is assumed not to carry. A tag value is
+              // ingested from a remote-write client, so "realistically never contains this byte" is an assumption
+              // about somebody else's data; a length prefix makes the concatenation unambiguous whatever the
+              // value holds, and two distinct combinations cannot spell one key. Costs one int per tag.
+              key.append(name.length()).append(':').append(name)
+                  .append(value.length()).append(':').append(value);
+            }
 
-            final long timestamp = (long) row[0];
-            final String combination = key.toString();
-            final ObservedSeries seen = seriesByKey.get(combination);
-            if (seen != null)
-              seen.earliest = Math.min(seen.earliest, timestamp);
-            else
-              seriesByKey.put(combination,
-                  new ObservedSeries(labelsOf(vs.metricName(), tagNames, row), timestamp));
-            return true;
-          });
-        } finally {
-          TimeSeriesReadMetrics.publish(readMetrics, database.getName(), typeName,
-              TimeSeriesReadMetrics.SURFACE_PROM_SERIES);
-        }
+          final long timestamp = (long) row[0];
+          final String combination = key.toString();
+          final ObservedSeries seen = seriesByKey.get(combination);
+          if (seen != null)
+            seen.earliest = Math.min(seen.earliest, timestamp);
+          else
+            seriesByKey.put(combination,
+                new ObservedSeries(labelsOf(vs.metricName(), tagNames, row), timestamp));
+          return true;
+        });
       } catch (final IllegalArgumentException ignored) {
         // Skip malformed match patterns
       }
@@ -231,12 +219,17 @@ public class GetPromQLSeriesHandler extends AbstractServerHttpHandler {
   /**
    * The label set of one row, built once per distinct combination rather than once per sample.
    * {@code tagNames[t]} names the value in {@code row[t + 1]}; see the ROW LAYOUT note above.
+   * <p>
+   * A label whose value is empty is left OUT, because in Prometheus that is what an absent label is - the same
+   * rule the dedup key above applies, and the two have to agree or a series would be keyed on a label it is not
+   * reported with (issue #7712).
    */
   private static Map<String, String> labelsOf(final String metricName, final String[] tagNames, final Object[] row) {
     final Map<String, String> labels = new LinkedHashMap<>();
     labels.put("__name__", metricName);
     for (int t = 0; t < tagNames.length; t++)
-      if (t + 1 < row.length && row[t + 1] != null)
+      if (t + 1 < row.length && row[t + 1] != null
+          && PromQLResponseFormatter.isLabelValuePresent(row[t + 1].toString()))
         labels.put(tagNames[t], row[t + 1].toString());
     return labels;
   }

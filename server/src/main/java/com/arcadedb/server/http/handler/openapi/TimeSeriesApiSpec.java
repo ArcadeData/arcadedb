@@ -19,6 +19,7 @@
 package com.arcadedb.server.http.handler.openapi;
 
 import com.arcadedb.server.http.HttpSessionManager;
+import com.arcadedb.server.http.handler.DatabaseAbstractHandler;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.Operation;
 import io.swagger.v3.oas.models.PathItem;
@@ -57,7 +58,23 @@ public class TimeSeriesApiSpec implements OpenApiContributor {
   // case. The quoted text is the message AbstractServerHttpHandler actually sends.
   private static final String READ_STALE_SESSION_DESCRIPTION =
       "Database not found. A session id that no longer resolves is NOT an error here: the read degrades to "
-          + "running outside the transaction and still answers 200.";
+          + "running outside the transaction and still answers 200, reporting the degrade in the "
+          + DatabaseAbstractHandler.SESSION_EXPIRED + " response header.";
+
+  // Issue #7714: the two protocols answer an unresolvable transaction on a time-series READ differently, and
+  // that is a CONTRACT rather than an accident, so it is written down on both surfaces - here, and in the
+  // comments on TimeSeriesQuery/TimeSeriesLatest in arcadedb.proto. HTTP follows GET /api/v1/query, whose
+  // degrade is what keeps read-after-commit and idempotent retries working; gRPC follows lookupByRid,
+  // updateRecord and the search RPCs of #7326, which all answer FAILED_PRECONDITION. Refusing on HTTP would
+  // turn a currently-succeeding retry into an error for every client that does one, which is a compatibility
+  // break needing a deprecation story rather than a patch. What the degrade may not be is SILENT, which is
+  // what the header below is for.
+  private static final String SESSION_EXPIRED_RESPONSE_DESCRIPTION =
+      "Present only when the request named a session id this server could not resolve (committed, rolled back, "
+          + "expired, or owned by another principal). It carries that id, and says this answer was produced "
+          + "OUTSIDE the transaction the caller named rather than inside it. The read is not refused, which is "
+          + "what keeps a read-after-commit working; the gRPC TimeSeriesQuery/TimeSeriesLatest RPCs refuse the "
+          + "same case with FAILED_PRECONDITION, following their own protocol's convention.";
 
   private static final String WRITE_STALE_SESSION_DESCRIPTION =
       "Database not found, or the session id header names a transaction that no longer resolves "
@@ -141,6 +158,8 @@ public class TimeSeriesApiSpec implements OpenApiContributor {
     mediaType.setSchema(oneOf);
     success.setContent(new Content().addMediaType(SpecBuilders.JSON, mediaType));
     success.addHeaderObject(SESSION_HEADER, SpecBuilders.stringHeader(SESSION_RESPONSE_DESCRIPTION));
+    success.addHeaderObject(DatabaseAbstractHandler.SESSION_EXPIRED,
+        SpecBuilders.stringHeader(SESSION_EXPIRED_RESPONSE_DESCRIPTION));
 
     post.setResponses(SpecBuilders.standardResponses("200", success,
         "400", "401", "403", "404", "500"));
@@ -184,6 +203,8 @@ public class TimeSeriesApiSpec implements OpenApiContributor {
         false));
     final ApiResponse latest = SpecBuilders.jsonResponse("Most recent sample", "TimeSeriesLatestResponse");
     latest.addHeaderObject(SESSION_HEADER, SpecBuilders.stringHeader(SESSION_RESPONSE_DESCRIPTION));
+    latest.addHeaderObject(DatabaseAbstractHandler.SESSION_EXPIRED,
+        SpecBuilders.stringHeader(SESSION_EXPIRED_RESPONSE_DESCRIPTION));
     get.setResponses(SpecBuilders.standardResponses("200", latest, "400", "401", "403", "404", "500"));
     get.getResponses().addApiResponse("404", SpecBuilders.errorResponse(READ_STALE_SESSION_DESCRIPTION));
     // See the query endpoint: dropping an unresolvable tag is worse here, because this endpoint answers ONE
@@ -209,7 +230,9 @@ public class TimeSeriesApiSpec implements OpenApiContributor {
     final Schema<Object> aggregation = SpecBuilders.object(
         "Bucketed aggregation. Present only when the caller wants buckets rather than raw rows.");
     aggregation.addProperty("bucketInterval", SpecBuilders.integer(
-        "Bucket width in the same unit as the timestamps"));
+        "Bucket width in the same unit as the timestamps. Must be a positive WHOLE number: a value with a "
+            + "fractional part is refused with 400 rather than truncated, because a bucket width is exactly the "
+            + "sort of value a client computes by division."));
     aggregation.addProperty("requests", SpecBuilders.arrayOf(request, "Aggregations to compute"));
 
     final Schema<Object> schema = SpecBuilders.object("Time-series query definition");

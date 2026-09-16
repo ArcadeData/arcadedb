@@ -187,6 +187,14 @@ class Issue7370GrpcTimeSeriesInTransactionIT extends BaseGraphServerTest {
    * and the three search RPCs (#7326) already carry. Before this branch the field did not exist, so the request
    * could not even express the mistake; the wrong answer was an ordinary-looking result set.
    * <p>
+   * Issue #7714 weighed making the HTTP time-series reads match this and decided they must NOT:
+   * {@code POST /api/v1/ts/{db}/query} and {@code GET /api/v1/ts/{db}/latest} follow {@code GET /api/v1/query},
+   * whose degrade to a session-less read is what keeps a read-after-commit and an idempotent retry working, so
+   * refusing there would break every client that does one. They report the degrade in an
+   * {@code arcadedb-session-expired} response header instead. This RPC keeps refusing, because it follows its
+   * own protocol's convention - the split is deliberate and is written down in the proto comments on these two
+   * RPCs and in the OpenAPI operations for the HTTP routes. A WRITE is refused on both protocols.
+   * <p>
    * Driven through a raw stub because {@link RemoteGrpcDatabase} stamps its own transaction id and so cannot
    * express a wrong one.
    */
