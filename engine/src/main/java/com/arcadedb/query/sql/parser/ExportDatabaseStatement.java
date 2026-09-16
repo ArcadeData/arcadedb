@@ -22,6 +22,9 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.engine.MaintenanceCoordinator;
+import com.arcadedb.engine.MaintenanceCoordinator.Operation;
+import com.arcadedb.engine.MaintenanceCoordinator.Reservation;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -35,6 +38,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.UUID;
 
 public class ExportDatabaseStatement extends SimpleExecStatement {
 
@@ -56,16 +60,15 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
     // users (GHSA / arcadedb-operations#654). In embedded mode (no security configured) this check is a no-op.
     context.getDatabase().checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SECURITY);
 
-    if (this.url == null) {
-      // ASSIGN DEFAULT NAME
-      this.url = new Url("%s-export-%s.%s.tgz".formatted(//
-        context.getDatabase().getName(),//
-        DateTimeFormatter.ofPattern("yyyyMMdd-HHmmssSSS").format(LocalDateTime.now()),//
-        format.getStringValue())//
-      );
-    }
-
-    final String targetUrl = this.url.getUrlString();
+    // THE DEFAULT NAME IS RESOLVED INTO A LOCAL, NEVER BACK INTO this.url. THE PARSED STATEMENT IS HELD IN
+    // StatementCache AND THE SAME INSTANCE IS HANDED TO EVERY LATER EXECUTION OF THE SAME TEXT, SO ASSIGNING IT
+    // FROZE THE FIRST RUN'S TIMESTAMP FOR THE LIFE OF THE DATABASE: THE SECOND 'EXPORT DATABASE' WITH NO TARGET
+    // FAILED WITH "the export file ... already exist", AND WITH 'WITH overwrite = true' IT SILENTLY REPLACED THE
+    // FIRST EXPORT. TWO CONCURRENT ONES RACED ON THE SHARED FIELD AND BOTH WROTE WHICHEVER NAME WON - WHICH IS
+    // EXACTLY THE COLLISION Operation.EXPORT'S ADMISSION POLICY ASSUMES CANNOT HAPPEN (issue #7450)
+    final String targetUrl = this.url != null ?
+        this.url.getUrlString() :
+        defaultTargetName(context.getDatabase().getName(), format.getStringValue());
     final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("operation", "export database");
     result.setProperty("toUrl", targetUrl);
@@ -76,7 +79,19 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
 
     fileName = "exports" + File.separator + fileName;
 
-    try {
+    // TAKE THE PER-DATABASE MAINTENANCE SLOT (issue #7450). EXPORT DATABASE READS THE WHOLE DATABASE OFF DISK AND
+    // WRITES AN ARCHIVE, WHICH IS WHAT A BACKUP DOES, BUT BEING A SQL STATEMENT IT IS EXECUTED BY THE ENGINE AND SO
+    // COULD NOT REACH THE SERVER'S ADMISSION POLICY AT ALL: AN EXPORT RAN UNSEEN BY A CONCURRENT 'restore database'
+    // ABOUT TO DROP THE DIRECTORY OUT FROM UNDER IT (THE #7384 HAZARD, #7443 ON THIS PATH).
+    //
+    // Operation.EXPORT EXCLUDES ONLY A RESTORE, UNLIKE ITS SIBLINGS: TWO EXPORTS OF ONE DATABASE NAME TWO DIFFERENT
+    // TARGETS AND HAVE NO REASON TO REFUSE EACH OTHER, WHICH IS WHY ADMITTING IT NEEDED THE COORDINATOR TO COUNT
+    // RESERVATIONS PER KIND RATHER THAN HOLD A SET OF KINDS.
+    //
+    // RESERVED HERE, AFTER THE TARGET HAS BEEN VALIDATED, SO A STATEMENT REJECTED BY ITS OWN VALIDATION NEVER HOLDS
+    // THE SLOT. ON A DATABASE WITH NO COORDINATOR BOUND - AN EMBEDDED PROCESS WITH NO SERVER IN IT - THIS RESERVES
+    // NOTHING AND THE STATEMENT BEHAVES EXACTLY AS IT DID BEFORE.
+    try (final Reservation slot = MaintenanceCoordinator.reserve(context.getDatabase(), Operation.EXPORT)) {
       final Class<?> clazz = Class.forName("com.arcadedb.integration.exporter.Exporter");
       final Object exporter = clazz.getConstructor(Database.class, String.class).newInstance(context.getDatabase(), fileName);
 
@@ -115,6 +130,30 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
     final InternalResultSet rs = new InternalResultSet();
     rs.add(result);
     return rs;
+  }
+
+  /**
+   * The archive an {@code EXPORT DATABASE} with no explicit target writes to.
+   * <p>
+   * The random component is what makes the name collision-safe, and {@code MaintenanceCoordinator.Operation.EXPORT}
+   * depends on that: two exports of one database are admitted together (issue #7450) because they write two
+   * different files, and a timestamp alone - even at millisecond precision - does not guarantee that for two that
+   * start together. The exporter formats check {@code file.exists()} and then create, so a shared name is not
+   * merely a failure for one of them but two writers of one archive.
+   * <p>
+   * Nothing parses this name back, unlike a backup archive, whose timestamp
+   * {@code BackupCoordinator.parseArchiveTimestamp} reads for retention and listing - so the suffix breaks no
+   * reader. The timestamp stays FIRST so the archives of one database still sort chronologically.
+   * <p>
+   * Package-private and static rather than inlined so the property can be tested directly: what is at risk is two
+   * calls landing within one millisecond, which no test can force through the statement itself.
+   */
+  static String defaultTargetName(final String databaseName, final String format) {
+    return "%s-export-%s-%s.%s.tgz".formatted(//
+        databaseName,//
+        DateTimeFormatter.ofPattern("yyyyMMdd-HHmmssSSS").format(LocalDateTime.now()),//
+        UUID.randomUUID(),//
+        format);
   }
 
   @Override

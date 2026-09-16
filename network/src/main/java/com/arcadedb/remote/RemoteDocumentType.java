@@ -28,6 +28,7 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
@@ -232,6 +233,18 @@ public class RemoteDocumentType implements DocumentType {
     remoteDatabase.command("sql", "drop property `" + name + "`.`" + propertyName + "`");
     remoteDatabase.getSchema().reload();
     return p;
+  }
+
+  @Override
+  public Property renameProperty(final String propertyName, final String newPropertyName) {
+    // Back-tick quoted like every other identifier this class embeds in hand-built SQL: the local schema accepts
+    // names that are not bare identifiers, and NAME's value is parsed as an identifier (AlterPropertyStatement
+    // reads it through Expression.getDefaultAlias(), which unescapes a quoted one), so an unquoted name here would
+    // let whitespace or a keyword spelling be parsed as more than one token instead of the literal new name.
+    remoteDatabase.command("sql",
+        "alter property `" + name + "`.`" + propertyName + "` name " + Identifier.quote(newPropertyName));
+    remoteDatabase.getSchema().reload();
+    return getProperty(newPropertyName);
   }
 
   @Override

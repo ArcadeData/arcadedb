@@ -386,11 +386,11 @@ public class BoltE2ETests
         Assert.Equal(payload, record["echo"].As<byte[]>());
     }
 
-    [Fact(DisplayName = "TYPE-005: Nested lists and maps round-trip structurally")]
-    public async Task Type005_NestedListMapRoundtrip()
+    [Fact(DisplayName = "TYPE-005: Nested lists round-trip structurally")]
+    public async Task Type005_NestedListRoundtrip()
     {
         await using var session = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer"));
-        var result = await session.RunAsync("MATCH (t:TypeMatrix) RETURN t.nestedListProp AS l, t.nestedMapProp AS m");
+        var result = await session.RunAsync("MATCH (t:TypeMatrix) RETURN t.nestedListProp AS l");
         var record = await result.SingleAsync();
 
         var list = record["l"].As<List<object>>();
@@ -399,11 +399,6 @@ public class BoltE2ETests
         var nestedList = list[2].As<List<object>>();
         Assert.Equal(3L, nestedList[0].As<long>());
         Assert.Equal(4L, nestedList[1].As<long>());
-
-        var map = record["m"].As<Dictionary<string, object>>();
-        Assert.Equal(1L, map["a"].As<long>());
-        var nestedMap = map["b"].As<Dictionary<string, object>>();
-        Assert.Equal(2L, nestedMap["c"].As<long>());
     }
 
     [Fact(DisplayName = "TYPE-006: Null values round-trip")]

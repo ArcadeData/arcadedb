@@ -81,11 +81,19 @@ public class AlterPropertyStatement extends DDLStatement {
       result.setProperty("newValue", finalValue);
     } else if (settingName != null) {
       final String setting = settingName.getStringValue().toLowerCase(Locale.ENGLISH);
-      final Object finalValue = "default".equalsIgnoreCase(setting) ? settingValue.toString() : settingValue.execute((Identifiable) null, context);
+      // NAME is read as an identifier - getDefaultAlias() resolves a bare `NAME newName` (mirroring ALTER TYPE ...
+      // NAME) or a backtick-quoted `NAME \`odd name\`` to the plain, unescaped name - rather than as an evaluated
+      // expression, so it is taken literally rather than resolved as a variable reference, and any backtick
+      // quoting is unescaped instead of being stored as part of the property name.
+      final Object finalValue = "name".equalsIgnoreCase(setting) ? settingValue.getDefaultAlias().getStringValue()
+          : "default".equalsIgnoreCase(setting) ? settingValue.toString() : settingValue.execute((Identifiable) null, context);
 
       final Object oldValue;
 
-      if ("readonly".equalsIgnoreCase(setting)) {
+      if ("name".equalsIgnoreCase(setting)) {
+        oldValue = property.getName();
+        typez.renameProperty(propertyName.getStringValue(), String.valueOf(finalValue));
+      } else if ("readonly".equalsIgnoreCase(setting)) {
         oldValue = property.isReadonly();
         property.setReadonly((boolean) finalValue);
       } else if ("mandatory".equalsIgnoreCase(setting)) {

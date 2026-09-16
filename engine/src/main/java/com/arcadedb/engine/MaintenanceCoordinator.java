@@ -24,19 +24,22 @@ import com.arcadedb.exception.DatabaseOperationInProgressException;
 
 /**
  * The admission policy for whole-database maintenance operations, as the engine sees it: one slot per database,
- * held for the duration of a backup, a restore or an import, and handed to at most one operation of each kind.
+ * held for the duration of a backup, a restore, an import or an export, and handed to at most one operation of each
+ * kind except {@link Operation#EXPORT}, which does not exclude itself.
  * <p>
  * The policy itself is the server's - {@code com.arcadedb.server.backup.BackupCoordinator} is the only
  * implementation, one instance per {@code ArcadeDBServer} - and the server binds it to every database it opens
  * under {@link #WRAPPER_NAME}. This interface is what the engine can name, because the dependency runs from the
  * server to the engine and not back.
  * <p>
- * <b>Why the engine needs to name it at all.</b> {@code BACKUP DATABASE} and {@code IMPORT DATABASE} are SQL
- * statements executed by the engine, and a client reaches them over HTTP, Postgres, gRPC, Bolt or the console
- * exactly as it reaches {@code SELECT}. Until issue #7443 they took no slot, so a SQL backup of a live database
- * ran unseen by a concurrent {@code restore database} that was about to drop the directory out from under it, and
- * a second SQL backup of the same database was not refused either - two archives named from the same timestamp
- * writing into one file, which is the #6753 defect on this path.
+ * <b>Why the engine needs to name it at all.</b> {@code BACKUP DATABASE}, {@code IMPORT DATABASE} and
+ * {@code EXPORT DATABASE} are SQL statements executed by the engine, and a client reaches them over HTTP, Postgres,
+ * gRPC, Bolt or the console exactly as it reaches {@code SELECT}. Until issue #7443 the first two took no slot, so
+ * a SQL backup of a live database ran unseen by a concurrent {@code restore database} that was about to drop the
+ * directory out from under it, and a second SQL backup of the same database was not refused either - two archives
+ * named from the same timestamp writing into one file, which is the #6753 defect on this path. {@code EXPORT
+ * DATABASE} reads the whole database off disk and writes an archive just as a backup does, and took nothing until
+ * issue #7450.
  * <p>
  * A database with no coordinator bound - an embedded process with no server in it - reserves nothing and behaves
  * exactly as it did before. {@link #reserve} answers that case with a no-op reservation rather than with
@@ -55,14 +58,26 @@ public interface MaintenanceCoordinator {
   /**
    * The whole-database maintenance operations that share one per-database slot.
    * <p>
-   * {@link #conflictsWith} is the whole admission policy: two operations on one database exclude each other unless
-   * one is a {@link #BACKUP} and the other an {@link #IMPORT}. A restore excludes everything because it drops and
-   * replaces the database directory; a backup excludes another backup because two full backups of one database
-   * read and compress the same data twice for one usable archive (issue #6753); an import excludes another import
-   * because an import creates the database it loads into, so the second one could not have created it anyway.
+   * {@link #conflictsWith} is the whole admission policy. A {@link #RESTORE} excludes everything and is excluded by
+   * everything, because it drops and replaces the database directory every other operation is reading or writing.
+   * Apart from a restore, the only refusal left is an operation of the same kind as one already running, and
+   * {@link #EXPORT} is the one kind exempt from even that.
+   * <p>
+   * A {@link #BACKUP} excludes another backup because two full backups of one database read and compress the same
+   * data twice for one usable archive, and both resolve their default name from a timestamp (issue #6753). An
+   * {@link #IMPORT} excludes another import because an import creates the database it loads into, so the second one
+   * could not have created it anyway. An {@link #EXPORT} excludes neither: two exports of one database write two
+   * different files, and nothing makes them collide the way two backups do (issue #7450). That is why the
+   * implementation counts reservations per kind rather than holding a set of kinds - two concurrent exports each
+   * have to release only their own.
    */
   enum Operation {
-    BACKUP("back up", "a backup"), RESTORE("restore", "a restore"), IMPORT("import", "an import");
+    BACKUP("back up", "a backup"), RESTORE("restore", "a restore"), IMPORT("import", "an import"),
+    /**
+     * A SQL {@code EXPORT DATABASE}: reads the whole database off disk and writes an archive, like a backup, but
+     * to a target the statement names, so two of them are legitimate and are admitted together (issue #7450).
+     */
+    EXPORT("export", "an export");
 
     private final String verb;
     private final String phrase;
@@ -91,14 +106,25 @@ public interface MaintenanceCoordinator {
     /**
      * Whether an operation of this kind, already running on a database, refuses one of kind {@code other} on the
      * same database.
+     * <p>
+     * The relation is symmetric, which is what lets a caller ask it in whichever direction it holds the two
+     * operations, and it is NOT reflexive: {@code EXPORT.conflictsWith(EXPORT)} is false.
      */
     public boolean conflictsWith(final Operation other) {
-      return this == other || this == RESTORE || other == RESTORE;
+      if (this == RESTORE || other == RESTORE)
+        return true;
+      // EVERY OTHER KIND EXCLUDES A SECOND OF ITS OWN - EXCEPT AN EXPORT, WHOSE TARGET THE STATEMENT NAMES, SO TWO
+      // OF THEM ARE TWO DIFFERENT ARCHIVES RATHER THAN TWO WRITERS OF ONE (issue #7450)
+      return this == other && this != EXPORT;
     }
   }
 
   /**
    * Reserves {@code databaseName} for {@code operation}.
+   * <p>
+   * A kind that does not exclude itself - {@link Operation#EXPORT} - may hold several reservations of one database
+   * at once, and each is released by its own {@link #end(String, Operation)}. Reservations are not reentrant: a
+   * caller that already holds a conflicting one on this database would refuse itself.
    *
    * @return {@code null} when the reservation was taken - the caller must then release it with
    * {@link #end(String, Operation)} from a {@code finally} - or the operation already running that refuses this
@@ -107,9 +133,10 @@ public interface MaintenanceCoordinator {
   Operation begin(String databaseName, Operation operation);
 
   /**
-   * Releases the reservation a successful {@link #begin(String, Operation)} took. Always call it from a
-   * {@code finally}: a leaked reservation blocks every later backup, restore and import of that database until the
-   * server restarts.
+   * Releases the ONE reservation a successful {@link #begin(String, Operation)} took - not every reservation of
+   * that kind, which matters for {@link Operation#EXPORT}, where a second export of the same database may be
+   * holding one of its own. Always call it from a {@code finally}: a leaked reservation blocks every later backup,
+   * restore, import and export of that database until the server restarts.
    */
   void end(String databaseName, Operation operation);
 
@@ -142,7 +169,9 @@ public interface MaintenanceCoordinator {
    *
    * @throws DatabaseOperationInProgressException when a conflicting operation already holds the slot. Nothing is
    *                                              reserved in that case and {@link Reservation#close()} is never
-   *                                              owed.
+   *                                              owed. Reserve as LATE as the caller can - after whatever
+   *                                              validation may reject the operation outright - so a refused
+   *                                              request never holds the slot for the time it takes to fail.
    */
   static Reservation reserve(final Database database, final Operation operation) {
     final MaintenanceCoordinator coordinator = boundTo(database);

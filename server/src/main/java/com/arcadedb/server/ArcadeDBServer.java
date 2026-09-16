@@ -1744,6 +1744,12 @@ public class ArcadeDBServer {
    * <p>
    * Package-private rather than private so a test can drive it with a real archive: the alternative is racing a
    * full server boot, which is not a way to observe anything mid-flight.
+   * <p>
+   * The archive is fetched under <b>this server's</b> resolved
+   * {@link GlobalConfiguration#SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS}, not the process-wide static one - see the
+   * {@code setAllowLocalUrls} call below and issue #7468. What this command does <b>not</b> run is
+   * {@code ServerControlPlane.validateClientRestoreImportUrl}: that gate exists to refuse a URL a <i>client</i>
+   * supplied, and the {@code restore:} URL comes from the operator's own configuration file.
    *
    * @param databaseName the database being restored, and the key the progress is published under
    * @param url          the archive URL exactly as the operator wrote it after {@code restore:}
@@ -1793,6 +1799,16 @@ public class ArcadeDBServer {
       try {
         final Class<?> clazz = Class.forName("com.arcadedb.integration.restore.Restore");
         final Object restorer = clazz.getConstructor(String.class, String.class).newInstance(url, databasePath);
+        // The local-URL policy the fetch inside FullRestoreFormat runs under, resolved from THIS server's own
+        // ContextConfiguration rather than left to that class's fallback on the static GlobalConfiguration value
+        // (issue #7468). Without this call RestoreSettings.allowLocalUrls stays null, and a per-instance override
+        // of SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS reached the HTTP/gRPC 'restore database' verb - which resolves
+        // it through the same ServerControlPlane.isRestoreImportLocalUrlsAllowed() used here - but not this
+        // server's own boot-time restore, so one server answered the same URL two different ways.
+        // ContextConfiguration.getValueAsBoolean falls through to the static value when nothing is overlaid, so a
+        // deployment that never overrode the setting sees exactly the behaviour it saw before.
+        clazz.getMethod("setAllowLocalUrls", boolean.class)
+            .invoke(restorer, new ServerControlPlane(this).isRestoreImportLocalUrlsAllowed());
         RestoreProgress.installCallback(clazz, restorer, progress, STARTUP_RESTORE_STEPS);
 
         clazz.getMethod("restoreDatabase").invoke(restorer);

@@ -494,13 +494,11 @@ func Test_TYPE_004_ByteArrayParamRoundtrip(t *testing.T) {
 	require.Equal(t, payload, got)
 }
 
-func Test_TYPE_005_NestedListMapRoundtrip(t *testing.T) {
+func Test_TYPE_005_NestedListRoundtrip(t *testing.T) {
 	d := newDriver(t, boltURI(plainContainer, "bolt"))
-	rec := runSingle(t, d, "beer", "MATCH (t:TypeMatrix) RETURN t.nestedListProp AS l, t.nestedMapProp AS m", nil)
+	rec := runSingle(t, d, "beer", "MATCH (t:TypeMatrix) RETURN t.nestedListProp AS l", nil)
 	l, _ := rec.Get("l")
-	m, _ := rec.Get("m")
 	require.Equal(t, []any{int64(1), int64(2), []any{int64(3), int64(4)}}, l)
-	require.Equal(t, map[string]any{"a": int64(1), "b": map[string]any{"c": int64(2)}}, m)
 }
 
 func Test_TYPE_006_NullRoundtrip(t *testing.T) {

@@ -18,8 +18,14 @@
  */
 package com.arcadedb.query.opencypher.executor;
 
+import com.arcadedb.query.opencypher.temporal.TemporalUtil;
+
+import java.util.List;
+import java.util.Map;
+
 /**
- * Comparisons between a value stored on a record and a value a query supplies.
+ * Comparisons and validation shared by every openCypher write clause (CREATE, MERGE, SET) between a value stored on
+ * a record and a value a query supplies.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -42,5 +48,71 @@ public final class CypherValues {
       return numberA.longValue() == numberB.longValue()
           && Double.compare(numberA.doubleValue(), numberB.doubleValue()) == 0;
     return false;
+  }
+
+  /**
+   * Coerces a property value to its stored Java type and rejects the ones a property cannot hold, matching Neo4j's
+   * "Property values can only be of primitive types or arrays thereof". Every openCypher write clause (CREATE, MERGE,
+   * SET) funnels its property values through here so a map - or a list containing one - is refused the same way
+   * regardless of which clause, or which right-hand-side shape (dot property, {@code +=}/{@code =} map, bare
+   * parameter), produced it (issue #7629).
+   * <p>
+   * A Point value is exempt: Neo4j treats Point as a primitive property type, ArcadeDB just has no dedicated
+   * Geometry runtime type yet (issue #4870) and represents one as a map of coordinate keys under the hood, so
+   * refusing every map would also reject {@code point()}'s own output. {@link #isPointShaped} recognises one
+   * structurally - by the numeric {@code x}/{@code y} and a {@code crs} key every branch of
+   * {@code CypherPointFunction} writes, the same keys {@code CypherPointDistanceFunction} and
+   * {@code PointWithinBBoxFunction} already key off to read one back - rather than by class identity, because a
+   * Point read back off storage is deserialized as a plain {@link Map} (issue #7629): identity would exempt a
+   * point() call's immediate result but not a value copied from an already-stored Point property (e.g.
+   * {@code MATCH (a) CREATE (b {loc: a.loc})}). The exemption only waives the "is a Map" check on the point-shaped
+   * map itself - every one of its own entries is still validated, so a map smuggled in under some other key (e.g.
+   * {@code {x: 1, y: 2, crs: 'x', payload: {secret: 1}}}) is still refused.
+   */
+  public static Object coerceAndValidatePropertyValue(final Object value) {
+    if (value == null)
+      return null; // a null value is a removal (SET) or simply not stored (CREATE/MERGE), not a stored value
+    final Object coerced = TemporalUtil.toCoreJavaType(value);
+    validatePropertyValue(coerced);
+    return coerced;
+  }
+
+  private static void validatePropertyValue(final Object value) {
+    if (value instanceof List) {
+      for (final Object element : (List<?>) value) {
+        if (element instanceof Map<?, ?> map && isPointShaped(map)) {
+          validatePointEntries(map);
+          continue;
+        }
+        if (element instanceof Map)
+          throw new IllegalArgumentException("TypeError: InvalidPropertyType - Property values can not contain map values");
+        if (element instanceof List)
+          validatePropertyValue(element);
+      }
+    } else if (value instanceof Map<?, ?> map) {
+      if (isPointShaped(map))
+        validatePointEntries(map);
+      else
+        throw new IllegalArgumentException("TypeError: InvalidPropertyType - Property values can not be maps");
+    }
+  }
+
+  /**
+   * A heuristic, not a type check: any map with a non-null {@code crs} and numeric {@code x}/{@code y} is treated as
+   * a Point, even one a query wrote as a plain literal rather than through {@code point()} - ArcadeDB has no
+   * dedicated Geometry runtime type to check identity against instead (#4870). It is the most robust option
+   * available today: identity-based exemption breaks as soon as a Point is copied from storage (see the class
+   * javadoc above), and {@link #validatePointEntries} closes the map-smuggling loophole a looser key-presence check
+   * would leave open.
+   */
+  private static boolean isPointShaped(final Map<?, ?> map) {
+    return map.get("crs") != null && map.get("x") instanceof Number && map.get("y") instanceof Number;
+  }
+
+  /** A point-shaped map is exempt as a whole, but its own values are not: this refuses one smuggling a map/list of
+   *  maps in under a key {@link #isPointShaped} doesn't look at. */
+  private static void validatePointEntries(final Map<?, ?> map) {
+    for (final Object entry : map.values())
+      validatePropertyValue(entry);
   }
 }
