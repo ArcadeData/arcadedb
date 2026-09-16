@@ -74,7 +74,11 @@ import java.util.zip.GZIPInputStream;
  * in-thread branch for the same #4957 reason - the same thing an embedded caller appending inside its own
  * transaction already gets. It does not make the samples part of that transaction: the nested begin/commit is
  * an independent transaction rather than a savepoint, so they are durable before the caller commits anything.
- * Issue #7410 tracks that divergence from {@code TimeSeriesEngine}'s javadoc.
+ * Issue #7410 closed that divergence in favour of this behaviour, and #7657 settled that it stays: an append
+ * that joined the caller's transaction would be committed outside the shard's {@code appendLock}, and two
+ * callers appending to one shard would then contend for its header page instead of being serialized
+ * ({@code Issue7657AppendStaysSelfCommittingTest} measures both halves of that). What this route documents to
+ * its own clients is therefore final, and {@code TimeSeriesApiSpec} says it in the OpenAPI document too.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
