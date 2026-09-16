@@ -36,6 +36,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Regression tests for issue #6832: {@code SET a = b} and {@code SET a += b}, where the right-hand side is a node or
  * a relationship rather than a literal map, were silent no-ops. Neo4j copies the source entity's properties onto the
  * target, and a right-hand side that is neither an entity nor a map is a type error rather than a discarded write.
+ * <p>
+ * Every refusal below is asserted on the thrown exception itself rather than on its {@code .rootCause()}: since
+ * #7729 it is an {@link InvalidPropertyTypeException}, a {@code CommandExecutionException} the openCypher engine
+ * rethrows unchanged instead of wrapping, so the diagnosis IS the outermost throwable - which is exactly what makes
+ * it reach a Bolt or HTTP client rather than only the server log.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -145,10 +150,7 @@ class CypherSetFromEntityIssue6832Test {
     database.transaction(() -> database.command("opencypher", "CREATE (:A {id: 1})"));
 
     assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher", "MATCH (a:A) SET a = {x: {y: 1}}")))
-        // Not .rootCause(): since #7729 this is an InvalidPropertyTypeException, a CommandExecutionException the
-        // openCypher engine rethrows unchanged instead of wrapping, so the diagnosis IS the outermost throwable -
-        // which is exactly what makes it reach a Bolt/HTTP client rather than only the server log.
-        .isInstanceOf(InvalidPropertyTypeException.class)
+        .isInstanceOf(InvalidPropertyTypeException.class) // outermost, not a cause: see the class javadoc
         .hasMessageContaining("TypeError: InvalidPropertyType");
   }
 
@@ -157,10 +159,7 @@ class CypherSetFromEntityIssue6832Test {
     database.transaction(() -> database.command("opencypher", "CREATE (:A {id: 1})"));
 
     assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher", "MATCH (a:A) SET a += {x: {y: 1}}")))
-        // Not .rootCause(): since #7729 this is an InvalidPropertyTypeException, a CommandExecutionException the
-        // openCypher engine rethrows unchanged instead of wrapping, so the diagnosis IS the outermost throwable -
-        // which is exactly what makes it reach a Bolt/HTTP client rather than only the server log.
-        .isInstanceOf(InvalidPropertyTypeException.class)
+        .isInstanceOf(InvalidPropertyTypeException.class) // outermost, not a cause: see the class javadoc
         .hasMessageContaining("TypeError: InvalidPropertyType");
   }
 
@@ -169,10 +168,7 @@ class CypherSetFromEntityIssue6832Test {
     database.transaction(() -> database.command("opencypher", "CREATE (:A {id: 1})"));
 
     assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher", "MATCH (a:A) SET a += {x: [{y: 1}]}")))
-        // Not .rootCause(): since #7729 this is an InvalidPropertyTypeException, a CommandExecutionException the
-        // openCypher engine rethrows unchanged instead of wrapping, so the diagnosis IS the outermost throwable -
-        // which is exactly what makes it reach a Bolt/HTTP client rather than only the server log.
-        .isInstanceOf(InvalidPropertyTypeException.class)
+        .isInstanceOf(InvalidPropertyTypeException.class) // outermost, not a cause: see the class javadoc
         .hasMessageContaining("TypeError: InvalidPropertyType");
   }
 
@@ -266,10 +262,7 @@ class CypherSetFromEntityIssue6832Test {
 
     database.begin();
     assertThatThrownBy(() -> database.command("opencypher", "MATCH (a:A) SET a.ok = 1, a += {bad: {nested: 1}}"))
-        // Not .rootCause(): since #7729 this is an InvalidPropertyTypeException, a CommandExecutionException the
-        // openCypher engine rethrows unchanged instead of wrapping, so the diagnosis IS the outermost throwable -
-        // which is exactly what makes it reach a Bolt/HTTP client rather than only the server log.
-        .isInstanceOf(InvalidPropertyTypeException.class)
+        .isInstanceOf(InvalidPropertyTypeException.class) // outermost, not a cause: see the class javadoc
         .hasMessageContaining("TypeError: InvalidPropertyType");
 
     final ResultSet inTx = database.query("opencypher", "MATCH (a:A) RETURN a.ok AS ok");
@@ -287,10 +280,7 @@ class CypherSetFromEntityIssue6832Test {
 
     database.begin();
     assertThatThrownBy(() -> database.command("opencypher", "MATCH (a:A) SET a.ok = 1, a.bad = {nested: 1}"))
-        // Not .rootCause(): since #7729 this is an InvalidPropertyTypeException, a CommandExecutionException the
-        // openCypher engine rethrows unchanged instead of wrapping, so the diagnosis IS the outermost throwable -
-        // which is exactly what makes it reach a Bolt/HTTP client rather than only the server log.
-        .isInstanceOf(InvalidPropertyTypeException.class)
+        .isInstanceOf(InvalidPropertyTypeException.class) // outermost, not a cause: see the class javadoc
         .hasMessageContaining("TypeError: InvalidPropertyType");
 
     final ResultSet inTx = database.query("opencypher", "MATCH (a:A) RETURN a.ok AS ok");
