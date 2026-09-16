@@ -649,7 +649,7 @@ public class TimeSeriesEngine implements AutoCloseable {
               // tighter - the buckets of different shards overlap, so a shard legitimately holding more than
               // ceiling/N of them is not evidence that the UNION is over the ceiling, and stopping it would
               // refuse a request whose real answer fits. The bound stays a bound either way, and it is the one
-              // that cannot refuse an answer the caller was entitled to (claude-review on PR #7728).
+              // that cannot refuse an answer the caller was entitled to.
               shardResult.setBucketCeiling(bucketCeiling);
               shard.getSealedStore().aggregateMultiBlocks(fromTs, toTs, requests, bucketIntervalMs, shardResult, shardMetrics, tagFilter);
               return shardResult;

@@ -90,7 +90,7 @@ public final class TimeSeriesReadMetrics {
   // is the half worth keeping, being what distinguishes a slow dashboard from a slow label picker - so there is
   // one "other|other|<surface>" entry per surface, not one in total. Named for the same reason
   // MicrometerQueryMetricsRecorder names its RESERVED_* counts: the ceiling and what sits above it are one
-  // number, read by the guard test rather than restated in it (claude-review on PR #7728).
+  // number, read by the guard test rather than restated in it.
   static final         int    RESERVED_OVERFLOW_METER_SETS = SURFACES.length;
 
   private static final ConcurrentHashMap<String, MeterSet> METER_SETS = new ConcurrentHashMap<>();
@@ -198,7 +198,7 @@ public final class TimeSeriesReadMetrics {
     // The recursion guard tests the WHOLE collapsed tuple, not just its db half. "other" is a legal database
     // name, so a guard reading only the db would have treated a real database called "other" as though it were
     // already collapsed, skipped the ceiling for it entirely, and let its types grow the cache without bound -
-    // the very leak the ceiling exists to stop (claude-review on PR #7728). Testing both halves cannot be
+    // the very leak the ceiling exists to stop (issues #5025, #6805). Testing both halves cannot be
     // fooled that way: a database named "other" holding a type named anything else still collapses, and the one
     // tuple that reads as already-collapsed is the one that genuinely is.
     if (METER_SETS.size() >= MAX_METER_SETS && !(OVERFLOW_TAG.equals(database) && OVERFLOW_TAG.equals(type)))

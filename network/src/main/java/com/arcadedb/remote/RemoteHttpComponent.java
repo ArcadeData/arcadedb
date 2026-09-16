@@ -831,7 +831,7 @@ public class RemoteHttpComponent extends RWLockContext {
     final boolean promoted = explanation != null && !explanation.isEmpty();
     // The envelope then carries only what the leading sentence did NOT already say. Repeating the promoted text
     // verbatim under 'reason=' stated the same diagnosis twice in one message, which is exactly the readability
-    // this was meant to buy back (claude-review on PR #7728).
+    // this was meant to buy back.
     //
     // A server that filled in BOTH fields with the same text therefore drops both, leaving the sentence alone.
     // That is deliberate and not a case falling through the cracks: printing "reason=X detail=X" after having
