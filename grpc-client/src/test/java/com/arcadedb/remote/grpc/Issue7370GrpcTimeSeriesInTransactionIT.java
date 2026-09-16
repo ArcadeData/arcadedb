@@ -72,11 +72,14 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * transaction at all. {@code TimeSeriesShard.appendSamples} wraps the mutable-bucket write in its own
  * {@code db.begin()}/{@code db.commit()}, and an ArcadeDB nested transaction is an independent transaction
  * rather than a savepoint, so the sample is already committed and already global.
- * {@link #timeSeriesAppendsAreNotPartOfTheEnclosingTransaction} measures exactly that, and #7410 tracks it.
+ * {@link #timeSeriesAppendsAreNotPartOfTheEnclosingTransaction} measures exactly that. #7410 corrected the
+ * {@code TimeSeriesEngine} javadoc that used to claim the opposite; #7657 tracks whether the behaviour itself
+ * should change.
  * <p>
  * The issue's other premise - that the HTTP routes already bind the session transaction through
- * {@code DatabaseAbstractHandler} - is also not so: all three {@code /api/v1/ts} handlers extend
- * {@code AbstractServerHttpHandler}, which never reads {@code arcadedb-session-id}. #7402 tracks that.
+ * {@code DatabaseAbstractHandler} - was not so when this class was written: all three {@code /api/v1/ts}
+ * handlers extended {@code AbstractServerHttpHandler}, which never reads {@code arcadedb-session-id}. #7402
+ * closed that, and {@link #theHttpTimeSeriesRoutesJoinTheSessionTransaction} now pins the fixed shape.
  */
 class Issue7370GrpcTimeSeriesInTransactionIT extends BaseGraphServerTest {
 
@@ -464,7 +467,7 @@ class Issue7370GrpcTimeSeriesInTransactionIT extends BaseGraphServerTest {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  //  The two premises of #7370 that do not hold, pinned (issues #7410 and #7402)
+  //  The two premises of #7370: one still does not hold (#7410), the other was made to (#7402)
   // ─────────────────────────────────────────────────────────────────────────────
 
   /**
@@ -477,7 +480,9 @@ class Issue7370GrpcTimeSeriesInTransactionIT extends BaseGraphServerTest {
    * <p>
    * The DOCUMENT insert in the same transaction is the control: it proves the statements ran inside a live
    * transaction that really did roll back, so "the sample survived" cannot be explained by the transaction
-   * never having existed. #7410 tracks the divergence between this and {@code TimeSeriesEngine}'s javadoc.
+   * never having existed. #7410 closed the divergence between this and {@code TimeSeriesEngine}'s javadoc, in
+   * favour of what this test measures; {@code Issue7410AppendTransactionScopeTest} pins the same contract
+   * embedded, at the engine and SQL entry points.
    */
   @Test
   void timeSeriesAppendsAreNotPartOfTheEnclosingTransaction() {
@@ -512,15 +517,20 @@ class Issue7370GrpcTimeSeriesInTransactionIT extends BaseGraphServerTest {
 
   /**
    * #7370's other premise: that the HTTP routes bind the session's transaction through
-   * {@code DatabaseAbstractHandler}. They do not - all three {@code /api/v1/ts} handlers extend
-   * {@code AbstractServerHttpHandler}, which never reads {@code arcadedb-session-id}. Asserted on the DOCUMENT
-   * witness rather than on the samples, since #7410 means the samples cannot tell the two apart: a session's
-   * own uncommitted document row is invisible to {@code POST /api/v1/ts/{db}/query}'s database handle in the
-   * sense that the handle is not the session's at all. #7402 tracks closing it; when it is closed the third
-   * assertion here fails and names the claim to revisit.
+   * {@code DatabaseAbstractHandler}. When this class was written they did not - all three {@code /api/v1/ts}
+   * handlers extended {@code AbstractServerHttpHandler}, which never reads {@code arcadedb-session-id} - and
+   * the two assertions at the end of this test pinned that, inverted, so that closing #7402 would fail here and
+   * name the claim to revisit. #7402 closed it, and they are stated the right way round now.
+   * <p>
+   * The pin is still on the handler hierarchy rather than on the samples, because #7410 means the samples
+   * cannot tell the two apart: a time-series append is already committed and already global whether or not the
+   * read joined the transaction. The behavioural consequences of the binding - the echoed session id, the
+   * refusal of a write naming an unresolvable session - are asserted over HTTP in
+   * {@code Issue7402TimeSeriesHttpSessionIT}; what this test keeps is the cross-protocol statement that the two
+   * premises of #7370 have now been separated, one closed and one still open.
    */
   @Test
-  void theHttpTimeSeriesRoutesDoNotYetJoinTheSessionTransaction() {
+  void theHttpTimeSeriesRoutesJoinTheSessionTransaction() {
     seed();
 
     final RemoteDatabase session = httpClient();
@@ -529,7 +539,8 @@ class Issue7370GrpcTimeSeriesInTransactionIT extends BaseGraphServerTest {
       session.command("sql", "INSERT INTO " + DOC_TYPE + " SET name = 'witness'");
 
       // The session's own SQL does see its uncommitted row: DatabaseAbstractHandler binds the transaction for
-      // /api/v1/command. This is the contrast that makes the next assertion mean something.
+      // /api/v1/command. This is the contrast that made the assertions below mean something while they were
+      // inverted, and it is still the control that the session is live.
       assertThat(countOfWitnesses(session))
           .as("POST /api/v1/command does bind arcadedb-session-id")
           .isEqualTo(1L);
@@ -537,15 +548,12 @@ class Issue7370GrpcTimeSeriesInTransactionIT extends BaseGraphServerTest {
       session.command("sql", "INSERT INTO " + TYPE + " SET ts = 3000, location = 'us-east', temperature = 30.0");
       assertThat(timestampsOf(session.timeSeriesQuery(wholeRange()))).containsExactly(1_000L, 2_000L, 3_000L);
 
-      // #7402: the TS routes take no session id at all. Proven by the handler hierarchy rather than by the
-      // samples, which #7410 makes indistinguishable; asserted here so the pin is executable.
       assertThat(DatabaseAbstractHandler.class.isAssignableFrom(PostTimeSeriesQueryHandler.class))
-          .as("#7402: PostTimeSeriesQueryHandler does not extend DatabaseAbstractHandler, so it never reads "
-              + "arcadedb-session-id")
-          .isFalse();
+          .as("#7402: PostTimeSeriesQueryHandler is on DatabaseAbstractHandler, so it reads arcadedb-session-id")
+          .isTrue();
       assertThat(DatabaseAbstractHandler.class.isAssignableFrom(GetTimeSeriesLatestHandler.class))
           .as("#7402: same for GetTimeSeriesLatestHandler")
-          .isFalse();
+          .isTrue();
     } finally {
       session.rollback();
     }

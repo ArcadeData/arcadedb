@@ -19,6 +19,7 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.AggregationType;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
@@ -36,15 +37,26 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
 import java.util.ArrayList;
-import java.util.Deque;
 import java.util.List;
 import java.util.logging.Level;
 
 /**
  * HTTP handler for TimeSeries query endpoint.
  * Endpoint: POST /api/v1/ts/{database}/query
+ * <p>
+ * On {@link DatabaseAbstractHandler} since issue #7402, so a request carrying {@code arcadedb-session-id} reads
+ * through the transaction that session opened - and under the session's lock, on the session's principal, with
+ * the session's idle clock refreshed - instead of on whatever context the Undertow worker happened to carry.
+ * That base class also subsumes the {@code checkAuthorizationOnDatabase} call this handler used to make by
+ * hand: it is the database-level gate of GHSA-x8mg-6r4p-87pf and the per-type principal binding of
+ * GHSA-c23x-pqcj-7hfm in one, which is what that helper existed to stand in for.
+ * <p>
+ * {@link #requiresTransaction()} is false: this is a read, and an auto-commit wrapper around it would only add a
+ * commit with nothing to commit. A consequence of that answer, shared with {@code GET /query}, is that an
+ * unresolvable session id degrades to a session-less read rather than being refused - see
+ * {@link DatabaseAbstractHandler#rejectsUnresolvableSession()}.
  */
-public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
+public class PostTimeSeriesQueryHandler extends DatabaseAbstractHandler {
 
   public PostTimeSeriesQueryHandler(final HttpServer httpServer) {
     super(httpServer);
@@ -56,16 +68,13 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
   }
 
   @Override
+  protected boolean requiresTransaction() {
+    return false;
+  }
+
+  @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
-      final JSONObject payload) throws Exception {
-
-    final Deque<String> databaseParam = exchange.getQueryParameters().get("database");
-    if (databaseParam == null || databaseParam.isEmpty())
-      return new ExecutionResponse(400, "{ \"error\" : \"Database parameter is required\"}");
-
-    // Enforce database-level authorization (GHSA-x8mg-6r4p-87pf): this handler does not extend DatabaseAbstractHandler.
-    // Checked before any payload/parameter validation so an unauthorized caller cannot probe the target database.
-    checkAuthorizationOnDatabase(user, databaseParam.getFirst());
+      final Database db, final JSONObject payload) throws Exception {
 
     // Every member below is resolved through TimeSeriesHandlerUtils so an absent, null or wrongly-typed one is
     // refused by NAME in the 'error' field, instead of reaching JSONObject's raising getters and being answered as
@@ -83,7 +92,7 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
       return TimeSeriesHandlerUtils.badRequest(e);
     }
 
-    final DatabaseInternal database = httpServer.getServer().getDatabase(databaseParam.getFirst(), false, false);
+    final DatabaseInternal database = (DatabaseInternal) db;
 
     // Type resolution and the per-type read ACL both live in TimeSeriesGateway, shared with the gRPC
     // TimeSeriesQuery RPC (issue #7305). The ACL matters here more than anywhere else: a TimeSeries type owns
@@ -126,9 +135,7 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
       final List<ColumnDefinition> columns, final String typeName, final long fromTs, final long toTs,
       final TagFilter tagFilter) throws Exception {
 
-    // Same cap and same semantics as the query/command endpoints: a non-positive value means unlimited. Note
-    // that here the cap governs serialization only - the engine query below materializes the whole range
-    // regardless, so removing the cap does not widen an already unbounded fetch.
+    // Same cap and same semantics as the query/command endpoints: a non-positive value means unlimited.
     // requireIntLimit rather than payload.getInt: the latter narrows with Number.intValue(), so a limit an int
     // cannot hold would wrap to a negative value and be read as unlimited, exactly as on the other endpoints.
     final Object rawLimit = payload.opt("limit");
@@ -147,15 +154,23 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
       return TimeSeriesHandlerUtils.badRequest(e);
     }
 
-    final List<Object[]> rows = engine.query(fromTs, toTs, columnIndices, tagFilter);
-
     // The hard ceiling no caller can widen (issue #5719): a caller that states a huge 'limit', or an unlimited
-    // one, is refused rather than served an arbitrarily large response. Checked here, before the JSON is built,
-    // so the ceiling at least keeps the second and larger copy of the range out of the heap - it cannot keep the
-    // first one out, because engine.query() above materializes the whole range before any limit is known. That
-    // is a bound on the fetch, and it belongs in the engine, not in this handler.
+    // one, is refused rather than served an arbitrarily large response.
     final int maxResultRows = getMaxResultRows();
     final int ceiling = applyMaxResultRows(limit, maxResultRows);
+
+    // The bound on the FETCH (issue #7336). Everything this method has to decide - the row count, whether the
+    // response was cut short, and whether the ceiling refuses it - is answered by the rows up to the ceiling
+    // plus ONE: that extra row is what tells a cut answer from a complete one, and nothing beyond it is ever
+    // looked at. engine.query() answered the same questions by merging every shard's full range into one sorted
+    // ArrayList first, so '{"from": 0, "to": 9999999999999, "limit": 10}' over millions of samples cost O(N)
+    // heap and O(N log N) time to serialize ten rows.
+    // A non-positive ceiling means the ceiling is disabled AND the caller asked for everything, which is the one
+    // request that genuinely has no bound; Integer.MAX_VALUE is left alone rather than overflowed, and is
+    // unlimited in practice because no List can hold more.
+    final int fetchLimit = ceiling <= 0 || ceiling == Integer.MAX_VALUE ? 0 : ceiling + 1;
+    final List<Object[]> rows = engine.queryAscending(fromTs, toTs, columnIndices, tagFilter, fetchLimit, null);
+
     if (ceiling != limit && rows.size() > ceiling)
       throw resultSetTooLarge(maxResultRows);
 
@@ -187,9 +202,12 @@ public class PostTimeSeriesQueryHandler extends AbstractServerHttpHandler {
     if (truncated && !callerSuppliedLimit)
       // The caller stated no limit, so this truncation is the only one it did not ask for: an operator must be
       // able to find it in the log, exactly as on the query and command endpoints.
+      // The message no longer states the total: the fetch now stops one row past the cap, so the only honest
+      // thing that can be said is that there were more (issue #7336). Counting them is the O(N) walk the cap
+      // exists to avoid, and the remedy the operator needs does not depend on the number.
       LogManager.instance().log(this, Level.WARNING,
-          "Query on time series type '%s' returned %d rows, more than the default HTTP limit of %d: the response has been "
-              + "truncated. Set 'limit' in the request, or raise '%s'.", typeName, rows.size(), limit,
+          "Query on time series type '%s' returned more rows than the default HTTP limit of %d: the response has been "
+              + "truncated to %d rows. Set 'limit' in the request, or raise '%s'.", typeName, limit, count,
           GlobalConfiguration.SERVER_HTTP_QUERY_DEFAULT_LIMIT.getKey());
 
     return new ExecutionResponse(200, result.toString());

@@ -33,9 +33,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Regression test for issue #4957: {@link TimeSeriesEngine#appendBatch} dispatched every shard write to the
  * shared {@code shardExecutor} even when the caller had an enclosing transaction open. Each TS-Shard thread
- * then ran with its own fresh {@code DatabaseContext}/transaction, so the shard page writes were published
- * out of band with the enclosing commit and, under HA, the page versions were reordered on the Raft log -
- * exactly the hazard the {@link TimeSeriesEngine#appendSamples} javadoc documents and forbids.
+ * then ran the shard's own {@code begin/commit} in its own fresh {@code DatabaseContext}, concurrently with
+ * the other shards', so the order in which the shard transactions committed - and, under HA, the order their
+ * page versions reached the Raft log - was no longer the calling thread's.
+ * <p>
+ * (This paragraph used to give the reason as the shard pages being published "out of band with the enclosing
+ * commit". Per issue #7410 that happens on both paths: a shard append always commits its own transaction,
+ * because an ArcadeDB nested {@code begin/commit} is an independent transaction rather than a savepoint. What
+ * the in-thread fallback removes is the cross-thread dispatch, which is what this test asserts and has always
+ * asserted - no assertion below changed with that correction.)
  * <p>
  * The HA page-version reordering itself needs a cluster to observe, so this test verifies the fix's
  * observable single-node contract instead: when a transaction is active on the calling thread the shard
@@ -66,7 +72,9 @@ class Issue4957AppendBatchTransactionTest extends TestHelper {
 
       // #4957: with an enclosing transaction active, no shard write may be routed to the executor.
       // The fixed-pool threads are created lazily on the first submitted task, so any live
-      // ArcadeDB-TS-Shard thread for this type proves the forbidden dispatch happened.
+      // ArcadeDB-TS-Shard thread for this type proves the forbidden dispatch happened. (The samples
+      // themselves are already committed by now either way - see #7410 - so only the thread names can
+      // tell the two paths apart.)
       assertThat(shardThreadsOf(typeName))
           .as("appendBatch inside an enclosing transaction must write the shards on the calling thread")
           .isEmpty();
