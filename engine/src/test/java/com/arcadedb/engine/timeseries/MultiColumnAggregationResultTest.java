@@ -82,6 +82,20 @@ class MultiColumnAggregationResultTest {
     assertThat(result.getValue(1000L, 0)).isEqualTo(2.0);
   }
 
+  /**
+   * Every "this request stayed empty" test below writes to ONE request and reads back another, so each one has to
+   * rule out the answer it would get from a bucket that was never touched at all: {@code getValue} returns a plain
+   * {@code 0.0} for an unknown bucket in map mode, and for an unset {@code bucketUsed[idx]} in flat mode. Asserting
+   * the bucket is really there is what makes the absent marker read afterwards evidence about the SEED that
+   * {@code newInitializedValues()} laid down per request index, rather than about the bucket's existence
+   * (claude-review on PR #7662).
+   */
+  private static void assertBucketExists(final MultiColumnAggregationResult result) {
+    assertThat(result.getBucketTimestamps())
+        .as("the bucket must exist, or an absent answer proves nothing about the per-request seed")
+        .containsExactly(1000L);
+  }
+
   private static List<MultiColumnAggregationRequest> sumThenCount() {
     return List.of(new MultiColumnAggregationRequest(1, AggregationType.SUM, "sumA"),
         new MultiColumnAggregationRequest(2, AggregationType.COUNT, "countB"));
@@ -103,6 +117,7 @@ class MultiColumnAggregationResultTest {
     final MultiColumnAggregationResult result = new MultiColumnAggregationResult(sumThenCount());
     // only the COUNT request gets data in this bucket; the SUM request stays empty
     result.accumulate(1000L, 1, 7.0);
+    assertBucketExists(result);
     assertThat(result.getCount(1000L, 0)).isZero();
     assertThat(result.getValue(1000L, 0)).as("SUM over no real sample is absent, not a total of zero").isNaN();
     assertThat(result.getValue(1000L, 1)).as("COUNT still counts rows").isEqualTo(1.0);
@@ -118,6 +133,7 @@ class MultiColumnAggregationResultTest {
     final MultiColumnAggregationResult result = new MultiColumnAggregationResult(sumThenCount());
     // only the SUM request gets data in this bucket; the COUNT request stays empty
     result.accumulate(1000L, 0, 7.0);
+    assertBucketExists(result);
     assertThat(result.getValue(1000L, 1)).as("COUNT of no rows is 0, not absent").isEqualTo(0.0);
     assertThat(result.getCount(1000L, 1)).isZero();
   }
@@ -131,6 +147,7 @@ class MultiColumnAggregationResultTest {
     final MultiColumnAggregationResult result = new MultiColumnAggregationResult(sumThenCount(), 0L, 1000L, 16);
     result.accumulate(1000L, 1, 7.0);
     assertThat(result.isFlatMode()).isTrue();
+    assertBucketExists(result);
     assertThat(result.getValue(1000L, 0)).isNaN();
     assertThat(result.getValue(1000L, 1)).isEqualTo(1.0);
   }
@@ -144,6 +161,7 @@ class MultiColumnAggregationResultTest {
     final MultiColumnAggregationResult result = new MultiColumnAggregationResult(avgThenCount());
     result.accumulate(1000L, 1, 7.0);
     result.finalizeAvg();
+    assertBucketExists(result);
     assertThat(result.getCount(1000L, 0)).isZero();
     assertThat(result.getValue(1000L, 0)).as("AVG over no real sample is absent, not zero").isNaN();
   }
@@ -154,6 +172,7 @@ class MultiColumnAggregationResultTest {
     result.accumulate(1000L, 1, 7.0);
     result.finalizeAvg();
     assertThat(result.isFlatMode()).isTrue();
+    assertBucketExists(result);
     assertThat(result.getValue(1000L, 0)).isNaN();
   }
 
