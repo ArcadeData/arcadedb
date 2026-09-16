@@ -224,6 +224,39 @@ class Issue7715FractionalIntegralMemberTest {
   }
 
   /**
+   * The same extreme exponent with a coefficient that HAS trailing zeros, which is a different code path:
+   * {@code "100E2147483647"} is {@code (unscaled=100, scale=-2147483647)}, and {@code stripTrailingZeros()}
+   * raises the scale to strip a zero - from a scale that is already at the bottom of its range, so it throws a
+   * {@code ArithmeticException("Overflow")} of its own. Were it to run, that throw sits outside the resolver's
+   * catch and would answer a malformed request with a 500 rather than the 400 the endpoints render an
+   * {@code IllegalArgumentException} as (CodeRabbit on PR #7730).
+   * <p>
+   * What this pins is the REFUSAL, not which guard produces it. The JSON layer's own numeric limits turn an
+   * exponent this extreme away before a {@code BigDecimal} carrying such a scale can exist, so today the strip
+   * is never reached; the resolver guards it anyway, because its correctness may not rest on a dependency's
+   * internal limit. Should that limit ever widen, this case must still be a client error - which is what the
+   * assertion says. {@code 1E2147483647} does not exercise the same path: its coefficient has no trailing zero
+   * to strip.
+   */
+  @Test
+  @Timeout(300)
+  void refusesAnExtremeExponentWhoseCoefficientHasTrailingZeros() {
+    for (final String spelling : new String[] { "100E2147483647", "-100E2147483647", "10E2147483647",
+        "100E-2147483647" }) {
+      final JSONObject owner = new JSONObject().put("from", spelling);
+
+      final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
+      assertThatThrownBy(() -> TimeSeriesHandlerUtils.optLong(owner, "from", -1L, "from"))
+          .as("'%s' must be refused as a client error, never as an ArithmeticException the mapper reads as 500",
+              spelling)
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageStartingWith("'from' must be a ");
+      stopwatch.assertGaveUpWithin(10_000,
+          "a constant-time refusal of '" + spelling + "' from materialising the value its exponent names");
+    }
+  }
+
+  /**
    * The length cap on a numeric string, defence in depth against an arbitrarily long digit run. Reported as
    * "must be a number" rather than with a message of its own, because that is #7340's answer for a member that
    * did not arrive as one and there is no reason for this endpoint to have two.

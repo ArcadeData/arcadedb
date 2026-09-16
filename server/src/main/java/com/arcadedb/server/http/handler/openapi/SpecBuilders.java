@@ -112,7 +112,9 @@ public final class SpecBuilders {
 
   public static final String SESSION_EXPIRED_DESCRIPTION =
       "Present only when the request named a session id this server could not resolve (committed, rolled back, "
-          + "expired, or owned by another principal). It carries that id, and says this answer was produced "
+          + "expired, or owned by another principal). It carries that id reduced to the characters a session id "
+          + "is made of - anything else becomes '?', and an overlong one is truncated - and says this answer "
+          + "was produced "
           + "OUTSIDE the transaction the caller named rather than inside it. The call is not refused, which is "
           + "what keeps a read-after-commit and an idempotent retry working; the gRPC TimeSeriesQuery and "
           + "TimeSeriesLatest RPCs refuse the same case with FAILED_PRECONDITION, following their own "
