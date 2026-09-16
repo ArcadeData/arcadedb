@@ -4,7 +4,7 @@
 
 Certification status of ArcadeDB's Bolt protocol against every official Neo4j driver, per the shared conformance spec ([`spec.yaml`](spec.yaml), epic #4882). Columns are driver language by pinned version ([`driver-versions.md`](driver-versions.md)).
 
-**Last verified:** 2026-09-15 08:14 UTC ([run](https://github.com/ArcadeData/arcadedb/actions/runs/34945019476))
+**Last verified:** 2026-09-16 08:08 UTC ([run](https://github.com/ArcadeData/arcadedb/actions/runs/35071260768))
 
 Legend: ✅ pass, ❌ fail, ⚠️ expected-fail / known limitation, ➖ not applicable, ⚪ skipped, `·` not reported. A `·` in a listed Coverage-gaps column means no result for that driver:version.
 
@@ -68,7 +68,7 @@ Legend: ✅ pass, ❌ fail, ⚠️ expected-fail / known limitation, ➖ not app
 | **TYPE-002** Relationship round-trips as a native Bolt structure | · | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **TYPE-003** Path round-trips as a native Bolt structure | · | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **TYPE-004** ByteArray round-trips as a bound parameter | · | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **TYPE-005** Nested lists and maps round-trip structurally | · | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **TYPE-005** Nested lists round-trip structurally | · | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **TYPE-006** Null values round-trip | · | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **TYPE-007** LocalDate round-trips as a native Bolt Date structure | · | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **TYPE-008** LocalTime round-trips as a native Bolt LocalTime structure | · | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
