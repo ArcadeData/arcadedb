@@ -21,6 +21,7 @@ package com.arcadedb.engine.timeseries;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.timeseries.LineProtocolParser.Sample;
+import com.arcadedb.schema.LocalTimeSeriesType;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -89,7 +90,7 @@ class Issue7741LineProtocolWriteStaysInThreadTest extends TestHelper {
   void anAppendBatchWithNoTransactionStillDispatches() throws Exception {
     database.command("sql", "CREATE TIMESERIES TYPE dispatched TIMESTAMP ts FIELDS (value DOUBLE) SHARDS 4");
     final TimeSeriesEngine engine =
-        ((com.arcadedb.schema.LocalTimeSeriesType) database.getSchema().getType("dispatched")).getEngine();
+        ((LocalTimeSeriesType) database.getSchema().getType("dispatched")).getEngine();
 
     final long[] timestamps = new long[40];
     final Object[] values = new Object[40];

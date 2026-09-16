@@ -21,6 +21,7 @@ package com.arcadedb.engine.timeseries;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.Component;
+import com.arcadedb.engine.OwnTransaction;
 import com.arcadedb.engine.timeseries.codec.DeltaOfDeltaCodec;
 import com.arcadedb.engine.timeseries.codec.DictionaryCodec;
 import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
@@ -756,11 +757,14 @@ public class TimeSeriesShard implements AutoCloseable {
       int capturedPageCount = -1;
       // Count down to mirror the retry convention used in appendSamples().
       for (int attempt = 3; attempt > 0; attempt--) {
-        db.begin();
+        // Tracked, like every other transaction this class begins for itself: compactAll() is public API and
+        // nothing stops an embedded caller from running it inside a transaction of their own, which is the
+        // caller a bare isTransactionActive() would have rolled back after a failed commit (issue #7732).
+        final OwnTransaction tx = OwnTransaction.begin(db);
         try {
           final int pageCount = mutableBucket.getDataPageCount();
           if (pageCount == 0) {
-            db.rollback();
+            tx.rollbackIfMine();
             return;
           }
 
@@ -779,7 +783,7 @@ public class TimeSeriesShard implements AutoCloseable {
             final long cap = GlobalConfiguration.maxReplicatedSealedStoreSize(database.getConfiguration());
             final long projected = sealedStore.getFileSizeBytes() + (long) pageCount * mutableBucket.getPageSize();
             if (projected > cap) {
-              db.rollback();
+              tx.rollbackIfMine();
               warnOversizedSealedSkip(projected, cap);
               return;
             }
@@ -787,19 +791,17 @@ public class TimeSeriesShard implements AutoCloseable {
 
           mutableBucket.setCompactionInProgress(true);
           mutableBucket.setCompactionWatermark(initialBlockCount);
-          db.commit();
+          tx.commit();
           capturedPageCount = pageCount;
           break;
         } catch (final ConcurrentModificationException e) {
-          if (db.isTransactionActive())
-            db.rollback();
+          tx.rollbackIfMine();
           if (attempt == 1)
             throw new IOException("Compaction failed in phase 0 after retries", e);
           // An in-flight append committed page-0 between begin and commit; retry with the
           // latest version.
         } catch (final Exception e) {
-          if (db.isTransactionActive())
-            db.rollback();
+          tx.rollbackIfMine();
           throw e instanceof IOException ? (IOException) e : new IOException("Compaction failed in phase 0", e);
         }
       }
@@ -834,7 +836,7 @@ public class TimeSeriesShard implements AutoCloseable {
     // sealed block across the Phase-2/Phase-4 page boundary.
     Object[] phase2Spill = null;
     if (lastFullPage > 0) {
-      db.begin();
+      final OwnTransaction snapshot = OwnTransaction.begin(db);
       try {
         final Object[] snapshotData = mutableBucket.readFullPagesForCompaction(lastFullPage);
         if (snapshotData != null)
@@ -845,7 +847,7 @@ public class TimeSeriesShard implements AutoCloseable {
           phase2Spill = buildCompressedBlocks(snapshotData, allCompressedList, allMetaList, allStatsList,
               allTagDVList, true);
       } finally {
-        db.rollback(); // read-only: rollback is always safe
+        snapshot.rollbackIfMine(); // read-only: rollback is always safe, and only ever of our own
       }
     }
 
@@ -876,7 +878,7 @@ public class TimeSeriesShard implements AutoCloseable {
     Object[] phase4aData;
     compactionLock.writeLock().lock();
     try {
-      db.begin();
+      final OwnTransaction snapshot = OwnTransaction.begin(db);
       try {
         phase4aPageCount = mutableBucket.getDataPageCount();
         if (phase4aPageCount > lastFullPage + 1)
@@ -885,7 +887,7 @@ public class TimeSeriesShard implements AutoCloseable {
         else
           phase4aData = null;
       } finally {
-        db.rollback(); // read-only snapshot
+        snapshot.rollbackIfMine(); // read-only snapshot
       }
     } finally {
       compactionLock.writeLock().unlock();
@@ -923,7 +925,7 @@ public class TimeSeriesShard implements AutoCloseable {
       prePhase4cHook.run();
     compactionLock.writeLock().lock();
     try {
-      db.begin();
+      final OwnTransaction tx = OwnTransaction.begin(db);
       try {
         final int finalPageCount = mutableBucket.getDataPageCount();
 
@@ -970,10 +972,9 @@ public class TimeSeriesShard implements AutoCloseable {
         // No MVCC conflict: writeLock blocks all concurrent appendSamples().
         mutableBucket.clearDataPages();
         mutableBucket.setCompactionInProgress(false);
-        db.commit();
+        tx.commit();
       } catch (final Exception e) {
-        if (db.isTransactionActive())
-          db.rollback();
+        tx.rollbackIfMine();
         // Restore sealed store to initial state so the next run re-compacts cleanly.
         // (The crash-recovery flag remains set, so a restart also handles this correctly.)
         try {
@@ -1198,14 +1199,17 @@ public class TimeSeriesShard implements AutoCloseable {
   private void clearCompactionFlagBestEffort() {
     final DatabaseInternal db = database.getWrappedDatabaseInstance();
     compactionLock.writeLock().lock();
+    OwnTransaction tx = null;
     try {
-      db.begin();
+      tx = OwnTransaction.begin(db);
       mutableBucket.setCompactionInProgress(false);
-      db.commit();
+      tx.commit();
     } catch (final Exception ignored) {
-      if (db.isTransactionActive())
+      // Best-effort, but never at the caller's expense: only the transaction begun here, and only while it is
+      // still on the thread (issue #7732). Null when begin() itself failed, in which case there is none.
+      if (tx != null)
         try {
-          db.rollback();
+          tx.rollbackIfMine();
         } catch (final Exception re) { /* ignored */ }
     } finally {
       compactionLock.writeLock().unlock();

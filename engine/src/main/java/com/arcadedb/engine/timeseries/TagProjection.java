@@ -68,6 +68,9 @@ final class TagProjection {
     if (columnIndices == null || tagFilter == null)
       return new TagProjection(columnIndices, null);
 
+    assert isAscendingAndDistinct(columnIndices) :
+        "A TimeSeries projection must be ascending and duplicate-free: " + Arrays.toString(columnIndices);
+
     int missing = 0;
     for (final TagFilter.Condition cond : tagFilter.getConditions())
       if (!contains(columnIndices, columnIndices.length, cond.columnIndex()))
@@ -123,6 +126,21 @@ final class TagProjection {
     for (int i = 0; i < keep.length; i++)
       narrowed[i + 1] = row[keep[i] + 1];
     return narrowed;
+  }
+
+  /**
+   * The precondition {@link #narrow} depends on, checked under {@code -ea} only (claude-review on PR #7747).
+   * <p>
+   * An assertion and not a refusal, because it is a contract between engine paths rather than anything a user can
+   * reach: every caller resolves its projection by walking the schema in order. What it buys is that a future one
+   * that does not FAILS in a test run instead of silently relabelling which value belongs to which requested
+   * column - which is what the widened narrow() would do, since it reads the decompressor's schema order.
+   */
+  private static boolean isAscendingAndDistinct(final int[] columnIndices) {
+    for (int i = 1; i < columnIndices.length; i++)
+      if (columnIndices[i] <= columnIndices[i - 1])
+        return false;
+    return true;
   }
 
   private static boolean contains(final int[] array, final int length, final int value) {

@@ -78,8 +78,12 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
   private final byte[]             kinds;
   /** {@link #rawNull} per column, precomputed: the raw bits a column with no value set reads back as. */
   private final long[]             nullRaw;
-  /** Whether any column's "no value" is something other than zero, i.e. whether a fresh row needs filling. */
-  private final boolean            hasAbsentMarkers;
+  /**
+   * The columns whose "no value" is something other than zero, which is the only work a FRESH row needs: a
+   * new {@code long[]} is already zero everywhere else. Empty - the common all-integer schema - means a fresh
+   * row costs nothing at all, as it did before issue #7743 (claude-review on PR #7747).
+   */
+  private final int[]              absentMarkerColumns;
   private       long[]             timestamps;
   private final long[][]           rawValues;
   private final String[][]         stringValues;
@@ -126,13 +130,14 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
       colIdx++;
     }
 
-    boolean absentMarkers = false;
+    int absentMarkers = 0;
     for (final long raw : nullRaw)
-      if (raw != 0L) {
-        absentMarkers = true;
-        break;
-      }
-    this.hasAbsentMarkers = absentMarkers;
+      if (raw != 0L)
+        ++absentMarkers;
+    this.absentMarkerColumns = new int[absentMarkers];
+    for (int c = 0, next = 0; c < nullRaw.length; c++)
+      if (nullRaw[c] != 0L)
+        absentMarkerColumns[next++] = c;
   }
 
   /**
@@ -150,15 +155,19 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
     // marker where the column can carry one, zero elsewhere (issue #7743). The second reason applies to a fresh
     // row too, which is why the cheap "only stale rows" test is not the whole condition; a batch with no
     // floating-point column has nothing to write into a fresh row and skips the loop as it always did.
-    final boolean stale = row < staleRows;
-    if (stale || hasAbsentMarkers)
+    if (row < staleRows) {
+      // A refilled row: every column has to be reset, whatever its null reads back as.
       for (int c = 0; c < columns.length; c++) {
-        if (rawValues[c] != null) {
-          if (stale || nullRaw[c] != 0L)
-            rawValues[c][row] = nullRaw[c];
-        } else if (stale)
+        if (rawValues[c] != null)
+          rawValues[c][row] = nullRaw[c];
+        else
           stringValues[c][row] = null;
       }
+    } else
+      // A fresh row is already zero everywhere, so only the columns whose absence is NOT zero are touched -
+      // none at all on an all-integer schema, which is the bulk-ingest case this class is built for.
+      for (final int c : absentMarkerColumns)
+        rawValues[c][row] = nullRaw[c];
     return row;
   }
 
