@@ -256,9 +256,11 @@ class HttpQueryMaxResultRowsIT extends BaseGraphServerTest {
 
   @Test
   void theTimeSeriesQueryEndpointEnforcesTheCeilingToo() throws Exception {
-    // The endpoint the issue calls out separately: it materializes the whole range before any limit is known,
-    // so the ceiling cannot keep the fetch out of the heap - but it can, and must, refuse to build the JSON
-    // copy of it rather than serve an unbounded response to a caller stating 'limit: -1'.
+    // The endpoint the issue calls out separately: it must refuse to serve an unbounded response to a caller
+    // stating 'limit: -1' rather than build the JSON copy of the range.
+    // It used to materialize the whole range before any limit was known, so the ceiling could keep only the
+    // second copy out of the heap; since issue #7336 the fetch itself stops at the ceiling plus one row, and
+    // that extra row is what this refusal is decided on.
     assertThat(send("command", new JSONObject()
         .put("language", "sql")
         .put("command", "CREATE TIMESERIES TYPE ceilingts TIMESTAMP ts TAGS (location STRING) FIELDS (value DOUBLE)"))
