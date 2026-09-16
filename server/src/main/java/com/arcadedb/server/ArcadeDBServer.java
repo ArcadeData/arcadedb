@@ -1668,7 +1668,17 @@ public class ArcadeDBServer {
                 LogManager.instance().log(this, Level.INFO, "Creating default database '%s'...", null, dbName);
                 database = createDatabase(dbName, defaultDbMode);
               }
-              try (final var rs = database.command("sql", "import database " + commandParams)) {
+              // THE SERVER'S OWN ContextConfiguration, NOT THE EMPTY ONE THE TWO-ARGUMENT command() OVERLOAD
+              // BUILDS: ImportDatabaseStatement RESOLVES SERVER_SECURITY_IMPORT_BLOCK_LOCAL_NETWORKS FROM
+              // context.getConfiguration(), SO AN EMPTY OVERLAY MADE IT READ THE PROCESS-WIDE STATIC VALUE, AND AN
+              // OPERATOR WHO SET THE FLAG ON THIS SERVER INSTANCE ALONE (AN EMBEDDED OR MULTI-INSTANCE DEPLOYMENT)
+              // GOT ONE ANSWER FROM THIS SERVER'S 'IMPORT DATABASE' VERB AND ANOTHER FROM ITS OWN BOOT-TIME IMPORT
+              // (ISSUE #7632). A DATABASE OPENED BY THE SERVER INHERITS NO ContextConfiguration OF ITS OWN -
+              // DatabaseFactory IS HANDED A PATH AND NOTHING ELSE - SO THE CONFIGURATION HAS TO TRAVEL WITH THE
+              // COMMAND. THE SAME DIVERGENCE #6474 CLOSED FOR THE CLIENT-ISSUED VERB AND #7468 FOR THE STARTUP
+              // 'restore:' COMMAND. THE OVERLAY FALLS BACK TO THE STATIC VALUE FOR EVERY KEY THIS SERVER DID NOT
+              // OVERRIDE, SO A DEFAULT CONFIGURATION SEES NO CHANGE.
+              try (final var rs = database.command("sql", "import database " + commandParams, configuration)) {
                 // ImportDatabaseStatement REPORTS EXACTLY ONE CLASS OF FAILURE IN-BAND RATHER THAN BY THROWING: A
                 // FAILED probeOnly PROBE, AND (SINCE ISSUE #7461) A 'WITH ...' SETTING VALUE THE IMPORTER REFUSES,
                 // BOTH AS THE SINGLE ROW {"result":"FAIL","reason":...}. DISCARDING THAT ROW USED TO LEAVE dbName
