@@ -1897,7 +1897,11 @@ public class SelectExecutionPlanner {
         return;
       }
 
-      plan.chain(new FetchFromTimeSeriesStep(tsType, fromTs, toTs, tagFilter, context));
+      // Issue #7663: the ascending read carries a cap too. ORDER BY ts ASC LIMIT n, and a bare LIMIT n, used to
+      // walk the whole range and let LimitExecutionStep drop the surplus - after it had been decompressed, boxed
+      // and held.
+      plan.chain(new FetchFromTimeSeriesStep(tsType, fromTs, toTs, tagFilter, false,
+          timeSeriesAscendingScanLimit(tsType, info, context), context));
       return;
     }
 
@@ -2909,10 +2913,16 @@ public class SelectExecutionPlanner {
     // no DISTINCT and a WHERE clause the engine reproduces exactly.
     if (info.limit == null || info.distinct || info.groupBy != null || info.aggregateProjection != null)
       return 0;
-    if (!isTimeSeriesWhereFullyPushedDown(tsType, info, context))
-      return 0;
 
+    // Same guard, and for the same reason, as the ascending twin below: isTimeSeriesWhereFullyPushedDown
+    // evaluates the right-hand side of a tag equality at PLANNING time against a null record, and a cap is an
+    // optimisation that must never be the reason a query that used to run now fails. Reachability here is
+    // narrower - this method needs an explicit ORDER BY <ts> DESC - but the exposure is the same shared helper,
+    // and an asymmetric guard between two methods calling it reads as an oversight (claude-review on PR #7720).
     try {
+      if (!isTimeSeriesWhereFullyPushedDown(tsType, info, context))
+        return 0;
+
       final int limitValue = info.limit.getValue(context);
       if (limitValue < 0)
         return 0;
@@ -2921,9 +2931,106 @@ public class SelectExecutionPlanner {
         return 0;
       return Math.addExact(skipValue, limitValue);
     } catch (final RuntimeException e) {
-      // SKIP/LIMIT depend on runtime state (or overflow): fall back to an uncapped descending scan.
+      // SKIP/LIMIT depend on runtime state (or overflow), or a predicate would not evaluate against a null
+      // record: fall back to an uncapped descending scan.
       return 0;
     }
+  }
+
+  /**
+   * Issue #7663: decides how many rows the ASCENDING TimeSeries fetch is allowed to stop at.
+   * <p>
+   * Reached only when {@link #timeSeriesDescendingScanLimit} declined, so the fetch runs oldest-first and its
+   * first rows are the oldest rows of the range. A {@code LIMIT} may therefore be pushed into the fetch whenever
+   * nothing between the engine and the caller can add, drop or reorder a row - which is a stricter condition than
+   * the descending path needs, because the descending path only gets here with an explicit
+   * {@code ORDER BY ts DESC} while this one also serves queries with no ORDER BY at all.
+   * <p>
+   * The order itself is NOT claimed: {@code info.orderApplied} stays untouched, so an
+   * {@code ORDER BY ts ASC} still chains its {@link OrderByStep}. That step then sorts the capped rows, which is
+   * the same answer it would have produced from the whole range - {@code queryAscending} returns the globally
+   * oldest {@code n} - for a fraction of the residency. Claiming the order as well is a separate optimisation and
+   * a separate risk.
+   *
+   * @return {@code 0} when the fetch must stay unbounded, or a positive row cap the engine may stop at
+   */
+  private int timeSeriesAscendingScanLimit(final LocalTimeSeriesType tsType, final QueryPlanningInfo info,
+      final CommandContext context) {
+    if (info.limit == null)
+      return 0;
+
+    // Each of these can hand the caller rows the fetch did not produce, or drop rows it did: UNWIND multiplies,
+    // LET and $expand dereference, DISTINCT collapses, an aggregate folds the whole input into its output.
+    if (info.expand || info.unwind != null || info.perRecordLetClause != null || info.globalLetPresent)
+      return 0;
+    // The DISTINCT/GROUP BY/aggregate trio is checked again inside isTimeSeriesTimestampOrderByAsc, and the
+    // overlap is deliberate rather than dead: a query with no ORDER BY at all never reaches that method, so
+    // without this line the three would go unchecked on exactly the shape - a bare LIMIT n - this method was
+    // added to serve (claude-review on PR #7720).
+    if (info.distinct || info.groupBy != null || info.aggregateProjection != null)
+      return 0;
+
+    // Everything below can evaluate caller-supplied expressions at PLANNING time - the SKIP/LIMIT values, and
+    // inside isTimeSeriesWhereFullyPushedDown the right-hand side of a tag equality. The descending cap does the
+    // same, but only for a query that already stated ORDER BY <ts> DESC; this one is reached by ANY time-series
+    // query carrying a LIMIT, so the same evaluation now meets far more expression shapes. A cap is an
+    // OPTIMISATION and must never be the reason a query that used to run now fails: anything thrown here means
+    // "cannot prove it", which is an uncapped scan.
+    try {
+      // An ORDER BY re-orders the WHOLE result, so the oldest n rows of the fetch are not the first n of the
+      // answer - unless the clause asks for exactly the ascending timestamp order the fetch already produces.
+      if (info.orderBy != null && !isTimeSeriesTimestampOrderByAsc(tsType, info))
+        return 0;
+
+      // The residual FilterStep must not be able to discard a row the engine counted against the cap, which is
+      // the same condition the descending cap requires (issue #5414).
+      if (!isTimeSeriesWhereFullyPushedDown(tsType, info, context))
+        return 0;
+
+      final int limitValue = info.limit.getValue(context);
+      if (limitValue < 0)
+        return 0;
+      final int skipValue = info.skip == null ? 0 : info.skip.getValue(context);
+      if (skipValue < 0)
+        return 0;
+      // SKIP is served out of this same fetch, so the cap has to cover both or SKIP eats the answer.
+      return Math.addExact(skipValue, limitValue);
+    } catch (final RuntimeException e) {
+      // SKIP/LIMIT depend on runtime state (or overflow), or a predicate would not evaluate against a null
+      // record: fall back to an uncapped ascending scan.
+      return 0;
+    }
+  }
+
+  /**
+   * Returns true when the ORDER BY is a single ASCENDING clause on the time-series timestamp column that the
+   * fetch order alone already satisfies - the ascending mirror of {@link #isTimeSeriesTimestampOrderByDesc}, and
+   * subject to the same caveats: the clause is applied after the projection, so it is only about the raw
+   * timestamp while the projection does not rebind that name, and aggregation, GROUP BY and DISTINCT all make it
+   * refer to post-aggregation output instead.
+   * <p>
+   * {@link OrderByItem#getType()} defaults to {@link OrderByItem#ASC}, so an ORDER BY that states no direction
+   * lands here rather than being read as a missing one.
+   */
+  private static boolean isTimeSeriesTimestampOrderByAsc(final LocalTimeSeriesType tsType, final QueryPlanningInfo info) {
+    if (info.orderApplied || info.orderBy == null || info.orderBy.getItems() == null || info.orderBy.getItems().size() != 1)
+      return false;
+    if (info.aggregateProjection != null || info.groupBy != null || info.distinct || info.projectionAfterOrderBy != null)
+      return false;
+
+    final OrderByItem item = info.orderBy.getItems().getFirst();
+    // A modifier, a computed expression or a parameterised direction all mean the fetch order alone cannot
+    // satisfy the clause.
+    if (item.modifier != null || item.expression != null || item.getDirectionParameter() != null)
+      return false;
+    if (!OrderByItem.ASC.equalsIgnoreCase(item.getType()))
+      return false;
+
+    final String timestampColumn = tsType.getTimestampColumn();
+    if (!timestampColumn.equals(item.getName()))
+      return false;
+
+    return projectionKeepsTimestampName(info.projection, timestampColumn);
   }
 
   /**
