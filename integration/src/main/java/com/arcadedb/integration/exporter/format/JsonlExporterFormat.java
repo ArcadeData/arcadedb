@@ -97,6 +97,7 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
     if (!exportFile.getParentFile().exists())
       exportFile.getParentFile().mkdirs();
 
+    final File lock = claimExportFile(exportFile);
     try (final OutputStreamWriter fileWriter = new OutputStreamWriter(new GZIPOutputStream(new FileOutputStream(exportFile)),
         DatabaseFactory.getDefaultCharset())) {
       writer = fileWriter;
@@ -158,6 +159,8 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
       exportEdges(edgeTypes, graphSerializer);
       exportLightweightEdges(vertexTypes, graphSerializer);
       exportTimeSeries(timeSeriesTypes);
+    } finally {
+      releaseExportFile(lock);
     }
   }
 

@@ -399,7 +399,15 @@ public class ServerControlPlane {
    * wrapper - takes the database out from under the cluster and leaves it on every follower
    * (issue #7389).
    *
-   * @throws IllegalArgumentException when no database by that name is registered on this server
+   * <p>
+   * Takes the per-database maintenance slot as {@link Operation#DROP} before touching the directory (issue #7641):
+   * without it a {@code drop database} was admitted while a {@code trigger backup}, a {@code restore database} or
+   * an {@code import database} of the same database was running, and the drop deleted the directory out from under
+   * whichever of those was reading or writing it. {@link Operation#DROP} conflicts with everything, the same as
+   * {@link Operation#RESTORE}, because a drop destroys the directory unconditionally and with no replacement.
+   *
+   * @throws IllegalArgumentException     when no database by that name is registered on this server
+   * @throws OperationInProgressException when a backup, restore, import or export of the same database is running
    */
   public void dropDatabase(final String databaseName) {
     requireDatabaseName(databaseName);
@@ -407,7 +415,12 @@ public class ServerControlPlane {
     if (!server.existsDatabase(databaseName))
       throw new IllegalArgumentException("Database '" + databaseName + "' does not exist");
 
-    dropDatabaseClusterWide(server.getDatabase(databaseName), databaseName);
+    beginExclusive(databaseName, Operation.DROP);
+    try {
+      dropDatabaseClusterWide(server.getDatabase(databaseName), databaseName);
+    } finally {
+      server.getBackupCoordinator().end(databaseName, Operation.DROP);
+    }
   }
 
   /**

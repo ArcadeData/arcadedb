@@ -19,11 +19,16 @@
 package com.arcadedb.integration.exporter.format;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.integration.exporter.ExportException;
 import com.arcadedb.integration.exporter.ExporterContext;
 import com.arcadedb.integration.exporter.ExporterSettings;
 import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.utility.DateUtils;
 
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.Files;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 
@@ -44,4 +49,42 @@ public abstract class AbstractExporterFormat {
   public abstract void exportDatabase() throws Exception;
 
   public abstract String getName();
+
+  /**
+   * Claims {@code exportFile} for the duration of this export, so a second export racing to the same resolved
+   * target - the same explicit URL twice, or two default names resolving within one millisecond - fails outright
+   * instead of interleaving its output with this writer's (issue #7644).
+   * <p>
+   * {@code MaintenanceCoordinator.Operation.EXPORT} admits any number of exports of one database together (issue
+   * #7450), on the premise that two exports name two different files. Nothing enforced that premise: {@code
+   * file.exists() && !overwriteFile} is a check-then-create a second export starting in the same instant can both
+   * pass, and with {@code overwriteFile} set the check does not even apply, so two writers simply interleaved into
+   * one archive.
+   * <p>
+   * A sidecar lock rather than an atomic create of {@code exportFile} itself ({@code FullBackupFormat}'s
+   * {@code claimBackupFile} does exactly that for backups): the target legitimately pre-exists here whenever
+   * {@code overwriteFile} is set, so claiming the PATH - not the absence of a file at it - is what is needed, and
+   * that is what a lock file gives independently of {@code overwriteFile}.
+   *
+   * @return the lock file; release it with {@link #releaseExportFile(File)} from a {@code finally}
+   */
+  protected final File claimExportFile(final File exportFile) {
+    final File lock = new File(exportFile.getPath() + ".exporting");
+    try {
+      Files.createFile(lock.toPath());
+    } catch (final FileAlreadyExistsException e) {
+      throw new ExportException("Another export to '%s' is already in progress".formatted(exportFile));
+    } catch (final IOException e) {
+      throw new ExportException("Export target '%s' cannot be claimed".formatted(exportFile), e);
+    }
+    return lock;
+  }
+
+  /**
+   * Releases the claim {@link #claimExportFile(File)} took. Always call it from a {@code finally}: a leaked lock
+   * file blocks every later export to that target until an operator removes it by hand.
+   */
+  protected final void releaseExportFile(final File lock) {
+    lock.delete();
+  }
 }
