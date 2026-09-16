@@ -218,6 +218,28 @@ class CypherMapPropertyDiagnosticsIssue7729Test {
   }
 
   @Test
+  void aWideMapNamesTheFirstFewKeysAndCountsTheRest() {
+    // The one piece of message-building that reads a magic constant: MAX_DESCRIBED_KEYS caps the enumeration so a
+    // wide map cannot turn one refusal into a page of client response and server log. Six keys, so exactly one is
+    // left to count. The keys named are whichever the map iterates first, which is why only the count is asserted
+    // exactly - the cap, not the ordering, is the behaviour being pinned.
+    assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher",
+        "MATCH (t:T) SET t.wide = {a: 1, b: 2, c: 3, d: 4, e: 5, f: {nested: 1}}")))
+        .isInstanceOf(InvalidPropertyTypeException.class)
+        .hasMessageContaining("property 'wide'")
+        .hasMessageContaining("... 1 more");
+  }
+
+  @Test
+  void aMapNarrowerThanTheCapNamesEveryKeyAndCountsNothing() {
+    assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher",
+        "MATCH (t:T) SET t.narrow = {a: 1, b: 2, c: 3, d: 4, e: 5}")))
+        .isInstanceOf(InvalidPropertyTypeException.class)
+        .hasMessageContaining("[a, b, c, d, e]")
+        .hasMessageNotContaining("more");
+  }
+
+  @Test
   void theRefusalNamesTheOffendingKeysSoTheValueCanBeIdentified() {
     assertThatThrownBy(() -> database.transaction(
         () -> database.command("opencypher", "MATCH (n:R), (t:T) SET t.m2 = n.m")))
