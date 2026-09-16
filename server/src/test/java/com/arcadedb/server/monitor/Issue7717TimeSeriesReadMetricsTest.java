@@ -199,17 +199,31 @@ class Issue7717TimeSeriesReadMetricsTest {
    */
   @Test
   void theMeterCacheIsBounded() {
+    // Across EVERY surface, not one: the collapse keeps the surface half of the tuple, so overflowing a single
+    // surface would leave the other five untested and the bound would look tighter than it is
+    // (claude-review on PR #7728).
     for (int i = 0; i < TimeSeriesReadMetrics.MAX_METER_SETS + 500; i++) {
       final AggregationMetrics metrics = new AggregationMetrics();
       metrics.addSkippedBlock();
-      TimeSeriesReadMetrics.publish(metrics, "db-" + i, "Readings", TimeSeriesReadMetrics.SURFACE_TS_QUERY);
+      TimeSeriesReadMetrics.publish(metrics, "db-" + i, "Readings",
+          TimeSeriesReadMetrics.SURFACES[i % TimeSeriesReadMetrics.SURFACES.length]);
     }
 
     assertThat(TimeSeriesReadMetrics.cachedMeterSetCount())
         .as("the cache must not grow with the number of distinct databases seen")
-        .isLessThanOrEqualTo(TimeSeriesReadMetrics.MAX_METER_SETS + 1);
-    assertThat(Search.in(registry).name("arcadedb.timeseries.read.blocks").tag("db", "other").counters())
-        .as("the overflow tuple absorbs what the ceiling refused to cache").isNotEmpty();
+        .isLessThanOrEqualTo(TimeSeriesReadMetrics.MAX_METER_SETS + TimeSeriesReadMetrics.RESERVED_OVERFLOW_METER_SETS);
+
+    // And the collapse really does keep the surface, which is what that reserved count is paying for: once the
+    // tenant half is given up, which endpoint is doing the reading is the half still worth having.
+    for (final String surface : TimeSeriesReadMetrics.SURFACES) {
+      final AggregationMetrics metrics = new AggregationMetrics();
+      metrics.addSkippedBlock();
+      TimeSeriesReadMetrics.publish(metrics, "db-past-the-ceiling", "Readings", surface);
+      assertThat(Search.in(registry).name("arcadedb.timeseries.read.blocks").tag("db", "other")
+          .tag("surface", surface).counters())
+          .as("the overflow tuple for surface %s absorbs what the ceiling refused to cache", surface)
+          .isNotEmpty();
+    }
   }
 
   private static double blocks(final String database, final String outcome) {

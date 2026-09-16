@@ -61,6 +61,15 @@ public final class TimeSeriesReadMetrics {
   public static final String SURFACE_PROM_SERIES       = "prom-series";
   public static final String SURFACE_GRPC              = "grpc";
 
+  /**
+   * Every value the {@code surface} tag can carry. Enumerated rather than left implicit because it is what
+   * bounds the cache: the collapse keeps the surface and replaces only the db and type halves, so the overflow
+   * tuples are one per surface and the ceiling test has to know how many that is. Package-private so the test
+   * fills the cache across all of them rather than across one.
+   */
+  static final String[] SURFACES = { SURFACE_TS_QUERY, SURFACE_TS_LATEST, SURFACE_GRAFANA,
+      SURFACE_PROM_LABEL_VALUES, SURFACE_PROM_SERIES, SURFACE_GRPC };
+
   private static final String BLOCKS_METER   = "arcadedb.timeseries.read.blocks";
   private static final String PAGES_METER    = "arcadedb.timeseries.read.pages";
   private static final String ROWS_METER     = "arcadedb.timeseries.read.rows";
@@ -77,6 +86,12 @@ public final class TimeSeriesReadMetrics {
   // before anything collapses: the collapse is a backstop, not a routine operating mode. Soft, like the sibling
   // caches: the size test and the computeIfAbsent are not one atomic step.
   static final         int    MAX_METER_SETS = 10_000;
+  // Cache entries the collapse itself can add, above MAX_METER_SETS: the overflow tuple keeps the surface - it
+  // is the half worth keeping, being what distinguishes a slow dashboard from a slow label picker - so there is
+  // one "other|other|<surface>" entry per surface, not one in total. Named for the same reason
+  // MicrometerQueryMetricsRecorder names its RESERVED_* counts: the ceiling and what sits above it are one
+  // number, read by the guard test rather than restated in it (claude-review on PR #7728).
+  static final         int    RESERVED_OVERFLOW_METER_SETS = SURFACES.length;
 
   private static final ConcurrentHashMap<String, MeterSet> METER_SETS = new ConcurrentHashMap<>();
 
@@ -168,7 +183,11 @@ public final class TimeSeriesReadMetrics {
   /**
    * Resolves (and caches) the meters for one {@code db|type|surface} tuple. An already-seen tuple costs one
    * concatenation and one hash lookup; only a miss pays for the bound, and it pays before anything is retained.
-   * Recurses at most once, because the collapsed tuple is itself in the bounded set.
+   * <p>
+   * Recurses at most once, because the collapsed tuple is itself cacheable. Note the collapse keeps the
+   * SURFACE, so the cache settles at {@link #MAX_METER_SETS} plus {@link #RESERVED_OVERFLOW_METER_SETS} rather
+   * than plus one: bounded either way, and the extra entries are worth their cost because "which endpoint" is
+   * the half of the tuple an operator still needs once the tenant half has been given up.
    */
   private static MeterSet meterSet(final String database, final String type, final String surface) {
     final String key = database + '|' + type + '|' + surface;
