@@ -80,8 +80,6 @@ import java.util.zip.GZIPInputStream;
  */
 public class PostTimeSeriesWriteHandler extends DatabaseAbstractHandler {
 
-  private String rawPayload;
-
   public PostTimeSeriesWriteHandler(final HttpServer httpServer) {
     super(httpServer);
   }
@@ -106,6 +104,19 @@ public class PostTimeSeriesWriteHandler extends DatabaseAbstractHandler {
     return true;
   }
 
+  /**
+   * Returns the body and keeps NOTHING: the request pipeline attaches the returned text to the exchange under
+   * {@link #RAW_PAYLOAD}, which is where {@link #execute} reads it back.
+   * <p>
+   * This used to assign an instance field, and this handler is a singleton - one instance registered on the
+   * route serves every request. {@code parseRequestPayload} and {@code execute} are two separate calls from
+   * {@code handleRequest}, with authentication, the idempotency reservation and the session resolution in
+   * between, so two concurrent ingests interleaved as: T1 parses body1, T2 overwrites the field with body2, T1
+   * executes and appends T2's samples, T2 executes and appends them again. T1 answered 204 having written the
+   * wrong body and lost its own, with counts computed from that same wrong body so they agreed with
+   * themselves - silent, on the InfluxDB line-protocol ingest path, where concurrent writers are the normal
+   * deployment (issue #7683).
+   */
   @Override
   protected String parseRequestPayload(final HttpServerExchange e) {
     if (!e.isInIoThread() && !e.isBlocking())
@@ -121,22 +132,18 @@ public class PostTimeSeriesWriteHandler extends DatabaseAbstractHandler {
         });
 
     final byte[] rawBytes = bytesRef.get();
-    if (rawBytes == null) {
-      rawPayload = null;
+    if (rawBytes == null)
       return null;
-    }
 
     final var contentEncoding = e.getRequestHeaders().get(Headers.CONTENT_ENCODING);
     if (contentEncoding != null && !contentEncoding.isEmpty() && "gzip".equalsIgnoreCase(contentEncoding.getFirst())) {
       try (final GZIPInputStream gzip = new GZIPInputStream(new ByteArrayInputStream(rawBytes))) {
-        rawPayload = new String(gzip.readAllBytes(), DatabaseFactory.getDefaultCharset());
+        return new String(gzip.readAllBytes(), DatabaseFactory.getDefaultCharset());
       } catch (final IOException ex) {
         throw new IllegalArgumentException("Failed to decompress gzip body: " + ex.getMessage(), ex);
       }
-    } else {
-      rawPayload = new String(rawBytes, DatabaseFactory.getDefaultCharset());
     }
-    return rawPayload;
+    return new String(rawBytes, DatabaseFactory.getDefaultCharset());
   }
 
   @Override
@@ -144,6 +151,10 @@ public class PostTimeSeriesWriteHandler extends DatabaseAbstractHandler {
       final Database db, final JSONObject payload) throws Exception {
 
     final DatabaseInternal database = (DatabaseInternal) db;
+
+    // This request's body, off the exchange rather than off a field shared with every concurrent request
+    // (issue #7683); see parseRequestPayload.
+    final String rawPayload = exchange.getAttachment(RAW_PAYLOAD);
 
     // The read-your-writes bookmark is emitted by DatabaseAbstractHandler, on every return path this method
     // has - including the partial-write 400, whose already-inserted samples are durable (issue #5866) - and,

@@ -36,7 +36,15 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -381,6 +389,69 @@ class Issue7402TimeSeriesHttpSessionIT extends BaseGraphServerTest {
     assertThat(countDocuments(rootAuth(), null))
         .as("the rollback still took the witness, so the transaction was real throughout")
         .isZero();
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  //  One request's body must not be another request's body (issue #7683)
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Issue #7683, folded into this branch because it lives in a method this branch already rewrites.
+   * {@code PostTimeSeriesWriteHandler} used to keep the request body in an INSTANCE field, and the handler is a
+   * singleton registered once on the route. {@code parseRequestPayload} and {@code execute} are two separate
+   * calls from {@code handleRequest} with authentication, the idempotency reservation and the session
+   * resolution in between, so two concurrent ingests could interleave as: T1 parses body1, T2 overwrites the
+   * field with body2, T1 executes and appends T2's samples, T2 executes and appends them again. T1 answered 204
+   * having written the wrong body and lost its own.
+   * <p>
+   * Eight threads release together on a barrier, each posting one sample at a timestamp only it uses, so the
+   * assertion is exact rather than statistical: every timestamp present, exactly once, and no timestamp that
+   * nobody sent. Against the field this fails by losing timestamps and duplicating others; the failure is a set
+   * difference, not a count, so a run that happens not to interleave reports green honestly rather than
+   * flakily red.
+   */
+  @Test
+  void concurrentIngestsDoNotOverwriteEachOthersBodies() throws Exception {
+    seed();
+
+    final int writers = 8;
+    final CyclicBarrier releaseTogether = new CyclicBarrier(writers);
+    final ExecutorService pool = Executors.newFixedThreadPool(writers);
+    try {
+      final List<Callable<Integer>> posts = new ArrayList<>(writers);
+      for (int w = 0; w < writers; w++) {
+        final long timestamp = 100_000L + w;
+        posts.add(() -> {
+          releaseTogether.await(30, TimeUnit.SECONDS);
+          return writeSamples(rootAuth(), null,
+              TYPE + ",location=us-east temperature=" + (w(timestamp)) + " " + timestamp).statusCode();
+        });
+      }
+
+      for (final Future<Integer> answered : pool.invokeAll(posts, 60, TimeUnit.SECONDS))
+        assertThat(answered.get()).as("every concurrent ingest must be accepted").isEqualTo(204);
+    } finally {
+      pool.shutdownNow();
+      assertThat(pool.awaitTermination(30, TimeUnit.SECONDS)).isTrue();
+    }
+
+    final List<Long> expected = new ArrayList<>();
+    for (int w = 0; w < writers; w++)
+      expected.add(100_000L + w);
+
+    final HttpResponse<String> all = post("/ts/" + getDatabaseName() + "/query", rootAuth(), null,
+        new JSONObject().put("type", TYPE).put("from", 100_000).put("to", 200_000).toString(), "application/json");
+    assertThat(all.statusCode()).isEqualTo(200);
+
+    assertThat(timestampsOf(all).toList())
+        .as("#7683: each concurrent body must be appended once and only once - a shared field loses some "
+            + "timestamps and writes others twice")
+        .containsExactlyInAnyOrderElementsOf(expected);
+  }
+
+  /** A distinct temperature per writer, so a body cannot be confused with another by value either. */
+  private static double w(final long timestamp) {
+    return (timestamp - 100_000L) + 0.5;
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
