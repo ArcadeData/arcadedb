@@ -23,8 +23,8 @@ import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
-import java.util.regex.Pattern;
 
 /**
  * Cypher split() function - splits a string by a delimiter.
@@ -72,6 +72,17 @@ public class CypherSplitFunction implements StatelessFunction {
       return characters;
     }
 
-    return List.of(str.split(Pattern.quote(delimiter), -1));
+    // The delimiter is a literal, so it is found with indexOf. String.split(Pattern.quote(delimiter), -1) compiled a
+    // regex on every call, once per row: a quoted pattern never takes String.split's fast path, not even for a
+    // one-character delimiter. The pieces are the ones that call returns - every occurrence, left to right and not
+    // overlapping, with the empty leading, inner and trailing pieces kept.
+    final List<String> pieces = new ArrayList<>();
+    int from = 0;
+    for (int at = str.indexOf(delimiter); at >= 0; at = str.indexOf(delimiter, from)) {
+      pieces.add(str.substring(from, at));
+      from = at + delimiter.length();
+    }
+    pieces.add(str.substring(from));
+    return Collections.unmodifiableList(pieces);
   }
 }
