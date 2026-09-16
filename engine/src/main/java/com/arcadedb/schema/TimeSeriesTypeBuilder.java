@@ -285,6 +285,17 @@ public class TimeSeriesTypeBuilder {
     if (timestampColumn == null)
       throw new SchemaException("TimeSeries type requires a TIMESTAMP column");
 
+    // Negative durations are refused rather than carried: renderCreate() omits both clauses below zero, while
+    // the embedded create() hands the value straight to LocalTimeSeriesType, so the SAME builder body would
+    // produce a type whose getRetentionMs() is the caller's negative number embedded and 0 remotely. Neither is
+    // what the caller asked for, and the difference contradicts the one-body-of-builder-code contract this
+    // builder exists for. Zero keeps its meaning of "no policy" (claude/CodeRabbit review on PR #7692).
+    if (retentionMs < 0)
+      throw new SchemaException("TimeSeries retention cannot be negative, was " + retentionMs + "ms");
+    if (compactionBucketIntervalMs < 0)
+      throw new SchemaException(
+          "TimeSeries compaction bucket interval cannot be negative, was " + compactionBucketIntervalMs + "ms");
+
     // A TimeSeries row is a fixed-stride record and a sealed block column is one of three primitive
     // codecs, so a type with neither a fixed width nor a bounded text form cannot be stored. Declaring
     // one used to be accepted and then corrupted the columns after it in the row (issue #5475).

@@ -295,4 +295,37 @@ class Issue7399TimeSeriesTypeBuilderSQLTest extends TestHelper {
     assertThatThrownBy(() -> builder("UnstorableColumn").withField("blob", Type.BINARY).create())
         .isInstanceOf(SchemaException.class).hasMessageContaining("cannot be used in a TIMESERIES type");
   }
+
+  @Test
+  void aNegativeDurationIsRefusedOnBothPathsRatherThanRenderedAwayOnOne() {
+    // Without the check, this is a silent divergence and not an error: renderCreate() omits a clause that is not
+    // > 0, so the remote path would have stored 0, while the embedded path stores the negative number as given.
+    assertThatThrownBy(() -> builder("NegativeRetention").withField("v", Type.DOUBLE).withRetention(-1L).toSQL())
+        .isInstanceOf(SchemaException.class).hasMessageContaining("retention cannot be negative");
+    assertThatThrownBy(() -> builder("NegativeRetention").withField("v", Type.DOUBLE).withRetention(-1L).create())
+        .isInstanceOf(SchemaException.class).hasMessageContaining("retention cannot be negative");
+
+    assertThatThrownBy(() -> builder("NegativeCompaction").withField("v", Type.DOUBLE)
+        .withCompactionBucketInterval(-1L).toSQL())
+        .isInstanceOf(SchemaException.class).hasMessageContaining("compaction bucket interval cannot be negative");
+    assertThatThrownBy(() -> builder("NegativeCompaction").withField("v", Type.DOUBLE)
+        .withCompactionBucketInterval(-1L).create())
+        .isInstanceOf(SchemaException.class).hasMessageContaining("compaction bucket interval cannot be negative");
+  }
+
+  @Test
+  void zeroKeepsItsMeaningOfNoPolicyOnBothPaths() {
+    // The bound is on NEGATIVE only: zero is how a caller says "no retention, no compaction interval", it is the
+    // field default, and refusing it would break every builder that never names either.
+    final TimeSeriesType created = builder("ZeroDurations").withField("v", Type.DOUBLE)
+        .withRetention(0L).withCompactionBucketInterval(0L).create();
+
+    assertThat(created.getRetentionMs()).isZero();
+    assertThat(created.getCompactionBucketIntervalMs()).isZero();
+
+    final String sql = builder("ZeroDurationsSQL").withField("v", Type.DOUBLE)
+        .withRetention(0L).withCompactionBucketInterval(0L).toSQL().getFirst();
+    assertThat(sql).doesNotContain("RETENTION").doesNotContain("COMPACTION_INTERVAL");
+    assertParses(sql);
+  }
 }
