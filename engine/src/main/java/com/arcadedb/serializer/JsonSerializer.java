@@ -130,6 +130,14 @@ public class JsonSerializer {
       // DATETIME_NANOS / DATETIME_SECOND don't all collapse onto the schema-wide format string. Called for an
       // undeclared property too (with a null type, exactly as serializeResult does), so a java.util.Date always
       // gets the explicit DATE-vs-DATETIME decision rather than JSONObject's class-only dispatch (issue #7638).
+      //
+      // THE UNDECLARED CASE IS A DELIBERATE WIDENING, not a side effect. A java.util.Date on a schemaless property
+      // used to skip this call and reach JSONObject's Date branch, which renders in the JVM's DEFAULT zone; it is
+      // now formatted UTC-anchored like every other Date in the engine. That is what serializeResult() has done
+      // for the same value since #7610, and what the write side does - Type#convertToDate anchors its
+      // LocalDateTime-to-Date conversion to UTC - so the old answer was the outlier: the same document read back
+      // through GET /document/{db}/{rid} and through a query disagreed, and the document one moved with the
+      // machine's time zone. Pinned by Issue7638DateColumnPrecisionTest#anUndeclaredDatePropertyIsAlsoUtcAnchored.
       value = formatTemporalForPrecision(value, type != null && type.existsProperty(p) ? type.getProperty(p).getType() : null,
           schemaDateTimeFormat, schemaDateFormat);
 
