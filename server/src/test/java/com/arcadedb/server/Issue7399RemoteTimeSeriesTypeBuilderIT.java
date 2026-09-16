@@ -144,6 +144,29 @@ class Issue7399RemoteTimeSeriesTypeBuilderIT extends BaseGraphServerTest {
   }
 
   @Test
+  void aTypeBuiltWithNoPrecisionReadsBackAsNullOnBothSides() {
+    // The other tests all declare a precision, so none of them would notice the absent case going wrong - and
+    // "a remote client cannot tell NANOSECOND from the default" is one of the two defects this change fixes.
+    // schema:types omits the key entirely when the type declared none, so what is pinned here is that the omission
+    // reads back as null on the remote side and not as "", and that the embedded side agrees.
+    final TimeSeriesType viaEmbedded = embedded().getSchema().buildTimeSeriesType()
+        .withName("NoPrecisionEmbedded").withTimestamp("ts").withField("value", Type.DOUBLE).withShards(1).create();
+    assertThat(viaEmbedded.getPrecision()).isNull();
+
+    try (final RemoteDatabase database = remote()) {
+      final TimeSeriesType viaRemote = database.getSchema().buildTimeSeriesType()
+          .withName("NoPrecisionRemote").withTimestamp("ts").withField("value", Type.DOUBLE).withShards(1).create();
+      assertThat(viaRemote.getPrecision()).isNull();
+    }
+
+    // And again on a connection whose cache was never told anything, so this is the server's answer.
+    try (final RemoteDatabase database = remote()) {
+      assertThat(((TimeSeriesType) database.getSchema().getType("NoPrecisionRemote")).getPrecision()).isNull();
+      assertThat(((TimeSeriesType) database.getSchema().getType("NoPrecisionEmbedded")).getPrecision()).isNull();
+    }
+  }
+
+  @Test
   void aTypeBuiltRemotelyAcceptsSamples() {
     // A declaration the server stored but cannot ingest into would pass every assertion above. This one writes.
     try (final RemoteDatabase database = remote()) {

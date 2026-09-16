@@ -216,6 +216,16 @@ class Issue7399TimeSeriesTypeBuilderSQLTest extends TestHelper {
   }
 
   @Test
+  void aBuilderThatDeclaresNoPrecisionRendersNoPrecisionClause() {
+    final String sql = builder("NoPrecision").withField("value", Type.DOUBLE).toSQL().getFirst();
+    assertThat(sql).doesNotContain("PRECISION");
+    assertParses(sql);
+
+    // And the type it creates reports none, rather than a default standing in for one that was never declared.
+    assertThat(builder("NoPrecisionCreated").withField("value", Type.DOUBLE).create().getPrecision()).isNull();
+  }
+
+  @Test
   void aPrecisionIsRenderedCaseInsensitively() {
     assertThat(builder("LowerCasePrecision").withField("value", Type.DOUBLE).withPrecision("nanosecond").toSQL().getFirst())
         .contains("PRECISION NANOSECOND");

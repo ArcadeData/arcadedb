@@ -202,7 +202,7 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
     }
 
     // Auto-create: timestamp + tags from labels + one DOUBLE field "value"
-    final TimeSeriesTypeBuilder builder = new TimeSeriesTypeBuilder((DatabaseInternal) database)
+    final TimeSeriesTypeBuilder builder = new TimeSeriesTypeBuilder(database)
         .withName(typeName)
         .withTimestamp("timestamp");
 

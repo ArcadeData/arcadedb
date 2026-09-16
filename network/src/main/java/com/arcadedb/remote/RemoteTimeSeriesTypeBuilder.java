@@ -53,13 +53,22 @@ public class RemoteTimeSeriesTypeBuilder extends TimeSeriesTypeBuilder {
 
     // Sequentially, not as one script: the downsampling ALTER names the type the CREATE just made, and the two are
     // separate statements only because the create grammar has no downsampling clause.
-    for (final String sql : statements)
-      remoteDatabase.command("sql", sql);
+    //
+    // The cache is invalidated in a finally, not after the last statement: when the CREATE succeeds and the ALTER
+    // does not (issue #7689's window), the type EXISTS on the server and the exception is on its way out. Leaving
+    // the cache untouched on that path would have this schema instance answer existsType() with false for a type
+    // that is there, so a caller catching the failure and retrying would get "already exists" from the server with
+    // nothing client-side agreeing.
+    try {
+      for (final String sql : statements)
+        remoteDatabase.command("sql", sql);
+    } finally {
+      schema.invalidateSchema();
+    }
 
     // The type is read back from the server rather than assembled locally, so what the caller gets is the
     // declaration the server actually stored - the resolved shard count included, which is the server's
     // ASYNC_WORKER_THREADS when the builder named none and is therefore not knowable on this side.
-    schema.invalidateSchema();
     final DocumentType created = schema.getType(getName());
     if (!(created instanceof TimeSeriesType timeSeriesType))
       throw new SchemaException(
