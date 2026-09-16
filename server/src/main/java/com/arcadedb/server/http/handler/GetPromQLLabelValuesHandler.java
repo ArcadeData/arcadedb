@@ -19,6 +19,7 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.timeseries.AggregationMetrics;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.engine.timeseries.TimeSeriesGateway;
@@ -28,6 +29,7 @@ import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.monitor.TimeSeriesReadMetrics;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
@@ -47,6 +49,24 @@ public class GetPromQLLabelValuesHandler extends AbstractServerHttpHandler {
 
   public GetPromQLLabelValuesHandler(final HttpServer httpServer) {
     super(httpServer);
+  }
+
+  /**
+   * A full-range scan of every sample of every type the label appears on, so never on an Undertow IO thread
+   * (issue #7722).
+   * <p>
+   * The work is unbounded in the size of the SERIES rather than in the size of the request: the endpoint takes
+   * no bound the caller could narrow, and the {@code start}/{@code end} the Prometheus API defines for it are
+   * accepted and ignored here, so there is no request the server can answer cheaply. An IO thread serves many
+   * connections at once, and the cost of parking one is not paid by the caller whose scan it is - it is paid by
+   * every unrelated connection multiplexed onto the same thread.
+   * <p>
+   * This route is on Grafana's variable-refresh path, so a dashboard with one templated variable issues it on
+   * every load and on every refresh interval.
+   */
+  @Override
+  protected boolean mustExecuteOnWorkerThread() {
+    return true;
   }
 
   @Override
@@ -115,11 +135,21 @@ public class GetPromQLLabelValuesHandler extends AbstractServerHttpHandler {
         // The visitor runs under the shard's read locks (see TimeSeriesRowVisitor): it folds, it does not compute
         // and it never calls back into the engine.
         final TimeSeriesEngine engine = tsType.getEngine();
-        engine.forEachRow(Long.MIN_VALUE, Long.MAX_VALUE, columnIndices, null, null, row -> {
-          if (valueSlot < row.length && row[valueSlot] != null)
-            values.add(row[valueSlot].toString());
-          return true;
-        });
+        // What the scan actually did, published to whatever the server's metrics subsystem feeds (issue #7717):
+        // on this route above all, because whether the sealed layer answers a block from its declared tag values
+        // or has to decompress it is the difference between a label picker that costs nothing and one that reads
+        // the series. null - and therefore free - whenever metrics are off.
+        final AggregationMetrics readMetrics = TimeSeriesReadMetrics.start();
+        try {
+          engine.forEachRow(Long.MIN_VALUE, Long.MAX_VALUE, columnIndices, null, readMetrics, row -> {
+            if (valueSlot < row.length && row[valueSlot] != null)
+              values.add(row[valueSlot].toString());
+            return true;
+          });
+        } finally {
+          TimeSeriesReadMetrics.publish(readMetrics, database.getName(), tsType.getName(),
+              TimeSeriesReadMetrics.SURFACE_PROM_LABEL_VALUES);
+        }
       }
     }
 

@@ -44,6 +44,16 @@ public class GetPromQLQueryRangeHandler extends AbstractServerHttpHandler {
     super(httpServer);
   }
 
+  /**
+   * Evaluates a PromQL expression at every step of a range, so never on an Undertow IO thread (issue #7722),
+   * for the reason {@code GetPromQLQueryHandler} gives at its own override - with strictly more work to do,
+   * since the expression is evaluated once per step rather than once.
+   */
+  @Override
+  protected boolean mustExecuteOnWorkerThread() {
+    return true;
+  }
+
   @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
       final JSONObject payload) throws Exception {

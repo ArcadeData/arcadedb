@@ -820,8 +820,16 @@ public class RemoteHttpComponent extends RWLockContext {
       return new RemoteException("Empty payload received");
     }
 
+    // The server's own sentence FIRST, then the envelope (issue #7716). A refusal the server was careful to
+    // word - which tag did not resolve, which projection member names nothing - used to sit in the middle of a
+    // diagnostic envelope, so an application logging getMessage() led with "Error on executing remote command"
+    // and a caller reading a truncated log line never reached the reason. The envelope is kept: the status code
+    // and the absence of a typed exception are what tell a maintainer this arm was the one taken.
+    final String explanation = reason != null && !reason.isEmpty() ? reason : detail;
     return new RemoteException(
-        "Error on executing remote command '" + operation + "' (httpErrorCode=" + statusCode
+        "Error on executing remote command '" + operation + "'"
+            + (explanation != null && !explanation.isEmpty() ? ": " + explanation : "")
+            + " (httpErrorCode=" + statusCode
             + " httpErrorDescription=" + httpErrorDescription + " reason=" + reason + " detail=" + detail + " exception="
             + exception + ")");
   }

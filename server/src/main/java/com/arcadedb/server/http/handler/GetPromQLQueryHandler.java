@@ -41,6 +41,19 @@ public class GetPromQLQueryHandler extends AbstractServerHttpHandler {
     super(httpServer);
   }
 
+  /**
+   * Evaluates a PromQL expression over the samples it selects, so never on an Undertow IO thread (issue #7722).
+   * <p>
+   * A weaker case than the two discovery endpoints - the bound here is the expression's own range rather than
+   * the whole series - but the same decision: the read is a scan whose size the server does not know before
+   * doing it, and blocking an IO thread on one starves the unrelated connections sharing it. The dispatch costs
+   * a hand-off on a path whose answer takes a scan anyway.
+   */
+  @Override
+  protected boolean mustExecuteOnWorkerThread() {
+    return true;
+  }
+
   @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
       final JSONObject payload) throws Exception {

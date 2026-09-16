@@ -37,6 +37,7 @@ import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.timeseries.AggregationMetrics;
 import com.arcadedb.engine.timeseries.AggregationType;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.LineProtocolParser.Sample;
@@ -76,6 +77,7 @@ import com.arcadedb.server.grpc.InsertOptions.TransactionMode;
 import com.arcadedb.server.grpc.ProjectionSettings.ProjectionEncoding;
 import com.arcadedb.server.monitor.QueryProfile;
 import com.arcadedb.server.monitor.ServerQueryProfiler;
+import com.arcadedb.server.monitor.TimeSeriesReadMetrics;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -3660,6 +3662,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       if (columnIndex < 0)
         throw Status.INVALID_ARGUMENT
             .withDescription("Field '" + request.getField() + "' not found in type").asRuntimeException();
+      try {
+        // Refused here rather than inside the engine, where it used to surface as zeros before compaction and an
+        // internal error after it (issue #7725). Rendered as INVALID_ARGUMENT, the same status the two refusals
+        // around it use, so a client reads one contract for a request it stated wrong.
+        TimeSeriesGateway.requireAggregatableColumn(columns.get(columnIndex), type);
+      } catch (final IllegalArgumentException e) {
+        throw Status.INVALID_ARGUMENT.withDescription(e.getMessage()).asRuntimeException();
+      }
 
       // Same default alias as the HTTP endpoint, so the two protocols name the same computed column alike.
       final String alias = request.getAlias().isEmpty()
@@ -3669,12 +3679,26 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       aliases.add(alias);
     }
 
-    final MultiColumnAggregationResult result = engine.aggregateMulti(fromTs, toTs, requests,
-        aggregation.getBucketIntervalMs(), tagFilter);
-    final List<Long> timestamps = result.getBucketTimestamps();
-
     final int configuredMax = serverConfiguration().getValueAsInteger(
         GlobalConfiguration.SERVER_GRPC_TIMESERIES_MAX_RESULT_ROWS);
+
+    // What the read actually did, published to whatever the server's metrics subsystem feeds (issue #7717).
+    // null - and therefore free - whenever metrics are off.
+    final AggregationMetrics readMetrics = TimeSeriesReadMetrics.start();
+
+    // The ceiling is carried INTO the scan, so a request that will be refused stops costing the whole range
+    // first (issue #7724). The engine stops one block past the ceiling, which leaves a result the check below
+    // necessarily refuses - it is over the ceiling by construction - so the refusal and its wording are
+    // unchanged and only its price differs.
+    final MultiColumnAggregationResult result;
+    try {
+      result = engine.aggregateMulti(fromTs, toTs, requests, aggregation.getBucketIntervalMs(), tagFilter,
+          readMetrics, configuredMax);
+    } finally {
+      TimeSeriesReadMetrics.publish(readMetrics, req.getDatabase(), req.getType(), TimeSeriesReadMetrics.SURFACE_GRPC);
+    }
+    final List<Long> timestamps = result.getBucketTimestamps();
+
     if (configuredMax > 0 && timestamps.size() > configuredMax)
       throw timeSeriesCeilingExceeded("the aggregation produced " + timestamps.size() + " buckets, more than the "
           + "maximum of " + configuredMax, "widen bucket_interval_ms or narrow the time range");

@@ -19,6 +19,7 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.timeseries.AggregationMetrics;
 import com.arcadedb.engine.timeseries.AggregationType;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.MultiColumnAggregationRequest;
@@ -33,6 +34,7 @@ import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.monitor.TimeSeriesReadMetrics;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
@@ -183,7 +185,8 @@ public class PostGrafanaQueryHandler extends AbstractServerHttpHandler {
     }
 
     if (!target.isNull("aggregation"))
-      return executeAggregation(target, targetPath, engine, columns, fromTs, toTs, maxDataPoints, tagFilter);
+      return executeAggregation(target, targetPath, engine, database.getName(), typeName, columns, fromTs, toTs,
+          maxDataPoints, tagFilter);
 
     return executeRawQuery(target, targetPath, engine, columns, fromTs, toTs, tagFilter);
   }
@@ -242,7 +245,8 @@ public class PostGrafanaQueryHandler extends AbstractServerHttpHandler {
   }
 
   private JSONObject executeAggregation(final JSONObject target, final String targetPath,
-      final TimeSeriesEngine engine, final List<ColumnDefinition> columns, final long fromTs, final long toTs,
+      final TimeSeriesEngine engine, final String databaseName, final String typeName,
+      final List<ColumnDefinition> columns, final long fromTs, final long toTs,
       final int maxDataPoints, final TagFilter tagFilter) throws Exception {
 
     final String aggPath = targetPath + ".aggregation";
@@ -282,6 +286,10 @@ public class PostGrafanaQueryHandler extends AbstractServerHttpHandler {
         final int colIndex = TimeSeriesHandlerUtils.findColumnIndex(fieldName, columns);
         if (colIndex < 0)
           return buildErrorFrame("Field '" + fieldName + "' not found in type");
+        // Refused here rather than inside the engine, where it used to surface as zeros before compaction and a
+        // 500 after it (issue #7725). Inside the try on purpose: this is a statement about the REQUEST, so it
+        // belongs in the error frame with the other caller mistakes above.
+        TimeSeriesGateway.requireAggregatableColumn(columns.get(colIndex), aggType);
 
         requests.add(new MultiColumnAggregationRequest(colIndex, aggType, alias));
         aliases.add(alias);
@@ -290,10 +298,27 @@ public class PostGrafanaQueryHandler extends AbstractServerHttpHandler {
       return buildErrorFrame(e.getMessage());
     }
 
-    final MultiColumnAggregationResult aggResult = engine.aggregateMulti(fromTs, toTs, requests, bucketInterval,
-        tagFilter);
+    // The hard ceiling every other read surface enforces (issue #5719), on the one branch that had no bound of
+    // its own: this route reads no 'limit', and a small 'bucketInterval' over a wide range produces one frame
+    // row per bucket. Carried INTO the scan rather than checked only on its result, so a request that will be
+    // refused stops costing the whole range first (issue #7724) - the engine stops one block past the ceiling,
+    // which leaves a result the check below necessarily refuses.
+    final int maxResultRows = getMaxResultRows();
+
+    // What the read actually did, published to whatever the server's metrics subsystem feeds (issue #7717).
+    // null - and therefore free - whenever metrics are off.
+    final AggregationMetrics readMetrics = TimeSeriesReadMetrics.start();
+    final MultiColumnAggregationResult aggResult;
+    try {
+      aggResult = engine.aggregateMulti(fromTs, toTs, requests, bucketInterval, tagFilter, readMetrics, maxResultRows);
+    } finally {
+      TimeSeriesReadMetrics.publish(readMetrics, databaseName, typeName, TimeSeriesReadMetrics.SURFACE_GRAFANA);
+    }
 
     final List<Long> timestamps = aggResult.getBucketTimestamps();
+
+    if (maxResultRows > 0 && timestamps.size() > maxResultRows)
+      throw resultSetTooLarge(maxResultRows);
 
     // Schema: time + one field per aggregation
     final JSONArray schemaFields = new JSONArray();
