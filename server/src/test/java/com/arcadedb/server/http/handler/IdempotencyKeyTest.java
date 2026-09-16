@@ -87,4 +87,55 @@ class IdempotencyKeyTest {
     final String k = AbstractServerHttpHandler.buildIdempotencyKey("abc", "POST", "/api/v1/begin/dbA", "dbA", null);
     assertThat(k).hasSize(64);
   }
+
+  /**
+   * Issue #7704: a route whose body is BYTES binds to it exactly as a text route binds to its string. The binary
+   * routes ({@code /prom/write}, {@code /prom/read}) return {@code null} for the string payload by construction,
+   * so before the byte arm existed their key was the request id, method, path and database and nothing else - and
+   * two remote-write requests carrying different samples under one {@code X-Request-Id} replayed each other.
+   */
+  @Test
+  void sameRequestIdDifferentBinaryBodyProducesDifferentKey() {
+    final String k1 = AbstractServerHttpHandler.buildIdempotencyKey("abc", "POST", "/api/v1/ts/dbA/prom/write", "dbA",
+        null, new byte[] { 1, 2, 3 });
+    final String k2 = AbstractServerHttpHandler.buildIdempotencyKey("abc", "POST", "/api/v1/ts/dbA/prom/write", "dbA",
+        null, new byte[] { 1, 2, 4 });
+    assertThat(k1).isNotEqualTo(k2);
+  }
+
+  /** The same bytes are the same request, which is the retry the cache exists for. */
+  @Test
+  void anIdenticalBinaryBodyProducesTheSameKey() {
+    final String k1 = AbstractServerHttpHandler.buildIdempotencyKey("abc", "POST", "/api/v1/ts/dbA/prom/write", "dbA",
+        null, new byte[] { 9, 9, 9 });
+    final String k2 = AbstractServerHttpHandler.buildIdempotencyKey("abc", "POST", "/api/v1/ts/dbA/prom/write", "dbA",
+        null, new byte[] { 9, 9, 9 });
+    assertThat(k1).isEqualTo(k2);
+  }
+
+  /**
+   * An empty byte body hashes as no body, which is the same treatment the text arm gives an empty string. Nothing
+   * downstream distinguishes the two - an empty remote_write is answered 204 without reaching the engine - so the
+   * digest does not pretend to either.
+   */
+  @Test
+  void anEmptyBinaryBodyHashesAsNoBody() {
+    final String absent = AbstractServerHttpHandler.buildIdempotencyKey("abc", "POST", "/api/v1/ts/dbA/prom/write",
+        "dbA", null, null);
+    final String empty = AbstractServerHttpHandler.buildIdempotencyKey("abc", "POST", "/api/v1/ts/dbA/prom/write",
+        "dbA", null, new byte[0]);
+    assertThat(absent).isEqualTo(empty);
+  }
+
+  /**
+   * The two body forms cannot be confused for each other: a text body and a byte body carrying the same bytes are
+   * two different requests, which is what the separator between the arms is for.
+   */
+  @Test
+  void aTextBodyAndAByteBodyOfTheSameBytesAreDifferentKeys() {
+    final String text = AbstractServerHttpHandler.buildIdempotencyKey("abc", "POST", "/p", "dbA", "AB", null);
+    final String binary = AbstractServerHttpHandler.buildIdempotencyKey("abc", "POST", "/p", "dbA", null,
+        new byte[] { 'A', 'B' });
+    assertThat(text).isNotEqualTo(binary);
+  }
 }

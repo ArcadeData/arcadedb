@@ -32,6 +32,7 @@ import com.arcadedb.server.monitor.TimeSeriesReadMetrics;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Deque;
@@ -67,12 +68,11 @@ public class GetPromQLLabelValuesHandler extends DatabaseAbstractHandler {
   }
 
   /**
-   * A full-range scan of every sample of every type the label appears on, so never on an Undertow IO thread
-   * (issue #7722).
+   * A scan of every sample of every type the label appears on, so never on an Undertow IO thread (issue #7722).
    * <p>
-   * The work is unbounded in the size of the SERIES rather than in the size of the request: the endpoint takes
-   * no bound the caller could narrow, and the {@code start}/{@code end} the Prometheus API defines for it are
-   * accepted and ignored here, so there is no request the server can answer cheaply. An IO thread serves many
+   * The work is unbounded in the size of the SERIES rather than in the size of the request: {@code start}/{@code
+   * end} narrow it since issue #7709, but they are optional and the request Grafana's variable refresh sends
+   * carries neither, so the server still has to be able to answer the whole-series one. An IO thread serves many
    * connections at once, and the cost of parking one is not paid by the caller whose scan it is - it is paid by
    * every unrelated connection multiplexed onto the same thread.
    * <p>
@@ -100,13 +100,46 @@ public class GetPromQLLabelValuesHandler extends DatabaseAbstractHandler {
     final String labelName = nameParam.getFirst();
     final DatabaseInternal database = (DatabaseInternal) db;
 
+    // Prometheus documents this endpoint as answering "in the specified time range", and it used to read neither
+    // bound - so a Grafana picker scoped to the last hour was offered every value the type had ever held that
+    // retention had not yet expired, and the sibling /series endpoint, which does read them, disagreed with this
+    // one about what a range means (issue #7709). Both are optional, and absent they mean the whole series, which
+    // is what every request sent before this change was.
+    //
+    // Parsed with the range endpoint's own parser rather than a second Double.parseDouble: it refuses a
+    // non-finite or out-of-epoch value as well as an unparseable one, which is the bound issue #6807 added, and
+    // a discovery endpoint has no reason to accept a `start` the query endpoints reject.
+    final String startStr = getQueryParameter(exchange, "start");
+    final String endStr = getQueryParameter(exchange, "end");
+    final long startMs;
+    final long endMs;
+    try {
+      startMs = startStr != null && !startStr.isBlank()
+          ? GetPromQLQueryRangeHandler.parseTimestampMs("start", startStr) : Long.MIN_VALUE;
+      endMs = endStr != null && !endStr.isBlank()
+          ? GetPromQLQueryRangeHandler.parseTimestampMs("end", endStr) : Long.MAX_VALUE;
+    } catch (final IllegalArgumentException e) {
+      return new ExecutionResponse(400, PromQLResponseFormatter.formatError("bad_data", e.getMessage()));
+    }
+    // A range the caller inverted selects nothing, and saying so is cheaper and clearer than answering an empty
+    // list for a request that cannot have been meant.
+    if (startMs > endMs)
+      return new ExecutionResponse(400,
+          PromQLResponseFormatter.formatError("bad_data", "end timestamp must not be before start timestamp"));
+
+    final boolean rangeRequested = startMs != Long.MIN_VALUE || endMs != Long.MAX_VALUE;
+
     final Set<String> values = new LinkedHashSet<>();
 
     if ("__name__".equals(labelName)) {
-      // Return all TimeSeries type names
+      // Return the TimeSeries type names, which are the metric names.
       for (final DocumentType type : database.getSchema().getTypes())
         if (type instanceof LocalTimeSeriesType tsType && tsType.getEngine() != null
-            && SecurityHelper.canAccessType(database, tsType, SecurityDatabaseUser.ACCESS.READ_RECORD))
+            && SecurityHelper.canAccessType(database, tsType, SecurityDatabaseUser.ACCESS.READ_RECORD)
+            // A metric with no sample in the window is not a metric the range carries. Asked only when a bound
+            // was actually sent: an unscoped request must keep naming every type, a type holding no sample at
+            // all included, which is what it answered before the bounds existed.
+            && (!rangeRequested || hasSamplesInRange(database, tsType, startMs, endMs)))
           // A metric the caller cannot read must not be named back to it.
           values.add(type.getName());
     } else {
@@ -136,6 +169,10 @@ public class GetPromQLLabelValuesHandler extends DatabaseAbstractHandler {
         // Grafana picker, not a free win. The mutable bucket has no declaration and is still scanned, on the same
         // one-column projection issue #7371 introduced, but it is bounded by the compaction interval.
         //
+        // The range narrows all of that further and costs nothing extra (issue #7709): a block outside
+        // [startMs, endMs] is dropped on its directory entry, a block inside it still answers from its
+        // declaration, and only the at most two blocks that straddle a bound are decompressed and filtered per row.
+        //
         // What the read actually did, published to whatever the server's metrics subsystem feeds (issue #7717):
         // on this route above all, because the ratio of blocks answered from a declaration to blocks that had to
         // be decompressed is exactly what says whether the push-down issue #7660 added is working for a given
@@ -143,7 +180,7 @@ public class GetPromQLLabelValuesHandler extends DatabaseAbstractHandler {
         // off.
         final AggregationMetrics readMetrics = TimeSeriesReadMetrics.start();
         try {
-          tsType.getEngine().collectDistinctTagValues(labelName, values, readMetrics);
+          tsType.getEngine().collectDistinctTagValues(labelName, startMs, endMs, values, readMetrics);
         } finally {
           TimeSeriesReadMetrics.publish(readMetrics, database.getName(), tsType.getName(),
               TimeSeriesReadMetrics.SURFACE_PROM_LABEL_VALUES);
@@ -160,6 +197,21 @@ public class GetPromQLLabelValuesHandler extends DatabaseAbstractHandler {
     final List<String> sorted = new ArrayList<>(values);
     Collections.sort(sorted);
     return new ExecutionResponse(200, PromQLResponseFormatter.formatLabelsResponse(sorted));
+  }
+
+  /**
+   * Whether this metric carries a sample in the requested window (issue #7709), counted into the same read
+   * metrics as every other read on this route so an operator sees what the probe cost.
+   */
+  private static boolean hasSamplesInRange(final DatabaseInternal database, final LocalTimeSeriesType tsType,
+      final long startMs, final long endMs) throws IOException {
+    final AggregationMetrics readMetrics = TimeSeriesReadMetrics.start();
+    try {
+      return tsType.getEngine().hasRowsInRange(startMs, endMs, readMetrics);
+    } finally {
+      TimeSeriesReadMetrics.publish(readMetrics, database.getName(), tsType.getName(),
+          TimeSeriesReadMetrics.SURFACE_PROM_LABEL_VALUES);
+    }
   }
 
   /** Whether the type declares a TAG column with this name. A FIELD of the same name is not a label. */
