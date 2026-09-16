@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.exception.InvalidPropertyTypeException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -45,6 +46,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * same check, silently storing a value no other openCypher write clause accepts. These tests pin CREATE and MERGE's
  * creation branch to the same behaviour as SET/MERGE's SET actions, for both a literal map and a parameter-sourced
  * one.
+ * <p>
+ * Every refusal below is asserted on the thrown exception itself rather than on its {@code .rootCause()}: since
+ * #7729 it is an {@link InvalidPropertyTypeException}, a {@code CommandExecutionException} the openCypher engine
+ * rethrows unchanged instead of wrapping, so the diagnosis IS the outermost throwable - which is exactly what makes
+ * it reach a Bolt or HTTP client rather than only the server log.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -74,7 +80,7 @@ class CypherMapPropertyConsistencyIssue7629Test {
 
     assertThatThrownBy(() -> database.transaction(
         () -> database.command("opencypher", "CREATE (n:R {id: 1, m: $m})", Map.of("m", mapValue))))
-        .rootCause()
+        .isInstanceOf(InvalidPropertyTypeException.class) // outermost, not a cause: see the class javadoc
         .hasMessageContaining("TypeError: InvalidPropertyType");
 
     assertThat(database.query("opencypher", "MATCH (n:R) RETURN n").hasNext()).isFalse();
@@ -84,7 +90,7 @@ class CypherMapPropertyConsistencyIssue7629Test {
   void createRejectsALiteralNestedMapProperty() {
     assertThatThrownBy(() -> database.transaction(
         () -> database.command("opencypher", "CREATE (n:R {id: 1, m: {nested: 1}})")))
-        .rootCause()
+        .isInstanceOf(InvalidPropertyTypeException.class) // outermost, not a cause: see the class javadoc
         .hasMessageContaining("TypeError: InvalidPropertyType");
   }
 
@@ -94,7 +100,7 @@ class CypherMapPropertyConsistencyIssue7629Test {
 
     assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher",
         "MATCH (a:R {id: 1}), (b:R {id: 2}) CREATE (a)-[r:REL {m: $m}]->(b)", Map.of("m", Map.of("k", 1)))))
-        .rootCause()
+        .isInstanceOf(InvalidPropertyTypeException.class) // outermost, not a cause: see the class javadoc
         .hasMessageContaining("TypeError: InvalidPropertyType");
   }
 
@@ -109,7 +115,7 @@ class CypherMapPropertyConsistencyIssue7629Test {
 
     assertThatThrownBy(() -> database.transaction(
         () -> database.command("opencypher", "CREATE (n:R $props)", Map.of("props", props))))
-        .rootCause()
+        .isInstanceOf(InvalidPropertyTypeException.class) // outermost, not a cause: see the class javadoc
         .hasMessageContaining("TypeError: InvalidPropertyType");
 
     assertThat(database.query("opencypher", "MATCH (n:R) RETURN n").hasNext()).isFalse();
@@ -124,7 +130,7 @@ class CypherMapPropertyConsistencyIssue7629Test {
 
     assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher",
         "MATCH (a:R {id: 1}), (b:R {id: 2}) CREATE (a)-[r:REL $props]->(b)", Map.of("props", props))))
-        .rootCause()
+        .isInstanceOf(InvalidPropertyTypeException.class) // outermost, not a cause: see the class javadoc
         .hasMessageContaining("TypeError: InvalidPropertyType");
   }
 
@@ -143,7 +149,7 @@ class CypherMapPropertyConsistencyIssue7629Test {
   void createRejectsAListContainingAMapParameter() {
     assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher",
         "CREATE (n:R {id: 1, tags: $tags})", Map.of("tags", List.of(Map.of("k", 1))))))
-        .rootCause()
+        .isInstanceOf(InvalidPropertyTypeException.class) // outermost, not a cause: see the class javadoc
         .hasMessageContaining("TypeError: InvalidPropertyType");
 
     assertThat(database.query("opencypher", "MATCH (n:R) RETURN n").hasNext()).isFalse();
@@ -198,7 +204,7 @@ class CypherMapPropertyConsistencyIssue7629Test {
   void createRejectsAPointShapedMapSmugglingANestedMap() {
     assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher",
         "CREATE (n:R {id: 1, loc: {x: 1, y: 2, crs: 'cartesian', payload: {secret: 1}}})")))
-        .rootCause()
+        .isInstanceOf(InvalidPropertyTypeException.class) // outermost, not a cause: see the class javadoc
         .hasMessageContaining("TypeError: InvalidPropertyType");
   }
 
@@ -218,7 +224,7 @@ class CypherMapPropertyConsistencyIssue7629Test {
   void mergeCreationBranchRejectsAMapValuedParameterProperty() {
     assertThatThrownBy(() -> database.transaction(
         () -> database.command("opencypher", "MERGE (n:R {id: 1, m: $m})", Map.of("m", Map.of("k", 1)))))
-        .rootCause()
+        .isInstanceOf(InvalidPropertyTypeException.class) // outermost, not a cause: see the class javadoc
         .hasMessageContaining("TypeError: InvalidPropertyType");
 
     assertThat(database.query("opencypher", "MATCH (n:R) RETURN n").hasNext()).isFalse();
@@ -230,7 +236,7 @@ class CypherMapPropertyConsistencyIssue7629Test {
 
     assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher",
         "MATCH (a:R {id: 1}), (b:R {id: 2}) MERGE (a)-[r:REL {m: $m}]->(b)", Map.of("m", Map.of("k", 1)))))
-        .rootCause()
+        .isInstanceOf(InvalidPropertyTypeException.class) // outermost, not a cause: see the class javadoc
         .hasMessageContaining("TypeError: InvalidPropertyType");
   }
 
@@ -300,7 +306,7 @@ class CypherMapPropertyConsistencyIssue7629Test {
     final Map<String, Object> mapValue = Map.of("k", 1, "nested", Map.of("deep", true));
     assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher",
         "MATCH (n:R {id: 1}) SET n += $p", Map.of("p", Map.of("m", mapValue)))))
-        .rootCause()
+        .isInstanceOf(InvalidPropertyTypeException.class) // outermost, not a cause: see the class javadoc
         .hasMessageContaining("TypeError: InvalidPropertyType");
 
     // Scalars in the same parameter map still work, matching the reported repro's earlier successful step.

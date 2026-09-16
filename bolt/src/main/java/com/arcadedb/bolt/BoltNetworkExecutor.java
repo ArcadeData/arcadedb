@@ -45,6 +45,7 @@ import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.InvalidPropertyTypeException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.Index;
@@ -1925,7 +1926,9 @@ public class BoltNetworkExecutor extends Thread {
    * {@code ConcurrentModificationException} or a {@code LockTimeoutException}) map to a Neo4j
    * transient status so managed-transaction drivers auto-retry; an {@link ArithmeticErrorException}
    * (64-bit overflow, division by zero) maps to Neo4j's ArithmeticError so a driver reports the caller's
-   * values rather than a server fault (issue #5602); a {@link DuplicatedKeyException} (unique-index
+   * values rather than a server fault (issue #5602); an {@link InvalidPropertyTypeException} (a map, or a list
+   * containing one, asked to be stored in a property) maps to Neo4j's own TypeError for that refusal, which is a
+   * client error however it was reached - by a map literal or by copying a value SQL had stored (issue #7729); a {@link DuplicatedKeyException} (unique-index
    * violation) and a {@link SecurityException} (permission denial) are both permanent client errors,
    * so they must not fall into DatabaseError, which a driver's retry policy reads as "safe to retry";
    * a {@link TimeoutException} (a query/statement deadline, not the retryable
@@ -1939,6 +1942,8 @@ public class BoltNetworkExecutor extends Thread {
       return BoltErrorCodes.TRANSIENT_CONFLICT_ERROR;
     if (isArithmeticError(error))
       return BoltErrorCodes.ARITHMETIC_ERROR;
+    if (CauseChain.contains(error, InvalidPropertyTypeException.class))
+      return BoltErrorCodes.TYPE_ERROR;
     if (CauseChain.contains(error, DuplicatedKeyException.class))
       return BoltErrorCodes.CONSTRAINT_VIOLATION_ERROR;
     if (CauseChain.contains(error, SecurityException.class))

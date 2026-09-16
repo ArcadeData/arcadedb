@@ -95,6 +95,11 @@ class ErrorCategoryTest {
     assertThat(ErrorCategory.of(new ValidationException("mandatory property"))).isEqualTo(ErrorCategory.VALIDATION);
     assertThat(ErrorCategory.of(new IllegalArgumentException("bad parameter"))).isEqualTo(ErrorCategory.VALIDATION);
     assertThat(ErrorCategory.of(new QueryNotIdempotentException("writes on a query"))).isEqualTo(ErrorCategory.VALIDATION);
+    // Issue #7729: it extends CommandExecutionException, so without its own arm it would fall through to SERVER and
+    // every wire protocol would report a client type error as the server's fault. It answered VALIDATION as an
+    // IllegalArgumentException before it had a type of its own; that verdict has to survive the change.
+    assertThat(ErrorCategory.of(new InvalidPropertyTypeException("Property values can not be maps")))
+        .isEqualTo(ErrorCategory.VALIDATION);
     assertThat(ErrorCategory.of(new CommandParsingException("bad syntax"))).isEqualTo(ErrorCategory.PARSING);
     assertThat(ErrorCategory.of(new CommandSQLParsingException("bad syntax"))).isEqualTo(ErrorCategory.PARSING);
     assertThat(ErrorCategory.of(new TimeoutException("too slow"))).isEqualTo(ErrorCategory.TIMEOUT);

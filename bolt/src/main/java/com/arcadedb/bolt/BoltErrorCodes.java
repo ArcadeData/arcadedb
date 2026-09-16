@@ -42,6 +42,12 @@ public final class BoltErrorCodes {
   // caller supplied have no representable answer, which Neo4j reports as a client error - not the generic
   // DatabaseError a driver would surface as "the server broke". See issue #5602.
   public static final String ARITHMETIC_ERROR      = "Neo.ClientError.Statement.ArithmeticError";
+  // A value a property cannot hold - openCypher refuses a map, or a list containing one, exactly as Neo4j does with
+  // "Property values can only be of primitive types or arrays thereof". The statement is fine and so is the server;
+  // the value the caller asked to store is not storable, which Neo4j reports under this title. Without it the
+  // refusal reached a driver as the generic DatabaseError it reads as an unexplained server fault, and the reporter
+  // of issue #7629 saw exactly that. See issues #7629 and #7729.
+  public static final String TYPE_ERROR            = "Neo.ClientError.Statement.TypeError";
 
   // Transaction errors
   public static final String TRANSACTION_ERROR = "Neo.ClientError.Transaction.TransactionNotFound";

@@ -18,10 +18,14 @@
  */
 package com.arcadedb.query.opencypher.executor;
 
+import com.arcadedb.database.Document;
+import com.arcadedb.exception.InvalidPropertyTypeException;
+import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 
 import java.util.List;
 import java.util.Map;
+import java.util.StringJoiner;
 
 /**
  * Comparisons and validation shared by every openCypher write clause (CREATE, MERGE, SET) between a value stored on
@@ -30,6 +34,15 @@ import java.util.Map;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class CypherValues {
+  /** How many of a refused map's keys a message names before it stops; see {@link #describeKeys}. */
+  private static final int MAX_DESCRIBED_KEYS = 5;
+
+  /** How long an expression's text may be before a message stops naming it; see {@link #namesAValue}. */
+  private static final int MAX_ECHOED_EXPRESSION_LENGTH = 100;
+
+  /** How much of any one caller-supplied name a message shows; see {@link #describeName}. */
+  private static final int MAX_DESCRIBED_NAME_LENGTH = 40;
+
   private CypherValues() {
   }
 
@@ -68,33 +81,209 @@ public final class CypherValues {
    * {@code MATCH (a) CREATE (b {loc: a.loc})}). The exemption only waives the "is a Map" check on the point-shaped
    * map itself - every one of its own entries is still validated, so a map smuggled in under some other key (e.g.
    * {@code {x: 1, y: 2, crs: 'x', payload: {secret: 1}}}) is still refused.
+   * <p>
+   * The two context arguments are what a refusal needs to be able to name (issue #7729). The message this used to
+   * raise was written for the literal case - {@code SET n.x = {y: 1}} - where the offending value is right there in
+   * the query text. It is just as reachable through a copy: {@code SET t = n} or {@code SET t.m2 = n.m} against a
+   * record whose map property was written by SQL, which is allowed to store one because {@code MAP} is a
+   * first-class ArcadeDB schema type. On those paths the caller wrote no map at all, and "Property values can not
+   * be maps" named neither the property being written nor where the value came from. Both are passed raw rather
+   * than pre-rendered, and are read only on the failure path: a property write is a hot path and must not pay for a
+   * message no one will ever see.
+   *
+   * @param propertyName the property the value was about to be stored under, or null when the caller has no name
+   *                     for it
+   * @param valueOrigin  where the value came from, used only to describe it: a {@link Document} for a value copied
+   *                     off another record, an {@link Expression} for one a query expression produced, a
+   *                     {@link String} for the name of the parameter that supplied it, or null when unknown
    */
-  public static Object coerceAndValidatePropertyValue(final Object value) {
+  public static Object coerceAndValidatePropertyValue(final Object value, final String propertyName,
+      final Object valueOrigin) {
     if (value == null)
       return null; // a null value is a removal (SET) or simply not stored (CREATE/MERGE), not a stored value
     final Object coerced = TemporalUtil.toCoreJavaType(value);
-    validatePropertyValue(coerced);
+    validatePropertyValue(coerced, propertyName, valueOrigin, false);
     return coerced;
   }
 
-  private static void validatePropertyValue(final Object value) {
+  private static void validatePropertyValue(final Object value, final String propertyName, final Object valueOrigin,
+      final boolean insideList) {
     if (value instanceof List) {
       for (final Object element : (List<?>) value) {
         if (element instanceof Map<?, ?> map && isPointShaped(map)) {
-          validatePointEntries(map);
+          validatePointEntries(map, propertyName, valueOrigin, true);
           continue;
         }
-        if (element instanceof Map)
-          throw new IllegalArgumentException("TypeError: InvalidPropertyType - Property values can not contain map values");
+        if (element instanceof Map<?, ?> map)
+          throw new InvalidPropertyTypeException(refusal(map, propertyName, valueOrigin, true));
         if (element instanceof List)
-          validatePropertyValue(element);
+          validatePropertyValue(element, propertyName, valueOrigin, true);
       }
     } else if (value instanceof Map<?, ?> map) {
       if (isPointShaped(map))
-        validatePointEntries(map);
+        validatePointEntries(map, propertyName, valueOrigin, insideList);
       else
-        throw new IllegalArgumentException("TypeError: InvalidPropertyType - Property values can not be maps");
+        throw new InvalidPropertyTypeException(refusal(map, propertyName, valueOrigin, insideList));
     }
+  }
+
+  /**
+   * Builds the refusal message. It answers three questions in order - what rule was broken, which value broke it,
+   * and where that value came from - because the caller may have written none of them: on a copy path the only
+   * thing the query text shows is the two variables.
+   * <p>
+   * The value is described by its keys and not by its contents. Neo4j prints the whole map, but this message
+   * travels to a client and into the server log, and the keys are enough to identify which value was refused
+   * without copying the data itself into either place. The list is capped for the same reason.
+   */
+  private static String refusal(final Map<?, ?> map, final String propertyName, final Object valueOrigin,
+      final boolean insideList) {
+    // No capacity hint: the finished length swings between roughly 120 and 300 characters depending on which
+    // origin clause applies, so any single guess is wrong most of the time, and this runs only on the way to
+    // throwing.
+    final StringBuilder message = new StringBuilder();
+    message.append("TypeError: InvalidPropertyType - Property values can only be of primitive types or arrays thereof. ")
+        .append("Encountered a map ").append(describeKeys(map));
+    if (insideList)
+      message.append(" inside the list");
+    message.append(" assigned to ");
+    if (propertyName != null)
+      message.append("property '").append(describeName(propertyName)).append("'");
+    else
+      message.append("a property");
+
+    if (valueOrigin instanceof Document source && source.getIdentity() != null) {
+      // The one case nothing else explains: the caller named two variables and neither is a map. Say which record
+      // holds the value, and why it was storable in the first place. A record with no identity yet cannot be one
+      // the caller copied FROM, so it names no record rather than the string "null".
+      message.append(", copied from record ").append(source.getIdentity())
+          .append(". ArcadeDB SQL can store a map in a property and openCypher can not, so such a property can be"
+              + " read and returned but never copied into another one");
+    } else if (valueOrigin instanceof Expression expression) {
+      final String text = expression.getText();
+      if (namesAValue(text)) {
+        // A bare parameter reads as one wherever it was written, so "$p" is reported the same way CREATE and MERGE
+        // report it - they resolve it to its name before getting here, SET does not. It is a NAME, so it is bounded
+        // like every other name; an expression is not, and is named whole or not at all, because half an expression
+        // names nothing.
+        if (text.charAt(0) == '$')
+          message.append(", supplied by parameter $").append(describeName(text.substring(1)));
+        else
+          message.append(", produced by the expression ").append(text);
+      }
+    } else if (valueOrigin instanceof String parameterName)
+      message.append(", supplied by parameter $").append(describeName(parameterName));
+
+    return message.append(".").toString();
+  }
+
+  /**
+   * How every caller-supplied name reaches the message: a map key, the property being written, the parameter that
+   * supplied the value. All three are the same kind of text and travel to the same two places, so all three are
+   * bounded and cleaned the same way rather than each clause deciding for itself - which is how the parameter
+   * clause came to be the one that did neither.
+   */
+  private static String describeName(final String name) {
+    return sanitize(abbreviate(name));
+  }
+
+  /**
+   * Caps one name's own length. Bounding how MANY keys a message names is only half the bound: a single name is
+   * caller-supplied text too, and one long enough would carry the same weight into the client response and the
+   * server log that naming every key would.
+   */
+  private static String abbreviate(final String name) {
+    if (name.length() <= MAX_DESCRIBED_NAME_LENGTH)
+      return name;
+    // Never cut between the halves of a surrogate pair: a name holding an astral character would otherwise end in a
+    // lone surrogate, which renders as a replacement character wherever the message is read.
+    final int end = Character.isHighSurrogate(name.charAt(MAX_DESCRIBED_NAME_LENGTH - 1))
+        ? MAX_DESCRIBED_NAME_LENGTH - 1 : MAX_DESCRIBED_NAME_LENGTH;
+    return name.substring(0, end) + "...";
+  }
+
+  /**
+   * Replaces control characters with a space. A property name, a map key and a parameter name are all
+   * caller-supplied text - Cypher's
+   * backtick-quoted identifiers accept a newline inside one - and this message is written to the server log as a
+   * line, so an unescaped newline would let a caller forge log entries below the real one (CWE-117). The expression
+   * clause needs no such treatment: {@link #namesAValue} already admits nothing but letters, digits and
+   * {@code . _ $}.
+   * <p>
+   * Returns the string itself when there is nothing to replace, which is every ordinary identifier, so the common
+   * case allocates nothing beyond what the message already builds.
+   */
+  private static String sanitize(final String text) {
+    for (int i = 0; i < text.length(); i++) {
+      if (breaksALine(text.charAt(i))) {
+        final char[] cleaned = text.toCharArray();
+        for (int j = i; j < cleaned.length; j++)
+          if (breaksALine(cleaned[j]))
+            cleaned[j] = ' ';
+        return new String(cleaned);
+      }
+    }
+    return text;
+  }
+
+  /**
+   * Anything a reader of the log might take for the end of a line. {@link Character#isISOControl} covers the usual
+   * suspects, CR and LF among them, and the C1 range that includes U+0085 NEL; U+2028 and U+2029 are not control
+   * characters by that test but plenty of log viewers and parsers break on them all the same, and a bound that
+   * stops only the breaks one particular reader honours is not a bound.
+   */
+  private static boolean breaksALine(final char c) {
+    return Character.isISOControl(c) || c == '\u2028' || c == '\u2029';
+  }
+
+  /**
+   * Whether an expression's own text may be echoed into the message: only when it NAMES the value rather than
+   * spelling it out - {@code n.m}, {@code n.m.k}, {@code $p}.
+   * <p>
+   * This is a privacy bound, not a tidiness one. The rest of this message deliberately reports a refused map by its
+   * keys and never its contents, because it travels to a client and into the server log; echoing the right-hand
+   * side verbatim would put those contents back, since a map literal's text IS its values -
+   * {@code SET n.x = {password: 'secret'}} would otherwise log the secret. A literal cannot match the shape below,
+   * so it can never be echoed, and nothing is lost by refusing it: for a literal right-hand side the clause would
+   * only repeat query text the caller just wrote, while for every other shape it is the only thing that says where
+   * the value came from.
+   * <p>
+   * Matched by a character walk rather than a regex: this runs while building an exception message from
+   * caller-supplied text, which is the last place to hand a backtracking matcher an unbounded string. The length
+   * cap bounds the clause for the same reason.
+   */
+  private static boolean namesAValue(final String text) {
+    if (text == null || text.isEmpty() || text.length() > MAX_ECHOED_EXPRESSION_LENGTH)
+      return false;
+    final char first = text.charAt(0);
+    if (!Character.isLetter(first) && first != '_' && first != '$')
+      return false;
+    for (int i = 1; i < text.length(); i++) {
+      final char c = text.charAt(i);
+      if (!Character.isLetterOrDigit(c) && c != '_' && c != '.' && c != '$')
+        return false;
+    }
+    return true;
+  }
+
+  /**
+   * At most {@link #MAX_DESCRIBED_KEYS} keys, so a wide map cannot turn one refusal into a page of log. Which keys
+   * those are follows the map's own iteration order: insertion order for a map the parser built, and whatever the
+   * driver's map gives for a bound parameter. The cap is the behaviour worth relying on, not the selection.
+   */
+  private static String describeKeys(final Map<?, ?> map) {
+    if (map.isEmpty())
+      return "with no entries";
+    final StringJoiner keys = new StringJoiner(", ", "[", "]");
+    int described = 0;
+    for (final Object key : map.keySet()) {
+      if (described++ >= MAX_DESCRIBED_KEYS) {
+        keys.add("... " + (map.size() - MAX_DESCRIBED_KEYS) + " more");
+        break;
+      }
+      keys.add(describeName(String.valueOf(key)));
+    }
+    return keys.toString();
   }
 
   /**
@@ -111,8 +300,9 @@ public final class CypherValues {
 
   /** A point-shaped map is exempt as a whole, but its own values are not: this refuses one smuggling a map/list of
    *  maps in under a key {@link #isPointShaped} doesn't look at. */
-  private static void validatePointEntries(final Map<?, ?> map) {
+  private static void validatePointEntries(final Map<?, ?> map, final String propertyName, final Object valueOrigin,
+      final boolean insideList) {
     for (final Object entry : map.values())
-      validatePropertyValue(entry);
+      validatePropertyValue(entry, propertyName, valueOrigin, insideList);
   }
 }
