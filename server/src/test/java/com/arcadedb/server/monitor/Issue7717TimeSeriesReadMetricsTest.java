@@ -44,6 +44,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class Issue7717TimeSeriesReadMetricsTest {
 
+  // ASSUMPTION, stated because it is invisible: this class drives JVM-WIDE state - TimeSeriesReadMetrics'
+  // enabled flag and meter cache, and Micrometer's global registry - which every server IT also toggles by
+  // starting and stopping a real server. That is safe only while no two such classes run concurrently in one
+  // JVM, which holds today because the server module enables no parallel execution. Turning it on would make
+  // this class and those ITs flaky against each other, and the fix then is to give this one a registry and a
+  // gate of its own rather than to loosen its assertions.
+
+
   // One registry for the whole class, attached to the global composite the sink publishes to. Per-test
   // registries would not work: a meter built while one was attached keeps recording into it, so the next test's
   // registry would answer 0 for a counter that had in fact been incremented. Each test uses a database name of
