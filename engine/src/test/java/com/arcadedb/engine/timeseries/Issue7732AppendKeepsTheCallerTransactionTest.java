@@ -27,10 +27,12 @@ import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -102,10 +104,13 @@ class Issue7732AppendKeepsTheCallerTransactionTest extends TestHelper {
 
   private void installFailingCommits(final int failures, final Class<? extends RuntimeException> failWith) {
     final LocalDatabase local = (LocalDatabase) ((DatabaseInternal) database).getEmbedded();
-    final DatabaseInternal real = local.getWrappedDatabaseInstance();
-    local.setWrappedDatabaseInstance((DatabaseInternal) Proxy.newProxyInstance(
-        DatabaseInternal.class.getClassLoader(), new Class<?>[] { DatabaseInternal.class },
-        new FailingCommits(real, failures, failWith)));
+    local.setWrappedDatabaseInstance(failingCommits(local.getWrappedDatabaseInstance(), failures, failWith));
+  }
+
+  private static DatabaseInternal failingCommits(final DatabaseInternal delegate, final int failures,
+      final Class<? extends RuntimeException> failWith) {
+    return (DatabaseInternal) Proxy.newProxyInstance(DatabaseInternal.class.getClassLoader(),
+        new Class<?>[] { DatabaseInternal.class }, new FailingCommits(delegate, failures, failWith));
   }
 
   private TimeSeriesEngine createAll() {
@@ -188,6 +193,49 @@ class Issue7732AppendKeepsTheCallerTransactionTest extends TestHelper {
     } finally {
       database.commit();
     }
+  }
+
+  /**
+   * The third site in {@code TimeSeriesShard}'s constructor: crash recovery, which runs on every open of a shard
+   * whose bucket was left mid-compaction (claude-review on PR #7747). Unlike the two above it commits on
+   * {@code database} rather than on the wrapped instance - a local repair must not be replicated - so the failure
+   * is injected by handing the ENGINE a database whose commit fails, which is where that call resolves from.
+   * <p>
+   * The message assertion is what makes the injection exact: it is the crash-recovery commit that failed and not
+   * some earlier one, or this test would prove nothing about this block.
+   */
+  @Test
+  void aFailedCrashRecoveryCommitLeavesTheCallerTransactionIntact() throws Exception {
+    final List<ColumnDefinition> cols = List.of(
+        new ColumnDefinition("ts", Type.LONG, ColumnDefinition.ColumnRole.TIMESTAMP),
+        new ColumnDefinition("value", Type.DOUBLE, ColumnDefinition.ColumnRole.FIELD));
+    database.getSchema().createDocumentType("Control").createProperty("k", Type.INTEGER);
+
+    database.begin();
+    final TimeSeriesEngine engine = new TimeSeriesEngine((DatabaseInternal) database, "Recovered", cols, 1);
+    database.commit();
+
+    // The state a crash mid-compaction leaves behind, which is what makes the next open run crash recovery.
+    database.begin();
+    engine.getShard(0).getMutableBucket().setCompactionInProgress(true);
+    database.commit();
+
+    database.begin();
+    database.newDocument("Control").set("k", 1).save();
+
+    // A second engine over the same files, as a retried initEngine() builds one: the components are registered,
+    // so nothing but the recovery block commits on the way through.
+    assertThatThrownBy(() -> new TimeSeriesEngine(
+        failingCommits((DatabaseInternal) database, 1, RuntimeException.class), "Recovered", cols, 1))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("Crash recovery failed for shard");
+
+    assertThat(database.isTransactionActive())
+        .as("the recovery's failed commit must not have taken the caller's transaction with it")
+        .isTrue();
+    database.commit();
+
+    assertThat(controlRows()).isEqualTo(1);
   }
 
   /** {@code OwnTransaction} itself: the rollback is a no-op once the commit has taken its transaction away. */

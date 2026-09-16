@@ -47,7 +47,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * whose {@code getTimestampColumn()} and {@code findTimestampColumnIndex()} named different columns.</li>
  * </ol>
  * The fourth item of the issue, {@code RemoteSchema.reload()} keeping a cached type's Java class, is pinned in
- * {@code Issue7740RemoteSchemaReloadKindTest} - it needs a server.
+ * {@code Issue7740RemoteSchemaReloadKindIT} - it needs a server.
  *
  * @see <a href="https://github.com/ArcadeData/arcadedb/issues/7740">issue #7740</a>
  *

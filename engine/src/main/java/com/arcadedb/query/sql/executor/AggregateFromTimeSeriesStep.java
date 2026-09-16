@@ -23,6 +23,7 @@ import com.arcadedb.engine.timeseries.MultiColumnAggregationRequest;
 import com.arcadedb.engine.timeseries.MultiColumnAggregationResult;
 import com.arcadedb.engine.timeseries.TagFilter;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
+import com.arcadedb.engine.timeseries.TimeSeriesNaN;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.LocalTimeSeriesType;
@@ -111,7 +112,17 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
               for (int i = 0; i < requests.size(); i++) {
                 final MultiColumnAggregationRequest req = requests.get(i);
                 final String outputAlias = requestAliasToOutputAlias.getOrDefault(req.alias(), req.alias());
-                row.setProperty(outputAlias, aggResult.getValue(bucketTs, i));
+                final double value = aggResult.getValue(bucketTs, i);
+                // The absent marker becomes SQL NULL at the SQL boundary, exactly as it does on the row path
+                // (FetchFromTimeSeriesStep, issue #7743). The push-down and the generic aggregation answer the
+                // same query, so they cannot spell "this bucket measured nothing" differently: the generic path
+                // has always answered NULL for an AVG or MIN with nothing to average, and a client reading NaN
+                // from one plan and NULL from the other is reading the PLAN, not the data.
+                //
+                // The JSON boundary is unaffected: JSONObject.put(String, Object) already routed the NaN to its
+                // NaN-aware overload and wrote null (issue #7584). This makes the embedded SQL caller see the
+                // same thing the HTTP one always did, without depending on that coupling.
+                row.setProperty(outputAlias, TimeSeriesNaN.isAbsent(value) ? null : value);
               }
               rowCount++;
               return row;
