@@ -72,7 +72,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * transaction at all. {@code TimeSeriesShard.appendSamples} wraps the mutable-bucket write in its own
  * {@code db.begin()}/{@code db.commit()}, and an ArcadeDB nested transaction is an independent transaction
  * rather than a savepoint, so the sample is already committed and already global.
- * {@link #timeSeriesAppendsAreNotPartOfTheEnclosingTransaction} measures exactly that, and #7410 tracks it.
+ * {@link #timeSeriesAppendsAreNotPartOfTheEnclosingTransaction} measures exactly that. #7410 corrected the
+ * {@code TimeSeriesEngine} javadoc that used to claim the opposite; #7657 tracks whether the behaviour itself
+ * should change.
  * <p>
  * The issue's other premise - that the HTTP routes already bind the session transaction through
  * {@code DatabaseAbstractHandler} - is also not so: all three {@code /api/v1/ts} handlers extend
@@ -477,7 +479,9 @@ class Issue7370GrpcTimeSeriesInTransactionIT extends BaseGraphServerTest {
    * <p>
    * The DOCUMENT insert in the same transaction is the control: it proves the statements ran inside a live
    * transaction that really did roll back, so "the sample survived" cannot be explained by the transaction
-   * never having existed. #7410 tracks the divergence between this and {@code TimeSeriesEngine}'s javadoc.
+   * never having existed. #7410 closed the divergence between this and {@code TimeSeriesEngine}'s javadoc, in
+   * favour of what this test measures; {@code Issue7410AppendTransactionScopeTest} pins the same contract
+   * embedded, at the engine and SQL entry points.
    */
   @Test
   void timeSeriesAppendsAreNotPartOfTheEnclosingTransaction() {
