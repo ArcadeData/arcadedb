@@ -23,6 +23,7 @@ import com.arcadedb.integration.exporter.ExportException;
 import com.arcadedb.integration.exporter.ExporterContext;
 import com.arcadedb.integration.exporter.ExporterSettings;
 import com.arcadedb.integration.importer.ConsoleLogger;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.DateUtils;
 
 import java.io.File;
@@ -31,6 +32,7 @@ import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.logging.Level;
 
 public abstract class AbstractExporterFormat {
   protected final        ExporterSettings  settings;
@@ -82,9 +84,14 @@ public abstract class AbstractExporterFormat {
 
   /**
    * Releases the claim {@link #claimExportFile(File)} took. Always call it from a {@code finally}: a leaked lock
-   * file blocks every later export to that target until an operator removes it by hand.
+   * file blocks every later export to that target until an operator removes it by hand - which is exactly why a
+   * failed delete is logged rather than left silent: the log line is what points an operator at the file to
+   * remove, instead of leaving them to discover the block only on the next export attempt.
    */
   protected final void releaseExportFile(final File lock) {
-    lock.delete();
+    if (!lock.delete())
+      LogManager.instance().log(this, Level.WARNING,
+          "Could not delete the export lock file '%s': later exports to the same target will be refused until it is removed",
+          null, lock);
   }
 }

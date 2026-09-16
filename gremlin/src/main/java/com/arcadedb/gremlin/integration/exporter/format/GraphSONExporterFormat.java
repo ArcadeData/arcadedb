@@ -65,9 +65,11 @@ public class GraphSONExporterFormat extends AbstractExporterFormat {
     if (!exportFile.getParentFile().exists())
       exportFile.getParentFile().mkdirs();
 
-    final ArcadeGraph graph = ArcadeGraph.open(database);
+    // CLAIMED BEFORE THE GRAPH IS OPENED: A REFUSED CLAIM THEN LEAVES NOTHING OPEN TO CLOSE, RATHER THAN LEAKING
+    // AN ArcadeGraph THAT NOTHING IN THIS METHOD EVER CLOSES ON ANY PATH (issue #7644 review)
     final File lock = claimExportFile(exportFile);
     try {
+      final ArcadeGraph graph = ArcadeGraph.open(database);
       try (final FileOutputStream fos = new FileOutputStream(exportFile)) {
         try (final GZIPOutputStream out = new GZIPOutputStream(fos)) {
           graph.io(IoCore.graphson()).writer().create().writeGraph(out, graph);
