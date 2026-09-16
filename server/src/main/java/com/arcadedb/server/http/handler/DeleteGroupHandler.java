@@ -39,6 +39,16 @@ public class DeleteGroupHandler extends AbstractServerHttpHandler {
   }
 
   @Override
+  protected boolean mustExecuteOnWorkerThread() {
+    // deleteGroup() below reaches ServerSecurity.deleteGroupClusterWide() on a replicated database, which
+    // submits a Raft entry and retries with compare-and-set on a superseded change (issue #7621) - an
+    // unbounded wait whose duration is a function of contention rather than a fixed timeout. Running that on
+    // the Undertow IO thread stalls every other connection on the same selector, including kubelet
+    // readiness/liveness probes (issue #7133).
+    return true;
+  }
+
+  @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
       final JSONObject payload) {
     checkRootUser(user);

@@ -302,7 +302,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private volatile boolean                   legacyRaftStorageWarningLogged = false;
   private volatile Thread                    autoJoinThread        = null;
   private volatile LifeCycle.State           forcedStateForTesting = null;
-  private          HealthMonitor             healthMonitor;
+  // Volatile: written on the thread that starts/stops HA, read from an HTTP worker thread via
+  // isCrashLoopEscalated() (issue #7622), same reasoning as raftServer above.
+  private volatile HealthMonitor             healthMonitor;
   // Periodic Raft snapshot/log-purge trigger (issue #5345). Runs on every node, leader and follower
   // alike, because each Ratis server purges its own log against its own snapshot index.
   private          RaftLogCompactionScheduler logCompactionScheduler;
@@ -2849,6 +2851,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       }
     }
     return null;
+  }
+
+  /**
+   * Whether this node's {@link HealthMonitor} has escalated a crash loop and given up automatically
+   * restarting (issue #7622): see {@link HealthMonitor#isCrashLoopEscalated()}. {@code false} when there is
+   * no monitor - HA not yet started, or already stopped.
+   */
+  public boolean isCrashLoopEscalated() {
+    final HealthMonitor monitor = healthMonitor;
+    return monitor != null && monitor.isCrashLoopEscalated();
   }
 
   /**

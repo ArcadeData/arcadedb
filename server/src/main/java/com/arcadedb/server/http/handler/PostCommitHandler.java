@@ -35,6 +35,15 @@ public class PostCommitHandler extends DatabaseAbstractHandler {
   }
 
   @Override
+  protected boolean mustExecuteOnWorkerThread() {
+    // database.commit() below waits for the commit to be published (issue #7621): on a replicated database
+    // that is a Raft round-trip, and it is on the data path rather than an admin one, so it is reachable far
+    // more often than the cluster-admin handlers issue #7133 fixed. Running that wait on the Undertow IO
+    // thread stalls every other connection on the same selector, including kubelet readiness/liveness probes.
+    return true;
+  }
+
+  @Override
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database,
       final JSONObject payload) throws IOException {
     // Guard with isTransactionActive() so a retried /commit whose session was already removed by the first

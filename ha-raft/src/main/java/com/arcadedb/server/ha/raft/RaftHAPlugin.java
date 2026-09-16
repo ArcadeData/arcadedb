@@ -497,6 +497,12 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   }
 
   @Override
+  public boolean isCrashLoopEscalated() {
+    final RaftHAServer s = raftHAServer;
+    return s != null && s.isCrashLoopEscalated();
+  }
+
+  @Override
   public String getClusterToken() {
     return raftHAServer != null ? raftHAServer.getClusterToken() : null;
   }

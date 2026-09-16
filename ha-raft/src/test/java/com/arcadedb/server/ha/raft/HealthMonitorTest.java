@@ -497,6 +497,42 @@ class HealthMonitorTest {
   }
 
   @Test
+  void crashLoopEscalatedFlagTracksGiveUpAndClearsOnRecovery() {
+    // issue #7622: isCrashLoopEscalated() is what RaftHAServer/ServerControlPlane.isLive() consult to fail
+    // the Kubernetes liveness probe once the monitor has given up, so it must flip exactly when the give-up
+    // SEVERE fires, stay true while the churn is stopped, and clear the instant a healthy tick is observed
+    // (which cannot happen on its own while restarts are stopped, but must not stay stuck if it ever does -
+    // e.g. an operator intervening by hand, the documented way out).
+    final FakeHealthTarget fake = new FakeHealthTarget();
+    fake.state.set(LifeCycle.State.CLOSED);
+    final HealthMonitor monitor = crashLoopMonitor(fake, true, 3);
+
+    assertThat(monitor.isCrashLoopEscalated()).isFalse();
+
+    monitor.tick();
+    monitor.tick();
+    monitor.tick();
+    assertThat(monitor.isCrashLoopEscalated()).as("still restarting normally, not escalated yet").isFalse();
+
+    monitor.tick(); // crosses threshold -> one-shot reformat, not yet given up
+    assertThat(monitor.isCrashLoopEscalated()).as("reformat attempted, not a give-up").isFalse();
+
+    monitor.tick();
+    monitor.tick();
+    monitor.tick();
+    monitor.tick(); // crosses threshold again with the reformat already spent -> give up
+    assertThat(monitor.isCrashLoopEscalated()).as("gave up after the reformat also failed to stick").isTrue();
+
+    for (int i = 0; i < 5; i++)
+      monitor.tick();
+    assertThat(monitor.isCrashLoopEscalated()).as("stays escalated while the churn is stopped").isTrue();
+
+    fake.state.set(LifeCycle.State.RUNNING);
+    monitor.tick();
+    assertThat(monitor.isCrashLoopEscalated()).as("a healthy tick clears it").isFalse();
+  }
+
+  @Test
   void crashLoopGivesUpDirectlyWhenDivergenceRecoveryDisabled() {
     // With divergence recovery disabled there is no reformat step: escalation goes straight to give-up.
     final FakeHealthTarget fake = new FakeHealthTarget();

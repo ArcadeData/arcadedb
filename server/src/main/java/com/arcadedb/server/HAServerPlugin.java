@@ -91,6 +91,26 @@ public interface HAServerPlugin extends ServerPlugin {
     return null;
   }
 
+  /**
+   * Reports whether this node's HA layer has given up trying to recover and is not coming back on its own
+   * (issue #7622). {@code true} only after a crash-loop escalation has exhausted every automatic remedy - the
+   * Raft implementation raises a SEVERE alert at that point and stops restarting - so it is a stronger signal
+   * than {@link #getReadinessSignal(long)} answering {@code NOT_READY}: a node can be transiently not-ready
+   * (still joining, catching up) without this ever being {@code true}.
+   * <p>
+   * Consulted by {@code ServerControlPlane.isLive()} to fail the Kubernetes liveness probe once this is
+   * {@code true}: escalation used to leave the node in a permanent {@code NOT_READY} with liveness still
+   * green, which removed the pod from the Service but never triggered the pod restart that is the documented
+   * way out, leaving an operator to notice the SEVERE alert and act by hand. Failing liveness here makes that
+   * restart automatic.
+   * <p>
+   * Returns {@code false} when this HA implementation has no such escalation concept - HA disabled, or a
+   * non-Raft implementation.
+   */
+  default boolean isCrashLoopEscalated() {
+    return false;
+  }
+
   String getClusterName();
 
   Map<String, Object> getStats();
