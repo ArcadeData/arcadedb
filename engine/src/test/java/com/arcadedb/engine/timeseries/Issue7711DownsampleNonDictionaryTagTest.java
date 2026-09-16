@@ -30,6 +30,7 @@ import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #7711: {@code TimeSeriesSealedStore.downsampleBlocks} decompressed the tag columns of the blocks it was
@@ -128,6 +129,51 @@ class Issue7711DownsampleNonDictionaryTagTest extends TestHelper {
       assertThat(distinctTagValues(downsampled)).containsExactlyInAnyOrder("zone_0", "zone_1");
     } finally {
       engine.close();
+    }
+  }
+
+  /**
+   * Why {@code decodeColumn}'s new {@code default} arm is unreachable rather than merely believed to be
+   * (claude-review on PR #7730). It throws for a codec it cannot decode, which would turn a previously-silent
+   * corruption into a hard failure on a background maintenance path - so it matters that no sealed block can
+   * carry such a column in the first place.
+   * <p>
+   * It cannot, because the WRITE side refuses first and always has: {@code compressColumn} throws for the same
+   * two codecs, so a type declaring one never gets as far as producing a block for the reader to choke on. The
+   * type itself is created without complaint - {@code TimeSeriesTypeBuilder} does not restrict codec by role,
+   * which {@code Issue7399TimeSeriesTypeBuilderSQLTest} pins - and the refusal lands at seal time.
+   */
+  @Test
+  void aColumnWithAnUndecodableCodecIsRefusedAtSealTimeSoNoBlockCanCarryOne() throws Exception {
+    for (final TimeSeriesCodec codec : new TimeSeriesCodec[] { TimeSeriesCodec.NONE,
+        TimeSeriesCodec.DELTA_OF_DELTA }) {
+      final List<ColumnDefinition> columns = List.of(
+          new ColumnDefinition("ts", Type.LONG, ColumnDefinition.ColumnRole.TIMESTAMP),
+          new ColumnDefinition("zone", Type.STRING, ColumnDefinition.ColumnRole.TAG, codec),
+          new ColumnDefinition("temperature", Type.DOUBLE, ColumnDefinition.ColumnRole.FIELD));
+
+      final DatabaseInternal db = (DatabaseInternal) database;
+      database.begin();
+      final TimeSeriesEngine engine = new TimeSeriesEngine(db, "ds_undecodable_" + codec, columns, 1);
+      database.commit();
+      try {
+        database.begin();
+        engine.appendSamples(new long[] { 1000L, 2000L }, new Object[] { "a", "b" }, new Object[] { 1.0, 2.0 });
+        database.commit();
+
+        assertThatThrownBy(() -> {
+          database.begin();
+          try {
+            engine.compactAll();
+          } finally {
+            database.commit();
+          }
+        }).as("%s reaches compressColumn before any reader could meet it", codec)
+            .hasRootCauseInstanceOf(IllegalStateException.class)
+            .rootCause().hasMessageContaining(codec.name());
+      } finally {
+        engine.close();
+      }
     }
   }
 
