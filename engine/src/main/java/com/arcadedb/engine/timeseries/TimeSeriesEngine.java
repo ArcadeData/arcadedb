@@ -642,6 +642,14 @@ public class TimeSeriesEngine implements AutoCloseable {
                   new MultiColumnAggregationResult(requests, firstBucket, bucketIntervalMs, maxBuckets);
               // Each shard stops at the ceiling on its own. Buckets only ever union across shards, so a shard
               // that has passed it guarantees the merged total has too (issue #7724).
+              //
+              // The ceiling is given to each shard WHOLE rather than divided by their number, which makes this
+              // path's worst case O(shards x ceiling) instead of O(ceiling): every shard may scan its way to
+              // the ceiling before any of them stops. That is deliberate. Dividing would be unsound, not merely
+              // tighter - the buckets of different shards overlap, so a shard legitimately holding more than
+              // ceiling/N of them is not evidence that the UNION is over the ceiling, and stopping it would
+              // refuse a request whose real answer fits. The bound stays a bound either way, and it is the one
+              // that cannot refuse an answer the caller was entitled to (claude-review on PR #7728).
               shardResult.setBucketCeiling(bucketCeiling);
               shard.getSealedStore().aggregateMultiBlocks(fromTs, toTs, requests, bucketIntervalMs, shardResult, shardMetrics, tagFilter);
               return shardResult;

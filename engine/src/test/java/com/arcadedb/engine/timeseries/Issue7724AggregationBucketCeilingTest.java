@@ -120,6 +120,55 @@ class Issue7724AggregationBucketCeilingTest extends TestHelper {
     assertThat(result.isOverBucketCeiling()).isFalse();
   }
 
+  /**
+   * The multi-shard path, where each shard stops against the ceiling independently and the results are then
+   * merged. The invariant the three surfaces rely on has to survive that merge: whatever the shards did, what
+   * comes back is over the ceiling, so the caller's own check still refuses it.
+   * <p>
+   * Block counts are deliberately NOT asserted here - samples are routed to shards round-robin, so how many
+   * blocks each shard ends up touching depends on the machine's core count, which is what
+   * {@code Issue7089NaNTransparentSumAvgTest} was made to pin {@code SHARDS 1} for. The bound this test is
+   * about is the merged bucket count, and that is machine-independent.
+   */
+  @Test
+  void theMergedResultOfSeveralShardsIsStillOverTheCeiling() throws Exception {
+    database.command("sql", "CREATE TIMESERIES TYPE Sharded"
+        + " TIMESTAMP ts FIELDS (value DOUBLE) SHARDS 4 COMPACTION_INTERVAL 1 SECONDS");
+    final TimeSeriesEngine engine = ((LocalTimeSeriesType) database.getSchema().getType("Sharded")).getEngine();
+
+    database.transaction(() -> {
+      for (int i = 0; i < SAMPLES; i++)
+        database.command("sql", "INSERT INTO Sharded SET ts = :ts, value = :v",
+            Map.of("ts", i * BUCKET, "v", (double) i));
+    });
+    engine.compactAll();
+
+    final List<MultiColumnAggregationRequest> requests =
+        List.of(new MultiColumnAggregationRequest(1, AggregationType.SUM, "s"));
+
+    for (final int ceiling : new int[] { 1, 10, 100 }) {
+      database.begin();
+      final MultiColumnAggregationResult result;
+      try {
+        result = engine.aggregateMulti(0L, SAMPLES * BUCKET, requests, BUCKET, null, null, ceiling);
+      } finally {
+        database.commit();
+      }
+      assertThat(result.getBucketTimestamps().size())
+          .as("merged across 4 shards, a result stopped at a ceiling of %d must still be above it", ceiling)
+          .isGreaterThan(ceiling);
+    }
+
+    // And a ceiling the answer stays under still returns every bucket, merged across all four shards.
+    database.begin();
+    try {
+      assertThat(engine.aggregateMulti(0L, SAMPLES * BUCKET, requests, BUCKET, null, null, SAMPLES * 10)
+          .getBucketTimestamps()).hasSize(SAMPLES);
+    } finally {
+      database.commit();
+    }
+  }
+
   /** The used-bucket count is the number of rows the result will hand back, in both storage modes. */
   @Test
   void theUsedBucketCountIsTheNumberOfRowsReturned() {
