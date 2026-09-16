@@ -43,10 +43,14 @@ package com.arcadedb.engine.timeseries;
  * it - which is why the SUM fold is keyed on that count rather than on the accumulator's value. {@code COUNT} is the one aggregate that does not
  * skip: it counts rows, as SQL's {@code COUNT(*)} does, and the SQL push-down maps it from {@code count(*)}.
  * <p>
- * A window that was offered no sample at all is a different question from one whose samples were all absent, and
- * only SUM answers the two differently: the empty sum is the additive identity, so a SUM accumulator seeded with
- * zero and never offered anything stays zero, while one absent sample is enough to make it {@link #ABSENT}
- * (issue #7506).
+ * A window that was offered no sample at all and one whose samples were all absent are NOT told apart: both answer
+ * {@link #ABSENT}, for SUM as for the other three. Issue #7506 briefly made SUM answer the additive identity for
+ * the first of those, and issue #7694 settled it back, for two reasons that outweigh the appeal of the empty sum
+ * being zero. The vectorized SUM implementations already answer {@link #ABSENT} for an empty range, so the
+ * carve-out left two layers of this subsystem disagreeing about what the empty sum is - the very shape of defect
+ * this class was written to remove. And no production path can produce the "offered nothing" case anyway: every
+ * accumulation loop offers a value to every aggregation request, so which of the two a bucket was in could not be
+ * observed outside a test.
  * <p>
  * The PromQL layer is deliberately NOT under this policy for {@code sum}/{@code avg}: Prometheus propagates NaN
  * through those, and a PromQL query is expected to answer what Prometheus would.
@@ -100,17 +104,11 @@ public final class TimeSeriesNaN {
    * it. So the accumulator is absent if and only if {@code present} is zero, and NaN with {@code present} above
    * zero is the arithmetic result, kept as IEEE keeps it.
    *
-   * <p>
-   * An absent sample reaching an accumulator that holds no real sample yet returns {@link #ABSENT} rather than the
-   * accumulator, so that a caller seeding with the additive identity can still tell "this accumulator was never
-   * offered a sample" from "it was offered samples and none was real" (issue #7506). For the callers that seed with
-   * {@link #ABSENT} - every one of them before #7506 - this is the accumulator, and the fold is unchanged.
-   *
    * @param present how many real samples the accumulator holds, BEFORE this one - see {@link #countIfPresent}
    */
   public static double sum(final double accumulator, final long present, final double sample) {
     if (Double.isNaN(sample))
-      return present == 0 ? ABSENT : accumulator;
+      return accumulator;
     return present == 0 ? sample : accumulator + sample;
   }
 
@@ -119,16 +117,14 @@ public final class TimeSeriesNaN {
    * count of real samples saying whether its value is a total or an absence. A partial with no real sample is
    * skipped whatever its value; a running sum with none is replaced; two totals are added, NaN included.
    * <p>
-   * When NEITHER side holds a real sample there is no total to protect, and the two "no data" values are added
-   * instead of one being dropped: absence propagates through the addition ({@code 0 + NaN} is NaN), so untouched
-   * merged with untouched stays the additive identity while untouched merged with absent becomes absent (issue
-   * #7506). Both sides are {@link #ABSENT} for every caller that seeds with it, which makes this the same NaN the
-   * old branch returned.
+   * When neither side holds a real sample the running accumulator is kept, and it is {@link #ABSENT} for every
+   * caller in the tree - each of them seeds SUM and AVG with the absent marker - so absence survives the merge
+   * rather than collapsing to a zero (issue #7694).
    */
   public static double mergeSum(final double accumulator, final long present, final double partial,
       final long partialPresent) {
     if (partialPresent == 0)
-      return present == 0 ? accumulator + partial : accumulator;
+      return accumulator;
     return present == 0 ? partial : accumulator + partial;
   }
 
