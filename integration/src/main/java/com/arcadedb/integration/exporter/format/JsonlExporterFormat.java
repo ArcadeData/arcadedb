@@ -78,10 +78,7 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
     if (file.exists() && !settings.overwriteFile)
       throw new ExportException("The export file '%s' already exist and '-o' setting is false".formatted(settings.file));
 
-    if (file.getParentFile() != null && !file.getParentFile().exists()) {
-      if (!file.getParentFile().mkdirs())
-        throw new ExportException("The export file '%s' cannot be created".formatted(settings.file));
-    }
+    ensureParentDirectory(file);
 
     if (database.isTransactionActive())
       database.getTransaction().rollback();
@@ -93,9 +90,6 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
       exportFile = new File(settings.file.substring("file://".length()));
     else
       exportFile = new File(settings.file);
-
-    if (!exportFile.getParentFile().exists())
-      exportFile.getParentFile().mkdirs();
 
     final File lock = claimExportFile(exportFile);
     try (final OutputStreamWriter fileWriter = new OutputStreamWriter(new GZIPOutputStream(new FileOutputStream(exportFile)),

@@ -46,10 +46,7 @@ public class GraphMLExporterFormat extends AbstractExporterFormat {
     if (file.exists() && !settings.overwriteFile)
       throw new ExportException("The export file '%s' already exist and '-o' setting is false".formatted(settings.file));
 
-    if (file.getParentFile() != null && !file.getParentFile().exists()) {
-      if (!file.getParentFile().mkdirs())
-        throw new ExportException("The export file '%s' cannot be created".formatted(settings.file));
-    }
+    ensureParentDirectory(file);
 
     if (database.isTransactionActive())
       throw new ExportException("Transaction in progress found");
@@ -61,9 +58,6 @@ public class GraphMLExporterFormat extends AbstractExporterFormat {
       exportFile = new File(settings.file.substring("file://".length()));
     else
       exportFile = new File(settings.file);
-
-    if (!exportFile.getParentFile().exists())
-      exportFile.getParentFile().mkdirs();
 
     // CLAIMED BEFORE THE GRAPH IS OPENED: A REFUSED CLAIM THEN LEAVES NOTHING OPEN TO CLOSE, RATHER THAN LEAKING
     // AN ArcadeGraph THAT NOTHING IN THIS METHOD EVER CLOSES ON ANY PATH (issue #7644 review)
