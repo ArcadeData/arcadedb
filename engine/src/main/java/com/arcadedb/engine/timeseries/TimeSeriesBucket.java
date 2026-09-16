@@ -539,6 +539,110 @@ public class TimeSeriesBucket extends PaginatedComponent {
   }
 
   /**
+   * Scans the mutable bucket oldest-first and returns at most {@code limit} rows, the oldest ones in
+   * the requested range (issue #7336).
+   * <p>
+   * The ascending mirror of {@link #scanRangeDescending}, with the same page pruning and the same
+   * assumption - none - about rows being globally ordered across pages: late arrivals are always
+   * appended to the last page, so a page whose minimum is newer than the current cut-off is skipped
+   * rather than ending the walk.
+   *
+   * @param fromTs        start timestamp (inclusive)
+   * @param toTs          end timestamp (inclusive)
+   * @param columnIndices which columns to return (null = all)
+   * @param tagFilter     optional tag filter, evaluated straight off the page so non-matching rows
+   *                      cost no allocation
+   * @param limit         maximum number of rows to return, 0 or less means unlimited
+   * @param metrics       optional page and row counters, may be {@code null}
+   *
+   * @return list of sample rows ordered from the oldest to the newest
+   */
+  public List<Object[]> scanRangeAscending(final long fromTs, final long toTs, final int[] columnIndices,
+      final TagFilter tagFilter, final int limit, final AggregationMetrics metrics) throws IOException {
+    final int need = limit > 0 ? limit : Integer.MAX_VALUE;
+    final int dataPageCount = getDataPageCount();
+
+    final TagMatcher[] matchers = tagFilter == null ? null : buildTagMatchers(tagFilter, columnIndices);
+    if (tagFilter != null && matchers == null)
+      // A condition on a column the caller did not ask for: nothing can match.
+      return new ArrayList<>();
+
+    // Bounded queries keep the current best rows in a max-heap on the timestamp, so the cut-off is
+    // always exact and a row is materialised only when it really enters the result. Unlimited
+    // queries have no cut-off to maintain and just collect.
+    final PriorityQueue<Object[]> heap = need == Integer.MAX_VALUE ?
+        null :
+        new PriorityQueue<>(Math.min(need, 1024), (a, b) -> Long.compare((long) b[0], (long) a[0]));
+    final List<Object[]> collected = heap == null ? new ArrayList<>() : null;
+
+    // Timestamp of the newest row retained so far: with `need` rows already held, nothing newer can
+    // enter the result.
+    long cutoffTs = Long.MAX_VALUE;
+    int held = 0;
+
+    for (int pageNum = 1; pageNum <= dataPageCount; pageNum++) {
+      final BasePage page = database.getTransaction().getPage(new PageId(database, fileId, pageNum), pageSize);
+
+      final int sampleCount = page.readShort(DATA_SAMPLE_COUNT_OFFSET) & 0xFFFF;
+      if (sampleCount == 0)
+        continue;
+
+      final long pageMinTs = page.readLong(DATA_MIN_TS_OFFSET);
+      final long pageMaxTs = page.readLong(DATA_MAX_TS_OFFSET);
+
+      // Skip pages outside range
+      if (pageMaxTs < fromTs || pageMinTs > toTs) {
+        if (metrics != null)
+          metrics.addSkippedPage();
+        continue;
+      }
+
+      // Skip pages that cannot beat the rows already collected
+      if (held >= need && pageMinTs >= cutoffTs) {
+        if (metrics != null)
+          metrics.addSkippedPage();
+        continue;
+      }
+
+      if (metrics != null)
+        metrics.addScannedPage();
+
+      for (int row = 0; row < sampleCount; row++) {
+        final int rowOffset = DATA_ROWS_OFFSET + row * rowSize;
+        final long ts = page.readLong(rowOffset);
+
+        if (ts < fromTs || ts > toTs)
+          continue;
+        if (held >= need && ts >= cutoffTs)
+          continue;
+        if (matchers != null && !matchesTagFilter(page, rowOffset, matchers))
+          continue;
+
+        final Object[] materialized = readRow(page, rowOffset, columnIndices);
+        if (metrics != null)
+          metrics.addMaterializedRows(1);
+
+        if (heap == null) {
+          collected.add(materialized);
+          held++;
+          continue;
+        }
+
+        heap.add(materialized);
+        if (heap.size() > need)
+          heap.poll();
+        held = heap.size();
+        if (held >= need)
+          cutoffTs = (long) heap.peek()[0];
+      }
+    }
+
+    final List<Object[]> results = heap == null ? collected : new ArrayList<>(heap);
+    TimeSeriesSealedStore.trimToAscendingLimit(results, need);
+    return results;
+  }
+
+  /**
    * A tag condition prepared for repeated evaluation against raw page bytes.
    * <p>
    * String tags are by far the common case and used to cost a {@code byte[]} plus a {@code String}
