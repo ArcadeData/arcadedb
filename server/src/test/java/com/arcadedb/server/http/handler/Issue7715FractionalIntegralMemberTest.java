@@ -153,38 +153,66 @@ class Issue7715FractionalIntegralMemberTest {
         "1E+2147483646", "9E2147483647" }) {
       final JSONObject owner = new JSONObject().put("bucketInterval", spelling);
 
+      // Either refusal is correct and both are constant-time: the JSON layer's own numeric limits turn an
+      // extreme exponent away as "must be a number" before BigDecimal sees it, and the scale and precision
+      // tests in readLong answer it as "must be a whole number" if it ever gets past them. Which one fires is
+      // an implementation detail of a dependency; that it is refused without materialising the value is not.
       assertTimeoutPreemptively(Duration.ofSeconds(10), () ->
           assertThatThrownBy(
               () -> TimeSeriesHandlerUtils.requireLong(owner, "bucketInterval", "aggregation.bucketInterval"))
               .isInstanceOf(IllegalArgumentException.class)
-              .hasMessageStartingWith("'aggregation.bucketInterval' must be a whole number between "),
+              .hasMessageStartingWith("'aggregation.bucketInterval' must be a "),
           "'" + spelling + "' must be refused in constant time, not by materialising the value it names");
     }
   }
 
   /**
    * The same exponent as a JSON NUMBER rather than a string, which is the other way it arrives from a body the
-   * parser read. {@code elementToObject} hands anything carrying an exponent over as a {@code Double}, so this
-   * route never reaches {@link java.math.BigDecimal} with the exponent intact: {@code Double.parseDouble}
-   * saturates {@code 1E2147483647} to infinity, which is refused as a wrong type, and underflows
-   * {@code 1E-2147483647} to a plain {@code 0.0}, which is the number the caller is then answered for. Pinned
-   * because the boundary between the two routes is what makes the string one the only dangerous one - if
-   * {@code elementToObject} ever stopped narrowing to a double, this would need the same guard.
+   * parser read. Both directions are refused, and in constant time, because the value is read as the lexeme the
+   * request carried rather than as the double {@code JSONObject.opt} would narrow it to.
    */
   @Test
-  void aJsonNumberWithAnExtremeExponentIsNarrowedByTheParserBeforeItGetsHere() {
+  void refusesAnExtremeExponentWrittenAsAJsonNumber() {
     final JSONObject payload = new JSONObject("{\"bucketInterval\":1E2147483647,\"from\":1E-2147483647}");
 
     assertTimeoutPreemptively(Duration.ofSeconds(10), () -> {
       assertThatThrownBy(
           () -> TimeSeriesHandlerUtils.requireLong(payload, "bucketInterval", "aggregation.bucketInterval"))
-          .as("saturated to infinity by the parser, and an infinity is not a number a bucket width can be")
           .isInstanceOf(IllegalArgumentException.class)
-          .hasMessageStartingWith("'aggregation.bucketInterval' must be a number: received ");
+          .hasMessageStartingWith("'aggregation.bucketInterval' must be a ");
 
-      assertThat(TimeSeriesHandlerUtils.optLong(payload, "from", -1L, "from"))
-          .as("underflowed to 0.0 by the parser: a whole number, and the one the value denotes").isZero();
+      assertThatThrownBy(() -> TimeSeriesHandlerUtils.optLong(payload, "from", -1L, "from"))
+          .as("10^-2147483647 is refused, not answered as the 0.0 a double would have made of it")
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageStartingWith("'from' must be a ");
     });
+  }
+
+  /**
+   * The member is read as the LEXEME the request carried, not as the double {@code JSONObject.opt} narrows it to
+   * (CodeRabbit on PR #7730). {@code elementToObject} converts any number whose text holds a {@code '.'} or an
+   * exponent with {@code getAsDouble()}, so {@code 9007199254740993.0} would otherwise arrive here already
+   * rounded to {@code 9007199254740992.0} and be accepted as a whole number ONE AWAY from the instant the caller
+   * wrote - the very substitution this issue is about, arriving by a different door.
+   * <p>
+   * Reading the lexeme is better than the other way out, refusing every double past the safe-integer range: it
+   * refuses nothing that is exact as written. {@code 9007199254740993.0} IS a whole number, and is answered as
+   * one.
+   */
+  @Test
+  void readsTheLexemeRatherThanTheDoubleTheParserWouldNarrowItTo() {
+    final JSONObject payload = new JSONObject(
+        "{\"from\":9007199254740993.0,\"to\":9007199254740993,\"bucketInterval\":1.00000000000000000001}");
+
+    assertThat(TimeSeriesHandlerUtils.optLong(payload, "from", 0L, "from"))
+        .as("written with a decimal point, so opt() would have rounded it to ...992").isEqualTo(9007199254740993L);
+    assertThat(TimeSeriesHandlerUtils.optLong(payload, "to", 0L, "to")).isEqualTo(9007199254740993L);
+
+    assertThatThrownBy(
+        () -> TimeSeriesHandlerUtils.requireLong(payload, "bucketInterval", "aggregation.bucketInterval"))
+        .as("a fraction a double cannot even hold is still a fraction")
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageStartingWith("'aggregation.bucketInterval' must be a whole number between ");
   }
 
   /**
