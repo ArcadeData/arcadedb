@@ -20,6 +20,7 @@ package com.arcadedb.server.http.handler.openapi;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.http.HttpSessionManager;
+import com.arcadedb.server.http.handler.DatabaseAbstractHandler;
 
 import io.swagger.v3.oas.models.Operation;
 import io.swagger.v3.oas.models.headers.Header;
@@ -94,7 +95,30 @@ public final class SpecBuilders {
    */
   public static final String READ_STALE_SESSION_DESCRIPTION =
       "Database not found. A session id that no longer resolves is NOT an error here: the read degrades to "
-          + "running outside the transaction and still answers 200.";
+          + "running outside the transaction and still answers 200, reporting the degrade in the "
+          + DatabaseAbstractHandler.SESSION_EXPIRED + " response header.";
+
+  /**
+   * The header {@code DatabaseAbstractHandler} sets on an operation that RAN a request naming a session it could
+   * not resolve, instead of refusing it (issue #7714).
+   * <p>
+   * Lives here for the same reason the four paragraphs above do: the header is set by the base handler, so every
+   * operation whose {@code rejectsUnresolvableSession()} is false carries it - the three {@code /api/v1/ts}
+   * routes, the ten Grafana and Prometheus ones #7681 bound to the session, {@code GET /api/v1/query}, and the
+   * three transaction endpoints. A client generated from this contract can otherwise not tell an answer produced
+   * inside the transaction it named from one produced outside it, which is the whole point of #7714.
+   */
+  public static final String SESSION_EXPIRED_HEADER = DatabaseAbstractHandler.SESSION_EXPIRED;
+
+  public static final String SESSION_EXPIRED_DESCRIPTION =
+      "Present only when the request named a session id this server could not resolve (committed, rolled back, "
+          + "expired, or owned by another principal). It carries that id reduced to the characters a session id "
+          + "is made of - anything else becomes '?', and an overlong one is truncated - and says this answer "
+          + "was produced "
+          + "OUTSIDE the transaction the caller named rather than inside it. The call is not refused, which is "
+          + "what keeps a read-after-commit and an idempotent retry working; the gRPC TimeSeriesQuery and "
+          + "TimeSeriesLatest RPCs refuse the same case with FAILED_PRECONDITION, following their own "
+          + "protocol's convention.";
 
   /**
    * What a 404 covers on a session-aware WRITE, which answers true to {@code rejectsUnresolvableSession()}.
@@ -121,6 +145,14 @@ public final class SpecBuilders {
   /** The {@code arcadedb-session-id} echo a session-aware operation puts on its success response. */
   public static Header sessionEchoHeader() {
     return stringHeader(SESSION_RESPONSE_DESCRIPTION);
+  }
+
+  /**
+   * The {@code arcadedb-session-expired} header a DEGRADING operation puts on its success response - one that
+   * runs a request naming an unresolvable session rather than refusing it (issue #7714).
+   */
+  public static Header sessionExpiredHeader() {
+    return stringHeader(SESSION_EXPIRED_DESCRIPTION);
   }
 
   public static Parameter pathParam(final String name, final String description) {

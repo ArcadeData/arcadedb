@@ -278,9 +278,23 @@ final class TimeSeriesHandlerUtils {
       // report as fractional ("0E-2147483647" is not).
       return 0L;
 
-    // Trailing zeros first, so 1.000 is the whole number it plainly is. Cheap at any scale: it divides the
-    // UNSCALED value by ten while that stays exact and never materialises the value the scale denotes.
-    final BigDecimal stripped = exact.stripTrailingZeros();
+    // Trailing zeros first, so 1.000 is the whole number it plainly is. Cheap: it divides the UNSCALED value by
+    // ten while that stays exact and never materialises the value the scale denotes.
+    //
+    // ONLY for a POSITIVE scale, which is the only scale that can hide a fractional part. Stripping a zero
+    // RAISES the scale, and a scale already at the bottom of its range has nowhere to go: "100E2147483647" is
+    // (unscaled=100, scale=-2147483647), and stripTrailingZeros() throws an ArithmeticException("Overflow") of
+    // its own trying to strip its two zeros - outside the catch below, so it would leave this method as an
+    // ArithmeticException rather than the IllegalArgumentException the endpoints render as a 400, answering a
+    // malformed request with a 500 (CodeRabbit on PR #7730).
+    //
+    // Not reachable as things stand: the JSON layer's numeric limits refuse an exponent that extreme before a
+    // BigDecimal carrying such a scale can exist, which is the same reason the two guards below are not what a
+    // caller meets today. It is guarded for the same reason they are - this method's correctness may not rest on
+    // a dependency's internal limit - and nothing is lost by it: a scale of zero or less has no digits after the
+    // decimal point to begin with, so there is no fractional part for the strip to reveal, and the digit count
+    // below reads the same either way.
+    final BigDecimal stripped = exact.scale() > 0 ? exact.stripTrailingZeros() : exact;
 
     // A positive scale that survives that strip means the last digit is non-zero and sits after the decimal
     // point, so the value has a fractional part - the case this issue is about.
