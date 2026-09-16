@@ -38,7 +38,11 @@ package com.arcadedb.engine.timeseries;
  * absence of a measurement, and a sum over 999 real samples and one absent one is the sum of the 999 - the way SQL's
  * {@code SUM} and {@code AVG} skip NULL. So {@link #sum(double, long, double)} is the same fold shape, {@code AVG}
  * divides the folded sum by the number of samples that were REAL ({@link #countIfPresent(long, double)}), and a
- * window whose every sample was absent answers {@link #ABSENT} for all four. A NaN the arithmetic itself produces
+ * window whose every sample was absent answers {@link #ABSENT} for all four. A window that was offered no sample at
+ * all is a different question, and only SUM answers it differently: the empty sum is the additive identity, so a SUM
+ * accumulator seeded with zero and never offered anything stays zero (issue #7506).
+ * <p>
+ * A NaN the arithmetic itself produces
  * over real samples ({@code +Infinity + -Infinity}) is a different thing - an undefined total, kept as IEEE keeps
  * it - which is why the SUM fold is keyed on that count rather than on the accumulator's value. {@code COUNT} is the one aggregate that does not
  * skip: it counts rows, as SQL's {@code COUNT(*)} does, and the SQL push-down maps it from {@code count(*)}.
@@ -95,11 +99,17 @@ public final class TimeSeriesNaN {
    * it. So the accumulator is absent if and only if {@code present} is zero, and NaN with {@code present} above
    * zero is the arithmetic result, kept as IEEE keeps it.
    *
+   * <p>
+   * An absent sample reaching an accumulator that holds no real sample yet returns {@link #ABSENT} rather than the
+   * accumulator, so that a caller seeding with the additive identity can still tell "this accumulator was never
+   * offered a sample" from "it was offered samples and none was real" (issue #7506). For the callers that seed with
+   * {@link #ABSENT} - every one of them before #7506 - this is the accumulator, and the fold is unchanged.
+   *
    * @param present how many real samples the accumulator holds, BEFORE this one - see {@link #countIfPresent}
    */
   public static double sum(final double accumulator, final long present, final double sample) {
     if (Double.isNaN(sample))
-      return accumulator;
+      return present == 0 ? ABSENT : accumulator;
     return present == 0 ? sample : accumulator + sample;
   }
 
@@ -107,11 +117,17 @@ public final class TimeSeriesNaN {
    * Merges a partial SUM into a running one: the same rule as {@link #sum(double, long, double)}, with each side's
    * count of real samples saying whether its value is a total or an absence. A partial with no real sample is
    * skipped whatever its value; a running sum with none is replaced; two totals are added, NaN included.
+   * <p>
+   * When NEITHER side holds a real sample there is no total to protect, and the two "no data" values are added
+   * instead of one being dropped: absence propagates through the addition ({@code 0 + NaN} is NaN), so untouched
+   * merged with untouched stays the additive identity while untouched merged with absent becomes absent (issue
+   * #7506). Both sides are {@link #ABSENT} for every caller that seeds with it, which makes this the same NaN the
+   * old branch returned.
    */
   public static double mergeSum(final double accumulator, final long present, final double partial,
       final long partialPresent) {
     if (partialPresent == 0)
-      return accumulator;
+      return present == 0 ? accumulator + partial : accumulator;
     return present == 0 ? partial : accumulator + partial;
   }
 
