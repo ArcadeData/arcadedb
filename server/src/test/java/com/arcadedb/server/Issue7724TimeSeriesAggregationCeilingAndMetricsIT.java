@@ -24,6 +24,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.search.Search;
 import org.junit.jupiter.api.Test;
@@ -143,7 +144,7 @@ class Issue7724TimeSeriesAggregationCeilingAndMetricsIT extends BaseGraphServerT
 
   private double blocksCounted(final String surface) {
     double total = 0;
-    for (final io.micrometer.core.instrument.Counter counter : Search.in(Metrics.globalRegistry)
+    for (final Counter counter : Search.in(Metrics.globalRegistry)
         .name("arcadedb.timeseries.read.blocks").tag("db", getDatabaseName()).tag("type", TYPE)
         .tag("surface", surface).counters())
       total += counter.count();

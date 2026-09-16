@@ -195,7 +195,13 @@ public final class TimeSeriesReadMetrics {
     if (cached != null)
       return cached;
 
-    if (METER_SETS.size() >= MAX_METER_SETS && !OVERFLOW_TAG.equals(database))
+    // The recursion guard tests the WHOLE collapsed tuple, not just its db half. "other" is a legal database
+    // name, so a guard reading only the db would have treated a real database called "other" as though it were
+    // already collapsed, skipped the ceiling for it entirely, and let its types grow the cache without bound -
+    // the very leak the ceiling exists to stop (claude-review on PR #7728). Testing both halves cannot be
+    // fooled that way: a database named "other" holding a type named anything else still collapses, and the one
+    // tuple that reads as already-collapsed is the one that genuinely is.
+    if (METER_SETS.size() >= MAX_METER_SETS && !(OVERFLOW_TAG.equals(database) && OVERFLOW_TAG.equals(type)))
       return meterSet(OVERFLOW_TAG, OVERFLOW_TAG, surface);
 
     return METER_SETS.computeIfAbsent(key, k -> new MeterSet(database, type, surface));

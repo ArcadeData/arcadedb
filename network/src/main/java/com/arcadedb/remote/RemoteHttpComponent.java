@@ -825,12 +825,22 @@ public class RemoteHttpComponent extends RWLockContext {
     // diagnostic envelope, so an application logging getMessage() led with "Error on executing remote command"
     // and a caller reading a truncated log line never reached the reason. The envelope is kept: the status code
     // and the absence of a typed exception are what tell a maintainer this arm was the one taken.
+    // Whichever of the two the server actually filled in - the TimeSeries endpoints answer 'error', the generic
+    // mapper answers 'detail' - promoted to the front of the message.
     final String explanation = reason != null && !reason.isEmpty() ? reason : detail;
+    final boolean promoted = explanation != null && !explanation.isEmpty();
+    // The envelope then carries only what the leading sentence did NOT already say. Repeating the promoted text
+    // verbatim under 'reason=' stated the same diagnosis twice in one message, which is exactly the readability
+    // this was meant to buy back (claude-review on PR #7728).
+    final StringBuilder envelope = new StringBuilder(" (httpErrorCode=").append(statusCode)
+        .append(" httpErrorDescription=").append(httpErrorDescription);
+    if (!promoted || !explanation.equals(reason))
+      envelope.append(" reason=").append(reason);
+    if (!promoted || !explanation.equals(detail))
+      envelope.append(" detail=").append(detail);
+    envelope.append(" exception=").append(exception).append(')');
+
     return new RemoteException(
-        "Error on executing remote command '" + operation + "'"
-            + (explanation != null && !explanation.isEmpty() ? ": " + explanation : "")
-            + " (httpErrorCode=" + statusCode
-            + " httpErrorDescription=" + httpErrorDescription + " reason=" + reason + " detail=" + detail + " exception="
-            + exception + ")");
+        "Error on executing remote command '" + operation + "'" + (promoted ? ": " + explanation : "") + envelope);
   }
 }
