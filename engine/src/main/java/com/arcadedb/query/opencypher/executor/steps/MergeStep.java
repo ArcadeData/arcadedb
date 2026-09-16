@@ -1336,7 +1336,11 @@ public class MergeStep extends AbstractExecutionStep {
         final Object value = entry.getValue();
         if (value != null) {
           keyValues.add(entry.getKey());
-          keyValues.add(CypherValues.coerceAndValidatePropertyValue(value));
+          // No origin: evaluateProperties() hands back the evaluated values alone, so the expression or parameter
+          // each came from is already gone by here. The property name is the half a refusal most needs, and
+          // carrying the raw values alongside would cost a second map on a path that allocates one per row
+          // (issue #7729).
+          keyValues.add(CypherValues.coerceAndValidatePropertyValue(value, entry.getKey(), null));
         }
       }
       edgeProperties = keyValues.toArray();
@@ -1365,7 +1369,9 @@ public class MergeStep extends AbstractExecutionStep {
     for (final Map.Entry<String, Object> entry : properties.entrySet()) {
       final Object value = entry.getValue();
       if (value != null)
-        document.set(entry.getKey(), CypherValues.coerceAndValidatePropertyValue(value));
+        // No origin, for the reason given in createEdge() above: the raw expression is gone by the time
+        // evaluateProperties() returns.
+        document.set(entry.getKey(), CypherValues.coerceAndValidatePropertyValue(value, entry.getKey(), null));
     }
   }
 

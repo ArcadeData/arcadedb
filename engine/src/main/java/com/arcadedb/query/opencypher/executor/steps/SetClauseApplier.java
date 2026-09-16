@@ -164,7 +164,10 @@ public final class SetClauseApplier {
         // Coerce and validate HERE so an invalid value rejects the clause before any of it has been written: the
         // step rolls back only a transaction it opened itself, so a value refused halfway through would otherwise
         // leave the earlier items behind in the caller's transaction.
-        values[i] = coerceAndValidate(evaluator.evaluate(item.getValueExpression(), result, context));
+        // The property name is the static one when the clause spells it (SET n.m2 = ...), the resolved key when it
+        // computes it (SET n[$k] = ...); either way it is what a refusal has to be able to name (issue #7729).
+        values[i] = coerceAndValidate(evaluator.evaluate(item.getValueExpression(), result, context),
+            item.getProperty() != null ? item.getProperty() : keys[i], item.getValueExpression());
         break;
       case REPLACE_MAP:
       case MERGE_MAP:
@@ -401,9 +404,12 @@ public final class SetClauseApplier {
     // replace form clears the target before reading this map, so "SET a = a" would otherwise read a map it has just
     // emptied. Coercing and validating the entries here rather than at write time is what lets an invalid one reject
     // the clause before any earlier item has been written.
+    // The origin is the record itself when the right-hand side was an entity: "SET t = n" names no property and no
+    // value, so without it a refusal can only say that something, somewhere, was a map (issue #7729).
+    final Object origin = value instanceof Document sourceRecord ? sourceRecord : null;
     final Map<String, Object> materialised = new LinkedHashMap<>(source.size());
     for (final Map.Entry<String, Object> entry : source.entrySet())
-      materialised.put(entry.getKey(), coerceAndValidate(entry.getValue()));
+      materialised.put(entry.getKey(), coerceAndValidate(entry.getValue(), entry.getKey(), origin));
     return materialised;
   }
 
@@ -537,7 +543,7 @@ public final class SetClauseApplier {
    * {@link CypherValues#coerceAndValidatePropertyValue} (issue #7629), so a map property value is refused the same
    * way whichever clause writes it.
    */
-  private static Object coerceAndValidate(final Object value) {
-    return CypherValues.coerceAndValidatePropertyValue(value);
+  private static Object coerceAndValidate(final Object value, final String propertyName, final Object valueOrigin) {
+    return CypherValues.coerceAndValidatePropertyValue(value, propertyName, valueOrigin);
   }
 }

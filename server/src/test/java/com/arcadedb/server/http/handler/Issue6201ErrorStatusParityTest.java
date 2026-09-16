@@ -26,6 +26,7 @@ import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.InvalidPropertyTypeException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
@@ -113,6 +114,12 @@ class Issue6201ErrorStatusParityTest {
           () -> new QueryNotIdempotentException("Query is not idempotent")),
       new MappedFailure("JSONException", 400, () -> new JSONException("Missing property 'command'")),
       new MappedFailure("IllegalArgumentException", 400, () -> new IllegalArgumentException("Unparseable limit")),
+      // Issue #7729. It extends CommandExecutionException, whose arm answers 500, so it needs its own arm ahead of
+      // that one - exactly like ArithmeticErrorException. It answered 400 as an IllegalArgumentException before it
+      // had a type of its own, and a value the caller cannot store is the caller's error either way.
+      new MappedFailure("InvalidPropertyTypeException", 400,
+          () -> new InvalidPropertyTypeException(
+              "TypeError: InvalidPropertyType - Property values can only be of primitive types or arrays thereof.")),
       new MappedFailure("CommandParsingException", 400, () -> new CommandParsingException("Unknown variable 'x'")));
 
   /**

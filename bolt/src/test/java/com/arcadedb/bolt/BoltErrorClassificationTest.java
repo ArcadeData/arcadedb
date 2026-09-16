@@ -25,6 +25,7 @@ import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.InvalidPropertyTypeException;
 import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TimeoutException;
@@ -59,6 +60,39 @@ class BoltErrorClassificationTest {
     // The conflict is often wrapped by the query/command layer before reaching the Bolt handler.
     final Throwable wrapped = new RuntimeException("command failed", new ConcurrentModificationException("retry"));
     assertThat(BoltNetworkExecutor.classifyExecutionError(wrapped, BoltErrorCodes.DATABASE_ERROR))
+        .isEqualTo(BoltErrorCodes.TRANSIENT_CONFLICT_ERROR);
+  }
+
+  /**
+   * Issue #7729. openCypher refusing a map-valued property is a client type error, the same one Neo4j reports as
+   * {@code Neo.ClientError.Statement.TypeError}. It used to be an {@link IllegalArgumentException} nothing here
+   * recognised, so it reached the driver as DatabaseError - an unexplained server fault - which is what the
+   * reporter of issue #7629 saw.
+   */
+  @Test
+  void invalidPropertyTypeClassifiesAsAClientTypeError() {
+    final Throwable e = new InvalidPropertyTypeException(
+        "TypeError: InvalidPropertyType - Property values can only be of primitive types or arrays thereof.");
+    assertThat(BoltNetworkExecutor.classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR))
+        .isEqualTo(BoltErrorCodes.TYPE_ERROR);
+  }
+
+  @Test
+  void invalidPropertyTypeWrappedAsCauseStillClassifiesAsAClientTypeError() {
+    // The auto-commit wrapper and the CALL path both wrap it before it reaches the Bolt handler.
+    final Throwable wrapped = new RuntimeException("command failed",
+        new InvalidPropertyTypeException("TypeError: InvalidPropertyType - ..."));
+    assertThat(BoltNetworkExecutor.classifyExecutionError(wrapped, BoltErrorCodes.DATABASE_ERROR))
+        .isEqualTo(BoltErrorCodes.TYPE_ERROR);
+  }
+
+  @Test
+  void aConflictOutranksATypeErrorSoTheDriverStillRetries() {
+    // Same precedence rule the arithmetic arm follows: a chain carrying both must keep the transient verdict, which
+    // is the one a managed-transaction driver has to act on.
+    final Throwable e = new ConcurrentModificationException("retry",
+        new InvalidPropertyTypeException("TypeError: InvalidPropertyType - ..."));
+    assertThat(BoltNetworkExecutor.classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR))
         .isEqualTo(BoltErrorCodes.TRANSIENT_CONFLICT_ERROR);
   }
 

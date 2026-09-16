@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.exception.InvalidPropertyTypeException;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -144,7 +145,10 @@ class CypherSetFromEntityIssue6832Test {
     database.transaction(() -> database.command("opencypher", "CREATE (:A {id: 1})"));
 
     assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher", "MATCH (a:A) SET a = {x: {y: 1}}")))
-        .rootCause()
+        // Not .rootCause(): since #7729 this is an InvalidPropertyTypeException, a CommandExecutionException the
+        // openCypher engine rethrows unchanged instead of wrapping, so the diagnosis IS the outermost throwable -
+        // which is exactly what makes it reach a Bolt/HTTP client rather than only the server log.
+        .isInstanceOf(InvalidPropertyTypeException.class)
         .hasMessageContaining("TypeError: InvalidPropertyType");
   }
 
@@ -153,7 +157,10 @@ class CypherSetFromEntityIssue6832Test {
     database.transaction(() -> database.command("opencypher", "CREATE (:A {id: 1})"));
 
     assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher", "MATCH (a:A) SET a += {x: {y: 1}}")))
-        .rootCause()
+        // Not .rootCause(): since #7729 this is an InvalidPropertyTypeException, a CommandExecutionException the
+        // openCypher engine rethrows unchanged instead of wrapping, so the diagnosis IS the outermost throwable -
+        // which is exactly what makes it reach a Bolt/HTTP client rather than only the server log.
+        .isInstanceOf(InvalidPropertyTypeException.class)
         .hasMessageContaining("TypeError: InvalidPropertyType");
   }
 
@@ -162,7 +169,10 @@ class CypherSetFromEntityIssue6832Test {
     database.transaction(() -> database.command("opencypher", "CREATE (:A {id: 1})"));
 
     assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher", "MATCH (a:A) SET a += {x: [{y: 1}]}")))
-        .rootCause()
+        // Not .rootCause(): since #7729 this is an InvalidPropertyTypeException, a CommandExecutionException the
+        // openCypher engine rethrows unchanged instead of wrapping, so the diagnosis IS the outermost throwable -
+        // which is exactly what makes it reach a Bolt/HTTP client rather than only the server log.
+        .isInstanceOf(InvalidPropertyTypeException.class)
         .hasMessageContaining("TypeError: InvalidPropertyType");
   }
 
@@ -256,7 +266,10 @@ class CypherSetFromEntityIssue6832Test {
 
     database.begin();
     assertThatThrownBy(() -> database.command("opencypher", "MATCH (a:A) SET a.ok = 1, a += {bad: {nested: 1}}"))
-        .rootCause()
+        // Not .rootCause(): since #7729 this is an InvalidPropertyTypeException, a CommandExecutionException the
+        // openCypher engine rethrows unchanged instead of wrapping, so the diagnosis IS the outermost throwable -
+        // which is exactly what makes it reach a Bolt/HTTP client rather than only the server log.
+        .isInstanceOf(InvalidPropertyTypeException.class)
         .hasMessageContaining("TypeError: InvalidPropertyType");
 
     final ResultSet inTx = database.query("opencypher", "MATCH (a:A) RETURN a.ok AS ok");
@@ -274,7 +287,10 @@ class CypherSetFromEntityIssue6832Test {
 
     database.begin();
     assertThatThrownBy(() -> database.command("opencypher", "MATCH (a:A) SET a.ok = 1, a.bad = {nested: 1}"))
-        .rootCause()
+        // Not .rootCause(): since #7729 this is an InvalidPropertyTypeException, a CommandExecutionException the
+        // openCypher engine rethrows unchanged instead of wrapping, so the diagnosis IS the outermost throwable -
+        // which is exactly what makes it reach a Bolt/HTTP client rather than only the server log.
+        .isInstanceOf(InvalidPropertyTypeException.class)
         .hasMessageContaining("TypeError: InvalidPropertyType");
 
     final ResultSet inTx = database.query("opencypher", "MATCH (a:A) RETURN a.ok AS ok");

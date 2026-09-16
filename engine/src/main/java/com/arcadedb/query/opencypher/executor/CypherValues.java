@@ -18,10 +18,14 @@
  */
 package com.arcadedb.query.opencypher.executor;
 
+import com.arcadedb.database.Document;
+import com.arcadedb.exception.InvalidPropertyTypeException;
+import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 
 import java.util.List;
 import java.util.Map;
+import java.util.StringJoiner;
 
 /**
  * Comparisons and validation shared by every openCypher write clause (CREATE, MERGE, SET) between a value stored on
@@ -30,6 +34,9 @@ import java.util.Map;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class CypherValues {
+  /** How many of a refused map's keys a message names before it stops; see {@link #describeKeys}. */
+  private static final int MAX_DESCRIBED_KEYS = 5;
+
   private CypherValues() {
   }
 
@@ -68,33 +75,104 @@ public final class CypherValues {
    * {@code MATCH (a) CREATE (b {loc: a.loc})}). The exemption only waives the "is a Map" check on the point-shaped
    * map itself - every one of its own entries is still validated, so a map smuggled in under some other key (e.g.
    * {@code {x: 1, y: 2, crs: 'x', payload: {secret: 1}}}) is still refused.
+   * <p>
+   * The two context arguments are what a refusal needs to be able to name (issue #7729). The message this used to
+   * raise was written for the literal case - {@code SET n.x = {y: 1}} - where the offending value is right there in
+   * the query text. It is just as reachable through a copy: {@code SET t = n} or {@code SET t.m2 = n.m} against a
+   * record whose map property was written by SQL, which is allowed to store one because {@code MAP} is a
+   * first-class ArcadeDB schema type. On those paths the caller wrote no map at all, and "Property values can not
+   * be maps" named neither the property being written nor where the value came from. Both are passed raw rather
+   * than pre-rendered, and are read only on the failure path: a property write is a hot path and must not pay for a
+   * message no one will ever see.
+   *
+   * @param propertyName the property the value was about to be stored under, or null when the caller has no name
+   *                     for it
+   * @param valueOrigin  where the value came from, used only to describe it: a {@link Document} for a value copied
+   *                     off another record, an {@link Expression} for one a query expression produced, a
+   *                     {@link String} for the name of the parameter that supplied it, or null when unknown
    */
-  public static Object coerceAndValidatePropertyValue(final Object value) {
+  public static Object coerceAndValidatePropertyValue(final Object value, final String propertyName,
+      final Object valueOrigin) {
     if (value == null)
       return null; // a null value is a removal (SET) or simply not stored (CREATE/MERGE), not a stored value
     final Object coerced = TemporalUtil.toCoreJavaType(value);
-    validatePropertyValue(coerced);
+    validatePropertyValue(coerced, propertyName, valueOrigin, false);
     return coerced;
   }
 
-  private static void validatePropertyValue(final Object value) {
+  private static void validatePropertyValue(final Object value, final String propertyName, final Object valueOrigin,
+      final boolean insideList) {
     if (value instanceof List) {
       for (final Object element : (List<?>) value) {
         if (element instanceof Map<?, ?> map && isPointShaped(map)) {
-          validatePointEntries(map);
+          validatePointEntries(map, propertyName, valueOrigin, true);
           continue;
         }
-        if (element instanceof Map)
-          throw new IllegalArgumentException("TypeError: InvalidPropertyType - Property values can not contain map values");
+        if (element instanceof Map<?, ?> map)
+          throw new InvalidPropertyTypeException(refusal(map, propertyName, valueOrigin, true));
         if (element instanceof List)
-          validatePropertyValue(element);
+          validatePropertyValue(element, propertyName, valueOrigin, true);
       }
     } else if (value instanceof Map<?, ?> map) {
       if (isPointShaped(map))
-        validatePointEntries(map);
+        validatePointEntries(map, propertyName, valueOrigin, insideList);
       else
-        throw new IllegalArgumentException("TypeError: InvalidPropertyType - Property values can not be maps");
+        throw new InvalidPropertyTypeException(refusal(map, propertyName, valueOrigin, insideList));
     }
+  }
+
+  /**
+   * Builds the refusal message. It answers three questions in order - what rule was broken, which value broke it,
+   * and where that value came from - because the caller may have written none of them: on a copy path the only
+   * thing the query text shows is the two variables.
+   * <p>
+   * The value is described by its keys and not by its contents. Neo4j prints the whole map, but this message
+   * travels to a client and into the server log, and the keys are enough to identify which value was refused
+   * without copying the data itself into either place. The list is capped for the same reason.
+   */
+  private static String refusal(final Map<?, ?> map, final String propertyName, final Object valueOrigin,
+      final boolean insideList) {
+    final StringBuilder message = new StringBuilder(196);
+    message.append("TypeError: InvalidPropertyType - Property values can only be of primitive types or arrays thereof. ")
+        .append("Encountered a map ").append(describeKeys(map));
+    if (insideList)
+      message.append(" inside the list");
+    message.append(" assigned to ");
+    if (propertyName != null)
+      message.append("property '").append(propertyName).append("'");
+    else
+      message.append("a property");
+
+    if (valueOrigin instanceof Document source) {
+      // The one case nothing else explains: the caller named two variables and neither is a map. Say which record
+      // holds the value, and why it was storable in the first place.
+      message.append(", copied from record ").append(source.getIdentity())
+          .append(". ArcadeDB SQL can store a map in a property and openCypher can not, so such a property can be"
+              + " read and returned but never copied into another one");
+    } else if (valueOrigin instanceof Expression expression) {
+      final String text = expression.getText();
+      if (text != null && !text.isEmpty())
+        message.append(", produced by the expression ").append(text);
+    } else if (valueOrigin instanceof String parameterName)
+      message.append(", supplied by parameter $").append(parameterName);
+
+    return message.append(".").toString();
+  }
+
+  /** At most {@link #MAX_DESCRIBED_KEYS} keys, so a wide map cannot turn one refusal into a page of log. */
+  private static String describeKeys(final Map<?, ?> map) {
+    if (map.isEmpty())
+      return "with no entries";
+    final StringJoiner keys = new StringJoiner(", ", "[", "]");
+    int described = 0;
+    for (final Object key : map.keySet()) {
+      if (described++ == MAX_DESCRIBED_KEYS) {
+        keys.add("... " + (map.size() - MAX_DESCRIBED_KEYS) + " more");
+        break;
+      }
+      keys.add(String.valueOf(key));
+    }
+    return keys.toString();
   }
 
   /**
@@ -111,8 +189,9 @@ public final class CypherValues {
 
   /** A point-shaped map is exempt as a whole, but its own values are not: this refuses one smuggling a map/list of
    *  maps in under a key {@link #isPointShaped} doesn't look at. */
-  private static void validatePointEntries(final Map<?, ?> map) {
+  private static void validatePointEntries(final Map<?, ?> map, final String propertyName, final Object valueOrigin,
+      final boolean insideList) {
     for (final Object entry : map.values())
-      validatePropertyValue(entry);
+      validatePropertyValue(entry, propertyName, valueOrigin, insideList);
   }
 }

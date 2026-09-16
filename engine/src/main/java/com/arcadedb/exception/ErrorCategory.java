@@ -98,6 +98,11 @@ public enum ErrorCategory {
    * failures in cannot relabel an arithmetic error as invalid syntax, and before any test on
    * {@link CommandExecutionException} would be, since {@link ArithmeticErrorException} extends it.
    * <p>
+   * {@link InvalidPropertyTypeException} is named explicitly rather than left to the
+   * {@link CommandExecutionException} fall-through, because it extends that type and would otherwise land in
+   * {@link #SERVER}. It used to be an {@link IllegalArgumentException} and so already answered {@link #VALIDATION};
+   * naming it keeps that verdict across the change (issue #7729).
+   * <p>
    * {@link IllegalArgumentException} is the one entry that is not self-evidently the caller's fault: the engine
    * raises it both for bad input and for internal invariant violations, so classifying it as {@link #VALIDATION}
    * can label a server bug a client error. It is mapped anyway because the HTTP handler has answered it with 400
@@ -126,6 +131,7 @@ public enum ErrorCategory {
       return SECURITY;
     if (CauseChain.contains(error, ValidationException.class) //
         || CauseChain.contains(error, QueryNotIdempotentException.class) //
+        || CauseChain.contains(error, InvalidPropertyTypeException.class) //
         || CauseChain.contains(error, IllegalArgumentException.class))
       return VALIDATION;
     if (CauseChain.contains(error, CommandParsingException.class))
