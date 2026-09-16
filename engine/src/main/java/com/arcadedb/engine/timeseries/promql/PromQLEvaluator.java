@@ -20,6 +20,7 @@ package com.arcadedb.engine.timeseries.promql;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.timeseries.AggregationMetrics;
 import com.arcadedb.engine.timeseries.TimeSeriesNaN;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.TimeBoundRegex;
@@ -116,6 +117,9 @@ public class PromQLEvaluator {
     this.lookbackMs = lookbackMs;
   }
 
+  // The read counters this evaluator's selector scans fill in, or null for "do not count" (issue #7717).
+  private AggregationMetrics readMetrics;
+
   private long regexDeadline() {
     if (regexDeadline == null)
       regexDeadline = TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(database));
@@ -132,6 +136,19 @@ public class PromQLEvaluator {
    */
   public void setRegexDeadline(final long regexDeadline) {
     this.regexDeadline = regexDeadline;
+  }
+
+  /**
+   * Counts what this evaluator's selector scans do into {@code metrics} (issue #7717), or stops counting when
+   * given {@code null}, which is the default and what every caller outside the two PromQL HTTP endpoints uses.
+   * <p>
+   * A field rather than a parameter on {@code evaluateInstant}/{@code evaluateRange}, matching
+   * {@link #setRegexDeadline(long)} right above: an evaluator is built per request, the metrics belong to that
+   * request, and threading a counter through every arm of the expression evaluator would put it in a dozen
+   * signatures that have nothing to say about it. Set it before evaluating.
+   */
+  public void setReadMetrics(final AggregationMetrics readMetrics) {
+    this.readMetrics = readMetrics;
   }
 
   /**
@@ -253,7 +270,7 @@ public class PromQLEvaluator {
 
     final Iterator<Object[]> rowIter;
     try {
-      rowIter = engine.iterateQuery(queryStart, queryEnd, null, tagFilter);
+      rowIter = engine.iterateQuery(queryStart, queryEnd, null, tagFilter, readMetrics);
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING,
           "Error querying TimeSeries type '%s': %s", null, typeName, e.getMessage());
@@ -309,7 +326,7 @@ public class PromQLEvaluator {
 
     final Iterator<Object[]> rowIter;
     try {
-      rowIter = engine.iterateQuery(queryStart, queryEnd, null, tagFilter);
+      rowIter = engine.iterateQuery(queryStart, queryEnd, null, tagFilter, readMetrics);
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING,
           "Error querying TimeSeries type '%s': %s", null, typeName, e.getMessage());

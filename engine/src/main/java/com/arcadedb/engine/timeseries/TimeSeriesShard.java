@@ -355,11 +355,25 @@ public class TimeSeriesShard implements AutoCloseable {
    */
   public Iterator<Object[]> iterateRange(final long fromTs, final long toTs, final int[] columnIndices,
                                          final TagFilter tagFilter) throws IOException {
+    return iterateRange(fromTs, toTs, columnIndices, tagFilter, null);
+  }
+
+  /**
+   * {@link #iterateRange(long, long, int[], TagFilter)}, counting what the SEALED walk did into
+   * {@code metrics} (issue #7717). {@code null} means "do not count".
+   * <p>
+   * The sealed half only: the mutable half is read by {@code TimeSeriesBucket.scanRange}, which keeps no
+   * counters of its own. So the block numbers - which are the ones that say whether the push-downs are
+   * working - are complete, while the mutable page numbers are not reported on this path.
+   */
+  public Iterator<Object[]> iterateRange(final long fromTs, final long toTs, final int[] columnIndices,
+                                         final TagFilter tagFilter, final AggregationMetrics metrics)
+      throws IOException {
     final Iterator<Object[]> sealedIter;
     final Iterator<Object[]> mutableIter;
     compactionLock.readLock().lock();
     try {
-      sealedIter = sealedStore.iterateRange(fromTs, toTs, columnIndices, tagFilter);
+      sealedIter = sealedStore.iterateRange(fromTs, toTs, columnIndices, tagFilter, metrics);
       // Eagerly materialize the mutable iterator under the lock.
       // A lazy iterator would risk reading stale (cleared) pages if compaction
       // acquires the write lock and clears the bucket before next() is called.

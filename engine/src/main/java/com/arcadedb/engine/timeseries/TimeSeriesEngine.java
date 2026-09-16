@@ -366,11 +366,24 @@ public class TimeSeriesEngine implements AutoCloseable {
    */
   public Iterator<Object[]> iterateQuery(final long fromTs, final long toTs, final int[] columnIndices,
       final TagFilter tagFilter) throws IOException {
+    return iterateQuery(fromTs, toTs, columnIndices, tagFilter, null);
+  }
+
+  /**
+   * {@link #iterateQuery(long, long, int[], TagFilter)}, counting what the sealed walk did into
+   * {@code metrics} (issue #7717). {@code null} means "do not count" and costs nothing, as everywhere else.
+   * <p>
+   * This is the read the PromQL evaluation endpoints reach - {@code /prom/api/v1/query} and
+   * {@code /query_range} both resolve their selectors through here - and until it took a metrics parameter
+   * those two surfaces were the only {@code /ts} reads the sink could not see.
+   */
+  public Iterator<Object[]> iterateQuery(final long fromTs, final long toTs, final int[] columnIndices,
+      final TagFilter tagFilter, final AggregationMetrics metrics) throws IOException {
     final PriorityQueue<PeekableIterator> heap = new PriorityQueue<>(
         Math.max(1, shardCount), Comparator.comparingLong(it -> (long) it.peek()[0]));
 
     for (final TimeSeriesShard shard : shards) {
-      final Iterator<Object[]> it = shard.iterateRange(fromTs, toTs, columnIndices, tagFilter);
+      final Iterator<Object[]> it = shard.iterateRange(fromTs, toTs, columnIndices, tagFilter, metrics);
       if (it.hasNext())
         heap.add(new PeekableIterator(it));
     }

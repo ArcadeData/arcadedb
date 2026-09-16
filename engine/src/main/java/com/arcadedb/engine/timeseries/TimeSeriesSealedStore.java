@@ -452,8 +452,17 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    */
   public Iterator<Object[]> iterateRange(final long fromTs, final long toTs, final int[] columnIndices,
       final TagFilter tagFilter) throws IOException {
+    return iterateRange(fromTs, toTs, columnIndices, tagFilter, null);
+  }
+
+  /**
+   * {@link #iterateRange(long, long, int[], TagFilter)}, counting what the walk did into {@code metrics}
+   * (issue #7717). {@code null} means "do not count" and is the path every pre-existing caller takes.
+   */
+  public Iterator<Object[]> iterateRange(final long fromTs, final long toTs, final int[] columnIndices,
+      final TagFilter tagFilter, final AggregationMetrics metrics) throws IOException {
     final List<Object[]> results = new ArrayList<>();
-    forEachRow(fromTs, toTs, columnIndices, tagFilter, null, row -> results.add(row));
+    forEachRow(fromTs, toTs, columnIndices, tagFilter, metrics, row -> results.add(row));
     return results.iterator();
   }
 
