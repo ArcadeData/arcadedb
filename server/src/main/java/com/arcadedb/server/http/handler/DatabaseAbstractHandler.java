@@ -311,8 +311,14 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
    * multiplexed onto the same thread. Introduced with {@code GET /api/v1/ts/{database}/latest} in issue #7402
    * and shared from here since issue #7681, which put eight more IO-thread handlers on this base class.
    * <p>
-   * Only tests the header's presence. A value that turns out not to resolve has already cost the dispatch by
-   * then, which is the cheap half of the trade.
+   * Only tests the header's presence, which is deliberately the SAME test {@link #setTransactionInThreadLocal}
+   * and {@link #removeSession} make on the same header - all three read it as
+   * {@code sessionId != null && !sessionId.isEmpty()}, where {@code isEmpty()} asks whether the header carries
+   * any value at all, not whether that value is blank. Keeping them identical is the point: this method decides
+   * which THREAD the request is answered on and that one decides what the id RESOLVES to, so tightening one
+   * without the other would answer a request on the IO thread and then block it on the session lock anyway, or
+   * dispatch one that was never going to touch a session. A value that turns out not to resolve has by then
+   * cost a dispatch, which is the cheap half of the trade (claude-review on PR #7723).
    */
   protected boolean carriesSessionId(final HttpServerExchange exchange) {
     final HeaderValues sessionId = exchange.getRequestHeaders().get(SESSION_ID_HEADER);
