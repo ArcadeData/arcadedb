@@ -832,6 +832,11 @@ public class RemoteHttpComponent extends RWLockContext {
     // The envelope then carries only what the leading sentence did NOT already say. Repeating the promoted text
     // verbatim under 'reason=' stated the same diagnosis twice in one message, which is exactly the readability
     // this was meant to buy back (claude-review on PR #7728).
+    //
+    // A server that filled in BOTH fields with the same text therefore drops both, leaving the sentence alone.
+    // That is deliberate and not a case falling through the cracks: printing "reason=X detail=X" after having
+    // already said X states it three times. The fields are dropped only when they ADD nothing - a detail that
+    // differs from the promoted reason by so much as a character is still printed.
     final StringBuilder envelope = new StringBuilder(" (httpErrorCode=").append(statusCode)
         .append(" httpErrorDescription=").append(httpErrorDescription);
     if (!promoted || !explanation.equals(reason))
