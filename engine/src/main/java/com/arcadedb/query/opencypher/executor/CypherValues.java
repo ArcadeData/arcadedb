@@ -210,15 +210,25 @@ public final class CypherValues {
    */
   private static String sanitize(final String text) {
     for (int i = 0; i < text.length(); i++) {
-      if (Character.isISOControl(text.charAt(i))) {
+      if (breaksALine(text.charAt(i))) {
         final char[] cleaned = text.toCharArray();
         for (int j = i; j < cleaned.length; j++)
-          if (Character.isISOControl(cleaned[j]))
+          if (breaksALine(cleaned[j]))
             cleaned[j] = ' ';
         return new String(cleaned);
       }
     }
     return text;
+  }
+
+  /**
+   * Anything a reader of the log might take for the end of a line. {@link Character#isISOControl} covers the usual
+   * suspects, CR and LF among them, and the C1 range that includes U+0085 NEL; U+2028 and U+2029 are not control
+   * characters by that test but plenty of log viewers and parsers break on them all the same, and a bound that
+   * stops only the breaks one particular reader honours is not a bound.
+   */
+  private static boolean breaksALine(final char c) {
+    return Character.isISOControl(c) || c == '\u2028' || c == '\u2029';
   }
 
   /**

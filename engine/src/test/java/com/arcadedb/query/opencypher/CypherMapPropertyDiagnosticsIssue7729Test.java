@@ -225,6 +225,31 @@ class CypherMapPropertyDiagnosticsIssue7729Test {
   }
 
   @Test
+  void aUnicodeLineSeparatorIsTreatedAsALineBreakToo() {
+    // U+2028 is not an ISO control character, but plenty of log viewers and parsers break a line on it.
+    assertThatThrownBy(() -> database.transaction(
+        () -> database.command("opencypher", "MATCH (t:T) SET t.`a\u2028FAKE LOG LINE` = {k: 1}")))
+        .isInstanceOf(InvalidPropertyTypeException.class)
+        .satisfies(e -> assertThat(e.getMessage()).doesNotContain("\u2028"))
+        .hasMessageContaining("FAKE LOG LINE");
+  }
+
+  @Test
+  void anExpressionTooLongToNameIsSimplyNotNamed() {
+    // The third bound in the message, and the only one without a test of its own: an expression's text is echoed
+    // only up to MAX_ECHOED_EXPRESSION_LENGTH. Past it the clause is dropped rather than truncated, because half an
+    // expression names nothing.
+    final String longParameter = "p".repeat(150);
+
+    assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher",
+        "MATCH (t:T) SET t.m = $" + longParameter, Map.of(longParameter, Map.of("k", 1)))))
+        .isInstanceOf(InvalidPropertyTypeException.class)
+        .hasMessageContaining("property 'm'")
+        .satisfies(e -> assertThat(e.getMessage()).doesNotContain(longParameter))
+        .hasMessageNotContaining("produced by the expression");
+  }
+
+  @Test
   void aBareParameterReadsTheSameWhicheverClauseRefusedIt() {
     // CREATE and MERGE resolve a bare parameter to its name before validating; SET passes the expression. Both
     // describe the same thing, so both say it the same way.
