@@ -33,6 +33,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
@@ -247,6 +248,22 @@ class CypherMapPropertyDiagnosticsIssue7729Test {
         .hasMessageContaining("property 'm'")
         .satisfies(e -> assertThat(e.getMessage()).doesNotContain(longParameter))
         .hasMessageNotContaining("produced by the expression");
+  }
+
+  @Test
+  void aLongParameterNameIsCutToTheSameLengthWhicheverClauseRefusedIt() {
+    // SET reaches the parameter through the expression, CREATE resolves it to a name first. Both are naming the
+    // same thing, so both bound it the same way - the expression cap is for expressions, not for names.
+    final String longParameter = "p".repeat(60);
+    final Map<String, Object> args = Map.of(longParameter, Map.of("k", 1));
+
+    final String fromSet = catchThrowable(() -> database.transaction(
+        () -> database.command("opencypher", "MATCH (t:T) SET t.m = $" + longParameter, args))).getMessage();
+    final String fromCreate = catchThrowable(() -> database.transaction(
+        () -> database.command("opencypher", "CREATE (n:R {id: 9, m: $" + longParameter + "})", args))).getMessage();
+
+    assertThat(fromSet).contains("supplied by parameter $" + "p".repeat(40) + "...");
+    assertThat(fromCreate).contains("supplied by parameter $" + "p".repeat(40) + "...");
   }
 
   @Test
