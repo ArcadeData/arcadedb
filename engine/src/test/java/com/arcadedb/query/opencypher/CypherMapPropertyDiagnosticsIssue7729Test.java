@@ -345,6 +345,19 @@ class CypherMapPropertyDiagnosticsIssue7729Test {
   }
 
   @Test
+  void createDoesNotEchoALiteralRightHandSideEither() {
+    // The SET counterpart is aLiteralRightHandSideIsNeverEchoedBackSoItsValuesStayOutOfTheMessageAndTheLog. CREATE
+    // reaches the same place by a different road - a literal map arrives already evaluated, so there is no origin
+    // to echo rather than one that is refused - and the two must agree on what the caller is told.
+    assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher",
+        "CREATE (n:R {id: 9, creds: {password: 'hunter2'}})")))
+        .isInstanceOf(InvalidPropertyTypeException.class)
+        .hasMessageContaining("property 'creds'")
+        .hasMessageContaining("password")
+        .hasMessageNotContaining("hunter2");
+  }
+
+  @Test
   void aValueCopiedFromAnotherPropertyIsStillNamedByTheExpressionThatReadIt() {
     assertThatThrownBy(() -> database.transaction(
         () -> database.command("opencypher", "MATCH (n:R), (t:T) SET t.m2 = n.m")))

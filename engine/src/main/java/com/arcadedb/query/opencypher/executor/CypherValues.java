@@ -272,7 +272,7 @@ public final class CypherValues {
     final StringJoiner keys = new StringJoiner(", ", "[", "]");
     int described = 0;
     for (final Object key : map.keySet()) {
-      if (described++ == MAX_DESCRIBED_KEYS) {
+      if (described++ >= MAX_DESCRIBED_KEYS) {
         keys.add("... " + (map.size() - MAX_DESCRIBED_KEYS) + " more");
         break;
       }
