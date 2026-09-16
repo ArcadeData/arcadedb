@@ -103,6 +103,9 @@ public class PluginApiSpec implements OpenApiContributor {
     openAPI.getComponents().addSchemas("TransferLeaderRequest", createTransferLeaderRequestSchema());
     openAPI.getComponents().addSchemas("ClusterActionResponse", createClusterActionResponseSchema());
     openAPI.getComponents().addSchemas("VerifyDatabaseResponse", createVerifyResponseSchema());
+    openAPI.getComponents().addSchemas("VerifyDatabaseLocalResponse", createVerifyLocalResponseSchema());
+    openAPI.getComponents().addSchemas("VerifyDatabaseClusterResponse", createVerifyClusterResponseSchema());
+    openAPI.getComponents().addSchemas("VerifyDatabaseClusterResult", createVerifyClusterResultSchema());
     openAPI.getComponents().addSchemas("BootstrapStateResponse", createBootstrapStateResponseSchema());
     openAPI.getComponents().addSchemas("PeerCapabilitiesResponse", createPeerCapabilitiesResponseSchema());
   }
@@ -397,8 +400,15 @@ public class PluginApiSpec implements OpenApiContributor {
     // BEFORE this branch is taken, exactly as on the snapshot download route, so a malformed name is refused
     // here rather than resolving to a 404 further down. A checksum computation failure is caught locally and
     // reported as 500.
-    get.setResponses(SpecBuilders.standardResponses("200",
-        SpecBuilders.jsonResponse("Per-file checksums", null),
+    // The body is a FLAT map of file name to checksum - SnapshotHttpHandler.putChecksums writes the map's
+    // entries at top level, with no envelope - which is not the shape the /cluster/verify route answers with and
+    // was declared as an un-named object here, so a generated client got an empty model (issue #7577).
+    final ApiResponse checksums = new ApiResponse();
+    checksums.setDescription("Per-file checksums, keyed by file name. No envelope: the map IS the body");
+    checksums.setContent(new Content().addMediaType(SpecBuilders.JSON,
+        new MediaType().schema(SpecBuilders.mapOf(SpecBuilders.integer("CRC of the file's contents"),
+            "File name to checksum"))));
+    get.setResponses(SpecBuilders.standardResponses("200", checksums,
         "400", "401", "403", "404", "500", "503"));
 
     final PathItem pathItem = new PathItem();
@@ -445,6 +455,14 @@ public class PluginApiSpec implements OpenApiContributor {
     peer.addProperty("version", SpecBuilders.string(
         "Server version this peer reported alongside its capabilities. Absent when the leader has no fresh "
             + "answer from it."));
+    peer.addProperty("capabilitiesUnknownReason", SpecBuilders.string("""
+        Why 'capabilities' is absent for this peer, when the leader knows why. An absent capabilities array \
+        otherwise reads the same whether the peer runs a build that predates the capability route or was never \
+        asked because its address identifies no single peer, and the two have nothing alike as remedies \
+        (issue #7256). Written by the leader only."""));
+    // Only these three are written for every peer; every other member above is conditional on a health sample,
+    // on a resolvable endpoint, or on this node being the leader (issue #7578).
+    peer.setRequired(List.of("id", "address", "role"));
 
     final Schema<Object> database = SpecBuilders.object("One database's cluster state");
     database.addProperty("name", SpecBuilders.string("Database name"));
@@ -458,6 +476,8 @@ public class PluginApiSpec implements OpenApiContributor {
         "When the last acquisition attempt ran, as epoch milliseconds. Absent when none was made."));
     database.addProperty("acquireError", SpecBuilders.string(
         "Why the last acquisition failed. Absent on success."));
+    // The name is the row; everything else says so in its own description.
+    database.setRequired(List.of("name"));
 
     final Schema<Object> schema = SpecBuilders.object("Cluster and replication status");
     schema.addProperty("implementation", SpecBuilders.string("Always 'raft'"));
@@ -480,13 +500,97 @@ public class PluginApiSpec implements OpenApiContributor {
     schema.addProperty("lastElectionTime", SpecBuilders.integer(
         "Last election as epoch milliseconds"));
     schema.addProperty("uptime", SpecBuilders.integer("Milliseconds since the Raft server started"));
+    // This node's OWN Raft position, written on every answer and documented nowhere until the #7578 sweep. The
+    // per-peer figures above are the LEADER's view of its followers, so on a follower - the node an operator
+    // polls when that node is the suspect - these three were the only lag figures available and none of them
+    // appeared in the contract (issue #7136).
+    schema.addProperty("localAppliedIndex", SpecBuilders.integer(
+        "Last Raft index this node has applied. -1 when the division cannot be read, e.g. during an in-place "
+            + "restart"));
+    schema.addProperty("localCommitIndex", SpecBuilders.integer(
+        "Last Raft index this node knows to be committed. -1 under the same condition"));
+    schema.addProperty("localReplicationLag", SpecBuilders.integer(
+        "Entries this node has yet to apply: 'localCommitIndex' minus 'localAppliedIndex'. -1 rather than a "
+            + "fabricated difference whenever either side is unknown"));
     schema.addProperty("peers", SpecBuilders.arrayOf(peer, "Known peers"));
     schema.addProperty("databases", SpecBuilders.arrayOf(database, "Replicated databases"));
-    schema.addProperty("databasePresence", SpecBuilders.object(
-        "Which peer holds which database. Present only when this server is the leader and the "
-            + "request set '?presence=true'."));
-    schema.addProperty("alerts", SpecBuilders.arrayOf(
-        SpecBuilders.object("One cluster alert"), "Conditions worth an operator's attention"));
+    schema.addProperty("databasePresence", SpecBuilders.mapOf(
+        SpecBuilders.arrayOf(SpecBuilders.string("Peer identifier"), "Peers that hold this database"),
+        "Which peer holds which database, keyed by database name. Present only when this server is the leader "
+            + "and the request set '?presence=true'."));
+    schema.addProperty("alerts", SpecBuilders.arrayOf(alertSchema(),
+        "Conditions worth an operator's attention. Empty when the cluster is healthy: an absent array is not a "
+            + "state this endpoint produces"));
+    // Emitted by GetClusterHandler on every answer and documented nowhere, which is the same defect as an
+    // undeclared 'required' entry pointing the other way: a client generated from this contract could not read
+    // the one field that says whether THIS node is serving traffic (issue #7577 sweep).
+    schema.addProperty("localResync", localResyncSchema());
+    // 'databasePresence' is written only by a leader answering '?presence=true'; everything else above is on
+    // every answer, with 'leaderId' and 'leaderHttpAddress' carrying an explicit null rather than going absent
+    // (issue #7578).
+    schema.setRequired(List.of("implementation", "clusterName", "localPeerId", "capabilities", "raftState",
+        "isLeader", "leaderReady", "leaderId", "leaderHttpAddress", "electionCount", "lastElectionTime",
+        "uptime", "localAppliedIndex", "localCommitIndex", "localReplicationLag", "peers", "databases",
+        "localResync", "alerts"));
+    return schema;
+  }
+
+  /**
+   * One cluster alert. Was {@code SpecBuilders.object("One cluster alert")} - a bare object, so the whole
+   * operator-facing payload of this endpoint was unreachable through typed access (issue #7577).
+   * <p>
+   * The severity vocabulary is written out here rather than read from {@code ClusterAlerts.SEVERITY_*}, for the
+   * same reason {@link #HA_RAFT_PATHS} is written out: the {@code ha-raft} module depends on {@code server} and
+   * not the other way round. {@code RaftHAPluginAlertSchemaMatchesClusterAlertsTest}, over in that module where
+   * both are visible, is what keeps the two the same set.
+   */
+  private Schema<?> alertSchema() {
+    final Schema<String> severity = SpecBuilders.string("""
+        How urgent the condition is. 'critical' means this node or the cluster is not serving correctly right \
+        now, 'warning' that it will not keep serving correctly, 'info' that a declared configuration and the \
+        live one differ without consequence yet.""");
+    severity.setEnum(List.of("info", "warning", "critical"));
+
+    final Schema<Object> alert = SpecBuilders.object("One cluster alert");
+    alert.addProperty("id", SpecBuilders.string("""
+        Stable identifier of the condition, e.g. 'lagging-followers' or 'local-resync-in-progress'. Key a \
+        monitoring rule on this rather than on 'title', which is prose and may be reworded."""));
+    alert.addProperty("severity", severity);
+    alert.addProperty("title", SpecBuilders.string("One line naming the condition, for a dashboard row"));
+    alert.addProperty("message", SpecBuilders.string("What is wrong, in full sentences"));
+    alert.addProperty("recommendation", SpecBuilders.string("What an operator should do about it"));
+    alert.addProperty("details", SpecBuilders.freeFormObject("""
+        The condition's own data - the peers involved, the databases behind, the lag figures. An open map \
+        because each 'id' carries its own keys; read it against the 'id', not blind."""));
+    // Every alert is built as one chained expression, so an alert that exists exists whole.
+    alert.setRequired(List.of("id", "severity", "title", "message", "recommendation", "details"));
+    return alert;
+  }
+
+  /**
+   * This node's own resync / WAL-gap quarantine state (issue #7136). The invariant it exists to expose is that
+   * anything making {@code /api/v1/ready} answer 503 is visible here, so a client watching a rolling restart
+   * reads {@code inProgress} rather than polling the probe.
+   */
+  private Schema<?> localResyncSchema() {
+    final Schema<Object> schema = SpecBuilders.object("""
+        This node's resync state. Present on every answer. The database names it carries are reduced to the \
+        ones the caller is authorized on, so a caller scoped to one database cannot learn another tenant's \
+        database name from a status poll.""");
+    schema.addProperty("inProgress", SpecBuilders.bool(
+        "True while this node is not ready to serve traffic. The same answer '/api/v1/ready' gives"));
+    schema.addProperty("snapshotDownloadQueued", SpecBuilders.bool("A snapshot install is waiting to start"));
+    schema.addProperty("snapshotDownloadInProgress", SpecBuilders.bool("A snapshot is being installed now"));
+    schema.addProperty("divergedDatabases", SpecBuilders.arrayOf(SpecBuilders.string("Database name"),
+        "Databases quarantined because this node's WAL diverged from the leader's"));
+    schema.addProperty("snapshotAppliedFloor", SpecBuilders.integer(
+        "Raft index the last installed snapshot brought this node to"));
+    schema.addProperty("databaseAppliedFloors", SpecBuilders.mapOf(
+        SpecBuilders.integer("Raft index this database has been brought to"),
+        "Per-database applied floor, keyed by database name"));
+    // Built as one chained expression by GetClusterHandler.buildLocalResync, so it is present whole.
+    schema.setRequired(List.of("inProgress", "snapshotDownloadQueued", "snapshotDownloadInProgress",
+        "divergedDatabases", "snapshotAppliedFloor", "databaseAppliedFloors"));
     return schema;
   }
 
@@ -518,16 +622,76 @@ public class PluginApiSpec implements OpenApiContributor {
         "Database the action applied to. Present on resync."));
     schema.addProperty("localServer", SpecBuilders.string(
         "Server that performed the action. Present on resync."));
+    // 'result' is the one member every one of these routes writes; the other three say in their own
+    // descriptions which action produces them (issue #7578).
+    schema.setRequired(List.of("result"));
     return schema;
   }
 
+  /**
+   * The two shapes {@code PostVerifyDatabaseHandler} answers with, as a {@code oneOf} rather than as one object
+   * whose every member is conditional.
+   * <p>
+   * A follower - or a leader answering a request another peer already forwarded - reports only its own
+   * checksums; a leader answering a first-hand request fans out and returns only {@code result}. Declared as
+   * one object, the two shapes share no member at all, so the schema could say nothing about what it always
+   * sends and a client had to probe for keys. Split, each branch says exactly what it carries (issues #7577,
+   * #7578).
+   */
   private Schema<?> createVerifyResponseSchema() {
+    final Schema<Object> schema = SpecBuilders.object("""
+        Per-file checksums of one database, in one of two shapes. A follower - and a leader answering a request \
+        a peer already forwarded - answers the local shape, carrying only its own checksums. A leader answering \
+        a first-hand request fans out to every peer and answers the cluster shape, carrying only 'result'. The \
+        two share no member, so read 'result' to tell them apart.""");
+    schema.setType(null);
+    schema.setOneOf(List.of(SpecBuilders.ref("VerifyDatabaseLocalResponse"),
+        SpecBuilders.ref("VerifyDatabaseClusterResponse")));
+    return schema;
+  }
+
+  private Schema<?> createVerifyLocalResponseSchema() {
+    final Schema<Object> schema = SpecBuilders.object("""
+        One node's own checksums, for the leader to compare against. Answered by a follower, and by a leader \
+        whose request carried the already-forwarded marker.""");
+    schema.addProperty("localChecksums", SpecBuilders.mapOf(SpecBuilders.integer("CRC of the file's contents"),
+        "File name to checksum map, for a quick cross-peer comparison"));
+    schema.addProperty("files", SpecBuilders.arrayOf(verifiedFileSchema(), "Files with size and category"));
+    schema.addProperty("localServer", SpecBuilders.string("Server the checksums were taken on"));
+    schema.addProperty("sealedStoresIncluded", SpecBuilders.bool("""
+        True when this build checksums the TimeSeries sealed stores as well (issue #7338). A peer on an older \
+        build omits the flag, and the leader then leaves its sealed files out of the comparison rather than \
+        reporting every one of them MISSING - a rolling upgrade must not make the divergence detector cry \
+        divergence over a file the other side was never asked to checksum. Stays true even when \
+        'sealedStoresComplete' is false: "my build checksums them" and "this answer covers them" are different \
+        statements."""));
+    schema.addProperty("sealedStoresComplete", SpecBuilders.bool("""
+        Present and false when this answer did NOT cover every sealed store - an unreadable file, or a \
+        compaction pause the node could not take. Absent when coverage was complete."""));
+    schema.setRequired(List.of("localChecksums", "files", "localServer", "sealedStoresIncluded"));
+    return schema;
+  }
+
+  private Schema<?> createVerifyClusterResponseSchema() {
+    final Schema<Object> schema = SpecBuilders.object(
+        "A leader's cluster-wide comparison, fanned out to every peer");
+    schema.addProperty("result", SpecBuilders.ref("VerifyDatabaseClusterResult"));
+    schema.setRequired(List.of("result"));
+    return schema;
+  }
+
+  /** One file of a verified database. */
+  private Schema<?> verifiedFileSchema() {
     final Schema<Object> file = SpecBuilders.object("One database file");
     file.addProperty("name", SpecBuilders.string("File name"));
     file.addProperty("checksum", SpecBuilders.integer("CRC of the file's contents"));
     file.addProperty("size", SpecBuilders.integer("File size in bytes"));
     file.addProperty("type", SpecBuilders.string("File category"));
+    file.setRequired(List.of("name", "checksum", "size", "type"));
+    return file;
+  }
 
+  private Schema<?> createVerifyClusterResultSchema() {
     final Schema<Object> mismatch = SpecBuilders.object(
         "One file whose checksum differs between the leader and a peer");
     mismatch.addProperty("file", SpecBuilders.string("File name"));
@@ -535,6 +699,7 @@ public class PluginApiSpec implements OpenApiContributor {
     mismatch.addProperty("localChecksum", SpecBuilders.integer("Leader's CRC for the file"));
     mismatch.addProperty("remoteChecksum", SpecBuilders.string(
         "Peer's CRC for the file, or 'MISSING' when the peer does not have it"));
+    mismatch.setRequired(List.of("file", "type", "localChecksum", "remoteChecksum"));
 
     final Schema<Object> peerResult = SpecBuilders.object(
         "One peer's comparison against the leader's checksums");
@@ -549,31 +714,29 @@ public class PluginApiSpec implements OpenApiContributor {
         "Present only when mismatchedFiles is greater than zero"));
     peerResult.addProperty("error", SpecBuilders.string(
         "Why the peer could not be queried or compared. Absent on a completed comparison."));
+    // The three identifying members are on every row; the counters and the mismatch list say in their own
+    // descriptions when they are not (issue #7578).
+    peerResult.setRequired(List.of("peerId", "httpAddress", "status"));
 
     final Schema<Object> result = SpecBuilders.object(
         "Leader-only cluster-wide comparison, fanned out to every peer");
     result.addProperty("database", SpecBuilders.string("Database name"));
-    result.addProperty("files", SpecBuilders.arrayOf(file, "The leader's files with size and category"));
+    result.addProperty("files", SpecBuilders.arrayOf(verifiedFileSchema(),
+        "The leader's files with size and category"));
     result.addProperty("localServer", SpecBuilders.string("Leader server name"));
     result.addProperty("localPeerId", SpecBuilders.string("Leader's peer identifier"));
-    result.addProperty("localChecksums", SpecBuilders.object("Leader's file name to checksum map"));
+    result.addProperty("localChecksums", SpecBuilders.mapOf(SpecBuilders.integer("CRC of the file's contents"),
+        "Leader's file name to checksum map"));
     result.addProperty("peers", SpecBuilders.arrayOf(peerResult, "Every other peer's comparison result"));
     result.addProperty("overallStatus", SpecBuilders.string(
         "ALL_CONSISTENT when every peer was compared and agreed, INCONSISTENCY_DETECTED when a compared peer "
             + "differs, VERIFICATION_INCOMPLETE when nothing diverged but at least one peer could not be verified"));
-
-    final Schema<Object> schema = SpecBuilders.object(
-        "Per-file checksums of one database. A follower response carries only its own 'localChecksums', "
-            + "'files' and 'localServer'; the leader instead returns only 'result', nesting a "
-            + "cluster-wide comparison against every other peer.");
-    schema.addProperty("localChecksums", SpecBuilders.object(
-        "File name to checksum map, for a quick cross-peer comparison. Present on a follower response."));
-    schema.addProperty("files", SpecBuilders.arrayOf(file,
-        "Files with size and category. Present on a follower response."));
-    schema.addProperty("localServer", SpecBuilders.string(
-        "Server the checksums were taken on. Present on a follower response."));
-    schema.addProperty("result", result);
-    return schema;
+    result.addProperty("incompleteSealedStores", SpecBuilders.bool("""
+        Present and true when the LEADER's own answer was short of a sealed store, so no peer comparison can be \
+        complete: the leader compares its own keys. Absent when its coverage was complete."""));
+    result.setRequired(List.of("database", "files", "localServer", "localPeerId", "localChecksums", "peers",
+        "overallStatus"));
+    return result;
   }
 
   private Schema<?> createBootstrapStateResponseSchema() {
@@ -585,10 +748,15 @@ public class PluginApiSpec implements OpenApiContributor {
         "Last transaction id, -1 when the database could not be read"));
     database.addProperty("error", SpecBuilders.string(
         "Why the database could not be read. Absent on success."));
+    // A database that could not be read still reports a name, an empty fingerprint and -1, so the three are
+    // written whatever happened (issue #7578).
+    database.setRequired(List.of("name", "fingerprint", "lastTxId"));
 
     final Schema<Object> schema = SpecBuilders.object("Per-database bootstrap state of one peer");
-    schema.addProperty("databases", SpecBuilders.arrayOf(database, "Databases on this peer"));
+    schema.addProperty("databases", SpecBuilders.arrayOf(database,
+        "Databases on this peer. Empty when it holds none"));
     schema.addProperty("peerId", SpecBuilders.string("Peer that reported the state"));
+    schema.setRequired(List.of("databases", "peerId"));
     return schema;
   }
 
@@ -600,7 +768,8 @@ public class PluginApiSpec implements OpenApiContributor {
     schema.addProperty("version", SpecBuilders.string("Server version of the answering peer, for operators; "
         + "nothing decides on it"));
     schema.addProperty("capabilities", SpecBuilders.arrayOf(SpecBuilders.string("Capability token"),
-        "Capability tokens this peer can decode, sorted"));
+        "Capability tokens this peer can decode, sorted. Empty when it can decode none, never absent"));
+    schema.setRequired(List.of("peerId", "version", "capabilities"));
     return schema;
   }
 }

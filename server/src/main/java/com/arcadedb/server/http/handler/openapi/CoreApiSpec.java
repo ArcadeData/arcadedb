@@ -119,7 +119,14 @@ public class CoreApiSpec implements OpenApiContributor {
       writes - INSERT, UPDATE, DELETE, DDL, BACKUP DATABASE, or one this analysis cannot classify - is refused \
       with 400 before it runs, because a streamed response puts its status code on the wire ahead of the rows \
       and so cannot report a statement that fails half-way through. Request the buffered 'application/json' \
-      encoding for it instead.""";
+      encoding for it instead.
+
+      EXPLAIN is refused on the stream for a different reason and with its own 400 ("EXPLAIN produces a plan, \
+      not a row stream"): it is read-only and passes the gate above, but its answer is a plan rather than rows, \
+      and a stream of rows plus a stats trailer has nowhere to carry one. Request it buffered, where the plan \
+      arrives in the 'explain' and 'explainPlan' properties of the envelope and 'result' is empty. All three \
+      operations answer EXPLAIN this way; until issue #7575 the GET operation reached neither rule and answered \
+      the plan as a result row instead.""";
 
   @Override
   public void contribute(final OpenAPI openAPI) {
@@ -160,9 +167,19 @@ public class CoreApiSpec implements OpenApiContributor {
     // GET /api/v1/server
     final Operation getOp = new Operation();
     getOp.setSummary("Get server information");
-    getOp.setDescription("Retrieves server status, version, and configuration information");
+    getOp.setDescription("""
+        Retrieves this server's identity and, depending on 'mode', its metrics and settings or its cluster \
+        state. The identity members - user, version, serverName, languages - are on every answer.""");
     getOp.setOperationId("getServerInfo");
     getOp.addTagsItem("Server");
+    // Documented because it decides which members the response carries, and a client generated without it had
+    // no way to ask for anything but the default (issue #7578 sweep).
+    final Parameter mode = SpecBuilders.queryParam("mode", """
+        Which optional sections to include. 'default' adds 'metrics' and 'settings', 'cluster' adds 'ha', \
+        'basic' adds nothing and is the cheapest form. An unrecognised value behaves like 'basic'.""", false);
+    mode.getSchema().setEnum(List.of("default", "basic", "cluster"));
+    mode.getSchema().setDefault("default");
+    getOp.addParametersItem(mode);
     getOp.setResponses(createServerGetResponses());
     pathItem.setGet(getOp);
 
@@ -652,7 +669,7 @@ public class CoreApiSpec implements OpenApiContributor {
     final Schema<Object> schema = SpecBuilders.object("Query request object");
     schema.addProperty("command", SpecBuilders.string("Query or command to execute"));
     schema.addProperty("language", SpecBuilders.string("Query language").example("sql"));
-    schema.addProperty("params", SpecBuilders.object(
+    schema.addProperty("params", SpecBuilders.mapOf(SpecBuilders.anyValue("One parameter value"),
         """
         Query parameters. Values may be JSON primitives, arrays, or typed-marker objects: \
         {"$bytes": "<base64>"} for byte[] (standard or URL-safe base64), \
@@ -676,7 +693,7 @@ public class CoreApiSpec implements OpenApiContributor {
     final Schema<Object> schema = SpecBuilders.object("Command request object");
     schema.addProperty("command", SpecBuilders.string("Command to execute"));
     schema.addProperty("language", SpecBuilders.string("Command language").example("sql"));
-    schema.addProperty("params", SpecBuilders.object(
+    schema.addProperty("params", SpecBuilders.mapOf(SpecBuilders.anyValue("One parameter value"),
         """
         Command parameters. Values may be JSON primitives, arrays, or typed-marker objects: \
         {"$bytes": "<base64>"} for byte[] (standard or URL-safe base64), \
@@ -697,9 +714,41 @@ public class CoreApiSpec implements OpenApiContributor {
     return schema;
   }
 
+  /**
+   * One row of a query result. A fresh schema per call rather than a shared instance, for the reason
+   * {@code PrometheusApiSpec.samplePair} states: one mutable schema object reachable from several points in the
+   * document is how a later tweak to one of them silently rewrites the others.
+   * <p>
+   * An open map rather than a bare object: a row's keys are whatever the statement projected, plus the '@rid'
+   * and '@type' markers JsonSerializer writes into every serialized record (issue #7577).
+   */
+  private static Schema<Object> resultRow() {
+    return SpecBuilders.freeFormObject("""
+        One result row: the projections the statement asked for, plus the '@rid' and '@type' markers \
+        JsonSerializer writes into every serialized record.""");
+  }
+
   private Schema<?> createQueryResponseSchema() {
     final Schema<Object> schema = SpecBuilders.object("Query response object");
-    schema.addProperty("result", SpecBuilders.arrayOf(SpecBuilders.object(null), "Query results"));
+    // Not an array unconditionally, which is what this said before issue #7577 looked at it: the 'graph' and
+    // 'studio' serializers put ONE object here holding the deduplicated elements, not a row list. A client
+    // generated from the old declaration parsed two of the three serializers into the wrong type.
+    final Schema<Object> graphResult = SpecBuilders.object("""
+        The 'graph' and 'studio' serializers answer with one object instead of a row list: the elements every \
+        row referenced, deduplicated across the whole result.""");
+    graphResult.addProperty("vertices", SpecBuilders.arrayOf(resultRow(), "Vertices, deduplicated"));
+    graphResult.addProperty("edges", SpecBuilders.arrayOf(resultRow(), "Edges, deduplicated"));
+    graphResult.addProperty("records", SpecBuilders.arrayOf(resultRow(),
+        "Non-element rows. Written by the 'studio' serializer only"));
+    graphResult.setRequired(List.of("vertices", "edges"));
+
+    final Schema<Object> result = new Schema<>();
+    result.setDescription("""
+        The rows, shaped by the 'serializer' the request asked for: an array with the default 'record' \
+        serializer, and one {vertices, edges} object - plus 'records' under 'studio' - with the two graph \
+        serializers.""");
+    result.setOneOf(List.of(SpecBuilders.arrayOf(resultRow(), "Query results"), graphResult));
+    schema.addProperty("result", result);
     schema.addProperty("limit", SpecBuilders.integer(
         """
         Effective row cap applied while serializing, -1 when uncapped. This is the serializer's cap, not the \
@@ -715,6 +764,26 @@ public class CoreApiSpec implements OpenApiContributor {
         cut in half."""));
     schema.addProperty("truncated", SpecBuilders.bool(
         "True when the cap stopped the serialization with rows still pending, so the response is incomplete"));
+    // The two EXPLAIN envelope properties. They were produced by the POST operations from the day EXPLAIN was
+    // handled and documented nowhere, so a client generated from this contract could not read the plan it had
+    // asked for through typed access - the same defect as a missing 'required' list, pointing the other way
+    // (issue #7575).
+    schema.addProperty("explain", SpecBuilders.string("""
+        The execution plan as indented text, one line per step. Present on an EXPLAIN or PROFILE statement, and \
+        on any statement run with 'profileExecution'; absent otherwise. 'result' is then empty: the plan is the \
+        answer, and it is not also repeated as a row."""));
+    schema.addProperty("explainPlan", SpecBuilders.freeFormObject("""
+        The same plan in structured form, for a caller that reads the steps rather than prints them. Present \
+        exactly when 'explain' is."""));
+    // reportLimits writes all three on every buffered answer, whatever the statement did and whatever
+    // serializer produced the body, so a client that null-checks them is null-checking a case this server
+    // cannot produce (issue #7578).
+    //
+    // 'result' is deliberately NOT here. It is written by every serializer branch, but serializeResultSet
+    // returns without touching the response when the query engine handed back no result set at all - a state
+    // only a query-language plugin can produce - and a 'required' that is true of the three engines in the
+    // distribution and false of a fourth is the lie #7578 warns about in the other direction.
+    schema.setRequired(List.of("limit", "returned", "truncated"));
     return schema;
   }
 
@@ -728,9 +797,10 @@ public class CoreApiSpec implements OpenApiContributor {
     final Schema<Object> schema = SpecBuilders.object("""
         One line of a newline-delimited streaming response. Exactly one of 'record', 'stats' or 'error' is \
         present.""");
-    schema.addProperty("record", SpecBuilders.object("""
+    schema.addProperty("record", SpecBuilders.freeFormObject("""
         One result row, identical to an element of the 'result' array of the buffered application/json \
-        response."""));
+        response. An open map: a row's keys are the projections the statement asked for, plus the '@rid' and \
+        '@type' markers JsonSerializer writes into every serialized record."""));
 
     final Schema<Object> stats = SpecBuilders.object("""
         Trailer, always the last line of a complete stream. Carries the same three numbers the buffered \
@@ -816,26 +886,80 @@ public class CoreApiSpec implements OpenApiContributor {
 
   private Schema<?> createErrorResponseSchema() {
     final Schema<Object> schema = SpecBuilders.object("Error response object");
-    schema.addProperty("error", SpecBuilders.string("Error message"));
-    schema.addProperty("detail", SpecBuilders.string("Error details"));
-    schema.addProperty("exception", SpecBuilders.string("Exception class name"));
-    schema.addProperty("exceptionArgs", SpecBuilders.string("Exception arguments"));
-    schema.addProperty("help", SpecBuilders.string("Help information"));
+    schema.addProperty("error", SpecBuilders.string("Error message. The one member every error body carries"));
+    schema.addProperty("detail", SpecBuilders.string(
+        "Error details, including the cause chain when there is one. Absent when there is nothing to add"));
+    schema.addProperty("exception", SpecBuilders.string(
+        "Exception class name, for distinguishing failure classes programmatically. Absent when the failure "
+            + "was raised as a plain message rather than from an exception"));
+    schema.addProperty("exceptionArgs", SpecBuilders.string(
+        "Exception arguments, when the exception class carries any"));
+    schema.addProperty("help", SpecBuilders.string("What to do about it, when the server can say"));
+    // Both error writers in AbstractServerHttpHandler open with 'error' and guard every other member
+    // (issue #7578).
+    schema.setRequired(List.of("error"));
     return schema;
   }
 
+  /**
+   * What {@code GET /api/v1/server} actually answers.
+   * <p>
+   * Three of the four properties this used to declare - {@code status}, {@code mode} and {@code uptime} - are
+   * not members {@code GetServerHandler} has ever written, so a generated client carried three fields that are
+   * always null and none of the four the server does send on every answer. Found by the #7578 sweep, which is
+   * what establishing the {@code required} list per schema turns up: a field cannot be declared required until
+   * someone has read the handler, and reading the handler is what shows the properties are wrong.
+   */
   private Schema<?> createServerInfoSchema() {
-    final Schema<Object> schema = SpecBuilders.object("Server information object");
+    final Schema<Object> schema = SpecBuilders.object("""
+        Server information. The first four members are on every answer; which of the rest appear is decided by \
+        the 'mode' query parameter.""");
+    final Schema<String> user = SpecBuilders.string(
+        "The authenticated caller. Null on a request that carried no principal");
+    user.setNullable(true);
+    schema.addProperty("user", user);
     schema.addProperty("version", SpecBuilders.string("Server version"));
-    schema.addProperty("status", SpecBuilders.string("Server status"));
-    schema.addProperty("mode", SpecBuilders.string("Server mode"));
-    schema.addProperty("uptime", SpecBuilders.integer("Server uptime in milliseconds"));
+    schema.addProperty("serverName", SpecBuilders.string("This server's configured name"));
+    schema.addProperty("languages", SpecBuilders.arrayOf(SpecBuilders.string("Query language name"),
+        "Query languages this build can run, e.g. sql, sqlscript, cypher, gremlin"));
+    schema.addProperty("metrics", SpecBuilders.freeFormObject("""
+        Profiler counters, request meters, executor pools and sparse-vector index statistics. Present with \
+        mode=default only. An open map: the counter set follows the build and the plugins loaded."""));
+    schema.addProperty("settings", SpecBuilders.arrayOf(settingSchema(), """
+        Every server setting with its current and default value. Present with mode=default only. A setting \
+        marked hidden reports '*****' for both, and so does any setting whose key contains 'password'."""));
+    schema.addProperty("ha", SpecBuilders.freeFormObject("""
+        Cluster topology and per-database replication state. Present with mode=cluster only, and only when \
+        this server runs an HA implementation. The per-database rows are scoped to the caller's authorized \
+        databases; the topology members are not."""));
+    schema.setRequired(List.of("user", "version", "serverName", "languages"));
+    return schema;
+  }
+
+  /** One row of the {@code settings} array. */
+  private Schema<?> settingSchema() {
+    final Schema<Object> schema = SpecBuilders.object("One server setting");
+    schema.addProperty("key", SpecBuilders.string("Setting key, e.g. 'arcadedb.server.httpQueryMaxResultRows'"));
+    schema.addProperty("value", SpecBuilders.anyValue(
+        "Current value, or '*****' when the setting is hidden or its key names a password"));
+    schema.addProperty("description", SpecBuilders.string("What the setting does"));
+    schema.addProperty("overridden", SpecBuilders.bool(
+        "True when this server's context overrides the default rather than inheriting it"));
+    schema.addProperty("default", SpecBuilders.anyValue("Default value, masked the same way as 'value'"));
+    schema.setRequired(List.of("key", "value", "description", "overridden", "default"));
     return schema;
   }
 
   private Schema<?> createDatabaseListSchema() {
     final Schema<Object> schema = SpecBuilders.object("Database list response");
-    schema.addProperty("result", SpecBuilders.arrayOf(SpecBuilders.string(null), "List of database names"));
+    // 'version' and 'user' are written by GetDatabasesHandler in the same expression as 'result' and were
+    // documented nowhere, so a generated client could not read them at all (issue #7578 sweep).
+    schema.addProperty("version", SpecBuilders.string("Server version"));
+    schema.addProperty("user", SpecBuilders.string("The authenticated caller"));
+    schema.addProperty("result", SpecBuilders.arrayOf(SpecBuilders.string("Database name"), """
+        The databases this caller is authorized on, not every database installed. A database the caller cannot \
+        see is indistinguishable here from one that does not exist."""));
+    schema.setRequired(List.of("version", "user", "result"));
     return schema;
   }
 
@@ -845,6 +969,7 @@ public class CoreApiSpec implements OpenApiContributor {
         True when the database exists and is among the authenticated user's authorized databases. \
         False both when the database does not exist and when it exists but the caller is not \
         authorized to see it, since the response does not distinguish the two cases."""));
+    schema.setRequired(List.of("result"));
     return schema;
   }
 
@@ -879,6 +1004,14 @@ public class CoreApiSpec implements OpenApiContributor {
         as an unknown control key, and 'Vertex' is not 'vertex'. Only the CSV boolean literals 'true' and 'false' \
         are matched ignoring case.
 
+        A control key the encoding DOES understand, carrying a value on the kind of line that cannot use it, is \
+        refused the same way: '@id' on an edge line, '@from' or '@to' on a vertex line. It used to be dropped in \
+        silence, so a client that models both line shapes with one struct - which the gRPC sibling \
+        GraphBatchRecord invites, since it carries temp_id for both kinds - got a load that looked clean. A key \
+        carrying nothing is still accepted, so JSON null and the empty string are ignored and a single CSV header \
+        naming all five control columns across both sections keeps working, as long as the inapplicable columns \
+        are left empty.
+
         A temporary id is resolved only within the request that declared it, and only if the vertex appeared \
         earlier in the same payload: a vertex loaded by an EARLIER request has to be referenced by RID \
         (#bucket:position). Under refMode=ordinal, use 'ordinalBase' to keep one position counter across a load \
@@ -901,7 +1034,10 @@ public class CoreApiSpec implements OpenApiContributor {
         A header row naming the columns, then one data row per record. The control keys are column names: @type and \
         @class are required, @id names a vertex's temporary id, and @from and @to name an edge's endpoints. Every \
         other column is a property, and the '@' prefix is reserved there too - an unrecognised '@' column is refused \
-        with a 400. A '---' row separates the vertex section from the edge section, and a new header row follows it. \
+        with a 400, and a control column carrying a value the row's kind cannot use - '@id' on an edge row, '@from' \
+        or '@to' on a vertex row - is refused too, while an EMPTY one is ignored, so one header naming all five \
+        across both sections keeps working. A '---' row separates the vertex section from the edge section, and a \
+        new header row follows it. \
         Values are typed by inspection: 'true'/'false' become booleans, numeric text becomes a number, an empty \
         field sets no property at all. Quoting follows RFC 4180, single-line fields only."""));
     csv.setExample("""
@@ -941,7 +1077,9 @@ public class CoreApiSpec implements OpenApiContributor {
   private Schema<?> createBatchVertexLineSchema() {
     final Schema<Object> schema = SpecBuilders.object("""
         A vertex line. Its properties are the keys of this same object, flat beside the control keys below - they are \
-        NOT nested under a 'properties' key, and sending one carrying an object is refused with a 400.""");
+        NOT nested under a 'properties' key, and sending one carrying an object is refused with a 400. '@from' and \
+        '@to' name an edge's endpoints and a vertex has none: carrying either here is refused with a 400 naming the \
+        line, not dropped.""");
     schema.addProperty("@type", SpecBuilders.string("Discriminator. 'v' is accepted as a synonym of 'vertex'")
         ._enum(List.of("vertex", "v")));
     schema.addProperty("@class", SpecBuilders.string("""
@@ -951,6 +1089,9 @@ public class CoreApiSpec implements OpenApiContributor {
         Temporary id, resolved only against the edges of THIS request. Optional - a vertex needs one only if an edge \
         in the same payload references it, and one that declares none is counted in 'verticesWithoutId'. Ignored \
         under refMode=ordinal, where an edge names a vertex by its 0-based position instead."""));
+    // A vertex has no endpoints, so '@from'/'@to' on this line is a misplacement rather than data, and it is refused
+    // rather than dropped in silence (issue #7574). Declared here as well as refused, so a generated client can
+    // reject it locally instead of discovering it as a 400.
     schema.setRequired(List.of("@type", "@class"));
     addFlatPropertyPolicy(schema);
     return schema;
@@ -959,7 +1100,9 @@ public class CoreApiSpec implements OpenApiContributor {
   private Schema<?> createBatchEdgeLineSchema() {
     final Schema<Object> schema = SpecBuilders.object("""
         An edge line. Its properties are the keys of this same object, flat beside the control keys below - they are \
-        NOT nested under a 'properties' key, and sending one carrying an object is refused with a 400.""");
+        NOT nested under a 'properties' key, and sending one carrying an object is refused with a 400. '@id' is a \
+        vertex's temporary id and an edge is never referenced by one: carrying it here is refused with a 400 naming \
+        the line, not dropped.""");
     schema.addProperty("@type", SpecBuilders.string("Discriminator. 'e' is accepted as a synonym of 'edge'")
         ._enum(List.of("edge", "e")));
     schema.addProperty("@class", SpecBuilders.string("""
@@ -970,6 +1113,8 @@ public class CoreApiSpec implements OpenApiContributor {
         or an existing RID in #bucket:position form; each request resolves only the ids of its own payload. Under \
         refMode=ordinal it is the vertex's 0-based position, offset by 'ordinalBase'."""));
     schema.addProperty("@to", SpecBuilders.string("Destination vertex, named the same way as '@from'"));
+    // An edge is identified by its endpoints and is never referenced by a temporary id, so '@id' on this line is a
+    // misplacement rather than data, and it is refused rather than dropped in silence (issue #7574).
     schema.setRequired(List.of("@type", "@class", "@from", "@to"));
     addFlatPropertyPolicy(schema);
     return schema;
@@ -994,12 +1139,17 @@ public class CoreApiSpec implements OpenApiContributor {
     schema.addProperty("edgesCreated", SpecBuilders.integer("Edges created"));
     schema.addProperty("elapsedMs", SpecBuilders.integer("Elapsed time in milliseconds"));
     addLoadAccounting(schema);
-    schema.addProperty("idMapping", SpecBuilders.object(
+    schema.addProperty("idMapping", SpecBuilders.mapOf(SpecBuilders.string("RID, in #bucket:position form"),
         "Temporary id to RID mapping, present only when temporary ids were used and the mapping was small enough to echo"));
     schema.addProperty("idMappingOmitted", SpecBuilders.bool(
         "True when the mapping was too large to return"));
     schema.addProperty("idMappingSize", SpecBuilders.integer(
         "Number of entries in the omitted mapping"));
+    // The three counters plus the three accounting numbers addLoadAccounting contributes are written on every
+    // successful load; everything about the id mapping is conditional on the load having used temporary ids
+    // (issue #7578).
+    schema.setRequired(List.of("verticesCreated", "edgesCreated", "elapsedMs", "bytesRead", "linesRead",
+        "linesSkipped"));
     return schema;
   }
 
@@ -1033,7 +1183,7 @@ public class CoreApiSpec implements OpenApiContributor {
     progress.addProperty("phase", SpecBuilders.string("'vertices' or 'edges'"));
     progress.addProperty("verticesCreated", SpecBuilders.integer("Vertices attempted so far"));
     progress.addProperty("edgesCreated", SpecBuilders.integer("Edges attempted so far"));
-    progress.addProperty("idMapping", SpecBuilders.object("""
+    progress.addProperty("idMapping", SpecBuilders.mapOf(SpecBuilders.string("RID, in #bucket:position form"), """
         Temporary id to RID mapping of the vertices this chunk resolved, and only of those: the mapping is \
         handed back one committed chunk at a time so neither end ever holds the whole load's worth of it \
         (issue #7353). Concatenate the 'idMapping' of every line, in order, to obtain what the buffered \
@@ -1105,6 +1255,11 @@ public class CoreApiSpec implements OpenApiContributor {
         True when earlier chunks are durably committed. Retrying the whole payload then duplicates \
         the already-committed vertices, because temporary ids are not keys."""));
     addLoadAccounting(schema);
+    // Every batch failure reports what it had attempted - that is the whole point of this shape - so the five
+    // below plus the three accounting numbers are unconditional. 'requestId' is echoed only when the request
+    // carried a correlation id (issue #7578).
+    schema.setRequired(List.of("error", "exception", "verticesCreated", "edgesCreated", "partialCommit",
+        "bytesRead", "linesRead", "linesSkipped"));
     return schema;
   }
 
@@ -1140,8 +1295,15 @@ public class CoreApiSpec implements OpenApiContributor {
     operation.addProperty("startedOn", SpecBuilders.integer("Start time as epoch milliseconds"));
     operation.addProperty("elapsedMs", SpecBuilders.integer("Elapsed time in milliseconds"));
 
+    // Each row is built from one ProgressTracker snapshot with no conditional member, so a row that is
+    // present is present whole (issue #7578).
+    operation.setRequired(List.of("id", "database", "operation", "stepName", "stepIndex", "totalSteps", "done",
+        "total", "percentage", "startedOn", "elapsedMs"));
+
     final Schema<Object> schema = SpecBuilders.object("In-progress maintenance operations");
-    schema.addProperty("result", SpecBuilders.arrayOf(operation, "In-progress operations"));
+    schema.addProperty("result", SpecBuilders.arrayOf(operation,
+        "In-progress operations. Empty when nothing is running"));
+    schema.setRequired(List.of("result"));
     return schema;
   }
 }

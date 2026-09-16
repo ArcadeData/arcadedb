@@ -196,10 +196,14 @@ public class TimeSeriesApiSpec implements OpenApiContributor {
   private Schema<?> createQueryRequestSchema() {
     final Schema<Object> request = SpecBuilders.object("One aggregation to compute over a bucket");
     request.addProperty("field", SpecBuilders.string("Field name to aggregate"));
-    request.addProperty("type", SpecBuilders.string(
-        "Aggregation function. Required, one of SUM, AVG, MIN, MAX, COUNT, matched case-insensitively."));
+    final Schema<String> aggregationType = SpecBuilders.string(
+        "Aggregation function, matched case-insensitively. The same vocabulary the Grafana query endpoint "
+            + "accepts, because both resolve it through the same parser.");
+    aggregationType.setEnum(List.copyOf(GrafanaApiSpec.AGGREGATION_TYPES));
+    request.addProperty("type", aggregationType);
     request.addProperty("alias", SpecBuilders.string(
         "Output name. Defaults to the field name suffixed with the lower-cased aggregation type."));
+    request.setRequired(List.of("field", "type"));
 
     final Schema<Object> aggregation = SpecBuilders.object(
         "Bucketed aggregation. Present only when the caller wants buckets rather than raw rows.");
@@ -210,6 +214,7 @@ public class TimeSeriesApiSpec implements OpenApiContributor {
             + "is exactly the sort of value a client computes by division."));
     aggregation.addProperty("requests", SpecBuilders.arrayOf(request,
         "Aggregations to compute. Must name at least one; an empty array is refused with 400."));
+    aggregation.setRequired(List.of("bucketInterval", "requests"));
 
     final Schema<Object> schema = SpecBuilders.object("Time-series query definition");
     schema.addProperty("type", SpecBuilders.string("Time-series type name"));
@@ -217,7 +222,7 @@ public class TimeSeriesApiSpec implements OpenApiContributor {
         "Inclusive lower bound of the timestamp range. Unbounded when omitted."));
     schema.addProperty("to", SpecBuilders.integer(
         "Inclusive upper bound of the timestamp range. Unbounded when omitted."));
-    schema.addProperty("tags", SpecBuilders.object(
+    schema.addProperty("tags", SpecBuilders.mapOf(SpecBuilders.string("Tag value the column must equal"),
         "Tag filter as name to value pairs. All pairs must match. A name that is no TAG column of the type is "
             + "refused with 400 rather than ignored."));
     schema.addProperty("fields", SpecBuilders.arrayOf(
@@ -238,9 +243,13 @@ public class TimeSeriesApiSpec implements OpenApiContributor {
     schema.addProperty("columns", SpecBuilders.arrayOf(
         SpecBuilders.string("Column name"), "Column names, in the order the row values appear"));
     schema.addProperty("rows", SpecBuilders.arrayOf(
-        SpecBuilders.arrayOf(SpecBuilders.object("Column value"), "One row"),
+        SpecBuilders.arrayOf(SpecBuilders.anyValue("One cell: a timestamp, a number, a string, or null"),
+            "One row"),
         "Rows, each positionally aligned with 'columns'"));
     schema.addProperty("count", SpecBuilders.integer("Number of rows returned"));
+    // All four written unconditionally by PostTimeSeriesQueryHandler's raw branch; 'rows' is an empty array on
+    // a range that matched nothing, not an absent member (issue #7578).
+    schema.setRequired(List.of("type", "columns", "rows", "count"));
     return schema;
   }
 
@@ -248,8 +257,10 @@ public class TimeSeriesApiSpec implements OpenApiContributor {
     final Schema<Object> bucket = SpecBuilders.object("One aggregation bucket");
     bucket.addProperty("timestamp", SpecBuilders.integer("Bucket start timestamp"));
     bucket.addProperty("values", SpecBuilders.arrayOf(
-        SpecBuilders.object("Aggregated value"),
+        SpecBuilders.anyValue("One aggregated value: a number, or null for a bucket the aggregation had no "
+            + "sample for"),
         "Aggregated values, positionally aligned with 'aggregations'"));
+    bucket.setRequired(List.of("timestamp", "values"));
 
     final Schema<Object> schema = SpecBuilders.object("Aggregated samples");
     schema.addProperty("type", SpecBuilders.string("Time-series type name"));
@@ -258,6 +269,7 @@ public class TimeSeriesApiSpec implements OpenApiContributor {
         "Aliases of the computed aggregations, in bucket value order"));
     schema.addProperty("buckets", SpecBuilders.arrayOf(bucket, "Buckets, ordered by timestamp"));
     schema.addProperty("count", SpecBuilders.integer("Number of buckets returned"));
+    schema.setRequired(List.of("type", "aggregations", "buckets", "count"));
     return schema;
   }
 
@@ -266,10 +278,14 @@ public class TimeSeriesApiSpec implements OpenApiContributor {
     schema.addProperty("type", SpecBuilders.string("Time-series type name"));
     schema.addProperty("columns", SpecBuilders.arrayOf(
         SpecBuilders.string("Column name"), "Column names, in sample value order"));
-    final Schema<?> latest = SpecBuilders.arrayOf(SpecBuilders.object("Column value"),
+    final Schema<?> latest = SpecBuilders.arrayOf(
+        SpecBuilders.anyValue("One cell: a timestamp, a number, a string, or null"),
         "Most recent sample, positionally aligned with 'columns'. Null when the series is empty.");
     latest.setNullable(true);
     schema.addProperty("latest", latest);
+    // 'latest' is NULL on an empty series rather than absent, which is what lets it be required: a client
+    // distinguishes "no sample" from "no answer" without a null-check on the member itself (issue #7578).
+    schema.setRequired(List.of("type", "columns", "latest"));
     return schema;
   }
 
@@ -289,6 +305,9 @@ public class TimeSeriesApiSpec implements OpenApiContributor {
     schema.addProperty("unavailableTypes", SpecBuilders.arrayOf(
         SpecBuilders.string("Type name"),
         "Measurements naming a time-series type whose storage engine failed to load; see the server log for why"));
+    // 'error' plus the two counters are on every rejection; the three name lists are written only when they
+    // hold something, and 'requestId' only when the request carried a correlation id (issue #7578).
+    schema.setRequired(List.of("error", "written", "dropped"));
     return schema;
   }
 }
