@@ -148,7 +148,7 @@ public final class CypherValues {
       message.append(" inside the list");
     message.append(" assigned to ");
     if (propertyName != null)
-      message.append("property '").append(propertyName).append("'");
+      message.append("property '").append(sanitize(propertyName)).append("'");
     else
       message.append("a property");
 
@@ -162,7 +162,10 @@ public final class CypherValues {
     } else if (valueOrigin instanceof Expression expression) {
       final String text = expression.getText();
       if (namesAValue(text))
-        message.append(", produced by the expression ").append(text);
+        // A bare parameter reads as one wherever it was written, so "$p" is reported the same way CREATE and MERGE
+        // report it - they resolve it to its name before getting here, SET does not.
+        message.append(text.charAt(0) == '$' ? ", supplied by parameter " : ", produced by the expression ")
+            .append(text);
     } else if (valueOrigin instanceof String parameterName)
       message.append(", supplied by parameter $").append(parameterName);
 
@@ -176,6 +179,29 @@ public final class CypherValues {
    */
   private static String abbreviate(final String key) {
     return key.length() <= MAX_DESCRIBED_KEY_LENGTH ? key : key.substring(0, MAX_DESCRIBED_KEY_LENGTH) + "...";
+  }
+
+  /**
+   * Replaces control characters with a space. A property name or a map key is caller-supplied text - Cypher's
+   * backtick-quoted identifiers accept a newline inside one - and this message is written to the server log as a
+   * line, so an unescaped newline would let a caller forge log entries below the real one (CWE-117). The expression
+   * clause needs no such treatment: {@link #namesAValue} already admits nothing but letters, digits and
+   * {@code . _ $}.
+   * <p>
+   * Returns the string itself when there is nothing to replace, which is every ordinary identifier, so the common
+   * case allocates nothing beyond what the message already builds.
+   */
+  private static String sanitize(final String text) {
+    for (int i = 0; i < text.length(); i++) {
+      if (Character.isISOControl(text.charAt(i))) {
+        final char[] cleaned = text.toCharArray();
+        for (int j = i; j < cleaned.length; j++)
+          if (Character.isISOControl(cleaned[j]))
+            cleaned[j] = ' ';
+        return new String(cleaned);
+      }
+    }
+    return text;
   }
 
   /**
@@ -223,7 +249,7 @@ public final class CypherValues {
         keys.add("... " + (map.size() - MAX_DESCRIBED_KEYS) + " more");
         break;
       }
-      keys.add(abbreviate(String.valueOf(key)));
+      keys.add(sanitize(abbreviate(String.valueOf(key))));
     }
     return keys.toString();
   }
