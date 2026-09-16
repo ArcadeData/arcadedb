@@ -24,6 +24,7 @@ import com.arcadedb.engine.timeseries.DownsamplingTier;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
+import com.arcadedb.remote.RemoteException;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.TimeSeriesType;
 import com.arcadedb.schema.Type;
@@ -222,6 +223,28 @@ class Issue7399RemoteTimeSeriesTypeBuilderIT extends BaseGraphServerTest {
 
       // Nothing was sent: the type must not half-exist on the server.
       assertThat(database.getSchema().existsType("SubSecondRetention")).isFalse();
+    }
+  }
+
+  @Test
+  void aDuplicateTypeNameIsRefusedOnBothPathsWithDifferentExceptionTypes() {
+    // The one documented seam in the parity contract. Both paths refuse the duplicate and both say so in the same
+    // words, but the embedded one answers before touching storage while the remote one learns it from the server,
+    // so the exception TYPE differs. Pinned here so the difference cannot drift into something a caller cannot
+    // catch at all - see RemoteTimeSeriesTypeBuilder's class javadoc.
+    embedded().getSchema().buildTimeSeriesType()
+        .withName("Duplicate").withTimestamp("ts").withField("value", Type.DOUBLE).withShards(1).create();
+
+    assertThatThrownBy(() -> embedded().getSchema().buildTimeSeriesType()
+        .withName("Duplicate").withTimestamp("ts").withField("value", Type.DOUBLE).withShards(1).create())
+        .isInstanceOf(SchemaException.class)
+        .hasMessageContaining("Type 'Duplicate' already exists");
+
+    try (final RemoteDatabase database = remote()) {
+      assertThatThrownBy(() -> database.getSchema().buildTimeSeriesType()
+          .withName("Duplicate").withTimestamp("ts").withField("value", Type.DOUBLE).withShards(1).create())
+          .isInstanceOf(RemoteException.class)
+          .hasMessageContaining("Type 'Duplicate' already exists");
     }
   }
 

@@ -34,6 +34,14 @@ import java.util.List;
  * {@code Schema}. That only holds if the two agree on what a valid builder is, which is why the validation lives in
  * the base class and why {@link TimeSeriesTypeBuilder#toSQL()} refuses a state the grammar cannot express rather
  * than shipping DDL the server would reject.
+ * <p>
+ * <b>Where the two do NOT agree is the exception type for a name that is already taken.</b> Both refuse it, but the
+ * embedded {@code create()} answers with {@code SchemaException("Type 'X' already exists")} before touching storage,
+ * while this one has no client-side existence check - the rendered DDL carries no {@code IF NOT EXISTS} and no
+ * check would be race-free anyway - so the refusal comes back from the server as a {@link RemoteException} wrapping
+ * the {@code CommandExecutionException}, with the same sentence in its message. A caller that catches
+ * {@code SchemaException} specifically for "already exists" therefore has to catch both. Measured, and pinned by
+ * {@code Issue7399RemoteTimeSeriesTypeBuilderIT.aDuplicateTypeNameIsRefusedOnBothPathsWithDifferentExceptionTypes}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
