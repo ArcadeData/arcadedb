@@ -309,6 +309,24 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
   }
 
   /**
+   * Whether an {@code arcadedb-session-id} this server cannot resolve must be refused rather than silently
+   * degraded to a session-less request. See the branch in {@link #setTransactionInThreadLocal} for what the two
+   * answers mean.
+   * <p>
+   * Defaults to {@link #requiresTransaction()}, which is the answer for every handler whose auto-commit wrapper
+   * IS the thing a stale id would substitute for the caller's transaction. It is a separate question for a
+   * handler that writes without wanting that wrapper: {@code POST /api/v1/ts/{database}/write} appends through
+   * {@code TimeSeriesShard.appendSamples}, which opens its own {@code begin}/{@code commit} per shard, so an
+   * outer auto-commit transaction would buy it nothing and would cost it the parallel shard dispatch
+   * {@code TimeSeriesEngine.appendBatch} only takes with no transaction active on the calling thread (#4957).
+   * That handler answers {@code false} to {@link #requiresTransaction()} and {@code true} here: a write must
+   * still not run outside the transaction its caller believes it is inside (issue #7402).
+   */
+  protected boolean rejectsUnresolvableSession() {
+    return requiresTransaction();
+  }
+
+  /**
    * Extracts the autoCommit parameter from the request payload.
    *
    * @param payload The request payload (may be null)
@@ -371,10 +389,10 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
         // The session id is not resolvable (committed/rolled back, expired, or owned by another principal).
         // A write-capable handler MUST reject it: falling through session-less would run the command in an
         // implicit auto-committing transaction while the client believes it is inside a transaction it can
-        // still roll back. Read-only handlers (GET /query) and the transaction endpoints
-        // (/begin, /commit, /rollback) instead degrade to a session-less request, keeping read-after-commit
-        // and idempotent retries of commit/rollback working.
-        if (requiresTransaction())
+        // still roll back. Read-only handlers (GET /query, the two /api/v1/ts read routes) and the transaction
+        // endpoints (/begin, /commit, /rollback) instead degrade to a session-less request, keeping
+        // read-after-commit and idempotent retries of commit/rollback working.
+        if (rejectsUnresolvableSession())
           throw new HttpSessionException("Remote transaction '" + sessionId.getFirst() + "' not found or expired");
 
         return null;
