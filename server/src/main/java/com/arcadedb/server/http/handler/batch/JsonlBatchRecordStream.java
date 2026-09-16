@@ -53,10 +53,10 @@ import java.util.Set;
  */
 public class JsonlBatchRecordStream implements BatchRecordStream {
 
-  private static final Set<String> META_KEYS = Set.of("@type", "@class", "@id", "@from", "@to");
+  private static final Set<String> META_KEYS = BatchControlKeys.ALL;
 
   /** Named in the refusal messages so the client is told what the five understood control keys are. */
-  private static final String META_KEY_LIST = "@type, @class, @id, @from and @to";
+  private static final String META_KEY_LIST = BatchControlKeys.LIST;
 
   /**
    * The one non-{@code @} key that cannot be taken at face value: {@code GraphBatchRecord} carries a
@@ -165,10 +165,13 @@ public class JsonlBatchRecordStream implements BatchRecordStream {
       throw new IllegalArgumentException("Missing @class at line " + lineNumber);
 
     if (record.kind == BatchRecord.Kind.VERTEX) {
-      record.tempId = json.getString("@id", null);
+      rejectMisplacedControlKey(json, BatchControlKeys.FROM, BatchRecord.Kind.VERTEX);
+      rejectMisplacedControlKey(json, BatchControlKeys.TO, BatchRecord.Kind.VERTEX);
+      record.tempId = json.getString(BatchControlKeys.ID, null);
     } else {
-      record.fromRef = json.getString("@from", null);
-      record.toRef = json.getString("@to", null);
+      rejectMisplacedControlKey(json, BatchControlKeys.ID, BatchRecord.Kind.EDGE);
+      record.fromRef = json.getString(BatchControlKeys.FROM, null);
+      record.toRef = json.getString(BatchControlKeys.TO, null);
       if (record.fromRef == null || record.toRef == null)
         throw new IllegalArgumentException("Edge missing @from or @to at line " + lineNumber);
     }
@@ -203,6 +206,23 @@ public class JsonlBatchRecordStream implements BatchRecordStream {
           + "{\"@type\":\"vertex\",\"@class\":\"Person\",\"properties\":{\"name\":\"Alice\"}}. Nested here, the object "
           + "would be stored as a single property literally named 'properties' and nothing would fail until "
           + "something queried for a field that was never written");
+  }
+
+  /**
+   * Refuses a control key the parser understands, sent on the kind of line that cannot use it (issue #7574).
+   * <p>
+   * A JSON null and an empty string both count as absent, which is what keeps the two encodings agreeing about the
+   * same payload model: CSV cannot tell an empty field from an unset one, so refusing the JSONL spellings of
+   * "carries nothing" would make the two disagree about a client that emits one struct for both line shapes - the
+   * shape the gRPC sibling {@code GraphBatchRecord} invites. Only a value the client actually filled in is refused,
+   * because only that one is a value the load would have dropped.
+   */
+  private void rejectMisplacedControlKey(final JSONObject json, final String key, final BatchRecord.Kind kind) {
+    if (json.isNull(key))
+      return;
+    if (json.get(key) instanceof final String text && text.isEmpty())
+      return;
+    throw BatchControlKeys.misplaced(key, kind, lineNumber);
   }
 
   private static Object unwrap(final Object value) {
