@@ -18,12 +18,14 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.HAServerPlugin;
 
 import java.io.IOException;
 import java.net.http.HttpClient;
+import java.time.Duration;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 
@@ -65,6 +67,36 @@ import java.util.logging.Level;
  * @param refusal why this forward may not be sent at all, or {@code null} when it may
  */
 public record LeaderDial(String address, boolean https, HttpClient client, String refusal) {
+
+  /**
+   * A {@code Duration} of zero or less is rejected by both {@code HttpClient.Builder.connectTimeout} and
+   * {@code HttpRequest.Builder.timeout}. Clamping to 1 ms rather than falling back to a default is
+   * deliberate, matching {@code LeaderCommandForwarder.Transport}'s own clamp: 0 must not become a back door
+   * to the unbounded behaviour {@link #newConnectTimeoutBoundedClient} and the response deadlines in
+   * {@code RaftReplicatedDatabase}/{@code PostBatchHandler} (issues #7526/#7527/#7542/#7543) exist to remove.
+   * Public and shared from here rather than one copy per site (claude-review finding on PR #7650), since
+   * {@link #newConnectTimeoutBoundedClient} is already the shared home for the connect-timeout half of the
+   * same reasoning.
+   */
+  public static final long MIN_FORWARD_TIMEOUT_MS = 1L;
+
+  /**
+   * Builds the plain-HTTP client a follower-to-leader forward dials on, with
+   * {@link GlobalConfiguration#HA_PROXY_CONNECT_TIMEOUT} applied unconditionally (issues
+   * #7526/#7527/#7542/#7543): a leader that never even accepts the connection has no bound without this,
+   * distinct from - and unaffected by - whatever response deadline the caller applies per request. Shared by
+   * every plain-HTTP forward site ({@code RaftReplicatedDatabase}, {@code PostBatchHandler}) rather than one
+   * copy of the clamp per site.
+   * <p>
+   * Read once, at construction: a built {@code HttpClient}'s connect timeout cannot change afterward, so each
+   * caller builds its own client once (e.g. in its constructor) rather than per request.
+   */
+  public static HttpClient newConnectTimeoutBoundedClient(final ContextConfiguration configuration) {
+    final long configured = configuration.getValueAsLong(GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT);
+    return HttpClient.newBuilder()
+        .connectTimeout(Duration.ofMillis(Math.max(configured, MIN_FORWARD_TIMEOUT_MS)))
+        .build();
+  }
 
   /**
    * Said once per JVM: a cluster that names an HTTPS leader endpoint but cannot hand out a client for it has a

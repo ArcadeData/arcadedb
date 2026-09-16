@@ -50,11 +50,15 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.net.ConnectException;
 import java.net.URI;
 import java.net.http.HttpClient;
+import java.net.http.HttpConnectTimeoutException;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
@@ -234,16 +238,22 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    * connection is retired instead, because a bulk upload's remainder is not worth a keep-alive.
    */
   private static final int        MAX_ABANDONED_BODY_DRAIN   = 64 * 1024;
-  private static final HttpClient HTTP_CLIENT                = HttpClient.newHttpClient();
 
   /**
    * Emits the "a peer relayed a batch here and this node is not the leader either" notice only once (issue
    * #6191). Per handler instance, so each server in an in-process cluster still gets to say it once.
    */
   private final AtomicBoolean forwardedAgainWarned = new AtomicBoolean(false);
+  /** Logged at most once: {@code arcadedb.ha.proxyBatchReadTimeout} was misconfigured to 0 or negative. */
+  private final AtomicBoolean batchTimeoutClampWarned = new AtomicBoolean(false);
+  // Built once, here, rather than a static field shared JVM-wide: two embedded servers in one JVM (tests) can
+  // configure HA_PROXY_CONNECT_TIMEOUT differently, and a java.net.http.HttpClient's connect timeout is fixed
+  // at build time regardless (issues #7526/#7542).
+  private final HttpClient    httpClient;
 
   public PostBatchHandler(final HttpServer httpServer) {
     super(httpServer);
+    this.httpClient = LeaderDial.newConnectTimeoutBoundedClient(httpServer.getServer().getConfiguration());
   }
 
   @Override
@@ -1564,7 +1574,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // Where to dial the leader and on which scheme: its HTTPS endpoint when the cluster has one for it, the
     // plain-HTTP one otherwise (issue #7508). The relayed payload and the cluster token below would otherwise
     // cross an SSL cluster in cleartext.
-    final LeaderDial dial = LeaderDial.resolve(ha, HTTP_CLIENT);
+    final LeaderDial dial = LeaderDial.resolve(ha, httpClient);
     if (dial == null)
       return new ExecutionResponse(503,
           "{ \"error\" : \"Cannot forward batch to leader: leader address is not available\"}");
@@ -1603,10 +1613,27 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       path += "?" + queryString;
     final String url = dial.url(path);
 
+    // The response deadline (issues #7526/#7542): deliberately arcadedb.ha.proxyBatchReadTimeout rather than
+    // arcadedb.ha.proxyReadTimeout, because a bulk load's legitimate duration is a function of the payload the
+    // client is still streaming - the same reasoning relaxConnectionReadTimeout above applies to the INCOMING
+    // side of this same load. On the streaming encoding this bounds only the wait for the leader's first
+    // response line (send() below returns as soon as headers arrive); on the non-streaming path it bounds the
+    // whole exchange.
+    final long configuredBatchTimeout = httpServer.getServer().getConfiguration()
+        .getValueAsLong(GlobalConfiguration.HA_PROXY_BATCH_READ_TIMEOUT);
+    if (configuredBatchTimeout < LeaderDial.MIN_FORWARD_TIMEOUT_MS && batchTimeoutClampWarned.compareAndSet(false, true))
+      LogManager.instance().log(this, Level.WARNING,
+          "%s is set to %,d, which does not switch the bound off - a batch forwarded to the leader is never "
+              + "unbounded. It is clamped to %,d ms instead, so forwarded batches on this node will fail almost "
+              + "immediately. Set a positive value in milliseconds. This notice is logged only once.",
+          GlobalConfiguration.HA_PROXY_BATCH_READ_TIMEOUT.getKey(), configuredBatchTimeout, LeaderDial.MIN_FORWARD_TIMEOUT_MS);
+    final long deadlineMs = Math.max(configuredBatchTimeout, LeaderDial.MIN_FORWARD_TIMEOUT_MS);
+
     // The body travels through the same guarded stream the leader-side load would use, so a cut upload cannot
     // relay a replay of its own bytes on to the leader either (issue #6180).
     final HttpRequest request = buildForwardRequest(url, contentType, clusterToken, user.getName(),
-        exchange.getRequestContentLength(), body, streaming ? NdJsonResultStream.CONTENT_TYPE : null);
+        exchange.getRequestContentLength(), body, streaming ? NdJsonResultStream.CONTENT_TYPE : null,
+        Duration.ofMillis(deadlineMs));
 
     try {
       if (streaming)
@@ -1630,6 +1657,38 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       LogManager.instance().log(this, Level.WARNING, "Interrupted while forwarding /batch to leader at %s", url);
       return new ExecutionResponse(503,
           "{ \"error\" : \"Interrupted while forwarding batch to leader\"}");
+    } catch (final HttpConnectTimeoutException e) {
+      // ORDER IS LOAD-BEARING: HttpConnectTimeoutException is a SUBCLASS of HttpTimeoutException, so this arm
+      // has to come first or it is dead code and a black-holed SYN reports itself as "did not answer"
+      // (issues #7526/#7542). Typed 504 rather than the generic 503 below, naming the leader, as
+      // LeaderCommandForwarder already does for its own bounded forwards.
+      LogManager.instance().log(this, Level.WARNING, "Cannot connect to leader at %s to forward /batch: %s", url, e.getMessage());
+      return new ExecutionResponse(504, new JSONObject()
+          .put("error", "Cannot connect to the leader at " + url + " within "
+              + dial.client().connectTimeout().map(Duration::toMillis).orElse(-1L) + "ms ("
+              // Naming the setting is only accurate on the plain-HTTP path: the HTTPS one dials on
+              // RaftHAServer.forwardHttpsClients (TrustedHttpClientCache), whose connect timeout is a
+              // hardcoded 5s that arcadedb.ha.proxyConnectTimeout does not govern (claude-review finding on
+              // PR #7650) - naming it there would point an operator at a knob that does nothing here.
+              + (dial.https() ? "the configured connect timeout" : GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT.getKey())
+              + "); the leader may be down or unreachable")
+          .toString());
+    } catch (final ConnectException e) {
+      // The OTHER half of "cannot be reached": the host actively refused the connection (ECONNREFUSED) rather
+      // than never answering the SYN, which arrives immediately rather than after the connect timeout and so is
+      // a plain ConnectException, not an HttpConnectTimeoutException (found by this fix's own test,
+      // the RaftReplicatedDatabase counterpart of this same gap). Same typed 504 as the connect-timeout arm.
+      LogManager.instance().log(this, Level.WARNING, "Cannot connect to leader at %s to forward /batch: %s", url, e.getMessage());
+      return new ExecutionResponse(504, new JSONObject()
+          .put("error", "Cannot connect to the leader at " + url + ": " + e.getMessage())
+          .toString());
+    } catch (final HttpTimeoutException e) {
+      // The leader accepted the connection but did not answer within deadlineMs - the failure #7526/#7542 were
+      // filed about: previously nothing bounded this wait at all.
+      LogManager.instance().log(this, Level.WARNING, "Leader at %s did not answer /batch forward within %,dms", url, deadlineMs);
+      return new ExecutionResponse(504, new JSONObject()
+          .put("error", "The leader at " + url + " did not answer within " + deadlineMs + "ms")
+          .toString());
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "Error forwarding /batch to leader at %s: %s", url, e.getMessage());
       return new ExecutionResponse(503,
@@ -1661,7 +1720,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    */
   static HttpRequest buildForwardRequest(final String url, final String contentType, final String clusterToken,
       final String userName, final long contentLength, final InputStream body) {
-    return buildForwardRequest(url, contentType, clusterToken, userName, contentLength, body, null);
+    return buildForwardRequest(url, contentType, clusterToken, userName, contentLength, body, null, null);
   }
 
   /**
@@ -1673,6 +1732,20 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    */
   static HttpRequest buildForwardRequest(final String url, final String contentType, final String clusterToken,
       final String userName, final long contentLength, final InputStream body, final String accept) {
+    return buildForwardRequest(url, contentType, clusterToken, userName, contentLength, body, accept, null);
+  }
+
+  /**
+   * As above, and additionally bounds the wait for the leader's response (issues #7526/#7542): without it a
+   * leader that accepts the connection and never answers parks the Undertow worker thread serving
+   * {@code POST /api/v1/batch} until the OS tears the socket down. The production forward
+   * ({@link #forwardBatchToLeader}) always supplies one; the shorter overloads above pass {@code null} for
+   * the tests that exercise the request shape without a deadline of their own.
+   *
+   * @param timeout the response deadline, or {@code null} for none
+   */
+  static HttpRequest buildForwardRequest(final String url, final String contentType, final String clusterToken,
+      final String userName, final long contentLength, final InputStream body, final String accept, final Duration timeout) {
 
     final AtomicBoolean bodyTaken = new AtomicBoolean(false);
     final Supplier<InputStream> oneShotBody = () -> {
@@ -1700,6 +1773,8 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
 
     if (accept != null)
       forward.header("Accept", accept);
+    if (timeout != null)
+      forward.timeout(timeout);
 
     return forward.build();
   }

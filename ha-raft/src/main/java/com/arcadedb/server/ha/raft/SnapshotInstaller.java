@@ -56,7 +56,6 @@ import java.security.KeyStore;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
@@ -138,19 +137,30 @@ public final class SnapshotInstaller {
   private static final AtomicBoolean PLAIN_HTTP_FALLBACK_WARNED = new AtomicBoolean(false);
 
   /**
-   * Absolute database directory paths with an install currently in flight. The lifecycle assumes
-   * installs for a given database never overlap (see {@link #closeLocalDatabaseIfOpen}); this set turns
-   * a violation of that assumption from a silent double-close into a logged WARNING so it is
-   * diagnosable after the fact. Keyed by resolved path (not database name) so two logical servers in
-   * the same JVM - which use distinct database directories - never raise a spurious overlap warning.
+   * Absolute database directory paths with installs currently in flight, and how many. The lifecycle assumes
+   * installs for a given database never overlap (see {@link #closeLocalDatabaseIfOpen}); registering here turns
+   * a violation of that assumption from a silent double-close into a logged WARNING so it is diagnosable after
+   * the fact. Keyed by resolved path (not database name) so two logical servers in the same JVM - which use
+   * distinct database directories - never raise a spurious overlap warning.
    * <p>
    * Since issue #7444 the per-database maintenance slot {@link #install} takes usually prevents the overlap
    * outright rather than only reporting it: a second install of the same database on the same server waits for the
-   * first. This set still earns its keep, because that wait is bounded - an install that outlasts
+   * first. Registration here still earns its keep, because that wait is bounded - an install that outlasts
    * {@code arcadedb.ha.snapshotInstallBackupWaitMs} can still be joined by a second one, and that is exactly the
    * case worth a WARNING.
+   * <p>
+   * <b>Reference-counted rather than a plain presence set (issue #7622).</b> The #7128 recovery-pass skip guards
+   * below key off this map to know whether it is safe to delete a directory an install might still be touching,
+   * so the guard has to stay true for as long as ANY overlapping install of that database is still running - not
+   * just the first one to register. A plain set had no owner: two overlapping installs shared one entry, and the
+   * {@code finally} of whichever finished FIRST removed it unconditionally, clearing the guard while the other
+   * was still running and leaving the recovery pass free to delete its staging directory. Counting registrations
+   * and removing the key only when the count reaches zero keeps the guard correct regardless of finishing order.
+   * {@link #acquireNewDatabase} needs the opposite, exclusive discipline - two acquisitions of the same
+   * never-seen database must never share one staging directory - so it registers through
+   * {@link #tryAcquireInstallInFlightExclusive} instead of {@link #registerInstallInFlight}.
    */
-  private static final Set<String> INSTALLS_IN_FLIGHT = ConcurrentHashMap.newKeySet();
+  private static final Map<String, Integer> INSTALLS_IN_FLIGHT = new ConcurrentHashMap<>();
 
   /**
    * The {@link #INSTALLS_IN_FLIGHT} key for {@code dbDir}, normalized and absolutized exactly like the two
@@ -164,17 +174,51 @@ public final class SnapshotInstaller {
   }
 
   /**
+   * Registers one more install in flight for {@code inFlightKey} and returns whether another install already
+   * held it (an overlap worth a WARNING at the call site). Always paired with exactly one
+   * {@link #releaseInstallInFlight} call, from a {@code finally} block.
+   */
+  private static boolean registerInstallInFlight(final String inFlightKey) {
+    final boolean[] overlapped = { false };
+    INSTALLS_IN_FLIGHT.compute(inFlightKey, (key, count) -> {
+      overlapped[0] = count != null;
+      return count == null ? 1 : count + 1;
+    });
+    return overlapped[0];
+  }
+
+  /**
+   * The exclusive form {@link #acquireNewDatabase} uses: registers {@code inFlightKey} only when no install -
+   * of any kind - already holds it, atomically with the check. Returns {@code false}, registering nothing, when
+   * one already does, so the caller can refuse rather than share a staging directory with it.
+   */
+  private static boolean tryAcquireInstallInFlightExclusive(final String inFlightKey) {
+    return INSTALLS_IN_FLIGHT.putIfAbsent(inFlightKey, 1) == null;
+  }
+
+  /**
+   * Releases one registration taken by {@link #registerInstallInFlight} or
+   * {@link #tryAcquireInstallInFlightExclusive}, removing {@code inFlightKey} once every install that
+   * registered it has released its own - see the reference-counting note on {@link #INSTALLS_IN_FLIGHT}.
+   * Idempotent: releasing a key nothing holds (already released, e.g. by the caller's own early release before
+   * delegating) is a no-op rather than an error.
+   */
+  private static void releaseInstallInFlight(final String inFlightKey) {
+    INSTALLS_IN_FLIGHT.compute(inFlightKey, (key, count) -> count == null || count <= 1 ? null : count - 1);
+  }
+
+  /**
    * Test-only: registers {@code dbDir} as having an install in flight, so a test can exercise the issue #7128
    * skip guard in {@link #recoverPendingSnapshotSwaps(Path, ArcadeDBServer)} without driving a real download.
    * Always paired with {@link #clearInstallInFlightForTesting} once the test is done with it.
    */
   static void markInstallInFlightForTesting(final Path dbDir) {
-    INSTALLS_IN_FLIGHT.add(resolvedInFlightKey(dbDir));
+    registerInstallInFlight(resolvedInFlightKey(dbDir));
   }
 
   /** Test-only: undoes {@link #markInstallInFlightForTesting}. */
   static void clearInstallInFlightForTesting(final Path dbDir) {
-    INSTALLS_IN_FLIGHT.remove(resolvedInFlightKey(dbDir));
+    releaseInstallInFlight(resolvedInFlightKey(dbDir));
   }
 
   /**
@@ -194,6 +238,16 @@ public final class SnapshotInstaller {
    * refused while its files are being moved.
    */
   static volatile Runnable recoveryBarrierForTesting = null;
+
+  /**
+   * Test-only barrier invoked inside {@link #acquireNewDatabase}, right after the early
+   * {@code releaseInstallInFlight} of the existsDatabase race and before delegating to {@link #install}.
+   * {@code null} in production (the only cost is a single reference read per acquisition that hits that
+   * race). The PR-#7650-review regression test sets it to register a different, concurrent install on the
+   * same key at exactly that point, proving the outer {@code finally} does not release that install's own
+   * registration too.
+   */
+  static volatile Runnable existsDatabaseRaceBarrierForTesting = null;
 
   /**
    * The effective per-entry cap. {@code arcadedb.ha.snapshotMaxEntrySize} declared and documented exactly this
@@ -294,9 +348,10 @@ public final class SnapshotInstaller {
     final Path dbPath = Path.of(databasePath).normalize().toAbsolutePath();
     final String inFlightKey = dbPath.toString();
     // The lifecycle assumes installs for a given database never overlap (see closeLocalDatabaseIfOpen). If
-    // they ever do, log it loudly rather than silently double-closing: this set makes the violation
-    // diagnosable. Keyed by resolved path so distinct logical servers do not collide on database name.
-    if (!INSTALLS_IN_FLIGHT.add(inFlightKey))
+    // they ever do, log it loudly rather than silently double-closing: registering here makes the violation
+    // diagnosable, and counted rather than a plain flag so the guard below survives however many overlap
+    // (issue #7622). Keyed by resolved path so distinct logical servers do not collide on database name.
+    if (registerInstallInFlight(inFlightKey))
       LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
           "Concurrent snapshot install detected for '%s'; the install lifecycle assumes these never overlap "
               + "for the same database - this may indicate a coordination bug in the HA layer", null, databaseName);
@@ -323,7 +378,7 @@ public final class SnapshotInstaller {
           coordinator.end(databaseName, BackupCoordinator.Operation.RESTORE);
       }
     } finally {
-      INSTALLS_IN_FLIGHT.remove(inFlightKey);
+      releaseInstallInFlight(inFlightKey);
     }
   }
 
@@ -532,9 +587,17 @@ public final class SnapshotInstaller {
     // two acquisitions share one staging dir and race on the atomic rename; the caller treats this like any other
     // failed install and Ratis re-triggers once the other acquisition has finished and released the key.
     final String inFlightKey = dbPath.toString();
-    if (!INSTALLS_IN_FLIGHT.add(inFlightKey))
+    if (!tryAcquireInstallInFlightExclusive(inFlightKey))
       throw new IOException("Concurrent acquisition already in progress for '" + databaseName
           + "'; acquisitions for the same database must not overlap (possible HA coordination bug)");
+    // Whether THIS invocation still owns the registration just taken. Set false the moment it releases early
+    // (the existsDatabase race below), so the outer finally does not release again: a plain "idempotent,
+    // no-op if already released" release is only actually a no-op if nothing else has registered inFlightKey
+    // in the meantime - which an early release does not guarantee. A second install starting in that window
+    // registers its own entry, and an unconditional second release here would decrement THAT install's count
+    // instead of finding the key already gone, clearing the guard while it is still writing its staging
+    // directory (review finding on PR #7650).
+    boolean ownsRegistration = true;
 
     try {
       // Clean any leftover staging from a previous failed attempt, then create a fresh reserved staging dir.
@@ -556,8 +619,14 @@ public final class SnapshotInstaller {
       // Re-check right before publishing: the database may have been created concurrently while we downloaded.
       if (server.existsDatabase(databaseName)) {
         deleteDirectoryIfExists(staging);
-        // Release our guard before delegating so install()'s own guard does not see a spurious overlap.
-        INSTALLS_IN_FLIGHT.remove(inFlightKey);
+        // Release our guard before delegating so install()'s own guard does not see a spurious overlap, and
+        // record that we no longer own it so the outer finally does not release it a second time.
+        releaseInstallInFlight(inFlightKey);
+        ownsRegistration = false;
+        // Test-only: lets a test register a DIFFERENT install on inFlightKey right here, in the window this
+        // release just opened, to prove the outer finally below does not clear that install's own guard.
+        if (existsDatabaseRaceBarrierForTesting != null)
+          existsDatabaseRaceBarrierForTesting.run();
         install(databaseName, dbPath.toString(), leaderHttpAddrSupplier, leaderHttpsAddrSupplier, clusterToken, server);
         return;
       }
@@ -604,8 +673,11 @@ public final class SnapshotInstaller {
 
       HALog.log(SnapshotInstaller.class, HALog.BASIC, "New database '%s' acquired from leader", databaseName);
     } finally {
-      // Idempotent: a no-op if we already released the key before delegating to install() above.
-      INSTALLS_IN_FLIGHT.remove(inFlightKey);
+      // Only what THIS invocation still owns: the existsDatabase branch above already released its own
+      // registration, and by now a different install may hold inFlightKey - releasing again would decrement
+      // that install's count instead of being the no-op it looks like (review finding on PR #7650).
+      if (ownsRegistration)
+        releaseInstallInFlight(inFlightKey);
       // Defensive: on success the staging dir was renamed away; on failure it was deleted. This is a no-op
       // in both cases but guarantees no reserved staging dir is ever leaked.
       deleteDirectoryIfExists(staging);
@@ -911,7 +983,7 @@ public final class SnapshotInstaller {
         // one, an equally real deletion of an in-flight install's staging directory, unguarded).
         if (dirName.startsWith(ACQUIRE_STAGING_PREFIX)) {
           final Path finalDbPath = databasesDir.resolve(dirName.substring(ACQUIRE_STAGING_PREFIX.length()));
-          if (INSTALLS_IN_FLIGHT.contains(resolvedInFlightKey(finalDbPath))) {
+          if (INSTALLS_IN_FLIGHT.containsKey(resolvedInFlightKey(finalDbPath))) {
             LogManager.instance().log(SnapshotInstaller.class, Level.FINE,
                 "Skipping acquisition-staging cleanup for %s this pass: an acquisition is already in flight for it",
                 null, dbDir);
@@ -946,7 +1018,7 @@ public final class SnapshotInstaller {
         // marker in its catch block. A crash takes INSTALLS_IN_FLIGHT - an in-memory set - down with it, so
         // the next actual process restart finds the marker with nothing in-flight to race and reconciles it
         // normally.
-        if (INSTALLS_IN_FLIGHT.contains(resolvedInFlightKey(dbDir))) {
+        if (INSTALLS_IN_FLIGHT.containsKey(resolvedInFlightKey(dbDir))) {
           LogManager.instance().log(SnapshotInstaller.class, Level.FINE,
               "Skipping snapshot recovery for %s this pass: an install is already in flight for it", null, dbDir);
           continue;

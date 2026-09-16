@@ -141,7 +141,9 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
       // writers on one page and drives the "Concurrent modification on page ..." retry storms.
       server.setDatabaseWrapper(db -> {
         warnIfSingleBucketTypes(db);
-        return new RaftReplicatedDatabase(server, db, raftHAServer);
+        // Shared client, not one built per database (review finding on PR #7650): see RaftHAServer's
+        // forwardHttpClient field javadoc.
+        return new RaftReplicatedDatabase(server, db, raftHAServer, raftHAServer.getForwardHttpClient());
       });
 
       // Re-wrap any databases that were already loaded before this plugin started
@@ -494,6 +496,12 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     // Raft not started yet means this node has not joined the consensus group, so it is not ready.
     final boolean ready = s != null && s.isReadyForTraffic(maxLagEntries);
     return ready ? READINESS_SIGNAL.READY : READINESS_SIGNAL.NOT_READY;
+  }
+
+  @Override
+  public boolean isCrashLoopEscalated() {
+    final RaftHAServer s = raftHAServer;
+    return s != null && s.isCrashLoopEscalated();
   }
 
   @Override

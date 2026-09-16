@@ -27,6 +27,7 @@ import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.ha.raft.ratis.RatisRefusedEntryErrorFilter;
 import com.arcadedb.server.ha.raft.ratis.RatisSnapshotDigestWarningFilter;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.http.handler.LeaderDial;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.client.RaftClientConfigKeys;
@@ -154,6 +155,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   private final    ArcadeDBServer          arcadeServer;
   private final    ContextConfiguration    configuration;
+  // One client for every database this node replicates, not one per database (review finding on PR #7650):
+  // RaftHAPlugin's server.setDatabaseWrapper callback builds a new RaftReplicatedDatabase per database, and
+  // each java.net.http.HttpClient owns its own default executor/selector thread when built without one - an
+  // O(databases-per-node) cost for what LeaderDial.newConnectTimeoutBoundedClient's other two call sites
+  // (PostBatchHandler, LeaderCommandForwarder.Transport) already keep at one-per-server.
+  private final    HttpClient              forwardHttpClient;
   private volatile ArcadeStateMachine      stateMachine;
   private final    ClusterMonitor          clusterMonitor;
   private final    Quorum                  quorum;
@@ -302,7 +309,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private volatile boolean                   legacyRaftStorageWarningLogged = false;
   private volatile Thread                    autoJoinThread        = null;
   private volatile LifeCycle.State           forcedStateForTesting = null;
-  private          HealthMonitor             healthMonitor;
+  // Volatile: written on the thread that starts/stops HA, read from an HTTP worker thread via
+  // isCrashLoopEscalated() (issue #7622), same reasoning as raftServer above.
+  private volatile HealthMonitor             healthMonitor;
   // Periodic Raft snapshot/log-purge trigger (issue #5345). Runs on every node, leader and follower
   // alike, because each Ratis server purges its own log against its own snapshot index.
   private          RaftLogCompactionScheduler logCompactionScheduler;
@@ -344,6 +353,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   public RaftHAServer(final ArcadeDBServer arcadeServer, final ContextConfiguration configuration) {
     this.arcadeServer = arcadeServer;
     this.configuration = configuration;
+    this.forwardHttpClient = LeaderDial.newConnectTimeoutBoundedClient(configuration);
 
     final String serverList = configuration.getValueAsString(GlobalConfiguration.HA_SERVER_LIST);
     final String clusterName = configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_NAME);
@@ -1730,6 +1740,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // Same reasoning for the forward client: a forward still in flight holds this close() until it unwinds,
     // bounded by that request's own timeout, and leaving it open would leak a selector thread per server.
     forwardHttpsClients.close();
+    // Same leak this method already prevents for capabilityHttpsClients/forwardHttpsClients, for the plain-HTTP
+    // forward client every RaftReplicatedDatabase this server wraps a database with shares (review finding on
+    // PR #7650): a fresh RaftHAServer - and a fresh forwardHttpClient - is built on every
+    // RaftHAPlugin.startService(), and an unclosed one outlives it.
+    forwardHttpClient.close();
     stalledResyncExecutor.shutdownNow();
     channelRecoveryExecutor.shutdownNow();
     if (transactionBroker != null) {
@@ -2849,6 +2864,25 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       }
     }
     return null;
+  }
+
+  /**
+   * Whether this node's {@link HealthMonitor} has escalated a crash loop and given up automatically
+   * restarting (issue #7622): see {@link HealthMonitor#isCrashLoopEscalated()}. {@code false} when there is
+   * no monitor - HA not yet started, or already stopped.
+   */
+  public boolean isCrashLoopEscalated() {
+    final HealthMonitor monitor = healthMonitor;
+    return monitor != null && monitor.isCrashLoopEscalated();
+  }
+
+  /**
+   * The connect-timeout-bounded client every {@link RaftReplicatedDatabase} this node wraps a database with
+   * dials the leader on - one per node, not one per database (review finding on PR #7650): see the field
+   * javadoc on {@link #forwardHttpClient}.
+   */
+  HttpClient getForwardHttpClient() {
+    return forwardHttpClient;
   }
 
   /**
