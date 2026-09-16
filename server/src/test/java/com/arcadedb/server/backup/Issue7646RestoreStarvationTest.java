@@ -67,9 +67,7 @@ class Issue7646RestoreStarvationTest {
     waiter.start();
 
     assertThat(waiterStarted.await(10, TimeUnit.SECONDS)).isTrue();
-    // STILL BLOCKED AFTER A SHORT WHILE PROVES IT REACHED THE WAIT - AND, WITH IT, THE REGISTRATION THAT PRECEDES
-    // THE WAIT IN begin(String, Operation, long) - RATHER THAN HAVING RETURNED ALREADY
-    waiter.join(300);
+    awaitRestoreRegisteredAsWaiting(coordinator);
     assertThat(waiter.isAlive()).as("the restore is waiting on the export already running").isTrue();
 
     // A STREAM OF NEW EXPORTS ARRIVING AFTER THE RESTORE STARTED WAITING MUST ALL BE REFUSED - THIS IS THE
@@ -107,7 +105,7 @@ class Issue7646RestoreStarvationTest {
 
     final Thread waiter = new Thread(() -> coordinator.begin("db", Operation.RESTORE, 20_000), "restore-waiter-7646b");
     waiter.start();
-    waiter.join(300);
+    awaitRestoreRegisteredAsWaiting(coordinator);
     assertThat(waiter.isAlive()).isTrue();
 
     coordinator.end("db", Operation.EXPORT);
@@ -147,5 +145,28 @@ class Issue7646RestoreStarvationTest {
     coordinator.end("db", Operation.EXPORT);
     coordinator.end("db", Operation.EXPORT);
     assertThat(coordinator.isInProgress("db")).isFalse();
+  }
+
+  /**
+   * Blocks until the waiting restore is actually REGISTERED, proved by the guard it registers for: a fresh export
+   * answered with {@link Operation#RESTORE} can only come from {@code isRestoreWaiting}, since no restore holds
+   * the slot yet (the export the waiter is parked behind does).
+   * <p>
+   * A started thread, or one still alive after a short join, proves neither - the thread can be alive and not yet
+   * have reached {@code restoreStartedWaiting}, which would make everything asserted after it either
+   * scheduling-dependent or a false positive (review of PR #7649). This waits on the state itself instead.
+   * <p>
+   * The refusals it consumes are the point rather than a side effect: they ARE the behaviour under test, and every
+   * one of them is a reservation that was refused, so none of them has to be released.
+   */
+  private static void awaitRestoreRegisteredAsWaiting(final BackupCoordinator coordinator) throws InterruptedException {
+    final long deadline = System.currentTimeMillis() + 10_000;
+    while (coordinator.begin("db", Operation.EXPORT) != Operation.RESTORE) {
+      // Admitted rather than refused means the guard is not up yet - that export now holds a reservation of its
+      // own, so give it straight back before looking again, or the waiter would be left waiting on this probe.
+      coordinator.end("db", Operation.EXPORT);
+      assertThat(System.currentTimeMillis()).as("the restore never registered as waiting").isLessThan(deadline);
+      Thread.sleep(5);
+    }
   }
 }
