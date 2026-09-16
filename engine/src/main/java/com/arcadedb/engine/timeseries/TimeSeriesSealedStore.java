@@ -506,7 +506,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * {@code region in {eu, us}} is consistent with two combinations or with four, and the entry cannot say which,
    * so such a block is READ. The same goes for a block only partially covered by the range, whose earliest
    * IN-RANGE timestamp is not its {@code minTimestamp}, and for a projected column whose declaration is not
-   * spelled the way a scan spells it ({@link #declaredValuesAreExactFor}).
+   * spelled the way a scan spells it ({@link #declaredDistinctValuesAreExact}).
    * <p>
    * No tag filter: the one caller enumerates a metric's series and applies no filter, and a filter would have to
    * be evaluated against a declaration whose values are TEXT while a condition holds the boxed value.
@@ -701,13 +701,22 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   /**
-   * Whether {@link BlockEntry#tagDistinctValues} for this column may be handed back as the column's values.
+   * Whether {@link BlockEntry#tagDistinctValues} for this column holds the values a SCAN of the block produces,
+   * so a declared value may be handed back in place of the value the scan would have decoded.
    * <p>
-   * True only for a {@code STRING} TAG column stored with {@code DICTIONARY}, which is the one case in which the
-   * strings a declaration holds are the values a scan of the block produces - see
-   * {@link #collectDistinctTagValues} for why the other cases differ, and
-   * {@link ColumnDefinition#defaultCodecFor} for why a TAG column that was not given an explicit codec is always
-   * a dictionary one.
+   * True only for a {@code STRING} TAG column stored with {@code DICTIONARY}. The declaration is always TEXT -
+   * every writer builds it with {@code val != null ? val.toString() : ""} - while {@link #decompressColumns} puts
+   * a dictionary entry through {@link ColumnDefinition#boxString} and a {@code SIMPLE8B} one through
+   * {@link ColumnDefinition#boxRaw}, either of which can hand back something a string is not. For a
+   * {@code STRING} column {@code boxString} returns its argument unchanged, and only there are the two the same.
+   * A TAG column that was not given an explicit codec is always a dictionary one
+   * ({@link ColumnDefinition#defaultCodecFor}), so this is the ordinary case rather than a special one.
+   * <p>
+   * ONE method for both readers that answer from a declaration - {@link #collectDistinctTagValues}, which unions
+   * one column's declared set (issue #7660), and {@link #declaredSingleCombination}, which reads a whole
+   * single-valued combination off the entry (issue #7710). They arrived on separate branches with a byte-identical
+   * copy each; widening this predicate to another codec or type in only one of them would silently reintroduce
+   * exactly the class of defect both issues are about (claude-review on PR #7730).
    */
   private static boolean declaredDistinctValuesAreExact(final ColumnDefinition column) {
     return column.getRole() == ColumnDefinition.ColumnRole.TAG && column.getDataType() == Type.STRING
@@ -2955,7 +2964,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * is not the block's {@code minTimestamp}, which is the timestamp this row carries;</li>
    * <li>the block holds at least one sample;</li>
    * <li>every projected column is a TAG column whose declaration is spelled the way a scan spells it
-   * ({@link #declaredValuesAreExactFor}) and lists EXACTLY ONE value. Two columns declaring two values each are
+   * ({@link #declaredDistinctValuesAreExact}) and lists EXACTLY ONE value. Two columns declaring two values each are
    * consistent with two combinations and with four, and {@code tagDistinctValues} is per column
    * (see {@link BlockEntry#tagDistinctValues}) so it cannot say which.</li>
    * </ul>
@@ -2991,7 +3000,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       // null here - yet such a block holds exactly one (empty) combination and needs no read at all. Checking the
       // array up front turned the simplest case of all into a full decompression (claude-review on PR #7730).
       if (entry.tagDistinctValues == null || c >= entry.tagDistinctValues.length
-          || !declaredValuesAreExactFor(columns.get(c)))
+          || !declaredDistinctValuesAreExact(columns.get(c)))
         return null;
 
       final String[] declared = entry.tagDistinctValues[c];
@@ -3004,23 +3013,6 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     // A projection naming a column the schema does not have would leave a slot unfilled, which would read as a
     // null tag rather than as the mismatch it is.
     return slot == row.length ? row : null;
-  }
-
-  /**
-   * Whether {@link BlockEntry#tagDistinctValues} for this column holds the values a SCAN of the block produces,
-   * so one of them may be handed to a visitor in place of the value it would have decoded.
-   * <p>
-   * True only for a {@code STRING} TAG column stored with {@code DICTIONARY}. The declaration is always TEXT -
-   * every writer builds it with {@code val != null ? val.toString() : ""} - while {@link #decompressColumns} puts
-   * a dictionary entry through {@link ColumnDefinition#boxString} and a {@code SIMPLE8B} one through
-   * {@link ColumnDefinition#boxRaw}, either of which can hand back something a string is not. For a {@code STRING}
-   * column {@code boxString} returns its argument unchanged, and only there are the two the same. A TAG column
-   * that was not given an explicit codec is always a dictionary one
-   * ({@link ColumnDefinition#defaultCodecFor}), so this is the ordinary case rather than a special one.
-   */
-  private static boolean declaredValuesAreExactFor(final ColumnDefinition column) {
-    return column.getRole() == ColumnDefinition.ColumnRole.TAG && column.getDataType() == Type.STRING
-        && column.getCompressionHint() == TimeSeriesCodec.DICTIONARY;
   }
 
   /**
