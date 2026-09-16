@@ -38,6 +38,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * second, hand-maintained copy of the SET clause that understood only the {@code variable.property} shape. The
  * dynamic-key form, the expression-target form, the property-value type check and the simultaneous-assignment rule
  * were all missing from that copy, so a MERGE action behaved differently from the identical stand-alone SET.
+ * <p>
+ * Every refusal below is asserted on the thrown exception itself rather than on its {@code .rootCause()}: since
+ * #7729 it is an {@link InvalidPropertyTypeException}, a {@code CommandExecutionException} the openCypher engine
+ * rethrows unchanged instead of wrapping, so the diagnosis IS the outermost throwable - which is exactly what makes
+ * it reach a Bolt or HTTP client rather than only the server log.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -109,10 +114,7 @@ class CypherMergeSetClauseParityIssue6831Test {
     // The identical stand-alone SET already raises this; the MERGE action must not be the lenient one.
     assertThatThrownBy(() -> database.transaction(
         () -> database.command("opencypher", "MERGE (n:P {id: 2}) ON CREATE SET n.p = {a: 1}")))
-        // Not .rootCause(): since #7729 this is an InvalidPropertyTypeException, a CommandExecutionException the
-        // openCypher engine rethrows unchanged instead of wrapping, so the diagnosis IS the outermost throwable -
-        // which is exactly what makes it reach a Bolt/HTTP client rather than only the server log.
-        .isInstanceOf(InvalidPropertyTypeException.class)
+        .isInstanceOf(InvalidPropertyTypeException.class) // outermost, not a cause: see the class javadoc
         .hasMessageContaining("TypeError: InvalidPropertyType");
   }
 
@@ -277,10 +279,7 @@ class CypherMergeSetClauseParityIssue6831Test {
 
     assertThatThrownBy(() -> database.transaction(
         () -> database.command("opencypher", "MERGE (n:P {id: 1}) ON MATCH SET n += {bad: {nested: 1}}")))
-        // Not .rootCause(): since #7729 this is an InvalidPropertyTypeException, a CommandExecutionException the
-        // openCypher engine rethrows unchanged instead of wrapping, so the diagnosis IS the outermost throwable -
-        // which is exactly what makes it reach a Bolt/HTTP client rather than only the server log.
-        .isInstanceOf(InvalidPropertyTypeException.class)
+        .isInstanceOf(InvalidPropertyTypeException.class) // outermost, not a cause: see the class javadoc
         .hasMessageContaining("TypeError: InvalidPropertyType");
   }
 }
