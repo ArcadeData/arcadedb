@@ -200,10 +200,11 @@ class Issue7384OperationAdmissionTest {
         if (one != two)
           assertThat(one.conflictsWith(two)).isFalse();
 
-    // AND THE ONLY KINDS THAT CAN SURVIVE TOGETHER ARE THE NON-DESTRUCTIVE ONES: A RESTORE IS ALONE OR NOT THERE,
-    // AND BACKUP, IMPORT AND EXPORT COEXIST IN ANY COMBINATION (EXPORT JOINED THEM IN #7450)
+    // AND THE ONLY KINDS THAT CAN SURVIVE TOGETHER ARE THE NON-DESTRUCTIVE ONES: A RESTORE OR A DROP IS ALONE OR
+    // NOT THERE (DROP JOINED THAT PAIR IN #7641, THE SAME WAY RESTORE ALWAYS HAS), AND BACKUP, IMPORT AND EXPORT
+    // COEXIST IN ANY COMBINATION (EXPORT JOINED THEM IN #7450)
     assertThat(admitted).isIn(EnumSet.of(Operation.BACKUP), EnumSet.of(Operation.RESTORE), EnumSet.of(Operation.IMPORT),
-        EnumSet.of(Operation.EXPORT),
+        EnumSet.of(Operation.EXPORT), EnumSet.of(Operation.DROP),
         EnumSet.of(Operation.BACKUP, Operation.IMPORT), EnumSet.of(Operation.BACKUP, Operation.EXPORT),
         EnumSet.of(Operation.IMPORT, Operation.EXPORT),
         EnumSet.of(Operation.BACKUP, Operation.IMPORT, Operation.EXPORT));

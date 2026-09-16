@@ -270,9 +270,24 @@ public class BackupCoordinator implements MaintenanceCoordinator {
     }
   }
 
-  /** Registers a waiting {@link Operation#RESTORE} on {@code databaseName}. Pairs with {@link #restoreStoppedWaiting}. */
+  /**
+   * Registers a waiting {@link Operation#RESTORE} on {@code databaseName}. Pairs with {@link #restoreStoppedWaiting}.
+   * <p>
+   * The create-or-increment happens in ONE {@code compute}, not a {@code computeIfAbsent} followed by a separate
+   * {@code incrementAndGet}: split across two steps, a second waiter's {@link #restoreStoppedWaiting} could land
+   * between them - find the freshly created counter still at zero, decrement it to below zero and remove the map
+   * entry - and this call's increment would then apply to a counter no longer in the map, silently losing the
+   * registration the whole {@code waitingRestores} mechanism exists for (issue #7646, review of PR #7649). Two
+   * waiting restores on one database are reachable: a second {@code RESTORE} is refused by {@code conflictsWith}
+   * and then waits in {@link #begin(String, Operation, long)} exactly like the first.
+   */
   private void restoreStartedWaiting(final String databaseName) {
-    waitingRestores.computeIfAbsent(databaseName, name -> new AtomicInteger()).incrementAndGet();
+    waitingRestores.compute(databaseName, (name, count) -> {
+      if (count == null)
+        return new AtomicInteger(1);
+      count.incrementAndGet();
+      return count;
+    });
   }
 
   /**
