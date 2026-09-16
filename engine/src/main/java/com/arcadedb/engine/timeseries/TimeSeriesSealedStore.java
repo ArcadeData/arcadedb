@@ -40,6 +40,7 @@ import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.BitSet;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -552,6 +553,88 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     } finally {
       directoryLock.readLock().unlock();
     }
+  }
+
+  /**
+   * Adds the distinct values of one TAG column to {@code out}, reading a block's DIRECTORY ENTRY instead of the
+   * block itself wherever the entry already declares them (issue #7660).
+   * <p>
+   * The declaration is not an approximation and not a Bloom-style superset: {@code TimeSeriesShard}'s
+   * {@code buildCompressedBlocks} and {@link #downsampleBlocks} both build it from the very {@code Object[]} they
+   * hand to {@link #compressColumn}, with the same {@code val != null ? val.toString() : ""} normalisation the
+   * block's dictionary is built with, so the declared set IS that dictionary. The paths that rewrite a block
+   * afterwards keep it true: {@link #truncateBefore} and {@link #truncateToBlockCount} drop whole blocks and copy
+   * every retained one verbatim, compaction's {@link #writeTempCompactionFile} does the same, and
+   * {@link #downsampleBlocks} recomputes the set from the rows it emits. Nothing deletes a row from a sealed block,
+   * so no declaration outlives the rows it was computed from.
+   * <p>
+   * What a declaration cannot carry is the BOXING the scan applies on the way out: {@link #decompressColumns} puts
+   * every dictionary string through {@link ColumnDefinition#boxString}, which returns its argument unchanged for a
+   * {@code STRING} column and only for one - elsewhere {@code ""} comes back as {@code null} (as {@code false} for
+   * {@code BOOLEAN}) and a numeric string comes back normalised. A block is therefore answered from its declaration
+   * only for a {@code STRING} TAG column stored with {@code DICTIONARY}, and read otherwise. Either way what lands
+   * in {@code out} is exactly what a full scan of that block would have put there.
+   *
+   * @param schemaColumnIndex the column's index in the full schema, timestamp column included
+   * @param nonTsColumnIndex  the same column's index among the NON-timestamp columns, which is how a projection is
+   *                          spelled on every read path
+   * @param out               receives the values; a {@code null} is never added, and the sealed layer never
+   *                          produces one for a {@code STRING} TAG because {@link #compressColumn} writes a null
+   *                          tag as the empty string
+   * @param metrics           optional counters, may be {@code null}. A block answered from its directory entry is
+   *                          counted as a SKIPPED block, because it is not decompressed; a block that had to be
+   *                          read counts as a slow-path block plus its rows
+   */
+  void collectDistinctTagValues(final int schemaColumnIndex, final int nonTsColumnIndex, final Set<String> out,
+      final AggregationMetrics metrics) throws IOException {
+    directoryLock.readLock().lock();
+    try {
+      final boolean declarationIsExact = declaredDistinctValuesAreExact(columns.get(schemaColumnIndex));
+      final int tsColIdx = findTimestampColumnIndex();
+      final int[] projection = { nonTsColumnIndex };
+
+      for (final BlockEntry entry : blockDirectory) {
+        final String[] declared = declarationIsExact && entry.tagDistinctValues != null
+            && schemaColumnIndex < entry.tagDistinctValues.length ? entry.tagDistinctValues[schemaColumnIndex] : null;
+
+        if (declared != null) {
+          // The whole point of the issue: O(cardinality) off the directory entry, with no file read and no decode.
+          Collections.addAll(out, declared);
+          if (metrics != null)
+            metrics.addSkippedBlock();
+          continue;
+        }
+
+        // No usable declaration - a block written before the tag metadata section existed, or a TAG column whose
+        // boxing the declaration cannot reproduce. Read that one column of that one block, nothing more.
+        final Object[][] decompressed = decompressColumns(entry, projection, tsColIdx);
+        if (decompressed.length == 0)
+          continue;
+        for (final Object value : decompressed[0])
+          if (value != null)
+            out.add(value.toString());
+        if (metrics != null) {
+          metrics.addSlowPathBlock();
+          metrics.addMaterializedRows(decompressed[0].length);
+        }
+      }
+    } finally {
+      directoryLock.readLock().unlock();
+    }
+  }
+
+  /**
+   * Whether {@link BlockEntry#tagDistinctValues} for this column may be handed back as the column's values.
+   * <p>
+   * True only for a {@code STRING} TAG column stored with {@code DICTIONARY}, which is the one case in which the
+   * strings a declaration holds are the values a scan of the block produces - see
+   * {@link #collectDistinctTagValues} for why the other cases differ, and
+   * {@link ColumnDefinition#defaultCodecFor} for why a TAG column that was not given an explicit codec is always
+   * a dictionary one.
+   */
+  private static boolean declaredDistinctValuesAreExact(final ColumnDefinition column) {
+    return column.getRole() == ColumnDefinition.ColumnRole.TAG && column.getDataType() == Type.STRING
+        && column.getCompressionHint() == TimeSeriesCodec.DICTIONARY;
   }
 
   /**

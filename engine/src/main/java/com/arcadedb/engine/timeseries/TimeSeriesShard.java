@@ -38,6 +38,7 @@ import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.Set;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantLock;
@@ -450,6 +451,42 @@ public class TimeSeriesShard implements AutoCloseable {
           return false;
       }
       return true;
+    } finally {
+      compactionLock.readLock().unlock();
+    }
+  }
+
+  /**
+   * Adds the distinct values of one TAG column, over both layers, to {@code out} (issue #7660).
+   * <p>
+   * The sealed layer answers a block from its directory entry wherever it can, so the cost there is the number of
+   * BLOCKS rather than the number of samples - see {@link TimeSeriesSealedStore#collectDistinctTagValues} for why
+   * that entry is exact. The mutable bucket carries no such declaration and is scanned, on a projection of the one
+   * column so that nothing else is decoded or boxed; it is bounded by the compaction interval rather than by the
+   * series, which is why the sealed layer is where the saving lives.
+   * <p>
+   * A {@code null} tag value contributes nothing. That is not a policy invented here: it is what the PromQL label
+   * endpoint has always done with the {@code null} a mutable row hands it, and the sealed layer never hands one out
+   * for a {@code STRING} TAG because {@code compressColumn} writes a null tag as the empty string.
+   *
+   * @param metrics optional counters, may be {@code null}. Mutable rows are counted in {@code materializedRows},
+   *                exactly as {@link #forEachRow} counts them
+   */
+  void collectDistinctTagValues(final int schemaColumnIndex, final int nonTsColumnIndex, final Set<String> out,
+      final AggregationMetrics metrics) throws IOException {
+    compactionLock.readLock().lock();
+    try {
+      sealedStore.collectDistinctTagValues(schemaColumnIndex, nonTsColumnIndex, out, metrics);
+
+      final int[] projection = { nonTsColumnIndex };
+      for (final Object[] row : mutableBucket.scanRange(Long.MIN_VALUE, Long.MAX_VALUE, projection)) {
+        // row is { timestamp, the one projected column }: the layout TimeSeriesBucket.readRow() builds for any
+        // projection, and the reason the value is read from slot 1 rather than from the column's schema index.
+        if (row.length > 1 && row[1] != null)
+          out.add(row[1].toString());
+        if (metrics != null)
+          metrics.addMaterializedRows(1);
+      }
     } finally {
       compactionLock.readLock().unlock();
     }
