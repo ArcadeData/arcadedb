@@ -59,7 +59,7 @@ public interface Property {
    * PROPERTY} does not scrub the field from documents either - so a value already written under the old name
    * keeps reading back under the old name, and only a write made after the rename lands under the new one.
    * Making a rename also migrate existing values would be a new class of behaviour for a schema statement to
-   * have, and is deliberately out of scope; see {@code docs/7589-property-rename.md} for the reasoning and for
+   * have, and is deliberately out of scope; see issue #7589 and PR #7627 for the reasoning and for
    * how to migrate existing values across the rename if that is what is needed.
    * <p>
    * This handle is stale the moment this method returns successfully - like a handle to a dropped property, it no

@@ -34,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>
  * That path was covered only by a unit test feeding a hand-built {@code WALFile.WALPage} to {@code applyChanges}. This is the
  * real thing: a leader crosses the page boundary, and every follower has to resolve the names both ways and read the records
- * back. It is the scenario behind the upgrade-ordering requirement in {@code docs/5560-dictionary-multipage.md}.
+ * back. It is the scenario behind the upgrade-ordering requirement described on issue #5560.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

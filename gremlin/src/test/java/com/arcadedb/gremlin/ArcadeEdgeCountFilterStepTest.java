@@ -90,9 +90,9 @@ class ArcadeEdgeCountFilterStepTest {
    * degree-check step never installs for {@code where(outE(X).count().is(boundedPredicate))} - reliably
    * now, instead of on roughly half of JVM processes as before #5841. Results stay correct via the OLTP
    * fallback either way, see the {@code *MatchesTheUnoptimizedPath} differential tests below. See
-   * docs/5840-gav-csr-labeled-gremlin-string-traversals.md ("Known trade-off") for the full analysis;
-   * extending {@code applyEdgeCountFilterOptimization} to recognize {@code CountStrategy}'s rewritten
-   * shapes is tracked there as follow-up work, not done here.
+   * issue #5840 and PR #5899 ("Known trade-off") for the full analysis; extending
+   * {@code applyEdgeCountFilterOptimization} to recognize {@code CountStrategy}'s rewritten shapes is
+   * tracked there as follow-up work, not done here.
    */
   @Test
   void theDegreeFilterStepDoesNotInstallForBoundedPredicates() {
