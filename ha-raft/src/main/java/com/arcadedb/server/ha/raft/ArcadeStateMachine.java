@@ -2013,7 +2013,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // A transaction this node originated is recognised by its own bytes: the registered transaction carries the WAL
     // it shipped, and an entry is claimed only when it carries the same. No origin marker, client id or context is
     // needed for that, so it holds whatever happened to the leadership, the Raft client or the context in between.
-    final LocalCommit local = localCommits.claim(databaseName, peekWalTransactionId(decoded.walData()), decoded.walData());
+    final LocalCommit local = localCommits.claim(databaseName, walTransactionIdOfCommittedEntry(decoded, entryIndex),
+        decoded.walData());
     try {
       if (local != null)
         publishLocalCommit(local, decoded, entryIndex);
@@ -2024,6 +2025,54 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // reservation taken at append time has done its job. A no-op on a follower, whose ledger is empty.
       pageVersions.release(databaseName, pages, decoded.walData());
     }
+  }
+
+  /**
+   * The WAL transaction id of a COMMITTED transaction entry, read the way the apply path has to read it.
+   * <p>
+   * {@link #peekWalTransactionId(byte[])} reports a payload too short to hold the id as a {@link ReplicationException}.
+   * Its type is left alone here because its other call sites read the id for a log line rather than to decide
+   * anything ({@code RaftReplicatedDatabase.localWalTxId} catches it and carries on with a sentinel). On the apply
+   * path it was the wrong answer: {@code applyWithRetry} rethrows a
+   * {@code ReplicationException} unchanged (it is the resync signal applyTxEntry raises on a WAL gap), so a committed
+   * entry whose payload is truncated bypassed {@link #handleUnexpectedApplyError} entirely - no quarantine, no targeted
+   * snapshot resync, and the failed future Ratis swallows while advancing its own applied index. The corrupt entry was
+   * therefore skipped on this node and nothing said so.
+   * <p>
+   * A truncated payload IS what {@link RaftLogEntryDecodeException} exists for (issue #7138): a committed entry of a
+   * KNOWN type this version cannot read. Raised as one, it reaches {@code applyWithRetry}'s {@code RuntimeException}
+   * branch, quarantines this one database and lets the leader resend it as a snapshot, exactly as a decode failure of
+   * the envelope itself already does (issue #7495).
+   */
+  private static long walTransactionIdOfCommittedEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long entryIndex) {
+    try {
+      return peekWalTransactionId(decoded.walData());
+    } catch (final ReplicationException e) {
+      throw decodeFailure(decoded, entryIndex, "read the WAL transaction id of", e);
+    }
+  }
+
+  /**
+   * The WAL transaction a committed entry carries, decoded the way the apply path has to decode it: the same
+   * reclassification {@link #walTransactionIdOfCommittedEntry} applies, for the same reason. {@code
+   * deserializeWalTransaction} rejects a misaligned page count or delta range with a {@link ReplicationException}
+   * (issue #4420), and on this path that exception type means "resync already in progress" to
+   * {@code applyWithRetry}, which rethrows it without quarantining anything.
+   */
+  private static WALFile.WALTransaction walTransactionOfCommittedEntry(final RaftLogEntryCodec.DecodedEntry decoded,
+      final long entryIndex) {
+    try {
+      return deserializeWalTransaction(decoded.walData());
+    } catch (final ReplicationException e) {
+      throw decodeFailure(decoded, entryIndex, "decode the WAL payload of", e);
+    }
+  }
+
+  private static RaftLogEntryDecodeException decodeFailure(final RaftLogEntryCodec.DecodedEntry decoded,
+      final long entryIndex, final String what, final ReplicationException cause) {
+    return new RaftLogEntryDecodeException(
+        "Cannot " + what + " the committed transaction entry for database '" + decoded.databaseName() + "' at index "
+            + entryIndex + ": " + cause.getMessage(), RaftLogEntryType.TX_ENTRY, decoded.databaseName(), cause);
   }
 
   /**
@@ -2091,7 +2140,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   private void applyReplicatedTransaction(final RaftLogEntryCodec.DecodedEntry decoded, final long entryIndex) {
     final DatabaseInternal db = databaseFor(decoded.databaseName());
-    final WALFile.WALTransaction walTx = deserializeWalTransaction(decoded.walData());
+    final WALFile.WALTransaction walTx = walTransactionOfCommittedEntry(decoded, entryIndex);
 
     HALog.log(this, HALog.DETAILED, "Applying tx %d to database '%s' (pages=%d)",
         walTx.txId, decoded.databaseName(), walTx.pages.length);
