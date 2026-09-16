@@ -1018,6 +1018,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // on that database, so quarantine it and let the leader resend it as a snapshot. The node stays up for
       // its other databases, and the entry is never silently skipped. Without a database name there is nothing
       // to quarantine, and handleUnexpectedApplyError escalates to the node-wide halt as before.
+      //
+      // This branch is for the ENVELOPE, decoded above before applyWithRetry is called. A decode failure raised
+      // INSIDE the apply - applyTxEntry's WAL payload, since issue #7495 - has already been through
+      // handleUnexpectedApplyError by the time it leaves applyWithRetry, which is why applyWithRetry re-types the
+      // one case that would otherwise arrive here (see its catch of RaftLogEntryDecodeException). Widening the
+      // catches between here and `catch (Throwable)` would undo that and charge one failure to the swallow budget
+      // twice; theEscalationBudgetIsChargedOncePerUndecodableEntry is the test that says so.
       final String decodeDatabase = e.getDatabaseName();
       LogManager.instance().log(this, Level.SEVERE,
           "Cannot decode the committed Raft log entry at index %d (type=%s, database=%s). This is either a corrupt "
