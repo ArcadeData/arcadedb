@@ -132,7 +132,10 @@ public final class CypherValues {
    */
   private static String refusal(final Map<?, ?> map, final String propertyName, final Object valueOrigin,
       final boolean insideList) {
-    final StringBuilder message = new StringBuilder(196);
+    // No capacity hint: the finished length swings between roughly 120 and 300 characters depending on which
+    // origin clause applies, so any single guess is wrong most of the time, and this runs only on the way to
+    // throwing.
+    final StringBuilder message = new StringBuilder();
     message.append("TypeError: InvalidPropertyType - Property values can only be of primitive types or arrays thereof. ")
         .append("Encountered a map ").append(describeKeys(map));
     if (insideList)
