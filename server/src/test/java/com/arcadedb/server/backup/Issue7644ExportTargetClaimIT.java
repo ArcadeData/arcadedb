@@ -20,6 +20,7 @@ package com.arcadedb.server.backup;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.engine.MaintenanceCoordinator.Operation;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.utility.FileUtils;
@@ -49,7 +50,7 @@ import java.util.zip.GZIPInputStream;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Issue #7644: {@link com.arcadedb.engine.MaintenanceCoordinator.Operation#EXPORT} admits any number of exports of
+ * Issue #7644: {@link Operation#EXPORT} admits any number of exports of
  * one database at once (issue #7450), on the premise that two exports name two different files. Nothing enforced
  * that premise:
  * <ul>
@@ -91,7 +92,7 @@ class Issue7644ExportTargetClaimIT extends BaseGraphServerTest {
   void cleanUp() {
     final BackupCoordinator coordinator = getServer(0).getBackupCoordinator();
     for (int i = 0; i < 64 && coordinator.isInProgress(getDatabaseName()); i++)
-      coordinator.end(getDatabaseName(), com.arcadedb.engine.MaintenanceCoordinator.Operation.EXPORT);
+      coordinator.end(getDatabaseName(), Operation.EXPORT);
 
     if (exportDir.exists())
       FileUtils.deleteRecursively(exportDir);
