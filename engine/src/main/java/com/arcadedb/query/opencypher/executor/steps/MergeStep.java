@@ -1290,7 +1290,7 @@ public class MergeStep extends AbstractExecutionStep {
 
     if (nodePattern.hasProperties()) {
       final Map<String, Object> evaluatedProperties = evaluateProperties(nodePattern.getProperties(), result);
-      setProperties(vertex, evaluatedProperties);
+      setProperties(vertex, evaluatedProperties, nodePattern.getProperties());
     }
 
     vertex.save();
@@ -1327,7 +1327,8 @@ public class MergeStep extends AbstractExecutionStep {
     // validation inside newEdge() (issue #4413).
     final Object[] edgeProperties;
     if (relPattern.hasProperties()) {
-      final Map<String, Object> evaluatedProperties = evaluateProperties(relPattern.getProperties(), result);
+      final Map<String, Object> rawProperties = relPattern.getProperties();
+      final Map<String, Object> evaluatedProperties = evaluateProperties(rawProperties, result);
       final List<Object> keyValues = new ArrayList<>(evaluatedProperties.size() * 2);
       for (final Map.Entry<String, Object> entry : evaluatedProperties.entrySet()) {
         // Skip a null value, matching setProperties (the vertex creation branch) and CreateStep's own
@@ -1336,11 +1337,8 @@ public class MergeStep extends AbstractExecutionStep {
         final Object value = entry.getValue();
         if (value != null) {
           keyValues.add(entry.getKey());
-          // No origin: evaluateProperties() hands back the evaluated values alone, so the expression or parameter
-          // each came from is already gone by here. The property name is the half a refusal most needs, and
-          // carrying the raw values alongside would cost a second map on a path that allocates one per row
-          // (issue #7729).
-          keyValues.add(CypherValues.coerceAndValidatePropertyValue(value, entry.getKey(), null));
+          keyValues.add(CypherValues.coerceAndValidatePropertyValue(value, entry.getKey(),
+              originOf(rawProperties, entry.getKey())));
         }
       }
       edgeProperties = keyValues.toArray();
@@ -1364,15 +1362,39 @@ public class MergeStep extends AbstractExecutionStep {
    * {@code ON MATCH SET} actions, instead of silently storing it only on the creation branch (issue #7629).
    * A null value is skipped, matching {@link CreateStep#setProperties}: Cypher property maps don't remove via
    * null the way SET's merge form does, so a null entry is simply not stored.
+   *
+   * @param rawProperties the pattern's own property map, still holding what the query wrote before
+   *                      {@link #evaluateProperties} replaced each entry with its value, so a refusal can name
+   *                      where the value came from the way CREATE and SET already do (issue #7729)
    */
-  private void setProperties(final MutableDocument document, final Map<String, Object> properties) {
+  private void setProperties(final MutableDocument document, final Map<String, Object> properties,
+      final Map<String, Object> rawProperties) {
     for (final Map.Entry<String, Object> entry : properties.entrySet()) {
       final Object value = entry.getValue();
       if (value != null)
-        // No origin, for the reason given in createEdge() above: the raw expression is gone by the time
-        // evaluateProperties() returns.
-        document.set(entry.getKey(), CypherValues.coerceAndValidatePropertyValue(value, entry.getKey(), null));
+        document.set(entry.getKey(),
+            CypherValues.coerceAndValidatePropertyValue(value, entry.getKey(), originOf(rawProperties, entry.getKey())));
     }
+  }
+
+  /**
+   * The origin of one property, read back out of the pattern's raw property map: the parameter's name for a bare
+   * parameter, the expression itself for a computed value, and null for a literal, which a message has nothing to
+   * say about that it does not already show. {@link #evaluateProperties} returns only the evaluated values, so
+   * without this a map refused by MERGE named the property and nothing else, while the same refusal from CREATE or
+   * SET named where the value came from (issue #7729).
+   * <p>
+   * One map lookup per property written. That is deliberately not deferred to the failure path: deferring it needs
+   * either a supplier allocated per call or a second map built per row, and both cost more on the path that
+   * succeeds - which is every path but one - than the lookup does.
+   */
+  private static Object originOf(final Map<String, Object> rawProperties, final String property) {
+    if (rawProperties == null)
+      return null;
+    final Object raw = rawProperties.get(property);
+    if (raw instanceof CypherASTBuilder.ParameterReference parameter)
+      return parameter.getName();
+    return raw instanceof Expression ? raw : null;
   }
 
   /**

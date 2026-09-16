@@ -177,7 +177,7 @@ public final class SetClauseApplier {
         // ("SET b.name = 'new', a = b" must copy b's PRE-clause name). Resolving the shape now also means a
         // right-hand side that is neither an entity nor a map fails the clause before any of it has been written.
         values[i] = toPropertyMap(evaluator.evaluate(item.getValueExpression(), result, context),
-            item.getType() == SetClause.SetType.REPLACE_MAP ? "=" : "+=");
+            item.getType() == SetClause.SetType.REPLACE_MAP ? "=" : "+=", item.getValueExpression());
         break;
       case LABELS:
         // A Cypher 25 dynamic label - SET n:$(expr) - is a read of the row, so it is answered from the pre-clause
@@ -387,7 +387,8 @@ public final class SetClauseApplier {
    * null right-hand side stays a no-op, which is what the two callers get back as a null map.
    */
   @SuppressWarnings("unchecked")
-  private static Map<String, Object> toPropertyMap(final Object value, final String operator) {
+  private static Map<String, Object> toPropertyMap(final Object value, final String operator,
+      final Expression valueExpression) {
     if (value == null)
       return null;
 
@@ -405,8 +406,9 @@ public final class SetClauseApplier {
     // emptied. Coercing and validating the entries here rather than at write time is what lets an invalid one reject
     // the clause before any earlier item has been written.
     // The origin is the record itself when the right-hand side was an entity: "SET t = n" names no property and no
-    // value, so without it a refusal can only say that something, somewhere, was a map (issue #7729).
-    final Object origin = value instanceof Document sourceRecord ? sourceRecord : null;
+    // value, so without it a refusal can only say that something, somewhere, was a map. Otherwise it is the
+    // right-hand side as written, which is what names the parameter in "SET t += $p" (issue #7729).
+    final Object origin = value instanceof Document sourceRecord ? sourceRecord : valueExpression;
     final Map<String, Object> materialised = new LinkedHashMap<>(source.size());
     for (final Map.Entry<String, Object> entry : source.entrySet())
       materialised.put(entry.getKey(), coerceAndValidate(entry.getValue(), entry.getKey(), origin));
