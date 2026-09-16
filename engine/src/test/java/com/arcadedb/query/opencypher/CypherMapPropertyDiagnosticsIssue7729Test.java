@@ -183,6 +183,28 @@ class CypherMapPropertyDiagnosticsIssue7729Test {
   }
 
   @Test
+  void aNewlineInAParameterNameCannotForgeALogLineEither() {
+    // The parameter clause is the third place a caller-supplied name reaches the message, and it used to be the one
+    // that neither cleaned nor bounded it. Cypher's backtick quoting applies to a parameter name as much as to a
+    // property name.
+    assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher",
+        "CREATE (n:R {id: 9, m: $`a\nFAKE LOG LINE`})", Map.of("a\nFAKE LOG LINE", Map.of("k", 1)))))
+        .isInstanceOf(InvalidPropertyTypeException.class)
+        .satisfies(e -> assertThat(e.getMessage()).doesNotContain("\n"))
+        .hasMessageContaining("FAKE LOG LINE");
+  }
+
+  @Test
+  void aVeryLongPropertyNameIsCutShortLikeEveryOtherNameTheMessageEchoes() {
+    final String longName = "p".repeat(200);
+
+    assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher",
+        "MATCH (t:T) SET t.`" + longName + "` = {k: 1}")))
+        .isInstanceOf(InvalidPropertyTypeException.class)
+        .satisfies(e -> assertThat(e.getMessage()).doesNotContain(longName));
+  }
+
+  @Test
   void aBareParameterReadsTheSameWhicheverClauseRefusedIt() {
     // CREATE and MERGE resolve a bare parameter to its name before validating; SET passes the expression. Both
     // describe the same thing, so both say it the same way.
