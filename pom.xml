@@ -120,7 +120,7 @@
              interfaces - not the concrete classes - cover (issue #5838). A version bump must re-verify via
              javap that those contracts still exist and are still implemented by both the placeholder and the
              concrete step for addV/addE/property, or the widened-OperationType bug silently comes back; see
-             docs/5838-gremlin-parse-over-widens-operationtype.md and
+             PR #5903 and
              gremlin/src/test/java/com/arcadedb/gremlin/ArcadeGremlinAnalyzeTest.java. See also gremlin/pom.xml's
              own comment on the paired antlr version (issue #5535). -->
         <gremlin.version>3.8.2</gremlin.version>

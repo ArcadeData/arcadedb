@@ -65,7 +65,7 @@ import java.util.logging.Level;
  * <br>
  * <b>Upgrade order in a cluster:</b> a follower still running a build without multi-page support reads page 0 only, so once a
  * database has rolled over, replicated pages beyond the first leave that follower reporting "Dictionary item with id N is not
- * valid". Followers have to be upgraded before, or together with, the leader. See {@code docs/5560-dictionary-multipage.md}.
+ * valid". Followers have to be upgraded before, or together with, the leader. See issue #5560.
  * <br>
  */
 public class Dictionary extends PaginatedComponent {
