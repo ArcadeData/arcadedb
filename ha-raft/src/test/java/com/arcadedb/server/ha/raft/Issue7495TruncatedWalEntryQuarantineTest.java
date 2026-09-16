@@ -26,6 +26,7 @@ import org.apache.ratis.statemachine.TransactionContext;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.junit.jupiter.api.Test;
 
+import java.nio.BufferUnderflowException;
 import java.nio.ByteBuffer;
 import java.util.Collections;
 import java.util.concurrent.CompletableFuture;
@@ -160,6 +161,71 @@ class Issue7495TruncatedWalEntryQuarantineTest {
 
     assertThat(sm.isDatabaseDiverged("db-A")).isTrue();
     assertThat(sm.isHaltedAfterCriticalError()).isFalse();
+  }
+
+  /**
+   * The narrow window between the two decoders: 8 bytes is enough for the transaction id, but the WAL header the
+   * decoder reads is 24, so a payload in between runs out of buffer before {@code deserializeWalTransaction}
+   * reaches any of its explicit checks and raises a {@code BufferUnderflowException} instead of a
+   * {@link ReplicationException}. It is the same condition - a committed entry this node cannot read - and it
+   * must be reported as the same thing, rather than the diagnosis depending on how far in the corruption starts.
+   */
+  @Test
+  void aPayloadTooShortForTheWalHeaderIsClassifiedLikeAnyOtherUndecodableOne() {
+    final ArcadeStateMachine sm = new ArcadeStateMachine() {
+      @Override
+      DatabaseInternal databaseFor(final String databaseName) {
+        return null;
+      }
+    };
+
+    // 10 bytes: past the 8-byte transaction id, short of the 24-byte header.
+    final CompletableFuture<Message> future = sm.applyTransaction(txEntry(sm, "db-A", new byte[10], 13L));
+
+    assertThatThrownBy(future::join)
+        .hasCauseInstanceOf(ReplicationException.class)
+        .hasMessageContaining("Apply error on database 'db-A'");
+
+    final Throwable decode = catchThrowable(future::join).getCause().getCause();
+    assertThat(decode).isInstanceOf(RaftLogEntryDecodeException.class)
+        .hasMessageContaining("Cannot decode the WAL payload of");
+    assertThat(decode.getCause()).isInstanceOf(BufferUnderflowException.class);
+
+    assertThat(sm.isDatabaseDiverged("db-A")).isTrue();
+    assertThat(sm.isHaltedAfterCriticalError()).isFalse();
+  }
+
+  /**
+   * The bounded-escalation budget must be charged ONCE per failure.
+   * <p>
+   * {@code handleUnexpectedApplyError} rethrows the original error once the budget is exhausted, so a node that
+   * can never resync halts rather than degrading silently. The original here is a
+   * {@link RaftLogEntryDecodeException}, and {@code applyTransaction} catches that type separately as the handler
+   * for an unreadable ENVELOPE - a different failure, decoded before {@code applyWithRetry} is ever called.
+   * Without the guard in {@code applyWithRetry} the escalated exception reaches that catch and is handled a
+   * second time, charging one failure twice against the budget that just tripped.
+   */
+  @Test
+  void theEscalationBudgetIsChargedOncePerUndecodableEntry() {
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+
+    // The budget is `incrementAndGet() > 100`, so the first 100 quarantine and the 101st escalates.
+    for (int i = 1; i <= 100; i++) {
+      final int index = i;
+      assertThatThrownBy(() -> sm.applyTransaction(txEntry(sm, "db-A", new byte[0], index)).join())
+          .as("failure #%d is recoverable", i)
+          .hasCauseInstanceOf(ReplicationException.class);
+    }
+    assertThat(sm.divergedSwallowedErrorCount()).isEqualTo(100);
+    assertThat(sm.isHaltedAfterCriticalError()).isFalse();
+
+    final CompletableFuture<Message> escalated = sm.applyTransaction(txEntry(sm, "db-A", new byte[0], 101L));
+
+    assertThat(escalated.isCompletedExceptionally()).isTrue();
+    assertThat(sm.isHaltedAfterCriticalError()).as("a node that can never resync halts loudly").isTrue();
+    assertThat(sm.divergedSwallowedErrorCount())
+        .as("one failure, one swallow charged - not two")
+        .isEqualTo(101);
   }
 
   /**

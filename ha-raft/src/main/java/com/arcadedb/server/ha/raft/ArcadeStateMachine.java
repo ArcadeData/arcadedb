@@ -1161,7 +1161,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
         // recoverable resync condition - leaving them uncaught lets them propagate unchanged to
         // applyTransaction's fatal halt path so the node stops loudly rather than masking a corrupt
         // runtime.
-        handleUnexpectedApplyError(index, databaseName, t);
+        try {
+          handleUnexpectedApplyError(index, databaseName, t);
+        } catch (final RaftLogEntryDecodeException escalated) {
+          // handleUnexpectedApplyError rethrows the ORIGINAL error once the swallow budget is exhausted, so a
+          // node that can never resync halts instead of degrading silently. Since issue #7495 that original can
+          // be a RaftLogEntryDecodeException raised INSIDE this lambda (applyTxEntry's WAL decode), and
+          // applyTransaction catches that type separately - as the handler for an unreadable ENVELOPE, which is
+          // decoded before applyWithRetry is ever called. Letting this one reach that catch would run
+          // handleUnexpectedApplyError a second time for a single failure, charging the swallow twice against
+          // the very budget that just tripped and logging the escalation twice. It has been handled here, so
+          // hand the fatal path the same failure under a type that catch does not claim.
+          throw new IllegalStateException(escalated.getMessage(), escalated);
+        }
       }
     }
 
@@ -2047,7 +2059,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private static long walTransactionIdOfCommittedEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long entryIndex) {
     try {
       return peekWalTransactionId(decoded.walData());
-    } catch (final ReplicationException e) {
+    } catch (final RuntimeException e) {
       throw decodeFailure(decoded, entryIndex, "read the WAL transaction id of", e);
     }
   }
@@ -2058,18 +2070,26 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * deserializeWalTransaction} rejects a misaligned page count or delta range with a {@link ReplicationException}
    * (issue #4420), and on this path that exception type means "resync already in progress" to
    * {@code applyWithRetry}, which rethrows it without quarantining anything.
+   * <p>
+   * The catch is on {@code RuntimeException} rather than on {@code ReplicationException} alone because those
+   * explicit checks are not the only way the decode can fail: a payload long enough to hold the transaction id
+   * (8 bytes) but shorter than the header the decoder reads (24) runs out of buffer first and raises a
+   * {@code BufferUnderflowException}. Both shapes are one thing - a committed entry this node cannot read - and
+   * both now say so, rather than the diagnosis depending on how far into the payload the corruption happened to
+   * start. Nothing but the decode of a {@code byte[]} runs inside the try, so the wider catch cannot capture an
+   * unrelated failure.
    */
   private static WALFile.WALTransaction walTransactionOfCommittedEntry(final RaftLogEntryCodec.DecodedEntry decoded,
       final long entryIndex) {
     try {
       return deserializeWalTransaction(decoded.walData());
-    } catch (final ReplicationException e) {
+    } catch (final RuntimeException e) {
       throw decodeFailure(decoded, entryIndex, "decode the WAL payload of", e);
     }
   }
 
   private static RaftLogEntryDecodeException decodeFailure(final RaftLogEntryCodec.DecodedEntry decoded,
-      final long entryIndex, final String what, final ReplicationException cause) {
+      final long entryIndex, final String what, final RuntimeException cause) {
     return new RaftLogEntryDecodeException(
         "Cannot " + what + " the committed transaction entry for database '" + decoded.databaseName() + "' at index "
             + entryIndex + ": " + cause.getMessage(), RaftLogEntryType.TX_ENTRY, decoded.databaseName(), cause);
