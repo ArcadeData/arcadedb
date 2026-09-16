@@ -40,7 +40,8 @@ import com.arcadedb.database.DatabaseInternal;
  * safe - every record is either repaired or untouched. Set the configuration to 0 to get the single all-or-nothing
  * transaction back, memory cost included.
  * <p>
- * <b>Why ownership is a field and not {@code database.isTransactionActive()}</b>, which is the subtle half: that
+ * <b>Why ownership is an {@link OwnTransaction} and not {@code database.isTransactionActive()}</b>, which is the
+ * subtle half: that
  * question asks whether ANY transaction is on the thread, and the answer is yes for the caller's own whenever a check
  * runs nested inside one - which through HTTP is every production run. A batch commit that throws has already disposed
  * its context ({@code LocalDatabase.commit} pops it in a {@code finally} whether or not the write succeeded), so from
@@ -48,6 +49,9 @@ import com.arcadedb.database.DatabaseInternal;
  * that evidence would roll back work the pass never made - the other buckets a {@code CHECK DATABASE FIX} already
  * repaired into the same command transaction, or anything else the caller was holding (PR review on #6320). Tracked
  * explicitly instead, so {@link #finish} can only ever touch a transaction this pass opened and still holds.
+ * <p>
+ * That tracking is {@link OwnTransaction}, shared with the TimeSeries write paths that met the same landmine in
+ * issue #7732 rather than reimplemented here: one place to look for the rule, and one place to get it right.
  * <p>
  * <b>And why {@link #finish} exists at all</b> (issue #6342): a pass used to commit as the LAST statement of its
  * {@code try}, with a {@code finally} that filled in the returned counters and nothing else. So every way the body
@@ -61,7 +65,8 @@ import com.arcadedb.database.DatabaseInternal;
 public class RepairTransaction {
   private final DatabaseInternal database;
   private final int              batchPages;
-  private       boolean          owned;
+  /** The batch in flight, or {@code null} while this pass holds none. */
+  private       OwnTransaction   transaction;
 
   /**
    * @param batchPages modified-page budget of one batch, {@code <= 0} for a single all-or-nothing transaction.
@@ -81,8 +86,7 @@ public class RepairTransaction {
 
   /** Opens the transaction the repairs are made in, nested inside whatever the caller has open. */
   public void begin() {
-    database.begin();
-    owned = true;
+    transaction = OwnTransaction.begin(database);
   }
 
   /**
@@ -106,15 +110,15 @@ public class RepairTransaction {
    * {@link #finish} must not act on. Batches already committed stay committed.
    */
   public void commitBatchIfFull() {
-    if (!owned || batchPages <= 0)
+    if (transaction == null || batchPages <= 0)
       return;
     if (database.getTransaction().getModifiedPages() < batchPages)
       return;
 
-    owned = false;
-    database.commit();
-    database.begin();
-    owned = true;
+    final OwnTransaction inFlight = transaction;
+    transaction = null;
+    inFlight.commit();
+    transaction = OwnTransaction.begin(database);
   }
 
   /**
@@ -124,13 +128,16 @@ public class RepairTransaction {
    * @param completed whether the pass reached its end without throwing.
    */
   public void finish(final boolean completed) {
-    if (!owned)
+    final OwnTransaction held = transaction;
+    if (held == null)
       return;
 
-    owned = false;
+    transaction = null;
     if (completed)
-      database.commit();
+      held.commit();
     else
-      database.rollback();
+      // Only the transaction this pass opened, which is what the flag used to say and the identity check now
+      // proves: a rollback here must never reach the caller's (issue #7732).
+      held.rollbackIfMine();
   }
 }

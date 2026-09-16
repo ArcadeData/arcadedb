@@ -16,19 +16,19 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.engine.timeseries;
+package com.arcadedb.engine;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
 
 /**
- * The transaction a TimeSeries write path begins for itself, and the only one it is ever allowed to roll back
- * (issue #7732).
+ * The transaction a component begins for itself, and the only one it is ever allowed to roll back (issue #7732).
  * <p>
- * Every such path - a shard append, a header-page initialisation, the engine init inside a {@code CREATE
- * TIMESERIES TYPE} - opens its own {@code begin()}/{@code commit()} pair whatever the caller has open, because an
- * ArcadeDB nested transaction is an independent transaction rather than a savepoint (the contract
- * {@code TimeSeriesShard.appendSamples} states at length). Undoing one on failure therefore has to name WHICH
+ * Several engine paths open their own {@code begin()}/{@code commit()} pair whatever the caller has open, because
+ * an ArcadeDB nested transaction is an independent transaction rather than a savepoint: every TimeSeries write
+ * (a shard append, a header-page initialisation, crash recovery, the engine init inside a {@code CREATE TIMESERIES
+ * TYPE} - the contract {@code TimeSeriesShard.appendSamples} states at length), and every batch of a repair pass
+ * ({@link RepairTransaction}, which holds one of these). Undoing one on failure therefore has to name WHICH
  * transaction, and {@code db.isTransactionActive()} cannot: it answers for whatever context is on top of the
  * thread's stack at that moment.
  * <p>

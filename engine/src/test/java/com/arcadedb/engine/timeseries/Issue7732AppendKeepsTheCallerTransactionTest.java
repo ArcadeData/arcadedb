@@ -21,6 +21,7 @@ package com.arcadedb.engine.timeseries;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.engine.OwnTransaction;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.LocalTimeSeriesType;
