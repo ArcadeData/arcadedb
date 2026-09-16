@@ -46,6 +46,32 @@ import java.util.logging.Level;
 public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler {
   private static final HttpString SESSION_ID_HEADER = new HttpString(HttpSessionManager.ARCADEDB_SESSION_ID);
 
+  /**
+   * Response header naming a session id this server could not resolve, on a request that ran ANYWAY (issue
+   * #7714). A client can tell "your transaction is gone, this answer was produced outside it" apart from "your
+   * transaction answered this".
+   * <p>
+   * The value is the id the request sent, SANITIZED and bounded - see {@link #sanitizedSessionId}, which reduces
+   * it to the characters a session id is made of and caps its length. For an id this server issued that is the
+   * id verbatim; for anything else it is a bounded rendering of it, and a client comparing the two must expect
+   * that (CodeRabbit on PR #7730).
+   * <p>
+   * The degrade itself is deliberate and is not changing: it is what keeps a read-after-commit and an idempotent
+   * retry of {@code /commit} working, and refusing instead would turn a currently-succeeding retry into an error
+   * for every client that does one. What it should not be is SILENT. Until now the only signal was the ABSENCE
+   * of {@code arcadedb-session-id} in the response - inferable, but only by a client that knew to look for
+   * something that is not there. This header is the positive statement, it is additive, and a client that ignores
+   * it sees exactly what it saw before.
+   *
+   * @see #rejectsUnresolvableSession()
+   */
+  public static final String SESSION_EXPIRED = "arcadedb-session-expired";
+
+  private static final HttpString SESSION_EXPIRED_HEADER = new HttpString(SESSION_EXPIRED);
+
+  /** A session id is a UUID, 36 characters. See {@link #sanitizedSessionId}. */
+  private static final int MAX_ECHOED_SESSION_ID_LENGTH = 64;
+
   protected DatabaseAbstractHandler(final HttpServer httpServer) {
     super(httpServer);
   }
@@ -404,6 +430,43 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
     }
   }
 
+  /**
+   * The id to echo in {@link #SESSION_EXPIRED}, reduced to the shape a session id actually has (issue #7714).
+   * <p>
+   * This is the first value that travels from a REQUEST header into a RESPONSE header, and the only one on this
+   * path the client chose rather than the server. Undertow's parser already refuses CR and LF inside a header
+   * value, so response splitting is not reachable - but a session id is a UUID, and anything that is not one is
+   * a client that is already wrong, so nothing is lost by reducing what is echoed to the characters a UUID is
+   * made of and a length no id exceeds. That also keeps an arbitrary caller-chosen string out of whatever reads
+   * these headers downstream, which is a log scraper as often as it is a client (claude-review on PR #7730).
+   */
+  private static String sanitizedSessionId(final String sessionId) {
+    // The common case by far is an id that needs nothing done to it - a UUID this server issued, echoed back by
+    // a client whose session has since expired. Scanned first and returned UNCHANGED when it is already clean,
+    // so the ordinary degrade allocates nothing (claude-review on PR #7730).
+    final int length = sessionId.length();
+    if (length <= MAX_ECHOED_SESSION_ID_LENGTH) {
+      int i = 0;
+      while (i < length && isSessionIdChar(sessionId.charAt(i)))
+        i++;
+      if (i == length)
+        return sessionId;
+    }
+
+    final int kept = Math.min(length, MAX_ECHOED_SESSION_ID_LENGTH);
+    final StringBuilder sanitized = new StringBuilder(kept);
+    for (int i = 0; i < kept; i++) {
+      final char c = sessionId.charAt(i);
+      sanitized.append(isSessionIdChar(c) ? c : '?');
+    }
+    return sanitized.toString();
+  }
+
+  /** The alphabet a session id is made of: a UUID's, plus the underscore. See {@link #sanitizedSessionId}. */
+  private static boolean isSessionIdChar(final char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_';
+  }
+
   protected HttpSession setTransactionInThreadLocal(final HttpServerExchange exchange, final Database database,
       final ServerSecurityUser user) {
     final HeaderValues sessionId = exchange.getRequestHeaders().get(HttpSessionManager.ARCADEDB_SESSION_ID);
@@ -420,6 +483,10 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
         // retries of commit/rollback working.
         if (rejectsUnresolvableSession())
           throw new HttpSessionException("Remote transaction '" + sessionId.getFirst() + "' not found or expired");
+
+        // The degrade is deliberate but must not be silent: the caller believes it is inside a transaction and is
+        // about to be answered from outside one (issue #7714). See SESSION_EXPIRED.
+        exchange.getResponseHeaders().put(SESSION_EXPIRED_HEADER, sanitizedSessionId(sessionId.getFirst()));
 
         return null;
       }

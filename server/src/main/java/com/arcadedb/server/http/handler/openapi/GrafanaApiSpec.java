@@ -60,6 +60,8 @@ public class GrafanaApiSpec implements OpenApiContributor {
 
     final ApiResponse health = SpecBuilders.jsonResponse("Data source reachable", "GrafanaHealth");
     health.addHeaderObject(SpecBuilders.SESSION_HEADER, SpecBuilders.sessionEchoHeader());
+    // Degrades rather than refuses a session it cannot resolve, so it can say so (issue #7714).
+    health.addHeaderObject(SpecBuilders.SESSION_EXPIRED_HEADER, SpecBuilders.sessionExpiredHeader());
     get.setResponses(SpecBuilders.standardResponses("200", health, "400", "401", "403", "404", "500"));
     get.getResponses().addApiResponse("404",
         SpecBuilders.errorResponse(SpecBuilders.READ_STALE_SESSION_DESCRIPTION));
@@ -84,6 +86,8 @@ public class GrafanaApiSpec implements OpenApiContributor {
     // else. Answered from outside the session, a panel that had just created a type was told it does not exist.
     final ApiResponse metadata = SpecBuilders.jsonResponse("Queryable metadata", "GrafanaMetadata");
     metadata.addHeaderObject(SpecBuilders.SESSION_HEADER, SpecBuilders.sessionEchoHeader());
+    // Degrades rather than refuses a session it cannot resolve, so it can say so (issue #7714).
+    metadata.addHeaderObject(SpecBuilders.SESSION_EXPIRED_HEADER, SpecBuilders.sessionExpiredHeader());
     get.setResponses(SpecBuilders.standardResponses("200", metadata, "400", "401", "403", "404", "500"));
     get.getResponses().addApiResponse("404",
         SpecBuilders.errorResponse(SpecBuilders.READ_STALE_SESSION_DESCRIPTION));
@@ -110,6 +114,8 @@ public class GrafanaApiSpec implements OpenApiContributor {
 
     final ApiResponse frames = SpecBuilders.jsonResponse("DataFrames keyed by target refId", "GrafanaQueryResponse");
     frames.addHeaderObject(SpecBuilders.SESSION_HEADER, SpecBuilders.sessionEchoHeader());
+    // Degrades rather than refuses a session it cannot resolve, so it can say so (issue #7714).
+    frames.addHeaderObject(SpecBuilders.SESSION_EXPIRED_HEADER, SpecBuilders.sessionExpiredHeader());
     post.setResponses(SpecBuilders.standardResponses("200", frames, "400", "401", "403", "404", "500"));
     post.getResponses().addApiResponse("404",
         SpecBuilders.errorResponse(SpecBuilders.READ_STALE_SESSION_DESCRIPTION));

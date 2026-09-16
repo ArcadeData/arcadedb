@@ -151,6 +151,12 @@ public class GetPromQLLabelValuesHandler extends DatabaseAbstractHandler {
       }
     }
 
+    // An empty label value is an ABSENT label in Prometheus, never one of the label's values: see
+    // PromQLResponseFormatter.isLabelValuePresent (issue #7712). Removed here, at the point the answer is
+    // rendered, rather than inside the fold - the engine must keep reporting what the samples hold, and the
+    // same tag column still answers "" through the generic /ts surface.
+    values.removeIf(value -> !PromQLResponseFormatter.isLabelValuePresent(value));
+
     final List<String> sorted = new ArrayList<>(values);
     Collections.sort(sorted);
     return new ExecutionResponse(200, PromQLResponseFormatter.formatLabelsResponse(sorted));

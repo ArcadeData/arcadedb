@@ -89,6 +89,8 @@ public class PrometheusApiSpec implements OpenApiContributor {
     responses.addApiResponse("403", SpecBuilders.errorResponse("Forbidden"));
     responses.addApiResponse("404", SpecBuilders.errorResponse(SpecBuilders.WRITE_STALE_SESSION_DESCRIPTION));
     responses.addApiResponse("500", SpecBuilders.errorResponse("Internal server error"));
+    // No arcadedb-session-expired here: remote-write answers true to rejectsUnresolvableSession(), so it
+    // REFUSES a stale id with 404 and never runs outside the transaction the caller named (issue #7714).
     responses.get("204").addHeaderObject(SpecBuilders.SESSION_HEADER, SpecBuilders.sessionEchoHeader());
     post.setResponses(responses);
 
@@ -116,6 +118,8 @@ public class PrometheusApiSpec implements OpenApiContributor {
     mediaType.setSchema(new Schema<>().type("string").format("binary"));
     success.setContent(new Content().addMediaType(PROTOBUF, mediaType));
     success.addHeaderObject(SpecBuilders.SESSION_HEADER, SpecBuilders.sessionEchoHeader());
+    // Degrades rather than refuses a session it cannot resolve, so it can say so (issue #7714).
+    success.addHeaderObject(SpecBuilders.SESSION_EXPIRED_HEADER, SpecBuilders.sessionExpiredHeader());
 
     final ApiResponses responses = new ApiResponses();
     responses.addApiResponse("200", success);
@@ -246,6 +250,8 @@ public class PrometheusApiSpec implements OpenApiContributor {
   private ApiResponses promQlResponses(final String successDescription, final String successSchema) {
     final ApiResponse success = SpecBuilders.jsonResponse(successDescription, successSchema);
     success.addHeaderObject(SpecBuilders.SESSION_HEADER, SpecBuilders.sessionEchoHeader());
+    // Degrades rather than refuses a session it cannot resolve, so it can say so (issue #7714).
+    success.addHeaderObject(SpecBuilders.SESSION_EXPIRED_HEADER, SpecBuilders.sessionExpiredHeader());
 
     final ApiResponses responses = new ApiResponses();
     responses.addApiResponse("200", success);

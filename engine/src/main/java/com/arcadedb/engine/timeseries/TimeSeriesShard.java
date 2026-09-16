@@ -488,6 +488,38 @@ public class TimeSeriesShard implements AutoCloseable {
   }
 
   /**
+   * Visits the distinct TAG COMBINATIONS both layers carry in the range, rather than the samples that carry them
+   * (issue #7710).
+   * <p>
+   * The rows are the ones {@link #forEachRow} produces for the same projection, except that a sealed block which
+   * declares ONE combination is answered with a single synthetic row off its directory entry - see
+   * {@link TimeSeriesSealedStore#forEachTagCombination} for exactly when, and for why a block declaring more than
+   * one is read instead. The mutable bucket carries no such declaration and is always scanned, which is why the
+   * saving lives in the sealed layer.
+   * <p>
+   * A caller folding these rows into a set of combinations, each with the earliest timestamp it was observed at,
+   * reaches the same answer {@link #forEachRow} would give it - without reading the samples.
+   */
+  public boolean forEachTagCombination(final long fromTs, final long toTs, final int[] columnIndices,
+      final AggregationMetrics metrics, final TimeSeriesRowVisitor visitor) throws IOException {
+    compactionLock.readLock().lock();
+    try {
+      if (!sealedStore.forEachTagCombination(fromTs, toTs, columnIndices, metrics, visitor))
+        return false;
+
+      for (final Object[] row : mutableBucket.scanRange(fromTs, toTs, columnIndices)) {
+        if (metrics != null)
+          metrics.addMaterializedRows(1);
+        if (!visitor.visit(row))
+          return false;
+      }
+      return true;
+    } finally {
+      compactionLock.readLock().unlock();
+    }
+  }
+
+  /**
    * Adds the distinct values of one TAG column, over both layers, to {@code out} (issue #7660).
    * <p>
    * The sealed layer answers a block from its directory entry wherever it can, so the cost there is the number of

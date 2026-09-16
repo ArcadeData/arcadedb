@@ -27,6 +27,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -47,6 +48,29 @@ final class TimeSeriesHandlerUtils {
    */
   private static final int MAX_ECHOED_VALUE_LENGTH = 64;
 
+  /**
+   * Longest numeric STRING accepted where an integral member is expected. It keeps a pathological digit run out
+   * of {@link BigDecimal}'s parser, whose cost grows superlinearly with the digit count, and that is ALL it is
+   * for: the exponent is what makes a value large, not the text, so the guards in {@link #readLong} are what
+   * close the hole this issue is about.
+   * <p>
+   * Sized so it cannot refuse a value the caller could legitimately mean. A whole number a long can hold needs
+   * at most 20 significant characters, and this leaves more than an order of magnitude of headroom on top for
+   * leading zeros, a sign, a decimal point and a run of trailing ones - so a zero-padded {@code 1} is still read
+   * as {@code 1} (CodeRabbit on PR #7730). It is a bound on absurd TEXT, not a statement about which numbers are
+   * representable, and it is deliberately NOT measured on the significant digits alone: leading zeros cost the
+   * parser exactly as much as significant ones, so measuring only the latter would drop the protection while
+   * keeping the refusal.
+   */
+  private static final int MAX_NUMERIC_TEXT_LENGTH = 256;
+
+  /**
+   * Digits in the largest long, {@code 9223372036854775807}. A value with more integer digits than this cannot
+   * be one, which is the bound {@link BigDecimal#longValueExact()} applies internally - in {@code int}
+   * arithmetic, which is exactly the part {@link #readLong} has to redo.
+   */
+  private static final int LONG_MAX_DIGITS = 19;
+
   private TimeSeriesHandlerUtils() {
   }
 
@@ -66,8 +90,11 @@ final class TimeSeriesHandlerUtils {
    * <p>
    * Each helper DELEGATES to the matching {@link JSONObject} getter rather than re-deciding what is acceptable, so
    * what the endpoints accept is unchanged and only the refusal differs. In particular {@code getString} still
-   * renders a JSON number as its text and {@code getLong} still parses a numeric string; widening or narrowing
-   * that here would change which requests succeed, which this issue does not ask for.
+   * renders a JSON number as its text, and a numeric STRING is still read as a number; widening or narrowing that
+   * here would change which requests succeed, which issue #7340 did not ask for.
+   * <p>
+   * The one place that does NOT simply delegate is {@link #readLong}, which refuses a number the long it is
+   * narrowed to would not faithfully represent instead of truncating it (issue #7715). See its javadoc.
    *
    * @param path the member's dotted path as the caller wrote it, e.g. {@code targets[0].aggregation}
    */
@@ -189,12 +216,122 @@ final class TimeSeriesHandlerUtils {
     }
   }
 
+  /**
+   * Reads a member that must be an INTEGRAL number, refusing one the long it is narrowed to would not faithfully
+   * represent (issue #7715).
+   * <p>
+   * {@link JSONObject#getLong} narrows with {@code Number.longValue()}, which does not fail on a value a long
+   * cannot hold: a fractional {@code 1.5} arrives as {@code 1} and a magnitude past {@link Long#MAX_VALUE}
+   * saturates or wraps. Every member read through here is a millisecond instant or a bucket width - quantities
+   * whose whole point is the exact number the caller computed - so a silently different number is answered with a
+   * {@code 200} to a question the caller did not ask. That is the same defect #7675 refused for a non-positive
+   * {@code bucketInterval}, one step earlier: #7675 catches only the half that truncates to zero or below, and
+   * {@code 1.5} is not that half.
+   * <p>
+   * The check is done on the value's EXACT decimal rather than by comparing the narrowed long back against a
+   * double: a double comparison cannot tell {@code 9007199254740993} from its neighbour, which is exactly the
+   * range where a millisecond instant lives. What is accepted is otherwise unchanged - a numeric string is still
+   * read as a number, as the class javadoc states - so no request that named a whole number stops working.
+   * <p>
+   * <b>Why the value is read through {@code getBigDecimal} and not through {@code opt}.</b> {@code opt} goes via
+   * {@code JSONObject.elementToObject}, which narrows any number whose text carries a {@code '.'} or an exponent
+   * to a {@code double} - so {@code {"from": 9007199254740993.0}} would arrive here as
+   * {@code 9007199254740992.0}, already rounded, and would be accepted as a whole number one away from the one
+   * the caller wrote. Rejecting every double past the safe-integer range would close that, but it would also
+   * refuse instants that are perfectly exact as written. {@code getBigDecimal} keeps the LEXEME - the digits the
+   * request actually carried - so the value is neither rounded nor needlessly refused (CodeRabbit on PR #7730).
+   * {@code opt} is still used, for the error message and the length guard, where a narrowed value is fine.
+   * <p>
+   * <b>Why the bound below is re-derived instead of left to {@link BigDecimal#longValueExact()}.</b> That method
+   * bails out early on {@code (precision() - scale) > 19}, computed in {@code int}. A crafted exponent makes the
+   * subtraction OVERFLOW: {@code "1E2147483647"} parses to {@code (unscaled=1, scale=-2147483647)} without
+   * materialising anything, and {@code 1 - (-2147483647)} wraps to {@code -2147483648}, which is not greater
+   * than 19 - so the guard passes and the method goes on to materialise a 2^31-digit integer. The mirror image,
+   * {@code "1E-2147483647"}, drives {@code setScale(0)} into {@code bigTenToThe(2147483647)}. Either is hundreds
+   * of megabytes of allocation from a thirteen-byte request body, on an endpoint whose whole purpose here is
+   * input hardening (claude-review on PR #7730). The scale test and the {@code long} subtraction below run first
+   * and answer both in constant time, so {@code longValueExact()} is only ever reached for a value of at most 19
+   * integer digits.
+   * <p>
+   * Both spellings reach this the same way, whether the member arrived as a JSON number or as a string:
+   * {@code getBigDecimal} reads the lexeme either way. As it happens the JSON layer's own numeric limits turn an
+   * exponent that extreme away first, so the two tests below are not what a caller meets today - they are what
+   * keeps the guarantee from resting on a dependency's internal limit, which is not part of any contract this
+   * code can rely on. That is also why the test bounds assert that the value is refused rather than which of the
+   * two refused it.
+   */
   private static long readLong(final JSONObject owner, final String name, final String path) {
+    final Object received = owner.opt(name);
+
+    // Before the parse, because BigDecimal's cost grows with the digit count and the body limit was the only
+    // other bound on it. Only a STRING can be long in the first place - an extreme value written as a JSON
+    // number is SHORT, which is why this is defence in depth and not the guard that matters.
+    // On the RAW length, not the trimmed one: getBigDecimal parses the text as it arrived, and its parser
+    // refuses whitespace outright, so a value that trimming would have brought under the cap is refused a moment
+    // later anyway. Trimming here only made the guard look like it accepted something it does not
+    // (claude-review on PR #7730).
+    if (received instanceof String text && text.length() > MAX_NUMERIC_TEXT_LENGTH)
+      throw wrongType(path, "a number", received,
+          new NumberFormatException("longer than " + MAX_NUMERIC_TEXT_LENGTH + " characters"));
+
+    final BigDecimal exact;
     try {
-      return owner.getLong(name);
+      // A boolean, an object, an array, a non-numeric string and the lenient parser's NaN/Infinity all fail
+      // here, which is what makes the "must be a number" refusal below cover every one of them.
+      exact = owner.getBigDecimal(name);
     } catch (final JSONException e) {
-      throw wrongType(path, "a number", owner.opt(name), e);
+      throw wrongType(path, "a number", received, e);
     }
+
+    if (exact.signum() == 0)
+      // Zero at any scale is zero, and answering it here keeps the scale tests below off a value they would
+      // report as fractional ("0E-2147483647" is not).
+      return 0L;
+
+    // Trailing zeros first, so 1.000 is the whole number it plainly is. Cheap: it divides the UNSCALED value by
+    // ten while that stays exact and never materialises the value the scale denotes.
+    //
+    // ONLY for a POSITIVE scale, which is the only scale that can hide a fractional part. Stripping a zero
+    // RAISES the scale, and a scale already at the bottom of its range has nowhere to go: "100E2147483647" is
+    // (unscaled=100, scale=-2147483647), and stripTrailingZeros() throws an ArithmeticException("Overflow") of
+    // its own trying to strip its two zeros - outside the catch below, so it would leave this method as an
+    // ArithmeticException rather than the IllegalArgumentException the endpoints render as a 400, answering a
+    // malformed request with a 500 (CodeRabbit on PR #7730).
+    //
+    // Not reachable as things stand: the JSON layer's numeric limits refuse an exponent that extreme before a
+    // BigDecimal carrying such a scale can exist, which is the same reason the two guards below are not what a
+    // caller meets today. It is guarded for the same reason they are - this method's correctness may not rest on
+    // a dependency's internal limit - and nothing is lost by it: a scale of zero or less has no digits after the
+    // decimal point to begin with, so there is no fractional part for the strip to reveal, and the digit count
+    // below reads the same either way.
+    final BigDecimal stripped = exact.scale() > 0 ? exact.stripTrailingZeros() : exact;
+
+    // A positive scale that survives that strip means the last digit is non-zero and sits after the decimal
+    // point, so the value has a fractional part - the case this issue is about.
+    if (stripped.scale() > 0)
+      throw notAWholeLong(path, received, null);
+
+    // The integer-digit count, in LONG arithmetic: this is the subtraction that overflows above.
+    if ((long) stripped.precision() - (long) stripped.scale() > LONG_MAX_DIGITS)
+      throw notAWholeLong(path, received, null);
+
+    try {
+      return stripped.longValueExact();
+    } catch (final ArithmeticException e) {
+      // 19 integer digits is not quite the same bound as Long.MAX_VALUE: the last few values up to 10^19 - 1
+      // pass the digit count and land here.
+      throw notAWholeLong(path, received, e);
+    }
+  }
+
+  /**
+   * Refusal of a number that is not a whole one, or is one no long can hold. The two share a message because
+   * they are the same thing to the caller: the number it sent is not the number it would have been answered for.
+   */
+  private static IllegalArgumentException notAWholeLong(final String path, final Object received,
+      final Throwable cause) {
+    return new IllegalArgumentException("'" + path + "' must be a whole number between " + Long.MIN_VALUE + " and "
+        + Long.MAX_VALUE + ": received " + describe(received), cause);
   }
 
   static IllegalArgumentException missingMember(final String path, final String kind) {

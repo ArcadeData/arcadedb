@@ -45,6 +45,7 @@ public class TimeSeriesApiSpec implements OpenApiContributor {
   private static final String SESSION_RESPONSE_DESCRIPTION     = SpecBuilders.SESSION_RESPONSE_DESCRIPTION;
   private static final String READ_STALE_SESSION_DESCRIPTION   = SpecBuilders.READ_STALE_SESSION_DESCRIPTION;
   private static final String WRITE_STALE_SESSION_DESCRIPTION  = SpecBuilders.WRITE_STALE_SESSION_DESCRIPTION;
+  private static final String SESSION_EXPIRED_HEADER           = SpecBuilders.SESSION_EXPIRED_HEADER;
 
   @Override
   public void contribute(final OpenAPI openAPI) {
@@ -131,6 +132,8 @@ public class TimeSeriesApiSpec implements OpenApiContributor {
     mediaType.setSchema(oneOf);
     success.setContent(new Content().addMediaType(SpecBuilders.JSON, mediaType));
     success.addHeaderObject(SESSION_HEADER, SpecBuilders.stringHeader(SESSION_RESPONSE_DESCRIPTION));
+    success.addHeaderObject(SESSION_EXPIRED_HEADER,
+        SpecBuilders.sessionExpiredHeader());
 
     post.setResponses(SpecBuilders.standardResponses("200", success,
         "400", "401", "403", "404", "500"));
@@ -174,6 +177,8 @@ public class TimeSeriesApiSpec implements OpenApiContributor {
         false));
     final ApiResponse latest = SpecBuilders.jsonResponse("Most recent sample", "TimeSeriesLatestResponse");
     latest.addHeaderObject(SESSION_HEADER, SpecBuilders.stringHeader(SESSION_RESPONSE_DESCRIPTION));
+    latest.addHeaderObject(SESSION_EXPIRED_HEADER,
+        SpecBuilders.sessionExpiredHeader());
     get.setResponses(SpecBuilders.standardResponses("200", latest, "400", "401", "403", "404", "500"));
     get.getResponses().addApiResponse("404", SpecBuilders.errorResponse(READ_STALE_SESSION_DESCRIPTION));
     // See the query endpoint: dropping an unresolvable tag is worse here, because this endpoint answers ONE
@@ -199,8 +204,10 @@ public class TimeSeriesApiSpec implements OpenApiContributor {
     final Schema<Object> aggregation = SpecBuilders.object(
         "Bucketed aggregation. Present only when the caller wants buckets rather than raw rows.");
     aggregation.addProperty("bucketInterval", SpecBuilders.integer(
-        "Bucket width in the same unit as the timestamps. Required, and must be positive: a value of zero or "
-            + "less is refused with 400 rather than read as a single bucket over the whole range."));
+        "Bucket width in the same unit as the timestamps. Required, and must be a positive WHOLE number: a "
+            + "value of zero or less is refused with 400 rather than read as a single bucket over the whole "
+            + "range, and one with a fractional part is refused rather than truncated, because a bucket width "
+            + "is exactly the sort of value a client computes by division."));
     aggregation.addProperty("requests", SpecBuilders.arrayOf(request,
         "Aggregations to compute. Must name at least one; an empty array is refused with 400."));
 
