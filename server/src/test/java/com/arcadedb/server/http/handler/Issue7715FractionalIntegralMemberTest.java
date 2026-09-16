@@ -21,8 +21,11 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 /**
  * Issue #7715: an integral member of a time-series request used to be NARROWED with {@code Number.longValue()},
@@ -130,6 +133,86 @@ class Issue7715FractionalIntegralMemberTest {
           .isInstanceOf(IllegalArgumentException.class)
           .hasMessageStartingWith("'aggregation.bucketInterval' must be a number: received ");
     }
+  }
+
+  /**
+   * An exponent no long can hold, in a thirteen-byte body. {@link java.math.BigDecimal#longValueExact()} decides
+   * whether a value is too large with {@code (precision() - scale) > 19} in {@code int} arithmetic, which
+   * OVERFLOWS for {@code 1E2147483647}: the guard passes and the method materialises a 2^31-digit integer.
+   * {@code 1E-2147483647} is the mirror image, through {@code setScale(0)}. Both must be refused in constant
+   * time (claude-review on PR #7730).
+   * <p>
+   * Bounded with {@code assertTimeoutPreemptively} rather than by eye: the failure mode is an allocation storm,
+   * not a wrong answer, so a test that merely asserted the refusal would pass by hanging the build first. The
+   * bound is a TRIPWIRE between a constant-time refusal and materialising hundreds of megabytes - it is not a
+   * latency claim, which is why it is generous enough that a loaded CI machine cannot trip it.
+   */
+  @Test
+  void refusesAnExtremeExponentWithoutMaterialisingIt() {
+    for (final String spelling : new String[] { "1E2147483647", "1E-2147483647", "-1E2147483647",
+        "1E+2147483646", "9E2147483647" }) {
+      final JSONObject owner = new JSONObject().put("bucketInterval", spelling);
+
+      assertTimeoutPreemptively(Duration.ofSeconds(10), () ->
+          assertThatThrownBy(
+              () -> TimeSeriesHandlerUtils.requireLong(owner, "bucketInterval", "aggregation.bucketInterval"))
+              .isInstanceOf(IllegalArgumentException.class)
+              .hasMessageStartingWith("'aggregation.bucketInterval' must be a whole number between "),
+          "'" + spelling + "' must be refused in constant time, not by materialising the value it names");
+    }
+  }
+
+  /**
+   * The same exponent as a JSON NUMBER rather than a string, which is the other way it arrives from a body the
+   * parser read. {@code elementToObject} hands anything carrying an exponent over as a {@code Double}, so this
+   * route never reaches {@link java.math.BigDecimal} with the exponent intact: {@code Double.parseDouble}
+   * saturates {@code 1E2147483647} to infinity, which is refused as a wrong type, and underflows
+   * {@code 1E-2147483647} to a plain {@code 0.0}, which is the number the caller is then answered for. Pinned
+   * because the boundary between the two routes is what makes the string one the only dangerous one - if
+   * {@code elementToObject} ever stopped narrowing to a double, this would need the same guard.
+   */
+  @Test
+  void aJsonNumberWithAnExtremeExponentIsNarrowedByTheParserBeforeItGetsHere() {
+    final JSONObject payload = new JSONObject("{\"bucketInterval\":1E2147483647,\"from\":1E-2147483647}");
+
+    assertTimeoutPreemptively(Duration.ofSeconds(10), () -> {
+      assertThatThrownBy(
+          () -> TimeSeriesHandlerUtils.requireLong(payload, "bucketInterval", "aggregation.bucketInterval"))
+          .as("saturated to infinity by the parser, and an infinity is not a number a bucket width can be")
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageStartingWith("'aggregation.bucketInterval' must be a number: received ");
+
+      assertThat(TimeSeriesHandlerUtils.optLong(payload, "from", -1L, "from"))
+          .as("underflowed to 0.0 by the parser: a whole number, and the one the value denotes").isZero();
+    });
+  }
+
+  /**
+   * The length cap on a numeric string, defence in depth against an arbitrarily long digit run. Reported as
+   * "must be a number" rather than with a message of its own, because that is #7340's answer for a member that
+   * did not arrive as one and there is no reason for this endpoint to have two.
+   */
+  @Test
+  void refusesANumericStringLongerThanAnyWholeLongNeeds() {
+    final JSONObject owner = new JSONObject().put("from", "1".repeat(200));
+
+    assertThatThrownBy(() -> TimeSeriesHandlerUtils.optLong(owner, "from", 0L, "from"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageStartingWith("'from' must be a number: received ");
+  }
+
+  /**
+   * Zero survives the guards whatever scale it arrives with, including the scale that would make the checks
+   * report it as fractional. {@code "from": 0} is an ordinary request.
+   */
+  @Test
+  void keepsAcceptingZeroAtAnyScale() {
+    final JSONObject owner = new JSONObject("{\"a\":0,\"b\":0.0,\"c\":\"0E-40\",\"d\":-0.000}");
+
+    assertThat(TimeSeriesHandlerUtils.optLong(owner, "a", -1L, "a")).isZero();
+    assertThat(TimeSeriesHandlerUtils.optLong(owner, "b", -1L, "b")).isZero();
+    assertThat(TimeSeriesHandlerUtils.optLong(owner, "c", -1L, "c")).isZero();
+    assertThat(TimeSeriesHandlerUtils.optLong(owner, "d", -1L, "d")).isZero();
   }
 
   /**
