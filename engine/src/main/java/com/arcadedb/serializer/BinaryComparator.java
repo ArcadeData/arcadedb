@@ -114,6 +114,9 @@ public class BinaryComparator {
       case BinaryTypes.TYPE_LONG:
       case BinaryTypes.TYPE_DATETIME:
       case BinaryTypes.TYPE_DATE:
+      case BinaryTypes.TYPE_DATETIME_SECOND:
+      case BinaryTypes.TYPE_DATETIME_MICROS:
+      case BinaryTypes.TYPE_DATETIME_NANOS:
       case BinaryTypes.TYPE_BYTE:
         // Exact for an integral operand past 2^53 where a double is not, and delegating rather than duplicating
         // keeps this direction answering the negation of its reverse - the antisymmetry the narrowing branches
@@ -288,6 +291,9 @@ public class BinaryComparator {
     case BinaryTypes.TYPE_LONG:
     case BinaryTypes.TYPE_DATETIME:
     case BinaryTypes.TYPE_DATE:
+    case BinaryTypes.TYPE_DATETIME_SECOND:
+    case BinaryTypes.TYPE_DATETIME_MICROS:
+    case BinaryTypes.TYPE_DATETIME_NANOS:
       return Long.compare(value1.longValue(), ((Number) value2).longValue());
 
     case BinaryTypes.TYPE_DECIMAL:
@@ -337,6 +343,9 @@ public class BinaryComparator {
     case BinaryTypes.TYPE_LONG:
     case BinaryTypes.TYPE_DATETIME:
     case BinaryTypes.TYPE_DATE:
+    case BinaryTypes.TYPE_DATETIME_SECOND:
+    case BinaryTypes.TYPE_DATETIME_MICROS:
+    case BinaryTypes.TYPE_DATETIME_NANOS:
       return Long.compare(value1.longValue(), ((Number) value2).longValue());
 
     case BinaryTypes.TYPE_BOOLEAN:

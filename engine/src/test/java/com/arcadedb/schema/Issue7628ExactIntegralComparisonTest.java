@@ -165,6 +165,59 @@ class Issue7628ExactIntegralComparisonTest {
   }
 
   /**
+   * Found by the review of PR #7750, same family as #5900/#5947 and in the very switches this issue extends: the
+   * three sub-millisecond timestamp types were missing from the widening lists that already carried {@code DATE}
+   * and {@code DATETIME}, so an {@code INT}/{@code LONG}/{@code FLOAT}/{@code DOUBLE} against one of them fell
+   * through to {@code default: return -1}. That is not merely imprecise, it is a hard antisymmetry violation:
+   * {@code compare(10, INT, 5, DATETIME_NANOS)} and {@code compare(5, DATETIME_NANOS, 10, INT)} BOTH answered
+   * "less than", and a {@code DATETIME_NANOS} column is routinely past 2^53 as epoch nanos, which is the same
+   * band this issue is about.
+   */
+  @Test
+  void theSubMillisecondTimestampTypesAreOrderedRatherThanAnsweringMinusOne() {
+    final byte[] timestampTypes = { BinaryTypes.TYPE_DATETIME_SECOND, BinaryTypes.TYPE_DATETIME_MICROS,
+        BinaryTypes.TYPE_DATETIME_NANOS, BinaryTypes.TYPE_DATETIME, BinaryTypes.TYPE_DATE };
+
+    for (final byte timestampType : timestampTypes)
+      for (final long timestamp : new long[] { 5L, 10L, 15L }) {
+        assertOrdersAndIsAntisymmetric(10, BinaryTypes.TYPE_INT, timestamp, timestampType);
+        assertOrdersAndIsAntisymmetric(10L, BinaryTypes.TYPE_LONG, timestamp, timestampType);
+        assertOrdersAndIsAntisymmetric(10.0d, BinaryTypes.TYPE_DOUBLE, timestamp, timestampType);
+        assertOrdersAndIsAntisymmetric(10.0f, BinaryTypes.TYPE_FLOAT, timestamp, timestampType);
+      }
+  }
+
+  /** The same, at a magnitude only a {@code DATETIME_NANOS} reaches - past 2^53, where a double stops being exact. */
+  @Test
+  void aNanosecondTimestampPastTheDoubleMantissaIsStillOrdered() {
+    final long nanos = 1_781_236_800_123_456_789L;
+    assertThat(Type.isExactAsDouble(nanos)).as("the premise: epoch nanos are past 2^53").isFalse();
+
+    assertOrdersAndIsAntisymmetric(nanos - 1, BinaryTypes.TYPE_LONG, nanos, BinaryTypes.TYPE_DATETIME_NANOS);
+    assertOrdersAndIsAntisymmetric(nanos, BinaryTypes.TYPE_LONG, nanos, BinaryTypes.TYPE_DATETIME_NANOS);
+    assertOrdersAndIsAntisymmetric(nanos + 1, BinaryTypes.TYPE_LONG, nanos, BinaryTypes.TYPE_DATETIME_NANOS);
+  }
+
+  /**
+   * Asserts the pair orders by value AND that the reverse call is the exact negation.
+   * <p>
+   * The expected sign is computed from {@code longValue()}, not {@code doubleValue()}: every caller passes an
+   * integral {@code value1}, and routing the expectation through a double would reintroduce the very 2^53
+   * rounding this test exists to catch - the expectation would agree with a broken comparator.
+   */
+  private void assertOrdersAndIsAntisymmetric(final Number value1, final byte type1, final long timestamp,
+      final byte timestampType) {
+    final int forward = comparator.compare(value1, type1, timestamp, timestampType);
+    final int backward = comparator.compare(timestamp, timestampType, value1, type1);
+    final int expected = Long.compare(value1.longValue(), timestamp);
+
+    assertThat(Integer.signum(forward)).as("%s(type %d) vs timestamp %d(type %d)", value1, type1, timestamp,
+        timestampType).isEqualTo(Integer.signum(expected));
+    assertThat(Integer.signum(backward)).as("the reverse of %s(type %d) vs timestamp %d(type %d)", value1, type1,
+        timestamp, timestampType).isEqualTo(-Integer.signum(expected));
+  }
+
+  /**
    * Below the boundary nothing may change: the pair still meets at {@code double}, which is both exact and far
    * cheaper than a {@link BigDecimal} round trip on a hot comparison path.
    */
