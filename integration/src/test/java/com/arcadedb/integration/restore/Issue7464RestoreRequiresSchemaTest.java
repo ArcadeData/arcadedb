@@ -57,6 +57,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * {@code schema.prev.json}, because {@code LocalSchema.readConfiguration()} loads from the previous copy when the
  * primary is missing or empty. An archive carrying only the fallback really does restore to a working database,
  * so it must not be refused.
+ * <p>
+ * Since issue #7637 a freshly produced archive carries {@code schema.prev.json} too, so the doctoring below has to
+ * remove BOTH arms to reproduce an unusable archive - keeping only the primary out leaves an archive the second
+ * arm legitimately rescues, which is the whole point of #7637 and not a case this test is about.
  */
 class Issue7464RestoreRequiresSchemaTest {
   private static final String DATABASE_PATH = "target/databases/issue7464-restore-schema";
@@ -96,7 +100,7 @@ class Issue7464RestoreRequiresSchemaTest {
   @ParameterizedTest
   @ValueSource(ints = { 0, 4 })
   void aRestoreFromAnArchiveWithNoSchemaAtAllIsRefused(final int threads) throws Exception {
-    rewriteArchive(name -> LocalSchema.SCHEMA_FILE_NAME.equals(name) ? null : name);
+    rewriteArchive(name -> isSchemaFile(name) ? null : name);
 
     assertThatThrownBy(() -> new Restore(DOCTORED_FILE, RESTORED_PATH)
         .setRestoreThreads(threads).setVerboseLevel(0).restoreDatabase())
@@ -116,7 +120,9 @@ class Issue7464RestoreRequiresSchemaTest {
   @ParameterizedTest
   @ValueSource(ints = { 0, 4 })
   void aRestoreFromAnArchiveWhoseSchemaIsEmptyIsRefused(final int threads) throws Exception {
-    rewriteArchive(name -> name, LocalSchema.SCHEMA_FILE_NAME);
+    // The fallback goes too: with it in place the archive is usable, and correctly so - the refusal under test is
+    // "no arm of exists() is satisfied", not "the primary is empty" (issue #7637)
+    rewriteArchive(name -> LocalSchema.SCHEMA_PREV_FILE_NAME.equals(name) ? null : name, LocalSchema.SCHEMA_FILE_NAME);
 
     assertThatThrownBy(() -> new Restore(DOCTORED_FILE, RESTORED_PATH)
         .setRestoreThreads(threads).setVerboseLevel(0).restoreDatabase())
@@ -132,7 +138,11 @@ class Issue7464RestoreRequiresSchemaTest {
    */
   @Test
   void aRestoreFromAnArchiveCarryingOnlyThePreviousSchemaIsAccepted() throws Exception {
-    rewriteArchive(name -> LocalSchema.SCHEMA_FILE_NAME.equals(name) ? LocalSchema.SCHEMA_PREV_FILE_NAME : name);
+    // The archive's own schema.prev.json (issue #7637) is dropped first, so the primary can take its name without
+    // colliding with it - the shape under test is an archive whose ONLY schema file is the fallback
+    rewriteArchive(name -> LocalSchema.SCHEMA_PREV_FILE_NAME.equals(name) ?
+        null :
+        LocalSchema.SCHEMA_FILE_NAME.equals(name) ? LocalSchema.SCHEMA_PREV_FILE_NAME : name);
 
     new Restore(DOCTORED_FILE, RESTORED_PATH).setVerboseLevel(0).restoreDatabase();
 
@@ -157,6 +167,11 @@ class Issue7464RestoreRequiresSchemaTest {
   }
 
   // ------------------------------------------------------------------------------------------------------- HELPERS
+
+  /** Either arm of {@code DatabaseFactory.exists()} - both of which a backup now archives (issue #7637). */
+  private static boolean isSchemaFile(final String name) {
+    return LocalSchema.SCHEMA_FILE_NAME.equals(name) || LocalSchema.SCHEMA_PREV_FILE_NAME.equals(name);
+  }
 
   private static void rewriteArchive(final UnaryOperator<String> rename) throws IOException {
     rewriteArchive(rename, null);

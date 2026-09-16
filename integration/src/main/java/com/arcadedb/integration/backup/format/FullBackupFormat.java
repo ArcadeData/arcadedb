@@ -284,7 +284,16 @@ public class FullBackupFormat extends AbstractBackupFormat {
   private long backupFromFrozenFiles(final BackupArchiveWriter archive) throws IOException {
     long origSize = 0L;
     origSize += compressFile(archive, ((LocalDatabase) database.getEmbedded()).getConfigurationFile());
-    origSize += compressFile(archive, ((LocalSchema) database.getSchema()).getConfigurationFile());
+    final File schemaFile = ((LocalSchema) database.getSchema()).getConfigurationFile();
+    origSize += compressFile(archive, schemaFile);
+    // schema.prev.json, the copy LocalSchema.readConfiguration() falls back to when schema.json is missing,
+    // zero-length or unparseable, and the second arm of DatabaseFactory.exists(). Archived so a restored database
+    // keeps the corruption fallback the database it was copied from had, instead of having none until its first
+    // schema save recreates one (issue #7637). BOTH paths carry it, or the archive's file set would depend on
+    // which one happened to run. Absent is legitimate and compressFile skips it: a database whose schema has never
+    // been re-saved has no previous copy - which is also why it is deliberately NOT part of what
+    // checkArchiveCarriesTheSchema() requires.
+    origSize += compressFile(archive, new File(schemaFile.getParentFile(), LocalSchema.SCHEMA_PREV_FILE_NAME));
     // THE CALLER'S PAUSE IS NOT RELEASED EARLY ON THIS PATH, UNLIKE THE SNAPSHOT ONE: HERE THE PAGE IMAGE IS THE
     // ON-DISK ONE THE FLUSH SUSPENSION IS FREEZING, SO IT IS ONLY FIXED FOR AS LONG AS THE SUSPENSION LASTS AND
     // THE PAUSE HAS TO SPAN THE WHOLE CALLBACK - WHICH THIS PATH ALREADY THROTTLES WRITERS FOR ANYWAY
