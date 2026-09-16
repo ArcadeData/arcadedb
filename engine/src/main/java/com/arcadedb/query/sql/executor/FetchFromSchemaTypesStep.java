@@ -263,6 +263,10 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
 
   private void populateTimeSeriesMetadata(final ResultInternal r, final LocalTimeSeriesType tsType) {
     r.setProperty("timestampColumn", tsType.getTimestampColumn());
+    // The declared precision, absent before issue #7399: without it a remote client reading a TIMESERIES type back
+    // through RemoteSchema could not tell NANOSECOND from the default, so a builder round trip lost it silently.
+    if (tsType.getPrecision() != null)
+      r.setProperty("precision", tsType.getPrecision());
     r.setProperty("shardCount", tsType.getShardCount());
     r.setProperty("retentionMs", tsType.getRetentionMs());
     r.setProperty("compactionBucketIntervalMs", tsType.getCompactionBucketIntervalMs());
@@ -274,6 +278,9 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
       colR.setProperty("name", col.getName());
       colR.setProperty("dataType", col.getDataType().name());
       colR.setProperty("role", col.getRole().name());
+      // The codec is not re-derivable from the type and role alone once it has been overridden (issue #5475), so a
+      // remote view that omitted it reported the DEFAULT codec for every column - a silent lie about the storage.
+      colR.setProperty("compression", col.getCompressionHint().name());
       tsColResults.add(colR);
     }
     r.setProperty("tsColumns", tsColResults);

@@ -25,14 +25,18 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 
 /**
- * Issue #7335: the four type builders on {@link RemoteSchema} used to throw a bare
+ * Issue #7335: the type builders on {@link RemoteSchema} used to throw a bare
  * {@link UnsupportedOperationException} with no message, leaving the caller with a dead end that named
  * neither the reason nor the alternative.
+ * <p>
+ * Only the three deprecated document/vertex/edge builders are covered here. {@code buildTimeSeriesType()} was
+ * one of the four #7335 gave a message to, but issue #7399 then IMPLEMENTED it remotely, so it no longer
+ * throws at all; its behaviour is pinned by {@code Issue7399RemoteTimeSeriesTypeBuilderIT} instead.
  * <p>
  * Each test asserts on the message TEXT, not merely on the exception type: a type-only assertion passes
  * against the pre-fix code and therefore proves nothing. The SQL alternative each message names is a real,
  * working remote path - {@code RemoteSchema} itself issues {@code create document/vertex/edge type} over the
- * wire, and {@code CREATE TIMESERIES TYPE} is exercised remotely by the gRPC and server integration tests.
+ * wire.
  * <p>
  * The database is mocked, following the sibling {@code RemoteSchemaTest}: the builders throw before
  * dereferencing it, and a real {@link RemoteDatabase} cannot be used because its superclass constructor calls
@@ -72,18 +76,5 @@ class Issue7335RemoteSchemaBuilderMessageTest {
         .hasMessageContaining("buildEdgeType()")
         .hasMessageContaining("not supported")
         .hasMessageContaining("CREATE EDGE TYPE");
-  }
-
-  /**
-   * Unlike the other three, {@code buildTimeSeriesType()} is not deprecated: it is current API, so this is the
-   * message users are most likely to hit.
-   */
-  @Test
-  void buildTimeSeriesTypeNamesTheSqlAlternative() {
-    assertThatThrownBy(() -> schema.buildTimeSeriesType())
-        .isInstanceOf(UnsupportedOperationException.class)
-        .hasMessageContaining("buildTimeSeriesType()")
-        .hasMessageContaining("not supported")
-        .hasMessageContaining("CREATE TIMESERIES TYPE");
   }
 }
