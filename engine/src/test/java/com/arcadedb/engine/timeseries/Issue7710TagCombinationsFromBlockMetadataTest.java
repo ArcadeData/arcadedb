@@ -228,6 +228,44 @@ class Issue7710TagCombinationsFromBlockMetadataTest extends TestHelper {
   }
 
   /**
+   * The MIXED block: one projected tag single-valued, the other not. The fast path needs EVERY projected column
+   * to declare exactly one value, and the two extremes - all single, all multiple - do not exercise the
+   * short-circuit between them. A block like this is consistent with two combinations and with four, so it has
+   * to be read (claude-review on PR #7730).
+   */
+  @Test
+  void readsABlockWhereOnlyOneOfTheProjectedTagsIsSingleValued() throws Exception {
+    final TimeSeriesEngine engine = engineFor("ts_mixed_declaration");
+    try {
+      // One host throughout, two regions: host declares {h1}, region declares {eu, us}.
+      final int count = 6;
+      final long[] timestamps = new long[count];
+      final Object[] hosts = new Object[count];
+      final Object[] regions = new Object[count];
+      final Object[] values = new Object[count];
+      for (int i = 0; i < count; i++) {
+        timestamps[i] = 1000L + i * 1000L;
+        hosts[i] = "h1";
+        regions[i] = i % 2 == 0 ? "eu" : "us";
+        values[i] = (double) i;
+      }
+      append(engine, timestamps, hosts, regions, values);
+      seal(engine);
+      assertThat(engine.getShard(0).getSealedStore().getBlockCount()).isEqualTo(1);
+
+      final AggregationMetrics metrics = new AggregationMetrics();
+      final Map<String, Long> combinations = foldCombinations(engine, Long.MIN_VALUE, Long.MAX_VALUE, metrics);
+
+      assertThat(combinations).containsOnlyKeys("h1|eu", "h1|us");
+      assertThat(metrics.getMaterializedRows())
+          .as("one column declaring a single value is not enough: the block is read").isEqualTo(count);
+      assertThat(combinations).isEqualTo(foldRows(engine, Long.MIN_VALUE, Long.MAX_VALUE));
+    } finally {
+      engine.close();
+    }
+  }
+
+  /**
    * A tag column carrying an explicit non-dictionary codec declares its distinct values as TEXT while a scan of
    * it hands back the boxed value, so its declaration cannot stand in for the scan: the block is read instead of
    * being answered with a {@code String} where the caller would have seen an {@code Integer}.
