@@ -894,7 +894,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // store is not storable. It answered 400 as an IllegalArgumentException before #7729 gave it its own type, and
     // this keeps that answer rather than silently downgrading it to a server fault. The whole chain is searched,
     // for the same reason the arithmetic arm searches it: the wrapping depends on how the request arrived.
-    final InvalidPropertyTypeException invalidPropertyType = CauseChain.find(e, InvalidPropertyTypeException.class);
+    final InvalidPropertyTypeException invalidPropertyType = invalidPropertyType(e);
     if (invalidPropertyType != null) {
       logUserError(invalidPropertyType);
       sendErrorResponse(exchange, 400, "Cannot execute command", invalidPropertyType, null);
@@ -1640,6 +1640,10 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    */
   private static ArithmeticErrorException arithmeticError(final Throwable error) {
     return CauseChain.find(error, ArithmeticErrorException.class);
+  }
+
+  private static InvalidPropertyTypeException invalidPropertyType(final Throwable error) {
+    return CauseChain.find(error, InvalidPropertyTypeException.class);
   }
 
   private void sendErrorResponse(final HttpServerExchange exchange, final int code, final String errorMessage, final Throwable e,
