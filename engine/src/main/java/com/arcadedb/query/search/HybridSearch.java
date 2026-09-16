@@ -24,6 +24,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.function.sql.vector.SQLFunctionVectorFuse;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.fulltext.FullTextQueryParseException;
 import com.arcadedb.index.fulltext.FullTextSearch;
@@ -71,6 +72,36 @@ public final class HybridSearch {
   public static final int MAX_SEEDS          = 256;
   public static final int MAX_EXPANSION      = 2_000;
   public static final int MAX_DEPTH          = 3;
+
+  // The closed value sets this class enforces, named here rather than spelled out at each call site. Public for
+  // the same reason the bounds above are: the OpenAPI document, the MCP tool schemas and the gRPC RPCs all have
+  // to advertise exactly what strategyOf() and validateExpand() accept, and a value set written out in a
+  // description is a value set that drifts from the check the moment one of them gains a member (issue #7579).
+  public static final String       STRATEGY_RRF       = "RRF";
+  public static final String       STRATEGY_DBSF      = "DBSF";
+  public static final String       STRATEGY_LINEAR    = "LINEAR";
+  /**
+   * Every accepted {@code fusionStrategy}. Read from {@link SQLFunctionVectorFuse#STRATEGIES} rather than
+   * written out, because that function is where fusion scoring happens and therefore where the vocabulary is
+   * decided: a strategy this class accepted and {@code vector.fuse} did not would be refused by the statement
+   * rather than by the argument check, naming the SQL function instead of the request field.
+   */
+  public static final List<String> FUSION_STRATEGIES  = SQLFunctionVectorFuse.STRATEGIES;
+
+  public static final String       DIRECTION_OUT      = "out";
+  public static final String       DIRECTION_IN       = "in";
+  public static final String       DIRECTION_BOTH     = "both";
+  /** Every accepted {@code expand.direction}. Each is also the name of the SQL TRAVERSE projection it builds. */
+  public static final List<String> EXPAND_DIRECTIONS  = List.of(DIRECTION_OUT, DIRECTION_IN, DIRECTION_BOTH);
+
+  public static final String       LEG_VECTOR         = "vector";
+  public static final String       LEG_FULLTEXT       = "fulltext";
+  public static final String       LEG_EXPAND         = "expand";
+  /**
+   * The three legs: the only accepted {@code weights} keys, the keys of the per-leg accounting, and the only
+   * values a fused hit's {@code sources} array can carry.
+   */
+  public static final List<String> LEG_NAMES          = List.of(LEG_VECTOR, LEG_FULLTEXT, LEG_EXPAND);
 
   private HybridSearch() {
   }
@@ -122,7 +153,7 @@ public final class HybridSearch {
     // The expansion leg ranks by traversal order and carries no score, which the score-normalizing
     // strategies cannot consume. Rejecting here names the conflict; letting it through would surface
     // as a parse-level complaint about a source the caller never wrote.
-    if (expandArgs != null && !"RRF".equals(strategy))
+    if (expandArgs != null && !STRATEGY_RRF.equals(strategy))
       throw new IllegalArgumentException("fusionStrategy " + strategy + " needs a score on every row, but the graph "
           + "expansion leg is ranked by traversal order and has none. Use RRF, or drop 'expand'.");
     // The remaining expand and weights checks need no schema, so they are reported here too, before
@@ -163,7 +194,7 @@ public final class HybridSearch {
     final List<LegRow> vectorLeg = runVectorLeg(database, vectorQuery);
 
     final JSONObject legs = new JSONObject()
-        .put("vector", new JSONObject().put("count", vectorLeg.size()));
+        .put(LEG_VECTOR, new JSONObject().put("count", vectorLeg.size()));
 
     final FullTextLeg fullTextLeg = runFullTextLeg(database, args, legLimit(k), legs, expanding);
 
@@ -173,17 +204,17 @@ public final class HybridSearch {
         .setUseCollectionSizeForEdges(false);
 
     final List<Leg> legList = new ArrayList<>(3);
-    legList.add(new Leg("vector", vectorLeg, weightOf(args, "vector", 1.0f), vectorQuery.sparse() ? "score" : "distance"));
+    legList.add(new Leg(LEG_VECTOR, vectorLeg, weightOf(args, LEG_VECTOR, 1.0f), vectorQuery.sparse() ? "score" : "distance"));
     if (!fullTextLeg.rows().isEmpty())
-      legList.add(new Leg("fulltext", fullTextLeg.rows(), weightOf(args, "fulltext", 1.0f), "score"));
+      legList.add(new Leg(LEG_FULLTEXT, fullTextLeg.rows(), weightOf(args, LEG_FULLTEXT, 1.0f), "score"));
 
     Map<RID, ExpansionInfo> expansionInfo = Map.of();
     if (expanding) {
       final List<RID> seeds = collectSeeds(vectorLeg, fullTextLeg.rows());
       final Expansion expansion = runExpansionLeg(database, expandArgs, seeds);
       expansionInfo = expansion.info();
-      legs.put("expand", new JSONObject()
-          .put("direction", expandArgs.getString("direction", "out"))
+      legs.put(LEG_EXPAND, new JSONObject()
+          .put("direction", expandArgs.getString("direction", DIRECTION_OUT))
           .put("edgeTypes", expandArgs.getJSONArray("edgeTypes", new JSONArray()))
           .put("maxDepth", expandArgs.getInt("maxDepth", 1))
           .put("truncated", expansion.truncated())
@@ -193,7 +224,7 @@ public final class HybridSearch {
           .put("seedsTruncated", seeds.size() >= MAX_SEEDS)
           .put("count", expansion.rows().size()));
       if (!expansion.rows().isEmpty())
-        legList.add(new Leg("expand", expansion.rows(), weightOf(args, "expand", 0.5f), "score"));
+        legList.add(new Leg(LEG_EXPAND, expansion.rows(), weightOf(args, LEG_EXPAND, 0.5f), "score"));
     }
 
     final JSONObject response = new JSONObject()
@@ -216,7 +247,7 @@ public final class HybridSearch {
         results.put(new JSONObject()
             .put("rid", row.rid().toString())
             .put(vectorQuery.sparse() ? "score" : "distance", row.score())
-            .put("sources", new JSONArray().put("vector"))
+            .put("sources", new JSONArray().put(LEG_VECTOR))
             .put("properties", serializer.serializeDocument(document)));
       }
       response.put("fused", false);
@@ -228,8 +259,8 @@ public final class HybridSearch {
     // The index name is reported whenever the full-text leg ran, including when it matched nothing and
     // so could not become a fusion source. A caller comparing a fused and an unfused response would
     // otherwise see the field appear and disappear for a reason unrelated to which index was searched.
-    if (legs.has("fulltext"))
-      response.put("fulltextIndexName", legs.getJSONObject("fulltext").getString("indexName"));
+    if (legs.has(LEG_FULLTEXT))
+      response.put("fulltextIndexName", legs.getJSONObject(LEG_FULLTEXT).getString("indexName"));
 
     return response
         .put("truncated", results.length() >= k)
@@ -277,10 +308,10 @@ public final class HybridSearch {
       throw new IllegalArgumentException(
           "expand.maxDepth must be between 1 and " + MAX_DEPTH + ", got " + maxDepth);
 
-    final String direction = expandArgs.getString("direction", "out");
-    if (!"out".equals(direction) && !"in".equals(direction) && !"both".equals(direction))
+    final String direction = expandArgs.getString("direction", DIRECTION_OUT);
+    if (!EXPAND_DIRECTIONS.contains(direction))
       throw new IllegalArgumentException(
-          "expand.direction must be one of out, in, both, got '" + direction + "'");
+          "expand.direction must be one of " + String.join(", ", EXPAND_DIRECTIONS) + ", got '" + direction + "'");
   }
 
   /**
@@ -294,22 +325,23 @@ public final class HybridSearch {
     if (weights == null)
       return;
     for (final String key : weights.keySet())
-      if (!"vector".equals(key) && !"fulltext".equals(key) && !"expand".equals(key))
-        throw new IllegalArgumentException("Unknown weights key '" + key + "'. Allowed: vector, fulltext, expand");
+      if (!LEG_NAMES.contains(key))
+        throw new IllegalArgumentException(
+            "Unknown weights key '" + key + "'. Allowed: " + String.join(", ", LEG_NAMES));
 
     // A weight for a leg the request never asks for is rejected rather than ignored. It is read only
     // when its leg becomes a fusion source, so accepting it would leave the caller believing an
     // override took effect that nothing ever consumed - the same silent no-op an unknown key would be.
     // The full-text leg counts as requested when either of its arguments is present, so an incomplete
     // leg still reports the more specific error naming both fields.
-    if (weights.has("fulltext") && !args.has("fulltextIndexName") && !args.has("fulltextQuery"))
+    if (weights.has(LEG_FULLTEXT) && !args.has("fulltextIndexName") && !args.has("fulltextQuery"))
       throw new IllegalArgumentException(
           "weights.fulltext was supplied but the request has no full-text leg. Add 'fulltextIndexName' and "
               + "'fulltextQuery', or drop the weight.");
-    if (weights.has("expand") && !args.has("expand"))
+    if (weights.has(LEG_EXPAND) && !args.has("expand"))
       throw new IllegalArgumentException(
           "weights.expand was supplied but the request has no graph expansion leg. Add 'expand', or drop the weight.");
-    for (final String legName : List.of("vector", "fulltext", "expand")) {
+    for (final String legName : LEG_NAMES) {
       if (!weights.has(legName))
         continue;
       // The type is checked before the value is read: reading a non-numeric weight straight through
@@ -334,7 +366,7 @@ public final class HybridSearch {
       final List<RID> seeds) {
     validateExpand(expandArgs);
     final int maxDepth = expandArgs.getInt("maxDepth", 1);
-    final String direction = expandArgs.getString("direction", "out");
+    final String direction = expandArgs.getString("direction", DIRECTION_OUT);
     final List<String> edgeTypes = validatedEdgeTypes(database, expandArgs.getJSONArray("edgeTypes", null));
 
     if (seeds.isEmpty())
@@ -572,7 +604,7 @@ public final class HybridSearch {
     for (final Map.Entry<RID, Float> hit : ranked)
       rows.add(new LegRow(hit.getKey(), hit.getValue().doubleValue()));
 
-    legs.put("fulltext", new JSONObject()
+    legs.put(LEG_FULLTEXT, new JSONObject()
         .put("indexName", typeIndex.getName())
         .put("similarity", FullTextSearch.getSimilarity(typeIndex))
         .put("count", rows.size()));
@@ -689,11 +721,11 @@ public final class HybridSearch {
   }
 
   private static String strategyOf(final JSONObject args) {
-    final String raw = args.getString("fusionStrategy", "RRF");
+    final String raw = args.getString("fusionStrategy", STRATEGY_RRF);
     final String strategy = raw.toUpperCase(Locale.ROOT);
-    if (!"RRF".equals(strategy) && !"DBSF".equals(strategy) && !"LINEAR".equals(strategy))
+    if (!FUSION_STRATEGIES.contains(strategy))
       throw new IllegalArgumentException(
-          "Unknown fusionStrategy '" + raw + "'. Allowed: RRF, DBSF, LINEAR");
+          "Unknown fusionStrategy '" + raw + "'. Allowed: " + String.join(", ", FUSION_STRATEGIES));
     return strategy;
   }
 
