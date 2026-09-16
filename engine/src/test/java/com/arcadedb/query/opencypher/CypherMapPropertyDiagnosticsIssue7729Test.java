@@ -261,6 +261,28 @@ class CypherMapPropertyDiagnosticsIssue7729Test {
   }
 
   @Test
+  void anEmptyMapIsStillRefusedAndSaysItHadNoEntries() {
+    // Not point-shaped, so it takes the ordinary map branch - and the branch of describeKeys that has no keys to
+    // name at all.
+    assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher", "MATCH (t:T) SET t.m = {}")))
+        .isInstanceOf(InvalidPropertyTypeException.class)
+        .hasMessageContaining("property 'm'")
+        .hasMessageContaining("with no entries");
+  }
+
+  @Test
+  void oneVeryLongKeyIsCutShortSoItCannotCarryItsOwnPayloadIntoTheLog() {
+    // Capping how MANY keys are named is only half the bound: a key is caller-supplied text too.
+    final String longKey = "k".repeat(200);
+
+    assertThatThrownBy(() -> database.transaction(() -> database.command("opencypher",
+        "MATCH (t:T) SET t.m = $p", Map.of("p", Map.of(longKey, Map.of("x", 1))))))
+        .isInstanceOf(InvalidPropertyTypeException.class)
+        .hasMessageContaining("...")
+        .hasMessageNotContaining(longKey);
+  }
+
+  @Test
   void theRefusalNamesTheOffendingKeysSoTheValueCanBeIdentified() {
     assertThatThrownBy(() -> database.transaction(
         () -> database.command("opencypher", "MATCH (n:R), (t:T) SET t.m2 = n.m")))
