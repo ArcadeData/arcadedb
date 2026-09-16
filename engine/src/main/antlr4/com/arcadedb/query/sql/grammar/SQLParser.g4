@@ -477,16 +477,23 @@ customMetadataItem
 /**
  * CREATE TIMESERIES TYPE body
  * Example: CREATE TIMESERIES TYPE SensorData TIMESTAMP ts PRECISION NANOSECOND TAGS (sensor_id STRING) FIELDS (temperature DOUBLE, humidity DOUBLE) SHARDS 4 RETENTION 90 DAYS COMPACTION_INTERVAL 1 HOURS
+ * Example: CREATE TIMESERIES TYPE SensorData TIMESTAMP ts FIELDS (temperature DOUBLE CODEC GORILLA_XOR) DOWNSAMPLING POLICY AFTER 7 DAYS GRANULARITY 1 HOURS
+ *
+ * The optional CODEC and DOWNSAMPLING POLICY clauses exist so that the whole declaration is ONE statement
+ * (issue #7689). Without them, a caller reproducing a TimeSeriesTypeBuilder through DDL - RemoteTimeSeriesTypeBuilder
+ * and the JSONL logical restore both do - had to issue a CREATE followed by an ALTER, which leaves the type without
+ * its policy when only the first of the two lands, and had no expression at all for a per-column codec.
  */
 createTimeSeriesTypeBody
     : identifier
       (IF NOT EXISTS)?
-      (TIMESTAMP identifier (PRECISION tsPrecision)?)?
+      (TIMESTAMP identifier (PRECISION tsPrecision)? tsCodecClause?)?
       (TAGS LPAREN tsTagColumnDef (COMMA tsTagColumnDef)* RPAREN)?
       (FIELDS LPAREN tsFieldColumnDef (COMMA tsFieldColumnDef)* RPAREN)?
       (SHARDS INTEGER_LITERAL)?
       (RETENTION INTEGER_LITERAL tsRetentionUnit?)?
       ((COMPACTION_INTERVAL | COMPACTION INTERVAL) INTEGER_LITERAL tsRetentionUnit?)?
+      (DOWNSAMPLING POLICY downsamplingTierClause+)?
     ;
 
 tsPrecision
@@ -504,11 +511,20 @@ tsRetentionUnit
     ;
 
 tsTagColumnDef
-    : identifier identifier
+    : identifier identifier tsCodecClause?
     ;
 
 tsFieldColumnDef
-    : identifier identifier
+    : identifier identifier tsCodecClause?
+    ;
+
+/**
+ * Per-column compression codec, e.g. `CODEC SIMPLE8B`. The name is one of the TimeSeriesCodec constants; it is
+ * spelled as an `identifier` rather than as its own token set so that adding a codec to the enum does not need a
+ * grammar change. An unknown name is refused when the statement executes, where the enum can name the valid ones.
+ */
+tsCodecClause
+    : CODEC identifier
     ;
 
 /**
@@ -1666,6 +1682,7 @@ identifier
     | DOWNSAMPLING
     | POLICY
     | GRANULARITY
+    | CODEC
     // Additional keywords allowed as identifiers (matching JavaCC parser)
     | PROPERTY
     | BUCKETS

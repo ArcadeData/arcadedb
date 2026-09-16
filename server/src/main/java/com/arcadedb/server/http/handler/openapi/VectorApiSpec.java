@@ -67,6 +67,7 @@ public class VectorApiSpec implements OpenApiContributor {
             bounded candidate window whose size is reported as 'candidateLimit', so 'truncated' means the \
             window was filled and more matches may exist - raise 'k' to see them.""");
     post.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
+    post.addParametersItem(SpecBuilders.sessionHeaderParam());
     post.setRequestBody(SpecBuilders.jsonBody("Vector search request", "VectorSearchRequest", true));
     post.setResponses(vectorResponses(SpecBuilders.jsonResponse(
         "Ranked neighbors, nearest first", "VectorSearchResponse")));
@@ -89,6 +90,7 @@ public class VectorApiSpec implements OpenApiContributor {
             is ranked by traversal order and carries no score, so it can only be fused with the RRF \
             strategy.""");
     post.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
+    post.addParametersItem(SpecBuilders.sessionHeaderParam());
     post.setRequestBody(SpecBuilders.jsonBody("Hybrid search request", "HybridSearchRequest", true));
     post.setResponses(vectorResponses(SpecBuilders.jsonResponse(
         "Fused results, best first, each naming the legs it came from", "HybridSearchResponse")));
@@ -110,6 +112,7 @@ public class VectorApiSpec implements OpenApiContributor {
             the index scan and the record load is skipped rather than back-filled, so a search can \
             legitimately return fewer than 'limit' results.""");
     post.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
+    post.addParametersItem(SpecBuilders.sessionHeaderParam());
     post.setRequestBody(SpecBuilders.jsonBody("Full-text search request", "FullTextSearchRequest", true));
     post.setResponses(vectorResponses(SpecBuilders.jsonResponse(
         "Matching documents, highest score first", "FullTextSearchResponse")));
@@ -125,7 +128,19 @@ public class VectorApiSpec implements OpenApiContributor {
    * which limit it crossed.
    */
   private ApiResponses vectorResponses(final ApiResponse success) {
-    return SpecBuilders.standardResponses("200", success, "400", "401", "403", "404", "500");
+    // These three routes extend DatabaseAbstractHandler with requiresTransaction() false and no override of
+    // rejectsUnresolvableSession(), so they honour the session header and DEGRADE on one they cannot resolve,
+    // exactly as GET /query and the time-series reads do. The document said nothing about any of it, which
+    // reads to a client generator as "this route has nothing to do with transactions" - and left the one signal
+    // that says an answer came from outside the caller's transaction invisible here (issue #7714,
+    // claude-review on PR #7730).
+    success.addHeaderObject(SpecBuilders.SESSION_HEADER, SpecBuilders.sessionEchoHeader());
+    success.addHeaderObject(SpecBuilders.SESSION_EXPIRED_HEADER, SpecBuilders.sessionExpiredHeader());
+
+    final ApiResponses responses = SpecBuilders.standardResponses("200", success,
+        "400", "401", "403", "404", "500");
+    responses.addApiResponse("404", SpecBuilders.errorResponse(SpecBuilders.READ_STALE_SESSION_DESCRIPTION));
+    return responses;
   }
 
   private Schema<?> createSearchRequestSchema() {

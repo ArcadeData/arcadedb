@@ -68,6 +68,24 @@ public final class SpecBuilders {
       call then runs under the session's lock and principal and refreshes its idle timer. Omit it to run \
       outside any transaction.""";
 
+  /**
+   * What the session header means on a time-series WRITE, which is not the same thing it means on a read and
+   * is the whole of issue #7657/#7658. A read really does run inside the named transaction; an append does not
+   * join it, and never has - {@code TimeSeriesShard.appendSamples} commits its own transaction whatever the
+   * caller has open (#7410). Describing the two the same way is how a generated client ends up with a write
+   * method whose contract is atomicity the server does not offer. Pinned by
+   * {@code Issue7657TimeSeriesWriteSpecStatesNonAtomicityTest}.
+   */
+  public static final String WRITE_SESSION_REQUEST_DESCRIPTION = """
+      Session id returned by 'beginTransaction'. It makes this call run under that session's lock and \
+      principal and refreshes its idle timer, so a client that only ingests does not have its transaction \
+      reaped underneath it, and it turns a session id this server no longer knows into a 404 rather than a \
+      silent write outside the transaction you believe you are in.
+
+      It does NOT put the samples in that transaction. They are committed as they are appended and are \
+      readable by everyone before you commit anything; rolling the transaction back does not remove them. \
+      Omit it to run outside any transaction: for the samples themselves that is the same thing.""";
+
   public static final String SESSION_RESPONSE_DESCRIPTION =
       "Echo of the session id this call ran inside. Absent when the call ran outside a transaction.";
 
@@ -115,6 +133,11 @@ public final class SpecBuilders {
   /** The optional {@code arcadedb-session-id} request header, on an operation that honours it. */
   public static Parameter sessionHeaderParam() {
     return headerParam(SESSION_HEADER, SESSION_REQUEST_DESCRIPTION, false);
+  }
+
+  /** The optional {@code arcadedb-session-id} request header, on a write that does NOT join the transaction. */
+  public static Parameter writeSessionHeaderParam() {
+    return headerParam(SESSION_HEADER, WRITE_SESSION_REQUEST_DESCRIPTION, false);
   }
 
   /** The {@code arcadedb-session-id} echo a session-aware operation puts on its success response. */

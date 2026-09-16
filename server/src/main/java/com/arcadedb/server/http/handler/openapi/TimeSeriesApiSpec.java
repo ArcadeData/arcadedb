@@ -38,6 +38,9 @@ import java.util.List;
 public class TimeSeriesApiSpec implements OpenApiContributor {
   // The five paragraphs below moved to SpecBuilders in issue #7681, which needed the same text on ten more
   // operations across GrafanaApiSpec and PrometheusApiSpec. Re-declared here only as short local names.
+  // WRITE_SESSION_REQUEST_DESCRIPTION is there for the same reason and says what issue #7657 settled: the
+  // write route must NOT share the read routes' session text, because an append does not join the caller's
+  // transaction.
   private static final String SESSION_HEADER                   = SpecBuilders.SESSION_HEADER;
   private static final String SESSION_RESPONSE_DESCRIPTION     = SpecBuilders.SESSION_RESPONSE_DESCRIPTION;
   private static final String READ_STALE_SESSION_DESCRIPTION   = SpecBuilders.READ_STALE_SESSION_DESCRIPTION;
@@ -67,9 +70,17 @@ public class TimeSeriesApiSpec implements OpenApiContributor {
             The body may be gzip-compressed by sending Content-Encoding: gzip. A fully accepted \
             request answers 204 with no body; a request whose samples could not all be applied \
             answers 400 with the counts of what was written and dropped, so a client can tell a total \
-            rejection from a partial one.""");
+            rejection from a partial one.
+
+            An ingest is NOT atomic, with this request or with any transaction around it. Each \
+            measurement's batch commits its own storage transaction as it is appended, so a failure \
+            part-way leaves the measurements before it durable - which is what those counts report - \
+            and a rollback of the transaction named by 'arcadedb-session-id' does not take the \
+            appended samples back. Retry the dropped measurements rather than the whole body: the \
+            samples already written stay written. The same applies to INSERT INTO a TIMESERIES type \
+            through /api/v1/command/{database}.""");
     post.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
-    post.addParametersItem(SpecBuilders.sessionHeaderParam());
+    post.addParametersItem(SpecBuilders.writeSessionHeaderParam());
 
     final Parameter precision = SpecBuilders.queryParam("precision",
         "Unit of the timestamps in the body. Defaults to nanoseconds when omitted.", false);

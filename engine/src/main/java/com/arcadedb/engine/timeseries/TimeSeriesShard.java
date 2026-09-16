@@ -38,6 +38,7 @@ import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.Set;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantLock;
@@ -247,6 +248,21 @@ public class TimeSeriesShard implements AutoCloseable {
    * commit; they are visible to every other reader as soon as this method returns; and the caller's
    * {@code rollback()} does not take them back. {@code Issue7410AppendTransactionScopeTest} pins it, and
    * {@code Issue7370GrpcTimeSeriesInTransactionIT} pins the same contract over the wire.
+   * <p>
+   * <b>Decision (#7657): it stays this way, and the reason is {@link #appendLock} rather than a preference.</b>
+   * #7410 left open whether the append should instead join the caller's transaction, so that
+   * {@code INSERT INTO <timeseries type>} became atomic with its own statement. It should not. Every append
+   * writes page 0 - the header holds the sample count and the min/max timestamps - so two appends to one shard
+   * always want the same page version, and the serialization described in the next paragraph is the only
+   * reason they never contend for it. An append that wrote through the caller's transaction could not be
+   * serialized that way: the commit would belong to the caller, and a shard cannot hold a lock until an
+   * arbitrary user transaction ends without making one client's open transaction block every other writer of
+   * that shard. Both would then stage the same page, and one would lose its <i>whole</i> transaction to a
+   * {@link ConcurrentModificationException} that is not the shard's to retry - the loop below retries a commit
+   * this method owns. {@code Issue7657AppendStaysSelfCommittingTest} measures it. What it means for users is
+   * documented where they meet it: the {@code /api/v1/ts/{database}/write} and
+   * {@code /api/v1/command/{database}} entries of the OpenAPI document, and {@code TimeSeriesWriteSummary} in
+   * the gRPC proto.
    * <p>
    * Concurrent calls on the <em>same shard</em> are serialized by {@link #appendLock} so that
    * MVCC page-version conflicts can never arise between two concurrent appends.  Writes to
@@ -482,6 +498,42 @@ public class TimeSeriesShard implements AutoCloseable {
           return false;
       }
       return true;
+    } finally {
+      compactionLock.readLock().unlock();
+    }
+  }
+
+  /**
+   * Adds the distinct values of one TAG column, over both layers, to {@code out} (issue #7660).
+   * <p>
+   * The sealed layer answers a block from its directory entry wherever it can, so the cost there is the number of
+   * BLOCKS rather than the number of samples - see {@link TimeSeriesSealedStore#collectDistinctTagValues} for why
+   * that entry is exact. The mutable bucket carries no such declaration and is scanned, on a projection of the one
+   * column so that nothing else is decoded or boxed; it is bounded by the compaction interval rather than by the
+   * series, which is why the sealed layer is where the saving lives.
+   * <p>
+   * A {@code null} tag value contributes nothing. That is not a policy invented here: it is what the PromQL label
+   * endpoint has always done with the {@code null} a mutable row hands it, and the sealed layer never hands one out
+   * for a {@code STRING} TAG because {@code compressColumn} writes a null tag as the empty string.
+   *
+   * @param metrics optional counters, may be {@code null}. Mutable rows are counted in {@code materializedRows},
+   *                exactly as {@link #forEachRow} counts them
+   */
+  void collectDistinctTagValues(final int schemaColumnIndex, final int nonTsColumnIndex, final Set<String> out,
+      final AggregationMetrics metrics) throws IOException {
+    compactionLock.readLock().lock();
+    try {
+      sealedStore.collectDistinctTagValues(schemaColumnIndex, nonTsColumnIndex, out, metrics);
+
+      final int[] projection = { nonTsColumnIndex };
+      for (final Object[] row : mutableBucket.scanRange(Long.MIN_VALUE, Long.MAX_VALUE, projection)) {
+        // row is { timestamp, the one projected column }: the layout TimeSeriesBucket.readRow() builds for any
+        // projection, and the reason the value is read from slot 1 rather than from the column's schema index.
+        if (row.length > 1 && row[1] != null)
+          out.add(row[1].toString());
+        if (metrics != null)
+          metrics.addMaterializedRows(1);
+      }
     } finally {
       compactionLock.readLock().unlock();
     }

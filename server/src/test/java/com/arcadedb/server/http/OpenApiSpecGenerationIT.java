@@ -692,7 +692,10 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
         // And the Grafana and Prometheus reads that issue #7681 bound to the session, which reach the same
         // branch of DatabaseAbstractHandler and therefore send the same header.
         "checkGrafanaHealth", "getGrafanaMetadata", "queryGrafana", "prometheusRemoteRead",
-        "promQLQuery", "promQLQueryRange", "promQLLabels", "promQLLabelValues", "promQLSeries");
+        "promQLQuery", "promQLQueryRange", "promQLLabels", "promQLLabelValues", "promQLSeries",
+        // And the three vector-search reads, which reach the same branch through
+        // AbstractVectorSearchHandler and whose spec said nothing about sessions at all.
+        "vectorSearch", "hybridSearch", "fullTextSearch");
 
     final List<String> refusing = List.of(
         // requiresTransaction() is true, so a stale id is a 404 and this header is never sent.

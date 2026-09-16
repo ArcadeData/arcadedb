@@ -35,6 +35,9 @@ import java.util.List;
  * the base class and why {@link TimeSeriesTypeBuilder#toSQL()} refuses a state the grammar cannot express rather
  * than shipping DDL the server would reject.
  * <p>
+ * The rendered DDL is a single statement (issue #7689), so the type the server ends up with is either the whole
+ * declaration the builder accumulated or nothing at all.
+ * <p>
  * <b>Where the two do NOT agree is the exception type for a name that is already taken.</b> Both refuse it, but the
  * embedded {@code create()} answers with {@code SchemaException("Type 'X' already exists")} before touching storage,
  * while this one has no client-side existence check - the rendered DDL carries no {@code IF NOT EXISTS} and no
@@ -59,14 +62,16 @@ public class RemoteTimeSeriesTypeBuilder extends TimeSeriesTypeBuilder {
   public TimeSeriesType create() {
     final List<String> statements = toSQL();
 
-    // Sequentially, not as one script: the downsampling ALTER names the type the CREATE just made, and the two are
-    // separate statements only because the create grammar has no downsampling clause.
+    // toSQL() renders the WHOLE declaration - per-column codecs and downsampling policy included - as a single
+    // CREATE TIMESERIES TYPE since issue #7689, so this loop issues exactly one command and a create is all or
+    // nothing. It used to issue a CREATE and then an ALTER for the downsampling policy, and a caller whose
+    // connection dropped between the two, or who lost UPDATE_SCHEMA in between, was left with a type on the server
+    // that had no policy and an exception in hand. The loop stays because toSQL()'s contract is a list executed in
+    // order, not because there is more than one statement to execute.
     //
-    // The cache is invalidated in a finally, not after the last statement: when the CREATE succeeds and the ALTER
-    // does not (issue #7689's window), the type EXISTS on the server and the exception is on its way out. Leaving
-    // the cache untouched on that path would have this schema instance answer existsType() with false for a type
-    // that is there, so a caller catching the failure and retrying would get "already exists" from the server with
-    // nothing client-side agreeing.
+    // The cache is invalidated in a finally, not after the command: a command that fails AFTER the server applied
+    // it - the response is lost, the connection drops on the way back - leaves the type there, and leaving the
+    // cache untouched would have this schema instance answer existsType() with false for a type that exists.
     try {
       for (final String sql : statements)
         remoteDatabase.command("sql", sql);

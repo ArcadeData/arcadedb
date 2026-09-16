@@ -210,6 +210,7 @@ import org.antlr.v4.runtime.tree.TerminalNode;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.Deque;
 import java.util.HashSet;
 import java.util.List;
@@ -6699,28 +6700,34 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     stmt.name = (Identifier) visit(bodyCtx.identifier(0));
     stmt.ifNotExists = bodyCtx.IF() != null && bodyCtx.NOT() != null && bodyCtx.EXISTS() != null;
 
-    // TIMESTAMP column and optional PRECISION
+    // TIMESTAMP column and optional PRECISION / CODEC
     if (bodyCtx.TIMESTAMP() != null && bodyCtx.identifier().size() > 1) {
       stmt.timestampColumn = (Identifier) visit(bodyCtx.identifier(1));
       if (bodyCtx.PRECISION() != null && bodyCtx.tsPrecision() != null)
-        stmt.precision = bodyCtx.tsPrecision().getText().toUpperCase();
+        // Locale.ENGLISH, not the default locale: the four precision names all contain an 'i', and under a Turkish
+        // default locale the no-arg toUpperCase maps it to a dotted capital that matches none of them (claude
+        // review on PR #7721).
+        stmt.precision = bodyCtx.tsPrecision().getText().toUpperCase(Locale.ENGLISH);
+      // The body-level tsCodecClause is the TIMESTAMP column's: the tag and field ones are nested inside
+      // tsTagColumnDef/tsFieldColumnDef and so are not children of this context.
+      stmt.timestampCodec = codecOf(bodyCtx.tsCodecClause());
     }
 
-    // TAGS (name type, ...)
+    // TAGS (name type [CODEC name], ...)
     if (bodyCtx.TAGS() != null) {
       for (final SQLParser.TsTagColumnDefContext colCtx : bodyCtx.tsTagColumnDef()) {
         final Identifier colName = (Identifier) visit(colCtx.identifier(0));
         final Identifier colType = (Identifier) visit(colCtx.identifier(1));
-        stmt.tags.add(new CreateTimeSeriesTypeStatement.ColumnDef(colName, colType));
+        stmt.tags.add(new CreateTimeSeriesTypeStatement.ColumnDef(colName, colType, codecOf(colCtx.tsCodecClause())));
       }
     }
 
-    // FIELDS (name type, ...)
+    // FIELDS (name type [CODEC name], ...)
     if (bodyCtx.FIELDS() != null) {
       for (final SQLParser.TsFieldColumnDefContext colCtx : bodyCtx.tsFieldColumnDef()) {
         final Identifier colName = (Identifier) visit(colCtx.identifier(0));
         final Identifier colType = (Identifier) visit(colCtx.identifier(1));
-        stmt.fields.add(new CreateTimeSeriesTypeStatement.ColumnDef(colName, colType));
+        stmt.fields.add(new CreateTimeSeriesTypeStatement.ColumnDef(colName, colType, codecOf(colCtx.tsCodecClause())));
       }
     }
 
@@ -6789,7 +6796,39 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       stmt.compactionIntervalMs = compactionValue * multiplier;
     }
 
+    // DOWNSAMPLING POLICY AFTER ... GRANULARITY ... (issue #7689). Same tier clause, and the same ascending sort,
+    // as ALTER TIMESERIES TYPE ... ADD DOWNSAMPLING POLICY: a policy has to mean the same thing whichever statement
+    // declares it.
+    if (bodyCtx.DOWNSAMPLING() != null)
+      stmt.tiers = parseDownsamplingTiers(bodyCtx.downsamplingTierClause());
+
     return stmt;
+  }
+
+  /**
+   * The codec name a {@code tsCodecClause} carries, upper-cased, or {@code null} when the column named none. The
+   * name is NOT resolved to a {@code TimeSeriesCodec} here: the AST carries what was written and the statement
+   * resolves it when it executes, so an unknown name is reported as a command error naming the valid codecs rather
+   * than as a parse failure (issue #7689).
+   */
+  private static String codecOf(final SQLParser.TsCodecClauseContext codecCtx) {
+    return codecCtx == null ? null : codecCtx.identifier().getText().toUpperCase(Locale.ENGLISH);
+  }
+
+  /**
+   * Reads a list of {@code AFTER n unit GRANULARITY n unit} clauses into downsampling tiers, sorted ascending by
+   * threshold. Shared by CREATE TIMESERIES TYPE and ALTER TIMESERIES TYPE ... ADD DOWNSAMPLING POLICY.
+   */
+  private static List<DownsamplingTier> parseDownsamplingTiers(
+      final List<SQLParser.DownsamplingTierClauseContext> tierCtxs) {
+    final List<DownsamplingTier> tiers = new ArrayList<>(tierCtxs.size());
+    for (final SQLParser.DownsamplingTierClauseContext tierCtx : tierCtxs) {
+      final long afterMs = Long.parseLong(tierCtx.INTEGER_LITERAL(0).getText()) * parseTimeUnitMs(tierCtx.tsTimeUnit(0));
+      final long granMs = Long.parseLong(tierCtx.INTEGER_LITERAL(1).getText()) * parseTimeUnitMs(tierCtx.tsTimeUnit(1));
+      tiers.add(new DownsamplingTier(afterMs, granMs));
+    }
+    tiers.sort(Comparator.comparingLong(DownsamplingTier::afterMs));
+    return tiers;
   }
 
   @Override
@@ -6802,17 +6841,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     if (bodyCtx.ADD() != null) {
       stmt.addPolicy = true;
-      for (final SQLParser.DownsamplingTierClauseContext tierCtx : bodyCtx.downsamplingTierClause()) {
-        final long afterValue = Long.parseLong(tierCtx.INTEGER_LITERAL(0).getText());
-        final long afterMs = afterValue * parseTimeUnitMs(tierCtx.tsTimeUnit(0));
-
-        final long granValue = Long.parseLong(tierCtx.INTEGER_LITERAL(1).getText());
-        final long granMs = granValue * parseTimeUnitMs(tierCtx.tsTimeUnit(1));
-
-        stmt.tiers.add(new DownsamplingTier(afterMs, granMs));
-      }
-      // Sort tiers by afterMs ascending
-      stmt.tiers.sort((a, b) -> Long.compare(a.afterMs(), b.afterMs()));
+      stmt.tiers.addAll(parseDownsamplingTiers(bodyCtx.downsamplingTierClause()));
     } else {
       stmt.addPolicy = false;
     }
