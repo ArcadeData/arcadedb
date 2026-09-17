@@ -50,12 +50,12 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.security.SecurityDatabaseUser;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -268,31 +268,45 @@ public class PromQLEvaluator {
     final long queryEnd = evalTimeMs - offset;
     final long queryStart = queryEnd - lookbackMs;
 
-    final Iterator<Object[]> rowIter;
+    // Folded straight from the scan through forEachRow rather than collected via iterateQuery first (issue
+    // #7696): iterateQuery's own javadoc says the sealed layer materialises every matching row of the range
+    // before the caller sees the first one, and this selector's answer keeps ONE sample per label combination -
+    // O(series), paid for by visiting O(samples in the window) either way. forEachRow pays the same visit cost
+    // without ever holding the range in one list.
+    //
+    // Only IOException is caught here, not the broader Exception the iterateQuery call used to sit under: the
+    // post-filter regex logic now runs INSIDE the visitor, on the same call stack as the scan, and
+    // excludesEverySeries()'s contract - a malformed or ReDoS-shaped =~/!~ propagates rather than being read as
+    // an empty result - has to hold for it exactly as it already does for excludesEverySeries() itself. A
+    // TimeoutException/IllegalArgumentException from matchesPostFilters() is a RuntimeException, not an
+    // IOException, so it is unaffected by this catch and still reaches the caller.
+    final Map<String, VectorSample> latestByLabels = new LinkedHashMap<>();
     try {
-      rowIter = engine.iterateQuery(queryStart, queryEnd, null, tagFilter, readMetrics);
-    } catch (final Exception e) {
+      // One shared regexDeadline() for the whole evaluator instance (issue #5886 follow-up) - see the comment
+      // on regexDeadline() itself: evaluateRange() calls this method once per step (up to MAX_RANGE_STEPS), so
+      // anything less than one shared deadline for the whole query would let a crafted pattern tie up the
+      // thread for rowCount * stepCount * regexTimeout.
+      engine.forEachRow(queryStart, queryEnd, null, tagFilter, readMetrics, row -> {
+        if (!matchesPostFilters(row, vs.matchers(), columns, regexDeadline()))
+          return true;
+        final Map<String, String> labels = extractLabels(row, columns, vs.metricName());
+        final String key = labelKey(labels);
+        final long ts = (long) row[0];
+        final double value = extractValue(row, columns);
+        // forEachRow visits shard by shard, NOT merged by timestamp, and a label combination's samples are
+        // round-robin-scattered across every shard (TimeSeriesEngine#appendSamples), so they can reach this
+        // visitor in any order across the whole scan - unlike iterateQuery's merge, which used to guarantee
+        // the last row seen for a key was also the newest. "Latest" is decided on timestamp instead of on
+        // scan order: keep whichever of the existing and the new sample is newer rather than always
+        // overwriting.
+        latestByLabels.merge(key, new VectorSample(labels, value, ts),
+            (existing, candidate) -> candidate.timestampMs() >= existing.timestampMs() ? candidate : existing);
+        return true;
+      });
+    } catch (final IOException e) {
       LogManager.instance().log(this, Level.WARNING,
           "Error querying TimeSeries type '%s': %s", null, typeName, e.getMessage());
       return new InstantVector(List.of());
-    }
-
-    // Post-filter for NEQ/RE/NRE and group by label combination. One shared deadline for the whole evaluator
-    // instance (issue #5886 follow-up) - regexDeadline() computes it once and reuses it for every row of every
-    // step, not a fresh one per row or per step: matchesPostFilters() runs per row, and evaluateRange() calls
-    // this method once per step (up to MAX_RANGE_STEPS), so anything less than one shared deadline for the
-    // whole query would let a crafted =~/!~ pattern tie up the thread for rowCount * stepCount * regexTimeout.
-    final Map<String, VectorSample> latestByLabels = new LinkedHashMap<>();
-    while (rowIter.hasNext()) {
-      final Object[] row = rowIter.next();
-      if (!matchesPostFilters(row, vs.matchers(), columns, regexDeadline()))
-        continue;
-      final Map<String, String> labels = extractLabels(row, columns, vs.metricName());
-      final String key = labelKey(labels);
-      final long ts = (long) row[0];
-      final double value = extractValue(row, columns);
-      // Keep the latest sample for each label combination
-      latestByLabels.put(key, new VectorSample(labels, value, ts));
     }
 
     return new InstantVector(new ArrayList<>(latestByLabels.values()));
@@ -324,32 +338,40 @@ public class PromQLEvaluator {
     final long queryEnd = evalTimeMs - offset;
     final long queryStart = queryEnd - ms.rangeMs();
 
-    final Iterator<Object[]> rowIter;
+    // Folded straight from the scan through forEachRow rather than collected via iterateQuery first (issue
+    // #7696) - same rationale as evaluateVectorSelector() above, including the narrowed IOException catch so a
+    // post-filter regex failure still propagates instead of reading as an empty result.
+    final Map<String, List<double[]>> seriesByLabels = new LinkedHashMap<>();
+    final Map<String, Map<String, String>> labelsMap = new LinkedHashMap<>();
     try {
-      rowIter = engine.iterateQuery(queryStart, queryEnd, null, tagFilter, readMetrics);
-    } catch (final Exception e) {
+      // One shared regexDeadline() for the whole evaluator instance - see evaluateVectorSelector().
+      engine.forEachRow(queryStart, queryEnd, null, tagFilter, readMetrics, row -> {
+        if (!matchesPostFilters(row, vs.matchers(), columns, regexDeadline()))
+          return true;
+        final Map<String, String> labels = extractLabels(row, columns, vs.metricName());
+        final String key = labelKey(labels);
+        seriesByLabels.computeIfAbsent(key, k -> new ArrayList<>())
+            .add(new double[] { (long) row[0], extractValue(row, columns) });
+        labelsMap.putIfAbsent(key, labels);
+        return true;
+      });
+    } catch (final IOException e) {
       LogManager.instance().log(this, Level.WARNING,
           "Error querying TimeSeries type '%s': %s", null, typeName, e.getMessage());
       return new RangeVector(List.of());
     }
 
-    // Group rows by label combination. One shared deadline for the whole evaluator instance - see
-    // evaluateVectorSelector().
-    final Map<String, List<double[]>> seriesByLabels = new LinkedHashMap<>();
-    final Map<String, Map<String, String>> labelsMap = new LinkedHashMap<>();
-    while (rowIter.hasNext()) {
-      final Object[] row = rowIter.next();
-      if (!matchesPostFilters(row, vs.matchers(), columns, regexDeadline()))
-        continue;
-      final Map<String, String> labels = extractLabels(row, columns, vs.metricName());
-      final String key = labelKey(labels);
-      seriesByLabels.computeIfAbsent(key, k -> new ArrayList<>()).add(new double[] { (long) row[0], extractValue(row, columns) });
-      labelsMap.putIfAbsent(key, labels);
-    }
-
     final List<RangeSeries> result = new ArrayList<>();
-    for (final Map.Entry<String, List<double[]>> entry : seriesByLabels.entrySet())
-      result.add(new RangeSeries(labelsMap.get(entry.getKey()), entry.getValue(), queryStart, queryEnd));
+    for (final Map.Entry<String, List<double[]>> entry : seriesByLabels.entrySet()) {
+      final List<double[]> points = entry.getValue();
+      // forEachRow visits shard by shard, NOT merged by timestamp, and a label combination's samples are
+      // round-robin-scattered across every shard, so the points accumulated above are no longer in timestamp
+      // order the way iterateQuery's merge used to guarantee. rate()/irate()/increase() (PromQLFunctions) read
+      // the first, last and consecutive pairs of this list assuming ascending order, so it is restored here -
+      // once per series, over just that series' own points, rather than once for the whole scan.
+      points.sort(Comparator.comparingDouble(p -> p[0]));
+      result.add(new RangeSeries(labelsMap.get(entry.getKey()), points, queryStart, queryEnd));
+    }
     return new RangeVector(result);
   }
 

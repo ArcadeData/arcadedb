@@ -28,6 +28,7 @@ import com.arcadedb.query.sql.executor.InternalExecutionPlan;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import com.arcadedb.query.OperationType;
+import com.arcadedb.schema.TimeSeriesTypeBuilder;
 import com.arcadedb.utility.CollectionUtils;
 
 import java.util.Map;
@@ -67,6 +68,25 @@ public class Statement extends SimpleNode {
       builder.append(" = ");
       entry.getValue().toString(params, builder);
     }
+  }
+
+  /**
+   * {@code <count> <unit>} for a duration in milliseconds, in the SAME units the parser reads - the unit table
+   * lives once, on {@link com.arcadedb.schema.TimeSeriesTypeBuilder#renderSQLDuration}, so the two renderings
+   * cannot drift apart (claude review on PR #7721). Shared by every TimeSeries DDL statement that carries a
+   * duration in its AST - {@code CREATE}/{@code ALTER TIMESERIES TYPE} alike (issue #7791) - so a fix to one
+   * renders the other correctly too.
+   * <p>
+   * A duration that is not a whole number of seconds - which the grammar cannot express at all - falls back to
+   * milliseconds with no unit rather than throwing: {@code toString} renders whatever the statement happens to
+   * carry, including a value that got there through a hand-built AST, and a printer that throws would take
+   * {@code EXPLAIN} and the statement cache down with it. No in-tree path reaches that fallback: the only
+   * constructors are the parser's no-arg ones and each statement's {@code copy()}, and the grammar's smallest
+   * unit is SECONDS.
+   */
+  protected static String renderDuration(final long millis) {
+    final String rendered = TimeSeriesTypeBuilder.renderSQLDuration(millis);
+    return rendered != null ? rendered : String.valueOf(millis);
   }
 
   public void validate() throws CommandSQLParsingException {
