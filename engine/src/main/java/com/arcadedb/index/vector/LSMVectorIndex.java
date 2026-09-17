@@ -2010,6 +2010,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * also what keeps a reopened index from silently accumulating tombstones forever: the counter starts each session
    * at what the graph actually owes, not at zero.
    *
+   * <b>The validation walk is O(N) on the calling thread, and that is the accepted trade, not an oversight</b> (PR
+   * #7844 review). It is one location-index lookup per ordinal - no vector read, no distance computation, no graph
+   * construction - against the full rebuild it replaces, which is O(N) beam searches AND serializes on the JVM-wide
+   * {@code REBUILD_SEMAPHORE}. Putting the walk itself under admission control would gate the cheap thing on the
+   * machinery built for the expensive one; the rebuild path's own gap is issue #7814 and stays there.
+   *
    * @param gf the component holding the persisted graph, already known to have one
    *
    * @return the decision, or {@code null} when this path cannot make one and the caller should rebuild

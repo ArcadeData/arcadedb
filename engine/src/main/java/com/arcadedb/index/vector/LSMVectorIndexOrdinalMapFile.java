@@ -146,10 +146,13 @@ public class LSMVectorIndexOrdinalMapFile {
    * fails: it describes the ordinals, not the file.
    */
   long write(final int[] ordinalToVectorId, final IntFunction<RID> ridOfVector) {
-    // 14 bytes per entry is the worst case for the three varints below; the common case is a third of that, and
-    // the buffer grows on its own if this estimate is short. Computed in long arithmetic and clamped: an index
-    // large enough to overflow the int would otherwise ask for a NEGATIVE buffer and fail the write outright.
-    final Binary payload = new Binary((int) Math.min(Integer.MAX_VALUE - 8L, 16L + ordinalToVectorId.length * 14L));
+    // 20 bytes per entry is the ACTUAL worst case for the three varints below, and is meant as a bound rather than
+    // as a guess: 5 for the zigzagged int delta, 5 for the zigzagged bucket id, and 10 for the RID position, which
+    // putUnsignedNumber writes 7 bits at a time and so can take the full ceil(64/7) for a large one (PR #7844
+    // review). The common case is a quarter of that, and Binary grows on its own if this were ever short - the
+    // estimate only decides whether the write reallocates. Computed in long arithmetic and clamped: an index large
+    // enough to overflow the int would otherwise ask for a NEGATIVE buffer and fail the write outright.
+    final Binary payload = new Binary((int) Math.min(Integer.MAX_VALUE - 8L, 16L + ordinalToVectorId.length * 20L));
     payload.putUnsignedNumber(FORMAT_VERSION);
     payload.putUnsignedNumber(ordinalToVectorId.length);
 
