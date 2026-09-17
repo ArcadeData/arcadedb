@@ -3949,11 +3949,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    * the failure is simply gone.
    */
   private String concealable(final String prefix, final Throwable e) {
-    if (!concealErrors())
-      return prefix + ": " + e.getMessage();
-
-    LogManager.instance().log(this, Level.SEVERE, "%s (concealed from the client in production mode)", e, prefix);
-    return prefix + ": " + GrpcErrorMapper.CONCEALED_DESCRIPTION;
+    return GrpcErrorMapper.concealableDescription(this, prefix, e, concealErrors());
   }
 
   private Object[] toPropertyArray(final Map<String, GrpcValue> properties) {

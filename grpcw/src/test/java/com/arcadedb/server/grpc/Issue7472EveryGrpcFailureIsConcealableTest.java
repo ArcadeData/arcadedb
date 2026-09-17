@@ -145,6 +145,39 @@ class Issue7472EveryGrpcFailureIsConcealableTest {
   }
 
   /**
+   * Concealing is only half of it: the concealed text tells the operator to check the server log, so a call site
+   * that conceals must also be the one that WRITES that entry. This asks that no production source builds a
+   * concealed description by hand - every one goes through {@code GrpcErrorMapper.concealableDescription(...)},
+   * which conceals and logs together.
+   * <p>
+   * The gap this closes was invisible to the scans above and is the reason they are not enough on their own:
+   * {@code ArcadeDbGrpcAdminService}'s catch-all DID call {@code concealErrors()}, so it read as a stated decision,
+   * but it used the answer only to pick the text. It concealed the failure from the client and logged nothing
+   * anywhere - worse than not concealing, because then nobody had the detail (PR #7755 review).
+   */
+  @Test
+  void noProductionSourceBuildsAConcealedDescriptionByHand() throws IOException {
+    final List<String> offenders = new ArrayList<>();
+
+    try (final Stream<Path> sources = Files.walk(MAIN_SOURCES)) {
+      for (final Path source : sources.filter(p -> p.toString().endsWith(".java")).toList()) {
+        // The mapper DEFINES the constant and is where the one honest use of it lives.
+        if (source.getFileName().toString().equals("GrpcErrorMapper.java"))
+          continue;
+
+        for (final String statement : statementsMatching(Files.readString(source, StandardCharsets.UTF_8),
+            "CONCEALED_DESCRIPTION"))
+          offenders.add(source.getFileName() + ": " + statement.strip().replaceAll("\\s+", " "));
+      }
+    }
+
+    assertThat(offenders)
+        .as("a concealed description must come from GrpcErrorMapper.concealableDescription(...), which also writes "
+            + "the log entry the concealed text promises - building it by hand conceals the failure from everyone")
+        .isEmpty();
+  }
+
+  /**
    * Guards the guard: the scan has to actually find something, or a rename of the mapper - or a wrong source root -
    * would turn this test green by finding nothing at all, which is the vacuous pass this class exists to avoid.
    */

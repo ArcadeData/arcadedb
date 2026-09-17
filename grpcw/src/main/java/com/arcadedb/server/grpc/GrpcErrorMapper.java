@@ -192,11 +192,7 @@ public final class GrpcErrorMapper {
     }
 
     if (conceal)
-      // THE CONCEALED TEXT PROMISES THE OPERATOR A LOG ENTRY, SO THERE HAS TO BE ONE. NOTHING ELSE ON THIS PATH
-      // LOGS THE THROWABLE - GrpcLoggingInterceptor SEES THE MAPPED STATUS, NOT THE CAUSE - SO WITHOUT THIS THE
-      // DETAIL IS NOT CONCEALED FROM THE CLIENT, IT IS GONE (PR #7755 REVIEW)
-      LogManager.instance().log(GrpcErrorMapper.class, Level.SEVERE,
-          "%s (concealed from the client in production mode)", cause, contextPrefix != null ? contextPrefix : "gRPC");
+      logConcealed(GrpcErrorMapper.class, contextPrefix, cause);
 
     final String msg = conceal ?
         CONCEALED_DESCRIPTION :
@@ -265,6 +261,43 @@ public final class GrpcErrorMapper {
     if (mapped.getTrailers() != null)
       trailers.merge(mapped.getTrailers());
     return mapped.getStatus().asException(trailers);
+  }
+
+  /**
+   * The description for a failure a caller maps DIRECTLY - keeping a status code it chose rather than one this
+   * class would classify - with the exception's text concealed, and LOGGED, when the server runs in production.
+   * <p>
+   * One method for both halves because they are one decision: the concealed text tells the operator to check the
+   * server log, and nothing else on these paths writes that entry - {@code GrpcLoggingInterceptor} sees the mapped
+   * status rather than the cause, and {@code GrpcUnaryCall.respond} logs only the client-cancel race. A caller that
+   * concealed without logging would not be hiding the detail from the client, it would be destroying it, which is
+   * strictly worse than not concealing at all (PR #7755 review).
+   *
+   * @param requester the logging context, normally the calling service instance
+   */
+  static String concealableDescription(final Object requester, final String prefix, final Throwable e,
+      final boolean conceal) {
+    if (!conceal)
+      return prefix + ": " + e.getMessage();
+
+    logConcealed(requester, prefix, e);
+    return prefix + ": " + CONCEALED_DESCRIPTION;
+  }
+
+  /**
+   * Writes the entry a concealed answer promises, at the level the failure deserves.
+   * <p>
+   * {@code SEVERE} only for a fault the SERVER is responsible for. Everything else is something the caller did - a
+   * duplicated key, a validation refusal, a security denial - and a routine one at that: an upsert-by-insert-and-
+   * retry workload produces unique-constraint violations by design, and logging those at {@code SEVERE} would both
+   * cost a hot path and drain the word of its meaning for whoever is alerting on it. That is the split
+   * {@code AbstractServerHttpHandler} already draws between {@code getInternalErrorLogLevel()} and
+   * {@code getUserSevereErrorLogLevel()}, and this is the gRPC side of the same line (PR #7755 review).
+   */
+  static void logConcealed(final Object requester, final String context, final Throwable cause) {
+    final Level level = ErrorCategory.of(cause) == ErrorCategory.SERVER ? Level.SEVERE : Level.FINE;
+    LogManager.instance().log(requester, level, "%s (concealed from the client in production mode)", cause,
+        context != null ? context : "gRPC");
   }
 
   private static void addDuplicatedKeyTrailers(final Metadata trailers, final DuplicatedKeyException dup) {
