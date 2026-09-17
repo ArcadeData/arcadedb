@@ -26,6 +26,7 @@ import org.apache.ratis.protocol.RaftPeerId;
 
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * A multi-node Raft cluster whose HTTP layer really speaks TLS: every node binds an HTTPS listener with a
@@ -59,12 +60,27 @@ public abstract class BaseRaftHASslTest extends BaseRaftHATest {
   /** Kept clear of 2480-2489 (plain HTTP) and of the JDK-default 2490-2499 range, to make a clash obvious. */
   private static final int BASE_HTTPS_PORT = 2590;
 
-  /** The cluster's own certificate authority and the single node identity it signed. */
+  /**
+   * The certificate authority of each SSL suite that has run in this JVM, keyed by its
+   * {@link #pkiDirectoryName()}.
+   * <p>
+   * Static and keyed rather than a plain instance field: JUnit 5's default lifecycle builds a fresh test
+   * instance per {@code @Test} method, so an instance field would run {@code keytool} five times for a
+   * five-method class, and a plain static field would hand the second suite in the JVM the first one's key
+   * material - under the second suite's directory name, which is the confusing half. The key makes "once per
+   * class" true rather than merely intended (claude-review on PR #7838).
+   * <p>
+   * {@code RaftTestPki.create} deletes the directory's files before regenerating them, so two suites sharing
+   * one key would race; sharing by key is what stops that as well.
+   */
+  private static final Map<String, RaftTestPki> PKI_BY_DIRECTORY = new ConcurrentHashMap<>();
+
+  /** The cluster's own certificate authority and the single node identity it signed, for THIS suite. */
   private RaftTestPki pki;
 
   /**
-   * Generated once per test class, before {@link #onServerConfiguration} first runs. Subclasses give the
-   * directory a name of their own so two SSL suites in one JVM cannot overwrite each other's key material.
+   * Names the {@code target/} directory this suite's key material is generated into, once per class. Every
+   * subclass gives a name of its own so two SSL suites in one JVM cannot overwrite each other's.
    */
   protected abstract String pkiDirectoryName();
 
@@ -83,11 +99,13 @@ public abstract class BaseRaftHASslTest extends BaseRaftHATest {
     super.onServerConfiguration(config);
 
     if (pki == null)
-      try {
-        pki = RaftTestPki.create(Path.of("target", pkiDirectoryName()), "cluster");
-      } catch (final Exception e) {
-        throw new IllegalStateException("Cannot generate the test PKI for the SSL cluster fixture", e);
-      }
+      pki = PKI_BY_DIRECTORY.computeIfAbsent(pkiDirectoryName(), directory -> {
+        try {
+          return RaftTestPki.create(Path.of("target", directory), "cluster");
+        } catch (final Exception e) {
+          throw new IllegalStateException("Cannot generate the test PKI for the SSL cluster fixture", e);
+        }
+      });
 
     final String serverName = config.getValueAsString(GlobalConfiguration.SERVER_NAME);
     final int index = Integer.parseInt(serverName.substring(serverName.lastIndexOf('_') + 1));
