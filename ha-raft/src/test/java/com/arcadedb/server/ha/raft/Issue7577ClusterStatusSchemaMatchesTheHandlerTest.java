@@ -76,6 +76,27 @@ class Issue7577ClusterStatusSchemaMatchesTheHandlerTest {
         ClusterAlerts.SEVERITY_CRITICAL);
   }
 
+  /**
+   * The divergence vocabulary is a copy too, for the same reason and with the same failure: a cause added to
+   * {@code DivergenceCause} and not to the spec reaches operators through an enum that refuses it, so a typed
+   * client sees a quarantined database whose cause it cannot decode - which is the one field #7741 added because
+   * the database names alone read as a replication fault whatever put them there.
+   * <p>
+   * Read off the enum rather than listed here, so a new constant fails this without anyone remembering to.
+   */
+  @Test
+  void theDivergenceCauseEnumIsTheSetDivergenceCauseDeclares() {
+    final Schema<?> causes = (Schema<?>) property(clusterStatus(), "localResync").getProperties()
+        .get("divergenceCauses");
+    final List<Object> declared = new ArrayList<>(((Schema<?>) causes.getAdditionalProperties()).getEnum());
+
+    final List<String> actual = new ArrayList<>();
+    for (final DivergenceCause cause : DivergenceCause.values())
+      actual.add(cause.name());
+
+    assertThat(declared).containsExactlyInAnyOrderElementsOf(actual);
+  }
+
   /** An alert is built as one chained expression, so every member it declares is on every alert. */
   @Test
   void anAlertDeclaresTheSixMembersEveryAlertCarries() {
