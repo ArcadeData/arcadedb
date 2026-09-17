@@ -464,7 +464,8 @@ public class PostgresNetworkExecutor extends Thread {
         // underneath (issue #6725).
         answerWithColumns(portal);
       } else
-        // In practice, SAVEPOINT/RELEASE/ROLLBACK TO/SET and nothing else (issue #6930): they are the only
+        // In practice, SAVEPOINT/RELEASE/SET and nothing else (issue #6930; ROLLBACK TO fails at Parse since
+        // issue #7846 and never reaches here): they are the only
         // portals that carry no statement, never produce a result, and never get columns. An INSERT/UPDATE/
         // DELETE does NOT land here - it is run by the first arm and announced under whatever columns its
         // rows carried, empty ones included, exactly like the {cypher} write with no RETURN. The arm is kept
@@ -599,8 +600,9 @@ public class PostgresNetworkExecutor extends Thread {
                 Thread.currentThread().threadId());
 
       if (portal.ignoreExecution)
-        // SAVEPOINT/RELEASE/ROLLBACK TO/SET never produce rows: Execute must answer CommandComplete, not
-        // NoData - NoData ('n') is a Describe-only reply and is never a legal answer to Execute (issue #6930).
+        // SAVEPOINT/RELEASE/SET never produce rows: Execute must answer CommandComplete, not NoData - NoData
+        // ('n') is a Describe-only reply and is never a legal answer to Execute (issue #6930; ROLLBACK TO
+        // fails at Parse since issue #7846 and never reaches here).
         writeCommandComplete(portal.query, 0);
       else if (portal.copyStatement != null) {
         // COPY ... TO STDOUT (issue #7188): the rows go out as CopyData, and there is nothing to slice by the
