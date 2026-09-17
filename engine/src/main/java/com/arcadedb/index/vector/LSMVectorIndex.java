@@ -1581,13 +1581,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * detecting it has been released.
    *
    * @param loadedGraph              the graph loaded from disk, already verified against the manifest
-   * @param liveOrdinalToVectorId    every live vector's id, in ordinal order - not only the ones the graph covers
-   * @param graphSize                how many of {@code liveOrdinalToVectorId}'s leading entries the graph covers
+   * @param ordinalToVectorId        the ids the graph's ordinals resolve to, followed by every live vector the
+   *                                 graph does not cover. NOT "every live id": since issue #7842 the leading
+   *                                 {@code graphSize} entries are what the graph was BUILT over, which may include
+   *                                 ids that have since been tombstoned (PR #7844 review)
+   * @param graphSize                how many of {@code ordinalToVectorId}'s leading entries the graph covers
    * @param vectorProp               the vector property name, for reading the gap vectors back
    * @param unreachableOrdinals      ordinals of the loaded graph its own build could not link, from the manifest
    *                                 (issue #7190) - never {@code null}
+   * @param tombstonedOrdinals       how many of those leading entries answer for a vector that has since been
+   *                                 deleted, charged to the rebuild schedule by {@link #reuseStalePrefixGraph}
    */
-  private record ReuseCandidate(ImmutableGraphIndex loadedGraph, int[] liveOrdinalToVectorId, int graphSize,
+  private record ReuseCandidate(ImmutableGraphIndex loadedGraph, int[] ordinalToVectorId, int graphSize,
                                  String vectorProp, int[] unreachableOrdinals, int tombstonedOrdinals) {
   }
 
@@ -2230,7 +2235,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private void reuseStalePrefixGraph(final ReuseCandidate candidate) {
     final ImmutableGraphIndex loadedGraph = candidate.loadedGraph();
-    final int[] rebuiltOrdinalToVectorId = candidate.liveOrdinalToVectorId();
+    final int[] rebuiltOrdinalToVectorId = candidate.ordinalToVectorId();
     final int graphSize = candidate.graphSize();
     final String vectorProp = candidate.vectorProp();
 
@@ -2464,15 +2469,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * Called while holding {@link #graphBuildLock} (both call sites do) and NOT {@link #lock}'s write lock, which the
    * per-vector read it performs must not run under.
    *
-   * @param unreachableOrdinals   ordinals from the graph's manifest, ascending
-   * @param liveOrdinalToVectorId the live ordinal &rarr; vector id array those ordinals index into
-   * @param graphNodes            how many leading entries of that array the graph covers
-   * @param vectorProp            the vector property name, for the document-read fallback
+   * @param unreachableOrdinals ordinals from the graph's manifest, ascending
+   * @param ordinalToVectorId   the ordinal &rarr; vector id array those ordinals index into
+   * @param graphNodes          how many leading entries of that array the graph covers
+   * @param vectorProp          the vector property name, for the document-read fallback
    *
    * @return the entries to append; empty when there is nothing to re-queue
    */
   private List<DeltaVectorEntry> readUnreachableEntries(final int[] unreachableOrdinals,
-      final int[] liveOrdinalToVectorId, final int graphNodes, final String vectorProp) {
+      final int[] ordinalToVectorId, final int graphNodes, final String vectorProp) {
     if (unreachableOrdinals == null || unreachableOrdinals.length == 0)
       return List.of();
 
@@ -2487,7 +2492,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     }
 
     return readDeltaEntriesFor(
-        unreachableVectorIdsOf(unreachableOrdinals, liveOrdinalToVectorId, graphNodes, alreadyQueued), vectorProp);
+        unreachableVectorIdsOf(unreachableOrdinals, ordinalToVectorId, graphNodes, alreadyQueued), vectorProp);
   }
 
   /**
@@ -2495,17 +2500,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * {@link #readDeltaEntriesFor}.
    * <p>
    * An ordinal at or past {@code graphNodes} is dropped rather than trusted: the manifest is verified against the
-   * live set before this runs, so it should not happen, but resolving an out-of-range ordinal through the live array
+   * live set before this runs, so it should not happen, but resolving an out-of-range ordinal through that array
    * would pair a delta entry with a record the graph never held.
    *
-   * @param unreachableOrdinals    ordinals recorded in the manifest, ascending
-   * @param liveOrdinalToVectorId  the live ordinal &rarr; vector id array the graph's ordinals index into
-   * @param graphNodes             how many leading entries of that array the graph covers
-   * @param alreadyQueued          vector ids the delta buffer already holds, skipped before any read is paid for
+   * @param unreachableOrdinals ordinals recorded in the manifest, ascending
+   * @param ordinalToVectorId   the ordinal &rarr; vector id array the graph's ordinals index into
+   * @param graphNodes          how many leading entries of that array the graph covers
+   * @param alreadyQueued       vector ids the delta buffer already holds, skipped before any read is paid for
    *
    * @return the ids to read, ascending; empty when there is nothing to re-queue
    */
-  private static int[] unreachableVectorIdsOf(final int[] unreachableOrdinals, final int[] liveOrdinalToVectorId,
+  private static int[] unreachableVectorIdsOf(final int[] unreachableOrdinals, final int[] ordinalToVectorId,
       final int graphNodes, final IntHashSet alreadyQueued) {
     if (unreachableOrdinals == null || unreachableOrdinals.length == 0)
       return EMPTY_ORDINALS;
@@ -2513,9 +2518,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
     int count = 0;
     final int[] candidates = new int[unreachableOrdinals.length];
     for (final int ordinal : unreachableOrdinals) {
-      if (ordinal < 0 || ordinal >= graphNodes || ordinal >= liveOrdinalToVectorId.length)
+      if (ordinal < 0 || ordinal >= graphNodes || ordinal >= ordinalToVectorId.length)
         continue;
-      final int vectorId = liveOrdinalToVectorId[ordinal];
+      final int vectorId = ordinalToVectorId[ordinal];
       if (!alreadyQueued.contains(vectorId))
         candidates[count++] = vectorId;
     }
