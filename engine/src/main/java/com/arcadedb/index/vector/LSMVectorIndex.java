@@ -335,12 +335,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /** {@link ForkJoinPool} rejects anything above this, so a configured graph-build width is clamped to it. */
   private static final int MAX_GRAPH_BUILD_PARALLELISM = 0x7fff;
 
-  // Live incremental graph builder: inserts vectors one at a time via addGraphNode()
-  // instead of rebuilding the entire graph. The builder stays alive across put() calls.
-  // Search uses builder.getGraph() which is immediately searchable after each insert.
-  private volatile GraphIndexBuilder liveBuilder;
-  private volatile GrowableVectorValues liveVectorValues;
-
   // Delta vectors inserted since last graph build, cached in RAM for brute-force scan during search.
   // Writers (put/remove/rebuild) hold write lock; readers (search) take a volatile snapshot.
   private static final class DeltaVectorEntry {
@@ -357,8 +351,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
      * <p>
      * There is not always room. The buffer holds everything written since the last graph rebuild, and nothing
      * bounds how much that is - an ingest that outruns the rebuilds keeps appending - so a full payload per entry
-     * is a second complete copy of the corpus on the heap, exactly the copy issue #3144 removed from
-     * {@link GrowableVectorValues}. A 4.2M-record load of 768-dimension embeddings needs 12.9 GB for it alone and
+     * is a second complete copy of the corpus on the heap, exactly the copy issue #3144 removed from the graph
+     * build's own vector reader. A 4.2M-record load of 768-dimension embeddings needs 12.9 GB for it alone and
      * died of that at {@code -Xmx16g} (issue #7357). Past
      * {@code arcadedb.vectorIndex.deltaCacheSize} the entry keeps only its id and RID - 32 bytes rather than
      * {@code dimensions * 4} - and {@link #deltaVectorOf} reads the payload back from the pages.
@@ -1594,7 +1588,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
    *                                 (issue #7190) - never {@code null}
    */
   private record ReuseCandidate(ImmutableGraphIndex loadedGraph, int[] liveOrdinalToVectorId, int graphSize,
-                                 String vectorProp, int[] unreachableOrdinals) {
+                                 String vectorProp, int[] unreachableOrdinals, int tombstonedOrdinals) {
   }
 
   /**
@@ -1740,24 +1734,41 @@ public class LSMVectorIndex implements Index, IndexInternal {
           indexName);
     }
 
-    // CRITICAL FIX FOR #3135: Check if vectorIndex contains deleted entries
-    // If vectors were updated/deleted, the persisted graph's ordinal mappings are stale.
-    // The graph was built with ordinals based on the old vector set, but after filtering
-    // deleted vectors, the new ordinalToVectorId array will have different indices.
-    // This causes NPE when JVector tries to access vectors using stale ordinals.
-    // Solution: Rebuild graph from scratch if any deleted entries exist.
-    final boolean hasDeletedVectors = vectorIndex().getDeletedCount() > 0;
-    if (hasDeletedVectors) {
+    final LSMVectorIndexGraphFile gf = graphFile;
+    if (gf == null || !gf.hasPersistedGraph() || needsGraphRebuildForPQ)
+      return PersistedGraphCheck.UNUSABLE;
+
+    // FIX FOR #3135, NARROWED BY #7842: what a graph ordinal means is not in the graph, and the walk below
+    // re-derives it as "the live vector ids, ascending". That derivation is only the array the graph was built
+    // with while the live set has not lost a member: tombstone one vector and every ordinal past it slides down
+    // by one, so the graph and the array describe different records - which is why #3135 refused such a graph
+    // outright. The refusal is an O(N) rebuild for a single tombstone, and it fires on reopen, on the calling
+    // search thread, for every index at once (issue #7814).
+    //
+    // Since #7842 the array is RECORDED next to the graph instead of re-derived, and when that recording is
+    // present and still describes these records there is nothing to re-derive and nothing to rebuild: an ordinal
+    // whose vector id has been tombstoned is a dead node, and LiveVectorBitsFilter already refuses to return one
+    // from a search while the beam keeps walking through it (issue #5558). Only an index whose graph predates the
+    // recording - or whose recording no longer matches - still pays the rebuild.
+    //
+    // The recording is consulted only once something HAS been deleted, and the walk below is left exactly as it
+    // was otherwise. That is not caution for its own sake: the walk does not merely rebuild the array, it also
+    // re-reads and re-validates every vector, and drops the ones that no longer read back as a vector of the right
+    // arity. The recording cannot answer that question, so replacing the walk with it wholesale would trade a
+    // check this index has always made for a faster reopen. Deletions are the case where the walk's answer is
+    // WRONG rather than merely slower, and that is the case taken here.
+    if (vectorIndex().getDeletedCount() > 0) {
+      final PersistedGraphCheck viaOrdinalMap = reusePersistedGraphDespiteDeletions(gf);
+      if (viaOrdinalMap != null)
+        return viaOrdinalMap;
+
       LogManager.instance().log(this, Level.INFO,
           """
-              Deleted vectors detected in index %s - rebuilding graph from scratch to ensure ordinal consistency \
-              (fixes issue #3135: stale ordinal mappings after vector updates)""",
+              Deleted vectors detected in index %s and no usable ordinal map is recorded next to its graph - \
+              rebuilding from scratch to ensure ordinal consistency (issues #3135, #7842)""",
           indexName);
-    }
-
-    final LSMVectorIndexGraphFile gf = graphFile;
-    if (gf == null || !gf.hasPersistedGraph() || needsGraphRebuildForPQ || hasDeletedVectors)
       return PersistedGraphCheck.UNUSABLE;
+    }
 
     try {
       final var loadedGraph = gf.loadGraph();
@@ -1869,7 +1880,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       if (staleReason != null) {
         // ISSUE #6655: a graph stale ONLY because more vectors were added since it was built - no deletions
-        // (guaranteed by the !hasDeletedVectors guard above) and, when a manifest is present, its fingerprint
+        // (guaranteed by the getDeletedCount() guard above, which sends an index with tombstones down
+        // reusePersistedGraphDespiteDeletions instead) and, when a manifest is present, its fingerprint
         // proves the graph's own ordinals [0, graphSize) still resolve to exactly the records they were built
         // from - is not wrong, only behind. That is the identical staleness rebuildGraphBeforeSearch()'s async
         // policy already tolerates mid-session (a graph missing the newest vectors, not one describing the
@@ -1896,7 +1908,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // unlocked (see the field javadoc above). Only the decision - not the read - belongs under this
           // lock, same as every other branch in this method.
           return new PersistedGraphCheck(false,
-              new ReuseCandidate(loadedGraph, prefix, graphSize, vectorProp, persistedManifest.unreachableOrdinals()));
+              // Zero by construction: this branch is only reached with no tombstones at all (issue #7842).
+              new ReuseCandidate(loadedGraph, prefix, graphSize, vectorProp, persistedManifest.unreachableOrdinals(),
+                  0));
         }
         LogManager.instance().log(this, Level.INFO,
             "Persisted graph is not usable for index %s: %s - rebuilding from scratch (issues #3722, #6106)",
@@ -1970,6 +1984,201 @@ public class LSMVectorIndex implements Index, IndexInternal {
           .log(this, Level.WARNING, "Failed to load graph for %s, will rebuild: %s", indexName, e.getMessage());
       return PersistedGraphCheck.UNUSABLE;
     }
+  }
+
+  /**
+   * The deletion counterpart of {@link #loadPersistedGraphOrDecidePrefix()}'s recompute walk: decide what to do with
+   * a persisted graph some of whose nodes now answer for tombstoned vectors, using the ordinal map recorded next to
+   * it instead of re-deriving one from a live set the deletions have shifted (issue #7842).
+   * <p>
+   * Called from {@link #loadPersistedGraphOrDecidePrefix()} and therefore under {@link #graphBuildLock}, with the
+   * same contract: it may publish {@link #graphIndex} itself, or hand back a {@link ReuseCandidate} for the caller
+   * to reuse unlocked, and it does no I/O beyond the graph load and the validation walk.
+   * <p>
+   * Validation is what separates "this graph is behind" from "this graph describes something else", and a vector id
+   * alone cannot answer it: a compaction renumbers the whole live set densely from 0 (issue #5870), so an id that
+   * survives a crash between the renumbering and the graph persist is live, in range, and means a different record.
+   * Every ordinal is therefore checked against the RID recorded with it - live ids must still hold exactly that
+   * location, and an id that is neither live nor tombstoned is one this index never issued, which says the id space
+   * moved underneath the graph. Either failure gives the graph up to the rebuild, which is what this path replaces
+   * rather than weakens.
+   * <p>
+   * The dead ordinals left behind are charged to {@link #mutationsSinceSerialize} rather than compacted here. That
+   * is deliberate: a tombstoned node IS pending work, and counting it as such puts it under every policy the engine
+   * already has for pending work - the ratio-scaled threshold, the inactivity timer, the JVM-wide
+   * {@code REBUILD_SEMAPHORE} and the heap admission check - instead of under a second, parallel schedule. It is
+   * also what keeps a reopened index from silently accumulating tombstones forever: the counter starts each session
+   * at what the graph actually owes, not at zero.
+   *
+   * @param gf the component holding the persisted graph, already known to have one
+   *
+   * @return the decision, or {@code null} when this path cannot make one and the caller should rebuild
+   */
+  private PersistedGraphCheck reusePersistedGraphDespiteDeletions(final LSMVectorIndexGraphFile gf) {
+    if (metadata.quantizationType == VectorQuantizationType.PRODUCT)
+      // PQ codes are addressed by the same ordinal and are produced, wholesale, by the rebuild this path avoids.
+      // Reusing a graph whose ordinal space has holes would pair it with a codebook built over a dense one, so
+      // PRODUCT keeps the rebuild until the PQ format learns to carry holes of its own.
+      return null;
+
+    final LSMVectorIndexGraphManifest.Content manifest = gf.getManifest().read();
+    if (manifest == null || manifest.vectorCount() <= 0)
+      // No manifest, or one that refuses these pages outright: nothing here can second-guess that (issue #6106).
+      return null;
+
+    final LSMVectorIndexOrdinalMapFile.Content persistedMap = gf.getManifest().readOrdinalMap();
+    if (persistedMap == null || persistedMap.size() != manifest.vectorCount())
+      // Written by a build older than issue #7842, lost with a backup that did not carry the sidecar, or not the
+      // map of the generation the manifest describes.
+      return null;
+
+    final VectorLocationIndex locations = vectorIndex();
+    final int[] mapVectorIds = persistedMap.vectorIds();
+    int liveOrdinals = 0;
+    for (int ordinal = 0; ordinal < mapVectorIds.length; ordinal++) {
+      final int vectorId = mapVectorIds[ordinal];
+      // Ascending is not a nicety: the gap computation below finds the vectors missing from this array with a
+      // binary search over it, and reuseStalePrefixGraph()/snapshotOf() read the result the same way.
+      if (ordinal > 0 && vectorId <= mapVectorIds[ordinal - 1]) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Vector graph ordinal map of index %s is not ascending at ordinal %d: rebuilding instead of reusing it",
+            indexName, ordinal);
+        return null;
+      }
+
+      if (locations.isLive(vectorId)) {
+        if (!persistedMap.hasRid(ordinal)
+            || !locations.isLocationOf(vectorId, persistedMap.bucketIds()[ordinal], persistedMap.positions()[ordinal])) {
+          LogManager.instance().log(this, Level.INFO,
+              "Vector id %d of index %s no longer holds the location its persisted graph was built over - the id "
+                  + "space was reissued under that graph (issue #5870), so it is rebuilt from scratch",
+              vectorId, indexName);
+          return null;
+        }
+        ++liveOrdinals;
+      } else if (!locations.isDeleted(vectorId)) {
+        LogManager.instance().log(this, Level.INFO,
+            "Vector id %d of its persisted graph is unknown to index %s - neither live nor tombstoned - so the "
+                + "graph is rebuilt from scratch rather than reused",
+            vectorId, indexName);
+        return null;
+      }
+    }
+
+    final ImmutableGraphIndex loadedGraph;
+    try {
+      loadedGraph = gf.loadGraph();
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Failed to load the persisted graph of index %s alongside its ordinal map, will rebuild: %s", indexName,
+          e.getMessage());
+      return null;
+    }
+    if (loadedGraph == null || loadedGraph.size() != mapVectorIds.length) {
+      LogManager.instance().log(this, Level.INFO,
+          "Persisted graph of index %s holds %d nodes while its ordinal map describes %d: rebuilding from scratch",
+          indexName, loadedGraph != null ? loadedGraph.size() : 0, mapVectorIds.length);
+      return null;
+    }
+
+    final int deadOrdinals = mapVectorIds.length - liveOrdinals;
+    // Live vectors the graph does not cover at all - written after it was persisted. size() is the live count
+    // (a tombstoned id keeps no location since issue #5516) and every live id in the map was just counted, so
+    // whatever is left over is exactly the gap.
+    final int gap = locations.size() - liveOrdinals;
+    final String vectorProp = vectorPropertyName();
+
+    if (gap > 0) {
+      // Deletions AND later insertions: the stale-prefix reuse of issue #6655, which until now could not be
+      // reached at all once anything had been deleted. Below the async-rebuild floor a full rebuild is already
+      // cheap, and that is the same line #6655 draws for the no-deletions case.
+      if (locations.size() < ASYNC_REBUILD_MIN_GRAPH_SIZE)
+        return null;
+
+      final int[] extended = appendVectorsMissingFrom(mapVectorIds, locations);
+      if (extended == null)
+        return null;
+
+      LogManager.instance().log(this, Level.INFO,
+          "Reusing the persisted graph of index %s as a prefix although %d of its %d nodes are now tombstoned: %d "
+              + "live vectors are not in it yet (issues #6655, #7842)",
+          indexName, deadOrdinals, mapVectorIds.length, gap);
+      return new PersistedGraphCheck(false,
+          new ReuseCandidate(loadedGraph, extended, mapVectorIds.length, vectorProp, manifest.unreachableOrdinals(),
+              deadOrdinals));
+    }
+
+    // The graph covers every live vector. Read what its own build left unreachable before publishing, for the same
+    // reason the up-to-date branch of loadPersistedGraphOrDecidePrefix() does: the graph and the entries that
+    // complete it have to become visible in the same write lock (issue #7190).
+    final int[] unreachableOrdinals = manifest.unreachableOrdinals();
+    final List<DeltaVectorEntry> unreachableEntries = readUnreachableEntries(unreachableOrdinals, mapVectorIds,
+        mapVectorIds.length, vectorProp);
+
+    final int queuedUnreachable;
+    lock.writeLock().lock();
+    try {
+      this.graphIndex = loadedGraph;
+      this.graphUnreachableOrdinals = unreachableOrdinals;
+      this.ordinalToVectorId = mapVectorIds;
+      queuedUnreachable = appendToDeltaBuffer(unreachableEntries);
+      if (deadOrdinals > 0) {
+        // What the graph owes, made visible to the policies that already decide when to pay it - which all read
+        // mutationsSinceSerialize, and all of which rebuildGraphBeforeSearch() gates on MUTABLE. IMMUTABLE here
+        // would publish the count and then hide it, so the tombstones would sit in the graph until an unrelated
+        // write happened to reopen the question. MUTABLE is also what reuseStalePrefixGraph() publishes for the
+        // same situation - a graph that is correct to search but behind the live set. addAndGet, not set: a write
+        // that landed while the validation above ran unlocked has already counted itself here.
+        mutationsSinceSerialize.addAndGet(deadOrdinals);
+        this.graphState = GraphState.MUTABLE;
+      } else if (graphState == GraphState.LOADING)
+        this.graphState = GraphState.IMMUTABLE;
+      // else: a concurrent write already promoted it to MUTABLE while this validation ran - see the identical
+      // branch in loadPersistedGraphOrDecidePrefix() for why that must not be overwritten back.
+    } finally {
+      lock.writeLock().unlock();
+    }
+
+    if (deadOrdinals > 0)
+      metrics.incrementGraphReusesWithTombstonedNodes();
+    LogManager.instance().log(this, Level.INFO,
+        "Reusing the persisted graph of index %s with %d of its %d nodes tombstoned, instead of rebuilding it from "
+            + "scratch (issue #7842). Searches skip those nodes already; a rebuild folds them out once the ordinary "
+            + "mutation threshold (%d) is crossed%s",
+        indexName, deadOrdinals, mapVectorIds.length, getEffectiveMutationsBeforeRebuild(),
+        queuedUnreachable > 0 ?
+            ", plus %d vector(s) its build left unreachable and queued into the delta scan".formatted(
+                queuedUnreachable) : "");
+
+    return PersistedGraphCheck.LOADED;
+  }
+
+  /**
+   * The ordinal map, extended with the live vector ids it does not cover, so
+   * {@link #reuseStalePrefixGraph(ReuseCandidate)} can read them as its gap.
+   *
+   * @return the extended array, or {@code null} when the missing ids are not all past the end of the map - which
+   * cannot happen while ids are handed out monotonically, and means the array cannot be used as a prefix if it does
+   */
+  private int[] appendVectorsMissingFrom(final int[] mapVectorIds, final VectorLocationIndex locations) {
+    final int[] missing = locations.getAllVectorIds()
+        .filter(id -> Arrays.binarySearch(mapVectorIds, id) < 0)
+        .toArray();
+    if (missing.length == 0)
+      return mapVectorIds;
+
+    if (mapVectorIds.length > 0 && missing[0] <= mapVectorIds[mapVectorIds.length - 1]) {
+      LogManager.instance().log(this, Level.INFO,
+          "Vector id %d of index %s is live, missing from the persisted graph and below its highest ordinal: the "
+              + "graph cannot be reused as a prefix, rebuilding instead",
+          missing[0], indexName);
+      return null;
+    }
+
+    final int[] extended = new int[mapVectorIds.length + missing.length];
+    System.arraycopy(mapVectorIds, 0, extended, 0, mapVectorIds.length);
+    System.arraycopy(missing, 0, extended, mapVectorIds.length, missing.length);
+    return extended;
   }
 
   /**
@@ -2092,12 +2301,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // it is already in that graph, a rebuild does not remove it, and counting it would let an index whose last
         // build orphaned a node rebuild itself on every reopen. Same reasoning, and same consequences, as the
         // re-queue buildGraphFromScratchExclusively does at the end of a build.
-        this.mutationsSinceSerialize.addAndGet(queuedIntoDelta);
+        // Only the gap counts as pending work. A node the persisted graph leaves unreachable is not a mutation -
+        // see the comment above. A node that answers for a DELETED vector is: it is in the graph, a rebuild is
+        // what removes it, and counting it is what puts it on the ordinary threshold's schedule rather than on a
+        // second one of its own (issue #7842).
+        this.mutationsSinceSerialize.addAndGet(queuedIntoDelta + candidate.tombstonedOrdinals());
       } finally {
         lock.writeLock().unlock();
       }
 
       metrics.incrementStalePrefixGraphReuses();
+      if (candidate.tombstonedOrdinals() > 0)
+        metrics.incrementGraphReusesWithTombstonedNodes();
       LogManager.instance().log(this, Level.INFO,
           "Reusing persisted graph for index %s as a stale prefix: %d of %d live vectors are already in the "
               + "graph, %d queued into the delta buffer pending an async rebuild (issues #6655, #6772)%s",
@@ -2462,7 +2677,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // A reconfigured width takes effect on the next build. The pool being replaced can never have a build running
     // on it: every live caller of this method is inside buildGraphFromScratchExclusively, which runs under
     // graphBuildLock, so at most one build per index exists at a time and it is the one asking for this pool.
-    // (The other caller, ensureLiveBuilder, is dead code.) shutdown() rather than shutdownNow() keeps that true
+    // shutdown() rather than shutdownNow() keeps that true
     // even if a future caller breaks the invariant: the work would finish rather than fail.
     if (pool != null && !pool.isShutdown())
       pool.shutdown();
@@ -2597,16 +2812,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // come first. A snapshot taken against an unmaterialised sequence would be 0, and every vector id would then
     // compare as "added after this build started" and be dropped from the delta scan.
     vectorIndex();
-
-    // Reset live builder — full rebuild creates a new graph with different ordinal mapping
-    if (liveBuilder != null) {
-      try {
-        liveBuilder.close();
-      } catch (final Exception ignored) {
-      }
-      liveBuilder = null;
-      liveVectorValues = null;
-    }
 
     if (releaseResidentGraphFirst) {
       // See buildGraphFromScratchReleasingResidentGraph() for why this is safe only on that path, and why the
@@ -3684,8 +3889,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
-   * Best-effort {@link GraphIndexBuilder#close()}, matching the existing {@code liveBuilder.close()} handling
-   * above: a close failure here must not mask whatever primary exception (if any) is already propagating.
+   * Best-effort {@link GraphIndexBuilder#close()}: a close failure here must not mask whatever primary exception
+   * (if any) is already propagating.
    */
   private void closeGraphBuilderQuietly(final GraphIndexBuilder builder) {
     try {
@@ -3789,8 +3994,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // The length the write ended on, so the next session measures the JVector footer from what was actually
     // written instead of re-deriving it from a page count that the async flush thread is still catching up to
     // (issue #7362).
-    persistedTo.getManifest().write(graphOrdinalToVectorId.length,
-        LSMVectorIndexGraphManifest.fingerprintOf(graphOrdinalToVectorId, vectorIndex()::getRid),
+    persistedTo.getManifest().write(graphOrdinalToVectorId, vectorIndex()::getRid,
         unreachable != null ? unreachable : EMPTY_ORDINALS,
         persistedTo.getLastWrittenGraphBytes());
   }
@@ -3995,70 +4199,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
     }
   }
 
-  /**
-   * Initialize the live builder for incremental inserts.
-   * Uses lazy-loading GrowableVectorValues — existing vectors are loaded from disk
-   * on-demand during beam search, not pre-loaded. This makes initialization O(1)
-   * instead of O(n) where n is the number of existing vectors.
-   * <p>
-   * Caller MUST hold the write lock.
-   */
-  private void ensureLiveBuilder() {
-    if (liveBuilder != null)
-      return;
-
-    try {
-      // Create GrowableVectorValues with lazy disk fallback — vectors are loaded from
-      // ArcadeDB pages/documents on first access and cached in the ConcurrentHashMap.
-      // This avoids the O(n) pre-loading that was the bottleneck at 1M+ scale.
-      // Bound the on-heap cache (issue #3144). The vectors are already persisted to pages before
-      // being added here, and GrowableVectorValues re-reads evicted ordinals lazily from disk, so
-      // capping the cache removes a second full copy of the whole vector set during bulk ingest
-      // without affecting correctness. Reuse the graph-build cache knob for a single tunable.
-      final int liveCacheSize = getGraphBuildCacheSize();
-      liveVectorValues = new GrowableVectorValues(
-          metadata.dimensions,
-          Math.max(1024, Math.min(vectorIndex().size(), liveCacheSize <= 0 ? vectorIndex().size() : liveCacheSize)),
-          this,
-          liveCacheSize
-      );
-
-      // Set the count to match existing vectors so size() reports correctly
-      final int maxId = vectorIndex().getMaxVectorId();
-      if (maxId >= 0) {
-        // Touch the max ID to set the count correctly (GrowableVectorValues tracks max ordinal)
-        liveVectorValues.addVector(maxId, liveVectorValues.getVector(maxId));
-      }
-
-      final BuildScoreProvider scoreProvider = BuildScoreProvider.randomAccessScoreProvider(liveVectorValues,
-          metadata.similarityFunction);
-
-      final ForkJoinPool buildPool = getOrCreateGraphBuildPool();
-      liveBuilder = new GraphIndexBuilder(
-          scoreProvider,
-          metadata.dimensions,
-          metadata.maxConnections,
-          metadata.beamWidth,
-          metadata.neighborOverflowFactor,
-          metadata.alphaDiversityRelaxation,
-          metadata.addHierarchy,
-          true, // concurrent
-          buildPool, // simdExecutor - dedicated pool for cancellation support
-          buildPool  // parallelExecutor
-      );
-
-      LogManager.instance().log(this, Level.INFO,
-          "Live builder initialized (lazy-loading) for incremental inserts on index: %s (%d resident locations)",
-          indexName, vectorIndex().size());
-
-    } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING,
-          "Could not initialize live builder for index %s: %s. Falling back to batch rebuild.",
-          indexName, e.getMessage());
-      liveBuilder = null;
-      liveVectorValues = null;
-    }
-  }
 
   /**
    * Minimum graph size to use async rebuild. Below this, synchronous rebuild is fast enough.
@@ -5192,9 +5332,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * The vector of every indexed record is on disk before anything on the heap is allowed to forget it: an
    * inline-quantized index holds it in its own pages, and a document-backed one in the source record. This is the
    * single place that knows both, so a caller that dropped an on-heap copy has one way to get it back rather than
-   * two nearly-identical ones - {@link GrowableVectorValues#getVector(int)} lazy-loads an evicted ordinal through
-   * it (issue #3144) and the delta scan reads back an entry whose payload the buffer's heap budget declined to
-   * keep (issue #7357).
+   * two nearly-identical ones - {@link ArcadePageVectorValues} re-reads an evicted ordinal through it (issue
+   * #3144) and the delta scan reads back an entry whose payload the buffer's heap budget declined to keep (issue
+   * #7357).
    * <p>
    * Validated here rather than by each caller, because an unusable read has exactly one right answer everywhere:
    * a vector of the wrong arity, or an all-zero one (which is what a torn or never-written region reads back as),
@@ -5412,8 +5552,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * {@link #UNREADABLE_NODE_SCORE} for one that cannot.
    * <p>
    * A deleted vector stays in the graph until the next rebuild and its pages are released as soon as it is
-   * tombstoned, so {@link ArcadePageVectorValues} hands back a placeholder rather than null (issue #3715) and
-   * {@link GrowableVectorValues} hands back null. Scoring either of those is meaningless, and for
+   * tombstoned, so {@link ArcadePageVectorValues} hands back a placeholder rather than null (issue #3715).
+   * Scoring that placeholder is meaningless, and for
    * {@code COSINE} it is worse than meaningless: the placeholder's squared magnitude underflows to zero in float,
    * so the similarity comes back {@code Infinity}. That made every tombstone the <i>best</i> candidate in the beam -
    * it displaced the real neighbours a query near deleted data was looking for, and tripped JVector's own
@@ -5431,20 +5571,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
-   * The vector values a search scores against: the live builder's in-memory set when the graph in use is the one that
-   * builder produced (there the ordinals <i>are</i> vector ids), and the page-backed reader otherwise. The reader is
-   * handed the index-scoped cache so a working set survives across queries (issue #5412).
+   * The vector values a search scores against: the page-backed reader, handed the index-scoped cache so a working
+   * set survives across queries (issue #5412).
    * <p>
-   * The first branch is currently unreachable and kept as a guard: {@code graphIndex} is only ever assigned a graph
-   * loaded from disk or one built by the local builder in {@code buildGraphFromScratch}, never
-   * {@code liveBuilder.getGraph()}, so the identity check cannot hold. That matters to the callers because it means
-   * the {@code ordinalMap} they pass is always the one published alongside the graph by the same rebuild - the
-   * pairing issue #4581 exists to keep intact - and never a map whose ordinals mean something else.
+   * There is only one source, and that is what the callers rely on: {@code graphIndex} is only ever assigned a graph
+   * loaded from disk or one built by a from-scratch build, and both publish the {@code ordinalMap} that describes
+   * them in the same write lock - so the map a caller passes always means what the graph it scores against means,
+   * the pairing issue #4581 exists to keep intact.
    */
   private RandomAccessVectorValues searchVectorValues(final int[] ordinalMap) {
-    if (liveVectorValues != null && liveBuilder != null && graphIndex == liveBuilder.getGraph())
-      return liveVectorValues;
-
     final String vectorProp =
         vectorPropertyName();
     return ArcadePageVectorValues.forSearch(getDatabase(), metadata.dimensions, vectorProp, vectorIndex(), ordinalMap,
@@ -7368,10 +7503,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // Persist vector to page (will be added to vectorIndex inside persistVectorWithLocation)
           persistVectorWithLocation(id, rid, vector);
 
-          // Track in liveVectorValues for metadata consistency (O(1) - just a map put)
           final VectorFloat<?> vf = vts.createFloatVector(vector);
-          if (liveVectorValues != null)
-            liveVectorValues.addVector(id, vf);
 
           // Add to delta buffer so the vector is visible in search via mergeWithDeltaScan.
           // Skipping expensive O(log n) HNSW graph inserts during commit replay (issue #3864):
@@ -7492,10 +7624,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         final int id = allocateVectorId();
         persistVectorWithLocation(id, rid, vector);
 
-        // Track in liveVectorValues for metadata consistency (O(1) - just a map put)
         final VectorFloat<?> vf = vts.createFloatVector(vector);
-        if (liveVectorValues != null)
-          liveVectorValues.addVector(id, vf);
 
         // Add to delta buffer for search visibility via mergeWithDeltaScan, reusing the already-converted
         // VectorFloat so the search path never re-converts the whole buffer per query (issue #5391).
@@ -8603,7 +8732,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
         statsGraph != null ? deltaScanWorkTarget(statsGraph.size(), maxDeltaScanRatio()) : 0L);
 
     // On-heap cache size of the live incremental builder (bounded, issue #3144)
-    stats.put("liveVectorCacheSize", liveVectorValues != null ? (long) liveVectorValues.vectorCount() : 0L);
 
     // Populate metrics from LSMVectorIndexMetrics
     metrics.populateStats(stats);

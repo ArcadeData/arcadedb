@@ -95,7 +95,7 @@ public class LSMVectorIndexGraphManifest {
    * @param closeDeferredRebuild {@code true} when the pages this manifest describes are known stale because the
    *                             most recent {@code close()} chose to defer the rebuild that would otherwise have
    *                             brought them up to date (issue #6657), rather than run it synchronously. Always
-   *                             {@code false} again once a build actually completes - {@link #write(int, long, int[], long)}
+   *                             {@code false} again once a build actually completes - {@link #write(int[], IntFunction, int[], long)}
    *                             and {@link #markUnusable(String)} both clear it - so it answers specifically "did the
    *                             last close skip a rebuild", not the broader "is a rebuild owed" that
    *                             {@code vectorCount}/{@code fingerprint} against the live index already answers.
@@ -122,8 +122,32 @@ public class LSMVectorIndexGraphManifest {
 
   private final Path path;
 
+  /**
+   * The ordinal &rarr; record correspondence itself, as opposed to the fingerprint of it this file carries (issue
+   * #7842). Owned here rather than by {@link LSMVectorIndexGraphFile} so that the two sidecars can never describe
+   * different generations of the same pages: every {@link #invalidate()}, {@link #markUnusable} and
+   * {@link #write(int[], IntFunction, int[], long)} on this object drives it too.
+   */
+  private final LSMVectorIndexOrdinalMapFile ordinalMap;
+
   LSMVectorIndexGraphManifest(final String graphFilePath) {
     this.path = Path.of(graphFilePath + "." + FILE_EXT);
+    this.ordinalMap = new LSMVectorIndexOrdinalMapFile(graphFilePath);
+  }
+
+  /**
+   * @return what the ordinal map next to this manifest records, or {@code null} when there is none or it does not
+   * verify
+   */
+  LSMVectorIndexOrdinalMapFile.Content readOrdinalMap() {
+    return ordinalMap.read();
+  }
+
+  /**
+   * @return the ordinal map sidecar, for the paths that need its path or existence rather than its content
+   */
+  LSMVectorIndexOrdinalMapFile getOrdinalMapFile() {
+    return ordinalMap;
   }
 
   /**
@@ -183,6 +207,8 @@ public class LSMVectorIndexGraphManifest {
    * a graph nothing vouches for instead of a graph the previous manifest still appears to describe.
    */
   public void invalidate() {
+    // The map describes exactly the pages this manifest vouches for, so it goes at the same moment (issue #7842).
+    ordinalMap.invalidate();
     try {
       Files.deleteIfExists(path);
     } catch (final IOException e) {
@@ -204,6 +230,8 @@ public class LSMVectorIndexGraphManifest {
    * @param reason human-readable note stored in the file; nothing reads it back
    */
   public void markUnusable(final String reason) {
+    // Refusing the pages means refusing what the map says about them too (issue #7842).
+    ordinalMap.invalidate();
     write(UNUSABLE_VECTOR_COUNT, 0L, reason, false, NO_UNREACHABLE_ORDINALS, 0L);
   }
 
@@ -216,8 +244,25 @@ public class LSMVectorIndexGraphManifest {
    * @param unreachableOrdinals see {@link Content#unreachableOrdinals()}; {@code null} is read as none
    * @param graphBytes          see {@link Content#graphBytes()}; {@code 0} records none
    */
+  public void write(final int[] ordinalToVectorId, final IntFunction<RID> ridOfVector,
+      final int[] unreachableOrdinals, final long graphBytes) {
+    // The map first, the certificate second: a manifest is what makes the pages usable, so it must never be on disk
+    // vouching for a generation whose map is still the previous one (issue #7842). The reverse order - map after
+    // manifest - would leave exactly that window open across a crash.
+    ordinalMap.write(ordinalToVectorId, ridOfVector);
+    write(ordinalToVectorId.length, fingerprintOf(ordinalToVectorId, ridOfVector), null, false, unreachableOrdinals,
+        graphBytes);
+  }
+
+  /**
+   * Records a count and a fingerprint without the array behind them, and therefore WITHOUT an ordinal map: the map
+   * is dropped, so a graph certified this way is read back the pre-issue-#7842 way, by re-deriving what its ordinals
+   * mean from the live set. Prefer {@link #write(int[], IntFunction, int[], long)}, which records both; this exists
+   * for callers that hold only the two numbers.
+   */
   public void write(final int vectorCount, final long fingerprint, final int[] unreachableOrdinals,
       final long graphBytes) {
+    ordinalMap.invalidate();
     write(vectorCount, fingerprint, null, false, unreachableOrdinals, graphBytes);
   }
 
@@ -228,7 +273,8 @@ public class LSMVectorIndexGraphManifest {
    * or falls back to {@link #UNUSABLE_VECTOR_COUNT} when nothing has ever been persisted here, so a first-ever
    * build that a large index's close deferred is recorded too.
    * <p>
-   * Cleared automatically the next time {@link #write(int, long, int[], long)} or {@link #markUnusable(String)} runs,
+   * Cleared automatically the next time {@link #write(int[], IntFunction, int[], long)} or
+   * {@link #markUnusable(String)} runs,
    * which is exactly when a rebuild - deferred or not - actually completes.
    * <p>
    * {@code read() == null} is treated as "nothing persisted yet" and takes the {@link #UNUSABLE_VECTOR_COUNT}
