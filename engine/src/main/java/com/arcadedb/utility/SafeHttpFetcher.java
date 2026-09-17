@@ -160,7 +160,17 @@ public class SafeHttpFetcher {
 
         // Forces the request to be sent and the response headers read, so the socket is connected before the pin is
         // released. The caller's later getInputStream() reuses that established connection and resolves nothing.
-        status = connection.getResponseCode();
+        //
+        // THIS BLOCKS, AND IT IS BOUNDED BY THE SAME TIMEOUTS - AN ORIGIN THAT ACCEPTS THE CONNECTION AND NEVER
+        // SENDS A HEADER, OR THAT STALLS PART WAY DOWN A REDIRECT CHAIN, TIMES OUT HERE RATHER THAN IN body().
+        // WITHOUT THIS ARM THAT CASE REACHED THE CALLER AS THE JDK'S BARE "Read timed out", WHICH NAMES NEITHER
+        // THE WAIT NOR THE SETTING, WHILE A STALL ONE BYTE LATER GOT THE FULL DIAGNOSTIC (PR #7755 REVIEW)
+        try {
+          status = connection.getResponseCode();
+        } catch (final SocketTimeoutException e) {
+          connection.disconnect();
+          throw describedTimeout(e, context, current, readTimeoutMs, connectTimeoutMs);
+        }
       } finally {
         PinnedDnsResolution.clear();
       }
@@ -206,6 +216,30 @@ public class SafeHttpFetcher {
    * {@link #body} for a stream the caller has already taken off the connection, or has wrapped (a
    * {@code GZIPInputStream}, a {@code ZipInputStream}) before the timeout could be described.
    */
+  /**
+   * The {@link SocketTimeoutException} to report in place of {@code e}, naming the source, the wait and the setting
+   * that relaxes it. Written once, because the wait can expire in either of two places - while the response headers
+   * are being read ({@link #open}) or while the body is ({@link #body}) - and an operator should not have to learn
+   * which one they hit to find out what to change.
+   * <p>
+   * The JDK raises the SAME exception type for a connect timeout and a read timeout, and by the time one is caught
+   * the two are no longer distinguishable, so both settings are named when they differ.
+   */
+  private static SocketTimeoutException describedTimeout(final SocketTimeoutException e, final String context,
+      final String url, final int readTimeoutMs, final int connectTimeoutMs) {
+    final String bound = readTimeoutMs == connectTimeoutMs ?
+        readTimeoutMs + "ms" :
+        connectTimeoutMs + "ms to connect / " + readTimeoutMs + "ms to read";
+
+    final SocketTimeoutException described = new SocketTimeoutException(
+        context + ": the remote source '" + url + "' did not answer within " + bound + " and the fetch timed out."
+            + " Raise '" + GlobalConfiguration.NETWORK_REMOTE_FETCH_READ_TIMEOUT.getKey() + "' or '"
+            + GlobalConfiguration.NETWORK_REMOTE_FETCH_CONNECT_TIMEOUT.getKey()
+            + "' (milliseconds, 0 = wait forever) if the origin is legitimately this slow");
+    described.initCause(e);
+    return described;
+  }
+
   public static InputStream describeTimeouts(final InputStream in, final String context, final String url,
       final int readTimeoutMs) {
     return new FilterInputStream(in) {

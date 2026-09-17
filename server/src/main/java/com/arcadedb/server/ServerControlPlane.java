@@ -1061,6 +1061,11 @@ public class ServerControlPlane {
    * <p>
    * Never fails the backup: the archive is written and the caller is being told so, and a directory that could not
    * be pruned is an operational problem to log, not a reason to report a successful backup as an error.
+   * <p>
+   * Not a race with the scheduler's own prune, even though both now walk the same directory for the same database:
+   * this runs inside the {@code BackupCoordinator} BACKUP slot {@link #triggerBackup} holds, and {@code BackupTask}
+   * takes the same slot for the scheduled run, so a scheduled backup and an on-demand trigger of one database are
+   * serialised end to end - prune included - rather than overlapping (issue #7472).
    */
   private void pruneBackups(final Path backupDirectory, final String databaseName) {
     final AutoBackupSchedulerPlugin plugin = getBackupPlugin();

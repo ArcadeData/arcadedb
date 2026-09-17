@@ -95,6 +95,16 @@ class Issue7500RemoteFetchReadTimeoutTest {
       exchange.close();
     });
 
+    // An origin that accepts the connection and sends NOTHING - not even a status line.
+    server.createContext("/silent", exchange -> {
+      try {
+        release.await(30, TimeUnit.SECONDS);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+      exchange.close();
+    });
+
     server.createContext("/content", exchange -> {
       final byte[] body = "id,name\n1,Jay\n".getBytes(StandardCharsets.UTF_8);
       exchange.sendResponseHeaders(200, body.length);
@@ -169,6 +179,31 @@ class Issue7500RemoteFetchReadTimeoutTest {
       assertThat(new String(in.readAllBytes(), StandardCharsets.UTF_8)).isEqualTo("id,name\n1,Jay\n");
     }
     connection.disconnect();
+  }
+
+  /**
+   * The OTHER place the wait can expire: while {@link SafeHttpFetcher#open} is reading the response HEADERS, before
+   * there is a body for {@link SafeHttpFetcher#body} to wrap. An origin that accepts the connection and then sends
+   * nothing at all - or that stalls part way down a redirect chain - times out there, and used to reach the caller
+   * as the JDK's bare {@code "Read timed out"} while a stall one byte later got the full diagnostic (PR #7755
+   * review).
+   */
+  @Test
+  @Timeout(60)
+  void anOriginThatNeverSendsAHeaderTimesOutWithTheSameDiagnostic() {
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
+
+    assertThatThrownBy(() -> SafeHttpFetcher.open(baseUrl + "/silent", BLOCK_LINK_LOCAL, "IMPORT DATABASE"))
+        .isInstanceOf(SocketTimeoutException.class)
+        .as("the message names the wait, the source and the settings that relax it")
+        .hasMessageContaining("IMPORT DATABASE")
+        .hasMessageContaining("/silent")
+        .hasMessageContaining(String.valueOf(TIMEOUT_MS))
+        .hasMessageContaining(GlobalConfiguration.NETWORK_REMOTE_FETCH_READ_TIMEOUT.getKey())
+        .as("and the JDK's own timeout is kept as the cause")
+        .hasCauseInstanceOf(SocketTimeoutException.class);
+
+    stopwatch.assertGaveUpWithin(30_000, "a bounded header read from one that waits for as long as the socket lives");
   }
 
   /**
