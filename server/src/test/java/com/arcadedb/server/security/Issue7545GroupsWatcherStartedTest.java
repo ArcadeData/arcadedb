@@ -32,6 +32,8 @@ import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -171,6 +173,38 @@ class Issue7545GroupsWatcherStartedTest {
       assertThat(await(() -> repo.getGroups().getJSONObject("databases").getJSONObject(DATABASE)
           .getJSONObject("groups").getJSONObject(GROUP).getJSONArray("access").isEmpty()))
           .as("save() as the first call still leaves the repository watching").isTrue();
+    } finally {
+      repo.stop();
+    }
+  }
+
+  /**
+   * Row 4b - the ORDER inside {@code save()}, raised by CodeRabbit on PR #7818. {@code startWatching()} takes the
+   * file's modification time as the watcher's baseline, and {@code save()} excludes other callers of this class
+   * but not an operator with an editor. With the baseline taken after {@code persist()}, an edit landing in that
+   * gap becomes the baseline while the in-memory document is still the one just saved - and because every later
+   * tick needs a STRICTLY newer stamp, that edit is never read (CWE-863).
+   * <p>
+   * Asserted without trying to win a microsecond race, because the race is only the symptom: the ordering itself
+   * is observable. A first-call {@code save()} that took its baseline BEFORE the write leaves the file strictly
+   * newer than {@code fileLastUpdated}, so the watcher fires once on its own, with nothing edited. One that took
+   * it after leaves the two equal, and the watcher never fires again. The witness is the reload callback, so the
+   * test names neither field.
+   */
+  @Test
+  void saveTakesTheWatcherBaselineBeforeItWritesTheFile() throws Exception {
+    final CountDownLatch reloaded = new CountDownLatch(1);
+    final SecurityGroupFileRepository repo = new SecurityGroupFileRepository(CONFIG_PATH, RELOAD_EVERY_MS)
+        .onReload(document -> {
+          reloaded.countDown();
+          return null;
+        });
+    try {
+      repo.save(documentGranting(new JSONArray().put("updateSchema")));
+
+      assertThat(reloaded.await(RELOAD_TIMEOUT_MS, TimeUnit.MILLISECONDS))
+          .as("the file a first-call save() wrote is newer than the baseline that save() captured, so no edit "
+              + "made in that window can be swallowed").isTrue();
     } finally {
       repo.stop();
     }

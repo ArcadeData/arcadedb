@@ -64,11 +64,19 @@ public class SecurityGroupFileRepository {
   }
 
   public synchronized void save(final JSONObject configuration) throws IOException {
-    persist(configuration);
-    latestGroupConfiguration = configuration;
     // Issue #7545: publishing a document is one of the three ways this repository can be reached first, and
     // every one of them has to leave the node watching the file. See startWatching().
+    //
+    // BEFORE the write, the same way applyReplicated() does it, and for a sharper reason than symmetry
+    // (CodeRabbit on PR #7818). startWatching() takes the file's current modification time as the watcher's
+    // baseline, and this method does not hold off an external writer - only other callers of this class. Taking
+    // the baseline after persist() would let an operator edit that lands in the gap become the baseline while
+    // latestGroupConfiguration still holds what was just saved: later ticks need a STRICTLY newer stamp, so
+    // that edit would never be read, which is this very issue in miniature (CWE-863). Taken first, the baseline
+    // is at most the pre-persist stamp, persist() moves the file past it, and nothing can be swallowed.
     startWatching();
+    persist(configuration);
+    latestGroupConfiguration = configuration;
   }
 
   /**
