@@ -37,6 +37,7 @@ import java.net.InetSocketAddress;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -64,6 +65,7 @@ class Issue7500StalledRemoteImportIsReportedTest {
   private HttpServer     origin;
   private String         url;
   private CountDownLatch release;
+  private AtomicBoolean  stallAfterSniff;
   private Object         previousTimeout;
   private Object         previousBlocking;
 
@@ -76,12 +78,19 @@ class Issue7500StalledRemoteImportIsReportedTest {
     GlobalConfiguration.SERVER_SECURITY_IMPORT_BLOCK_LOCAL_NETWORKS.setValue(false);
 
     release = new CountDownLatch(1);
+    stallAfterSniff = new AtomicBoolean(false);
     origin = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
     origin.createContext("/data", exchange -> {
       // Declares far more than it sends, then goes quiet holding the socket open: a hung HTTP connection, or a
       // proxy that keeps the socket after the origin dies.
       exchange.sendResponseHeaders(200, 1_000_000);
-      exchange.getResponseBody().write("id,name\n1,Jay\n".getBytes(StandardCharsets.UTF_8));
+      // ENOUGH ROWS THAT THE SNIFF AND THE ANALYSIS BOTH FINISH BEFORE THE SILENCE STARTS, SO THE TIMEOUT LANDS
+      // INSIDE THE FORMAT'S OWN READ LOOP AND ARRIVES AT load() ALREADY WRAPPED
+      final StringBuilder head = new StringBuilder("id,name\n1,Jay\n");
+      if (stallAfterSniff.get())
+        for (int i = 2; i < 200; i++)
+          head.append(i).append(",name").append(i).append('\n');
+      exchange.getResponseBody().write(head.toString().getBytes(StandardCharsets.UTF_8));
       exchange.getResponseBody().flush();
       try {
         release.await(30, TimeUnit.SECONDS);
@@ -133,5 +142,28 @@ class Issue7500StalledRemoteImportIsReportedTest {
         .hasRootCauseInstanceOf(SocketTimeoutException.class);
 
     stopwatch.assertGaveUpWithin(60_000, "a bounded remote read from one that waits for as long as the socket lives");
+  }
+
+  /**
+   * The same source, stalling LATER: far enough in that the sniff succeeds and the CSV format is already consuming
+   * the stream when the read times out. The format wraps that in its own
+   * {@code ImportException("Error on importing CSV", timeout)}, so the timeout is no longer the outermost throwable
+   * - and reporting only the outermost message threw away the wait and the setting name that the fetch layer had
+   * gone to the trouble of putting in the cause (CodeRabbit on PR #7755).
+   */
+  @Test
+  @Timeout(120)
+  void aTimeoutWrappedByTheFormatStillNamesTheWaitAndTheSetting() {
+    stallAfterSniff.set(true);
+
+    assertThatThrownBy(() -> new Importer(new String[] { "-url", url, "-database", DATABASE_PATH, "-documentType",
+        "Doc", "-forceDatabaseCreate", "true" }).setAllowLocalUrls(true).load())
+        .isInstanceOf(ImportException.class)
+        .as("the wrapper the format put on is kept - it says WHERE the import was")
+        .hasMessageContaining(url)
+        .as("and the cause it wrapped is reported too, rather than swallowed by it")
+        .hasMessageContaining(String.valueOf(TIMEOUT_MS))
+        .hasMessageContaining(GlobalConfiguration.NETWORK_REMOTE_FETCH_READ_TIMEOUT.getKey())
+        .hasRootCauseInstanceOf(SocketTimeoutException.class);
   }
 }
