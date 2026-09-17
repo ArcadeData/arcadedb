@@ -584,7 +584,7 @@ public class PluginApiSpec implements OpenApiContributor {
     schema.addProperty("divergedDatabases", SpecBuilders.arrayOf(SpecBuilders.string("Database name"),
         "Databases quarantined because this node's WAL diverged from the leader's"));
     schema.addProperty("divergenceCauses", SpecBuilders.mapOf(
-        SpecBuilders.string("Why that database was quarantined: WAL_VERSION_GAP, UNDECODABLE_LOG_ENTRY or APPLY_ERROR"),
+        divergenceCauseSchema(),
         """
             Why each quarantined database was quarantined, keyed by database name - the same names \
             'divergedDatabases' lists (issue #7741). The names alone read as a replication problem even when the \
@@ -599,6 +599,23 @@ public class PluginApiSpec implements OpenApiContributor {
     schema.setRequired(List.of("inProgress", "snapshotDownloadQueued", "snapshotDownloadInProgress",
         "divergedDatabases", "divergenceCauses", "snapshotAppliedFloor", "databaseAppliedFloors"));
     return schema;
+  }
+
+  /**
+   * The value side of {@code divergenceCauses}: why one database was quarantined, as a closed set.
+   * <p>
+   * The names are LITERALS rather than {@code DivergenceCause.values()} because this module cannot see that enum -
+   * {@code ha-raft} depends on {@code arcadedb-server}, not the other way round, which is the wire-protocol module
+   * rule. A repeated literal across that boundary needs enforcement rather than a comment asking the next editor,
+   * and it has it: {@code Issue7577ClusterStatusSchemaMatchesTheHandlerTest} compares this list against
+   * {@code DivergenceCause.values()} and fails the moment they drift. Same arrangement as the restore thread bound,
+   * which is repeated in {@code GlobalConfiguration} for the same reason and pinned the same way.
+   */
+  private static Schema<?> divergenceCauseSchema() {
+    final Schema<String> cause = SpecBuilders.string(
+        "Why that database was quarantined. A closed set: a client may branch on it");
+    cause.setEnum(List.of("WAL_VERSION_GAP", "UNDECODABLE_LOG_ENTRY", "APPLY_ERROR", "SNAPSHOT_INSTALL_INCOMPLETE"));
+    return cause;
   }
 
   private Schema<?> createAddPeerRequestSchema() {
