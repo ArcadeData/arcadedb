@@ -86,9 +86,9 @@ public class ReplicatedSecurityFingerprintRepository {
   private final Map<String, String> fingerprints = new ConcurrentHashMap<>();
 
   public ReplicatedSecurityFingerprintRepository(final String securityConfPath) {
-    this.securityConfPath = securityConfPath.endsWith(File.separator) ?
-        securityConfPath :
-        securityConfPath + File.separator;
+    // Taken as given: {@code new File(parent, child)} joins with a separator whether or not the parent carries
+    // one, and this path is only ever used that way.
+    this.securityConfPath = securityConfPath;
     load();
   }
 
@@ -106,6 +106,14 @@ public class ReplicatedSecurityFingerprintRepository {
    * one - and skipping it keeps this off the {@code fsync} path for exactly the applies that have nothing new to
    * say. The write that remains is one small file per security change that actually changes something, beside
    * the document's own write, which already fsyncs.
+   * <p>
+   * <b>The check-then-put-then-write is not atomic, and does not need to be, because this runs on ONE thread</b>
+   * (claude-review on PR #7748). Every production caller is an {@code applyReplicated*} inside
+   * {@code ArcadeStateMachine}'s {@code applySecurity*Entry}, reachable only from the Raft apply callback, which
+   * Ratis serializes per division. A future caller that reaches the single-argument {@code applyReplicated*}
+   * overloads from anywhere else would break that, so it is written here rather than left to be inferred: the
+   * cost of getting it wrong is two entries racing to record, and the file then naming a document neither of
+   * them is the last to have installed.
    */
   public void record(final String document, final String fingerprint) {
     if (fingerprint == null || fingerprint.equals(fingerprints.get(document)))
