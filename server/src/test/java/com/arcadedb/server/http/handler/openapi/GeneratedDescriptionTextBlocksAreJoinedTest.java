@@ -31,15 +31,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * The OpenAPI document is generated from Java text blocks, and a text block whose continuation lines are not joined
  * with a trailing {@code \\} keeps its own indentation as literal spaces. That ships VERBATIM into the document a
- * client renders, so the description arrives with visible multi-space gaps mid-sentence (PR #7755 review).
+ * client renders, so the description arrives with visible multi-space gaps mid-sentence.
  * <p>
- * Asserted over every description in the document rather than only the one that had it: the defect is a property of
- * how a text block is written, so the next one written the same way is the same bug, and a test that named one field
- * would not see it.
+ * Asserted over EVERY description in the document rather than the one field that had it (it was
+ * {@code localResync.divergenceCauses}, issue #7741): the defect is a property of how a text block is written, so the
+ * next one written the same way is the same bug and a test named after one field would not see it. Named after the
+ * invariant for the same reason (PR #7755 review).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class Issue7741DivergenceCausesSchemaTest {
+class GeneratedDescriptionTextBlocksAreJoinedTest {
 
   @Test
   void noGeneratedDescriptionCarriesACollapsedTextBlockIndent() {
