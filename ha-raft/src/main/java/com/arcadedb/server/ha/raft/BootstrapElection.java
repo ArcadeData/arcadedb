@@ -343,11 +343,11 @@ class BootstrapElection {
     // close() is an orderly shutdown that waits for it, and every request below carries its own
     // .timeout(attemptTimeoutMs), so that wait is bounded by the per-attempt budget rather than open-ended.
     //
-    // A failure to BUILD it is not a reason to send the cluster token in the clear. The affected probes report
-    // a retryable failure instead, and if they never succeed the election treats those peers as holding no
-    // local data - which is why the log below is SEVERE and says so: on a node whose truststore cannot be read
-    // the choice is between an unencrypted probe and a baseline chosen without that peer's answer, and this
-    // takes the second (issue #7563).
+    // A failure to BUILD it is not a reason to send the cluster token in the clear. The affected probes fail
+    // instead, definitively (see queryPeer), so the election treats those peers as holding no local data -
+    // which is why the log below is SEVERE and says so: on a node whose truststore cannot be read the choice
+    // is between an unencrypted probe and a baseline chosen without that peer's answer, and this takes the
+    // second (issue #7563).
     HttpClient httpsClient = null;
     if (peerAddresses.values().stream().anyMatch(url -> url.startsWith("https://")))
       try {
@@ -615,12 +615,22 @@ class BootstrapElection {
    * @param httpsClient the trust-carrying client for an HTTPS {@code url}, or {@code null} when none could be
    *                    built - in which case the probe fails retryably rather than going out in the clear
    */
-  private CompletableFuture<ProbeOutcome> queryPeer(final RaftPeerId peerId,
+  // Package-private rather than private so a test can drive the no-client branch below, which answers before
+  // anything else on this object is touched.
+  // @VisibleForTesting
+  CompletableFuture<ProbeOutcome> queryPeer(final RaftPeerId peerId,
       final String url, final Set<String> dbFilter, final long attemptTimeoutMs, final HttpClient httpsClient) {
     final boolean https = url.startsWith("https://");
     if (https && httpsClient == null)
+      // FATAL, not RETRYABLE, and the difference is two minutes of every election. The client is built ONCE
+      // for the whole fan-out and never rebuilt between rounds, so this outcome cannot change on a retry -
+      // which is exactly what ProbeResult.FATAL means. Reported as retryable it kept the peer in `pending`,
+      // and collectRemoteStatesWithRetry re-probed it every probeRetryBackoffMs until HA_BOOTSTRAP_TIMEOUT_MS
+      // (default 120 s) ran out before reaching the same conclusion it could have reached on the first
+      // attempt (claude-review on PR #7838). FATAL drops the peer now; it still lands in assumedEmptyOut, so
+      // the SEVERE line that names the peers whose state the election had to assume is unchanged.
       return CompletableFuture.completedFuture(
-          ProbeOutcome.retryable("no HTTPS client could be built from the cluster truststore"));
+          ProbeOutcome.fatal("no HTTPS client could be built from the cluster truststore"));
 
     final HttpRequest request = bootstrapStateRequestTo(url, haServer.getClusterToken(), attemptTimeoutMs);
 

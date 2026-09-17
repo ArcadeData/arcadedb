@@ -18,9 +18,16 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.Test;
 
 import java.net.http.HttpRequest;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -45,6 +52,11 @@ class Issue7563PlaintextPeerDialSchemeTest {
 
   private static final String HTTP_ADDR  = "peer-1:2480";
   private static final String HTTPS_ADDR = "peer-1:2490";
+
+  private static final RaftPeerId PEER = RaftPeerId.valueOf("peer-1");
+  /** Small enough that the retryable control finishes fast, large enough to fit several backoffs. */
+  private static final long       BUDGET_MS  = 300L;
+  private static final long       BACKOFF_MS = 10L;
 
   // ------------------------------------------------------------------ bootstrap-state probe
 
@@ -102,5 +114,73 @@ class Issue7563PlaintextPeerDialSchemeTest {
   void theRemoteShutdownIgnoresAnHttpsEndpointWhenSslIsOff() {
     assertThat(RaftHAPlugin.shutdownUrl(new PeerDialAddress(HTTP_ADDR, HTTPS_ADDR, null, null), false))
         .isEqualTo("http://peer-1:2480/api/v1/server");
+  }
+
+  // ------------------------------------------------------------------ "cannot happen twice" is FATAL
+
+  /**
+   * The branch itself: an HTTPS probe with no client to send it on answers {@code FATAL}, not
+   * {@code RETRYABLE} (claude-review on PR #7838), and - the other half of the security property - it answers
+   * rather than quietly falling back to the plain listener.
+   * <p>
+   * Driven through {@code queryPeer}, which is where the decision is made. The no-client branch answers
+   * before the election object is otherwise touched, so a bare instance is enough to reach it.
+   */
+  @Test
+  void anHttpsProbeWithNoClientIsFatalRatherThanRetriedOrDowngraded() throws Exception {
+    final BootstrapElection election = new BootstrapElection(null, null);
+
+    final BootstrapElection.ProbeOutcome outcome = election.queryPeer(PEER,
+        "https://peer-1:2490/api/v1/cluster/bootstrap-state", Set.of("db"), 1_000L, null).get();
+
+    assertThat(outcome.result())
+        .as("the client is built once per fan-out and never rebuilt, so retrying cannot change this")
+        .isEqualTo(BootstrapElection.ProbeResult.FATAL);
+    assertThat(outcome.detail()).contains("truststore");
+  }
+
+  /**
+   * Why that distinction is worth a test: {@code collectRemoteStatesWithRetry} drops a {@code FATAL} peer
+   * immediately and re-probes a {@code RETRYABLE} one until {@code HA_BOOTSTRAP_TIMEOUT_MS} runs out, so
+   * reporting the outcome above as retryable cost the full budget - two minutes by default - on every
+   * election of a cluster with a misconfigured {@code arcadedb.ssl.trustStore}, to reach the conclusion that
+   * was available on the first attempt.
+   * <p>
+   * The assertion counts <b>probe attempts</b> rather than elapsed time: the count is what the two outcomes
+   * actually differ by, and it says the same thing on a loaded runner as on an idle one.
+   */
+  @Test
+  void anOutcomeThatCannotChangeOnRetryIsNotRetried() {
+    final AtomicInteger fatalAttempts = new AtomicInteger();
+    final List<RaftPeerId> fatalAssumedEmpty = new ArrayList<>();
+    BootstrapElection.collectRemoteStatesWithRetry(
+        Map.of(PEER, "https://peer-1:2490/api/v1/cluster/bootstrap-state"),
+        (peerId, url, attemptMs) -> {
+          fatalAttempts.incrementAndGet();
+          return CompletableFuture.completedFuture(
+              BootstrapElection.ProbeOutcome.fatal("no HTTPS client could be built from the cluster truststore"));
+        },
+        BUDGET_MS, BUDGET_MS, BACKOFF_MS, () -> true, fatalAssumedEmpty);
+
+    assertThat(fatalAttempts)
+        .as("a peer whose probe can never succeed must be probed once, not until the budget runs out")
+        .hasValue(1);
+    assertThat(fatalAssumedEmpty)
+        .as("it still reaches the SEVERE line that names the peers the election had to assume empty")
+        .containsExactly(PEER);
+
+    // The control: the SAME budget, the same backoff, an outcome that says "try again" - and it does.
+    final AtomicInteger retryableAttempts = new AtomicInteger();
+    BootstrapElection.collectRemoteStatesWithRetry(
+        Map.of(PEER, "https://peer-1:2490/api/v1/cluster/bootstrap-state"),
+        (peerId, url, attemptMs) -> {
+          retryableAttempts.incrementAndGet();
+          return CompletableFuture.completedFuture(BootstrapElection.ProbeOutcome.retryable("HTTP 503"));
+        },
+        BUDGET_MS, BUDGET_MS, BACKOFF_MS, () -> true, new ArrayList<>());
+
+    assertThat(retryableAttempts.get())
+        .as("a transient failure is still retried, so the two outcomes are genuinely distinguished")
+        .isGreaterThan(1);
   }
 }
