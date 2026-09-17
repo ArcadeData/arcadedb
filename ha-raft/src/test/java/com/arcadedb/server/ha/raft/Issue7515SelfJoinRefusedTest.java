@@ -23,6 +23,8 @@ import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -163,6 +165,70 @@ class Issue7515SelfJoinRefusedTest {
 
     assertThatThrownBy(() -> RaftHAServer.ensureNotSelf(LOCAL, null, peer(LOCAL, LOCAL_ADDRESS)))
         .isInstanceOf(SelfJoinNotSupportedException.class);
+  }
+
+  // ---------------------------------------------------------------------------------------------------------
+  // The general form of the same hazard: an address the configuration ALREADY holds, submitted under a new id.
+  // ensureNotSelf answers for this node; ensureNoDuplicateAddress answers for every member.
+  // ---------------------------------------------------------------------------------------------------------
+
+  /**
+   * The case neither the id check nor the self check covers: peer B's address under a third id. buildAddArgs
+   * compares by id, does not see a member, and the Mode.ADD commits - leaving two entries for one process.
+   */
+  @Test
+  void addingAnExistingMembersAddressUnderANewIdIsRefused() {
+    assertThatThrownBy(() -> RaftHAServer.ensureNoDuplicateAddress(
+        List.of(peer(LOCAL, LOCAL_ADDRESS), peer(RaftPeerId.valueOf("127.0.0.1_2435"), "127.0.0.1:2435")),
+        peer(RaftPeerId.valueOf("a_third_identity"), "127.0.0.1:2435")))
+        .isInstanceOf(DuplicatePeerAddressException.class)
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("a_third_identity")
+        .hasMessageContaining("127.0.0.1_2435")
+        .hasMessageContaining("vote separately");
+  }
+
+  /** The loopback equivalence applies to every member, not only to this node. */
+  @Test
+  void aLoopbackSpellingOfAnExistingMembersAddressIsRefused() {
+    assertThatThrownBy(() -> RaftHAServer.ensureNoDuplicateAddress(
+        List.of(peer(RaftPeerId.valueOf("127.0.0.1_2435"), "127.0.0.1:2435")),
+        peer(RaftPeerId.valueOf("localhost_2435"), "localhost:2435")))
+        .isInstanceOf(DuplicatePeerAddressException.class);
+  }
+
+  /**
+   * The property that keeps {@code connect cluster} idempotent: re-adding a peer under the id it already holds
+   * stays the documented no-op, and is not refused as a duplicate of itself.
+   */
+  @Test
+  void reAddingAnExistingMemberUnderItsOwnIdIsStillTheIdempotentNoOp() {
+    assertThatCode(() -> RaftHAServer.ensureNoDuplicateAddress(
+        List.of(peer(LOCAL, LOCAL_ADDRESS), peer(RaftPeerId.valueOf("127.0.0.1_2435"), "127.0.0.1:2435")),
+        peer(RaftPeerId.valueOf("127.0.0.1_2435"), "127.0.0.1:2435")))
+        .doesNotThrowAnyException();
+  }
+
+  /**
+   * And it must hold whichever way the configuration iterates. With a single loop that returned on the id match
+   * and threw on an address match, this ordering - the duplicate-looking entry first - decided the answer.
+   */
+  @Test
+  void theIdempotentReAddIsNotDecidedByIterationOrder() {
+    final RaftPeer rejoining = peer(RaftPeerId.valueOf("127.0.0.1_2435"), "127.0.0.1:2435");
+
+    assertThatCode(() -> RaftHAServer.ensureNoDuplicateAddress(
+        List.of(peer(RaftPeerId.valueOf("localhost_2435"), "localhost:2435"), rejoining), rejoining))
+        .doesNotThrowAnyException();
+  }
+
+  /** A genuinely new server is untouched: its own address, its own port. */
+  @Test
+  void aNewPeerOnItsOwnAddressIsAccepted() {
+    assertThatCode(() -> RaftHAServer.ensureNoDuplicateAddress(
+        List.of(peer(LOCAL, LOCAL_ADDRESS), peer(RaftPeerId.valueOf("127.0.0.1_2435"), "127.0.0.1:2435")),
+        peer(RaftPeerId.valueOf("127.0.0.1_2436"), "127.0.0.1:2436")))
+        .doesNotThrowAnyException();
   }
 
   private static RaftPeer peer(final RaftPeerId id, final String address) {
