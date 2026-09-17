@@ -75,21 +75,6 @@ import java.util.logging.Level;
  */
 public class MembershipSecuritySeeder implements AutoCloseable {
 
-  /**
-   * Submits the three security documents and reports the ones that did not commit. In production this is
-   * {@code ServerSecurity.seedSecurityStateClusterWide(long)}, which reads each document under the security
-   * monitor and retries the failing ones within {@code retryBudgetMs}.
-   */
-  @FunctionalInterface
-  public interface SecuritySeed {
-    /**
-     * @param retryBudgetMs how long to keep retrying the documents that fail
-     *
-     * @return the names of the documents that could not be seeded, empty when all of them committed
-     */
-    List<String> seed(long retryBudgetMs);
-  }
-
   private final BooleanSupplier  isLeader;
   private final LongSupplier     retryBudgetMs;
   private final SecuritySeed     seed;
@@ -257,5 +242,20 @@ public class MembershipSecuritySeeder implements AutoCloseable {
   public void close() {
     if (ownedExecutor != null)
       ownedExecutor.shutdownNow();
+  }
+
+  /**
+   * Submits the three security documents and reports the ones that did not commit. In production this is
+   * {@code ServerSecurity.seedSecurityStateClusterWide(long)}, which reads each document under the security
+   * monitor and retries the failing ones within {@code retryBudgetMs}.
+   */
+  @FunctionalInterface
+  public interface SecuritySeed {
+    /**
+     * @param retryBudgetMs how long to keep retrying the documents that fail
+     *
+     * @return the names of the documents that could not be seeded, empty when all of them committed
+     */
+    List<String> seed(long retryBudgetMs);
   }
 }
