@@ -28,6 +28,11 @@ public class Importer extends AbstractImporter {
   /**
    * The source URL currently being read, recorded BEFORE the read rather than after it succeeds, so a failure while
    * reading can name it. {@link AbstractImporter#source} cannot: it is assigned only once the sniff has succeeded.
+   * <p>
+   * Plain instance state, reset at the top of {@link #load()}, because an {@code Importer} is single-use and
+   * single-threaded - every caller constructs a fresh one and {@code load()} walks its four routes in sequence. That
+   * is the same assumption {@link AbstractImporter#source}, {@code parser}, {@code format} and {@code context}
+   * already make; concurrent {@code load()} calls on ONE instance would race on all five alike.
    */
   private String loadingUrl;
 
