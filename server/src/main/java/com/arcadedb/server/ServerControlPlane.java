@@ -105,6 +105,12 @@ import java.util.logging.Level;
 public class ServerControlPlane {
   private static final IPAddressBlocklist RESERVED_ADDRESSES = IPAddressBlocklist.defaultReservedRanges();
 
+  /**
+   * The three cluster-replicated security documents, named as {@code ServerSecurity.seedSecurityStateClusterWide}
+   * names them so every report of a seed failure reads the same whichever path produced it.
+   */
+  private static final List<String> ALL_SEEDED_SECURITY_DOCUMENTS = List.of("users", "groups", "API tokens");
+
   private final ArcadeDBServer server;
 
   /**
@@ -329,12 +335,6 @@ public class ServerControlPlane {
           + "Raise arcadedb.ha.securitySeedRetryTimeout if the cluster routinely needs longer to reach a quorum.";
     }
   }
-
-  /**
-   * The three cluster-replicated security documents, named as {@code ServerSecurity.seedSecurityStateClusterWide}
-   * names them so every report of a seed failure reads the same whichever path produced it.
-   */
-  private static final List<String> ALL_SEEDED_SECURITY_DOCUMENTS = List.of("users", "groups", "API tokens");
 
   // ---------------------------------------------------------------------------------------------
   // Probes
