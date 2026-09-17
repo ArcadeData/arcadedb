@@ -829,35 +829,20 @@ public class RemoteSchema implements Schema {
 
     for (Result record : cached) {
       final String typeName = record.getProperty("name");
+      // Type codes here come from FetchFromSchemaTypesStep: full names for document/vertex/edge,
+      // KIND_CODE ("t") for timeseries. The single-char codes from LocalDocumentType.toJSON
+      // ("d"/"v"/"e"/"t") are NOT used on this path.
+      final String typeCode = record.getProperty("type");
       RemoteDocumentType type = previous != null ? previous.get(typeName) : null;
-      if (type == null) {
-        // Type codes here come from FetchFromSchemaTypesStep: full names for document/vertex/edge,
-        // KIND_CODE ("t") for timeseries. The single-char codes from LocalDocumentType.toJSON
-        // ("d"/"v"/"e"/"t") are NOT used on this path.
-        final String typeCode = record.getProperty("type");
-        switch (typeCode) {
-        case "document":
-          type = new RemoteDocumentType(remoteDatabase, record);
-          break;
-        case "vertex":
-          type = new RemoteVertexType(remoteDatabase, record);
-          break;
-        case "edge":
-          type = new RemoteEdgeType(remoteDatabase, record,
-              record.hasProperty("bidirectional") ? (Boolean) record.getProperty("bidirectional") : true,
-              record.hasProperty("lightweight") && (Boolean) record.getProperty("lightweight"),
-              record.hasProperty("unique") && (Boolean) record.getProperty("unique"));
-          break;
-        case LocalTimeSeriesType.KIND_CODE:
-          type = new RemoteTimeSeriesType(remoteDatabase, record);
-          break;
-        default:
-          LogManager.instance().log(this, Level.WARNING,
-              "Unknown schema type code '%s' for type '%s' - treating as document type", typeCode, typeName);
-          type = new RemoteDocumentType(remoteDatabase, record);
-          break;
-        }
-      } else
+      // A cached instance is reused only while it is still the right KIND of type (issue #7740). A
+      // drop-and-recreate can change that under a live connection - the same name coming back as a TIMESERIES
+      // type, say - and reusing the old instance left getType(name) answering with the old Java class forever,
+      // an explicit reload() included, because the switch below ran only for a name the snapshot did not carry.
+      if (type != null && !isOfKind(type, typeCode))
+        type = null;
+      if (type == null)
+        type = newTypeFor(typeCode, typeName, record);
+      else
         type.reload(record);
       newTypes.put(typeName, type);
     }
@@ -865,6 +850,45 @@ public class RemoteSchema implements Schema {
     this.buckets = newBuckets;
     this.types   = newTypes;
     return this;
+  }
+
+  /**
+   * The remote type a schema record describes, by its type code. Unknown codes are a document type, with a
+   * warning: a newer server's kind must not make the whole schema unusable on an older client.
+   */
+  private RemoteDocumentType newTypeFor(final String typeCode, final String typeName, final Result record) {
+    switch (typeCode) {
+    case "document":
+      return new RemoteDocumentType(remoteDatabase, record);
+    case "vertex":
+      return new RemoteVertexType(remoteDatabase, record);
+    case "edge":
+      return new RemoteEdgeType(remoteDatabase, record,
+          record.hasProperty("bidirectional") ? (Boolean) record.getProperty("bidirectional") : true,
+          record.hasProperty("lightweight") && (Boolean) record.getProperty("lightweight"),
+          record.hasProperty("unique") && (Boolean) record.getProperty("unique"));
+    case LocalTimeSeriesType.KIND_CODE:
+      return new RemoteTimeSeriesType(remoteDatabase, record);
+    default:
+      LogManager.instance().log(this, Level.WARNING,
+          "Unknown schema type code '%s' for type '%s' - treating as document type", typeCode, typeName);
+      return new RemoteDocumentType(remoteDatabase, record);
+    }
+  }
+
+  /**
+   * Whether a cached instance is what {@link #newTypeFor} would build for {@code typeCode} now. Exact classes,
+   * not {@code instanceof}: {@link RemoteVertexType} IS a {@link RemoteDocumentType}, so a vertex type recreated
+   * as a document type has to come back as a new instance rather than pass as one (issue #7740).
+   */
+  private static boolean isOfKind(final RemoteDocumentType type, final String typeCode) {
+    return switch (typeCode) {
+      case "vertex" -> type.getClass() == RemoteVertexType.class;
+      case "edge" -> type.getClass() == RemoteEdgeType.class;
+      case LocalTimeSeriesType.KIND_CODE -> type.getClass() == RemoteTimeSeriesType.class;
+      // "document" and any code this client does not know, both of which build a plain document type.
+      default -> type.getClass() == RemoteDocumentType.class;
+    };
   }
 
   private void checkSchemaIsLoaded() {

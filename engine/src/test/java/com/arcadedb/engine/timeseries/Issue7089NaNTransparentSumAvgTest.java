@@ -368,7 +368,10 @@ class Issue7089NaNTransparentSumAvgTest extends TestHelper {
     assertThat(((Number) rows.get(0).getProperty("s")).doubleValue()).isEqualTo(80.0);
     assertThat(((Number) rows.get(0).getProperty("a")).doubleValue()).isCloseTo(80.0 / 3, within(1e-9));
     assertThat(((Number) rows.get(0).getProperty("c")).longValue()).isEqualTo(4);
-    assertThat(((Number) rows.get(1).getProperty("s")).doubleValue()).isNaN();
+    // The second bucket held no real sample, so its SUM is absent. At the SQL boundary that is spelled NULL
+    // since issue #7743 - the marker is translated by the step rather than handed out raw - which is also what
+    // the generic aggregation and the raw-row projection answer for it. COUNT still counts rows.
+    assertThat(rows.get(1).<Object>getProperty("s")).as("absent SUM reaches SQL as NULL").isNull();
     assertThat(((Number) rows.get(1).getProperty("c")).longValue()).isEqualTo(2);
   }
 

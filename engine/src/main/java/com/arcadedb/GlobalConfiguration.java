@@ -2104,7 +2104,10 @@ public enum GlobalConfiguration {
       the HTTP client is built, because a java.net.http.HttpClient's connect timeout is fixed at build time - a \
       change needs a restart. RaftHAPlugin also reads it, as the budget for one whole peer authentication-session \
       RPC rather than only that RPC's connect phase: those are small requests on a LAN with a client waiting on \
-      a 401-or-200, so the connect budget is the right order of magnitude for the lot.""",
+      a 401-or-200, so the connect budget is the right order of magnitude for the lot. Since issue #7741 it also \
+      governs the HTTPS clients TrustedHttpClientCache builds, which is BOTH the leader forward on a TLS cluster \
+      (where it previously did nothing, a hardcoded 5s) AND the peer-capability probe that shares that cache; the \
+      probe's plain-HTTP client is a JVM-wide static and keeps its own 5s.""",
       Long.class, 5000L),
 
   HA_PROXY_COMMAND_TIMEOUT("arcadedb.ha.proxyCommandTimeout", SCOPE.SERVER,
@@ -2128,7 +2131,7 @@ public enum GlobalConfiguration {
   HA_PROXY_BATCH_READ_TIMEOUT("arcadedb.ha.proxyBatchReadTimeout", SCOPE.SERVER,
       """
       Milliseconds a follower waits for the leader to answer a /api/v1/batch load it relayed via \
-      PostBatchHandler (issues #7526/#7542), before giving up and answering the client HTTP 503. Deliberately \
+      PostBatchHandler (issues #7526/#7542), before giving up and answering the client HTTP 504. Deliberately \
       its own setting rather than arcadedb.ha.proxyReadTimeout: a bulk load's legitimate duration is a function \
       of the payload the client is still streaming, so the same generous order of magnitude as \
       arcadedb.server.httpStreamingReadTimeout (the budget this node grants the INCOMING side of the same load) \

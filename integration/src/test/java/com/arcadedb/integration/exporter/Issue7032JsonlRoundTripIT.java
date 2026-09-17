@@ -159,25 +159,29 @@ class Issue7032JsonlRoundTripIT {
       assertThat(policy.getDownsamplingTiers().get(1).afterMs()).isEqualTo(30L * 86_400_000L);
       assertThat(policy.getDownsamplingTiers().get(1).granularityMs()).isEqualTo(86_400_000L);
 
-      final List<Double> values = new ArrayList<>();
-      final List<Float> ratios = new ArrayList<>();
+      final List<Object> values = new ArrayList<>();
+      final List<Object> ratios = new ArrayList<>();
       try (final ResultSet rs = target.query("sql", "SELECT value, ratio FROM Sensor ORDER BY ts")) {
         while (rs.hasNext()) {
           final Result row = rs.next();
-          values.add(((Number) row.getProperty("value")).doubleValue());
-          ratios.add(((Number) row.getProperty("ratio")).floatValue());
+          values.add(row.getProperty("value"));
+          ratios.add(row.getProperty("ratio"));
         }
       }
       assertThat(values).hasSize(3);
       assertThat(values.get(0)).isEqualTo(1.5);
-      // NaN must survive: JSONArray.put(Number) rewrites a non-finite double to 0, so an unencoded NaN would come
-      // back as a measurement of zero.
-      assertThat(values.get(1)).isNaN();
+      // The NaN survives the round trip - JSONArray.put(Number) rewrites a non-finite double to 0, so an
+      // unencoded one would come back as a measurement of ZERO, which is what #7032 is about. What it comes back
+      // AS at the SQL boundary is NULL since issue #7743: NaN is the storage spelling of "no measurement here"
+      // and NULL is the SQL one, so the exporter's encoding is still doing its job - the value did not become a
+      // number. The engine boundary still hands out the marker itself, which is what the export reads.
+      assertThat(values.get(1)).as("absent, not a measurement of zero").isNull();
       assertThat(values.get(2)).isEqualTo(3.5);
 
-      // Same encoding, narrower column: a non-finite FLOAT must not come back as 0 either.
+      // Same encoding, narrower column: a non-finite FLOAT must not come back as 0 either. The INFINITY is a
+      // value in SQL arithmetic and is handed through untranslated; only the absent marker becomes NULL.
       assertThat(ratios.get(0)).isEqualTo(0.5f);
-      assertThat(ratios.get(1)).isNaN();
+      assertThat(ratios.get(1)).as("absent, not a measurement of zero").isNull();
       assertThat(ratios.get(2)).isEqualTo(Float.POSITIVE_INFINITY);
     }
   }

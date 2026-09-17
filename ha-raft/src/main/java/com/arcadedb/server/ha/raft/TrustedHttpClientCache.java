@@ -18,9 +18,11 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.http.handler.LeaderDial;
 
 import java.io.File;
 import java.io.IOException;
@@ -87,8 +89,14 @@ final class TrustedHttpClientCache {
       return client;
 
     final HttpClient previous = client;
+    // The same connect budget the plain-HTTP forwards get, rather than a hardcoded 5s (issue #7741). An
+    // operator tuning arcadedb.ha.proxyConnectTimeout on a TLS cluster changed nothing before this and had no
+    // way to tell, and the setting's own description named this path among the ones it governs. Clamped like
+    // LeaderDial.newConnectTimeoutBoundedClient does, and read once for the same reason: a built HttpClient's
+    // connect timeout cannot change afterwards, so a change needs a restart (or a truststore rotation, which
+    // rebuilds the client here).
     client = HttpClient.newBuilder()
-        .connectTimeout(Duration.ofSeconds(5))
+        .connectTimeout(connectTimeoutOf(server.getConfiguration()))
         .sslContext(SnapshotInstaller.buildSSLContext(server))
         .build();
     material = current;
@@ -99,6 +107,31 @@ final class TrustedHttpClientCache {
       previous.close();
     }
     return client;
+  }
+
+  /**
+   * The connect budget an HTTPS peer dial gets: {@link GlobalConfiguration#HA_PROXY_CONNECT_TIMEOUT}, the same
+   * setting the plain-HTTP forwards read (issue #7741).
+   * <p>
+   * It used to be a hardcoded 5s here, so an operator tuning the setting on a TLS cluster changed nothing and had
+   * no way to tell - the setting's own description named this path among the ones it governs, and the one place
+   * that knew better was a comment in the error message that had to avoid naming it. Clamped the way
+   * {@link LeaderDial#newConnectTimeoutBoundedClient} clamps it, because a zero or negative connect timeout is
+   * not something {@link HttpClient.Builder#connectTimeout} accepts and an outgoing dial must not be unbounded.
+   * <p>
+   * Read when the client is BUILT, not per request: a {@code java.net.http.HttpClient}'s connect timeout is fixed
+   * at build time, so a change takes effect on the next rebuild - a truststore rotation, or a restart.
+   * <p>
+   * <b>Both users of this cache get it</b>, the leader forward and the peer-capability probe, because the cache is
+   * one class held twice by {@code RaftHAServer} and the budget is the same question either way: how long to wait
+   * for a peer that is not accepting connections. The probe's PLAIN-HTTP sibling, {@code PeerCapabilityQuery.HTTP},
+   * is a JVM-wide static built before any server exists and keeps its own 5s - so an operator who lowers the
+   * setting speeds up the probe on a TLS cluster and not on a plaintext one. The setting's description says so
+   * rather than this being left for a reader to discover (claude-review on PR #7747).
+   */
+  static Duration connectTimeoutOf(final ContextConfiguration configuration) {
+    return Duration.ofMillis(Math.max(configuration.getValueAsLong(GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT),
+        LeaderDial.MIN_FORWARD_TIMEOUT_MS));
   }
 
   /**

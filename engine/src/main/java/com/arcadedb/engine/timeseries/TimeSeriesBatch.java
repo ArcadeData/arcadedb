@@ -44,8 +44,10 @@ import java.util.List;
  * engine.appendBatch(batch);
  * </pre>
  * Column indexes are ordinals among the <b>non-timestamp</b> columns of the type, the same order
- * used by the {@code Object[][]} form of the append API. A column left untouched on a row keeps its
- * zero value, matching how the {@code Object[][]} path stores a {@code null}.
+ * used by the {@code Object[][]} form of the append API. A column left untouched on a row reads back as
+ * what a {@code null} reads back as on that column - the absent marker where it can carry one, zero
+ * elsewhere - which is the same thing the {@code Object[][]} path stores for a {@code null} (issue #7743,
+ * see {@link #rawNull}).
  * <p>
  * A batch is a plain buffer with no synchronization: fill it on one thread, then append it.
  * {@link #clear()} makes it reusable across batches without reallocating the column arrays.
@@ -57,6 +59,10 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
 
   // Column kinds, resolved once at construction so the per-value setters switch on a dense int
   // instead of walking the Type enum.
+  /** {@link TimeSeriesNaN#ABSENT} in the raw forms {@link #rawNull} hands back (issue #7743). */
+  private static final long ABSENT_DOUBLE_BITS = Double.doubleToRawLongBits(TimeSeriesNaN.ABSENT);
+  private static final long ABSENT_FLOAT_BITS  = Float.floatToRawIntBits((float) TimeSeriesNaN.ABSENT);
+
   static final byte KIND_DOUBLE   = 0;
   static final byte KIND_FLOAT    = 1;
   static final byte KIND_LONG     = 2;
@@ -72,6 +78,14 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
 
   private final ColumnDefinition[] columns;
   private final byte[]             kinds;
+  /** {@link #rawNull} per column, precomputed: the raw bits a column with no value set reads back as. */
+  private final long[]             nullRaw;
+  /**
+   * The columns whose "no value" is something other than zero, which is the only work a FRESH row needs: a
+   * new {@code long[]} is already zero everywhere else. Empty - the common all-integer schema - means a fresh
+   * row costs nothing at all, as it did before issue #7743 (claude-review on PR #7747).
+   */
+  private final int[]              absentMarkerColumns;
   private       long[]             timestamps;
   private final long[][]           rawValues;
   private final String[][]         stringValues;
@@ -94,6 +108,7 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
 
     this.columns = new ColumnDefinition[valueColumns];
     this.kinds = new byte[valueColumns];
+    this.nullRaw = new long[valueColumns];
     this.rawValues = new long[valueColumns][];
     this.stringValues = new String[valueColumns][];
 
@@ -107,6 +122,7 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
       columns[colIdx] = col;
       final byte kind = kindOf(col.getDataType());
       kinds[colIdx] = kind;
+      nullRaw[colIdx] = rawNull(kind);
       // KIND_TEXT columns are stored length-prefixed in the row exactly like a STRING, so they need
       // the String backing too (issue #5475).
       if (kind == KIND_STRING || kind == KIND_TEXT)
@@ -115,6 +131,15 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
         rawValues[colIdx] = new long[initialCapacity];
       colIdx++;
     }
+
+    int absentMarkers = 0;
+    for (final long raw : nullRaw)
+      if (raw != 0L)
+        ++absentMarkers;
+    this.absentMarkerColumns = new int[absentMarkers];
+    for (int c = 0, next = 0; c < nullRaw.length; c++)
+      if (nullRaw[c] != 0L)
+        absentMarkerColumns[next++] = c;
   }
 
   /**
@@ -127,14 +152,29 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
     final int row = size++;
     timestamps[row] = timestamp;
 
-    // A refilled batch must not leak the previous fill's value into a column the caller skips.
-    if (row < staleRows)
+    // Two reasons to fill the row in: a refilled batch must not leak the previous fill's value into a column the
+    // caller skips, and a column the caller never sets must read back as what a null reads back as - the absent
+    // marker where the column can carry one, zero elsewhere (issue #7743). The second reason applies to a fresh
+    // row too, which is why the cheap "only stale rows" test is not the whole condition; a batch with no
+    // floating-point column has nothing to write into a fresh row and skips the loop as it always did.
+    if (row < staleRows) {
+      // A refilled row: every column has to be reset, whatever its null reads back as.
       for (int c = 0; c < columns.length; c++) {
         if (rawValues[c] != null)
-          rawValues[c][row] = 0L;
+          rawValues[c][row] = nullRaw[c];
         else
           stringValues[c][row] = null;
       }
+    } else
+      // A fresh row is already zero everywhere, so only the columns whose absence is NOT zero are touched -
+      // none at all on an all-integer schema, which is the bulk-ingest case this class is built for.
+      //
+      // "Already zero" is an invariant of this class, not just of the JVM: a fresh row is one at an index no
+      // fill has reached, and every backing array it can live in is freshly ALLOCATED - by the constructor or by
+      // grow(), which copies into a new array rather than reusing one. A growth path that ever recycled storage
+      // would have to fill these rows in full, like the stale branch above (claude-review on PR #7747).
+      for (final int c : absentMarkerColumns)
+        rawValues[c][row] = nullRaw[c];
     return row;
   }
 
@@ -217,7 +257,7 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
       return;
     }
     if (value == null) {
-      rawValues[columnIndex][row] = 0L;
+      rawValues[columnIndex][row] = rawNull(kind);
       return;
     }
 
@@ -229,6 +269,28 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
       case KIND_SHORT -> number.shortValue();
       case KIND_BYTE -> number.byteValue();
       default -> number.longValue();
+    };
+  }
+
+  /**
+   * The raw bits a {@code null} measurement takes in a column of this kind (issue #7743).
+   * <p>
+   * "No measurement here" is what a caller means by a null field value, and on a floating-point column that is
+   * exactly what {@link TimeSeriesNaN#ABSENT} says: every aggregate skips it, so an AVG divides by the samples
+   * that were really taken and a MIN is the smallest of them rather than a phantom zero. The bits survive the
+   * round trip on both layers - the mutable page stores them verbatim and {@code GORILLA_XOR} encodes a double
+   * by its bits - so the two layers keep answering alike, which is the property {@link TimeSeriesNaN#asMeasurement}
+   * exists to hold.
+   * <p>
+   * Every other numeric column stores zero for it, because an integer has no value outside its own range to
+   * spend on absence and a validity bitmap is not part of the format. That is the pre-existing behaviour, kept
+   * deliberately: a null in a {@code LONG} column still reads back as a real 0 on both layers.
+   */
+  static long rawNull(final byte kind) {
+    return switch (kind) {
+      case KIND_DOUBLE -> ABSENT_DOUBLE_BITS;
+      case KIND_FLOAT -> ABSENT_FLOAT_BITS;
+      default -> 0L;
     };
   }
 

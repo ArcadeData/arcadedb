@@ -183,7 +183,8 @@ class Issue5474PrimitiveIngestTest extends TestHelper {
     batch.setLong(row, 2, 8L);
     engine.appendSamples(batch);
 
-    // Second fill on the same buffer: only the tag is set, so a and b must read back as zero.
+    // Second fill on the same buffer: only the tag is set, so a and b read back as "no measurement" - the absent
+    // marker on the DOUBLE column, which can carry one, and zero on the LONG column, which cannot (issue #7743).
     batch.clear();
     row = batch.addRow(BASE_TS + 2);
     batch.setString(row, 0, "host_c");
@@ -197,11 +198,13 @@ class Issue5474PrimitiveIngestTest extends TestHelper {
     assertThat(result).hasSize(4);
 
     assertThat(result.get(2)[1]).isEqualTo("host_c");
-    assertThat(((Number) result.get(2)[2]).doubleValue()).isEqualTo(0.0d);
-    assertThat(((Number) result.get(2)[3]).longValue()).isEqualTo(0L);
+    assertThat(((Number) result.get(2)[2]).doubleValue()).as("a DOUBLE nobody measured is absent, not zero").isNaN();
+    assertThat(((Number) result.get(2)[3]).longValue()).as("a LONG has no marker to spend on absence").isEqualTo(0L);
 
+    // The point of the test, and it survives #7743: a column left unset and a column set to null are the same
+    // thing, whatever that thing reads back as.
     assertThat(result.get(3)[1]).isEqualTo("host_d");
-    assertThat(result.get(3)[2]).isEqualTo(result.get(2)[2]);
+    assertThat(((Number) result.get(3)[2]).doubleValue()).isNaN();
     assertThat(result.get(3)[3]).isEqualTo(result.get(2)[3]);
   }
 
