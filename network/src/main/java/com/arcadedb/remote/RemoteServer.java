@@ -47,8 +47,13 @@ public class RemoteServer extends RemoteHttpComponent {
    * loopback, to write a plaintext token back. Off by default: the token authenticates its holder and the
    * server cannot reissue it, so the one request in this client that carries secret material back is the
    * one request that checks how it would travel (issue #7372).
+   * <p>
+   * Volatile for the same reason {@code maxResultRows} is: this class is documented as not thread safe,
+   * but a connection-wide knob an application may flip at any time has to be visible to the thread that
+   * then makes the call, and a flag whose whole job is to relax a security guard is the wrong one to let
+   * a caller set without effect.
    */
-  private boolean allowInsecureApiTokenTransport = false;
+  private volatile boolean allowInsecureApiTokenTransport = false;
 
   public RemoteServer(final String server, final int port, final String userName, final String userPassword) {
     this(server, port, userName, userPassword, new ContextConfiguration());
@@ -356,6 +361,17 @@ public class RemoteServer extends RemoteHttpComponent {
   /**
    * Whether {@code host} names this machine's loopback interface. Fails closed on a name that does not
    * resolve: an unresolvable host is not a host known to be local.
+   * <p>
+   * <b>It answers for the resolution it performs, not for the one the socket will use.</b> A name is
+   * resolved here and resolved again, independently, by the JDK {@code HttpClient} when it dials - so a
+   * host name whose DNS answer an attacker can influence (rebinding, split horizon, a one-second TTL)
+   * could read as loopback here and carry the token somewhere else in the clear. Pinning the resolved
+   * address into the URL would close it and break TLS SNI and virtual hosting in exchange, which is a bad
+   * trade for a guard that is already the second of two. Configure the client with a literal address or
+   * with {@code localhost} and the gap does not arise; where it might, the transport that actually
+   * protects the token is TLS, and the server-side gate
+   * ({@code arcadedb.server.apiTokenRequireSecureTransport}) is the check that reads the live connection
+   * rather than a name.
    */
   static boolean isLoopbackHost(final String host) {
     if (host == null || host.isBlank())
