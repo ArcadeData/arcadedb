@@ -23,6 +23,7 @@ import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.util.concurrent.CountDownLatch;
@@ -142,7 +143,7 @@ class WriteBoundedOutputStreamTest {
   /** {@code NONE} is what a non-positive budget configures, and it must not get in the way of anything. */
   @Test
   void theDisabledBoundWritesStraightThrough() throws Exception {
-    final java.io.ByteArrayOutputStream sink = new java.io.ByteArrayOutputStream();
+    final ByteArrayOutputStream sink = new ByteArrayOutputStream();
     try (final WriteBoundedOutputStream out = new WriteBoundedOutputStream(sink,
         WriteBoundedOutputStream.WriteWatchdog.NONE)) {
       out.write("line\n".getBytes());
@@ -191,7 +192,7 @@ class WriteBoundedOutputStreamTest {
   }
 
   /** The production watchdog's shape: arm schedules the close, the returned handle cancels it. */
-  private PostBatchHandler.WriteBoundedOutputStream.WriteWatchdog watchdogFiringAfter(final long budgetMs,
+  private WriteBoundedOutputStream.WriteWatchdog watchdogFiringAfter(final long budgetMs,
       final CountDownLatch connectionClosed, final AtomicInteger fired) {
     return () -> {
       final ScheduledFuture<?> scheduled = scheduler.schedule(() -> {
