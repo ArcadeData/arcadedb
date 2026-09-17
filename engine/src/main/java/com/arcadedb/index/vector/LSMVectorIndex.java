@@ -2142,8 +2142,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // same situation - a graph that is correct to search but behind the live set. addAndGet, not set: a write
         // that landed while the validation above ran unlocked has already counted itself here.
         //
-        // deadOrdinals itself is a count taken over a set that was not frozen, and deliberately so. A delete
-        // committed DURING the walk above may have been read as live, in which case this misses it - but that
+        // deadOrdinals itself is a count taken over a set that was not frozen, and deliberately so. The one
+        // mutation that could make an unfrozen walk WRONG rather than merely approximate - a compaction renumbering
+        // the id space underneath it (issue #5870), which would let some ordinals be validated against the old
+        // numbering and some against the new - cannot interleave with it at all: the renumbering happens inside
+        // buildGraphFromScratchExclusively, which runs under graphBuildLock, and this walk is called by
+        // loadPersistedGraphOrDecidePrefix() while holding that same mutex. Ordinary deletes are what remains, and
+        // they are approximate by design. A delete committed DURING the walk above may have been read as live, in
+        // which case this misses it - but that
         // delete added itself to this very counter under its own write lock, so the total still moves; or it may
         // have been read as dead, in which case both it and this count it and the total is one high. Neither
         // direction can be wrong in the way that would matter: this number decides only WHEN the compaction runs,
