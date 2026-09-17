@@ -1652,6 +1652,33 @@ public enum GlobalConfiguration {
   SERVER_WS_EVENT_BUS_QUEUE_SIZE("arcadedb.server.eventBusQueueSize", SCOPE.SERVER,
       "Size of the queue used as a buffer for unserviced database change events.", Integer.class, 1000),
 
+  SERVER_WS_MAX_CONTROL_FRAME_SIZE("arcadedb.server.wsMaxControlFrameSize", SCOPE.SERVER, """
+      Maximum size in bytes of a single text frame accepted on /ws before an insert session has been started on \
+      that connection (issue #7403). Undertow's AbstractReceiveListener defaults to -1, unbounded, so every text \
+      frame used to be accumulated whole on the heap with no way for the server to say 'not that big'. A \
+      subscribe/unsubscribe/start/commit/rollback frame is a few hundred bytes, so this bound is deliberately \
+      tight; the accumulation is aborted with a 1009 TOO_BIG close as soon as it crosses the cap, not after the \
+      frame has been buffered. 0 or a negative value restores the unbounded behaviour.""", Long.class, 64 * 1024L),
+
+  SERVER_WS_MAX_INSERT_FRAME_SIZE("arcadedb.server.wsMaxInsertFrameSize", SCOPE.SERVER, """
+      Maximum size in bytes of a single text frame accepted on a /ws connection that has started a duplex insert \
+      session (issue #7403). A 'chunk' frame legitimately carries a whole batch of records, so it needs a larger \
+      budget than 'wsMaxControlFrameSize'; an operator running a bulk loader raises this one deliberately. The \
+      larger budget is granted when the connection's 'start' frame is dispatched and dropped again when its \
+      'commit'/'rollback' is, so a connection that never opens an insert session is never charged more than \
+      'wsMaxControlFrameSize'. Raising it scales the worst case by more than itself: a connection may have up \
+      to 64 frames waiting to be applied (WebSocketInsertProtocol.MAX_PENDING_FRAMES, which is not itself \
+      configurable), so the per-connection buffering to budget for is this value times that queue depth. 0 or a \
+      negative value restores the unbounded behaviour.""",
+      Long.class, 16 * 1024 * 1024L),
+
+  SERVER_WS_MAX_INSERT_CHUNK_ROWS("arcadedb.server.wsMaxInsertChunkRows", SCOPE.SERVER, """
+      Maximum number of records a single /ws 'chunk' frame may carry (issue #7403). This is the number a client \
+      actually reasons about, and it bounds the records array AFTER parsing, where 'wsMaxInsertFrameSize' bounds \
+      the bytes before it. A chunk over the cap is refused with an error frame naming the limit and leaves the \
+      session open, so a client that splits its batch can carry on. 0 or a negative value disables the cap.""",
+      Integer.class, 100_000),
+
   SERVER_WS_EVENT_BUS_MAX_PENDING_BYTES("arcadedb.server.eventBusMaxPendingBytes", SCOPE.SERVER, """
       Maximum number of bytes of change-stream frames that may be outstanding towards a single WebSocket subscriber
       before it is evicted. Frames are sent asynchronously, so a subscriber that never reads accumulates them in the

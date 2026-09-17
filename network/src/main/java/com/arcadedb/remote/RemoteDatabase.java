@@ -1281,6 +1281,30 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     return sessionId;
   }
 
+  /**
+   * Opens a duplex insert session on {@code /ws} (issue #7403): the {@code start} / {@code chunk} /
+   * {@code commit} / {@code rollback} control frames, with the acknowledgement of every chunk handed back to the
+   * caller before it decides what to send next.
+   * <p>
+   * This is the half {@link RemoteGraphBatch} structurally cannot offer. Its progress callback reports what
+   * {@code POST /api/v1/batch} did, but the commit policy of that endpoint is fixed by query parameters before
+   * the load starts; here the caller sees the acknowledgements and only then decides whether to
+   * {@link RemoteInsertSession#commit()} at all.
+   * <p>
+   * Example:
+   * <pre>{@code
+   * try (final RemoteInsertSession session = database.newInsertSession().targetType("Person").open()) {
+   *   final JSONObject ack = session.sendChunk(List.of(new JSONObject().put("name", "Elon")));
+   *   if (ack.getLong("failed", 0) == 0)
+   *     session.commit();
+   * }
+   * }</pre>
+   */
+  public RemoteInsertSession.Builder newInsertSession() {
+    checkDatabaseIsOpen();
+    return new RemoteInsertSession.Builder(this);
+  }
+
   protected void setSessionId(final String sessionId) {
     this.sessionId = sessionId;
     if (sessionId == null)

@@ -39,9 +39,20 @@ import java.util.logging.Level;
 import java.util.stream.Collectors;
 
 public class WebSocketReceiveListener extends AbstractReceiveListener {
-  private final HttpServer              httpServer;
-  private final WebSocketEventBus       webSocketEventBus;
-  private final WebSocketInsertProtocol insertProtocol;
+  private final    HttpServer              httpServer;
+  private final    WebSocketEventBus       webSocketEventBus;
+  private final    WebSocketInsertProtocol insertProtocol;
+  /**
+   * Whether this connection is currently entitled to the larger insert-frame budget (issue #7403). Raised when
+   * the connection's {@code start} frame is seen and dropped again when its {@code commit}/{@code rollback} is.
+   * <p>
+   * Read and written on the Undertow I/O thread only, which delivers the frames of one connection serially: the
+   * {@code start} frame is therefore fully handled before the next frame begins accumulating, so a client that
+   * pipelines {@code start} and its first {@code chunk} without waiting for {@code started} still gets the
+   * larger budget for that chunk. It is deliberately NOT keyed off a registered session, which is created
+   * asynchronously on a worker and would lose that race.
+   */
+  private volatile boolean                insertFrameBudget;
 
   public enum ACTION {UNKNOWN, SUBSCRIBE, UNSUBSCRIBE}
 
@@ -49,6 +60,34 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
     this.httpServer = httpServer;
     this.webSocketEventBus = webSocketEventBus;
     this.insertProtocol = httpServer.getInsertProtocol();
+  }
+
+  /**
+   * Bounds what one text frame may accumulate on the heap before {@link #onFullTextMessage} sees it (issue
+   * #7403).
+   * <p>
+   * Undertow's default is {@code -1}, unbounded: an authenticated client that opened a connection and never sent
+   * the final fragment of a text frame could pin an arbitrary amount of heap for as long as the connection
+   * lived. {@code BufferedTextMessage} checks the cap as it reads rather than after the frame is whole, and
+   * answers a breach with a {@code 1009 TOO_BIG} close frame followed by an {@code IOException} that
+   * {@link #onError} turns into a channel close - so the bound is on what is actually allocated, not on what is
+   * reported afterwards.
+   * <p>
+   * Two budgets rather than one: the control frames of {@code /ws} are a few hundred bytes and have no reason
+   * ever to be large, while a {@code chunk} frame carries a whole batch of records. A connection is charged the
+   * control budget until it dispatches a {@code start} frame, which is what makes the tight bound safe to keep
+   * tight. Re-read per frame, so an operator raising the setting on a running server does not have to reconnect
+   * its loaders.
+   */
+  @Override
+  protected long getMaxTextBufferSize() {
+    final GlobalConfiguration setting = insertFrameBudget ?
+        GlobalConfiguration.SERVER_WS_MAX_INSERT_FRAME_SIZE :
+        GlobalConfiguration.SERVER_WS_MAX_CONTROL_FRAME_SIZE;
+
+    final long max = httpServer.getServer().getConfiguration().getValueAsLong(setting);
+    // BufferedTextMessage treats anything <= 0 as unbounded, which is what the settings document 0 to mean.
+    return max > 0 ? max : -1;
   }
 
   @Override
@@ -61,7 +100,13 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
       // commit taken here would stall every other connection this thread serves.
       final var insertAction = rawAction.toLowerCase(Locale.ENGLISH);
       if (WebSocketInsertProtocol.handles(insertAction)) {
+        // The frame-size budget follows the session's lifetime on the wire rather than on the worker: see
+        // getMaxTextBufferSize(). Raised before dispatch and dropped after it, both on this I/O thread.
+        if ("start".equals(insertAction))
+          insertFrameBudget = true;
         insertProtocol.dispatch(channel, insertAction, message);
+        if ("commit".equals(insertAction) || "rollback".equals(insertAction))
+          insertFrameBudget = false;
         return;
       }
 
@@ -114,6 +159,13 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
     this.webSocketEventBus.unsubscribeAll(channelId);
     // An insert session the client walked away from without committing is rolled back, never left open.
     this.insertProtocol.onChannelClosed(channel, channelId);
+    // This override has never called super since the class was written, so the CLOSE frame was never read and
+    // the closing handshake never completed: the server simply stopped answering and left the peer to notice.
+    // Undertow's own onClose buffers the frame and replies with a close of its own, which is what a client
+    // waiting for the handshake needs - the JDK WebSocket client the new RemoteInsertSession is built on waits
+    // 30 seconds for it before giving up (issue #7403). The Undertow-based test client never noticed, because
+    // its close() follows sendCloseBlocking with a forced channel close.
+    super.onClose(channel, frameChannel);
   }
 
   private void sendAck(final WebSocketChannel channel, final ACTION action) {
