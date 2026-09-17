@@ -39,6 +39,12 @@ import java.util.Set;
  * @author Arcade Data Ltd
  */
 public class InsertSessionOptions {
+  /** Refusal shared by both halves of the contradiction, so a client reads the same sentence either way. */
+  private static final String TRANSACTION_ID_NEEDS_NONE =
+      "Property 'transactionId' goes with transactionMode 'none', the mode in which the CALLER owns the transaction."
+          + " Drop one or the other: a session cannot both join the transaction you named and open one of its own"
+          + " (issue #7403)";
+
   /**
    * When each transaction the session writes through is committed. Mirrors {@code InsertOptions.TransactionMode},
    * which is the part of the gRPC shape that most needs the control frames: over {@code POST /api/v1/batch} the
@@ -57,8 +63,15 @@ public class InsertSessionOptions {
     /** One transaction per row. */
     PER_ROW,
     /**
-     * The caller manages the transaction externally. Refused at {@code start}: a {@code /ws} session has no way to
-     * name an existing transaction yet, which is issue #7403.
+     * The caller manages the transaction externally: the rows join a transaction begun with
+     * {@code POST /api/v1/begin} and named by the {@code transactionId} field of the {@code start} frame, and
+     * the HTTP {@code /commit} or {@code /rollback} on that same id decides their fate (issue #7403). The
+     * session itself never begins, commits or rolls that transaction back - not on a {@code commit} frame, not
+     * when the connection drops, not when the idle sweep gives up on the session.
+     * <p>
+     * Refused when the {@code start} frame names no {@code transactionId}: there would be nothing to join, and
+     * quietly running such a session as a server-managed one is exactly the silent policy change this enum is
+     * parsed strictly to prevent.
      */
     NONE
   }
@@ -119,11 +132,30 @@ public class InsertSessionOptions {
    *                                  for is exactly the failure the control frames exist to prevent
    */
   public static InsertSessionOptions parse(final JSONObject options) {
-    if (options == null)
+    return parse(options, false);
+  }
+
+  /**
+   * @param externalTransactionNamed whether the {@code start} frame carried a {@code transactionId}, which is
+   *                                 what makes {@link TransactionMode#NONE} meaningful (issue #7403). The two
+   *                                 have to agree: {@code none} without an id has nothing to join, and an id
+   *                                 without {@code none} would have the session open a transaction of its own
+   *                                 and ignore the one the caller asked it to write into
+   *
+   * @throws IllegalArgumentException when a value is not one this server implements, or when the mode and the
+   *                                  presence of a {@code transactionId} contradict each other
+   */
+  public static InsertSessionOptions parse(final JSONObject options, final boolean externalTransactionNamed) {
+    if (options == null) {
+      if (externalTransactionNamed)
+        throw new IllegalArgumentException(TRANSACTION_ID_NEEDS_NONE);
       return new InsertSessionOptions(null, TransactionMode.PER_STREAM, ConflictMode.ERROR, List.of(), List.of(), false);
+    }
 
     final String targetType = options.getString("targetType", null);
-    final TransactionMode mode = parseTransactionMode(options.getString("transactionMode", null));
+    final TransactionMode mode = parseTransactionMode(options.getString("transactionMode", null), externalTransactionNamed);
+    if (externalTransactionNamed && mode != TransactionMode.NONE)
+      throw new IllegalArgumentException(TRANSACTION_ID_NEEDS_NONE);
     final ConflictMode conflictMode = parseConflictMode(options.getString("conflictMode", null));
     final List<String> keyColumns = parseColumns(options, "keyColumns");
     final List<String> updateColumns = parseColumns(options, "updateColumnsOnConflict");
@@ -139,7 +171,7 @@ public class InsertSessionOptions {
     return new InsertSessionOptions(targetType, mode, conflictMode, keyColumns, updateColumns, validateOnly);
   }
 
-  private static TransactionMode parseTransactionMode(final String rawMode) {
+  private static TransactionMode parseTransactionMode(final String rawMode, final boolean externalTransactionNamed) {
     if (rawMode == null || rawMode.isBlank())
       return TransactionMode.PER_STREAM;
 
@@ -155,9 +187,10 @@ public class InsertSessionOptions {
           + "'. Expected one of: per_stream, per_request, per_batch, per_row, none");
     }
 
-    if (mode == TransactionMode.NONE)
+    if (mode == TransactionMode.NONE && !externalTransactionNamed)
       throw new IllegalArgumentException(
-          "transactionMode 'none' needs an externally-managed transaction, which a /ws insert session cannot name yet (issue #7403)");
+          "transactionMode 'none' needs an externally-managed transaction: name it with the 'transactionId' field of the"
+              + " start frame, using the id 'POST /api/v1/begin' returned (issue #7403)");
 
     return mode;
   }
