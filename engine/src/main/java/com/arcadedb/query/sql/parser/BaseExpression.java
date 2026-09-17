@@ -139,10 +139,15 @@ public class BaseExpression extends MathExpression {
    * Parentheses around anything that already renders as one atom - an identifier, a literal, a function call, a map or
    * array literal, a CASE block - carry no meaning, and printing them would change the name every unaliased projection
    * written that way has always had ({@code SELECT (name) FROM V} is a column called {@code name}).
+   * <p>
+   * Also load-bearing when this expression itself carries a {@link #modifier} chain: most literal grammar
+   * alternatives have no bare {@code modifier*} form of their own (only {@code NULL modifier*} does), so
+   * {@code (42).asString()} needs the parentheses back or it re-renders as the unparseable {@code 42.asString()}
+   * (issue #7774).
    */
   private boolean rendersParentheses() {
-    return parenthesized && expression != null && expression.mathExpression != null
-        && !expression.mathExpression.operators.isEmpty();
+    return parenthesized && expression != null
+        && (modifier != null || expression.mathExpression != null && !expression.mathExpression.operators.isEmpty());
   }
 
   public Object execute(final Identifiable currentRecord, final CommandContext context) {

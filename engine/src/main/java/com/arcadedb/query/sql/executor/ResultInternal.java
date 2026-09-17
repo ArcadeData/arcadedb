@@ -23,6 +23,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -355,6 +356,30 @@ public class ResultInternal implements Result {
    */
   public boolean hasProjectedProperties() {
     return content != null && !content.isEmpty();
+  }
+
+  /**
+   * Overrides the {@link Result#toJSON()} default, which short-circuits to the backing element whenever the row
+   * {@link #isElement()}. That is wrong for a row a projection has reshaped in place, e.g. {@code SELECT *, n+1 AS
+   * z} - {@link com.arcadedb.query.sql.parser.Projection#calculateSingle} sets BOTH the element (for the {@code *})
+   * and explicit {@code content} entries on the same row, so the record and the row's own content disagree, and the
+   * element short-circuit answered the record: a computed alias was dropped, an alias colliding with a real column
+   * answered the stored value instead of the computed one, and an excluded column ({@code !col}) leaked back in
+   * (issue #7773). {@link #hasProjectedProperties()} is exactly the "has this projection reshaped the row?"
+   * question - it is what DISTINCT already asks to decide whether RID-based deduplication is still valid - so the
+   * short-circuit is skipped whenever it answers true, falling through to the {@link Result#toJSON()} property loop
+   * instead, which already agrees with {@link JsonSerializer#serializeResult}.
+   */
+  @Override
+  public JSONObject toJSON() {
+    if (isElement() && !hasProjectedProperties())
+      return getElement().get().toJSON();
+
+    final JSONObject result = new JSONObject();
+    for (final String prop : getPropertyNames())
+      result.put(prop, valueToJSON(getProperty(prop)));
+
+    return result;
   }
 
   public Optional<Document> getElement() {

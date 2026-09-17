@@ -3360,6 +3360,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   public BaseExpression visitNullBaseExpr(final SQLParser.NullBaseExprContext ctx) {
     final BaseExpression baseExpr = new BaseExpression();
     baseExpr.isNull = true;
+    // The grammar accepts `NULL modifier*` (`null.ifNull('default')`, `null.asString()`) and this visitor used to
+    // drop the modifiers on the floor, so the whole method/selector chain was silently discarded (issue #7774).
+    baseExpr.modifier = buildModifierChain(ctx.modifier());
     return baseExpr;
   }
 
