@@ -91,11 +91,14 @@ class TransactionControlNoRowDescriptionIT extends PostgresWireProtocolTestBase 
       assertTimeoutPreemptively(Duration.ofSeconds(10), () -> {
         sendSimpleQuery(out, "BEGIN");
         readUntilReadyForQuery(in);
-        for (final String statement : new String[] { "SAVEPOINT sp1", "ROLLBACK TO sp1", "RELEASE sp1" }) {
-          sendSimpleQuery(out, statement);
+        for (final String[] step : new String[][] { { "SAVEPOINT sp1", "SAVEPOINT" }, { "ROLLBACK TO sp1", "ROLLBACK" },
+            { "RELEASE sp1", "RELEASE" } }) {
+          sendSimpleQuery(out, step[0]);
           final List<WireMessage> response = readUntilReadyForQuery(in);
-          assertThat(messageTypesOf(response)).as(statement + " returns no rows, so no RowDescription").doesNotContain('T');
-          assertThat(messageTypesOf(response)).as(statement + " is acknowledged by its command tag").contains('C');
+          assertThat(messageTypesOf(response)).as(step[0] + " returns no rows, so no RowDescription").doesNotContain('T');
+          assertThat(messageTypesOf(response)).as(step[0] + " is acknowledged by its command tag").contains('C');
+          assertThat(commandTagOf(response)).isEqualTo(step[1]);
+          assertThat(readyForQueryStatusOf(response)).as(step[0] + " leaves the transaction open").isEqualTo('T');
         }
         sendSimpleQuery(out, "COMMIT");
         readUntilReadyForQuery(in);
