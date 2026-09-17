@@ -3080,7 +3080,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             final HAServerPlugin ha = ha();
             if (ha != null && !ha.isLeader()) {
               errorSent[0] = true;
-              out.onError(notTheLeader(ha, "graphBatchLoad", "a graph batch load must run on the leader", conceal));
+              out.onError(notTheLeader("graphBatchLoad", "a graph batch load must run on the leader"));
               return;
             }
 
@@ -3908,10 +3908,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    * replicated database rejects on a follower - indistinguishable to a caller (issue #6183): same status, same
    * trailers, same typed exception rebuilt on the client. All that is left to choose here is the wording.
    */
-  private static StatusRuntimeException notTheLeader(final HAServerPlugin ha, final String rpc, final String why,
-      final boolean conceal) {
-    return GrpcErrorMapper.toStatusRuntimeException(
-        new ServerIsNotTheLeaderException("this server is not the cluster leader and " + why, null), rpc, ha, conceal);
+  private StatusRuntimeException notTheLeader(final String rpc, final String why) {
+    return mapError(new ServerIsNotTheLeaderException("this server is not the cluster leader and " + why, null), rpc);
   }
 
   /** This server's HA plugin, or null when HA is inactive: the source of the leader address on a refusal. */
