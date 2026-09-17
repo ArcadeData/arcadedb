@@ -2038,8 +2038,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * {@link GlobalConfiguration#HA_SERVER_LIST} - keyed by peer id, and not a copy, exactly like
    * {@link #getHttpAddresses()}. Empty when no entry declared one, in which case
    * {@link #getPeerHttpsAddress} derives the endpoint instead.
+   * <p>
+   * Package-private, unlike its plain-HTTP twin: the only caller is the SSL cluster fixture patching in the
+   * ports each node actually bound, and nothing outside this package reads either map today
+   * ({@code grep -rn 'getHttpAddresses()'} finds no hit outside {@code com.arcadedb.server.ha.raft}), so there
+   * is no reason to widen the public surface for a second one (claude-review on PR #7838). Read an endpoint
+   * through {@link #getPeerHttpsAddress} or {@link PeerDialAddress} instead, which apply the guards this raw
+   * map has none of.
    */
-  public Map<RaftPeerId, String> getHttpsAddresses() {
+  Map<RaftPeerId, String> getHttpsAddresses() {
     return httpsAddresses;
   }
 
