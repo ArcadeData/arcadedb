@@ -29,9 +29,7 @@ import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
@@ -106,6 +104,27 @@ class TransactionControlNoRowDescriptionIT extends PostgresWireProtocolTestBase 
     }
   }
 
+  @Test
+  @DisplayName("A language-prefixed {sql}BEGIN still gets the bare BEGIN command tag")
+  void languagePrefixedTransactionControlGetsTheRightCommandTag() throws Exception {
+    try (final Socket socket = new Socket()) {
+      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+      authenticate(out, in);
+
+      assertTimeoutPreemptively(Duration.ofSeconds(10), () -> {
+        sendSimpleQuery(out, "{sql}BEGIN");
+        final List<WireMessage> begin = readUntilReadyForQuery(in);
+        assertThat(messageTypesOf(begin)).doesNotContain('T');
+        assertThat(commandTagOf(begin)).isEqualTo("BEGIN");
+        sendSimpleQuery(out, "{sql}COMMIT");
+        final List<WireMessage> commit = readUntilReadyForQuery(in);
+        assertThat(commandTagOf(commit)).isEqualTo("COMMIT");
+      });
+    }
+  }
+
   private static String commandTagOf(final List<WireMessage> messages) {
     final WireMessage complete = messages.stream().filter(m -> m.type() == 'C').findFirst()
         .orElseThrow(() -> new AssertionError("expected a CommandComplete"));
@@ -166,25 +185,5 @@ class TransactionControlNoRowDescriptionIT extends PostgresWireProtocolTestBase 
     for (final WireMessage message : messages)
       types.add(message.type());
     return types;
-  }
-
-  /**
-   * Parses an {@code ErrorResponse}'s {@code code letter -> null-terminated value} fields (e.g. {@code 'M'}
-   * for the message, {@code 'C'} for the SQLSTATE code) - the same format {@code writeError()} produces.
-   */
-  private static Map<Character, String> errorFields(final WireMessage message) {
-    assertThat(message.type()).isEqualTo('E');
-    final Map<Character, String> fields = new LinkedHashMap<>();
-    final byte[] body = message.body();
-    int i = 0;
-    while (i < body.length && body[i] != 0) {
-      final char code = (char) body[i++];
-      final int start = i;
-      while (body[i] != 0)
-        i++;
-      fields.put(code, new String(body, start, i - start, StandardCharsets.UTF_8));
-      i++; // skip this field's terminator
-    }
-    return fields;
   }
 }
