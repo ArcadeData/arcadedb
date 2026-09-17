@@ -1643,13 +1643,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * these must stay visible with default logging in production - demoting them to FINE is how a
    * BufferUnderflowException on a read-only command went undiagnosable (issue #5374).
    */
-  private Level getInternalErrorLogLevel() {
+  protected Level getInternalErrorLogLevel() {
     return "development".equals(httpServer.getServer().getConfiguration().getValueAsString(GlobalConfiguration.SERVER_MODE)) ?
             Level.SEVERE :
             Level.WARNING;
   }
 
-  private Level getUserSevereErrorLogLevel() {
+  protected Level getUserSevereErrorLogLevel() {
     return "development".equals(httpServer.getServer().getConfiguration().getValueAsString(GlobalConfiguration.SERVER_MODE)) ?
             Level.INFO :
             Level.FINE;

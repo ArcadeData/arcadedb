@@ -25,7 +25,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
@@ -232,25 +234,36 @@ class Issue7472EveryGrpcFailureIsConcealableTest {
   }
 
   /**
-   * Guards the guard: the scan has to actually find something, or a rename of the mapper - or a wrong source root -
-   * would turn this test green by finding nothing at all, which is the vacuous pass this class exists to avoid.
+   * Guards the guards: EVERY scan above has to actually find the constructs it judges, or a rename, a reformat or a
+   * wrong source root turns it green by finding nothing at all - which is the vacuous pass this class exists to
+   * avoid, and the specific fragility a source-level test carries (PR #7755 review).
+   * <p>
+   * One assertion per scan, each naming what it expects to exist, so the failure says which scan went blind rather
+   * than only that something did.
    */
   @Test
-  void theScanFindsTheCallSitesItIsMeantToCheck() throws IOException {
+  void everyScanFindsTheConstructsItJudges() throws IOException {
     assertThat(MAIN_SOURCES).as("the module's own sources, relative to the module directory Surefire runs in")
         .isDirectory();
 
-    int found = 0;
+    final Map<String, Integer> found = new LinkedHashMap<>();
     try (final Stream<Path> sources = Files.walk(MAIN_SOURCES)) {
       for (final Path source : sources.filter(p -> p.toString().endsWith(".java")).toList()) {
-        if (source.getFileName().toString().equals("GrpcErrorMapper.java"))
-          continue;
-        found += statementsCalling(Files.readString(source, StandardCharsets.UTF_8)).size();
+        final String text = Files.readString(source, StandardCharsets.UTF_8);
+        final boolean mapper = source.getFileName().toString().equals("GrpcErrorMapper.java");
+
+        if (!mapper)
+          found.merge("mapper calls", statementsCalling(text).size(), Integer::sum);
+        found.merge("directly-built statuses", statementsMatching(text, ".withDescription(").size(), Integer::sum);
+        found.merge("InsertError rows", statementsMatching(text, "InsertError.newBuilder(").size(), Integer::sum);
+        found.merge("concealed descriptions",
+            mapper ? 0 : text.split("CONCEALED_DESCRIPTION", -1).length - 1, Integer::sum);
       }
     }
 
-    assertThat(found).as("the two services each map through one helper, so there is at least one call to find")
-        .isGreaterThanOrEqualTo(2);
+    found.forEach((what, count) -> assertThat(count)
+        .as("the scan for %s found nothing, so it is asserting about nothing - has the construct been renamed?", what)
+        .isPositive());
   }
 
   /**
