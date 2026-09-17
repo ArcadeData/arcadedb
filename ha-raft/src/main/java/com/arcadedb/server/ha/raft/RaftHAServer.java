@@ -4208,7 +4208,13 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         // the durable side.
         final Object coerced = GlobalConfiguration.HA_RAFT_PERSIST_STORAGE.coerceFromConfigurationSource(sysProp,
             "system property '" + GlobalConfiguration.HA_RAFT_PERSIST_STORAGE.getKey() + "'");
-        return coerced instanceof Boolean b ? b : (Boolean) GlobalConfiguration.HA_RAFT_PERSIST_STORAGE.getDefValue();
+        if (coerced instanceof Boolean b)
+          return b;
+        // Refused: keep the compiled-in default. Read WITHOUT a cast, and biased to the durable side rather than
+        // to whatever a non-Boolean default would coerce to - a cast here would only turn a future change to this
+        // setting's declared default into a ClassCastException on a recovery path, and "not explicitly false" is
+        // the reading that cannot answer "wipe the Raft log" to a question nobody managed to ask.
+        return !Boolean.FALSE.equals(GlobalConfiguration.HA_RAFT_PERSIST_STORAGE.getDefValue());
       }
       return configuration.getValueAsBoolean(GlobalConfiguration.HA_RAFT_PERSIST_STORAGE);
     }
