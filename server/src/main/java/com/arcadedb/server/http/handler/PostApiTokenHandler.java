@@ -204,12 +204,18 @@ public class PostApiTokenHandler extends AbstractServerHttpHandler {
    * one entry per proxy, oldest (the client's own leg) first; one cleartext hop anywhere in the chain put the
    * response on a wire in the clear, and it does not matter which one. A blank or absent header reports nothing,
    * and nothing is not https.
+   * <p>
+   * The {@code -1} limit is load-bearing, not tidiness. {@code String.split} discards trailing empty strings by
+   * default, so {@code "https,"} would come back as a single {@code ["https"]} and read as one fully-encrypted
+   * hop - while the interior form {@code "https,,https"} was refused. A client can send that trailing comma and
+   * a pass-through proxy forwards it unchanged, so the default limit turned an empty hop into a way past the
+   * check depending only on where in the string it sat (found reviewing PR #7824).
    */
   static boolean forwardedProtoIsFullyEncrypted(final String forwardedProto) {
     if (forwardedProto == null || forwardedProto.isBlank())
       return false;
 
-    for (final String hop : forwardedProto.split(","))
+    for (final String hop : forwardedProto.split(",", -1))
       if (!"https".equalsIgnoreCase(hop.trim()))
         return false;
 

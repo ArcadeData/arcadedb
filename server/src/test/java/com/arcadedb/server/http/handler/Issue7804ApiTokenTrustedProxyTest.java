@@ -110,6 +110,32 @@ class Issue7804ApiTokenTrustedProxyTest {
   }
 
   /**
+   * A <em>trailing</em> empty hop has to be rejected for the same reason an interior one is, and it very nearly
+   * was not: {@code "https,".split(",")} yields just {@code ["https"]}, because String.split drops trailing
+   * empty strings unless it is given a negative limit. So {@code X-Forwarded-Proto: https,} - a value a client
+   * can send and a pass-through proxy will forward unchanged - read as a single fully-encrypted hop and let the
+   * mint through, while the interior form {@code "https,,https"} was correctly refused. Caught in review of
+   * PR #7824.
+   */
+  @Test
+  void aTrailingEmptyHopIsRejectedJustLikeAnInteriorOne() {
+    assertThat(PostApiTokenHandler.isTransportSafeForSecrets("http", proxy(), "https,", trusting(PROXY_IP)))
+        .as("'https,' is a hop that reported https and a hop that reported nothing").isFalse();
+    assertThat(PostApiTokenHandler.isTransportSafeForSecrets("http", proxy(), "https,,", trusting(PROXY_IP)))
+        .isFalse();
+    assertThat(PostApiTokenHandler.isTransportSafeForSecrets("http", proxy(), "https, ", trusting(PROXY_IP)))
+        .as("a blank trailing hop is no better than an empty one").isFalse();
+
+    // The leading form always failed, since split keeps leading empties; pinned so the fix cannot regress it.
+    assertThat(PostApiTokenHandler.isTransportSafeForSecrets("http", proxy(), ",https", trusting(PROXY_IP)))
+        .isFalse();
+
+    assertThat(PostApiTokenHandler.forwardedProtoIsFullyEncrypted("https,")).isFalse();
+    assertThat(PostApiTokenHandler.forwardedProtoIsFullyEncrypted("https"))
+        .as("the honest single-hop case must still pass").isTrue();
+  }
+
+  /**
    * A proxy configured to append rather than overwrite leaves a client-supplied {@code X-Forwarded-Proto} in
    * place and adds its own after it, so the request arrives carrying two separate headers with the client's
    * first. Reading only the first would hand the forgery straight back the win the trusted-proxy list is
