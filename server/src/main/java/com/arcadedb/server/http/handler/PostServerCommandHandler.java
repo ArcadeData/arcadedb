@@ -557,7 +557,8 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     final JSONObject event = new JSONObject().put("status", "error");
     final Throwable reported = e.getCause() != null ? e.getCause() : e;
     event.put("exception", reported.getClass().getName());
-    if (isProductionMode())
+    final boolean conceal = isProductionMode();
+    if (conceal)
       // THE CONCEALED TEXT PROMISES A LOG ENTRY, AND THIS BRANCH IS THE ONE PLACE THAT CAN WRITE IT: streamOrRun
       // HAS ALREADY SENT THE RESPONSE, SO THE FAILURE NEVER REACHES AbstractServerHttpHandler'S MAPPING, WHICH IS
       // WHERE EVERY OTHER CONCEALED HTTP FAILURE IS LOGGED (PR #7755 REVIEW).
@@ -568,7 +569,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       LogManager.instance().log(this, getInternalErrorLogLevel(),
           "Error on a control-plane operation, concealed from the client in production mode", e);
 
-    event.put("message", isProductionMode() ? ArcadeDBServer.CONCEALED_ERROR_MESSAGE : failureMessage(e));
+    event.put("message", conceal ? ArcadeDBServer.CONCEALED_ERROR_MESSAGE : failureMessage(e));
     return event;
   }
 

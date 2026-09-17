@@ -222,6 +222,12 @@ public class FileUtils {
    * {@code path} guaranteed to end with a separator, appending this JVM's {@link File#separator} only when it does
    * not already end with one of EITHER convention - so {@code "C:/data/"} on Windows stays as it is rather than
    * becoming {@code "C:/data/\"}.
+   * <p>
+   * Carries the same trade-off {@link #isSeparator(char)} does, in the other direction: a POSIX directory whose
+   * name genuinely ENDS in a backslash is read as already separated and gets nothing appended, so a later
+   * {@code directory + name} glues the two into one path segment instead of nesting them. Accepted for the same
+   * reason - a backslash in a POSIX directory name is pathological, a '/'-written Windows path is everyday - and
+   * noted here because the trade-off is not confined to the name-parsing side of it (PR #7755 review).
    */
   public static String appendSeparatorIfMissing(final String path) {
     return endsWithSeparator(path) ? path : path + File.separator;
