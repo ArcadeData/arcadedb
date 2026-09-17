@@ -151,6 +151,28 @@ final class RaftTestPki {
   }
 
   /**
+   * The PKCS#12 store holding this authority's node key entry with its full chain - the identity an ArcadeDB
+   * HTTPS listener presents when configured with {@code arcadedb.ssl.keyStore} (issue #7563).
+   */
+  Path nodeKeyStore() {
+    return nodeKeyStore;
+  }
+
+  /**
+   * The PKCS#12 store holding only this authority's CA certificate - the trust anchors a peer validates the
+   * listener above against, as {@code arcadedb.ssl.trustStore} and as the truststore
+   * {@code SnapshotInstaller.buildSSLContext} reads for every peer-to-peer dial (issue #7563).
+   */
+  Path trustStore() {
+    return trustStore;
+  }
+
+  /** The one password every store this class writes is protected with. */
+  static String password() {
+    return PASSWORD;
+  }
+
+  /**
    * Builds a JSSE context that presents this authority's node certificate as the client certificate while
    * trusting {@code trustedBy}'s CA. Passing a different instance as {@code trustedBy} is how the tests
    * dial a cluster whose server certificate is acceptable with a client identity that is not.
