@@ -809,11 +809,25 @@ public class PostgresNetworkExecutor extends Thread {
         return;
       }
 
+      // ROLLBACK TO <savepoint> promises to discard every write made since that savepoint, but this server has
+      // no savepoint checkpoint to roll back to (issue #7846): SAVEPOINT and RELEASE below are harmless no-ops
+      // (nothing is lost by accepting or discarding a marker nothing else reads), but a CommandComplete here
+      // would tell the client its rollback succeeded while every write since the savepoint is still pending and
+      // will be persisted by the next COMMIT. Refusing it - and aborting the transaction the same way any other
+      // statement is refused once the session is aborted - is the only reply that cannot silently lose data.
+      if (query.query.toUpperCase(Locale.ENGLISH).startsWith("ROLLBACK TO ")) {
+        setErrorInTx();
+        writeError(ERROR_SEVERITY.ERROR,
+            "ROLLBACK TO SAVEPOINT is not supported by this server: it cannot discard the writes made since the savepoint",
+            PostgresCopyStatement.SQLSTATE_FEATURE_NOT_SUPPORTED);
+        return;
+      }
+
       // Reused below for both the schema-fallback and the target-type resolution, but only set in the one
-      // branch that reaches database.command(...) below: none of SET/SAVEPOINT/RELEASE/ROLLBACK TO/SHOW/a
-      // system query/BEGIN are valid SQL productions (no bare "SET"/"SHOW" statement exists in SQLParser.g4),
-      // so parsing any of them here would be a guaranteed parse-and-fail on every one of those statements -
-      // exactly the ones connection setup (JDBC drivers, psql, poolers) sends most.
+      // branch that reaches database.command(...) below: none of SET/SAVEPOINT/RELEASE/SHOW/a system query/
+      // BEGIN are valid SQL productions (no bare "SET"/"SHOW" statement exists in SQLParser.g4), so parsing
+      // any of them here would be a guaranteed parse-and-fail on every one of those statements - exactly the
+      // ones connection setup (JDBC drivers, psql, poolers) sends most.
       Statement parsedStatement = null;
 
       final long engineStart = System.nanoTime();
@@ -828,8 +842,7 @@ public class PostgresNetworkExecutor extends Thread {
         setConfiguration(query.query);
         resultSet = new IteratorResultSet(createResultSet("STATUS", "Setting ignored").iterator());
       } else if (upperCaseText.startsWith("SAVEPOINT ") ||
-          upperCaseText.startsWith("RELEASE ") ||
-          upperCaseText.startsWith("ROLLBACK TO ")) {
+          upperCaseText.startsWith("RELEASE ")) {
         transactionControl = true;
         resultSet = new IteratorResultSet(Collections.emptyIterator());
       } else if (systemQuery != null)
@@ -2427,9 +2440,19 @@ public class PostgresNetworkExecutor extends Thread {
       final PostgresSystemQuery systemQuery = PostgresSystemQuery.parse(portal.query);
 
       if (upperCaseText.startsWith("SAVEPOINT ") ||
-          upperCaseText.startsWith("RELEASE ") ||
-          upperCaseText.startsWith("ROLLBACK TO ")) {
+          upperCaseText.startsWith("RELEASE ")) {
         portal.ignoreExecution = true;
+      } else if (upperCaseText.startsWith("ROLLBACK TO ")) {
+        // Mirror queryCommand()'s ROLLBACK TO refusal (issue #7846): failed here, at Parse, the same way a
+        // statement this server can't parse is - no portal is registered and no ParseComplete is sent, only
+        // the ErrorResponse. bindCommand() already drains a Bind that names a missing prepared statement
+        // without resurrecting it (issue #6660), so the rest of this pipelined request is handled the same
+        // way it is for any other rejected Parse.
+        setErrorInTx();
+        writeError(ERROR_SEVERITY.ERROR,
+            "ROLLBACK TO SAVEPOINT is not supported by this server: it cannot discard the writes made since the savepoint",
+            PostgresCopyStatement.SQLSTATE_FEATURE_NOT_SUPPORTED);
+        return;
       } else if (upperCaseText.startsWith("SET ")) {
         // Strip a trailing ';' before dispatch, mirroring what queryCommand() already does for its own
         // queryText on the simple-query protocol - a Parse message keeps the terminator glued onto the
@@ -3014,8 +3037,6 @@ public class PostgresNetworkExecutor extends Thread {
     } else if (isCommitStatement(upperCaseText)) {
       return "COMMIT";
     } else if (isRollbackStatement(upperCaseText)) {
-      return "ROLLBACK";
-    } else if (upperCaseText.startsWith("ROLLBACK TO ")) {
       return "ROLLBACK";
     } else if (upperCaseText.startsWith("SAVEPOINT ")) {
       return "SAVEPOINT";

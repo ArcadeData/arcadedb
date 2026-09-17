@@ -41,6 +41,11 @@ import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
  * table after {@code BEGIN}, and a client that checks the status when it opens a transaction (the Arrow PostgreSQL
  * ADBC driver, whose DB-API connections start with autocommit off) fails with
  * {@code [libpq] Failed to begin transaction}.
+ * <p>
+ * {@code ROLLBACK TO <savepoint>} is the one exception (issue #7846): unlike {@code BEGIN}/{@code COMMIT}/
+ * {@code ROLLBACK}/{@code SAVEPOINT}/{@code RELEASE}, which this server can honor and so may answer with a
+ * bare {@code CommandComplete}, it has no savepoint checkpoint to roll back to - answering success there
+ * would silently keep writes the client asked to discard, so it is refused instead.
  */
 class TransactionControlNoRowDescriptionIT extends PostgresWireProtocolTestBase {
 
@@ -78,7 +83,7 @@ class TransactionControlNoRowDescriptionIT extends PostgresWireProtocolTestBase 
   }
 
   @Test
-  @DisplayName("SAVEPOINT, RELEASE and ROLLBACK TO are answered with CommandComplete only")
+  @DisplayName("SAVEPOINT and RELEASE are answered with CommandComplete only")
   void savepointStatementsAreAnsweredWithTheBareCommandTag() throws Exception {
     try (final Socket socket = new Socket()) {
       socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
@@ -89,8 +94,7 @@ class TransactionControlNoRowDescriptionIT extends PostgresWireProtocolTestBase 
       assertTimeoutPreemptively(Duration.ofSeconds(10), () -> {
         sendSimpleQuery(out, "BEGIN");
         readUntilReadyForQuery(in);
-        for (final String[] step : new String[][] { { "SAVEPOINT sp1", "SAVEPOINT" }, { "ROLLBACK TO sp1", "ROLLBACK" },
-            { "RELEASE sp1", "RELEASE" } }) {
+        for (final String[] step : new String[][] { { "SAVEPOINT sp1", "SAVEPOINT" }, { "RELEASE sp1", "RELEASE" } }) {
           sendSimpleQuery(out, step[0]);
           final List<WireMessage> response = readUntilReadyForQuery(in);
           assertThat(messageTypesOf(response)).as(step[0] + " returns no rows, so no RowDescription").doesNotContain('T');
@@ -99,6 +103,40 @@ class TransactionControlNoRowDescriptionIT extends PostgresWireProtocolTestBase 
           assertThat(readyForQueryStatusOf(response)).as(step[0] + " leaves the transaction open").isEqualTo('T');
         }
         sendSimpleQuery(out, "COMMIT");
+        readUntilReadyForQuery(in);
+      });
+    }
+  }
+
+  @Test
+  @DisplayName("[#7846] ROLLBACK TO is refused, not answered with CommandComplete, and aborts the transaction")
+  void rollbackToIsRefusedRatherThanAcceptedAsANoOp() throws Exception {
+    try (final Socket socket = new Socket()) {
+      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+      authenticate(out, in);
+
+      assertTimeoutPreemptively(Duration.ofSeconds(10), () -> {
+        sendSimpleQuery(out, "BEGIN");
+        readUntilReadyForQuery(in);
+        sendSimpleQuery(out, "SAVEPOINT sp1");
+        readUntilReadyForQuery(in);
+
+        // This server has no savepoint checkpoint to roll back to: a CommandComplete here would tell the
+        // client its rollback succeeded while every write made since the savepoint is still pending.
+        sendSimpleQuery(out, "ROLLBACK TO sp1");
+        final List<WireMessage> response = readUntilReadyForQuery(in);
+        assertThat(messageTypesOf(response)).as("ROLLBACK TO is refused, not silently accepted").contains('E');
+        assertThat(messageTypesOf(response)).as("a refused statement is not acknowledged by a command tag").doesNotContain('C');
+        assertThat(readyForQueryStatusOf(response)).as("the transaction is left aborted").isEqualTo('E');
+
+        // Once aborted, every statement but COMMIT/ROLLBACK/END is refused (issue #6457) - including a
+        // client that ignores the ErrorResponse and tries to keep using the transaction.
+        sendSimpleQuery(out, "SELECT 1");
+        assertThat(readyForQueryStatusOf(readUntilReadyForQuery(in))).isEqualTo('E');
+
+        sendSimpleQuery(out, "ROLLBACK");
         readUntilReadyForQuery(in);
       });
     }
