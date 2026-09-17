@@ -65,6 +65,9 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   // database per plugin lifetime instead of on every (re)wrap.
   private final Set<String> warnedSingleBucketDatabases = ConcurrentHashMap.newKeySet();
 
+  /** The route {@link #shutdownRemoteServer} posts its {@code shutdown} command to. */
+  static final String SERVER_COMMAND_ROUTE = "/api/v1/server";
+
   /** The one command {@link #shutdownRemoteServer} sends. */
   private static final String SHUTDOWN_COMMAND_BODY = "{\"command\":\"shutdown\"}";
 
@@ -605,9 +608,6 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   public RoutingTable getRoutingTable(final ROUTING_PROTOCOL protocol) {
     return raftHAServer != null ? raftHAServer.getRoutingTable(protocol) : null;
   }
-
-  /** The route {@link #shutdownRemoteServer} posts its {@code shutdown} command to. */
-  static final String SERVER_COMMAND_ROUTE = "/api/v1/server";
 
   /**
    * Where a remote shutdown is dialled: the peer's HTTPS endpoint when SSL is enabled and
