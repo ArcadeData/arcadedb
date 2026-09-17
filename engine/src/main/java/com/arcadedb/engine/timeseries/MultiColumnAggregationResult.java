@@ -335,6 +335,16 @@ public final class MultiColumnAggregationResult {
    * <p>
    * SUM and AVG answer the same way (issue #7089), and answer it whether the request was offered only absent
    * samples or offered none at all: the two are one question here, decided in issue #7694.
+   * <p>
+   * A bucket that does not EXIST answers the same way too (issue #7698), rather than the {@code 0.0} this used to
+   * hand back from both modes. "There is no measurement here" is one question, and it had two answers: a bucket
+   * that exists with nothing real in it said absent, a bucket nothing ever landed in said zero - for SUM and MIN
+   * alike, the arm predating the NaN-as-absent policy of #4596/#7043/#7089 entirely. No reader in {@code src/main}
+   * could reach it, because all four iterate {@link #getBucketTimestamps()} and ask only for what it returned; the
+   * fifth reader is the one this is for - a caller that computes bucket timestamps from the REQUEST range instead,
+   * which is the natural way to fill the gaps of a fixed-step series, and which could not tell a missing bucket
+   * from a real total of zero. COUNT keeps answering {@code 0}, the way {@code COUNT(*)} does over no rows, and
+   * for the same reason {@link #newInitializedValues()} seeds it with a number.
    */
   public double getValue(final long bucketTs, final int requestIndex) {
     if (flatMode) {
@@ -344,12 +354,22 @@ public final class MultiColumnAggregationResult {
       final double[] overflow = overflowValues != null ? overflowValues.get(bucketTs) : null;
       if (overflow != null)
         return overflow[requestIndex];
-      return 0.0;
+      return noBucketValue(requestIndex);
     }
     final double[] vals = valuesByBucket.get(bucketTs);
     if (vals == null)
-      return 0.0;
+      return noBucketValue(requestIndex);
     return vals[requestIndex];
+  }
+
+  /**
+   * What a request answers for a bucket that does not exist: the same thing an untouched accumulator in a bucket
+   * that DOES exist answers, so the two cannot be told apart by a reader that has no business telling them apart
+   * (issue #7698). One expression of the rule, read by both modes, so the map arm and the two flat arms cannot
+   * drift.
+   */
+  private double noBucketValue(final int requestIndex) {
+    return types[requestIndex] == AggregationType.COUNT ? 0.0 : TimeSeriesNaN.ABSENT;
   }
 
   /**

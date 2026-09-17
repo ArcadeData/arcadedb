@@ -40,8 +40,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * gives the backslash its escaping meaning, so {@code a\b} rendered as a name the server stored as {@code ab} -
  * and {@code create()} then failed with "Type with name 'a\b' was not found" over a fully built type under a name
  * nobody asked for. A trailing backslash was a parse error instead. The embedded path accepted both names.</li>
- * <li>The column ORDER: the SQL rendering has one slot for the timestamp, one for TAGS and one for FIELDS, so the
- * remote path regroups; the embedded one replayed insertion order. One builder body, two types.</li>
+ * <li>The column ORDER: the SQL rendering had one slot for the timestamp, one for TAGS and one for FIELDS, so the
+ * remote path regrouped; the embedded one replayed insertion order. One builder body, two types. Closed on the
+ * grammar side by issue #7702, which made the column members repeatable and orderable, so both paths now keep the
+ * declaration.</li>
  * <li>The single-TIMESTAMP rule was enforced only when rendering SQL, so a two-TIMESTAMP builder - which
  * {@code JsonlImporterFormat} can produce by looping {@code withColumn} over an export - built an embedded type
  * whose {@code getTimestampColumn()} and {@code findTimestampColumnIndex()} named different columns.</li>
@@ -140,26 +142,33 @@ class Issue7740TimeSeriesBuilderParityTest extends TestHelper {
   }
 
   /**
-   * And a recipe it cannot spell is NOT silently turned into a different type on the embedded side to match.
+   * And a recipe the grammar could not spell is NOT silently turned into a different type on either side.
    * <p>
    * Regrouping the embedded declaration was the first answer to #7740 and it was wrong in a way the engine can
    * feel: the stored order is the type's identity - column indices are positions in it, and a sample is a
    * positional array - so a logical restore, which maps an export's sample arrays onto the type it has just
    * rebuilt, would have put every value in the wrong column ({@code Issue7371PromQLDiscoveryProjectionIT} builds
-   * exactly that layout on purpose, and caught it). What the rendering cannot carry is documented on
-   * {@link TimeSeriesTypeBuilder#toSQL()}, and the one path where the difference would corrupt rather than
-   * surprise refuses it: see {@code JsonlImporterFormat}.
+   * exactly that layout on purpose, and caught it). The second answer was to leave the rendering regrouping and
+   * document the difference; issue #7702 removed it instead, by making the grammar's column members repeatable
+   * and orderable. This is that same recipe - a FIELD declared before the TIMESTAMP - rendered in full.
+   *
+   * @see Issue7702InterleavedTagAndFieldOrderTest
    */
   @Test
-  void theRenderedPathRegroupsWhatTheGrammarCannotSpell() {
+  void theRenderedPathSpellsTheDeclarationItWasGiven() {
     final String sql = database.getSchema().buildTimeSeriesType().withName("FieldFirst")
         .withField("cpu", Type.DOUBLE)
         .withTimestamp("ts")
         .withTag("host", Type.STRING)
         .toSQL().getFirst();
 
-    assertThat(sql).isEqualTo("CREATE TIMESERIES TYPE `FieldFirst` TIMESTAMP `ts` TAGS (`host` STRING) "
-        + "FIELDS (`cpu` DOUBLE)");
+    assertThat(sql).isEqualTo("CREATE TIMESERIES TYPE `FieldFirst` FIELDS (`cpu` DOUBLE) TIMESTAMP `ts` "
+        + "TAGS (`host` STRING)");
+
+    database.command("sql", sql);
+    assertThat(columnNames((TimeSeriesType) database.getSchema().getType("FieldFirst")))
+        .as("one builder body, one column order")
+        .containsExactly("cpu", "ts", "host");
   }
 
   /** The embedded path still accepts it, and stores it as given: the engine supports the layout. */

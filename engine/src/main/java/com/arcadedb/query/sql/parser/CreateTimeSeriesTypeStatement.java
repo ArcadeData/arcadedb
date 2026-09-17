@@ -53,8 +53,27 @@ public class CreateTimeSeriesTypeStatement extends DDLStatement {
   public long       retentionMs;
   public long       compactionIntervalMs;
 
-  public List<ColumnDef> tags   = new ArrayList<>();
-  public List<ColumnDef> fields = new ArrayList<>();
+  /**
+   * The TAG and FIELD columns in DECLARATION order, roles interleaved as the statement spelled them (issue #7702).
+   * <p>
+   * Two role-keyed lists used to stand here, which is the shape the grammar had: one TAGS slot, one FIELDS slot.
+   * A TIMESERIES type stores its columns in the order they were declared and that order is the type's identity - a
+   * column index is a position in it and a sample is a positional array - so two lists could not carry what the
+   * builder could declare, and {@code TimeSeriesTypeBuilder.toSQL()} regrouped rather than rendered. One ordered
+   * list is the whole of the fix: the grammar repeats {@code tsColumnGroup}, this carries the result, and
+   * {@link #toString} renders consecutive same-role runs back into groups.
+   */
+  public List<ColumnDef> columns = new ArrayList<>();
+
+  /**
+   * How many of {@link #columns} were declared BEFORE the {@code TIMESTAMP} clause, i.e. the timestamp column's
+   * own position in the type's column list (issue #7702). 0 - the timestamp first - for every statement anyone has
+   * written, because the grammar had no other way to spell one until the clause became a repeatable member.
+   * <p>
+   * Carried as a position rather than by putting the timestamp into {@link #columns}: it has no data-type token of
+   * its own (it is always LONG) and it carries the PRECISION clause, so it is not a {@link ColumnDef}.
+   */
+  public int timestampPosition;
 
   /**
    * Tiers declared by the statement's own {@code DOWNSAMPLING POLICY} clause (issue #7689). Empty when the
@@ -89,19 +108,20 @@ public class CreateTimeSeriesTypeStatement extends DDLStatement {
 
     TimeSeriesTypeBuilder builder = schema.buildTimeSeriesType().withName(name.getStringValue());
 
-    if (timestampColumn != null)
-      builder = addColumn(builder, timestampColumn, Type.LONG, ColumnDefinition.ColumnRole.TIMESTAMP, timestampCodec);
-
     if (precision != null)
       builder = builder.withPrecision(precision);
 
-    for (final ColumnDef tag : tags)
-      builder = addColumn(builder, tag.name, Type.getTypeByName(tag.type.getStringValue()),
-          ColumnDefinition.ColumnRole.TAG, tag.codec);
-
-    for (final ColumnDef field : fields)
-      builder = addColumn(builder, field.name, Type.getTypeByName(field.type.getStringValue()),
-          ColumnDefinition.ColumnRole.FIELD, field.codec);
+    // ONE loop over the declaration order, not one per role and not the timestamp first: the builder stores the
+    // columns as it is given them, so feeding it timestamp-then-tags-then-fields would re-impose the very grouping
+    // issue #7702 removed. timestampPosition is where the TIMESTAMP clause stood among them.
+    for (int i = 0; i <= columns.size(); i++) {
+      if (i == timestampPosition && timestampColumn != null)
+        builder = addColumn(builder, timestampColumn, Type.LONG, ColumnDefinition.ColumnRole.TIMESTAMP,
+            timestampCodec);
+      if (i < columns.size())
+        builder = addColumn(builder, columns.get(i).name, Type.getTypeByName(columns.get(i).type.getStringValue()),
+            columns.get(i).role, columns.get(i).codec);
+    }
 
     if (shards != null)
       builder = builder.withShards(shards.getValue().intValue());
@@ -173,17 +193,7 @@ public class CreateTimeSeriesTypeStatement extends DDLStatement {
     if (ifNotExists)
       builder.append(" IF NOT EXISTS");
 
-    if (timestampColumn != null) {
-      builder.append(" TIMESTAMP ");
-      timestampColumn.toString(params, builder);
-      if (precision != null)
-        builder.append(" PRECISION ").append(precision);
-      if (timestampCodec != null)
-        builder.append(" CODEC ").append(timestampCodec);
-    }
-
-    appendColumnList(params, builder, " TAGS (", tags);
-    appendColumnList(params, builder, " FIELDS (", fields);
+    appendColumnMembers(params, builder);
 
     if (shards != null) {
       builder.append(" SHARDS ");
@@ -206,22 +216,48 @@ public class CreateTimeSeriesTypeStatement extends DDLStatement {
     }
   }
 
-  private static void appendColumnList(final Map<String, Object> params, final StringBuilder builder,
-      final String header, final List<ColumnDef> columns) {
-    if (columns.isEmpty())
-      return;
-    builder.append(header);
-    for (int i = 0; i < columns.size(); i++) {
-      if (i > 0)
-        builder.append(", ");
+  /**
+   * Renders the TIMESTAMP clause at its declared position and the remaining columns as one parenthesised group per
+   * RUN of consecutive columns sharing a role (issue #7702), so that printing and re-parsing a statement gives back
+   * the same column order - which is the order the type stores, and therefore the order its positional samples are
+   * read in. A declaration that puts the timestamp first and never interleaves the roles produces exactly the
+   * {@code TIMESTAMP ... TAGS (...) FIELDS (...)} it always did.
+   */
+  private void appendColumnMembers(final Map<String, Object> params, final StringBuilder builder) {
+    ColumnDefinition.ColumnRole openRole = null;
+    for (int i = 0; i <= columns.size(); i++) {
+      if (i == timestampPosition && timestampColumn != null) {
+        if (openRole != null) {
+          builder.append(")");
+          openRole = null;
+        }
+        builder.append(" TIMESTAMP ");
+        timestampColumn.toString(params, builder);
+        if (precision != null)
+          builder.append(" PRECISION ").append(precision);
+        if (timestampCodec != null)
+          builder.append(" CODEC ").append(timestampCodec);
+      }
+      if (i == columns.size())
+        break;
+
       final ColumnDef column = columns.get(i);
+      if (column.role != openRole) {
+        if (openRole != null)
+          builder.append(")");
+        builder.append(column.role == ColumnDefinition.ColumnRole.TAG ? " TAGS (" : " FIELDS (");
+        openRole = column.role;
+      } else
+        builder.append(", ");
+
       column.name.toString(params, builder);
       builder.append(" ");
       column.type.toString(params, builder);
       if (column.codec != null)
         builder.append(" CODEC ").append(column.codec);
     }
-    builder.append(")");
+    if (openRole != null)
+      builder.append(")");
   }
 
   /**
@@ -251,8 +287,8 @@ public class CreateTimeSeriesTypeStatement extends DDLStatement {
     result.shards = shards == null ? null : shards.copy();
     result.retentionMs = retentionMs;
     result.compactionIntervalMs = compactionIntervalMs;
-    result.tags = copyColumns(tags);
-    result.fields = copyColumns(fields);
+    result.columns = copyColumns(columns);
+    result.timestampPosition = timestampPosition;
     // DownsamplingTier is a record of two longs, so the list is the only mutable part to copy.
     result.tiers = new ArrayList<>(tiers);
     return result;
@@ -261,7 +297,8 @@ public class CreateTimeSeriesTypeStatement extends DDLStatement {
   private static List<ColumnDef> copyColumns(final List<ColumnDef> columns) {
     final List<ColumnDef> copy = new ArrayList<>(columns.size());
     for (final ColumnDef cd : columns)
-      copy.add(new ColumnDef(cd.name == null ? null : cd.name.copy(), cd.type == null ? null : cd.type.copy(), cd.codec));
+      copy.add(new ColumnDef(cd.name == null ? null : cd.name.copy(), cd.type == null ? null : cd.type.copy(), cd.role,
+          cd.codec));
     return copy;
   }
 
@@ -276,28 +313,33 @@ public class CreateTimeSeriesTypeStatement extends DDLStatement {
         && compactionIntervalMs == that.compactionIntervalMs && Objects.equals(name, that.name)
         && Objects.equals(timestampColumn, that.timestampColumn) && Objects.equals(precision, that.precision)
         && Objects.equals(timestampCodec, that.timestampCodec) && Objects.equals(shards, that.shards)
-        && Objects.equals(tags, that.tags) && Objects.equals(fields, that.fields) && Objects.equals(tiers, that.tiers);
+        && timestampPosition == that.timestampPosition && Objects.equals(columns, that.columns)
+        && Objects.equals(tiers, that.tiers);
   }
 
   @Override
   public int hashCode() {
     return Objects.hash(name, ifNotExists, timestampColumn, precision, timestampCodec, shards, retentionMs,
-        compactionIntervalMs, tags, fields, tiers);
+        compactionIntervalMs, columns, timestampPosition, tiers);
   }
 
   public static class ColumnDef {
-    public Identifier name;
-    public Identifier type;
+    public Identifier                       name;
+    public Identifier                       type;
+    /** TAG or FIELD. Carried per column since issue #7702, because the roles may interleave. */
+    public ColumnDefinition.ColumnRole      role;
     /** Codec named by {@code CODEC ...} on this column, or {@code null} for the role/type default (issue #7689). */
-    public String     codec;
+    public String                           codec;
 
-    public ColumnDef(final Identifier name, final Identifier type) {
-      this(name, type, null);
+    public ColumnDef(final Identifier name, final Identifier type, final ColumnDefinition.ColumnRole role) {
+      this(name, type, role, null);
     }
 
-    public ColumnDef(final Identifier name, final Identifier type, final String codec) {
+    public ColumnDef(final Identifier name, final Identifier type, final ColumnDefinition.ColumnRole role,
+        final String codec) {
       this.name = name;
       this.type = type;
+      this.role = role;
       this.codec = codec;
     }
 
@@ -308,12 +350,13 @@ public class CreateTimeSeriesTypeStatement extends DDLStatement {
       if (o == null || getClass() != o.getClass())
         return false;
       final ColumnDef that = (ColumnDef) o;
-      return Objects.equals(name, that.name) && Objects.equals(type, that.type) && Objects.equals(codec, that.codec);
+      return Objects.equals(name, that.name) && Objects.equals(type, that.type) && role == that.role
+          && Objects.equals(codec, that.codec);
     }
 
     @Override
     public int hashCode() {
-      return Objects.hash(name, type, codec);
+      return Objects.hash(name, type, role, codec);
     }
   }
 }
