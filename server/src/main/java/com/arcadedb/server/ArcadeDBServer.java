@@ -122,6 +122,18 @@ public class ArcadeDBServer {
   public static final String                                SNAPSHOT_PENDING_FILE                = ".snapshot-pending";
 
   /**
+   * What a client is told instead of an internal message when {@link #isProductionMode()} holds and the surface has
+   * nowhere to omit the detail from - the gRPC status description, the SSE {@code error} frame - as opposed to the
+   * HTTP JSON body, which simply leaves its {@code detail} field out.
+   * <p>
+   * ONE string for every such surface, and deliberately the same for every failure: a message that varied would put
+   * back precisely the signal the concealment removes, and a message that varied BY SURFACE would make the setting
+   * mean one thing here and another thing there, which is what issue #7472 is about.
+   */
+  public static final String                                CONCEALED_ERROR_MESSAGE              =
+      "The request failed. Check the server log for the details";
+
+  /**
    * The two steps the startup {@code restore:} command publishes - {@link RestoreProgress#STEP_EXTRACT} then
    * {@link RestoreProgress#STEP_ACTIVATE}. One fewer than {@code ServerControlPlane.performRestore}'s three:
    * this command restores straight into the final directory, so there is no temporary directory to swap in, and
@@ -302,16 +314,6 @@ public class ArcadeDBServer {
     return isProductionMode(configuration);
   }
 
-  /**
-   * What a client is told instead of an internal message when {@link #isProductionMode()} holds and the surface has
-   * nowhere to omit the detail from - the gRPC status description, the SSE {@code error} frame - as opposed to the
-   * HTTP JSON body, which simply leaves its {@code detail} field out.
-   * <p>
-   * ONE string for every such surface, and deliberately the same for every failure: a message that varied would put
-   * back precisely the signal the concealment removes, and a message that varied BY SURFACE would make the setting
-   * mean one thing here and another thing there, which is what issue #7472 is about.
-   */
-  public static final String CONCEALED_ERROR_MESSAGE = "The request failed. Check the server log for the details";
 
   /**
    * {@link #isProductionMode()} for a caller that holds the configuration rather than the server - the HTTP handler
