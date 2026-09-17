@@ -1634,7 +1634,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * {@code RaftServerImpl.applyLogToStateMachine}, i.e. the state-machine apply loop, and
    * {@code SnapshotInstallationHandler.installSnapshotImpl}, i.e. the thread serving a leader-initiated
    * snapshot install - and neither is a thread that may carry a Raft round trip or an exception from
-   * housekeeping. The seeder is {@code synchronized} for the same reason: the two can arrive concurrently.
+   * housekeeping. The seeder does its membership update under its own monitor for the same reason: the two
+   * can arrive concurrently.
    */
   @Override
   public void notifyConfigurationChanged(final long term, final long index,
