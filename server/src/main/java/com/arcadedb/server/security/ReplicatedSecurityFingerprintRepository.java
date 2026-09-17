@@ -221,7 +221,13 @@ public class ReplicatedSecurityFingerprintRepository {
     final Path tmp = Files.createTempFile(target.getParent(), FILE_NAME, ".tmp");
     try {
       try (final FileChannel channel = FileChannel.open(tmp, StandardOpenOption.WRITE)) {
-        channel.write(ByteBuffer.wrap(bytes));
+        // Looped, because FileChannel.write is only obliged to consume SOME of what remains (CodeRabbit on PR
+        // #7817). A short write here would fsync and publish a truncated JSON object, which load() cannot parse
+        // and therefore treats as absent - silently dropping the compare-and-set baseline this class exists to
+        // keep, and doing it on the path where the write reported success, so nothing would log.
+        final ByteBuffer buffer = ByteBuffer.wrap(bytes);
+        while (buffer.hasRemaining())
+          channel.write(buffer);
         channel.force(true);
       }
 
