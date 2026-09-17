@@ -1370,6 +1370,12 @@ public enum Type {
    * Answers whether the given floating point operand has an exact {@link BigDecimal} form. NaN and the infinities
    * do not, so a comparison involving one of them stays in {@code double}, where {@code Double.compare} already
    * orders them totally.
+   * <p>
+   * FOR AN OPERAND WHOSE STATIC TYPE IS {@link Number} - which is what {@code BinaryComparator} holds, having read
+   * the value out of a record. A caller holding a primitive {@code float}/{@code double}, as two of the
+   * {@link #castComparableNumber} branches below do, calls {@code Float.isFinite}/{@code Double.isFinite} directly
+   * instead: routing those through here would box the operand on a comparison path that is otherwise
+   * allocation-free. The apparent inconsistency is that trade, not an oversight (raised reviewing PR #7750).
    *
    * @param value the operand
    *
