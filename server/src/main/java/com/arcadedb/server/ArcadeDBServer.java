@@ -303,6 +303,17 @@ public class ArcadeDBServer {
   }
 
   /**
+   * What a client is told instead of an internal message when {@link #isProductionMode()} holds and the surface has
+   * nowhere to omit the detail from - the gRPC status description, the SSE {@code error} frame - as opposed to the
+   * HTTP JSON body, which simply leaves its {@code detail} field out.
+   * <p>
+   * ONE string for every such surface, and deliberately the same for every failure: a message that varied would put
+   * back precisely the signal the concealment removes, and a message that varied BY SURFACE would make the setting
+   * mean one thing here and another thing there, which is what issue #7472 is about.
+   */
+  public static final String CONCEALED_ERROR_MESSAGE = "The request failed. Check the server log for the details";
+
+  /**
    * {@link #isProductionMode()} for a caller that holds the configuration rather than the server - the HTTP handler
    * base class, which is constructed against an {@code HttpServer} whose server may be a test double. Static so the
    * rule itself is written once and every surface reads the SAME one, whichever handle on the configuration it has.

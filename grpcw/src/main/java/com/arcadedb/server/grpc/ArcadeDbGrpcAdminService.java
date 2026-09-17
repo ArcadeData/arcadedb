@@ -1143,7 +1143,9 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
    * thing on every surface (issue #7472).
    */
   private boolean concealErrors() {
-    return server != null && server.isProductionMode();
+    // NO NULL CHECK: THE CONSTRUCTOR REQUIRES A SERVER. ArcadeDbGrpcService's OWN concealErrors() DOES CHECK,
+    // BECAUSE THAT CLASS DELIBERATELY TOLERATES A NULL SERVER FOR EMBEDDED AND TEST CONSTRUCTION
+    return server.isProductionMode();
   }
 
   // Defense-in-depth: GrpcAuthInterceptor already authenticates these body credentials centrally
