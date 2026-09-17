@@ -21,6 +21,8 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.Limit;
 
+import java.util.Optional;
+
 /**
  * Created by luigidellaquila on 08/07/16.
  */
@@ -65,6 +67,16 @@ public class LimitExecutionStep extends AbstractExecutionStep {
       @Override
       public void close() {
         upstream.close();
+      }
+
+      @Override
+      public Optional<ExecutionPlan> getExecutionPlan() {
+        return upstream.getExecutionPlan();
+      }
+
+      @Override
+      public Optional<QueryStatistics> getStatistics() {
+        return upstream.getStatistics();
       }
     };
   }

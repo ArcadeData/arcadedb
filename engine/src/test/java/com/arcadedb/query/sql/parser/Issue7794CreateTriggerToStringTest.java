@@ -68,4 +68,21 @@ class Issue7794CreateTriggerToStringTest extends AbstractParserTest {
     assertThat(copy.ifNotExists).isTrue();
     assertThat(copy).isEqualTo(stmt);
   }
+
+  /**
+   * claude-review follow-up: {@code actionCodeQuoted} is only populated by the parser. A statement built any other
+   * way (setting {@code actionCode} directly) must still quote it on render rather than emit the bare word "null".
+   */
+  @Test
+  void quotesActionCodeWhenNotBuiltByTheParser() {
+    final CreateTriggerStatement stmt = new CreateTriggerStatement();
+    stmt.name = new Identifier("t5");
+    stmt.timing = new Identifier("BEFORE");
+    stmt.event = new Identifier("CREATE");
+    stmt.typeName = new Identifier("User");
+    stmt.actionType = new Identifier("SQL");
+    stmt.actionCode = "SELECT 1";
+
+    assertThat(stmt.toString()).isEqualTo("CREATE TRIGGER t5 BEFORE CREATE ON TYPE User EXECUTE SQL 'SELECT 1'");
+  }
 }

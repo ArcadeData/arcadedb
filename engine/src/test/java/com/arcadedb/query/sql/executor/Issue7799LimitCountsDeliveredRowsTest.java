@@ -21,6 +21,8 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.query.sql.parser.Limit;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -104,5 +106,55 @@ class Issue7799LimitCountsDeliveredRowsTest {
     step.setPrevious(new ShortBatchStep(context, 3));
 
     assertThat(drain(step, context)).isEqualTo(3);
+  }
+
+  /**
+   * claude-review follow-up: the wrapping {@code ResultSet} only forwarded {@code hasNext()}/{@code next()}/
+   * {@code close()}, silently dropping whatever {@code getExecutionPlan()}/{@code getStatistics()} the upstream
+   * batch carried - the same forwarding {@code TimeoutStep} already does for its own wrapper.
+   */
+  @Test
+  void forwardsExecutionPlanAndStatisticsFromUpstreamBatch() {
+    final CommandContext context = new BasicCommandContext();
+    final Limit limit = new Limit() {
+      @Override
+      public int getValue(final CommandContext ctx) {
+        return 5;
+      }
+    };
+
+    final ExecutionPlan marker = new ExecutionPlan() {
+      @Override
+      public List<ExecutionStep> getSteps() {
+        return List.of();
+      }
+
+      @Override
+      public String prettyPrint(final int depth, final int indent) {
+        return "";
+      }
+
+      @Override
+      public Result toResult() {
+        return new ResultInternal();
+      }
+    };
+    final QueryStatistics statsMarker = new QueryStatistics();
+
+    final ExecutionStepInternal step = new LimitExecutionStep(limit, context);
+    step.setPrevious(new AbstractExecutionStep(context) {
+      @Override
+      public ResultSet syncPull(final CommandContext ctx, final int nRecords) {
+        final InternalResultSet rs = new InternalResultSet();
+        rs.add(new ResultInternal().setProperty("i", 1));
+        rs.setPlan(marker);
+        rs.setStatistics(statsMarker);
+        return rs;
+      }
+    });
+
+    final ResultSet batch = step.syncPull(context, 100);
+    assertThat(batch.getExecutionPlan()).contains(marker);
+    assertThat(batch.getStatistics()).contains(statsMarker);
   }
 }
