@@ -218,7 +218,11 @@ public class ApiTokenConfiguration {
     final Path tmp = Files.createTempFile(target.getParent(), FILE_NAME, ".tmp");
     try {
       try (final FileChannel channel = FileChannel.open(tmp, StandardOpenOption.WRITE)) {
-        channel.write(ByteBuffer.wrap(bytes));
+        // Looped, because FileChannel.write() is only obliged to consume SOME of what remains: a short write here
+        // would fsync and publish a truncated server-api-tokens.json. load() already survives an unparseable file
+        // by degrading to the empty token store (fail-closed), so a silent short write here would cost every API
+        // token until the file is restored (issue #7825).
+        FileUtils.writeFully(channel, ByteBuffer.wrap(bytes));
         channel.force(true);
       }
 

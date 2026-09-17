@@ -1279,6 +1279,11 @@ class TypeTest extends TestHelper {
 
     result = Type.castComparableNumber((short) 1, (byte) 2);
     assertThat(result[0]).isInstanceOf(Byte.class);
+
+    // issue #7669: Short had no right-hand BigInteger arm
+    result = Type.castComparableNumber((short) 1, new BigInteger("2"));
+    assertThat(result[0]).isInstanceOf(BigDecimal.class);
+    assertThat(result[1]).isInstanceOf(BigDecimal.class);
   }
 
   @Test
@@ -1302,6 +1307,11 @@ class TypeTest extends TestHelper {
 
     result = Type.castComparableNumber(1, (byte) 2);
     assertThat(result[1]).isInstanceOf(Integer.class);
+
+    // issue #7669: Integer had no right-hand BigInteger arm
+    result = Type.castComparableNumber(1, new BigInteger("2"));
+    assertThat(result[0]).isInstanceOf(BigDecimal.class);
+    assertThat(result[1]).isInstanceOf(BigDecimal.class);
   }
 
   @Test
@@ -1325,6 +1335,11 @@ class TypeTest extends TestHelper {
 
     result = Type.castComparableNumber(1L, (byte) 2);
     assertThat(result[1]).isInstanceOf(Long.class);
+
+    // issue #7669: Long had no right-hand BigInteger arm
+    result = Type.castComparableNumber(1L, new BigInteger("2"));
+    assertThat(result[0]).isInstanceOf(BigDecimal.class);
+    assertThat(result[1]).isInstanceOf(BigDecimal.class);
   }
 
   @Test
@@ -1346,6 +1361,11 @@ class TypeTest extends TestHelper {
 
     result = Type.castComparableNumber(1.0f, (short) 2);
     assertThat(result[1]).isInstanceOf(Float.class);
+
+    // issue #7669: Float had no right-hand BigInteger arm
+    result = Type.castComparableNumber(1.0f, new BigInteger("2"));
+    assertThat(result[0]).isInstanceOf(BigDecimal.class);
+    assertThat(result[1]).isInstanceOf(BigDecimal.class);
   }
 
   @Test
@@ -1361,6 +1381,11 @@ class TypeTest extends TestHelper {
 
     result = Type.castComparableNumber(1.0, 2.0f);
     assertThat(result[1]).isInstanceOf(Double.class);
+
+    // issue #7669: Double had no right-hand BigInteger arm
+    result = Type.castComparableNumber(1.0, new BigInteger("2"));
+    assertThat(result[0]).isInstanceOf(BigDecimal.class);
+    assertThat(result[1]).isInstanceOf(BigDecimal.class);
   }
 
   @Test
@@ -1385,6 +1410,61 @@ class TypeTest extends TestHelper {
     assertThat(result[1]).isInstanceOf(BigDecimal.class);
     assertThat(((BigDecimal) result[0])).isEqualByComparingTo(new BigDecimal("1"));
     assertThat(((BigDecimal) result[1])).isEqualByComparingTo(new BigDecimal("2"));
+
+    // Reverse direction (issue #7669): the top-level chain had no left-hand BigInteger branch at all, so
+    // (BigInteger, BigDecimal) came back untouched and the caller's compareTo()/equals() threw ClassCastException.
+    result = Type.castComparableNumber(new BigInteger("2"), new BigDecimal("1"));
+    assertThat(result[0]).isInstanceOf(BigDecimal.class);
+    assertThat(result[1]).isInstanceOf(BigDecimal.class);
+    assertThat(((BigDecimal) result[0])).isEqualByComparingTo(new BigDecimal("2"));
+    assertThat(((BigDecimal) result[1])).isEqualByComparingTo(new BigDecimal("1"));
+  }
+
+  @Test
+  void castComparableNumberBigInteger() {
+    // BigInteger on the left had no branch at all before #7669, so every one of these threw ClassCastException
+    // once the caller tried to compareTo()/equals() the untouched pair.
+    Number[] result = Type.castComparableNumber(new BigInteger("2"), (short) 1);
+    assertThat(result[0]).isInstanceOf(BigDecimal.class);
+    assertThat(result[1]).isInstanceOf(BigDecimal.class);
+    assertThat(((BigDecimal) result[0])).isEqualByComparingTo(new BigDecimal("2"));
+    assertThat(((BigDecimal) result[1])).isEqualByComparingTo(new BigDecimal("1"));
+
+    result = Type.castComparableNumber(new BigInteger("2"), 1);
+    assertThat(result[0]).isInstanceOf(BigDecimal.class);
+    assertThat(result[1]).isInstanceOf(BigDecimal.class);
+    assertThat(((BigDecimal) result[0])).isEqualByComparingTo(new BigDecimal("2"));
+    assertThat(((BigDecimal) result[1])).isEqualByComparingTo(new BigDecimal("1"));
+
+    result = Type.castComparableNumber(new BigInteger("2"), 1L);
+    assertThat(result[0]).isInstanceOf(BigDecimal.class);
+    assertThat(result[1]).isInstanceOf(BigDecimal.class);
+    assertThat(((BigDecimal) result[0])).isEqualByComparingTo(new BigDecimal("2"));
+    assertThat(((BigDecimal) result[1])).isEqualByComparingTo(new BigDecimal("1"));
+
+    result = Type.castComparableNumber(new BigInteger("2"), 1.0f);
+    assertThat(result[0]).isInstanceOf(BigDecimal.class);
+    assertThat(result[1]).isInstanceOf(BigDecimal.class);
+    assertThat(((BigDecimal) result[0])).isEqualByComparingTo(new BigDecimal("2"));
+    assertThat(((BigDecimal) result[1])).isEqualByComparingTo(new BigDecimal("1"));
+
+    result = Type.castComparableNumber(new BigInteger("2"), 1.0);
+    assertThat(result[0]).isInstanceOf(BigDecimal.class);
+    assertThat(result[1]).isInstanceOf(BigDecimal.class);
+    assertThat(((BigDecimal) result[0])).isEqualByComparingTo(new BigDecimal("2"));
+    assertThat(((BigDecimal) result[1])).isEqualByComparingTo(new BigDecimal("1"));
+
+    result = Type.castComparableNumber(new BigInteger("2"), (byte) 1);
+    assertThat(result[0]).isInstanceOf(BigDecimal.class);
+    assertThat(result[1]).isInstanceOf(BigDecimal.class);
+    assertThat(((BigDecimal) result[0])).isEqualByComparingTo(new BigDecimal("2"));
+    assertThat(((BigDecimal) result[1])).isEqualByComparingTo(new BigDecimal("1"));
+
+    result = Type.castComparableNumber(new BigInteger("2"), new BigDecimal("1"));
+    assertThat(result[0]).isInstanceOf(BigDecimal.class);
+    assertThat(result[1]).isInstanceOf(BigDecimal.class);
+    assertThat(((BigDecimal) result[0])).isEqualByComparingTo(new BigDecimal("2"));
+    assertThat(((BigDecimal) result[1])).isEqualByComparingTo(new BigDecimal("1"));
   }
 
   @Test
@@ -1406,6 +1486,13 @@ class TypeTest extends TestHelper {
 
     result = Type.castComparableNumber((byte) 1, new BigDecimal("2"));
     assertThat(result[0]).isInstanceOf(BigDecimal.class);
+
+    // issue #7669: Byte had no right-hand BigInteger arm either
+    result = Type.castComparableNumber((byte) 1, new BigInteger("2"));
+    assertThat(result[0]).isInstanceOf(BigDecimal.class);
+    assertThat(result[1]).isInstanceOf(BigDecimal.class);
+    assertThat(((BigDecimal) result[0])).isEqualByComparingTo(new BigDecimal("1"));
+    assertThat(((BigDecimal) result[1])).isEqualByComparingTo(new BigDecimal("2"));
   }
 
   @Test

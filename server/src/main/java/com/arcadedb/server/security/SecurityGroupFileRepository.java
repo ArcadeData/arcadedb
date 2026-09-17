@@ -110,7 +110,11 @@ public class SecurityGroupFileRepository {
     final Path tmp = Files.createTempFile(target.getParent(), FILE_NAME, ".tmp");
     try {
       try (final FileChannel channel = FileChannel.open(tmp, StandardOpenOption.WRITE)) {
-        channel.write(ByteBuffer.wrap(bytes));
+        // Looped, because FileChannel.write() is only obliged to consume SOME of what remains: a short write here
+        // would fsync and publish a truncated server-groups.json, which load() cannot parse as a document with a
+        // 'version' and falls back to createDefault() - silently widening every group to the default permissions
+        // (issue #7825).
+        FileUtils.writeFully(channel, ByteBuffer.wrap(bytes));
         channel.force(true);
       }
       try {

@@ -1409,6 +1409,12 @@ public enum Type {
         left = new BigDecimal(left.intValue());
       else if (right instanceof Byte)
         left = left.byteValue();
+      else if (right instanceof BigInteger bigInteger1) {
+        // Mirrors the BigDecimal arm above: a BigInteger on the right has no narrower common type, so both
+        // operands promote to BigDecimal (issue #7669).
+        left = new BigDecimal(left.intValue());
+        right = new BigDecimal(bigInteger1);
+      }
 
     } else if (left instanceof Integer) {
       // INTEGER
@@ -1427,6 +1433,10 @@ public enum Type {
         right = right.intValue();
       else if (right instanceof Byte)
         right = right.intValue();
+      else if (right instanceof BigInteger bigInteger1) {
+        left = new BigDecimal(left.intValue());
+        right = new BigDecimal(bigInteger1);
+      }
 
     } else if (left instanceof Long) {
       // LONG
@@ -1455,6 +1465,10 @@ public enum Type {
         left = new BigDecimal(left.longValue());
       else if (right instanceof Integer || right instanceof Byte || right instanceof Short)
         right = right.longValue();
+      else if (right instanceof BigInteger bigInteger1) {
+        left = new BigDecimal(left.longValue());
+        right = new BigDecimal(bigInteger1);
+      }
 
     } else if (left instanceof Float) {
       // FLOAT
@@ -1479,6 +1493,9 @@ public enum Type {
           left = floatToBigDecimal(float1);
           right = BigDecimal.valueOf(right.longValue());
         }
+      } else if (right instanceof BigInteger bigInteger1) {
+        left = floatToBigDecimal(left.floatValue());
+        right = new BigDecimal(bigInteger1);
       }
 
     } else if (left instanceof Double) {
@@ -1498,6 +1515,34 @@ public enum Type {
         }
       } else if (right instanceof Byte || right instanceof Short || right instanceof Integer)
         right = right.doubleValue();
+      else if (right instanceof BigInteger bigInteger1) {
+        left = BigDecimal.valueOf(left.doubleValue());
+        right = new BigDecimal(bigInteger1);
+      }
+
+    } else if (left instanceof BigInteger bigInteger) {
+      // Mirrors the BigDecimal branch below: a BigInteger operand has no narrower common type with any other
+      // Number, so both sides promote to BigDecimal (issue #7669 - the missing left-hand counterpart of #7623).
+      if (right instanceof Integer integer) {
+        left = new BigDecimal(bigInteger);
+        right = new BigDecimal(integer);
+      } else if (right instanceof Long long1) {
+        left = new BigDecimal(bigInteger);
+        right = new BigDecimal(long1);
+      } else if (right instanceof Float float1) {
+        left = new BigDecimal(bigInteger);
+        right = floatToBigDecimal(float1);
+      } else if (right instanceof Double double1) {
+        left = new BigDecimal(bigInteger);
+        right = BigDecimal.valueOf(double1);
+      } else if (right instanceof Short short1) {
+        left = new BigDecimal(bigInteger);
+        right = new BigDecimal(short1);
+      } else if (right instanceof Byte byte1) {
+        left = new BigDecimal(bigInteger);
+        right = new BigDecimal(byte1);
+      } else if (right instanceof BigDecimal)
+        left = new BigDecimal(bigInteger);
 
     } else if (left instanceof BigDecimal) {
       // DOUBLE
@@ -1532,6 +1577,10 @@ public enum Type {
         left = left.doubleValue();
       else if (right instanceof BigDecimal)
         left = new BigDecimal(left.intValue());
+      else if (right instanceof BigInteger bigInteger1) {
+        left = new BigDecimal(left.intValue());
+        right = new BigDecimal(bigInteger1);
+      }
     }
 
     if (left instanceof BigDecimal bigDecimal && right instanceof BigDecimal bigDecimal1) {
