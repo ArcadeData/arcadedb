@@ -6711,16 +6711,19 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     boolean timestampSeen = false;
     for (final SQLParser.TsTypeMemberContext memberCtx : bodyCtx.tsTypeMember()) {
       if (memberCtx.TIMESTAMP() != null) {
+        // Through visit(), not getText(): the raw token text of a back-quoted name carries its quotes and its
+        // escapes, so the message would name a column the user did not write (claude review on PR #7757).
+        final Identifier timestamp = (Identifier) visit(memberCtx.identifier());
         if (timestampSeen)
           // The single-TIMESTAMP rule is the TYPE's, and the builder enforces it for every path; saying so here
           // as well turns a second clause into a parse-time error naming the column, rather than a create that
           // fails later with the type half-described.
           throw new CommandSQLParsingException(
               "A TIMESERIES type has exactly one TIMESTAMP column, and this statement declares a second one: '"
-                  + memberCtx.identifier().getText() + "'");
+                  + timestamp.getStringValue() + "'");
         timestampSeen = true;
         stmt.timestampPosition = stmt.columns.size();
-        stmt.timestampColumn = (Identifier) visit(memberCtx.identifier());
+        stmt.timestampColumn = timestamp;
         if (memberCtx.tsPrecision() != null)
           // Locale.ENGLISH, not the default locale: the four precision names all contain an 'i', and under a
           // Turkish default locale the no-arg toUpperCase maps it to a dotted capital that matches none of them
