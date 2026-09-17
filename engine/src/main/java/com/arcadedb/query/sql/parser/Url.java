@@ -35,7 +35,27 @@ public class Url extends SimpleNode {
 
   @Override
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
-    builder.append(urlString);
+    if (isRecognizedScheme(urlString)) {
+      builder.append(urlString);
+      return;
+    }
+
+    // NOT ONE OF THE SCHEME-PREFIXED FORMS THE LEXER HAS A TOKEN FOR (FILE_URL/HTTP_URL/HTTPS_URL/CLASSPATH_URL):
+    // IT WAS PARSED AS A QUOTED STRING_LITERAL, SO IT MUST BE RE-QUOTED TO STAY PARSEABLE (ISSUE #7800)
+    builder.append('\'');
+    if (urlString != null)
+      for (int i = 0; i < urlString.length(); i++) {
+        final char c = urlString.charAt(i);
+        if (c == '\'' || c == '\\')
+          builder.append('\\');
+        builder.append(c);
+      }
+    builder.append('\'');
+  }
+
+  private static boolean isRecognizedScheme(final String url) {
+    return url != null && (url.startsWith("file://") || url.startsWith("http://") || url.startsWith("https://")
+        || url.startsWith("classpath://"));
   }
 
   @Override

@@ -28,6 +28,8 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.security.SecurityDatabaseUser;
 
+import java.util.Map;
+
 public class RebuildGraphAnalyticalViewStatement extends DDLStatement {
   public Identifier name;
 
@@ -55,8 +57,17 @@ public class RebuildGraphAnalyticalViewStatement extends DDLStatement {
     return result;
   }
 
+  /** Overrides the two-arg form, not just the no-arg one - see {@link CreateMaterializedViewStatement} (issue #7800/#7794). */
   @Override
-  public String toString() {
-    return "REBUILD GRAPH ANALYTICAL VIEW " + name;
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
+    builder.append("REBUILD GRAPH ANALYTICAL VIEW ");
+    name.toString(params, builder);
+  }
+
+  @Override
+  public RebuildGraphAnalyticalViewStatement copy() {
+    final RebuildGraphAnalyticalViewStatement result = new RebuildGraphAnalyticalViewStatement();
+    result.name = name == null ? null : name.copy();
+    return result;
   }
 }

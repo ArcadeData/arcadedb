@@ -24,6 +24,8 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
+import java.util.Map;
+
 public class RefreshContinuousAggregateStatement extends DDLStatement {
   public Identifier name;
 
@@ -45,8 +47,17 @@ public class RefreshContinuousAggregateStatement extends DDLStatement {
     return result;
   }
 
+  /** Overrides the two-arg form, not just the no-arg one - see {@link CreateMaterializedViewStatement} (issue #7800/#7794). */
   @Override
-  public String toString() {
-    return "REFRESH CONTINUOUS AGGREGATE " + name;
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
+    builder.append("REFRESH CONTINUOUS AGGREGATE ");
+    name.toString(params, builder);
+  }
+
+  @Override
+  public RefreshContinuousAggregateStatement copy() {
+    final RefreshContinuousAggregateStatement result = new RefreshContinuousAggregateStatement();
+    result.name = name == null ? null : name.copy();
+    return result;
   }
 }

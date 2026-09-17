@@ -30,6 +30,8 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.util.Map;
+
 public class AlterGraphAnalyticalViewStatement extends DDLStatement {
   public Identifier name;
   public String     updateModeStr;
@@ -90,14 +92,23 @@ public class AlterGraphAnalyticalViewStatement extends DDLStatement {
     return result;
   }
 
+  /** Overrides the two-arg form, not just the no-arg one - see {@link CreateMaterializedViewStatement} (issue #7800/#7794). */
   @Override
-  public String toString() {
-    final StringBuilder sb = new StringBuilder("ALTER GRAPH ANALYTICAL VIEW ");
-    sb.append(name);
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
+    builder.append("ALTER GRAPH ANALYTICAL VIEW ");
+    name.toString(params, builder);
     if (updateModeStr != null)
-      sb.append(" UPDATE MODE ").append(updateModeStr.toUpperCase());
+      builder.append(" UPDATE MODE ").append(updateModeStr.toUpperCase());
     if (compactionThreshold >= 0)
-      sb.append(" COMPACTION THRESHOLD ").append(compactionThreshold);
-    return sb.toString();
+      builder.append(" COMPACTION THRESHOLD ").append(compactionThreshold);
+  }
+
+  @Override
+  public AlterGraphAnalyticalViewStatement copy() {
+    final AlterGraphAnalyticalViewStatement result = new AlterGraphAnalyticalViewStatement();
+    result.name = name == null ? null : name.copy();
+    result.updateModeStr = updateModeStr;
+    result.compactionThreshold = compactionThreshold;
+    return result;
   }
 }

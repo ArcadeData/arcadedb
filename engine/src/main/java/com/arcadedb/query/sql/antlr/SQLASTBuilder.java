@@ -6630,6 +6630,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // Extract string literal and remove quotes
     final String rawText = actionCtx.STRING_LITERAL().getText();
     stmt.actionCode = rawText.substring(1, rawText.length() - 1);
+    // KEPT WITH ITS QUOTES SO toString() CAN RE-RENDER THE EXACT ORIGINAL LITERAL (ISSUE #7794)
+    stmt.actionCodeQuoted = rawText;
 
     return stmt;
   }

@@ -105,6 +105,7 @@ public class UpdateStatement extends Statement {
     result.applyDefaults = applyDefaults;
     result.returnBefore = returnBefore;
     result.returnAfter = returnAfter;
+    result.returnCount = returnCount;
     result.returnProjection = returnProjection == null ? null : returnProjection.copy();
     result.whereClause = whereClause == null ? null : whereClause.copy();
     result.limit = limit == null ? null : limit.copy();

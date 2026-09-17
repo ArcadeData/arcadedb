@@ -29,6 +29,8 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Trigger;
 import com.arcadedb.schema.TriggerImpl;
 
+import java.util.Map;
+
 /**
  * SQL Statement for CREATE TRIGGER command.
  * Syntax: CREATE TRIGGER [IF NOT EXISTS] name (BEFORE|AFTER) (CREATE|READ|UPDATE|DELETE)
@@ -44,6 +46,12 @@ public class CreateTriggerStatement extends DDLStatement {
   public Identifier typeName;
   public Identifier actionType;  // SQL, JAVASCRIPT, or JAVA
   public String actionCode;
+  /**
+   * The action code's STRING_LITERAL exactly as it appeared in the source, quotes included. Rendering this instead
+   * of re-quoting {@link #actionCode} guarantees an exact round-trip no matter what the body contains (same
+   * approach as {@code DefineFunctionStatement.codeQuoted}).
+   */
+  public String actionCodeQuoted;
   public boolean ifNotExists = false;
 
   public CreateTriggerStatement() {
@@ -160,14 +168,38 @@ public class CreateTriggerStatement extends DDLStatement {
   }
 
   @Override
-  public String toString() {
-    return "CreateTriggerStatement{" +
-        "name=" + name +
-        ", timing=" + timing +
-        ", event=" + event +
-        ", typeName=" + typeName +
-        ", actionType=" + actionType +
-        ", ifNotExists=" + ifNotExists +
-        '}';
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
+    builder.append("CREATE TRIGGER ");
+    if (ifNotExists)
+      builder.append("IF NOT EXISTS ");
+    name.toString(params, builder);
+    builder.append(' ');
+    timing.toString(params, builder);
+    builder.append(' ');
+    event.toString(params, builder);
+    builder.append(" ON TYPE ");
+    typeName.toString(params, builder);
+    builder.append(" EXECUTE ");
+    actionType.toString(params, builder);
+    builder.append(' ').append(actionCodeQuoted);
+  }
+
+  @Override
+  public CreateTriggerStatement copy() {
+    final CreateTriggerStatement result = new CreateTriggerStatement();
+    result.name = name == null ? null : name.copy();
+    result.timing = timing == null ? null : timing.copy();
+    result.event = event == null ? null : event.copy();
+    result.typeName = typeName == null ? null : typeName.copy();
+    result.actionType = actionType == null ? null : actionType.copy();
+    result.actionCode = actionCode;
+    result.actionCodeQuoted = actionCodeQuoted;
+    result.ifNotExists = ifNotExists;
+    return result;
+  }
+
+  @Override
+  protected Object[] getIdentityElements() {
+    return new Object[] { name, timing, event, typeName, actionType, actionCode, ifNotExists };
   }
 }

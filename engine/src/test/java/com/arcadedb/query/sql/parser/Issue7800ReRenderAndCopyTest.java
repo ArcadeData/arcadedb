@@ -1,0 +1,118 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.query.sql.parser;
+
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Regression tests for issue #7800: two re-render defects (an unparseable {@code PERIODIC} keyword and an
+ * unquoted URL that loses its quotes) plus a batch of DDL statements whose {@code copy()} either threw
+ * {@code UnsupportedOperationException} or silently dropped a field.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+class Issue7800ReRenderAndCopyTest extends AbstractParserTest {
+
+  /** Item 1: CREATE MATERIALIZED VIEW ... REFRESH EVERY n UNIT used to re-render as the unparseable "REFRESH PERIODIC EVERY n UNIT". */
+  @Test
+  void createMaterializedViewPeriodicRefreshReRenders() {
+    final Statement result = (Statement) checkRightSyntax(
+        "CREATE MATERIALIZED VIEW AlterPMView AS SELECT name FROM Account REFRESH EVERY 1 SECOND");
+    assertThat(result.toString()).doesNotContain("PERIODIC");
+    assertThat(result.toString()).contains("REFRESH EVERY 1 SECOND");
+  }
+
+  /** Item 2: a URL that arrived as a quoted STRING_LITERAL without a recognized scheme must be re-quoted, not printed raw. */
+  @Test
+  void backupDatabaseWithPlainStringUrlReRenders() {
+    final Statement result = (Statement) checkRightSyntax("BACKUP DATABASE 'mybackup.zip'");
+    assertThat(result.toString()).isEqualTo("BACKUP DATABASE 'mybackup.zip'");
+  }
+
+  @Test
+  void backupDatabaseWithSchemeUrlIsRenderedUnquoted() {
+    final Statement result = (Statement) checkRightSyntax("BACKUP DATABASE file://mybackup.zip");
+    assertThat(result.toString()).isEqualTo("BACKUP DATABASE file://mybackup.zip");
+  }
+
+  /** Item 3: DROP INDEX copy() silently dropped ifExists. */
+  @Test
+  void dropIndexCopyPreservesIfExists() {
+    final DropIndexStatement stmt = (DropIndexStatement) new com.arcadedb.query.sql.antlr.SQLAntlrParser(null)
+        .parse("DROP INDEX Foo IF EXISTS");
+    final DropIndexStatement copy = stmt.copy();
+    assertThat(copy.ifExists).isTrue();
+    assertThat(copy.toString()).isEqualTo(stmt.toString());
+  }
+
+  /**
+   * Item 3: TraverseStatement.copy() dropped skip. The grammar never exposes SKIP on TRAVERSE (only LIMIT does),
+   * so this is set directly through the setter, exactly as the issue's own scope note says: latent, reachable only
+   * through the field/setter, not through SQL text.
+   */
+  @Test
+  void traverseCopyPreservesSkip() {
+    final TraverseStatement stmt = (TraverseStatement) new com.arcadedb.query.sql.antlr.SQLAntlrParser(null)
+        .parse("TRAVERSE out() FROM V LIMIT 10");
+    final Skip skip = new Skip();
+    skip.num = new PInteger().setValue(5);
+    stmt.setSkip(skip);
+
+    final TraverseStatement copy = (TraverseStatement) stmt.copy();
+    assertThat(copy.getSkip()).isNotNull();
+    assertThat(copy.getSkip().getValue(null)).isEqualTo(5);
+  }
+
+  /** Item 3: UpdateStatement.copy() dropped returnCount. */
+  @Test
+  void updateCopyPreservesReturnCount() {
+    final UpdateStatement stmt = (UpdateStatement) new com.arcadedb.query.sql.antlr.SQLAntlrParser(null)
+        .parse("UPDATE Foo SET a = 1 RETURN COUNT");
+    final UpdateStatement copy = stmt.copy();
+    assertThat(copy.returnCount).isTrue();
+    assertThat(copy.toString()).isEqualTo(stmt.toString());
+  }
+
+  /** Item 3: the 12 DDL statements that used to throw "IMPLEMENT copy() ON ..." must now copy every field. */
+  @Test
+  void everyPreviouslyUncopyableDdlStatementNowCopies() {
+    checkCopyRoundTrips("CREATE MATERIALIZED VIEW V1 AS SELECT FROM Account REFRESH MANUAL");
+    checkCopyRoundTrips("ALTER MATERIALIZED VIEW V1 REFRESH INCREMENTAL");
+    checkCopyRoundTrips("DROP MATERIALIZED VIEW IF EXISTS V1");
+    checkCopyRoundTrips("REFRESH MATERIALIZED VIEW V1");
+    checkCopyRoundTrips("CREATE GRAPH ANALYTICAL VIEW IF NOT EXISTS G1 VERTEX TYPES (Person) EDGE TYPES (Knows)");
+    checkCopyRoundTrips("ALTER GRAPH ANALYTICAL VIEW G1 UPDATE MODE SYNCHRONOUS");
+    checkCopyRoundTrips("DROP GRAPH ANALYTICAL VIEW IF EXISTS G1");
+    checkCopyRoundTrips("REBUILD GRAPH ANALYTICAL VIEW G1");
+    checkCopyRoundTrips("DROP CONTINUOUS AGGREGATE IF EXISTS CA1");
+    checkCopyRoundTrips("REFRESH CONTINUOUS AGGREGATE CA1");
+    checkCopyRoundTrips("ALIGN DATABASE");
+    checkCopyRoundTrips("CHECK DATABASE TYPE Customer, Order");
+  }
+
+  private void checkCopyRoundTrips(final String sql) {
+    final Statement stmt = new com.arcadedb.query.sql.antlr.SQLAntlrParser(null).parse(sql);
+    final Statement copy = stmt.copy();
+    assertThat(copy).as("copy() of '%s' must not be null", sql).isNotNull();
+    assertThat(copy.getClass()).isEqualTo(stmt.getClass());
+    assertThat(copy.toString()).as("copy() of '%s' must preserve every field", sql).isEqualTo(stmt.toString());
+  }
+}

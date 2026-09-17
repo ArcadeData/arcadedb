@@ -25,6 +25,8 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.MaterializedViewRefreshMode;
 
+import java.util.Map;
+
 public class CreateMaterializedViewStatement extends DDLStatement {
   public Identifier name;
   public SelectStatement selectStatement;
@@ -78,20 +80,40 @@ public class CreateMaterializedViewStatement extends DDLStatement {
     return result;
   }
 
+  /**
+   * Overrides the two-arg form (not just the no-arg debug one) so this renders as SQL wherever a statement is
+   * rendered through {@code toString(Map, StringBuilder)} - an enclosing {@code IF}/script block included -
+   * instead of throwing {@code UnsupportedOperationException} (same class of bug as issue #7794).
+   */
   @Override
-  public String toString() {
-    final StringBuilder sb = new StringBuilder("CREATE MATERIALIZED VIEW ");
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
+    builder.append("CREATE MATERIALIZED VIEW ");
     if (ifNotExists)
-      sb.append("IF NOT EXISTS ");
-    sb.append(name);
-    sb.append(" AS ").append(selectStatement);
+      builder.append("IF NOT EXISTS ");
+    name.toString(params, builder);
+    builder.append(" AS ");
+    selectStatement.toString(params, builder);
     if (refreshMode != null) {
-      sb.append(" REFRESH ").append(refreshMode);
+      builder.append(" REFRESH ");
       if ("PERIODIC".equalsIgnoreCase(refreshMode) && refreshInterval > 0)
-        sb.append(" EVERY ").append(refreshInterval).append(' ').append(refreshUnit);
+        builder.append("EVERY ").append(refreshInterval).append(' ').append(refreshUnit);
+      else
+        builder.append(refreshMode);
     }
     if (buckets > 0)
-      sb.append(" BUCKETS ").append(buckets);
-    return sb.toString();
+      builder.append(" BUCKETS ").append(buckets);
+  }
+
+  @Override
+  public CreateMaterializedViewStatement copy() {
+    final CreateMaterializedViewStatement result = new CreateMaterializedViewStatement();
+    result.name = name == null ? null : name.copy();
+    result.selectStatement = selectStatement == null ? null : selectStatement.copy();
+    result.refreshMode = refreshMode;
+    result.refreshInterval = refreshInterval;
+    result.refreshUnit = refreshUnit;
+    result.buckets = buckets;
+    result.ifNotExists = ifNotExists;
+    return result;
   }
 }

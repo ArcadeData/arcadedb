@@ -98,6 +98,7 @@ public class DropIndexStatement extends DDLStatement {
     final DropIndexStatement result = new DropIndexStatement();
     result.all = all;
     result.name = name == null ? null : name.copy();
+    result.ifExists = ifExists;
     return result;
   }
 
