@@ -35,8 +35,11 @@ import org.junit.jupiter.api.TestInfo;
 import org.awaitility.Awaitility;
 
 import java.io.File;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.List;
 import java.util.Random;
 
@@ -364,6 +367,83 @@ class Issue7842DeleteKeepsPersistedGraphTest {
             .as("it must pay the full rebuild instead, which is what keeps its codebook and its graph on the same "
                 + "dense ordinal space")
             .isEqualTo(1L);
+      } finally {
+        db.drop();
+      }
+    }
+  }
+
+  /**
+   * The RID at each ordinal is recorded, rather than the vector id alone, for exactly one reason: a compaction
+   * renumbers the whole live set densely from 0 (issue #5870), so an id that survives a crash between the
+   * renumbering and the graph persist is live, in range, and answers for a DIFFERENT record. An id-only check - the
+   * manifest fingerprint, which is what the no-deletions path still uses - cannot see that, and reusing the graph
+   * would return wrong-but-plausible neighbours rather than failing.
+   * <p>
+   * Reproduced by leaving behind exactly what that crash leaves: a sidecar recorded next to these very graph pages,
+   * over these very ordinals, whose RIDs belong to other records. The index must refuse the graph and rebuild.
+   */
+  @Test
+  void aRecordedMapWhoseRidsNoLongerMatchIsRefusedRatherThanReused() throws Exception {
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+      final Database db = factory.create();
+      try {
+        populate(db);
+        vectorIndex(db).buildVectorGraphNow();
+      } finally {
+        if (db.isOpen())
+          db.close();
+      }
+    }
+
+    final int[] ordinalToVectorId;
+    final Path graphPath;
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+      final Database db = factory.open();
+      try {
+        final LSMVectorIndex index = vectorIndex(db);
+        index.findNeighborsFromVector(embedding(1), 5, 64); // resolves the persisted graph and its ordinal map
+        ordinalToVectorId = index.getOrdinalToVectorIdForTest().clone();
+        graphPath = index.getGraphFilePathForTest();
+
+        db.begin();
+        db.command("sql", "DELETE FROM Doc WHERE id = ?", 0);
+        db.commit();
+
+        ((DatabaseInternal) db).kill();
+        db.close();
+      } finally {
+        if (db.isOpen())
+          db.close();
+      }
+    }
+
+    // Every ordinal now claims a RID one bucket position away from the record it actually describes - the shape a
+    // renumbered id space leaves, without needing to win the race that produces it.
+    final LSMVectorIndexGraphManifest manifest = new LSMVectorIndexGraphManifest(graphPath.toString());
+    final LSMVectorIndexOrdinalMapFile.Content recorded = manifest.readOrdinalMap();
+    assertThat(recorded).as("precondition: a map must have been recorded for there to be one to invalidate")
+        .isNotNull();
+    final Map<Integer, RID> shifted = new HashMap<>();
+    for (int ordinal = 0; ordinal < recorded.size(); ordinal++)
+      shifted.put(recorded.vectorIds()[ordinal],
+          new RID(recorded.bucketIds()[ordinal], recorded.positions()[ordinal] + 1));
+    new LSMVectorIndexOrdinalMapFile(graphPath.toString()).write(ordinalToVectorId, shifted::get);
+
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+      final Database db = factory.open();
+      try {
+        final LSMVectorIndex index = vectorIndex(db);
+        final RID liveRid = ridOf(db, 1);
+
+        final List<Pair<RID, Float>> results = index.findNeighborsFromVector(embedding(1), 5, 64);
+
+        assertThat(index.getStats().get("graphReusesWithTombstonedNodes"))
+            .as("a map whose RIDs no longer resolve to the records it names must never be trusted").isZero();
+        assertThat(index.getStats().get("graphRebuildCount"))
+            .as("the graph must be rebuilt from scratch instead, which is the conservative direction").isEqualTo(1L);
+        assertThat(results.stream().map(Pair::getFirst))
+            .as("and the answer must still be right after that rebuild").contains(liveRid);
       } finally {
         db.drop();
       }

@@ -109,6 +109,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.PrimitiveIterator;
 import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.Timer;
@@ -2106,7 +2107,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (locations.size() < ASYNC_REBUILD_MIN_GRAPH_SIZE)
         return null;
 
-      final int[] extended = appendVectorsMissingFrom(mapVectorIds, locations);
+      final int[] extended = appendVectorsMissingFrom(mapVectorIds, locations, gap);
       if (extended == null)
         return null;
 
@@ -2177,15 +2178,37 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /**
    * The ordinal map, extended with the live vector ids it does not cover, so
    * {@link #reuseStalePrefixGraph(ReuseCandidate)} can read them as its gap.
+   * <p>
+   * A linear merge rather than a binary search per live id: both sequences are ascending - the map by construction
+   * (the validation walk above has just proved it) and {@code getAllVectorIds()} by contract - so the set difference
+   * costs O(live + map) instead of O(live log map), and this runs on the search thread that reopened the index with
+   * nothing bounding how large either side is (PR #7844 review).
+   *
+   * @param expectedMissing how many ids the caller already knows are missing, as the initial capacity
    *
    * @return the extended array, or {@code null} when the missing ids are not all past the end of the map - which
    * cannot happen while ids are handed out monotonically, and means the array cannot be used as a prefix if it does
    */
-  private int[] appendVectorsMissingFrom(final int[] mapVectorIds, final VectorLocationIndex locations) {
-    final int[] missing = locations.getAllVectorIds()
-        .filter(id -> Arrays.binarySearch(mapVectorIds, id) < 0)
-        .toArray();
-    if (missing.length == 0)
+  private int[] appendVectorsMissingFrom(final int[] mapVectorIds, final VectorLocationIndex locations,
+      final int expectedMissing) {
+    int[] missing = new int[Math.max(16, expectedMissing)];
+    int missingCount = 0;
+    int mapCursor = 0;
+    final PrimitiveIterator.OfInt live = locations.getAllVectorIds().iterator();
+    while (live.hasNext()) {
+      final int vectorId = live.nextInt();
+      // Both cursors only ever advance, which is what makes this one pass over each sequence.
+      while (mapCursor < mapVectorIds.length && mapVectorIds[mapCursor] < vectorId)
+        ++mapCursor;
+      if (mapCursor < mapVectorIds.length && mapVectorIds[mapCursor] == vectorId)
+        continue;
+
+      if (missingCount == missing.length)
+        missing = Arrays.copyOf(missing, missingCount * 2);
+      missing[missingCount++] = vectorId;
+    }
+
+    if (missingCount == 0)
       return mapVectorIds;
 
     if (mapVectorIds.length > 0 && missing[0] <= mapVectorIds[mapVectorIds.length - 1]) {
@@ -2196,9 +2219,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
       return null;
     }
 
-    final int[] extended = new int[mapVectorIds.length + missing.length];
+    final int[] extended = new int[mapVectorIds.length + missingCount];
     System.arraycopy(mapVectorIds, 0, extended, 0, mapVectorIds.length);
-    System.arraycopy(missing, 0, extended, mapVectorIds.length, missing.length);
+    System.arraycopy(missing, 0, extended, mapVectorIds.length, missingCount);
     return extended;
   }
 
@@ -5612,6 +5635,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /** Visible for tests: the ordinal-to-vector-id map the next search would capture. */
+  /** Visible for tests: where this index's persisted graph lives, for a test that has to tamper with its sidecars. */
+  Path getGraphFilePathForTest() {
+    final LSMVectorIndexGraphFile gf = graphFile;
+    return gf != null ? gf.getOSFile().toPath() : null;
+  }
+
   int[] getOrdinalToVectorIdForTest() {
     return ordinalToVectorId;
   }
