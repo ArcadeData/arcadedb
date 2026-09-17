@@ -3467,12 +3467,22 @@ public class ArcadeStateMachine extends BaseStateMachine {
     try {
       installFromLeaderForBootstrap(dbName);
     } catch (final RuntimeException e) {
-      // One retry, then say so plainly and name the way out. Looping here would hold the single-threaded
-      // lifecycleExecutor against every other lifecycle task for as long as the leader stays unreachable.
+      // Recorded DURABLY before giving up, in the same set and the same file the #6124 overwrite guard uses
+      // (CodeRabbit on PR #7756). Logging alone was not enough and the reason is this method's own premise:
+      // applyTransaction persists this database's applied index whatever happens here, so the entry reads as
+      // applied while the database is absent, and the replay that would retry it is not guaranteed to survive
+      // the next Ratis snapshot. The mark is what outlives that - it is persisted in .raft/bootstrap-baselines,
+      // published by ClusterAlerts, and re-verified on the HealthMonitor's bootstrap-divergence tick, which is
+      // where the bounded retry now lives (reconcileBootstrapDivergence). installFromLeaderForBootstrap clears
+      // it on the success path, so nothing has to remember to.
+      markBootstrapUnreconciled(dbName);
+      // One retry HERE, then hand the problem to that tick: looping on the single-threaded lifecycleExecutor
+      // would hold every other lifecycle task for as long as the leader stays unreachable.
       LogManager.instance().log(this, Level.SEVERE,
           "Database '%s' was applied on this node in a previous session but is missing now, and reinstalling it from "
-              + "the leader failed again: %s. The node is running WITHOUT it. Once a leader is reachable, run "
-              + "POST /api/v1/cluster/resync/%s on this node, or restart it to replay this entry.",
+              + "the leader failed again: %s. The node is running WITHOUT it, and says so in the cluster status "
+              + "until it is back. The periodic bootstrap-divergence check retries the install; to force it, run "
+              + "POST /api/v1/cluster/resync/%s on this node once a leader is reachable.",
           e, dbName, e.getMessage(), dbName);
     }
   }
@@ -3735,6 +3745,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
         // real divergence for a database that is merely closed - and opening one just to fingerprint it
         // would undo an operator's decision to leave it closed. A database actually dropped loses its
         // mark with its baseline, on the DROP entry.
+        //
+        // The one case that is NOT "merely closed" is the database whose directory is gone too, which is
+        // how a marked database looks after the replay-skip's reinstall failed (issue #7298). There is no
+        // local copy to protect and nothing else retries it - the applied index already reads as applied -
+        // so this tick is the bounded retry, throttled to BOOTSTRAP_DIVERGENCE_CHECK_INTERVAL_MS and
+        // ending by itself the moment the install succeeds and clears the mark.
+        if (!databaseDirectoryExists(dbName))
+          retryMissingBootstrapDatabase(dbName);
         continue;
       }
       final BootstrapBaseline local;
@@ -3767,6 +3785,44 @@ public class ArcadeStateMachine extends BaseStateMachine {
           POST /api/v1/cluster/resync/%s on this node.""",
           dbName, local.lastTxId(), BootstrapElection.abbreviate(local.fingerprint()),
           leaderState.lastTxId(), BootstrapElection.abbreviate(leaderState.fingerprint()), dbName);
+    }
+  }
+
+  /**
+   * Whether {@code dbName}'s directory is on disk at all, which is the question {@code existsDatabase} does not
+   * answer: it reports registry membership, so a closed-but-present database and one that was deleted look the
+   * same to it. Only the second is safe to reinstall over.
+   * <p>
+   * A path that cannot be resolved answers {@code true} - "present" is the conservative answer here, because it
+   * is the one that leaves the local files alone.
+   */
+  private boolean databaseDirectoryExists(final String dbName) {
+    try {
+      final String path = SnapshotInstaller.resolveDatabasePath(server, dbName);
+      return path == null || new File(path).isDirectory();
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Could not resolve the directory of '%s' while verifying bootstrap divergence: %s; assuming it is present",
+          dbName, e.getMessage());
+      return true;
+    }
+  }
+
+  /**
+   * Re-attempts the leader install of a marked database whose files are gone (issue #7298). Runs on the
+   * {@link HealthMonitor} tick rather than the Raft apply thread, and never throws: a failure here just leaves the
+   * mark in place for the next tick, which is the whole point of hanging the retry off a periodic check.
+   */
+  private void retryMissingBootstrapDatabase(final String dbName) {
+    LogManager.instance().log(this, Level.WARNING,
+        "Database '%s' is marked unreconciled and its directory is absent on this node; retrying the install from "
+            + "the leader", dbName);
+    try {
+      installFromLeaderForBootstrap(dbName);
+    } catch (final RuntimeException e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Reinstalling the missing database '%s' from the leader failed again: %s. Keeping the mark; the next "
+              + "bootstrap-divergence check retries it", dbName, e.getMessage());
     }
   }
 
@@ -4361,7 +4417,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * lock as the baselines because it is persisted in the same file entry; the caller has already
    * recorded the baseline, so the entry exists.
    */
-  private void markBootstrapUnreconciled(final String dbName) {
+  // @VisibleForTesting
+  void markBootstrapUnreconciled(final String dbName) {
     synchronized (bootstrapBaselinesFileLock) {
       ensureBootstrapBaselinesLoaded();
       if (bootstrapUnreconciledDatabases.add(dbName))
