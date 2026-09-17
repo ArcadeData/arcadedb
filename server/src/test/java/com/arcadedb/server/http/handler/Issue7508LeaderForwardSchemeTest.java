@@ -283,22 +283,11 @@ class Issue7508LeaderForwardSchemeTest {
   }
 
   // ---------------------------------------------------------------------------------------------------------------
-  // Entry point 3: LeaderProxy - unreachable in production today (nothing constructs it, issue #7547), so only the
-  // branch that needs no request body is driven here. The HTTPS dial itself reads the body through
-  // exchange.startBlocking(), which a detached HttpServerExchange cannot serve.
+  // Entry point 3 used to be LeaderProxy, and it never ran: nothing constructed the class, so the branch driven
+  // here described no request any server had served. It was deleted with issue #7528, and with it the third arm of
+  // this test. The two entry points above are the whole of the follower-to-leader HTTP relay; the SQL write forward
+  // in RaftReplicatedDatabase is the third and is covered by Issue7508LeaderHttpsEndpointTest in ha-raft.
   // ---------------------------------------------------------------------------------------------------------------
-
-  @Test
-  void theProxyStandsDownRatherThanRelayingInClearWhenTheHttpsEndpointCannotBeReached() {
-    final StubHA ha = new StubHA(LEADER_HTTP, LEADER_HTTPS, null);
-
-    final LeaderProxy proxy = new LeaderProxy(httpServerWith(ha));
-
-    // Returning false hands the request back to the caller's own error path, which is what the proxy already did
-    // for an unusable leader address - and it happens before the body is read, so no upload is buffered for a
-    // request that was never going to be relayed.
-    assertThat(proxy.tryProxy(new HttpServerExchange(null), LEADER_HTTP, user("root"))).isFalse();
-  }
 
   // ---------------------------------------------------------------------------------------------------------------
   // Fixtures

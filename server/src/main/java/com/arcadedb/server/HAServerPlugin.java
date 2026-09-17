@@ -298,6 +298,12 @@ public interface HAServerPlugin extends ServerPlugin {
    * the identity it gives itself. An implementation that cannot change membership at runtime keeps the
    * default below; {@code ServerControlPlane.connectCluster} turns that into the refusal both transports
    * report, so the verb answers "this HA implementation cannot do it" rather than reading as a fault.
+   * <p>
+   * <b>The address names the server being added, never this one.</b> There is deliberately no runtime
+   * self-join - a membership change is issued by the leader of the cluster being joined, which this node has
+   * no credentials for - so an implementation should refuse an address that resolves to itself rather than
+   * accept it as a no-op. See {@code ServerControlPlane.connectCluster} for the whole of that decision
+   * (issue #7515).
    */
   default void connectCluster(final String serverAddress) {
     throw new UnsupportedOperationException("Dynamic membership not supported by this HA implementation");
