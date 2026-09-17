@@ -20,7 +20,6 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.*;
 import com.arcadedb.database.Record;
-import com.arcadedb.query.sql.parser.Projection;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
@@ -224,21 +223,23 @@ public class ResultInternal implements Result {
    * computed one; answering with backing column {@code d}'s declared type would describe a value this row does not
    * have. Asking the element first did exactly that (found reviewing PR #7750).
    * <p>
-   * {@link Projection#NO_SOURCE_COLUMN} is how the projection says "this alias is mine and it has no source
-   * column", which stops the lookup rather than letting it fall through to the element - a different answer from
-   * "this projection never mentioned this name", which does fall through.
+   * A KEY PRESENT WITH A NULL VALUE is how the projection says "this alias is mine and it has no source column",
+   * which stops the lookup rather than letting it fall through to the element - a different answer from an ABSENT
+   * key, "this projection never mentioned this name", which does fall through. The second lookup that tells them
+   * apart runs only when the first returned null, so a plain column reference still costs one.
    */
   @Override
   public Type getPropertyType(final String name) {
     if (projectionSourceColumns != null) {
       final String sourceColumn = projectionSourceColumns.get(name);
       if (sourceColumn != null) {
-        //noinspection StringEquality - identity on purpose: the marker can never collide with a real column name
-        if (sourceColumn == Projection.NO_SOURCE_COLUMN || projectionSourceType == null)
+        if (projectionSourceType == null)
           return null;
         final Property property = projectionSourceType.getPolymorphicPropertyIfExists(sourceColumn);
         return property != null ? property.getType() : null;
       }
+      if (projectionSourceColumns.containsKey(name))
+        return null;
     }
 
     if (element != null) {
