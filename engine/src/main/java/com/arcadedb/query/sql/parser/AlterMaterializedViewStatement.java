@@ -103,4 +103,9 @@ public class AlterMaterializedViewStatement extends DDLStatement {
     result.refreshUnit = refreshUnit;
     return result;
   }
+
+  @Override
+  protected Object[] getIdentityElements() {
+    return new Object[] { name, refreshMode, refreshInterval, refreshUnit };
+  }
 }

@@ -107,4 +107,9 @@ public class DropGraphAnalyticalViewStatement extends DDLStatement {
     result.ifExists = ifExists;
     return result;
   }
+
+  @Override
+  protected Object[] getIdentityElements() {
+    return new Object[] { name, ifExists };
+  }
 }

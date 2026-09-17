@@ -30,6 +30,8 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 
 public class CreateGraphAnalyticalViewStatement extends DDLStatement {
@@ -179,5 +181,22 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
     result.compactionThreshold = compactionThreshold;
     result.ifNotExists = ifNotExists;
     return result;
+  }
+
+  /**
+   * The array fields are wrapped in {@code Arrays.asList()} rather than compared as-is: {@code Object[].equals()}
+   * is reference identity, so two structurally-equal arrays from an original and its {@code copy()} would never
+   * compare equal otherwise. {@code null} is normalized to an empty list so a never-set clause does not need special
+   * casing.
+   */
+  @Override
+  protected Object[] getIdentityElements() {
+    return new Object[] {
+        name,
+        vertexTypes == null ? List.of() : Arrays.asList(vertexTypes),
+        edgeTypes == null ? List.of() : Arrays.asList(edgeTypes),
+        properties == null ? List.of() : Arrays.asList(properties),
+        edgeProperties == null ? List.of() : Arrays.asList(edgeProperties),
+        updateModeStr, compactionThreshold, ifNotExists };
   }
 }

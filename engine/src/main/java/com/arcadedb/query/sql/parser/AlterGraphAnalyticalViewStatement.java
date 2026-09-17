@@ -111,4 +111,9 @@ public class AlterGraphAnalyticalViewStatement extends DDLStatement {
     result.compactionThreshold = compactionThreshold;
     return result;
   }
+
+  @Override
+  protected Object[] getIdentityElements() {
+    return new Object[] { name, updateModeStr, compactionThreshold };
+  }
 }

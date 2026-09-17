@@ -25,6 +25,16 @@ import java.util.Objects;
 
 public class Url extends SimpleNode {
   protected String urlString;
+  /**
+   * The STRING_LITERAL token exactly as it appeared in the source, quotes and escapes included. Set only when the
+   * URL was parsed from a quoted literal rather than one of the scheme-prefixed tokens. {@code urlString} itself is
+   * stored UN-DECODED - {@code SQLASTBuilder.removeQuotes} only strips the outer quote characters, it never resolves
+   * the lexer's {@code STRING_ESCAPE_SEQ} escapes - so re-escaping it in {@code toString()} would double-encode any
+   * {@code \} or {@code '} it already contains, growing on every render/reparse cycle instead of round-tripping.
+   * Rendering this verbatim instead - the same approach as {@code CreateTriggerStatement.actionCodeQuoted} - sides
+   * steps decoding entirely and guarantees an exact, idempotent round-trip (issue #7800 review).
+   */
+  public String quotedLiteral;
 
   public Url() {
   }
@@ -35,27 +45,10 @@ public class Url extends SimpleNode {
 
   @Override
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
-    if (isRecognizedScheme(urlString)) {
+    if (quotedLiteral != null)
+      builder.append(quotedLiteral);
+    else
       builder.append(urlString);
-      return;
-    }
-
-    // NOT ONE OF THE SCHEME-PREFIXED FORMS THE LEXER HAS A TOKEN FOR (FILE_URL/HTTP_URL/HTTPS_URL/CLASSPATH_URL):
-    // IT WAS PARSED AS A QUOTED STRING_LITERAL, SO IT MUST BE RE-QUOTED TO STAY PARSEABLE (ISSUE #7800)
-    builder.append('\'');
-    if (urlString != null)
-      for (int i = 0; i < urlString.length(); i++) {
-        final char c = urlString.charAt(i);
-        if (c == '\'' || c == '\\')
-          builder.append('\\');
-        builder.append(c);
-      }
-    builder.append('\'');
-  }
-
-  private static boolean isRecognizedScheme(final String url) {
-    return url != null && (url.startsWith("file://") || url.startsWith("http://") || url.startsWith("https://")
-        || url.startsWith("classpath://"));
   }
 
   @Override
@@ -77,6 +70,7 @@ public class Url extends SimpleNode {
   public SimpleNode copy() {
     final Url result = new Url();
     result.urlString = urlString;
+    result.quotedLiteral = quotedLiteral;
     return result;
   }
 

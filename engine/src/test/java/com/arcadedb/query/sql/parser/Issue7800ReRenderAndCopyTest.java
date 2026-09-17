@@ -53,7 +53,28 @@ class Issue7800ReRenderAndCopyTest extends AbstractParserTest {
     assertThat(result.toString()).isEqualTo("BACKUP DATABASE file://mybackup.zip");
   }
 
-  /** Item 3: DROP INDEX copy() silently dropped ifExists. */
+  /**
+   * Review finding on the initial version of this fix: {@code urlString} is stored UN-DECODED (only the outer
+   * quotes are stripped, the lexer's escape sequences are not resolved), so re-escaping it in {@code toString()}
+   * double-encoded an already-escaped {@code \'}, growing the literal on every render/reparse cycle instead of
+   * round-tripping. Rendering the original quoted literal verbatim (like {@code CreateTriggerStatement.actionCodeQuoted})
+   * must reproduce the exact source and stay stable no matter how many times it is rendered.
+   */
+  @Test
+  void backupDatabaseWithEscapedQuoteInUrlRoundTripsExactlyAndStably() {
+    final String sql = "BACKUP DATABASE 'it\\'s a test.zip'";
+    final Statement result = (Statement) checkRightSyntax(sql);
+    assertThat(result.toString()).isEqualTo(sql);
+
+    // re-parse what was rendered and render it again: must be byte-for-byte identical, not growing
+    final Statement reparsed = new com.arcadedb.query.sql.antlr.SQLAntlrParser(null).parse(result.toString());
+    assertThat(reparsed.toString()).isEqualTo(sql);
+  }
+
+  /**
+   * Item 3: DROP INDEX copy() silently dropped ifExists. CodeRabbit also found that the class's (pre-existing,
+   * manual) equals()/hashCode() never included it either, so the strict and idempotent forms compared equal.
+   */
   @Test
   void dropIndexCopyPreservesIfExists() {
     final DropIndexStatement stmt = (DropIndexStatement) new com.arcadedb.query.sql.antlr.SQLAntlrParser(null)
@@ -61,6 +82,12 @@ class Issue7800ReRenderAndCopyTest extends AbstractParserTest {
     final DropIndexStatement copy = stmt.copy();
     assertThat(copy.ifExists).isTrue();
     assertThat(copy.toString()).isEqualTo(stmt.toString());
+    assertThat(copy).isEqualTo(stmt);
+
+    final DropIndexStatement strict = (DropIndexStatement) new com.arcadedb.query.sql.antlr.SQLAntlrParser(null)
+        .parse("DROP INDEX Foo");
+    assertThat(stmt).isNotEqualTo(strict);
+    assertThat(stmt.hashCode()).isNotEqualTo(strict.hashCode());
   }
 
   /**
@@ -81,7 +108,10 @@ class Issue7800ReRenderAndCopyTest extends AbstractParserTest {
     assertThat(copy.getSkip().getValue(null)).isEqualTo(5);
   }
 
-  /** Item 3: UpdateStatement.copy() dropped returnCount. */
+  /**
+   * Item 3: UpdateStatement.copy() dropped returnCount. CodeRabbit also found that the class's (pre-existing,
+   * manual) equals()/hashCode() never included it either, so RETURN COUNT compared equal to no RETURN clause at all.
+   */
   @Test
   void updateCopyPreservesReturnCount() {
     final UpdateStatement stmt = (UpdateStatement) new com.arcadedb.query.sql.antlr.SQLAntlrParser(null)
@@ -89,6 +119,12 @@ class Issue7800ReRenderAndCopyTest extends AbstractParserTest {
     final UpdateStatement copy = stmt.copy();
     assertThat(copy.returnCount).isTrue();
     assertThat(copy.toString()).isEqualTo(stmt.toString());
+    assertThat(copy).isEqualTo(stmt);
+
+    final UpdateStatement noReturn = (UpdateStatement) new com.arcadedb.query.sql.antlr.SQLAntlrParser(null)
+        .parse("UPDATE Foo SET a = 1");
+    assertThat(stmt).isNotEqualTo(noReturn);
+    assertThat(stmt.hashCode()).isNotEqualTo(noReturn.hashCode());
   }
 
   /** Item 3: the 12 DDL statements that used to throw "IMPLEMENT copy() ON ..." must now copy every field. */
@@ -114,5 +150,8 @@ class Issue7800ReRenderAndCopyTest extends AbstractParserTest {
     assertThat(copy).as("copy() of '%s' must not be null", sql).isNotNull();
     assertThat(copy.getClass()).isEqualTo(stmt.getClass());
     assertThat(copy.toString()).as("copy() of '%s' must preserve every field", sql).isEqualTo(stmt.toString());
+    // every one of these classes now has a getIdentityElements() (or, for AlignDatabaseStatement, a manual
+    // equals()) override, so a copy must also compare content-equal to its source, not just render the same text
+    assertThat(copy).as("copy() of '%s' must compare equal to its source", sql).isEqualTo(stmt);
   }
 }

@@ -528,10 +528,12 @@ public class CreateIndexStatement extends DDLStatement {
 
   @Override
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
-    builder.append("CREATE INDEX ");
+    builder.append("CREATE INDEX");
 
-    if (name != null)
+    if (name != null) {
+      builder.append(' ');
       name.toString(params, builder);
+    }
 
     if (ifNotExists)
       builder.append(" IF NOT EXISTS");

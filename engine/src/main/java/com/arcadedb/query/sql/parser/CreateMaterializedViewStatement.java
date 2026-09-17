@@ -116,4 +116,9 @@ public class CreateMaterializedViewStatement extends DDLStatement {
     result.ifNotExists = ifNotExists;
     return result;
   }
+
+  @Override
+  protected Object[] getIdentityElements() {
+    return new Object[] { name, selectStatement, refreshMode, refreshInterval, refreshUnit, buckets, ifNotExists };
+  }
 }
