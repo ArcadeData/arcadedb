@@ -3814,9 +3814,17 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
-   * Re-attempts the leader install of a marked database whose files are gone (issue #7298). Runs on the
-   * {@link HealthMonitor} tick rather than the Raft apply thread, and never throws: a failure here just leaves the
-   * mark in place for the next tick, which is the whole point of hanging the retry off a periodic check.
+   * Re-attempts the leader install of a marked database whose files are gone (issue #7298).
+   * <p>
+   * Runs on the {@code lifecycleExecutor}, not on the {@link HealthMonitor} tick that started the check and not on
+   * the Raft apply thread - {@link #verifyBootstrapDivergence()} submits the whole probe-and-reconcile task there.
+   * The distinction is worth stating because that executor is single-threaded: this is a DOWNLOAD, so unlike the
+   * 5-second probe it is queued behind and ahead of tasks measured in minutes. That is the same class of work
+   * {@code triggerSnapshotDownload} already does on it, and it is bounded by the same check window, so it adds a
+   * task of a size the executor already carries rather than a new kind of one.
+   * <p>
+   * Never throws: a failure here just leaves the mark in place for the next window, which is the whole point of
+   * hanging the retry off a periodic check.
    */
   private void retryMissingBootstrapDatabase(final String dbName) {
     LogManager.instance().log(this, Level.WARNING,
