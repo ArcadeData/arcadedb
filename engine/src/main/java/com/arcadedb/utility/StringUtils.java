@@ -19,6 +19,7 @@
 package com.arcadedb.utility;
 
 import java.util.IllegalFormatException;
+import java.util.Locale;
 
 /**
  * String helpers that the engine needs on paths where the obvious form allocates.
@@ -103,7 +104,7 @@ public class StringUtils {
     checkFormatWidth(caller, format);
 
     try {
-      return String.format(format, args);
+      return String.format(Locale.ROOT, format, args);
     } catch (final IllegalFormatException e) {
       throw new IllegalArgumentException(
           caller + "() cannot apply the format '" + format + "': " + e.getClass().getSimpleName() + " - " + e.getMessage(), e);
