@@ -528,10 +528,15 @@ public class CreateIndexStatement extends DDLStatement {
 
   @Override
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
-    builder.append("CREATE INDEX ");
+    builder.append("CREATE INDEX");
 
-    if (name != null)
+    if (name != null) {
+      builder.append(' ');
       name.toString(params, builder);
+    }
+
+    if (ifNotExists)
+      builder.append(" IF NOT EXISTS");
 
     if (typeName != null) {
       builder.append(" ON ");
@@ -602,12 +607,13 @@ public class CreateIndexStatement extends DDLStatement {
     result.keyTypes = keyTypes == null ? null : keyTypes.stream().map(x -> x.copy()).collect(Collectors.toList());
     result.engine = engine == null ? null : engine.copy();
     result.metadata = metadata == null ? null : metadata.copy();
+    result.ifNotExists = ifNotExists;
     return result;
   }
 
   @Override
   protected Object[] getIdentityElements() {
-    return new Object[] { name, typeName, propertyList, type, nullStrategy, keyTypes, engine, metadata };
+    return new Object[] { name, typeName, propertyList, type, nullStrategy, keyTypes, engine, metadata, ifNotExists };
   }
 
   public static class Property {

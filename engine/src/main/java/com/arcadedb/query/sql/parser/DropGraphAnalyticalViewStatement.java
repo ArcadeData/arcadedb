@@ -32,6 +32,8 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.util.Map;
+
 public class DropGraphAnalyticalViewStatement extends DDLStatement {
   public Identifier name;
   public boolean    ifExists = false;
@@ -89,8 +91,25 @@ public class DropGraphAnalyticalViewStatement extends DDLStatement {
     return result;
   }
 
+  /** Overrides the two-arg form, not just the no-arg one - see {@link CreateMaterializedViewStatement} (issue #7800/#7794). */
   @Override
-  public String toString() {
-    return "DROP GRAPH ANALYTICAL VIEW " + (ifExists ? "IF EXISTS " : "") + name;
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
+    builder.append("DROP GRAPH ANALYTICAL VIEW ");
+    if (ifExists)
+      builder.append("IF EXISTS ");
+    name.toString(params, builder);
+  }
+
+  @Override
+  public DropGraphAnalyticalViewStatement copy() {
+    final DropGraphAnalyticalViewStatement result = new DropGraphAnalyticalViewStatement();
+    result.name = name == null ? null : name.copy();
+    result.ifExists = ifExists;
+    return result;
+  }
+
+  @Override
+  protected Object[] getIdentityElements() {
+    return new Object[] { name, ifExists };
   }
 }

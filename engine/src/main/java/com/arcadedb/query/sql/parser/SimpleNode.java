@@ -192,5 +192,30 @@ public abstract class SimpleNode implements Node {
   public SimpleNode copy() {
     throw new UnsupportedOperationException();
   }
+
+  /**
+   * Quotes {@code value} as a single-quoted SQL string literal, escaping every character the grammar's
+   * {@code STRING_LITERAL} rule does not allow raw inside one: the quote itself, a backslash, and a carriage
+   * return/line feed ({@code SQLLexer.g4}'s {@code STRING_LITERAL} excludes {@code \r}/{@code \n} from the
+   * unescaped body - they can only appear as the {@code \r}/{@code \n} escape sequences). Shared by classes that
+   * keep a plain value alongside a parser-populated verbatim literal for exact round-tripping (e.g.
+   * {@code Url.urlString}/{@code quotedLiteral}, {@code CreateTriggerStatement.actionCode}/{@code actionCodeQuoted})
+   * and must still render something parseable when that verbatim literal isn't available - a value set through the
+   * public field/constructor rather than by the parser (issue #7800 review).
+   */
+  protected static void appendQuotedStringLiteral(final StringBuilder builder, final String value) {
+    builder.append('\'');
+    if (value != null)
+      for (int i = 0; i < value.length(); i++) {
+        final char c = value.charAt(i);
+        switch (c) {
+        case '\'', '\\' -> builder.append('\\').append(c);
+        case '\r' -> builder.append("\\r");
+        case '\n' -> builder.append("\\n");
+        default -> builder.append(c);
+        }
+      }
+    builder.append('\'');
+  }
 }
 /* JavaCC - OriginalChecksum=d5ed710e8a3f29d574adbb1d37e08f3b (do not edit this line) */

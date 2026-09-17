@@ -55,5 +55,26 @@ public class AlignDatabaseStatement extends SimpleExecStatement {
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("ALIGN DATABASE");
   }
+
+  @Override
+  public AlignDatabaseStatement copy() {
+    return new AlignDatabaseStatement();
+  }
+
+  /**
+   * No fields to compare - every instance means the same thing - but {@code getIdentityElements()} returning an
+   * empty array falls back to identity in {@link SimpleNode#equals}, which would still make {@code copy()} compare
+   * unequal to its source. Overridden directly instead, matching {@code DropIndexStatement}'s manual style for the
+   * same reason.
+   */
+  @Override
+  public boolean equals(final Object o) {
+    return o != null && getClass() == o.getClass();
+  }
+
+  @Override
+  public int hashCode() {
+    return getClass().hashCode();
+  }
 }
 /* ParserGeneratorCC - OriginalChecksum=1fdf26fbfd4b324c2953b99f2dc55ff8 (do not edit this line) */
