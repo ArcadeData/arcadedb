@@ -818,6 +818,10 @@ public class PostgresNetworkExecutor extends Thread {
 
       final long engineStart = System.nanoTime();
       final ResultSet resultSet;
+      // Transaction control returns no rows: PostgreSQL answers it with the bare CommandComplete tag. A RowDescription
+      // in front of the tag, even with zero fields, makes libpq report PGRES_TUPLES_OK instead of PGRES_COMMAND_OK,
+      // and a client that checks the status when it opens a transaction gives up ("Failed to begin transaction").
+      boolean transactionControl = false;
       final String upperCaseText = query.query.toUpperCase(Locale.ENGLISH);
       final PostgresSystemQuery systemQuery = PostgresSystemQuery.parse(query.query);
       if (upperCaseText.startsWith("SET ")) {
@@ -826,6 +830,7 @@ public class PostgresNetworkExecutor extends Thread {
       } else if (upperCaseText.startsWith("SAVEPOINT ") ||
           upperCaseText.startsWith("RELEASE ") ||
           upperCaseText.startsWith("ROLLBACK TO ")) {
+        transactionControl = true;
         resultSet = new IteratorResultSet(Collections.emptyIterator());
       } else if (systemQuery != null)
         resultSet = new IteratorResultSet(
@@ -840,16 +845,19 @@ public class PostgresNetworkExecutor extends Thread {
       } else if (isBeginStatement(upperCaseText)) {
         explicitTransactionStarted = true;
         database.begin();
+        transactionControl = true;
         resultSet = new IteratorResultSet(Collections.emptyIterator());
       } else if (isCommitStatement(upperCaseText)) {
         if (explicitTransactionStarted && database.isTransactionActive())
           database.commit();
         explicitTransactionStarted = false;
+        transactionControl = true;
         resultSet = new IteratorResultSet(Collections.emptyIterator());
       } else if (isRollbackStatement(upperCaseText)) {
         if (explicitTransactionStarted && database.isTransactionActive())
           database.rollback();
         explicitTransactionStarted = false;
+        transactionControl = true;
         resultSet = new IteratorResultSet(Collections.emptyIterator());
       } else {
         // A query about the emulated system catalog, which every client sends and which ArcadeDB's own SQL
@@ -866,17 +874,22 @@ public class PostgresNetworkExecutor extends Thread {
       profile.addEngineNanos(System.nanoTime() - engineStart);
 
       final long serStart = System.nanoTime();
-      Map<String, PostgresType> columns = catalogAnswer != null ? catalogAnswer.columns()
-          : getColumns(cachedResultSet, resolveQueryTargetType(parsedStatement), resolveAliasToSourceProperty(parsedStatement));
-      if (columns.isEmpty() && cachedResultSet.isEmpty()) {
-        final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(query.query, query.language, NO_PARAMETERS,
-            parsedStatement);
-        if (schemaColumns != null)
-          columns = schemaColumns;
+      if (!transactionControl) {
+        Map<String, PostgresType> columns = catalogAnswer != null ? catalogAnswer.columns()
+            : getColumns(cachedResultSet, resolveQueryTargetType(parsedStatement), resolveAliasToSourceProperty(parsedStatement));
+        if (columns.isEmpty() && cachedResultSet.isEmpty()) {
+          final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(query.query, query.language, NO_PARAMETERS,
+              parsedStatement);
+          if (schemaColumns != null)
+            columns = schemaColumns;
+        }
+        writeRowDescription(columns);
+        writeDataRows(cachedResultSet, columns);
       }
-      writeRowDescription(columns);
-      writeDataRows(cachedResultSet, columns);
-      writeCommandComplete(queryText, cachedResultSet.size());
+      // query.query is the language-prefix-stripped text (getTag matches bare "BEGIN"/"COMMIT"/... against it); the raw
+      // queryText still carries a "{sql}" prefix when the client sends one, which getTag doesn't recognise and answers
+      // with an empty command tag instead of e.g. "BEGIN".
+      writeCommandComplete(query.query, cachedResultSet.size());
       profile.addSerializationNanos(System.nanoTime() - serStart);
 
     } catch (final PostgresCopyStatement.CopyException e) {
