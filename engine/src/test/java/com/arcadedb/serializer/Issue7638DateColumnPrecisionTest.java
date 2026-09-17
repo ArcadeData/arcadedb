@@ -338,6 +338,43 @@ class Issue7638DateColumnPrecisionTest extends TestHelper {
     }
   }
 
+  /**
+   * Found by CodeRabbit's review of PR #7750. {@code SELECT *, n + 1 AS d} keeps the backing element AND publishes
+   * a COMPUTED value under a name the element also has, so a type lookup that consulted the element first answered
+   * with column {@code d}'s declared DATE for a value that is an integer - and would have applied DATE formatting
+   * to any temporal the expression happened to produce. The projection is now asked first and says "mine, and no
+   * source column", which is a different answer from "never mentioned".
+   */
+  @Test
+  void aComputedAliasCollidingWithABackingColumnDoesNotInheritItsType() {
+    withDateImplementation(Date.class, () -> {
+      database.transaction(() -> {
+        final DocumentType type = database.getSchema().createDocumentType("Issue7638Collision");
+        type.createProperty("d", Type.DATE);
+        type.createProperty("n", Type.INTEGER);
+        database.newDocument("Issue7638Collision").set("d", DAY).set("n", 7).save();
+      });
+
+      database.transaction(() -> {
+        try (final ResultSet rs = database.query("sql", "SELECT *, n + 1 AS d FROM Issue7638Collision")) {
+          final Result row = rs.next();
+          assertThat((Object) row.getProperty("d")).as("the row publishes the computed value, not the column")
+              .isEqualTo(8);
+          assertThat(row.getPropertyType("d"))
+              .as("so it must not report the backing DATE column's type for it").isNull();
+          assertThat(new JsonSerializer(database).serializeResult(database, row).get("d")).isEqualTo(8);
+        }
+
+        // The control: with no collision, `*` still reports the backing column's type
+        try (final ResultSet rs = database.query("sql", "SELECT * FROM Issue7638Collision")) {
+          final Result row = rs.next();
+          assertThat(row.getPropertyType("d")).isEqualTo(Type.DATE);
+          assertThat(new JsonSerializer(database).serializeResult(database, row).getString("d")).isEqualTo("2026-06-12");
+        }
+      });
+    });
+  }
+
   private void withDateImplementation(final Class<?> implementation, final Runnable body) {
     final BinarySerializer serializer = ((DatabaseInternal) database).getSerializer();
     final Object previous = serializer.getDateImplementation();

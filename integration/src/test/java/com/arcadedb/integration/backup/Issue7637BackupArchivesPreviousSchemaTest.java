@@ -61,7 +61,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Captured inside the t0 barrier rather than read off the live filesystem afterwards, deliberately: read late, the
  * previous copy can hold a generation NEWER than the archived {@code schema.json} (two DDLs after t0 leave it
  * holding the first one's result), which would be a fallback describing a page set the archive does not contain.
- * {@link #theArchivedPreviousSchemaIsTheT0OneNotALaterGeneration} is what pins that.
+ * {@link #theArchivedPreviousSchemaIsNotRetroFittedByALaterDdl} pins the end-to-end half of that, and
+ * {@code Issue6114SnapshotConfigurationCaptureTest} the t0 barrier itself.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -153,16 +154,25 @@ class Issue7637BackupArchivesPreviousSchemaTest {
   }
 
   /**
-   * The semantic reason the capture belongs inside the t0 barrier. Two DDLs run after the window opens: read off
-   * the live filesystem afterwards, {@code schema.prev.json} would then hold the FIRST of them - a generation
-   * newer than the archived {@code schema.json}, describing a page set the archive does not contain. The window
-   * has to serve the copy as it stood at t0, which is genuinely older than the archived primary.
+   * The archive carries the generation that was current when the backup ran, and a later DDL does not retro-fit it.
+   * <p>
+   * WHAT THIS DOES AND DOES NOT PIN, said plainly, because the difference was pointed out in review of PR #7750
+   * and the method name used to overstate it. {@code backupDatabase()} returns only once the archive is written,
+   * so both DDLs below land AFTER the whole backup - which means this test cannot distinguish "captured at t0"
+   * from "read at some later point during the backup". It pins the end-to-end property that matters to an
+   * operator: what came out of the archive is the schema the database had at backup time.
+   * <p>
+   * The t0 claim itself is pinned where it is decidable, at the barrier:
+   * {@code Issue6114SnapshotConfigurationCaptureTest#theWindowCarriesBothConfigurationFilesAsOfT0} runs a DDL
+   * WHILE the window is open - so the live {@code schema.prev.json} moves on to hold the generation the window is
+   * serving as its primary - and asserts the window still serves the t0 copy. A backup that re-read the file
+   * instead of capturing it fails there.
    * <p>
    * A plain {@code @Test} and not a parameterized one: this is the snapshot path only, because the frozen-files
-   * path freezes the database for the duration and so has no "after t0" for a DDL to land in.
+   * path freezes the database for the duration and so has no "after the backup began" for a DDL to land in.
    */
   @Test
-  void theArchivedPreviousSchemaIsTheT0OneNotALaterGeneration() throws Exception {
+  void theArchivedPreviousSchemaIsNotRetroFittedByALaterDdl() throws Exception {
     GlobalConfiguration.PAGE_SNAPSHOT_ENABLED.setValue(true);
     final String previousAtT0;
     try (final Database database = createDatabase()) {

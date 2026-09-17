@@ -120,8 +120,9 @@ public class BinaryComparator {
       case BinaryTypes.TYPE_BYTE:
         // Exact for an integral operand past 2^53 where a double is not, and delegating rather than duplicating
         // keeps this direction answering the negation of its reverse - the antisymmetry the narrowing branches
-        // used to break (#5900) and the 2^53 band would break again (#7628).
-        return -compareIntegralAgainstFloating(((Number) value2).longValue(), (Number) value1, type1);
+        // used to break (#5900) and the 2^53 band would break again (#7628). temporalAsLong, not a Number cast:
+        // a temporal operand is materialised through the configured implementation and need not be a Number.
+        return -compareIntegralAgainstFloating(temporalAsLong(value2, type2), (Number) value1, type1);
 
       case BinaryTypes.TYPE_DECIMAL:
         // The DECIMAL branch of this same method compares exactly; going through double here instead would make
@@ -289,12 +290,14 @@ public class BinaryComparator {
       return Integer.compare(value1.intValue(), (Boolean) value2 ? 1 : 0);
 
     case BinaryTypes.TYPE_LONG:
+      return Long.compare(value1.longValue(), ((Number) value2).longValue());
+
     case BinaryTypes.TYPE_DATETIME:
     case BinaryTypes.TYPE_DATE:
     case BinaryTypes.TYPE_DATETIME_SECOND:
     case BinaryTypes.TYPE_DATETIME_MICROS:
     case BinaryTypes.TYPE_DATETIME_NANOS:
-      return Long.compare(value1.longValue(), ((Number) value2).longValue());
+      return Long.compare(value1.longValue(), temporalAsLong(value2, type2));
 
     case BinaryTypes.TYPE_DECIMAL:
     case BinaryTypes.TYPE_FLOAT:
@@ -307,6 +310,36 @@ public class BinaryComparator {
     default:
       return -1;
     }
+  }
+
+  /**
+   * The {@code long} a temporal operand compares as.
+   * <p>
+   * A temporal column is STORED as a long but MATERIALISED through the configured
+   * {@code arcadedb.dateTimeImplementation}/{@code dateImplementation}, so a value reaching this comparator can be
+   * a {@code LocalDateTime}, {@code Date}, {@code Calendar}, {@code ZonedDateTime} or {@code Instant} just as
+   * easily as a {@code Number}. Casting it straight to {@code Number} threw {@code ClassCastException} - for
+   * {@code DATE} and {@code DATETIME} that predates this class's current shape, and #7628 extended the same cast
+   * to the three sub-millisecond types, turning their wrong answer into a crash instead of fixing it (found
+   * reviewing PR #7750).
+   * <p>
+   * The conversion is the one the {@code DATE}/{@code DATETIME} branch of {@link #compare} already applies in the
+   * opposite direction, which is why that direction answered instead of throwing - so normalising here is what
+   * makes the two agree rather than a second opinion about what a timestamp means.
+   *
+   * @param value the operand, a {@link Number} or any supported temporal representation
+   * @param type  its {@link BinaryTypes} code, which fixes the precision its long is counted in
+   */
+  private static long temporalAsLong(final Object value, final byte type) {
+    // The stored form, and the overwhelmingly common one on an index seek: no conversion, no allocation.
+    if (value instanceof Number number)
+      return number.longValue();
+    // A DATE's long is a count of DAYS, not a timestamp at some sub-day precision, so it converts through its own
+    // helper - the one BinarySerializer writes and reads it with. Asking dateTimeToTimestamp* for a DATE raises
+    // IllegalArgumentException, which would trade one thrown exception for another.
+    if (type == BinaryTypes.TYPE_DATE)
+      return DateUtils.dateToEpochDays(value);
+    return DateUtils.dateTimeToTimestampInferringStringPrecision(value, DateUtils.getPrecisionFromBinaryType(type));
   }
 
   /**
@@ -341,12 +374,14 @@ public class BinaryComparator {
     case BinaryTypes.TYPE_SHORT:
     case BinaryTypes.TYPE_BYTE:
     case BinaryTypes.TYPE_LONG:
+      return Long.compare(value1.longValue(), ((Number) value2).longValue());
+
     case BinaryTypes.TYPE_DATETIME:
     case BinaryTypes.TYPE_DATE:
     case BinaryTypes.TYPE_DATETIME_SECOND:
     case BinaryTypes.TYPE_DATETIME_MICROS:
     case BinaryTypes.TYPE_DATETIME_NANOS:
-      return Long.compare(value1.longValue(), ((Number) value2).longValue());
+      return Long.compare(value1.longValue(), temporalAsLong(value2, type2));
 
     case BinaryTypes.TYPE_BOOLEAN:
       return Long.compare(value1.longValue(), (Boolean) value2 ? 1L : 0L);

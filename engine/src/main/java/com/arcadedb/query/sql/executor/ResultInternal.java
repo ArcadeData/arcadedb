@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.*;
 import com.arcadedb.database.Record;
+import com.arcadedb.query.sql.parser.Projection;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
@@ -216,23 +217,37 @@ public class ResultInternal implements Result {
     return this;
   }
 
+  /**
+   * THE PROJECTION IS ASKED FIRST, the backing element second - the same precedence {@link #getProperty(String)}
+   * itself applies, and for the same reason. {@code SELECT *, n + 1 AS d} keeps the backing element AND publishes
+   * a computed value under {@code d} in {@code content}, so the value this row answers for {@code d} is the
+   * computed one; answering with backing column {@code d}'s declared type would describe a value this row does not
+   * have. Asking the element first did exactly that (found reviewing PR #7750).
+   * <p>
+   * {@link Projection#NO_SOURCE_COLUMN} is how the projection says "this alias is mine and it has no source
+   * column", which stops the lookup rather than letting it fall through to the element - a different answer from
+   * "this projection never mentioned this name", which does fall through.
+   */
   @Override
   public Type getPropertyType(final String name) {
+    if (projectionSourceColumns != null) {
+      final String sourceColumn = projectionSourceColumns.get(name);
+      if (sourceColumn != null) {
+        //noinspection StringEquality - identity on purpose: the marker can never collide with a real column name
+        if (sourceColumn == Projection.NO_SOURCE_COLUMN || projectionSourceType == null)
+          return null;
+        final Property property = projectionSourceType.getPolymorphicPropertyIfExists(sourceColumn);
+        return property != null ? property.getType() : null;
+      }
+    }
+
     if (element != null) {
-      // A row that still has its record answers from the schema directly - the projection map is for the rows that
-      // do not, and a name the element declares is the more specific answer anyway.
       final DocumentType elementType = element.getType();
       final Property declared = elementType != null ? elementType.getPolymorphicPropertyIfExists(name) : null;
       if (declared != null)
         return declared.getType();
     }
-    if (projectionSourceType == null || projectionSourceColumns == null)
-      return null;
-    final String sourceColumn = projectionSourceColumns.get(name);
-    if (sourceColumn == null)
-      return null;
-    final Property property = projectionSourceType.getPolymorphicPropertyIfExists(sourceColumn);
-    return property != null ? property.getType() : null;
+    return null;
   }
 
   /**

@@ -51,16 +51,29 @@ public class Projection extends SimpleNode {
    */
   private volatile Set<String> excludes;
   /**
-   * Alias to source column name, for the projection items that are plain, unqualified column references
-   * ({@code d}, or {@code d AS x} - not {@code d.sub}, not an expression, not a nested projection). Lets a row
-   * this projection produces report the schema type of the column each value came from, which its Java class does
-   * not always say (issue #7638, and see {@link com.arcadedb.query.sql.executor.Result#getPropertyType}).
+   * What every explicit (non-{@code *}) projection item publishes under its alias: the name of the source column
+   * for a plain, unqualified column reference ({@code d}, or {@code d AS x} - not {@code d.sub}, not an
+   * expression, not a nested projection), and {@link #NO_SOURCE_COLUMN} for everything else. Lets a row this
+   * projection produces report the schema type of the column each value came from, which its Java class does not
+   * always say (issue #7638, and see {@link com.arcadedb.query.sql.executor.Result#getPropertyType}).
+   * <p>
+   * COMPUTED ITEMS ARE RECORDED TOO, as the marker, and that is not redundant. {@code SELECT *, n + 1 AS d} keeps
+   * the backing element AND publishes a computed value under a name the element also has, so a lookup that fell
+   * through to the element would answer with column {@code d}'s declared type for a value that is not column
+   * {@code d}'s at all - a DATE verdict for an integer, and DATE formatting for any temporal the expression
+   * happened to produce. The marker says "this alias is this projection's, and it has no source column", which is
+   * a different answer from "this projection never mentioned it" (found reviewing PR #7750).
    * <p>
    * Computed once and never mutated afterwards, alongside {@link #excludes} and for the same reason: a
    * {@link Projection} is cached per statement and shared by every row and every thread executing it, so this must
    * not become per-row work, and the map handed to a row must be safe to read concurrently.
    */
   private volatile Map<String, String> sourceColumns;
+  /**
+   * {@link #sourceColumns} value for an alias this projection publishes from something that is not a plain column
+   * reference. Compared by identity, so it can never collide with a real column name.
+   */
+  public static final String NO_SOURCE_COLUMN = new String("\u0000no-source");
 
   public Projection(final List<ProjectionItem> items, final boolean distinct) {
     this.items = items;
@@ -216,19 +229,21 @@ public class Projection extends SimpleNode {
     if (sourceColumns == null) {
       Map<String, String> resolved = null;
       for (final ProjectionItem item : items) {
-        if (item.exclude || item.isAll() || item.nestedProjection != null)
+        if (item.exclude || item.isAll())
           continue;
 
         final Expression expression = item.getExpression();
         // isBaseIdentifier() is exactly "a bare column name and nothing else": no traversal, no method, no
         // arithmetic - so getDefaultAlias() names the source column, and the value published under the item's
-        // alias IS that column's value (ProjectionItem.convert only unwraps iterators and result sets).
-        if (expression == null || !expression.isBaseIdentifier())
-          continue;
+        // alias IS that column's value (ProjectionItem.convert only unwraps iterators and result sets). Anything
+        // else - an expression, a nested projection - publishes a value with no source column, and is recorded as
+        // the marker rather than skipped, so a lookup cannot fall through to a same-named backing property.
+        final boolean plainColumn = item.nestedProjection == null && expression != null && expression.isBaseIdentifier();
 
         if (resolved == null)
           resolved = new HashMap<>(items.size());
-        resolved.put(item.getProjectionAliasAsString(), expression.getDefaultAlias().getStringValue());
+        resolved.put(item.getProjectionAliasAsString(),
+            plainColumn ? expression.getDefaultAlias().getStringValue() : NO_SOURCE_COLUMN);
       }
       sourceColumns = resolved != null ? Collections.unmodifiableMap(resolved) : Collections.emptyMap();
     }

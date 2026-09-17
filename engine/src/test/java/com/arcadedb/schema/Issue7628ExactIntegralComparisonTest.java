@@ -23,6 +23,8 @@ import com.arcadedb.serializer.BinaryTypes;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.Date;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -215,6 +217,37 @@ class Issue7628ExactIntegralComparisonTest {
         timestampType).isEqualTo(Integer.signum(expected));
     assertThat(Integer.signum(backward)).as("the reverse of %s(type %d) vs timestamp %d(type %d)", value1, type1,
         timestamp, timestampType).isEqualTo(-Integer.signum(expected));
+  }
+
+  /**
+   * Found by CodeRabbit's review of PR #7750. A temporal column is STORED as a long but MATERIALISED through the
+   * configured {@code dateTimeImplementation}/{@code dateImplementation}, so a value reaching this comparator can
+   * be a {@code LocalDateTime} or a {@code Date} rather than a {@code Number}. Casting it straight to
+   * {@code Number} threw {@code ClassCastException} - pre-existing for DATE and DATETIME, and newly reachable for
+   * the three sub-millisecond types once they stopped answering {@code -1}. All five normalise through
+   * {@code DateUtils} now, so a numeric-first comparison answers instead of crashing.
+   */
+  @Test
+  void aTemporalOperandThatIsNotANumberIsNormalisedRatherThanCastBlindly() {
+    final LocalDateTime laterDateTime = LocalDateTime.of(2026, 6, 12, 15, 30);
+    final Date laterDate = new Date(1781236800000L);
+
+    for (final byte timestampType : new byte[] { BinaryTypes.TYPE_DATETIME, BinaryTypes.TYPE_DATE,
+        BinaryTypes.TYPE_DATETIME_SECOND, BinaryTypes.TYPE_DATETIME_MICROS, BinaryTypes.TYPE_DATETIME_NANOS })
+      for (final Object temporal : new Object[] { laterDateTime, laterDate }) {
+        assertThat(comparator.compare(1L, BinaryTypes.TYPE_LONG, temporal, timestampType))
+            .as("LONG vs %s as type %d", temporal.getClass().getSimpleName(), timestampType).isNegative();
+        assertThat(comparator.compare(1, BinaryTypes.TYPE_INT, temporal, timestampType))
+            .as("INT vs %s as type %d", temporal.getClass().getSimpleName(), timestampType).isNegative();
+        assertThat(comparator.compare(1.0d, BinaryTypes.TYPE_DOUBLE, temporal, timestampType))
+            .as("DOUBLE vs %s as type %d", temporal.getClass().getSimpleName(), timestampType).isNegative();
+        assertThat(comparator.compare(1.0f, BinaryTypes.TYPE_FLOAT, temporal, timestampType))
+            .as("FLOAT vs %s as type %d", temporal.getClass().getSimpleName(), timestampType).isNegative();
+
+        assertThat(comparator.compare(temporal, timestampType, 1L, BinaryTypes.TYPE_LONG))
+            .as("the reverse of LONG vs %s as type %d", temporal.getClass().getSimpleName(), timestampType)
+            .isPositive();
+      }
   }
 
   /**
