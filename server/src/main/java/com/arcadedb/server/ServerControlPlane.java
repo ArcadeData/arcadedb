@@ -320,6 +320,11 @@ public class ServerControlPlane {
    * Defensive against a plugin that throws: readiness is a probe, and a probe that propagates an exception is
    * answered with a 500 the orchestrator reads as "unknown" rather than as the NOT READY the failing node
    * deserves. A signal that cannot be read is treated as absent, leaving the gates below to decide.
+   * <p>
+   * Consulted without first testing {@code HA_ENABLED}, and that is what the null check here stands in for: a
+   * server with HA disabled registers no plugin, so {@link ArcadeDBServer#getHA()} is {@code null} and this is
+   * already the whole answer. Reading the setting as well would only add a second way to say the same thing, and
+   * a worse one - the plugin's presence is the fact, the setting is the intent that produced it.
    */
   private String haRaftLogFailure() {
     final HAServerPlugin ha = server.getHA();
