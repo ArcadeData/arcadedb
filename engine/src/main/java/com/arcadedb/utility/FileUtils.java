@@ -39,6 +39,9 @@ import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadInfo;
 import java.lang.management.ThreadMXBean;
 import java.net.URLEncoder;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.FileSystemException;
@@ -561,6 +564,24 @@ public class FileUtils {
                 + "missing or partial. Consider hosting the database on a file store that supports atomic renames.", null, target);
       Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
     }
+  }
+
+  /**
+   * Writes every remaining byte of {@code buffer} to {@code channel}, looped rather than trusted to a single call.
+   * {@link WritableByteChannel#write(ByteBuffer)} is only obliged to consume SOME of what remains; a caller that
+   * takes one call's return value on faith can fsync and publish a short write as a complete one - the file looks
+   * published, but its content is truncated, and nothing about the call failing says so (issue #7825).
+   * <p>
+   * A caller writing through a plain {@link java.io.FileOutputStream} or {@link OutputStreamWriter} instead does
+   * not need this: {@code OutputStream.write(byte[])} is specified to loop internally. It is {@link FileChannel}
+   * specifically - used for its {@code force(true)} fsync - whose {@code write} contract allows the short return.
+   *
+   * @param channel the channel to write to
+   * @param buffer  the bytes to write; consumed as a side effect, empty on return
+   */
+  public static void writeFully(final WritableByteChannel channel, final ByteBuffer buffer) throws IOException {
+    while (buffer.hasRemaining())
+      channel.write(buffer);
   }
 
   public static void appendContentToFile(final File file, final String content) throws IOException {

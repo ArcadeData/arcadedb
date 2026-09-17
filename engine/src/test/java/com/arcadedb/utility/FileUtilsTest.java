@@ -23,9 +23,12 @@ import org.junit.jupiter.api.io.TempDir;
 import org.mockito.MockedStatic;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
@@ -615,5 +618,48 @@ class FileUtilsTest {
     assertThat(FileUtils.isAbsolutePath("db.zip")).isFalse();
     assertThat(FileUtils.isAbsolutePath("")).isFalse();
     assertThat(FileUtils.isAbsolutePath("ab:cd")).as("a colon after more than one character is not a drive").isFalse();
+  }
+
+  /**
+   * Regression test for issue #7825: {@link java.nio.channels.WritableByteChannel#write(ByteBuffer)} is only
+   * obliged to consume SOME of what remains in the buffer, so a caller that calls it once and trusts the return
+   * value can publish a short write as if it had succeeded. {@link FileUtils#writeFully} has to loop until the
+   * buffer is drained instead of trusting one call - this pins the loop against a channel that always writes
+   * fewer bytes than it is given, which a real {@link java.nio.channels.FileChannel} on local disk essentially
+   * never does, so the bug would not show up against one in a test.
+   */
+  @Test
+  void writeFullyLoopsThroughAShortWritingChannel() throws IOException {
+    final byte[] content = "the quick brown fox jumps over the lazy dog".getBytes(StandardCharsets.UTF_8);
+    final ByteArrayOutputStream received = new ByteArrayOutputStream();
+    final AtomicInteger callCount = new AtomicInteger();
+
+    final WritableByteChannel shortWritingChannel = new WritableByteChannel() {
+      @Override
+      public int write(final ByteBuffer buffer) {
+        callCount.incrementAndGet();
+        // Never consumes more than 3 bytes per call, however much the buffer is offering.
+        final int n = Math.min(3, buffer.remaining());
+        for (int i = 0; i < n; i++)
+          received.write(buffer.get());
+        return n;
+      }
+
+      @Override
+      public boolean isOpen() {
+        return true;
+      }
+
+      @Override
+      public void close() {
+      }
+    };
+
+    FileUtils.writeFully(shortWritingChannel, ByteBuffer.wrap(content));
+
+    assertThat(received.toByteArray()).as("every byte must reach the channel, not just the first short write's worth")
+        .isEqualTo(content);
+    assertThat(callCount.get()).as("a channel capped at 3 bytes/call needs more than one call to drain the buffer")
+        .isGreaterThan(1);
   }
 }

@@ -824,14 +824,33 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     private void drainQueueNotifyingWaiters() {
       DatabaseAsyncTask leftover;
       // TASKS PARKED BY THE HELPING PATH ARE DROPPED TASKS TOO: NOTIFY THEM FIRST, THEN THE QUEUE
-      while ((leftover = helpDeferredTasks.isEmpty() ? queue.poll() : helpDeferredTasks.pollFirst()) != null)
-        if (leftover != FORCE_EXIT)
-          try {
-            leftover.completed();
-          } catch (final Throwable e) {
-            LogManager.instance()
-                .log(this, Level.SEVERE, "Error on notifying completion of dropped asynchronous task %s", e, leftover);
-          }
+      while ((leftover = helpDeferredTasks.isEmpty() ? queue.poll() : helpDeferredTasks.pollFirst()) != null) {
+        if (leftover == FORCE_EXIT)
+          continue;
+
+        // #7841: a task landing here raced a shrink, not necessarily a terminal close - the same ambiguity
+        // scheduleTask()'s post-offer check now accounts for on its side of this same race (search for issue
+        // #7841 there). Reschedule it onto whatever pool is live right now instead of just notifying it
+        // dropped: getBestSlot() throws the same "shut down" exception a genuine close would, so that case
+        // still falls through to completed() below exactly as before, and a momentarily-full live queue
+        // (waitIfQueueIsFull=false - this thread must not block its own shutdown/shrink on a peer's queue)
+        // falls through the same way rather than risk a hang here.
+        boolean rescheduled = false;
+        try {
+          rescheduled = getOwner().scheduleTask(-1, leftover, false, 0);
+        } catch (final Throwable e) {
+          // No live pool to hand it to - fall through to completed() below.
+        }
+        if (rescheduled)
+          continue;
+
+        try {
+          leftover.completed();
+        } catch (final Throwable e) {
+          LogManager.instance()
+              .log(this, Level.SEVERE, "Error on notifying completion of dropped asynchronous task %s", e, leftover);
+        }
+      }
     }
 
     DatabaseAsyncExecutorImpl getOwner() {
@@ -2367,17 +2386,26 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         // NOTE (#5081 review): remove(Object) on the Disruptor queue is an O(n) whole-queue-locking scan.
         // Acceptable ONLY because this undo runs on the rare dead-worker post-shutdown race - it must never
         // migrate onto the steady-state scheduling path.
-        if (!target.isAlive() && removeQuietly(queue, task))
-          // The worker exited (shutdown) after its final queue drain but before this offer landed:
-          // the task would sit unexecuted forever. Undo the offer and fail like any post-shutdown
-          // scheduling attempt. #5062 review r3 (point 2): this recheck is best-effort, not total -
-          // an offer landing after the final drain poll but before isAlive() flips to false passes
-          // the guard and is orphaned; closing it would need a lock on this hot path.
-          // #5062 review r4 (point 4): completed() is deliberately NOT invoked on the removed task -
-          // unlike the shutdown drain, the scheduling caller is still on the stack and this
-          // exception informs it directly, so no waiter can be parked on the task yet.
-          throw new DatabaseOperationException(
-              "Async executor has been shut down; cannot schedule asynchronous task " + task);
+        //
+        // `target.shutdown`, not only `!target.isAlive()` (issue #7841). `shutdown` is set BEFORE
+        // resizeThreads()/shutdownThreadsLocked() offer FORCE_EXIT to this worker's queue (both under
+        // lifecycleLock), while the worker stays alive for as long as it takes to drain whatever was ahead of
+        // FORCE_EXIT and then run drainQueueNotifyingWaiters() on whatever landed behind it - which is exactly
+        // where an offer racing behind FORCE_EXIT is silently dropped (completed() with no execute()) while
+        // isAlive() answers true the whole time. #5062 review r3 (point 2) called the isAlive()-only check
+        // "best-effort, not total" for precisely this reason; checking shutdown too closes the window a
+        // shrink (rather than a terminal close) can open, which is the one a producer pinned to a single
+        // bucket can hit on every resize (aProducerPinnedToOneBucketKeepsWorkingAcrossAShrink).
+        if ((target.shutdown || !target.isAlive()) && removeQuietly(queue, task))
+          // The task never got a chance to run on this worker. As documented on scheduleTask()'s only other
+          // caller of getBestSlot() (#6526 review round 7), a "shut down" exception here must mean a genuine
+          // terminal close, never an ordinary resize - so retry against whatever pool is live right now
+          // instead of failing the caller or losing the task. getBestSlot() throws the same exception this
+          // call used to throw directly when the retry finds no pool left, so a genuine close is still
+          // reported exactly as before. #5062 review r4 (point 4): completed() is deliberately NOT invoked on
+          // the removed task here - the scheduling caller is still on the stack, so no waiter can be parked on
+          // it yet, and the retry either runs it or reports the same terminal failure directly.
+          return scheduleTask(-1, task, waitIfQueueIsFull, applyBackPressureOnPercentage);
         counterScheduledTasks.incrementAndGet();
       }
       return scheduled;

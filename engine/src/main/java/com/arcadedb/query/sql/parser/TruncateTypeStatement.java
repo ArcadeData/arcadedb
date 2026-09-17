@@ -133,9 +133,25 @@ public class TruncateTypeStatement extends DDLStatement {
     }
 
     final boolean transactional = db.isTransactionActive();
-    if (lightweight)
-      truncateLightweightEdgeType(db, transactional);
-    else if (transactional)
+    if (lightweight) {
+      // `lightweight` is true both for a genuinely lightweight type and for a record-backed one that merely has a
+      // lightweight type somewhere below it (or above it: a lightweight type can just as well have a heavyweight
+      // subtype of its own, since a subtype's own LIGHTWEIGHT flag is independent of its parent's). Only route to
+      // the index-free DELETE-FROM path when every type actually in scope is lightweight; otherwise the
+      // record-backed ones keep the index-drop/rebuild path, and each lightweight one in the same scope is cleared
+      // afterwards with a targeted DELETE FROM - the only way to reach edges that allocate no record of their own
+      // (issue #7668).
+      final List<String> lightweightTypeNames = new ArrayList<>();
+      final boolean hasRecordBackedTypeInScope = collectTruncationScope(typez, polymorphic, lightweightTypeNames);
+      if (hasRecordBackedTypeInScope) {
+        if (transactional)
+          truncateInCallerTransaction(db);
+        else
+          truncateInOwnTransaction(db, schema, typez);
+        truncateLightweightEdgeTypes(db, transactional, lightweightTypeNames);
+      } else
+        truncateLightweightEdgeTypes(db, transactional, List.of(typeName.toString()));
+    } else if (transactional)
       truncateInCallerTransaction(db);
     else
       truncateInOwnTransaction(db, schema, typez);
@@ -153,15 +169,17 @@ public class TruncateTypeStatement extends DDLStatement {
   }
 
   /**
-   * Deletes a LIGHTWEIGHT edge type (or one with a LIGHTWEIGHT edge type below it, once POLYMORPHIC has cleared it
-   * for that) by running {@code DELETE FROM <type>} through the query engine, rather than {@code scanType()}: that
-   * statement already walks the vertices that hold such an edge and removes each one from both endpoints' lists
-   * correctly (issue #7477/#7478), so this reuses it instead of re-deriving the same removal-safe walk.
+   * Deletes one or more LIGHTWEIGHT edge types by running {@code DELETE FROM <type>} through the query engine for
+   * each, rather than {@code scanType()}: that statement already walks the vertices that hold such an edge and
+   * removes each one from both endpoints' lists correctly (issue #7477/#7478), so this reuses it instead of
+   * re-deriving the same removal-safe walk.
    * <p>
-   * {@code typeName.toString()}, not {@code getStringValue()}: the latter returns the plain, unescaped name, so a
-   * type created with a name that needs back-tick quoting (a reserved word, or one with a space) would rebuild into
-   * SQL text that fails to parse or, worse, is parsed as a different statement. {@code toString()} re-emits the
-   * back-tick quoting the parser produced this identifier from in the first place, which is what it exists for.
+   * Each entry in {@code typeNames} must already be safe to embed in SQL text (back-tick quoted where the name
+   * needs it - see {@link Identifier#quote}, or {@link Identifier#toString()} for the root type parsed from the
+   * statement itself), and must name a type on which {@code DELETE FROM} is not asked to be polymorphic beyond what
+   * the caller already accounted for: a lightweight type nested under another lightweight type is passed as its own
+   * entry rather than relying on {@code DELETE FROM} to reach it through the parent, so each entry here is deleted
+   * exactly once regardless of how many other entries are also its ancestor.
    * <p>
    * Mirrors the caller-transaction-vs-own-transaction split the record-backed paths make, for the same reason
    * (issue #6220): inside a caller transaction the delete joins it, so a {@code ROLLBACK} puts the edges back;
@@ -171,9 +189,10 @@ public class TruncateTypeStatement extends DDLStatement {
    * LSM-Tree tombstones, but the batch size still bounds how large a single committed transaction - one Raft log
    * entry in HA - gets for a type with a very large number of edges (issue #4817).
    */
-  private void truncateLightweightEdgeType(final Database db, final boolean transactional) {
+  private void truncateLightweightEdgeTypes(final Database db, final boolean transactional, final List<String> typeNames) {
     if (transactional) {
-      db.command("sql", "DELETE FROM " + typeName).close();
+      for (final String name : typeNames)
+        db.command("sql", "DELETE FROM " + name).close();
       return;
     }
 
@@ -182,7 +201,8 @@ public class TruncateTypeStatement extends DDLStatement {
     db.begin();
     boolean success = false;
     try {
-      db.command("sql", "DELETE FROM " + typeName + " BATCH " + batchSize).close();
+      for (final String name : typeNames)
+        db.command("sql", "DELETE FROM " + name + " BATCH " + batchSize).close();
       success = true;
     } finally {
       if (success)
@@ -190,6 +210,34 @@ public class TruncateTypeStatement extends DDLStatement {
       else
         db.rollback();
     }
+  }
+
+  /**
+   * Walks {@code type} and, when {@code polymorphic}, every subtype recursively, collecting the SQL-safe name (see
+   * {@link Identifier#quote}) of each lightweight edge type found into {@code lightweightTypeNames}.
+   * <p>
+   * A type's own LIGHTWEIGHT flag is independent of its parent's or its children's - a heavyweight edge type can
+   * have a lightweight subtype and vice versa - so the scope this statement touches can mix both shapes in either
+   * direction. Only the lightweight ones need the walk-based {@code DELETE FROM} of
+   * {@link #truncateLightweightEdgeTypes}; the caller uses the return value to decide whether the record-backed
+   * part of the same scope also needs the index-drop/rebuild path (issue #7668).
+   *
+   * @return whether at least one type in the scope is record-backed (not a lightweight edge type)
+   */
+  private static boolean collectTruncationScope(final DocumentType type, final boolean polymorphic,
+      final List<String> lightweightTypeNames) {
+    boolean hasRecordBackedType;
+    if (type instanceof EdgeType edgeType && edgeType.isLightweight()) {
+      lightweightTypeNames.add(Identifier.quote(type.getName()));
+      hasRecordBackedType = false;
+    } else
+      hasRecordBackedType = true;
+
+    if (polymorphic)
+      for (final DocumentType subType : type.getSubTypes())
+        hasRecordBackedType |= collectTruncationScope(subType, true, lightweightTypeNames);
+
+    return hasRecordBackedType;
   }
 
   /**
