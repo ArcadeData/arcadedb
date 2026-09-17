@@ -104,9 +104,13 @@ class Issue7529SecurityRefreshMetricsTest {
     try (final HAReplicationMetrics metrics = new HAReplicationMetrics(server)) {
       metrics.bindTo(registry);
 
+      // One gauge per member of PermissionRefreshMetrics.Snapshot, and the list is exhaustive on purpose:
+      // CoreApiSpec tells operators that every value of the ha.securityRefresh section is scrapeable under
+      // arcadedb.ha.security.*, so a member added to the record without a gauge makes that sentence false.
       for (final String name : List.of("arcadedb.ha.security.entries_applied",
-          "arcadedb.ha.security.refreshes_coalesced", "arcadedb.ha.security.sweeps_completed",
-          "arcadedb.ha.security.sweeps_failed", "arcadedb.ha.security.database_refresh_failures",
+          "arcadedb.ha.security.refreshes_requested", "arcadedb.ha.security.refreshes_coalesced",
+          "arcadedb.ha.security.sweeps_completed", "arcadedb.ha.security.sweeps_failed",
+          "arcadedb.ha.security.databases_refreshed", "arcadedb.ha.security.database_refresh_failures",
           "arcadedb.ha.security.last_entry_applied_at", "arcadedb.ha.security.last_sweep_at"))
         assertThat(registry.find(name).gauge()).as("%s must be registered", name).isNotNull();
     }

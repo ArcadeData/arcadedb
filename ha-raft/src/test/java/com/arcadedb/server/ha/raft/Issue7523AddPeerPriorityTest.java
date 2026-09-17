@@ -78,6 +78,45 @@ class Issue7523AddPeerPriorityTest {
         .hasMessageContaining("priority");
   }
 
+  /**
+   * The narrowing {@code JSONObject.getInt} would have done silently, and why it is not a rounding nit: every one
+   * of these truncates to {@code 0}, and {@code 0} is not a neutral default here - it is the value that declares
+   * the peer a witness as soon as any other peer carries a positive priority. The operator would have been told
+   * the peer was added, at the one priority with the opposite meaning to the one they asked for.
+   */
+  @Test
+  void aFractionalPriorityIsRefusedRatherThanTruncated() {
+    for (final Object fractional : List.of(0.5, 0.99, 2.5))
+      assertThatThrownBy(() -> PostAddPeerHandler.readPriority(new JSONObject().put("priority", fractional)))
+          .as("priority %s", fractional)
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("whole number");
+  }
+
+  /** Same reason: 2^32 narrows to 0 through an int cast, which would have read as a witness. */
+  @Test
+  void aPriorityTooLargeForAnIntIsRefusedRatherThanWrapped() {
+    assertThatThrownBy(() -> PostAddPeerHandler.readPriority(new JSONObject().put("priority", 4294967296L)))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("32-bit");
+
+    assertThatThrownBy(() -> PostAddPeerHandler.readPriority(new JSONObject().put("priority", Long.MIN_VALUE)))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  /** The boundary stays usable: a value that does fit is not caught by the guard above. */
+  @Test
+  void theLargestUsablePriorityIsStillAccepted() {
+    assertThat(PostAddPeerHandler.readPriority(new JSONObject().put("priority", Integer.MAX_VALUE)))
+        .isEqualTo(Integer.MAX_VALUE);
+  }
+
+  /** A whole number that merely arrived as a double is a whole number, and is accepted. */
+  @Test
+  void aWholeNumberWrittenAsADecimalIsAccepted() {
+    assertThat(PostAddPeerHandler.readPriority(new JSONObject("{\"priority\":10.0}"))).isEqualTo(10);
+  }
+
   /** The peer the handler hands to {@code addPeer} carries the id, the address and the priority together. */
   @Test
   void thePeerBuiltFromThePayloadCarriesThePriority() {

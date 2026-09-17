@@ -35,6 +35,7 @@ import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.monitor.DefaultServerMetrics;
 import com.arcadedb.server.monitor.ServerMetrics;
 import com.arcadedb.server.security.PermissionRefreshMetrics;
+import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Metrics;
@@ -143,9 +144,16 @@ public class GetServerHandler extends AbstractServerHttpHandler {
    * <p>
    * Readable by every authenticated user, like the topology fields beside it: these are counters and epoch
    * timestamps, naming no user, no group, no database and no permission.
+   * <p>
+   * Falls back to {@link PermissionRefreshMetrics.Snapshot#ZERO} when there is no security service to ask, the
+   * same answer the gauges give, so that a request served while one is being installed or torn down reports the
+   * section as zeros rather than failing the whole {@code mode=cluster} response over one of its members.
    */
   private JSONObject buildSecurityRefreshJSON() {
-    final PermissionRefreshMetrics.Snapshot stats = httpServer.getServer().getSecurity().getPermissionRefreshStats();
+    final ServerSecurity security = httpServer.getServer().getSecurity();
+    final PermissionRefreshMetrics.Snapshot stats = security != null
+        ? security.getPermissionRefreshStats()
+        : PermissionRefreshMetrics.Snapshot.ZERO;
     return new JSONObject()
         .put("entriesApplied", stats.entriesApplied())
         .put("refreshesRequested", stats.refreshesRequested())

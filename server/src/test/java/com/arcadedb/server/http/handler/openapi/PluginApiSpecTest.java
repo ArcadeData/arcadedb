@@ -28,6 +28,7 @@ import io.swagger.v3.oas.models.parameters.Parameter;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 
@@ -207,9 +208,17 @@ class PluginApiSpecTest {
         .containsExactlyInAnyOrder("peerId", "address", "name", "priority");
     // Issue #7523: the field is optional and its default has to be stated, because 0 is not "unset" - it is the
     // value that makes a peer a witness as soon as any other peer carries a positive one.
-    assertThat(schema.getProperties().get("priority").getDescription())
+    final Schema<?> priority = schema.getProperties().get("priority");
+    assertThat(priority.getDescription())
         .containsIgnoringCase("non-negative")
         .containsIgnoringCase("defaults to 0");
+
+    // The facets have to say what PostAddPeerHandler.readPriority does, or a generated client rejects the
+    // explicit null that handler accepts and sends the negative value it refuses.
+    assertThat(priority.getType()).isEqualTo("integer");
+    assertThat(priority.getNullable()).as("an explicit null means 'not stated'").isTrue();
+    assertThat(priority.getDefault()).isEqualTo(0);
+    assertThat(priority.getMinimum()).isEqualByComparingTo(BigDecimal.ZERO);
   }
 
   @Test

@@ -31,6 +31,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.util.List;
+import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -214,7 +215,7 @@ class RaftGroupAndTokenSeedOnPeerAdd3NodesIT extends BaseRaftHATest {
     return security(serverIndex).getApiTokenConfiguration().getToken(plaintext) != null;
   }
 
-  private static void awaitOn(final int serverIndex, final java.util.concurrent.Callable<Boolean> condition) {
+  private static void awaitOn(final int serverIndex, final Callable<Boolean> condition) {
     Awaitility.await("server " + serverIndex)
         .atMost(30, TimeUnit.SECONDS).pollInterval(200, TimeUnit.MILLISECONDS)
         .until(condition);

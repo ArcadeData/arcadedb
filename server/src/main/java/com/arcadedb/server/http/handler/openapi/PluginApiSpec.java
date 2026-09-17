@@ -27,6 +27,7 @@ import io.swagger.v3.oas.models.media.Schema;
 import io.swagger.v3.oas.models.responses.ApiResponse;
 import io.swagger.v3.oas.models.responses.ApiResponses;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Set;
 
@@ -184,7 +185,13 @@ public class PluginApiSpec implements OpenApiContributor {
 
             The optional 'priority' carries the peer's Raft leader-election priority, which before it could only \
             be declared in arcadedb.ha.serverList at startup: a peer added at runtime always got the default and \
-            a witness admitted this way could be elected leader. """ + RAFT_REQUIRED);
+            a witness admitted this way could be elected leader.
+
+            Note the direction: this grows the cluster the SERVER SERVING THIS REQUEST belongs to, with the peer \
+            named in the body. It never makes that server join another cluster, so it has to be issued against a \
+            member of the target cluster. An address that resolves to the serving node's own peer id is answered \
+            400 rather than accepted: it used to report the peer as added while doing nothing, because a peer \
+            already in the committed configuration is an idempotent no-op. """ + RAFT_REQUIRED);
     post.setRequestBody(SpecBuilders.jsonBody("Peer to add", "AddPeerRequest", true));
     post.setResponses(SpecBuilders.standardResponses("200",
         SpecBuilders.jsonResponse("Peer added and seeded", "ClusterActionResponse"),
@@ -614,12 +621,22 @@ public class PluginApiSpec implements OpenApiContributor {
     schema.addProperty("peerId", SpecBuilders.string("Peer identifier"));
     schema.addProperty("address", SpecBuilders.string("Peer address"));
     schema.addProperty("name", SpecBuilders.string("Optional display name"));
-    schema.addProperty("priority", SpecBuilders.integer(
+    final Schema<Number> priority = SpecBuilders.integer(
         "Raft leader-election priority, a non-negative integer. Defaults to 0, which is Ratis's own default and "
             + "leaves the peer as electable as every other peer on a cluster where nobody names a priority. Once ANY "
             + "peer carries a positive priority the priority-0 ones become witnesses that are never elected and are "
             + "skipped as step-down targets, so 0 is how a witness is declared and a higher value how a preferred "
-            + "leader is. The same field the 'priority' of an arcadedb.ha.serverList entry sets."));
+            + "leader is. A fractional value or one that does not fit in a 32-bit integer is refused rather than "
+            + "rounded, because the value it would round to declares a witness. The same field the 'priority' of an "
+            + "arcadedb.ha.serverList entry sets.");
+    // The three facets exist so a generated client refuses what the handler refuses, instead of sending it and
+    // reading a 400: PostAddPeerHandler.readPriority takes an explicit null as "not stated" and rejects a
+    // negative value by name. A schema declaring only 'integer' would have done the opposite on both counts -
+    // rejected a null it accepts, and passed a negative one it does not (issue #7523).
+    priority.setNullable(true);
+    priority.setDefault(0);
+    priority.setMinimum(BigDecimal.ZERO);
+    schema.addProperty("priority", priority);
     schema.setRequired(List.of("peerId", "address"));
     return schema;
   }
