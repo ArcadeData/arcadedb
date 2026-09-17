@@ -1639,6 +1639,20 @@ public enum GlobalConfiguration {
       "Number of iterations to generate the salt or user password. Changing this setting does not affect stored passwords",
       Integer.class, 65536),
 
+  SERVER_API_TOKEN_REQUIRE_SECURE_TRANSPORT("arcadedb.server.apiTokenRequireSecureTransport", SCOPE.SERVER,
+      """
+      When enabled, `POST /api/v1/server/api-tokens` refuses to mint a token unless the request arrived over HTTPS or \
+      from a loopback peer - the same precondition the gRPC `CreateApiToken` RPC has applied since 26.10.1. The token \
+      is the one response field on the HTTP API that the server can never reproduce and that authenticates its holder, \
+      so over a cleartext listener to a remote client it is readable by anything on the path. \
+      Default is false, which keeps the behaviour this route has always had: Studio's own token UI mints over the very \
+      same route, so enforcing by default would break every Studio deployment served over plain HTTP from a host that \
+      is not the operator's own. When it is false and the transport is unprotected the mint is still logged at WARNING. \
+      A TLS-terminating reverse proxy in front of a cleartext listener presents as a remote cleartext peer unless it \
+      forwards from loopback: this setting reads the live connection, deliberately not the X-Forwarded-Proto header, \
+      which any client can send. Such a deployment has moved the trust boundary to the proxy (issue #7372)""",
+      Boolean.class, false),
+
   SERVER_SECURITY_IMPORT_BLOCK_LOCAL_NETWORKS("arcadedb.server.security.importBlockLocalNetworks", SCOPE.SERVER,
       "When enabled (default), the SQL `IMPORT DATABASE` command refuses HTTP(S) URLs that resolve to loopback, link-local, "
           + "private (site-local), wildcard or multicast addresses. This mitigates Server-Side Request Forgery (SSRF) against "

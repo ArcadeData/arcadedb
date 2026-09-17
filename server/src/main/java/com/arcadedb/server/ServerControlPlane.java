@@ -809,10 +809,11 @@ public class ServerControlPlane {
    * <b>This method performs no transport check.</b> It cannot: it does not know how the caller
    * arrived. Deciding whether the answer may be written back is the transport's job. gRPC does it,
    * through {@code GrpcTransportSecurityInterceptor}: the mint is refused unless the call arrived
-   * over TLS or from a loopback peer. <b>HTTP does not</b> - {@code POST /server/api-tokens} mints a
-   * token over a cleartext listener to any host, as it always has - which is filed as issue #7372
-   * rather than changed here, because tightening a route that already behaves this way is a
-   * compatibility decision and not part of adding a second transport.
+   * over TLS or from a loopback peer. HTTP applies the same rule in {@code PostApiTokenHandler}, but
+   * only when {@code arcadedb.server.apiTokenRequireSecureTransport} is on: the route has always
+   * minted over a cleartext listener to any host and Studio's own token UI still does, so refusing by
+   * default is a compatibility decision left to the operator (issue #7372). With the setting off, an
+   * unprotected mint is logged at WARNING.
    *
    * A blank {@code database} means {@code "*"}, every database. That is what an omitted key has always
    * meant over HTTP; it now also covers an explicitly empty one, which previously stored a token scoped
