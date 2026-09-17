@@ -197,9 +197,21 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   public void configure(final ArcadeDBServer arcadeDBServer, final ContextConfiguration configuration) {
   }
 
+  /**
+   * Issue #7545: schedules the {@code server-groups.json} reload watcher, once, for the lifetime of this
+   * service - the mirror of the {@code groupRepository.stop()} that {@link #stopService()} has always done.
+   * <p>
+   * It used to be scheduled only as a side effect of {@link SecurityGroupFileRepository#load()}, i.e. only on a
+   * node that reached {@link SecurityGroupFileRepository#getGroups()} while the in-memory document was still
+   * absent. A node seeded by a replicated {@code SECURITY_GROUPS_ENTRY} before it opened any database gets its
+   * document published straight into memory by {@link #applyReplicatedGroups}, so that branch never ran and the
+   * file was never watched - an operator's hand edit on that node stayed invisible until restart. The
+   * repository keeps its own guard on every publisher; this call additionally makes the watcher independent of
+   * any document ever arriving.
+   */
   @Override
   public void startService() {
-    // NO ACTION
+    groupRepository.startWatching();
   }
 
   public void loadUsers() {

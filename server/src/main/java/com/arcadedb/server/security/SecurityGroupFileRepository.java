@@ -66,6 +66,9 @@ public class SecurityGroupFileRepository {
   public synchronized void save(final JSONObject configuration) throws IOException {
     persist(configuration);
     latestGroupConfiguration = configuration;
+    // Issue #7545: publishing a document is one of the three ways this repository can be reached first, and
+    // every one of them has to leave the node watching the file. See startWatching().
+    startWatching();
   }
 
   /**
@@ -86,6 +89,11 @@ public class SecurityGroupFileRepository {
    */
   public synchronized Exception applyReplicated(final JSONObject configuration) {
     latestGroupConfiguration = configuration;
+    // Issue #7545: BEFORE the write, so the watcher exists even on the node whose disk is full. This path used
+    // to publish the document without ever scheduling the watcher, and because it leaves
+    // latestGroupConfiguration non-null, getGroups()'s lazy-init branch - the only other place that scheduled
+    // it - was never entered again. See startWatching().
+    startWatching();
     try {
       persist(configuration);
       return null;
@@ -170,29 +178,72 @@ public class SecurityGroupFileRepository {
     return cfg;
   }
 
-  protected synchronized JSONObject load() throws IOException {
-    if (checkFileUpdatedTimer == null) {
-      checkFileUpdatedTimer = new Timer();
-      final Timer timer = checkFileUpdatedTimer;
-      checkFileUpdatedTimer.schedule(new TimerTask() {
-        @Override
-        public void run() {
-          // CHECK THE INSTANCE IS NOT CHANGED (THIS COULD HAPPEN DURING TESTS)
-          if (checkFileUpdatedTimer == timer)
-            try {
-              if (file.exists() && file.lastModified() > fileLastUpdated) {
-                LogManager.instance().log(this, Level.INFO, "Server groups configuration changed, reloading it...");
-                load();
+  /**
+   * Schedules the {@link #FILE_NAME} modification watcher. Idempotent, and callable before the document exists:
+   * the task checks {@code file.exists()} on every tick.
+   * <p>
+   * Split out of {@link #load()} for issue #7545. Scheduling it there tied the watcher's existence to the
+   * document being ABSENT when the store was first reached, because {@code load()} runs only from
+   * {@link #getGroups()}'s lazy-init branch. {@link #applyReplicated} publishes the document straight into
+   * {@code latestGroupConfiguration}, so on a node whose first contact with the group store is a replicated
+   * {@code SECURITY_GROUPS_ENTRY} - a freshly added peer with no database open yet, which is exactly the node
+   * {@code ServerSecurity.seedGroupsClusterWide} sends a group document to - that branch was never entered
+   * again and the file was never watched for the lifetime of the process. A hand-edited
+   * {@code server-groups.json} on such a node was then ignored until restart.
+   * <p>
+   * Every publisher now calls this, and {@code ServerSecurity.startService()} calls it once at startup so the
+   * watcher's lifetime is the service's rather than the first document's - {@code stopService()} already
+   * cancelled it through {@link #stop()}.
+   * <p>
+   * One-shot per instance, as the {@code load()} guard it replaced was: {@link #stop()} cancels the timer and
+   * leaves the reference set, so a stopped repository does not start watching again. That is not a restart hole
+   * - {@code ArcadeDBServer} builds a new {@code ServerSecurity}, and with it a new repository, on every start
+   * ({@code grep -rn 'new ServerSecurity(' server/src/main/java} finds exactly one site, in
+   * {@code startInternal()}, and {@code stopInternal()} is the only caller of {@code stopService()}).
+   * <p>
+   * The timer is a DAEMON, which the one it replaced was not. It used to exist only on a server that had
+   * already touched the group document; it now exists on every started repository, so a caller that skips
+   * {@link #stop()} must not be able to hold a JVM open. Same choice as {@code ServerSecurity}'s
+   * {@code tokenFailureCleanupTimer}.
+   */
+  public synchronized void startWatching() {
+    if (checkFileUpdatedTimer != null)
+      return;
 
-                if (reloadCallback != null)
-                  reloadCallback.call(latestGroupConfiguration);
-              }
-            } catch (final Throwable e) {
-              LogManager.instance().log(this, Level.SEVERE, "Error on reloading file '%s' after was changed", e, FILE_NAME);
+    // Adopt the file's current modification time as the baseline. The watcher fires on
+    // `lastModified() > fileLastUpdated`, and fileLastUpdated stays 0 until something actually reads the file -
+    // so on a server restart, where this now runs before any read, the first tick would treat a
+    // server-groups.json nobody had touched as changed, log "Server groups configuration changed, reloading
+    // it..." and run a full permission refresh on every single start. Nothing has been read or published at
+    // this point, so a baseline here can only mean "report changes from now on", which is what a watcher
+    // started at this moment is for; load() overwrites the field with what it really read, as it always did.
+    if (fileLastUpdated == 0L && file.exists())
+      fileLastUpdated = file.lastModified();
+
+    final Timer timer = new Timer("arcadedb-security-groups-watcher", true);
+    checkFileUpdatedTimer = timer;
+    timer.schedule(new TimerTask() {
+      @Override
+      public void run() {
+        // CHECK THE INSTANCE IS NOT CHANGED (THIS COULD HAPPEN DURING TESTS)
+        if (checkFileUpdatedTimer == timer)
+          try {
+            if (file.exists() && file.lastModified() > fileLastUpdated) {
+              LogManager.instance().log(this, Level.INFO, "Server groups configuration changed, reloading it...");
+              load();
+
+              if (reloadCallback != null)
+                reloadCallback.call(latestGroupConfiguration);
             }
-        }
-      }, checkConfigReloadEveryMs, checkConfigReloadEveryMs);
-    }
+          } catch (final Throwable e) {
+            LogManager.instance().log(this, Level.SEVERE, "Error on reloading file '%s' after was changed", e, FILE_NAME);
+          }
+      }
+    }, checkConfigReloadEveryMs, checkConfigReloadEveryMs);
+  }
+
+  protected synchronized JSONObject load() throws IOException {
+    startWatching();
 
     JSONObject json = null;
     if (file.exists()) {
