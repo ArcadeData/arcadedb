@@ -1023,7 +1023,6 @@ public class RemoteGrpcServer implements AutoCloseable {
           + host + "'. Enable TLS, or explicitly opt in with allowInsecureCredentials=true.");
   }
 
-
   /**
    * Creates call credentials for authentication, naming no database. Used by the admin plane, whose
    * RPCs authenticate from the request body and never read the database metadata.
