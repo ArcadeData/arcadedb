@@ -312,13 +312,76 @@ class Issue7842DeleteKeepsPersistedGraphTest {
     }
   }
 
+  /**
+   * PRODUCT quantization is the one case this fix deliberately does NOT cover: the PQ codes are addressed by the
+   * same ordinal and are produced wholesale by the rebuild, so reusing a graph whose ordinal space has holes would
+   * pair it with a codebook built over a dense one. That guard is a single {@code quantizationType == PRODUCT} test
+   * at the top of the reuse path, nothing fails loudly if a refactor drops it, and what it would produce is a
+   * silently wrong ranking rather than a crash - so it is pinned here.
+   */
+  @Test
+  void aProductQuantizedIndexStillRebuildsAfterDeletes() throws Exception {
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+      final Database db = factory.create();
+      try {
+        populate(db, "PRODUCT");
+        vectorIndex(db).buildVectorGraphNow();
+      } finally {
+        if (db.isOpen())
+          db.close();
+      }
+    }
+
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+      final Database db = factory.open();
+      try {
+        db.begin();
+        db.command("sql", "DELETE FROM Doc WHERE id = ?", 0);
+        db.commit();
+
+        ((DatabaseInternal) db).kill();
+        db.close();
+      } finally {
+        if (db.isOpen())
+          db.close();
+      }
+    }
+
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+      final Database db = factory.open();
+      try {
+        final LSMVectorIndex index = vectorIndex(db);
+        assertThat(index.getMetadata().quantizationType)
+            .as("precondition: the guard under test only applies to PRODUCT").isEqualTo(VectorQuantizationType.PRODUCT);
+        assertThat(index.getStats().get("deletedVectors"))
+            .as("precondition: read before the first search, which is what discards the tombstone set").isEqualTo(1L);
+
+        index.findNeighborsFromVector(embedding(1), 5, 64);
+
+        assertThat(index.getStats().get("graphReusesWithTombstonedNodes"))
+            .as("a PRODUCT-quantized index must never take the tombstone-tolerant reuse path").isZero();
+        assertThat(index.getStats().get("graphRebuildCount"))
+            .as("it must pay the full rebuild instead, which is what keeps its codebook and its graph on the same "
+                + "dense ordinal space")
+            .isEqualTo(1L);
+      } finally {
+        db.drop();
+      }
+    }
+  }
+
   private static void populate(final Database db) {
+    populate(db, null);
+  }
+
+  private static void populate(final Database db, final String quantization) {
     db.transaction(() -> {
       final var type = db.getSchema().createDocumentType("Doc");
       type.createProperty("id", Type.INTEGER);
       type.createProperty("vector", Type.ARRAY_OF_FLOATS);
       db.command("sql", "CREATE INDEX ON Doc (vector) LSM_VECTOR METADATA { \"dimensions\": " + DIMENSIONS
-          + ", \"similarity\": \"COSINE\" }");
+          + ", \"similarity\": \"COSINE\""
+          + (quantization != null ? ", \"quantization\": \"" + quantization + "\"" : "") + " }");
     });
 
     db.begin();
