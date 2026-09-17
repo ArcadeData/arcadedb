@@ -204,7 +204,12 @@ class PluginApiSpecTest {
     final Schema<?> schema = openAPI.getComponents().getSchemas().get("AddPeerRequest");
     assertThat(schema.getRequired()).containsExactlyInAnyOrder("peerId", "address");
     assertThat(schema.getProperties().keySet())
-        .containsExactlyInAnyOrder("peerId", "address", "name");
+        .containsExactlyInAnyOrder("peerId", "address", "name", "priority");
+    // Issue #7523: the field is optional and its default has to be stated, because 0 is not "unset" - it is the
+    // value that makes a peer a witness as soon as any other peer carries a positive one.
+    assertThat(schema.getProperties().get("priority").getDescription())
+        .containsIgnoringCase("non-negative")
+        .containsIgnoringCase("defaults to 0");
   }
 
   @Test

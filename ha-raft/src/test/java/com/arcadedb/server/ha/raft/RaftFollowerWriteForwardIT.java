@@ -39,8 +39,7 @@ import java.util.logging.Level;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Integration test verifying that write commands sent to a Raft follower's HTTP endpoint
- * are transparently proxied to the leader by {@link com.arcadedb.server.http.handler.LeaderProxy}
+ * Integration test verifying that write commands sent to a Raft follower's HTTP endpoint reach the leader
  * and succeed end-to-end.
  *
  * <p>Specifically:
@@ -50,8 +49,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   <li>A DML command (INSERT) sent to a follower is similarly forwarded, persisted on the
  *       leader, and replicated to all nodes.</li>
  * </ul>
+ *
+ * <p>The component that does the forwarding is {@code RaftReplicatedDatabase.forwardCommandToLeaderViaRaft},
+ * reached from {@code PostCommandHandler} through the engine. This class was called {@code RaftLeaderProxyIT}
+ * and its javadoc credited {@code LeaderProxy} - a transparent follower-to-leader HTTP proxy that nothing ever
+ * constructed, so no request had travelled that path and the test was green for a reason unrelated to the name
+ * it carried (issue #7528). {@code LeaderProxy} is gone; the name now says which path is under test.
  */
-class RaftLeaderProxyIT extends BaseRaftHATest {
+class RaftFollowerWriteForwardIT extends BaseRaftHATest {
 
   private static final String     PROXIED_TYPE = "ProxiedType";
   private static final HttpClient HTTP_CLIENT  = HttpClient.newBuilder()

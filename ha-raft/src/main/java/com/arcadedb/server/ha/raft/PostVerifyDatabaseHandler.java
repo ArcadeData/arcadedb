@@ -349,7 +349,7 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
         if (clusterToken != null) {
           conn.setRequestProperty("X-ArcadeDB-Cluster-Token", clusterToken);
           // Forward the initiating user's identity so that authorization on the peer evaluates
-          // against the actual caller (matching LeaderProxy's pattern).
+          // against the actual caller (the same substitution LeaderCommandForwarder makes for a session token).
           conn.setRequestProperty("X-ArcadeDB-Forwarded-User", user.getName());
           // One hop, whatever this address turns out to name: the node that serves this query answers with its
           // own checksums instead of fanning out again (issue #6221). Set inside the token branch because the
