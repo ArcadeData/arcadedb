@@ -59,15 +59,7 @@ public class Url extends SimpleNode {
     // constructor is public - WITH A urlString THAT ISN'T ONE OF THE SCHEME-PREFIXED FORMS WOULD OTHERWISE RENDER
     // RAW AND UNPARSEABLE HERE, THE SAME TRAP CreateTriggerStatement.actionCodeQuoted HAS (CODERABBIT, ISSUE #7800).
     // THIS FALLBACK QUOTES A PLAIN, ALREADY-DECODED VALUE, SO NO DOUBLE-ESCAPING RISK APPLIES TO IT.
-    builder.append('\'');
-    if (urlString != null)
-      for (int i = 0; i < urlString.length(); i++) {
-        final char c = urlString.charAt(i);
-        if (c == '\'' || c == '\\')
-          builder.append('\\');
-        builder.append(c);
-      }
-    builder.append('\'');
+    appendQuotedStringLiteral(builder, urlString);
   }
 
   private static boolean isRecognizedScheme(final String url) {
