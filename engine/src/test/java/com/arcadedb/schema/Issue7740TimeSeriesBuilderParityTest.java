@@ -118,21 +118,20 @@ class Issue7740TimeSeriesBuilderParityTest extends TestHelper {
   // ---- 2. the column order ----
 
   /**
-   * A field declared BEFORE the timestamp, which the remote path regroups and the embedded one used to replay as
-   * written. The two now agree, and they agree on the order the server's own CREATE builds.
+   * A recipe the grammar CAN spell produces the same type either way, which is the parity #7740 asks for.
    */
   @Test
   void theEmbeddedAndTheRenderedPathOrderTheColumnsAlike() {
     final TimeSeriesType embedded = database.getSchema().buildTimeSeriesType().withName("Embedded")
-        .withField("cpu", Type.DOUBLE)
         .withTimestamp("ts")
         .withTag("host", Type.STRING)
+        .withField("cpu", Type.DOUBLE)
         .create();
 
     database.command("sql", database.getSchema().buildTimeSeriesType().withName("Rendered")
-        .withField("cpu", Type.DOUBLE)
         .withTimestamp("ts")
         .withTag("host", Type.STRING)
+        .withField("cpu", Type.DOUBLE)
         .toSQL().getFirst());
     final TimeSeriesType rendered = (TimeSeriesType) database.getSchema().getType("Rendered");
 
@@ -140,15 +139,50 @@ class Issue7740TimeSeriesBuilderParityTest extends TestHelper {
     assertThat(columnNames(rendered)).as("one builder body, one column order").isEqualTo(columnNames(embedded));
   }
 
-  /** Within a role, declaration order is kept: canonical is a regrouping, not a sort. */
+  /**
+   * And a recipe it cannot spell is NOT silently turned into a different type on the embedded side to match.
+   * <p>
+   * Regrouping the embedded declaration was the first answer to #7740 and it was wrong in a way the engine can
+   * feel: the stored order is the type's identity - column indices are positions in it, and a sample is a
+   * positional array - so a logical restore, which maps an export's sample arrays onto the type it has just
+   * rebuilt, would have put every value in the wrong column ({@code Issue7371PromQLDiscoveryProjectionIT} builds
+   * exactly that layout on purpose, and caught it). What the rendering cannot carry is documented on
+   * {@link TimeSeriesTypeBuilder#toSQL()}, and the one path where the difference would corrupt rather than
+   * surprise refuses it: see {@code JsonlImporterFormat}.
+   */
+  @Test
+  void theRenderedPathRegroupsWhatTheGrammarCannotSpell() {
+    final String sql = database.getSchema().buildTimeSeriesType().withName("FieldFirst")
+        .withField("cpu", Type.DOUBLE)
+        .withTimestamp("ts")
+        .withTag("host", Type.STRING)
+        .toSQL().getFirst();
+
+    assertThat(sql).isEqualTo("CREATE TIMESERIES TYPE `FieldFirst` TIMESTAMP `ts` TAGS (`host` STRING) "
+        + "FIELDS (`cpu` DOUBLE)");
+  }
+
+  /** The embedded path still accepts it, and stores it as given: the engine supports the layout. */
+  @Test
+  void theEmbeddedPathKeepsTheOrderItWasGiven() {
+    final TimeSeriesType type = database.getSchema().buildTimeSeriesType().withName("AsDeclared")
+        .withField("cpu", Type.DOUBLE)
+        .withTimestamp("ts")
+        .withTag("host", Type.STRING)
+        .create();
+
+    assertThat(columnNames(type)).containsExactly("cpu", "ts", "host");
+  }
+
+  /** Within a role, declaration order is kept on both paths. */
   @Test
   void declarationOrderSurvivesWithinEachRole() {
     final TimeSeriesType type = database.getSchema().buildTimeSeriesType().withName("WithinRole")
-        .withField("zeta", Type.DOUBLE)
-        .withField("alpha", Type.DOUBLE)
         .withTimestamp("ts")
         .withTag("rack", Type.STRING)
         .withTag("host", Type.STRING)
+        .withField("zeta", Type.DOUBLE)
+        .withField("alpha", Type.DOUBLE)
         .create();
 
     assertThat(columnNames(type)).containsExactly("ts", "rack", "host", "zeta", "alpha");

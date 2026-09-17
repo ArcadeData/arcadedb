@@ -194,6 +194,15 @@ public class TimeSeriesTypeBuilder {
   public List<String> toSQL() {
     validate();
     validateForSQL();
+    // NOTE on the column ORDER, which is the one thing this rendering cannot carry (issue #7740): the grammar has
+    // one slot for the timestamp, one for TAGS and one for FIELDS, so renderCreate() regroups a declaration that
+    // interleaves them. The embedded create() stores the order as GIVEN - it must, because the order is the
+    // type's identity: column indices are positions in it and a sample is a positional array, and reordering it
+    // would break a logical restore, which maps an export's sample arrays onto the type it just rebuilt. So the
+    // same builder body can produce the same COLUMNS in a different ORDER here than embedded, and a caller who
+    // depends on the order declares it canonically or creates the type embedded. The one path where that
+    // difference would corrupt rather than surprise refuses it outright: JsonlImporterFormat compares the type it
+    // gets back against the export's own column list.
 
     return List.of(renderCreate());
   }
@@ -259,29 +268,6 @@ public class TimeSeriesTypeBuilder {
     final TimeSeriesCodec codec = column.getCompressionHint();
     if (codec != null && codec != ColumnDefinition.defaultCodecFor(column.getDataType(), column.getRole()))
       sql.append(" CODEC ").append(codec.name());
-  }
-
-  /**
-   * The columns in the order a created type carries them: the TIMESTAMP column, then the TAGs, then the FIELDs,
-   * each group keeping its declaration order (issue #7740). This is the order {@link #renderCreate()} emits and
-   * the order the server's {@code CREATE TIMESERIES TYPE} builds, so the embedded and the remote path produce
-   * the same type from the same builder body.
-   * <p>
-   * The three roles are the whole of {@link ColumnDefinition.ColumnRole}, so every column lands in exactly one
-   * of the groups and nothing can be dropped by reordering.
-   */
-  private List<ColumnDefinition> canonicalColumns() {
-    final List<ColumnDefinition> ordered = new ArrayList<>(columns.size());
-    addColumnsOfRole(ordered, ColumnDefinition.ColumnRole.TIMESTAMP);
-    addColumnsOfRole(ordered, ColumnDefinition.ColumnRole.TAG);
-    addColumnsOfRole(ordered, ColumnDefinition.ColumnRole.FIELD);
-    return ordered;
-  }
-
-  private void addColumnsOfRole(final List<ColumnDefinition> out, final ColumnDefinition.ColumnRole role) {
-    for (final ColumnDefinition col : columns)
-      if (col.getRole() == role)
-        out.add(col);
   }
 
   /**
@@ -406,6 +392,7 @@ public class TimeSeriesTypeBuilder {
     //
     // The single-TIMESTAMP rule used to live here too and now lives in validate(), which toSQL() runs first:
     // the grammar having one slot for it is a consequence of the type having one, not the reason (issue #7740).
+
   }
 
   /**
@@ -435,18 +422,21 @@ public class TimeSeriesTypeBuilder {
     type.setCompactionBucketIntervalMs(compactionBucketIntervalMs);
     type.setDownsamplingTiers(downsamplingTiers);
 
-    // Canonical order, not declaration order (issue #7740): the SQL rendering has one slot for the timestamp,
-    // one for the TAGS and one for the FIELDS, so a remote create() regroups the columns and an embedded one
-    // that replayed insertion order gave the same builder body two different types - [cpu, ts, host] here and
-    // [ts, host, cpu] over the wire - and with them two different sets of column indices. The server's own
-    // CreateTimeSeriesTypeStatement reads the clauses in this order, so this is the order that agrees with it.
-    final List<ColumnDefinition> ordered = canonicalColumns();
-
-    for (final ColumnDefinition col : ordered)
+    // DECLARATION order, deliberately (issue #7740, and the IT that caught the first answer to it): the stored
+    // column order is not a presentation detail, it is the type's identity - column indices are positions in it,
+    // and a TimeSeries sample is a positional array. Reordering here would have silently rewritten what a caller
+    // declared, and two paths depend on it not being rewritten: JsonlImporterFormat rebuilds a type from an
+    // export's own column list and then maps each exported sample ARRAY onto the type's current order, so a
+    // restore of a type whose FIELD precedes its TAGs would have landed every value in the wrong column; and
+    // Issue7371PromQLDiscoveryProjectionIT builds exactly that layout on purpose, because it is the one that
+    // catches a projection indexing bug. The divergence #7740 reports is closed at the other end: a declaration
+    // the grammar cannot spell is REFUSED by toSQL() rather than regrouped into a different type - see
+    // validateForSQL().
+    for (final ColumnDefinition col : columns)
       type.addTsColumn(col);
 
     // Register properties for each column
-    for (final ColumnDefinition col : ordered)
+    for (final ColumnDefinition col : columns)
       type.createProperty(col.getName(), col.getDataType());
 
     // Wrap engine initialization + type registration in recordFileChanges so that, under HA, the
