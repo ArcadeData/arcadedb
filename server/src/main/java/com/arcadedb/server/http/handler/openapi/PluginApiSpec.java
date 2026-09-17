@@ -586,7 +586,10 @@ public class PluginApiSpec implements OpenApiContributor {
     schema.addProperty("divergenceCauses", SpecBuilders.mapOf(
         SpecBuilders.string("Why that database was quarantined: WAL_VERSION_GAP, UNDECODABLE_LOG_ENTRY or APPLY_ERROR"),
         """
-            Why each quarantined database was quarantined, keyed by database name - the same names             'divergedDatabases' lists (issue #7741). The names alone read as a replication problem even when the             cause is this node's own unreadable log segment, which is a different thing for an operator to do             something about."""));
+            Why each quarantined database was quarantined, keyed by database name - the same names \
+            'divergedDatabases' lists (issue #7741). The names alone read as a replication problem even when the \
+            cause is this node's own unreadable log segment, which is a different thing for an operator to do \
+            something about."""));
     schema.addProperty("snapshotAppliedFloor", SpecBuilders.integer(
         "Raft index the last installed snapshot brought this node to"));
     schema.addProperty("databaseAppliedFloors", SpecBuilders.mapOf(

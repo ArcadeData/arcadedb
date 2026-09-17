@@ -395,7 +395,7 @@ class GrpcErrorMapperTest {
 
     final StatusException se = GrpcErrorMapper.toStatusException(
         new ServerIsNotTheLeaderException("not the leader", "10.0.0.7:2480"), "graphBatchLoad", null, callerTrailers,
-        false);;
+        false);
 
     assertThat(se.getStatus().getCode())
         .as("retrying the same follower is not the fix; the address is")
