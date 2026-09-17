@@ -45,6 +45,7 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.entry;
 import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -221,6 +222,26 @@ class Issue7741AuditItemsTest {
     assertThat(message.split("snapshot install", -1).length - 1)
         .as("the install is the cause AND the reason for the floor: said once")
         .isEqualTo(1);
+  }
+
+  /** The first cause a quarantine is recorded with is the one it keeps, and a resync clears the slate. */
+  @Test
+  void theFirstCauseWinsUntilTheResyncClearsIt() {
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+
+    sm.markStateDiverged("db-A", DivergenceCause.WAL_VERSION_GAP);
+    sm.markStateDiverged("db-A", DivergenceCause.APPLY_ERROR);
+
+    assertThat(sm.getLocalResyncState().divergenceCauses())
+        .as("a quarantined database goes on failing; the first cause is the one that describes why")
+        .containsExactly(entry("db-A", DivergenceCause.WAL_VERSION_GAP));
+
+    sm.clearDivergedDatabase("db-A");
+    sm.markStateDiverged("db-A", DivergenceCause.APPLY_ERROR);
+
+    assertThat(sm.getLocalResyncState().divergenceCauses())
+        .as("and the next quarantine records afresh")
+        .containsExactly(entry("db-A", DivergenceCause.APPLY_ERROR));
   }
 
   // ---- helpers ----

@@ -4755,6 +4755,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
   /**
    * {@link #markStateDiverged(String)} naming why, which is what the cluster status document reports
    * (issue #7741).
+   * <p>
+   * The FIRST cause a quarantine is recorded with is the one it keeps: {@code putIfAbsent} deliberately, which is
+   * the behaviour the {@code Set.add()} this replaced already had. A quarantined database goes on failing - every
+   * later committed entry for it hits the same wall - so the last cause would be noise from a database that is
+   * already waiting for a resync, while the first is the one that describes what went wrong. The map is cleared
+   * when the resync lands, so the next quarantine records afresh (claude-review on PR #7747).
    */
   // @VisibleForTesting
   void markStateDiverged(final String dbName, final DivergenceCause cause) {
