@@ -284,7 +284,16 @@ public class FullBackupFormat extends AbstractBackupFormat {
   private long backupFromFrozenFiles(final BackupArchiveWriter archive) throws IOException {
     long origSize = 0L;
     origSize += compressFile(archive, ((LocalDatabase) database.getEmbedded()).getConfigurationFile());
-    origSize += compressFile(archive, ((LocalSchema) database.getSchema()).getConfigurationFile());
+    final File schemaFile = ((LocalSchema) database.getSchema()).getConfigurationFile();
+    origSize += compressFile(archive, schemaFile);
+    // schema.prev.json, the copy LocalSchema.readConfiguration() falls back to when schema.json is missing,
+    // zero-length or unparseable, and the second arm of DatabaseFactory.exists(). Archived so a restored database
+    // keeps the corruption fallback the database it was copied from had, instead of having none until its first
+    // schema save recreates one (issue #7637). BOTH paths carry it, or the archive's file set would depend on
+    // which one happened to run. Absent is legitimate and compressFile skips it: a database whose schema has never
+    // been re-saved has no previous copy - which is also why it is deliberately NOT part of what
+    // checkArchiveCarriesTheSchema() requires.
+    origSize += compressFile(archive, new File(schemaFile.getParentFile(), LocalSchema.SCHEMA_PREV_FILE_NAME));
     // THE CALLER'S PAUSE IS NOT RELEASED EARLY ON THIS PATH, UNLIKE THE SNAPSHOT ONE: HERE THE PAGE IMAGE IS THE
     // ON-DISK ONE THE FLUSH SUSPENSION IS FREEZING, SO IT IS ONLY FIXED FOR AS LONG AS THE SUSPENSION LASTS AND
     // THE PAUSE HAS TO SPAN THE WHOLE CALLBACK - WHICH THIS PATH ALREADY THROTTLES WRITERS FOR ANYWAY
@@ -488,10 +497,15 @@ public class FullBackupFormat extends AbstractBackupFormat {
    * Notes an entry that made it into the archive, for {@link #checkArchiveCarriesTheSchema()} to read.
    * <p>
    * NON-EMPTY, NOT MERELY PRESENT. {@code LocalSchema.readConfiguration()} treats a zero-length
-   * {@code schema.json} exactly as it treats a missing one - it falls back to {@code schema.prev.json}, which
-   * an archive does not carry (issue #7637) - so a zero-byte entry restores to a database that opens cleanly
-   * with an EMPTY schema and reports no error anywhere. That is the quieter half of the same defect, and a
-   * presence check would let it through.
+   * {@code schema.json} exactly as it treats a missing one - so a zero-byte entry restores to a database that
+   * opens cleanly with an EMPTY schema and reports no error anywhere. That is the quieter half of the same
+   * defect, and a presence check would let it through.
+   * <p>
+   * ONLY {@code schema.json} COUNTS, still, although the archive does now carry {@code schema.prev.json} too
+   * (issue #7637). The previous copy is legitimately absent on a database whose schema has never been re-saved,
+   * so requiring it would refuse backups of perfectly good databases; and a restore that had only the fallback
+   * would open at the generation BEFORE the one the pages belong to. It is shipped so the restored database
+   * keeps the corruption fallback its source had, not as a substitute for the primary.
    */
   private void recordArchivedEntry(final String entryName, final long origSize) {
     if (origSize > 0 && LocalSchema.SCHEMA_FILE_NAME.equals(entryName))
@@ -502,7 +516,8 @@ public class FullBackupFormat extends AbstractBackupFormat {
    * Refuses an archive that would not restore to a database, which is what issue #7464 reported: both paths
    * treated an absent {@code schema.json} as "nothing to archive" and completed, and the archive they produced
    * satisfied neither arm of {@code DatabaseFactory.exists()} - it looks for {@code schema.json} and then for
-   * {@code schema.prev.json}, and neither path archives the latter. The restored directory was therefore not
+   * {@code schema.prev.json}, and at the time neither path archived the latter either (both do since #7637, but
+   * it is optional, so it does not make this check redundant). The restored directory was therefore not
    * recognised as a database at all, from a backup that had printed "Full backup completed".
    * <p>
    * HERE AND NOT AT EACH READER, for the reason the issue gives. Failing inside

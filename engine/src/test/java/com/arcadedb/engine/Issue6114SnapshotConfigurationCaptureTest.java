@@ -26,6 +26,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -51,13 +52,18 @@ class Issue6114SnapshotConfigurationCaptureTest extends TestHelper {
     schema.createDocumentType("AtT0");
 
     final String liveSchemaAtT0 = Files.readString(schema.getConfigurationFile().toPath(), StandardCharsets.UTF_8);
+    final String previousSchemaAtT0 = Files.readString(
+        new File(database.getDatabasePath(), LocalSchema.SCHEMA_PREV_FILE_NAME).toPath(), StandardCharsets.UTF_8);
 
     try (final PageSnapshot snapshot = db.getPageManager().openSnapshot(db)) {
       final List<PageSnapshot.SnapshotConfigFile> captured = snapshot.getConfigurationFiles();
 
       assertThat(captured).extracting(PageSnapshot.SnapshotConfigFile::fileName)
-          .as("configuration.json first, then schema.json - the order a consumer archives them in")
-          .containsExactly(LocalDatabase.CONFIGURATION_FILE_NAME, LocalSchema.SCHEMA_FILE_NAME);
+          .as("configuration.json first, then schema.json, then schema.prev.json - the order a consumer archives "
+              + "them in. The previous copy joined the window in #7637, so a restored database keeps the "
+              + "corruption fallback its source had")
+          .containsExactly(LocalDatabase.CONFIGURATION_FILE_NAME, LocalSchema.SCHEMA_FILE_NAME,
+              LocalSchema.SCHEMA_PREV_FILE_NAME);
 
       assertThat(schemaOf(captured)).as("the window must serve the schema exactly as it was at t0")
           .isEqualTo(liveSchemaAtT0);
@@ -77,6 +83,19 @@ class Issue6114SnapshotConfigurationCaptureTest extends TestHelper {
       assertThat(capturedTypes.keySet())
           .as("a type created after t0 has no pages in this window, so it must not be in its schema either")
           .doesNotContain("AfterT0");
+
+      // AND THE PREVIOUS COPY IS PINNED AT t0 TOO, not merely present in the captured set (issue #7637). This is
+      // where that claim is decidable: the DDL above ran while this window was open, so the live schema.prev.json
+      // now holds the generation the window is serving as its PRIMARY. A window that re-read the file instead of
+      // capturing it would serve that newer copy - a fallback describing a page set the archive does not contain,
+      // which is the whole reason the capture is inside the barrier rather than after it.
+      final String capturedPrevious = new String(
+          configurationFile(snapshot, LocalSchema.SCHEMA_PREV_FILE_NAME).content(), StandardCharsets.UTF_8);
+      assertThat(capturedPrevious).isEqualTo(previousSchemaAtT0);
+      assertThat(Files.readString(new File(database.getDatabasePath(), LocalSchema.SCHEMA_PREV_FILE_NAME).toPath(),
+          StandardCharsets.UTF_8))
+          .as("the DDL must really have moved the live previous copy on, or this proves nothing")
+          .isNotEqualTo(capturedPrevious);
     }
   }
 
@@ -129,7 +148,12 @@ class Issue6114SnapshotConfigurationCaptureTest extends TestHelper {
     }
   }
 
-  /** A configuration file that does not exist at t0 is simply absent, never an empty entry a restore would extract. */
+  /**
+   * A configuration file that does not exist at t0 is simply absent, never an empty entry a restore would extract.
+   * Both optional files are removed here, not just {@code configuration.json}: {@code schema.prev.json} is legitimately
+   * missing on a database whose schema has never been re-saved, and joining the captured set in #7637 must not have
+   * turned that into a zero-length entry either.
+   */
   @Test
   void aMissingConfigurationFileIsOmittedRatherThanCapturedEmpty() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
@@ -137,6 +161,10 @@ class Issue6114SnapshotConfigurationCaptureTest extends TestHelper {
 
     FileUtils.deleteFile(local.getConfigurationFile());
     assertThat(local.getConfigurationFile()).doesNotExist();
+
+    final File previousSchema = new File(database.getDatabasePath(), LocalSchema.SCHEMA_PREV_FILE_NAME);
+    FileUtils.deleteFile(previousSchema);
+    assertThat(previousSchema).doesNotExist();
 
     try (final PageSnapshot snapshot = db.getPageManager().openSnapshot(db)) {
       assertThat(snapshot.getConfigurationFiles()).extracting(PageSnapshot.SnapshotConfigFile::fileName)

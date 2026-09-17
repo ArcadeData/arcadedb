@@ -44,7 +44,7 @@ import com.arcadedb.exception.CauseChain;
 import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
-import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.InvalidPropertyTypeException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TimeoutException;
@@ -1921,36 +1921,59 @@ public class BoltNetworkExecutor extends Thread {
   }
 
   /**
-   * Classify a query/transaction execution error into a Bolt status code. ArcadeDB's
-   * optimistic-concurrency conflicts ({@link NeedRetryException}, e.g. a page-version
-   * {@code ConcurrentModificationException} or a {@code LockTimeoutException}) map to a Neo4j
-   * transient status so managed-transaction drivers auto-retry; an {@link ArithmeticErrorException}
-   * (64-bit overflow, division by zero) maps to Neo4j's ArithmeticError so a driver reports the caller's
-   * values rather than a server fault (issue #5602); an {@link InvalidPropertyTypeException} (a map, or a list
-   * containing one, asked to be stored in a property) maps to Neo4j's own TypeError for that refusal, which is a
-   * client error however it was reached - by a map literal or by copying a value SQL had stored (issue #7729); a {@link DuplicatedKeyException} (unique-index
-   * violation) and a {@link SecurityException} (permission denial) are both permanent client errors,
-   * so they must not fall into DatabaseError, which a driver's retry policy reads as "safe to retry";
-   * a {@link TimeoutException} (a query/statement deadline, not the retryable
-   * {@code LockTimeoutException} contention {@link #isRetryableConflict} already handles) maps to
-   * Neo4j's own TransactionTimedOut - not Transaction.Terminated, which means "explicitly killed by
-   * the user" and is excluded from driver retry predicates for exactly that reason (issue #7123).
-   * Anything else keeps the given default.
+   * Classify a query/transaction execution error into a Bolt status code.
+   * <p>
+   * The classification itself is {@link ErrorCategory}, the one place ArcadeDB's exception hierarchy is read, so
+   * this transport answers the question the same way every other one does. It used to be a hand-written ladder
+   * covering five of the ten categories, and issue #7123 - filed as "Bolt collapses every failure to
+   * {@code Neo.DatabaseError.General.UnknownError}" - was closed by making the gRPC mapper exhaustive while
+   * leaving this ladder as it was, so a {@code NOT_FOUND}, {@code SCHEMA} or {@code VALIDATION} failure still
+   * reached a Neo4j driver as an unexplained server fault: non-retryable, logged as internal, and giving the
+   * application no way to tell "you asked for something that does not exist" from "the database is broken"
+   * (issue #7624).
+   * <p>
+   * What the category does <b>not</b> model, and this method still decides:
+   * <ul>
+   *   <li>an {@link InvalidPropertyTypeException} - a map, or a list containing one, asked to be stored in a
+   *       property. {@link ErrorCategory} folds it into {@link ErrorCategory#VALIDATION} with every other bad
+   *       argument, and Neo4j has its own TypeError title for exactly that refusal, which is a client error
+   *       however it was reached - by a map literal or by copying a value SQL had stored (issue #7729). Tested
+   *       only once the category is known, so the {@link ErrorCategory#RETRY}-first precedence documented on
+   *       {@link ErrorCategory#of} still decides a chain carrying both;</li>
+   *   <li>which of Neo4j's parse-time titles a {@link ErrorCategory#PARSING} failure earns - delegated to
+   *       {@link #classifyParsingError}, the same method the statement path calls when the parsing exception
+   *       arrives unwrapped;</li>
+   *   <li>{@link ErrorCategory#SERVER}, which keeps the caller's {@code defaultCode}: that is how the transaction
+   *       path reports an unclassified failure as TransactionNotFound rather than as a generic database error.</li>
+   * </ul>
    */
   static String classifyExecutionError(final Throwable error, final String defaultCode) {
-    if (isRetryableConflict(error))
-      return BoltErrorCodes.TRANSIENT_CONFLICT_ERROR;
-    if (isArithmeticError(error))
-      return BoltErrorCodes.ARITHMETIC_ERROR;
-    if (CauseChain.contains(error, InvalidPropertyTypeException.class))
+    final ErrorCategory category = ErrorCategory.of(error);
+
+    if (category == ErrorCategory.VALIDATION && CauseChain.contains(error, InvalidPropertyTypeException.class))
       return BoltErrorCodes.TYPE_ERROR;
-    if (CauseChain.contains(error, DuplicatedKeyException.class))
-      return BoltErrorCodes.CONSTRAINT_VIOLATION_ERROR;
-    if (CauseChain.contains(error, SecurityException.class))
-      return BoltErrorCodes.FORBIDDEN_ERROR;
-    if (CauseChain.contains(error, TimeoutException.class))
-      return BoltErrorCodes.TRANSACTION_TIMED_OUT_ERROR;
-    return defaultCode;
+
+    return switch (category) {
+      // A conflict a managed-transaction driver auto-retries (NeedRetryException: a page-version
+      // ConcurrentModificationException, or a LockTimeoutException).
+      case RETRY -> BoltErrorCodes.TRANSIENT_CONFLICT_ERROR;
+      // A 64-bit overflow or a division by zero: the caller's values have no representable answer (issue #5602).
+      case ARITHMETIC -> BoltErrorCodes.ARITHMETIC_ERROR;
+      // A unique-index violation. Permanent: the identical write can never succeed on retry.
+      case DUPLICATED_KEY -> BoltErrorCodes.CONSTRAINT_VIOLATION_ERROR;
+      case NOT_FOUND -> BoltErrorCodes.ENTITY_NOT_FOUND_ERROR;
+      // The caller named a type, bucket or property the schema does not define: a statement that parsed but means
+      // nothing against this database, which is what Neo4j's SemanticError says.
+      case SCHEMA -> BoltErrorCodes.SEMANTIC_ERROR;
+      case SECURITY -> BoltErrorCodes.FORBIDDEN_ERROR;
+      case VALIDATION -> BoltErrorCodes.ARGUMENT_ERROR;
+      case PARSING -> classifyParsingError(CauseChain.find(error, CommandParsingException.class));
+      // A query/statement deadline, not the retryable LockTimeoutException contention RETRY already took. NOT
+      // Transaction.Terminated, which means "explicitly killed by the user" and is excluded from driver retry
+      // predicates for exactly that reason (issue #7123).
+      case TIMEOUT -> BoltErrorCodes.TRANSACTION_TIMED_OUT_ERROR;
+      case SERVER -> defaultCode;
+    };
   }
 
   /**

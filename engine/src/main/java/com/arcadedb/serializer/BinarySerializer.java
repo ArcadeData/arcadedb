@@ -495,13 +495,22 @@ public class BinarySerializer {
       content.putNumber(Double.doubleToLongBits(((Number) value).doubleValue()));
       break;
     case BinaryTypes.TYPE_DATE:
+      // floorDiv, NOT '/': integer division truncates towards zero, so every instant in the last day before the
+      // epoch would land on day 0 (1970-01-01) instead of day -1. LocalDate.toEpochDay() floors, and the two
+      // spellings of the same calendar day now share a column - a DATE column under
+      // arcadedb.dateImplementation=java.util.Date reaches here holding a Date rather than a LocalDate (#7638) -
+      // so they have to agree
       if (value instanceof Date date)
-        content.putUnsignedNumber(date.getTime() / DateUtils.MS_IN_A_DAY);
+        content.putUnsignedNumber(Math.floorDiv(date.getTime(), DateUtils.MS_IN_A_DAY));
       else if (value instanceof LocalDate date)
         content.putUnsignedNumber(date.toEpochDay());
+      else if (value instanceof Calendar calendar)
+        // arcadedb.dateImplementation=java.util.Calendar is a supported setting, so a DATE column configured with
+        // it reaches here holding a Calendar for the same reason (#7638)
+        content.putUnsignedNumber(Math.floorDiv(calendar.getTimeInMillis(), DateUtils.MS_IN_A_DAY));
       else
-        throw new IllegalArgumentException(
-            "Cannot serialize " + value.getClass() + " as DATE; expected java.util.Date or java.time.LocalDate");
+        throw new IllegalArgumentException("Cannot serialize " + value.getClass()
+            + " as DATE; expected java.util.Date, java.util.Calendar or java.time.LocalDate");
       break;
     case BinaryTypes.TYPE_DATETIME_SECOND:
     case BinaryTypes.TYPE_DATETIME:

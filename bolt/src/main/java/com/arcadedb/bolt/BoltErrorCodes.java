@@ -41,13 +41,23 @@ public final class BoltErrorCodes {
   // A 64-bit integer overflow or a division by zero. The statement is fine and so is the server; the values the
   // caller supplied have no representable answer, which Neo4j reports as a client error - not the generic
   // DatabaseError a driver would surface as "the server broke". See issue #5602.
-  public static final String ARITHMETIC_ERROR      = "Neo.ClientError.Statement.ArithmeticError";
+  public static final String ARITHMETIC_ERROR       = "Neo.ClientError.Statement.ArithmeticError";
   // A value a property cannot hold - openCypher refuses a map, or a list containing one, exactly as Neo4j does with
   // "Property values can only be of primitive types or arrays thereof". The statement is fine and so is the server;
   // the value the caller asked to store is not storable, which Neo4j reports under this title. Without it the
   // refusal reached a driver as the generic DatabaseError it reads as an unexplained server fault, and the reporter
   // of issue #7629 saw exactly that. See issues #7629 and #7729.
-  public static final String TYPE_ERROR            = "Neo.ClientError.Statement.TypeError";
+  public static final String TYPE_ERROR             = "Neo.ClientError.Statement.TypeError";
+  // The record the caller addressed does not exist (ErrorCategory.NOT_FOUND, a RecordNotFoundException). Neo4j's
+  // own title for "you named an entity that is not there"; it is a permanent client error, so it must not fall
+  // into the generic DatabaseError a driver logs as an internal server fault and, on a managed transaction,
+  // cannot distinguish from a broken database (issue #7624).
+  public static final String ENTITY_NOT_FOUND_ERROR = "Neo.ClientError.Statement.EntityNotFound";
+  // The request is well formed but asks for something invalid - a constraint violation, a bad parameter value, a
+  // write on an idempotent-only path (ErrorCategory.VALIDATION). Neo4j's own title for a statement performing
+  // operations with invalid arguments. Same reasoning as ENTITY_NOT_FOUND_ERROR: permanent and the caller's, not
+  // the server's (issue #7624).
+  public static final String ARGUMENT_ERROR         = "Neo.ClientError.Statement.ArgumentError";
 
   // Transaction errors
   public static final String TRANSACTION_ERROR = "Neo.ClientError.Transaction.TransactionNotFound";

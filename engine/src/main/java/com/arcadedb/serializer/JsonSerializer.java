@@ -94,7 +94,15 @@ public class JsonSerializer {
   public JSONObject serializeDocument(final Document document) {
     final Database database = document.getDatabase();
     final String schemaDateTimeFormat = database.getSchema().getDateTimeFormat();
-    final JSONObject object = new JSONObject().setDateFormat(database.getSchema().getDateTimeFormat())
+    final String schemaDateFormat = database.getSchema().getDateFormat();
+    // THE DATE SLOT CARRIES THE DATE PATTERN, as it does in serializeResult below. It used to carry the DATE-TIME
+    // one, so the same column rendered differently through GET /document/{db}/{rid} than through a query - a
+    // genuine DATE reaching this dispatch picked up a spurious 00:00:00 (issue #7638). What makes the change safe
+    // is the loop below now routing EVERY value through formatTemporalForPrecision, declared property or not, so a
+    // java.util.Date that is not on a DATE column is formatted there with the date-time pattern and never reaches
+    // this slot at all - the distinction #7610 established, which the unconditional date-time slot was standing in
+    // for here.
+    final JSONObject object = new JSONObject().setDateFormat(schemaDateFormat)
         .setDateTimeFormat(schemaDateTimeFormat);
 
     if (document.getIdentity() != null)
@@ -119,9 +127,19 @@ public class JsonSerializer {
       value = convertNonNumbers(value);
 
       // Issue #4149: format temporals with the column's declared precision so DATETIME_MICROS /
-      // DATETIME_NANOS / DATETIME_SECOND don't all collapse onto the schema-wide format string.
-      if (type != null && type.existsProperty(p))
-        value = formatTemporalForPrecision(value, type.getProperty(p).getType(), schemaDateTimeFormat);
+      // DATETIME_NANOS / DATETIME_SECOND don't all collapse onto the schema-wide format string. Called for an
+      // undeclared property too (with a null type, exactly as serializeResult does), so a java.util.Date always
+      // gets the explicit DATE-vs-DATETIME decision rather than JSONObject's class-only dispatch (issue #7638).
+      //
+      // THE UNDECLARED CASE IS A DELIBERATE WIDENING, not a side effect. A java.util.Date on a schemaless property
+      // used to skip this call and reach JSONObject's Date branch, which renders in the JVM's DEFAULT zone; it is
+      // now formatted UTC-anchored like every other Date in the engine. That is what serializeResult() has done
+      // for the same value since #7610, and what the write side does - Type#convertToDate anchors its
+      // LocalDateTime-to-Date conversion to UTC - so the old answer was the outlier: the same document read back
+      // through GET /document/{db}/{rid} and through a query disagreed, and the document one moved with the
+      // machine's time zone. Pinned by Issue7638DateColumnPrecisionTest#anUndeclaredDatePropertyIsAlsoUtcAnchored.
+      value = formatTemporalForPrecision(value, type != null && type.existsProperty(p) ? type.getProperty(p).getType() : null,
+          schemaDateTimeFormat, schemaDateFormat);
 
       object.put(p, value);
     }
@@ -133,7 +151,8 @@ public class JsonSerializer {
 
   public JSONObject serializeResult(final Database database, final Result result) {
     final String schemaDateTimeFormat = database.getSchema().getDateTimeFormat();
-    final JSONObject object = new JSONObject().setDateFormat(database.getSchema().getDateFormat())
+    final String schemaDateFormat = database.getSchema().getDateFormat();
+    final JSONObject object = new JSONObject().setDateFormat(schemaDateFormat)
         .setDateTimeFormat(schemaDateTimeFormat);
 
     DocumentType type = null;
@@ -152,7 +171,8 @@ public class JsonSerializer {
           // Issue #4149: keep precision-aware formatting on the projection branch too.
           Object projValue = serializeObject(database, entry.getValue());
           if (type != null && type.existsProperty(entry.getKey()))
-            projValue = formatTemporalForPrecision(projValue, type.getProperty(entry.getKey()).getType(), schemaDateTimeFormat);
+            projValue = formatTemporalForPrecision(projValue, type.getProperty(entry.getKey()).getType(),
+                schemaDateTimeFormat, schemaDateFormat);
           object.put(entry.getKey(), projValue);
         }
         return object;
@@ -167,8 +187,20 @@ public class JsonSerializer {
       // Property type from the document's schema only - issue #4149: getTypeByClass(LocalDateTime)
       // collapses every datetime variant onto DATETIME (millis), so the schema lookup is the
       // only reliable source for column-precision-aware formatting.
-      final Type schemaPropertyType =
-          type != null && type.existsProperty(propertyName) ? type.getProperty(propertyName).getType() : null;
+      //
+      // Issue #7638: a column-list projection (SELECT d FROM T) produces a NON-element result, so `type` is null
+      // here and every property used to be formatted with no schema type at all - which is only harmless while
+      // the value's Java class says what the column was. A java.util.Date does not: it backs a DATE column under
+      // arcadedb.dateImplementation=java.util.Date and a DATETIME one just as well, so a genuine DATE came out
+      // with a spurious 00:00:00. Result.getPropertyType() answers for exactly that case, from the type the
+      // projection recorded for the column it read.
+      // THE ROW IS THE ONLY SOURCE ASKED. getPropertyType() already falls back to the backing record's schema
+      // when the projection has nothing to say about the name, so adding a second fallback here would undo the
+      // one case the first exists for: SELECT *, <expression> AS d keeps the element AND publishes a computed
+      // value under a name the element also has, and the row answers null ON PURPOSE for it. Falling back to
+      // type.getProperty(d) on that null handed the computed value the COLUMN's type back - a DATE verdict that
+      // strips the time component off a computed timestamp, and a wrong @props hint (issue #7638).
+      final Type schemaPropertyType = result.getPropertyType(propertyName);
 
       if (includeTypeHints) {
         final Type propertyType;
@@ -211,7 +243,7 @@ public class JsonSerializer {
       // DATETIME_NANOS / DATETIME_SECOND keep their fractional digits even when the schema-wide
       // dateTimeFormat would truncate them. Falls back to data-driven precision (the value's
       // nanos field) when no schema type is available, e.g. for SELECT projection results.
-      value = formatTemporalForPrecision(value, schemaPropertyType, schemaDateTimeFormat);
+      value = formatTemporalForPrecision(value, schemaPropertyType, schemaDateTimeFormat, schemaDateFormat);
 
       object.put(propertyName, value);
     }
@@ -616,11 +648,29 @@ public class JsonSerializer {
    * below is, so a {@code Date} with a non-zero millisecond component doesn't get silently truncated
    * by a seconds-only schema pattern. {@code Date} can never hold finer than millisecond precision, so
    * the data-driven fallback below caps at {@link ChronoUnit#MILLIS}, not the nanos field.
+   * <p>
+   * Issue #7638: a value on a DATE-typed column is now formatted HERE, with {@code baseDateFormat} anchored to
+   * UTC, rather than left for {@link JSONObject#put(String, Object)} to dispatch on. Deferring was wrong twice
+   * over, and both were invisible while {@code arcadedb.dateImplementation=java.util.Date} was broken on the
+   * write side (see {@code BinaryTypes.getTypeFromValue}) and no DATE column could hold a {@code Date} at all:
+   * <ul>
+   *   <li>{@code JSONObject}'s {@code Date} branch renders in the JVM's DEFAULT zone, while a DATE is stored as
+   *   a count of days and read back as UTC midnight - so west of Greenwich every date came out one day
+   *   early;</li>
+   *   <li>the slot that dispatch reads is the caller's, and {@code serializeDocument} sets it to the DATE-TIME
+   *   pattern while {@code serializeResult} sets it to the date one, so the same column rendered differently
+   *   through {@code GET /document/{db}/{rid}} than through a query. Formatting here makes the two agree by
+   *   construction rather than by both remembering to set the same slot.</li>
+   * </ul>
    */
-  private static Object formatTemporalForPrecision(final Object value, final Type propertyType, final String baseDateTimeFormat) {
+  private static Object formatTemporalForPrecision(final Object value, final Type propertyType,
+      final String baseDateTimeFormat, final String baseDateFormat) {
+    if (propertyType == Type.DATE && (value instanceof Date || value instanceof Calendar || value instanceof Temporal))
+      // UTC, because that is the anchor the whole DATE round trip uses: DateUtils.date() materialises a stored day
+      // count as UTC midnight and Type#convertToDate converts back the same way
+      return DateUtils.format(value, baseDateFormat, "UTC");
+
     if (value instanceof Date date) {
-      if (propertyType == Type.DATE)
-        return value;
       final ChronoUnit precision = propertyType != null
           ? DateUtils.getPrecisionFromType(propertyType)
           : DateUtils.getPrecision((int) (Math.floorMod(date.getTime(), 1000L) * 1_000_000L));
