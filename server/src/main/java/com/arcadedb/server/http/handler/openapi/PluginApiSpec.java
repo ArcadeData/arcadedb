@@ -583,6 +583,18 @@ public class PluginApiSpec implements OpenApiContributor {
     schema.addProperty("snapshotDownloadInProgress", SpecBuilders.bool("A snapshot is being installed now"));
     schema.addProperty("divergedDatabases", SpecBuilders.arrayOf(SpecBuilders.string("Database name"),
         "Databases quarantined because this node's WAL diverged from the leader's"));
+    // The names in 'divergedDatabases' read as a replication fault whatever put them there, and two of the four
+    // causes are this node's own log or its own unfinished snapshot install rather than anything the leader did
+    // (issue #7741). The cause is what an operator acts on, so it is carried alongside the names rather than left
+    // to be inferred from an alert message.
+    final Schema<String> cause = SpecBuilders.string("Why this database was quarantined");
+    // Written out rather than read from DivergenceCause, for the same reason HA_RAFT_PATHS is: the ha-raft module
+    // depends on server and not the other way round. Issue7577ClusterStatusSchemaMatchesTheHandlerTest, over in
+    // that module where both are visible, is what keeps this the same set.
+    cause.setEnum(List.of("WAL_VERSION_GAP", "UNDECODABLE_LOG_ENTRY", "APPLY_ERROR", "SNAPSHOT_INSTALL_INCOMPLETE"));
+    schema.addProperty("divergenceCauses", SpecBuilders.mapOf(cause,
+        "Why each quarantined database was quarantined, keyed by database name. Scoped to the databases the "
+            + "caller is authorized on, exactly as 'divergedDatabases' is"));
     schema.addProperty("snapshotAppliedFloor", SpecBuilders.integer(
         "Raft index the last installed snapshot brought this node to"));
     schema.addProperty("databaseAppliedFloors", SpecBuilders.mapOf(
@@ -590,7 +602,7 @@ public class PluginApiSpec implements OpenApiContributor {
         "Per-database applied floor, keyed by database name"));
     // Built as one chained expression by GetClusterHandler.buildLocalResync, so it is present whole.
     schema.setRequired(List.of("inProgress", "snapshotDownloadQueued", "snapshotDownloadInProgress",
-        "divergedDatabases", "snapshotAppliedFloor", "databaseAppliedFloors"));
+        "divergedDatabases", "divergenceCauses", "snapshotAppliedFloor", "databaseAppliedFloors"));
     return schema;
   }
 
