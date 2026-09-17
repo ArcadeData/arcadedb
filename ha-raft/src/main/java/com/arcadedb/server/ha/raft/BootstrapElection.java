@@ -121,6 +121,9 @@ class BootstrapElection {
       .connectTimeout(Duration.ofSeconds(5))
       .build();
 
+  /** The route both the election fan-out and the divergence probe reach, on whichever scheme was chosen. */
+  static final String BOOTSTRAP_STATE_ROUTE = "/api/v1/cluster/bootstrap-state";
+
   private final RaftHAServer            haServer;
   private final ArcadeDBServer          server;
   // Tracks per-database whether the bootstrap protocol has been attempted in this leader's
@@ -474,9 +477,6 @@ class BootstrapElection {
     return statusCode == 401 || statusCode == 403 || statusCode == 408 || statusCode == 425
         || statusCode == 429 || statusCode >= 500;
   }
-
-  /** The route both the election fan-out and the divergence probe reach, on whichever scheme was chosen. */
-  static final String BOOTSTRAP_STATE_ROUTE = "/api/v1/cluster/bootstrap-state";
 
   /**
    * Picks the URL this probe is sent to. Prefers the peer's HTTPS endpoint when SSL is enabled and one
