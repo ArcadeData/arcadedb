@@ -190,6 +190,47 @@ public class FileUtils {
     return pos > -1 ? path.substring(pos + 1) : path;
   }
 
+  /**
+   * Whether {@code path} ends with a path separator in EITHER convention, not only this JVM's own
+   * {@link File#separator}. Same reason as {@link #lastIndexOfSeparator(String)}: a path an embedder, a
+   * configuration file or an environment variable supplies is routinely written with {@code '/'} even on Windows,
+   * and a check that only knows {@code '\'} answers "no separator" for one (issue #7588).
+   */
+  public static boolean endsWithSeparator(final String path) {
+    return !path.isEmpty() && isSeparator(path.charAt(path.length() - 1));
+  }
+
+  /**
+   * Whether {@code path} starts with a path separator in either convention - an absolute, root-relative path. Used
+   * by the guards that refuse one, which must not be escapable by writing the path the other way round.
+   */
+  public static boolean startsWithSeparator(final String path) {
+    return !path.isEmpty() && isSeparator(path.charAt(0));
+  }
+
+  /** Whether {@code c} is a path separator in either convention. */
+  public static boolean isSeparator(final char c) {
+    return c == '/' || c == '\\';
+  }
+
+  /**
+   * {@code path} guaranteed to end with a separator, appending this JVM's {@link File#separator} only when it does
+   * not already end with one of EITHER convention - so {@code "C:/data/"} on Windows stays as it is rather than
+   * becoming {@code "C:/data/\"}.
+   */
+  public static String appendSeparatorIfMissing(final String path) {
+    return endsWithSeparator(path) ? path : path + File.separator;
+  }
+
+  /**
+   * {@code path} without its trailing separator, in either convention, or unchanged when it has none. The path
+   * itself is returned when it IS a single separator: stripping that would turn the file-system root into the
+   * current directory.
+   */
+  public static String stripTrailingSeparator(final String path) {
+    return path.length() > 1 && endsWithSeparator(path) ? path.substring(0, path.length() - 1) : path;
+  }
+
   public static void deleteRecursively(final File rootFile) {
     for (int attempt = 0; attempt < 3; attempt++) {
       try {

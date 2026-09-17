@@ -277,7 +277,9 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
       final HttpURLConnection connection = SafeHttpFetcher.open(settings.inputFileURL,
           address -> !allowLocalUrls && RESERVED_ADDRESSES.isBlocked(address), "RESTORE DATABASE");
 
-      return new RestoreInputSource(null, connection.getInputStream(), 0);
+      // body() and not getInputStream(): the read timeout the fetch applies is reported as a timeout naming the
+      // setting that relaxes it, rather than as a bare "Read timed out" inside a restore failure (issue #7500).
+      return new RestoreInputSource(null, SafeHttpFetcher.body(connection, "RESTORE DATABASE"), 0);
     }
 
     String path = settings.inputFileURL;

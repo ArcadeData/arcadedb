@@ -52,10 +52,9 @@ public class SecurityGroupFileRepository {
   private volatile    JSONObject                 latestGroupConfiguration;
 
   public SecurityGroupFileRepository(String securityConfPath, final int checkConfigReloadEveryMs) {
-    if (!securityConfPath.endsWith(File.separator))
-      securityConfPath += File.separator;
-    this.securityConfPath = securityConfPath;
-    file = new File(securityConfPath, FILE_NAME);
+    // EITHER SEPARATOR CONVENTION (ISSUE #7588)
+    this.securityConfPath = FileUtils.appendSeparatorIfMissing(securityConfPath);
+    file = new File(this.securityConfPath, FILE_NAME);
     this.checkConfigReloadEveryMs = checkConfigReloadEveryMs;
   }
 

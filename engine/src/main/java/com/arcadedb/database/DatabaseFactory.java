@@ -25,6 +25,7 @@ import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.security.SecurityManager;
+import com.arcadedb.utility.FileUtils;
 
 import java.io.File;
 import java.nio.charset.Charset;
@@ -71,10 +72,10 @@ public class DatabaseFactory implements AutoCloseable {
     if (path == null || path.trim().isEmpty())
       throw new IllegalArgumentException("Missing path");
 
-    if (path.endsWith(File.separator))
-      databasePath = path.substring(0, path.length() - 1);
-    else
-      databasePath = path;
+    // EITHER SEPARATOR CONVENTION: A CALLER-SUPPLIED PATH IS ROUTINELY WRITTEN WITH '/' EVEN ON WINDOWS, WHERE A
+    // File.separator-ONLY CHECK LEFT THE TRAILING '/' IN PLACE AND EVERY PATH BUILT FROM IT DOUBLY SEPARATED. THE
+    // SAME LOOKUP LocalDatabase DERIVES THE DATABASE NAME WITH (ISSUE #7588)
+    databasePath = FileUtils.stripTrailingSeparator(path);
   }
 
   @Override

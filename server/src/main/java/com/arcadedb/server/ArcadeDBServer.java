@@ -281,6 +281,36 @@ public class ArcadeDBServer {
     return configuration;
   }
 
+  /** The configured {@code arcadedb.server.mode}: {@code development}, {@code test} or {@code production}. */
+  public String getMode() {
+    return configuration.getValueAsString(GlobalConfiguration.SERVER_MODE);
+  }
+
+  /**
+   * Whether this server runs in {@code production} mode, where an error answered to a client CONCEALS the free-form
+   * internal detail - a cause chain that can carry file paths, engine internals and schema names - and reports only
+   * the bounded, structured parts a driver needs to act: the status/class, the leader address, the duplicated-key
+   * details. {@code development} and {@code test} keep the full text to aid debugging.
+   * <p>
+   * Asked HERE and not re-derived per surface, so the setting means one thing everywhere. It used to be a private
+   * helper on the HTTP handler base class, and the two surfaces added since - the control plane's SSE progress
+   * stream and the gRPC error paths - reported raw internal messages regardless of it. Both are root-gated, so the
+   * exposure was to an already-privileged caller; but concealment is either a policy or it is not, and a surface
+   * that opts out silently makes it unreliable as one (issue #7472).
+   */
+  public boolean isProductionMode() {
+    return isProductionMode(configuration);
+  }
+
+  /**
+   * {@link #isProductionMode()} for a caller that holds the configuration rather than the server - the HTTP handler
+   * base class, which is constructed against an {@code HttpServer} whose server may be a test double. Static so the
+   * rule itself is written once and every surface reads the SAME one, whichever handle on the configuration it has.
+   */
+  public static boolean isProductionMode(final ContextConfiguration configuration) {
+    return "production".equals(configuration.getValueAsString(GlobalConfiguration.SERVER_MODE));
+  }
+
   /**
    * The server-health monitor, or {@code null} when the server is not running or
    * {@code arcadedb.server.healthCheck.enabled} is false (issue #7160).
@@ -497,7 +527,7 @@ public class ArcadeDBServer {
     LogManager.instance().log(this, Level.INFO, "Available query languages: %s",
         QueryEngineManager.getInstance().getAvailableLanguages());
 
-    final String mode = configuration.getValueAsString(GlobalConfiguration.SERVER_MODE);
+    final String mode = getMode();
 
     final String msg = "ArcadeDB Server started in '%s' mode (CPUs=%d MAXRAM=%s)".formatted(mode,
         Runtime.getRuntime().availableProcessors(), FileUtils.getSizeAsString(Runtime.getRuntime().maxMemory()));

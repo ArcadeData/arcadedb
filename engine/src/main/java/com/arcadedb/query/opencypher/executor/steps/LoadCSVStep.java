@@ -291,8 +291,10 @@ public class LoadCSVStep extends AbstractExecutionStep {
         context.getDatabase().getConfiguration().getValueAsString(GlobalConfiguration.OPENCYPHER_LOAD_CSV_BLOCKED_IP_RANGES));
 
     // An empty block-list is the configured opt-out from the address check; scheme and redirect handling still apply.
-    return SafeHttpFetcher.open(url, address -> !blocklist.isEmpty() && blocklist.isBlocked(address), "LOAD CSV")
-        .getInputStream();
+    // body() and not getInputStream(): a source that stops sending mid-stream is bounded by the configured read
+    // timeout, and body() is what turns the JDK's bare "Read timed out" into an error naming the setting (#7500).
+    return SafeHttpFetcher.body(
+        SafeHttpFetcher.open(url, address -> !blocklist.isEmpty() && blocklist.isBlocked(address), "LOAD CSV"), "LOAD CSV");
   }
 
   /**

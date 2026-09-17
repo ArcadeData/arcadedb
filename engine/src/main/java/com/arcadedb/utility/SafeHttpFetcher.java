@@ -18,12 +18,17 @@
  */
 package com.arcadedb.utility;
 
+import com.arcadedb.GlobalConfiguration;
+
+import java.io.FilterInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.InetAddress;
 import java.net.URI;
 import java.net.URL;
 import java.net.URLConnection;
+import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
 import java.util.Locale;
 import java.util.function.Predicate;
@@ -94,7 +99,31 @@ public class SafeHttpFetcher {
    */
   public static HttpURLConnection open(final String url, final Predicate<InetAddress> blocked, final String context)
       throws IOException {
-    return open(url, blocked, context, DEFAULT_MAX_REDIRECTS, DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_READ_TIMEOUT_MS);
+    return open(url, blocked, context, DEFAULT_MAX_REDIRECTS, configuredConnectTimeoutMs(), configuredReadTimeoutMs());
+  }
+
+  /**
+   * The configured connect timeout, in milliseconds, or {@link #DEFAULT_CONNECT_TIMEOUT_MS} when the setting is
+   * absent. Read per fetch rather than cached in a static, so a change through {@code ALTER SERVER SETTING} takes
+   * effect on the next fetch instead of at the next restart.
+   */
+  public static int configuredConnectTimeoutMs() {
+    return timeoutOrDefault(GlobalConfiguration.NETWORK_REMOTE_FETCH_CONNECT_TIMEOUT, DEFAULT_CONNECT_TIMEOUT_MS);
+  }
+
+  /** The configured read timeout, in milliseconds. See {@link #configuredConnectTimeoutMs()}. */
+  public static int configuredReadTimeoutMs() {
+    return timeoutOrDefault(GlobalConfiguration.NETWORK_REMOTE_FETCH_READ_TIMEOUT, DEFAULT_READ_TIMEOUT_MS);
+  }
+
+  /**
+   * A negative value is a JDK {@link IllegalArgumentException} at {@code setReadTimeout()} time - an error raised
+   * from the middle of a fetch, about a setting the operator changed elsewhere - so it falls back to the default
+   * instead. Zero is kept: it is the JDK's documented "no timeout", and an operator who sets it means it.
+   */
+  private static int timeoutOrDefault(final GlobalConfiguration setting, final int fallback) {
+    final int configured = setting.getValueAsInteger();
+    return configured >= 0 ? configured : fallback;
   }
 
   public static HttpURLConnection open(final String url, final Predicate<InetAddress> blocked, final String context,
@@ -155,6 +184,69 @@ public class SafeHttpFetcher {
     }
 
     throw new SecurityException(context + ": exceeded the maximum number of redirects (" + maxRedirects + ")");
+  }
+
+  /**
+   * The response body of a connection {@link #open} returned, with a read that TIMES OUT reported as what it is.
+   * <p>
+   * Every read of a remote source is bounded by {@code NETWORK_REMOTE_FETCH_READ_TIMEOUT}, and the JDK expresses
+   * that bound as a bare {@link SocketTimeoutException} whose message is {@code "Read timed out"}. By the time that
+   * reaches a caller it has usually been wrapped in something like {@code "Error on parsing source ..."}, which
+   * names neither the timeout nor the setting that would relax it - the same class of unhelpful error issues #7346
+   * and #7461 were about. This says both, once, at the stream where the wait actually happened (issue #7500).
+   *
+   * @param context short human-readable label for the calling feature, the same one passed to {@link #open}
+   */
+  public static InputStream body(final HttpURLConnection connection, final String context) throws IOException {
+    return describeTimeouts(connection.getInputStream(), context, connection.getURL().toString(),
+        connection.getReadTimeout());
+  }
+
+  /**
+   * {@link #body} for a stream the caller has already taken off the connection, or has wrapped (a
+   * {@code GZIPInputStream}, a {@code ZipInputStream}) before the timeout could be described.
+   */
+  public static InputStream describeTimeouts(final InputStream in, final String context, final String url,
+      final int readTimeoutMs) {
+    return new FilterInputStream(in) {
+      @Override
+      public int read() throws IOException {
+        try {
+          return in.read();
+        } catch (final SocketTimeoutException e) {
+          throw timeout(e);
+        }
+      }
+
+      @Override
+      public int read(final byte[] b, final int off, final int len) throws IOException {
+        try {
+          return in.read(b, off, len);
+        } catch (final SocketTimeoutException e) {
+          throw timeout(e);
+        }
+      }
+
+      @Override
+      public long skip(final long n) throws IOException {
+        try {
+          return in.skip(n);
+        } catch (final SocketTimeoutException e) {
+          throw timeout(e);
+        }
+      }
+
+      private SocketTimeoutException timeout(final SocketTimeoutException e) {
+        // A SocketTimeoutException AND NOT A PLAIN IOException, SO A CALLER THAT ALREADY DISTINGUISHES A STALLED
+        // SOURCE FROM A BROKEN ONE KEEPS DOING SO. THE MESSAGE IS WHAT CHANGES
+        final SocketTimeoutException described = new SocketTimeoutException(
+            context + ": the remote source '" + url + "' sent nothing for " + readTimeoutMs
+                + "ms and the read timed out. Raise '" + GlobalConfiguration.NETWORK_REMOTE_FETCH_READ_TIMEOUT.getKey()
+                + "' (milliseconds, 0 = wait forever) if the origin is legitimately this slow");
+        described.initCause(e);
+        return described;
+      }
+    };
   }
 
   /**

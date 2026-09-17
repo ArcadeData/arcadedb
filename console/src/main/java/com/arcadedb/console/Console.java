@@ -42,6 +42,7 @@ import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.remote.RemoteServer;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.AnsiCode;
+import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.RecordTableFormatter;
 import com.arcadedb.utility.ServerPathUtils;
 import com.arcadedb.utility.StringUtils;
@@ -119,8 +120,8 @@ public class Console {
         final ContextConfiguration configuration = new ContextConfiguration();
         ServerPathUtils.setRootPath(configuration);
         databaseDirectory = configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY);
-        if (!databaseDirectory.endsWith(File.separator))
-            databaseDirectory += File.separator;
+        // EITHER SEPARATOR CONVENTION (ISSUE #7588)
+        databaseDirectory = FileUtils.appendSeparatorIfMissing(databaseDirectory);
 
         GlobalConfiguration.PROFILE.setValue("low-cpu");
 

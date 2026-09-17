@@ -90,6 +90,12 @@ public final class GrpcErrorMapper {
   }
 
   /**
+   * The description a CONCEALED failure carries in place of the exception's own message. Deliberately identical for
+   * every failure: a message that varied would put back exactly the signal the concealment removes.
+   */
+  static final String CONCEALED_DESCRIPTION = "The request failed. Check the server log for the details";
+
+  /**
    * Maps a throwable to a {@link StatusRuntimeException} suitable for {@code StreamObserver.onError()}.
    * An already-mapped gRPC status (e.g. the security status produced by {@code getDatabase}) is passed
    * through unchanged so it is never masked as {@code INTERNAL}.
@@ -112,6 +118,27 @@ public final class GrpcErrorMapper {
    */
   public static StatusRuntimeException toStatusRuntimeException(final Throwable t, final String contextPrefix,
       final HAServerPlugin ha) {
+    return toStatusRuntimeException(t, contextPrefix, ha, false);
+  }
+
+  /**
+   * Same as {@link #toStatusRuntimeException(Throwable, String, HAServerPlugin)}, with the server's production-mode
+   * concealment applied.
+   * <p>
+   * In production the free-form part of the description - the exception's own message, which can carry file paths,
+   * engine internals and schema names - is replaced by {@link #CONCEALED_DESCRIPTION}. Everything a client can ACT
+   * on survives, and for exactly the reason the HTTP body keeps its {@code exception}/{@code exceptionArgs} fields:
+   * the status CODE, the {@link #EXCEPTION_CLASS_KEY} trailer the driver rebuilds the typed exception from, the
+   * duplicated-key trailers and the leader-redirect address and sentence are all bounded, structured values rather
+   * than free text, and the remote driver and HA depend on them.
+   * <p>
+   * The gRPC surfaces reported the raw message whatever {@code arcadedb.server.mode} said, so they silently opted
+   * out of the concealment the rest of the server applies (issue #7472).
+   *
+   * @param conceal true when the server runs in production mode - see {@code ArcadeDBServer.isProductionMode()}
+   */
+  public static StatusRuntimeException toStatusRuntimeException(final Throwable t, final String contextPrefix,
+      final HAServerPlugin ha, final boolean conceal) {
     final Throwable cause = unwrap(t);
 
     // Pass through statuses already chosen upstream (security, resource-exhausted, etc.).
@@ -146,8 +173,12 @@ public final class GrpcErrorMapper {
       code = statusCodeFor(cause);
     }
 
-    final String msg = cause.getMessage() != null ? cause.getMessage() : cause.toString();
+    final String msg = conceal ?
+        CONCEALED_DESCRIPTION :
+        cause.getMessage() != null ? cause.getMessage() : cause.toString();
     final String prefixed = contextPrefix != null && !contextPrefix.isBlank() ? contextPrefix + ": " + msg : msg;
+    // THE LEADER-REDIRECT SENTENCE SURVIVES CONCEALMENT: IT IS AN ADDRESS THIS SERVER PUT THERE, NOT INTERNAL
+    // DETAIL FROM AN EXCEPTION, AND IT IS THE ONLY THING THAT MAKES A FOLLOWER'S REFUSAL ACTIONABLE
     final String description = redirect != null ? prefixed + ". " + redirect : prefixed;
 
     return code.toStatus().withDescription(description).withCause(cause).asRuntimeException(trailers);

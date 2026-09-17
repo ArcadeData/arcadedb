@@ -25,6 +25,12 @@ import java.io.IOException;
 import java.util.Map;
 
 public class Importer extends AbstractImporter {
+  /**
+   * The source URL currently being read, recorded BEFORE the read rather than after it succeeds, so a failure while
+   * reading can name it. {@link AbstractImporter#source} cannot: it is assigned only once the sniff has succeeded.
+   */
+  private String loadingUrl;
+
   public Importer(final String[] args) {
     super(args);
   }
@@ -60,6 +66,7 @@ public class Importer extends AbstractImporter {
 
   public Map<String, Object> load() {
     source = null;
+    loadingUrl = null;
 
     try {
       final int cfgValue = settings.getIntValue("maxValueSampling", 100);
@@ -97,7 +104,7 @@ public class Importer extends AbstractImporter {
       if (settings.probeOnly)
         throw new IllegalArgumentException(e);
       else
-        throw new ImportException("Error on parsing source '" + source + "'", e);
+        throw new ImportException(importFailureMessage(e), e);
     } finally {
       stopImporting();
       if (database != null) {
@@ -109,11 +116,35 @@ public class Importer extends AbstractImporter {
     return context.toMap();
   }
 
+  /**
+   * The message an import failure is reported with.
+   * <p>
+   * It used to be {@code "Error on parsing source '" + source + "'"} and nothing else, which failed the caller twice
+   * over: {@code source} is only assigned once the sniff has SUCCEEDED, so anything that goes wrong while reading the
+   * source - the case a remote import most often hits - named the source {@code null}; and the cause's own message,
+   * the only part that says WHAT went wrong, appeared nowhere in the text a client is shown. A read timeout on a
+   * stalled remote source then reached the operator as {@code "Error on parsing source 'null'"}, naming neither the
+   * timeout nor the setting that relaxes it (issues #7500, #7346, #7461).
+   * <p>
+   * The URL is the one being read when the failure happened, which is known from the start, and the cause's message
+   * is appended. In production mode the server conceals this whole string before it reaches a client - see
+   * {@code ArcadeDBServer.isProductionMode()} - so naming the cause here costs nothing there and everything is still
+   * in the server log.
+   */
+  private String importFailureMessage(final Exception e) {
+    final String where = loadingUrl != null ? loadingUrl : source != null ? source.toString() : settings.url;
+    final String why = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+    return "Error on parsing source '" + where + "': " + why;
+  }
+
   protected void loadFromSource(final String url, AnalyzedEntity.EntityType entityType, final AnalyzedSchema analyzedSchema)
       throws IOException {
     if (url == null)
       // SKIP IT
       return;
+
+    // THE SOURCE BEING READ, RECORDED BEFORE THE READ RATHER THAN AFTER IT SUCCEEDS, SO A FAILURE CAN NAME IT
+    loadingUrl = url;
 
     final SourceDiscovery sourceDiscovery = new SourceDiscovery(url, settings.allowLocalUrls);
 

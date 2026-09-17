@@ -552,13 +552,27 @@ public final class PostgresCopyStatement {
       final String nul = nullString != null ? nullString : fmt == Format.CSV ? "" : "\\N";
       if (nul.indexOf('\r') >= 0 || nul.indexOf('\n') >= 0)
         throw new CopyException("COPY null representation cannot use newline or carriage return", SQLSTATE_SYNTAX_ERROR);
-      if (fmt == Format.TEXT && nul.indexOf(delim) >= 0)
-        throw new CopyException("COPY delimiter cannot appear in the NULL specification", SQLSTATE_SYNTAX_ERROR);
 
       final char q = quote != null ? quote : '"';
       final char e = escape != null ? escape : q;
       if (fmt == Format.CSV && delim == q)
         throw new CopyException("COPY delimiter and quote must be different", SQLSTATE_SYNTAX_ERROR);
+
+      // THE NULL SPECIFICATION IS WRITTEN RAW AND UNQUOTED FOR EVERY NULL VALUE (SEE appendRow), SO A CHARACTER
+      // INSIDE IT THAT THE FORMAT GIVES A MEANING TO DOES NOT ESCAPE - IT TAKES EFFECT. A DELIMITER SPLITS THE
+      // RECORD INTO ONE FIELD TOO MANY AND A CSV QUOTE OPENS A FIELD THE READER NEVER SEES CLOSED, SO THE OUTPUT
+      // STOPS BEING PARSEABLE AS THE FORMAT IT CLAIMS TO BE AND THE CONSUMER GETS A SHIFTED OR TRUNCATED ROW
+      // RATHER THAN AN ERROR. POSTGRESQL REFUSES BOTH COMBINATIONS UP FRONT (ProcessCopyOptions IN copy.c) AND
+      // THE DELIMITER ONE IN BOTH FORMATS, NOT ONLY IN TEXT, WHICH IS WHERE THIS STOPPED (ISSUE #7472).
+      // BOTH MESSAGES NAME THE CHARACTER, SO THE OPERATOR DOES NOT HAVE TO GUESS WHICH OPTION TO CHANGE
+      if (nul.indexOf(delim) >= 0)
+        throw new CopyException(
+            "COPY delimiter character must not appear in the NULL specification: delimiter is '" + delim
+                + "' and the NULL specification is \"" + nul + "\"", SQLSTATE_SYNTAX_ERROR);
+      if (fmt == Format.CSV && nul.indexOf(q) >= 0)
+        throw new CopyException(
+            "CSV quote character must not appear in the NULL specification: quote is '" + q
+                + "' and the NULL specification is \"" + nul + "\"", SQLSTATE_SYNTAX_ERROR);
 
       final Set<String> forced;
       if (forceQuoteColumns != null) {

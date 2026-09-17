@@ -97,7 +97,9 @@ import io.grpc.stub.StreamObserver;
 import org.jspecify.annotations.NonNull;
 
 import com.arcadedb.utility.DateUtils;
+import com.arcadedb.utility.FileUtils;
 
+import java.io.File;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -741,7 +743,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // everything else erased the exception type on the wire; the client's handleGrpcException/
       // GrpcClientErrorMapper already rebuilds the exact type from the status + trailers (issue #6192).
       if (!responded)
-        resp.onError(GrpcErrorMapper.toStatusRuntimeException(cause, "ExecuteCommand", ha()));
+        resp.onError(mapError(cause, "ExecuteCommand"));
     }
   }
 
@@ -1039,7 +1041,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // Preserve the engine exception type (e.g. DuplicatedKeyException -> ALREADY_EXISTS with index/keys)
         // so the client can reconstruct it instead of receiving an opaque INTERNAL.
         if (!responded)
-          resp.onError(GrpcErrorMapper.toStatusRuntimeException(cause, "CreateRecord", ha()));
+          resp.onError(mapError(cause, "CreateRecord"));
       }
       return;
     }
@@ -1053,7 +1055,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "ERROR in createRecord", e);
       if (!responded)
-        resp.onError(GrpcErrorMapper.toStatusRuntimeException(e, "CreateRecord", ha()));
+        resp.onError(mapError(e, "CreateRecord"));
     }
   }
 
@@ -1177,7 +1179,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // #7123) and passes an already-mapped StatusRuntimeException through unchanged (e.g.
         // FAILED_PRECONDITION from requireTransactionStillActive) instead of masking it as INTERNAL.
         if (!responded)
-          resp.onError(GrpcErrorMapper.toStatusRuntimeException(e, "LookupByRid"));
+          resp.onError(mapError(e, "LookupByRid"));
       }
       return;
     }
@@ -1189,7 +1191,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       resp.onCompleted();
     } catch (Exception e) {
       if (!responded)
-        resp.onError(GrpcErrorMapper.toStatusRuntimeException(e, "LookupByRid"));
+        resp.onError(mapError(e, "LookupByRid"));
     }
   }
 
@@ -1240,7 +1242,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // #7123) and passes an already-mapped StatusRuntimeException through unchanged (e.g.
         // FAILED_PRECONDITION from requireTransactionStillActive) instead of masking it as INTERNAL.
         if (!responded)
-          resp.onError(GrpcErrorMapper.toStatusRuntimeException(e, "UpdateRecord"));
+          resp.onError(mapError(e, "UpdateRecord"));
       }
       return;
     }
@@ -1254,7 +1256,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "ERROR in updateRecord", e);
       if (!responded)
-        resp.onError(GrpcErrorMapper.toStatusRuntimeException(e, "UpdateRecord"));
+        resp.onError(mapError(e, "UpdateRecord"));
     }
   }
 
@@ -1422,7 +1424,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // #7123) and passes an already-mapped StatusRuntimeException through unchanged (e.g.
         // FAILED_PRECONDITION from requireTransactionStillActive) instead of masking it as INTERNAL.
         if (!responded)
-          resp.onError(GrpcErrorMapper.toStatusRuntimeException(e, "DeleteRecord"));
+          resp.onError(mapError(e, "DeleteRecord"));
       }
       return;
     }
@@ -1436,7 +1438,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "ERROR in deleteRecord", e);
       if (!responded)
-        resp.onError(GrpcErrorMapper.toStatusRuntimeException(e, "DeleteRecord"));
+        resp.onError(mapError(e, "DeleteRecord"));
     }
   }
 
@@ -1530,7 +1532,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         } else {
           LogManager.instance().log(this, Level.SEVERE, "Error executing query: %s", cause, cause.getMessage());
           if (!txResponded)
-            responseObserver.onError(GrpcErrorMapper.toStatusRuntimeException(cause, "Query execution failed"));
+            responseObserver.onError(mapError(cause, "Query execution failed"));
         }
       }
       return;
@@ -1557,7 +1559,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error executing query: %s", e, e.getMessage());
       if (!responded)
-        responseObserver.onError(GrpcErrorMapper.toStatusRuntimeException(e, "Query execution failed"));
+        responseObserver.onError(mapError(e, "Query execution failed"));
     }
   }
 
@@ -1844,7 +1846,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // Pass through an already-mapped status (e.g. UNAUTHENTICATED/PERMISSION_DENIED from getDatabase)
       // instead of masking it as INTERNAL, and preserve the exception type for everything else.
       if (!responded)
-        responseObserver.onError(GrpcErrorMapper.toStatusRuntimeException(cause, "Failed to begin transaction", ha()));
+        responseObserver.onError(mapError(cause, "Failed to begin transaction"));
     }
   }
 
@@ -1925,7 +1927,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // this catch calling onError on an already-closed call - see the identical guard on executeCommand
       // (#6192) / createRecord.
       if (!responded)
-        rsp.onError(GrpcErrorMapper.toStatusRuntimeException(cause, "Commit failed", ha()));
+        rsp.onError(mapError(cause, "Commit failed"));
     } finally {
       // The transaction was claimed above (removed from activeTransactions), so release its concurrency slot and
       // shut the executor down exactly once here.
@@ -2179,7 +2181,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // GrpcErrorMapper both classifies the failure (a SQL syntax error, a missing type, etc. - issue
         // #7123) and passes an already-mapped StatusRuntimeException through unchanged (e.g.
         // RESOURCE_EXHAUSTED from the MATERIALIZE_ALL cap) instead of masking it as INTERNAL.
-        responseObserver.onError(GrpcErrorMapper.toStatusRuntimeException(e, "Stream query failed"));
+        responseObserver.onError(mapError(e, "Stream query failed"));
     } finally {
       // Stream endpoints mix engine iteration and row serialization throughout; expose the
       // total cost as engineNanos so the Server Profiler still captures query-level metrics.
@@ -2642,7 +2644,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           // StatusRuntimeException submitToActiveTransaction throws synchronously when the executor was
           // already shut down - RejectedExecutionException case, issue #6709) instead of masking it as INTERNAL.
           if (!responded)
-            resp.onError(GrpcErrorMapper.toStatusRuntimeException(e, "bulkInsert"));
+            resp.onError(mapError(e, "bulkInsert"));
         }
       } else {
         try (InsertContext ctx = new InsertContext(opts)) {
@@ -2655,7 +2657,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       }
     } catch (Exception e) {
       if (!responded)
-        resp.onError(GrpcErrorMapper.toStatusRuntimeException(e, "bulkInsert"));
+        resp.onError(mapError(e, "bulkInsert"));
     } finally {
       ProtocolContext.clear();
     }
@@ -2935,7 +2937,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             out.onCompleted();
           }
         } catch (Exception e) {
-          out.onError(GrpcErrorMapper.toStatusRuntimeException(e, "insertStream"));
+          out.onError(mapError(e, "insertStream"));
         } finally {
           InsertContext ctx = ctxRef.get();
           if (ctx != null)
@@ -3023,6 +3025,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final SynchronizedStreamObserver<GraphBatchResult> out = new SynchronizedStreamObserver<>(resp);
 
     final long startedAt = System.currentTimeMillis();
+    // Resolved once, up front: the error paths below run on the stream's own threads and must answer the same way
+    // for every chunk of one load (issue #7472).
+    final boolean conceal = concealErrors();
     final AtomicBoolean cancelled = new AtomicBoolean(false);
     // errorSent gates the onCompleted flush and the call.request(1) flow-control pull; the
     // SynchronizedStreamObserver above independently guarantees terminal-call safety.
@@ -3076,7 +3081,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             final HAServerPlugin ha = ha();
             if (ha != null && !ha.isLeader()) {
               errorSent[0] = true;
-              out.onError(notTheLeader(ha, "graphBatchLoad", "a graph batch load must run on the leader"));
+              out.onError(notTheLeader(ha, "graphBatchLoad", "a graph batch load must run on the leader", conceal));
               return;
             }
 
@@ -3155,7 +3160,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           // abandoned batch is still the one holding the flushed-edge count, and abandon() drops what was
           // buffered without touching what it had already committed.
           final Metadata trailers = partialCommitTrailer(abandoned, counts, tempIdMap, startedAt);
-          out.onError(graphBatchLoadError(e, trailers, ha()));
+          out.onError(graphBatchLoadError(e, trailers, conceal));
           return;
         } finally {
           if (!cancelled.get() && !errorSent[0])
@@ -3213,7 +3218,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           // close() is where the deferred incoming edges are connected, so a failure here can leave edges
           // buffered that the counters must not claim: the batch is asked what it actually flushed.
           final Metadata trailers = partialCommitTrailer(batchRef.get(), counts, tempIdMap, startedAt);
-          out.onError(graphBatchLoadError(e, trailers, ha()));
+          out.onError(graphBatchLoadError(e, trailers, conceal));
           closeQuietly(batchRef.get());
         }
       }
@@ -3221,23 +3226,27 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   }
 
   /**
-   * Builds the {@code onError} exception for a {@code graphBatchLoad} failure: the answer
-   * {@link GrpcErrorMapper#toStatusRuntimeException} builds for the same throwable on any other RPC, with
-   * {@code trailers} - this handler's partial-commit summary - carried alongside the mapper's own.
+   * Builds the {@code onError} exception for a {@code graphBatchLoad} failure, classifying {@code e} and
+   * layering {@code trailers} (the partial-commit summary) onto it via {@link GrpcErrorMapper#classifyAndAddTrailers}.
    * <p>
-   * Routed through the mapper rather than classified here so a {@link ServerIsNotTheLeaderException} raised
-   * <b>during</b> the load - the replicated database declining a schema change on a follower, as opposed to the
-   * explicit leadership check the first chunk runs - answers {@code FAILED_PRECONDITION} with the leader's
-   * address on the {@link LeaderRedirectProtocol} trailers, exactly as that up-front refusal does. It used to be
-   * classified as a bare retryable conflict: {@code ABORTED} with the address dropped, which sent the client back
-   * to the same follower to be refused again (issue #7624). An already-mapped status - a {@code getDatabase()}
-   * auth refusal, say - is still passed through with its own description and trailers.
-   *
-   * @param ha this server's HA plugin, or null outside a cluster
+   * When the cause is already a mapped {@link StatusRuntimeException}/{@link StatusException} - e.g. a
+   * {@code getDatabase()} auth refusal - its own description is kept verbatim instead of being overwritten with
+   * a synthesized {@code "graphBatchLoad: " + message}, matching how {@link GrpcErrorMapper#toStatusRuntimeException}
+   * treats the same pass-through case elsewhere.
    */
-  private static StatusException graphBatchLoadError(final Throwable e, final Metadata trailers,
-      final HAServerPlugin ha) {
-    return GrpcErrorMapper.toStatusException(e, "graphBatchLoad", ha, trailers);
+  private static StatusException graphBatchLoadError(final Throwable e, final Metadata trailers, final boolean conceal) {
+    final Throwable cause = GrpcErrorMapper.unwrap(e);
+    final Status.Code code = GrpcErrorMapper.classifyAndAddTrailers(cause, trailers);
+    final String description;
+    if (cause instanceof StatusRuntimeException sre)
+      description = sre.getStatus().getDescription();
+    else if (cause instanceof StatusException se)
+      description = se.getStatus().getDescription();
+    else
+      // CONCEALED IN PRODUCTION, LIKE EVERY OTHER RPC'S DESCRIPTION. THE PASS-THROUGH ARMS ABOVE ARE STATUSES THIS
+      // SERVER ALREADY CHOSE (AN AUTH REFUSAL, A RESOURCE LIMIT) AND CARRY NO EXCEPTION TEXT TO CONCEAL (#7472)
+      description = "graphBatchLoad: " + (conceal ? GrpcErrorMapper.CONCEALED_DESCRIPTION : cause.getMessage());
+    return code.toStatus().withDescription(description).asException(trailers);
   }
 
   // ---------------------------------------------------------------------------------------------------------
@@ -3308,7 +3317,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       resp.onCompleted();
     } catch (final Exception e) {
       if (!responded)
-        resp.onError(GrpcErrorMapper.toStatusRuntimeException(e, "TimeSeriesWrite", ha()));
+        resp.onError(mapError(e, "TimeSeriesWrite"));
     } finally {
       ProtocolContext.clear();
     }
@@ -3384,7 +3393,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           // drain for: every chunk before this one is already durable, so the client's useful next step is the
           // error, and the counts it can read from a subsequent query.
           failed.set(true);
-          out.onError(GrpcErrorMapper.toStatusRuntimeException(e, "TimeSeriesWriteStream", ha()));
+          out.onError(mapError(e, "TimeSeriesWriteStream"));
         } finally {
           ProtocolContext.clear();
         }
@@ -3484,7 +3493,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         resp.onCompleted();
     } catch (final Exception e) {
       if (!cancelled.get())
-        resp.onError(GrpcErrorMapper.toStatusRuntimeException(e, "TimeSeriesQuery", ha()));
+        resp.onError(mapError(e, "TimeSeriesQuery"));
     } finally {
       ProtocolContext.clear();
     }
@@ -3805,7 +3814,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       resp.onCompleted();
     } catch (final Exception e) {
       if (!responded)
-        resp.onError(GrpcErrorMapper.toStatusRuntimeException(e, "TimeSeriesLatest", ha()));
+        resp.onError(mapError(e, "TimeSeriesLatest"));
     } finally {
       ProtocolContext.clear();
     }
@@ -3900,14 +3909,36 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    * replicated database rejects on a follower - indistinguishable to a caller (issue #6183): same status, same
    * trailers, same typed exception rebuilt on the client. All that is left to choose here is the wording.
    */
-  private static StatusRuntimeException notTheLeader(final HAServerPlugin ha, final String rpc, final String why) {
+  private static StatusRuntimeException notTheLeader(final HAServerPlugin ha, final String rpc, final String why,
+      final boolean conceal) {
     return GrpcErrorMapper.toStatusRuntimeException(
-        new ServerIsNotTheLeaderException("this server is not the cluster leader and " + why, null), rpc, ha);
+        new ServerIsNotTheLeaderException("this server is not the cluster leader and " + why, null), rpc, ha, conceal);
   }
 
   /** This server's HA plugin, or null when HA is inactive: the source of the leader address on a refusal. */
   private HAServerPlugin ha() {
     return arcadeServer != null ? arcadeServer.getHA() : null;
+  }
+
+  /**
+   * Every failure this service answers with, mapped in ONE place.
+   * <p>
+   * It was 20-odd direct {@code GrpcErrorMapper.toStatusRuntimeException(...)} calls, half of which passed
+   * {@link #ha()} and half of which did not - so a leader refusal was actionable or not depending on which RPC
+   * raised it - and none of which applied the server's production-mode concealment. Routing them through a single
+   * method is what makes both of those one decision rather than twenty (issue #7472).
+   */
+  private StatusRuntimeException mapError(final Throwable t, final String contextPrefix) {
+    return GrpcErrorMapper.toStatusRuntimeException(t, contextPrefix, ha(), concealErrors());
+  }
+
+  /**
+   * Whether this server conceals the free-form part of an error from the client. Null-tolerant for the embedded and
+   * test constructions that pass no server: no server means no configured mode, and the verbose answer is what the
+   * pre-#7472 behaviour was.
+   */
+  private boolean concealErrors() {
+    return arcadeServer != null && arcadeServer.isProductionMode();
   }
 
   private Object[] toPropertyArray(final Map<String, GrpcValue> properties) {
@@ -4231,7 +4262,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
                   out.onNext(InsertResponse.newBuilder().setCommitted(Committed.newBuilder().setSummary(sum).build()).build());
                   out.onCompleted();
                 } catch (Exception e) {
-                  out.onError(GrpcErrorMapper.toStatusRuntimeException(e, "commit"));
+                  out.onError(mapError(e, "commit"));
                 } finally {
                   sessionWatermark.remove(ctx.sessionId);
                   ctx.closeQuietly();
@@ -4249,7 +4280,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             }
           } catch (Exception unexpected) {
             // defensive: fail fast on unexpected exceptions
-            out.onError(GrpcErrorMapper.toStatusRuntimeException(unexpected, "insertBidirectional"));
+            out.onError(mapError(unexpected, "insertBidirectional"));
             final InsertContext ctx = ref.getAndSet(null);
             if (ctx != null) {
               sessionWatermark.remove(ctx.sessionId);
@@ -5489,7 +5520,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       }
 
       // Create database factory for the specific database
-      DatabaseFactory dbFactory = new DatabaseFactory(databasePath + "/" + databaseName);
+      // File.separator AND NOT A LITERAL '/': THIS LOCATES A WHOLE DATABASE DIRECTORY, AND EVERY OTHER PATH THE
+      // ENGINE BUILDS FOR ONE USES THE PLATFORM SEPARATOR (ISSUE #7588)
+      DatabaseFactory dbFactory = new DatabaseFactory(databasePath + File.separator + databaseName);
 
       try {
         // Open database - ArcadeDB requires MODE parameter
@@ -5701,9 +5734,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         builder.putProperties(Property.RID_PROPERTY, toGrpcValue(document.getIdentity()));
       }
 
-      if (!builder.getPropertiesMap().containsKey(Property.TYPE_PROPERTY) && document instanceof Document
-          && document.getType() != null) {
-        Document doc = document;
+      if (!builder.getPropertiesMap().containsKey(Property.TYPE_PROPERTY) && document instanceof Document doc
+          && doc.getType() != null) {
         builder.putProperties(Property.TYPE_PROPERTY, toGrpcValue(doc.getTypeName()));
       }
 
