@@ -36,6 +36,14 @@ import java.util.concurrent.atomic.AtomicLong;
  * {@code lastSweepAt} lagging {@code lastEntryAppliedAt} says how long it has been failing. A log line could say
  * neither.
  * <p>
+ * <b>{@code entriesApplied} counts replicated GROUP documents, and only those.</b> A replicated API-token
+ * document is not counted and schedules no sweep, which is deliberate rather than an omission: a token is an
+ * authentication credential, and {@code ApiTokenConfiguration} is consulted on each authentication, so there is
+ * no derived per-database state for a sweep to re-derive and nothing that could lag. These counters answer one
+ * question - has this node re-derived its cached permissions from the group document it was told to enforce -
+ * and a token count here would make {@code entriesApplied} vs {@code sweepsCompleted}, the comparison the whole
+ * record exists for, read as a permanent gap on any cluster that mints tokens.
+ * <p>
  * <b>Deliberately not derived from the executor.</b> A {@code ThreadPoolExecutor}'s own {@code completedTaskCount}
  * counts tasks that RAN, which a coalesced submission never is, and counts a task that threw as completed. What
  * matters here is what the node ended up enforcing, so each number is recorded at the point the thing it names
