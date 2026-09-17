@@ -31,6 +31,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -86,6 +87,21 @@ class Issue7577ClusterStatusSchemaMatchesTheHandlerTest {
     assertThat(alert.getRequired())
         .as("ClusterAlerts builds each alert whole, so an alert that is present is present whole")
         .containsExactlyInAnyOrderElementsOf(alert.getProperties().keySet());
+  }
+
+  /**
+   * The divergence-cause vocabulary is a copy too (issue #7741), for the same reason: {@code DivergenceCause}
+   * lives here and the spec lives in {@code arcadedb-server}. A cause added to the enum and not to the spec
+   * would reach operators through an enum that refuses the value they are being shown.
+   */
+  @Test
+  void theDivergenceCauseEnumIsTheSetTheHandlerEmits() {
+    final List<Object> declared = new ArrayList<>(
+        property(property(clusterStatus(), "localResync"), "divergenceCauses").getAdditionalProperties() instanceof Schema<?> values
+            ? values.getEnum() : List.of());
+
+    assertThat(declared).containsExactlyInAnyOrder(
+        Stream.of(DivergenceCause.values()).map(DivergenceCause::name).toArray());
   }
 
   /**
