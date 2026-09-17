@@ -303,7 +303,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     // stale snapshot and mistake its own fresh transaction for a mid-statement one. Thread-confined, same as
     // pendingBatchCommands.
     private          TransactionContext         taskBatchTx              = null;
-    private          long                       taskBatchTxGeneration    = 0;
+    private          long                       taskBatchTxCommitCount   = 0;
 
     // #7615: single choke point for "the shared batch's non-durable bookkeeping is now moot" - every site
     // that commits, rolls back, or otherwise closes the shared batch transaction goes through here instead
@@ -319,8 +319,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     }
 
     /**
-     * Whether the shared batch transaction the running task was handed has since been committed and replaced by a
-     * fresh one (issue #7667).
+     * Whether the shared batch transaction the running task was handed has since been COMMITTED out from under it
+     * (issue #7667).
      * <p>
      * {@code isTransactionActive()} cannot answer this. A statement that commits MID-EXECUTION and immediately
      * begins another - {@code UPDATE/DELETE/MOVE VERTEX ... BATCH n} through {@code BatchStep}, {@code TRUNCATE
@@ -336,9 +336,16 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
      * Deliberately asked of the ORIGINAL context object rather than of {@code database.getTransaction()}: a nested
      * transaction pushed and committed under the running task is a different context entirely, does not publish the
      * shared batch, and so must not read as a replacement.
+     * <p>
+     * And deliberately keyed on {@code TransactionContext.getCommitCount()} rather than on a begin counter
+     * (claude-review on PR #7850). A statement that ROLLED the shared batch back and began another would move a
+     * begin counter identically, and the two outcomes are opposites here: after a commit the buffered writes are
+     * durable and must be dropped in silence, after a rollback they are gone and their submitters must be told.
+     * Counting commits means the rollback case simply does not match and keeps the pre-existing reporting path,
+     * so this does not rest on the invariant that no statement rolls the top-level transaction back mid-execution.
      */
-    private boolean sharedBatchReplacedDuringTask() {
-      return taskBatchTx != null && taskBatchTx.getGeneration() != taskBatchTxGeneration;
+    private boolean sharedBatchCommittedDuringTask() {
+      return taskBatchTx != null && taskBatchTx.getCommitCount() != taskBatchTxCommitCount;
     }
 
     private AsyncThread(final DatabaseInternal database, final int id) {
@@ -527,15 +534,15 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
           database.setWALFlush(currentSync);
         }
 
-        // #7667: snapshot the shared batch transaction and its generation BEFORE handing it to the task, so the
+        // #7667: snapshot the shared batch transaction and its commit count BEFORE handing it to the task, so the
         // classification below (and, while execute() is still on the stack, notifyPendingBatchCommandsAndAbandon)
         // can tell "the transaction everything buffered wrote to is still the one in front of me" from "a
-        // statement committed it mid-execution and began another". Taken after the begin() above, so it is the
-        // transaction `message` actually runs in; null when none is active, in which case nothing is buffered
-        // against one either (every commit site clears the buffers).
+        // statement committed it mid-execution". Taken after the begin() above, so it is the transaction `message`
+        // actually runs in; null when none is active, in which case nothing is buffered against one either (every
+        // commit site clears the buffers).
         if (!nested) {
           taskBatchTx = database.isTransactionActive() ? database.getTransaction() : null;
-          taskBatchTxGeneration = taskBatchTx != null ? taskBatchTx.getGeneration() : 0;
+          taskBatchTxCommitCount = taskBatchTx != null ? taskBatchTx.getCommitCount() : 0;
         }
 
         message.execute(this, database);
@@ -554,7 +561,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
             // before re-opening one - those writes are durable rather than undone, but either way there is nothing
             // left here to replay onto a later transaction.
             clearBatchState();
-          else if (sharedBatchReplacedDuringTask()) {
+          else if (sharedBatchCommittedDuringTask()) {
             // #7667: the task committed the shared batch part-way through and left a DIFFERENT transaction open
             // (UPDATE/DELETE/MOVE VERTEX ... BATCH n, TRUNCATE TYPE, REBUILD INDEX). Everything buffered before it
             // is durable on disk already, so it must neither be replayed by a later commitBatch() - ten records
@@ -582,8 +589,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
             // disable the retry-by-replay for every command buffered ahead of it on the same worker.
             pendingUnreplayableTasks.add(message);
 
-          // #7667: the snapshot has been consumed - dropped BEFORE commitBatch() below, whose own retry begin()
-          // bumps the very generation it compares against.
+          // #7667: the snapshot has been consumed - dropped BEFORE commitBatch() below, whose own commit bumps the
+          // very counter it compares against.
           taskBatchTx = null;
 
           count++;
@@ -760,7 +767,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       if (pendingBatchCommands.isEmpty() && pendingUnreplayableTasks.isEmpty())
         return;
 
-      if (sharedBatchReplacedDuringTask()) {
+      if (sharedBatchCommittedDuringTask()) {
         // #7667, the mirror of the duplicate-replay case: the running task committed the shared batch part-way
         // through and only then failed, so everything buffered ahead of it went out with that commit and is
         // durable. `cause` belongs to whatever happened AFTER it, in the replacement transaction - reporting it

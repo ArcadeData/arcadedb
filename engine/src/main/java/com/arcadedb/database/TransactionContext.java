@@ -215,13 +215,20 @@ public class TransactionContext implements Transaction {
   private       List<Integer>                        lockedFiles;
   private       List<Integer>                        explicitLockedFiles   = null;
   private       long                                 txId                  = -1;
-  // #7667: bumped once per begin() on THIS context object. A TransactionContext is reused across begin/commit
-  // cycles (LocalDatabase.begin() only pushes a new one for a NESTED transaction), and txId is -1 outside the WAL
-  // window, so neither object identity nor txId can answer "is the transaction I am holding still the same one I
-  // was holding a moment ago". This can: a caller that snapshots it, runs arbitrary code, and finds it changed
-  // knows that code closed its transaction and opened a fresh one on the same context - which is exactly what a
-  // statement that commits mid-execution (BatchStep's `BATCH n`, TRUNCATE TYPE, REBUILD INDEX) does.
-  private       long                                 generation            = 0;
+  // #7667: bumped once per SUCCESSFUL commit of THIS context object. A TransactionContext is reused across
+  // begin/commit cycles (LocalDatabase.begin() only pushes a new one for a NESTED transaction), and txId is -1
+  // outside the WAL window, so neither object identity nor txId can answer "has the transaction I am holding been
+  // committed out from under me". This can: a caller snapshots it, runs arbitrary code, and a changed value means
+  // that code published this transaction - which is exactly what a statement that commits mid-execution
+  // (BatchStep's `BATCH n`, TRUNCATE TYPE, REBUILD INDEX) does.
+  //
+  // Counts COMMITS, deliberately not begins (claude-review on PR #7850). A begin counter would also move for a
+  // rollback followed by a fresh begin inside one statement, and the two mean opposite things to the async batch:
+  // after a commit the buffered writes are durable and must be dropped silently, after a rollback they are gone and
+  // their submitters must be told. Keyed on the commit, the rollback case simply does not match and keeps the
+  // pre-existing reporting path - so the fix does not rest on the invariant that no statement rolls the top-level
+  // transaction back and re-begins it.
+  private       long                                 commitCount           = 0;
   private       STATUS                               status                = STATUS.INACTIVE;
   // Whether the 1st phase in progress ends by replaying the queued index operations - always true for an
   // originating commit. See isIndexChangesReplayed().
@@ -291,9 +298,6 @@ public class TransactionContext implements Transaction {
       throw new TransactionException("Transaction already begun");
 
     status = STATUS.BEGUN;
-    // #7667: after the "already begun" refusal above, so a rejected begin() never makes an unchanged transaction
-    // look replaced.
-    ++generation;
 
     // Read once per transaction (DATABASE-scope, constant for the DB lifetime): keeps the per-append hot path
     // to a plain field read instead of a configuration lookup.
@@ -331,15 +335,16 @@ public class TransactionContext implements Transaction {
     return phase1 != null ? phase1.result : null;
   }
 
-  /**
-   * How many times a transaction has been begun on THIS context object, monotonically increasing for its whole life
-   * (issue #7667). Snapshot it, run code that may commit, and compare: a different value means the transaction the
-   * snapshot referred to was closed and another one opened in its place, so anything buffered against the first is
-   * already durable (or already discarded) and must not be replayed onto the second. Never reset by
-   * {@link #reset()} - resetting it would make the next begin() hand back a value a stale snapshot could match.
+   /**
+   * How many transactions have been successfully COMMITTED on THIS context object, monotonically increasing for its
+   * whole life (issue #7667). Snapshot it, run code that may commit, and compare: a different value means the
+   * transaction the snapshot referred to was published, so anything buffered against it is already durable and must
+   * neither be replayed onto whatever transaction is open now nor reported as lost. A rollback deliberately does
+   * NOT move it - see the field's own comment. Never reset by {@link #reset()}, which would make a later commit
+   * hand back a value a stale snapshot could match.
    */
-  public long getGeneration() {
-    return generation;
+  public long getCommitCount() {
+    return commitCount;
   }
 
   public LocalTransactionExplicitLock lock() {
@@ -562,6 +567,13 @@ public class TransactionContext implements Transaction {
   }
 
   private void resetAndFireCallbacks() {
+    // #7667: the single point both commit paths converge on once the commit has actually concluded - commit() for a
+    // transaction with nothing to write (phase1 == null), and concludePhase2(committed) for every other one,
+    // including the HA path that drives commit1stPhase/commit2ndPhase itself without going through commit().
+    // rollback() does not come here, which is the whole point. Bumped before reset() and before the callbacks run,
+    // so anything reacting to the commit already observes it.
+    ++commitCount;
+
     final List<Runnable> callbacks = afterCommitCallbacks;
     reset();
     if (callbacks != null) {

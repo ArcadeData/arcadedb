@@ -19,6 +19,7 @@
 package com.arcadedb.database.async;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
@@ -27,6 +28,8 @@ import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -176,6 +179,63 @@ class Issue7667AsyncMidStatementCommitReplayTest extends TestHelper {
 
     database.transaction(() -> assertThat(database.countType(TYPE, true))
         .as("and the writes those callbacks were told about really are on disk").isEqualTo(buffered));
+  }
+
+  /**
+   * The counterpart the detection must NOT match (claude-review on PR #7850): a task that ROLLS the shared batch
+   * back mid-execution and begins another one has destroyed the buffered writes rather than published them, so
+   * their submitters must still be told when the batch is abandoned. Keying the detection on the transaction's
+   * commit count rather than on a begin counter is what keeps these two apart - a begin counter moves identically
+   * for both, and would silence the report for writes that really were lost.
+   */
+  @Test
+  void aMidStatementRollbackIsNotMistakenForAMidStatementCommit() throws Exception {
+    final int buffered = 3;
+
+    database.async().setParallelLevel(1);
+    database.async().setCommitEvery(1000); // no periodic boundary: the abandon below is the only outcome
+
+    final ConcurrentLinkedQueue<Exception> errors = new ConcurrentLinkedQueue<>();
+    for (int i = 0; i < buffered; i++)
+      database.async().command("sql", "INSERT INTO " + TYPE + " SET seq = ?", new AsyncResultsetCallback() {
+        @Override
+        public void onComplete(final ResultSet rs) {
+        }
+
+        @Override
+        public void onError(final Exception e) {
+          errors.add(e);
+        }
+      }, i);
+
+    // A task that rolls the shared batch back and re-opens one, then abandons the batch - the exact shape the
+    // commit-count detection has to keep telling apart from a BatchStep commit.
+    final CountDownLatch done = new CountDownLatch(1);
+    ((DatabaseAsyncExecutorImpl) database.async()).scheduleTask(0, new DatabaseAsyncTask() {
+      @Override
+      public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
+        database.rollback();
+        database.begin();
+        async.notifyPendingBatchCommandsAndAbandon(new RuntimeException("the batch these writes were in was rolled back"));
+        done.countDown();
+      }
+
+      @Override
+      public boolean requiresActiveTx() {
+        return false;
+      }
+    }, true, 0);
+
+    assertThat(done.await(30, TimeUnit.SECONDS)).isTrue();
+    database.async().waitCompletion();
+
+    assertThat(errors)
+        .as("a rollback destroyed the buffered writes, so unlike a mid-statement COMMIT their submitters must "
+            + "still be told - the detection must not treat the two alike")
+        .hasSize(buffered);
+
+    database.transaction(() -> assertThat(database.countType(TYPE, true))
+        .as("and nothing of the rolled-back batch survived").isZero());
   }
 
   private static AsyncResultsetCallback countingCallback(final AtomicInteger completions) {
