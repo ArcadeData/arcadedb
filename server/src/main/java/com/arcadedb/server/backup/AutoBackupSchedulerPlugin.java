@@ -283,11 +283,19 @@ public class AutoBackupSchedulerPlugin implements ServerPlugin {
    * @return number of archives deleted
    */
   public int applyRetention(final String backupDirectory, final String databaseName) {
-    if (!enabled || configLoader == null || backupConfig == null)
-      return 0;
+    // UNDER THE LIFECYCLE LOCK, AND ACROSS THE DELETION RATHER THAN ONLY THE POLICY LOOKUP. backupConfig IS
+    // PUBLISHED THERE BY reloadConfiguration(), SO READING IT OUTSIDE HAS NO HAPPENS-BEFORE EDGE TO THE NEW
+    // CONFIGURATION - AND COMPUTING THE KEEP SET UNDER THE LOCK BUT DELETING OUTSIDE IT WOULD STILL LET A RELOAD
+    // PUBLISH A MORE GENEROUS POLICY IN BETWEEN, AFTER WHICH THIS DELETES ARCHIVES THAT POLICY KEEPS. THE HOLD IS
+    // A DIRECTORY LISTING AND A HANDFUL OF FILE DELETIONS, AGAINST A LOCK THAT ALREADY SERIALISES THE PER-DATABASE
+    // RECONCILIATION (PR #7755 REVIEW)
+    synchronized (lifecycleLock) {
+      if (!enabled || configLoader == null || backupConfig == null)
+        return 0;
 
-    return new BackupRetentionManager(backupDirectory).applyRetention(databaseName,
-        configLoader.getEffectiveConfig(backupConfig, databaseName));
+      return new BackupRetentionManager(backupDirectory).applyRetention(databaseName,
+          configLoader.getEffectiveConfig(backupConfig, databaseName));
+    }
   }
 
   @Override

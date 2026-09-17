@@ -22,7 +22,10 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 
 import java.io.IOException;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.Map;
+import java.util.Set;
 
 public class Importer extends AbstractImporter {
   /**
@@ -138,8 +141,34 @@ public class Importer extends AbstractImporter {
    */
   private String importFailureMessage(final Exception e) {
     final String where = loadingUrl != null ? loadingUrl : source != null ? source.toString() : settings.url;
-    final String why = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-    return "Error on parsing source '" + where + "': " + why;
+    return "Error on parsing source '" + where + "': " + causeChain(e);
+  }
+
+  /**
+   * {@code e} and its causes as one line, {@code outermost -> cause -> cause}.
+   * <p>
+   * The WHOLE chain and not just {@code e.getMessage()}, because the message that says what actually went wrong is
+   * rarely the outermost one. A read timeout hit while a FORMAT is consuming the source - after the sniff has
+   * already succeeded - arrives here wrapped as {@code ImportException("Error on importing CSV", timeout)}, and
+   * reporting only that wrapper threw away the timeout, the wait and the setting name that the fetch layer had gone
+   * to the trouble of putting in the cause (issues #7500, #7346, #7461).
+   * <p>
+   * Stops on a cause already seen, by identity, so a cyclic chain cannot loop.
+   */
+  private static String causeChain(final Throwable e) {
+    final StringBuilder buffer = new StringBuilder(128).append(describe(e));
+
+    final Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+    visited.add(e);
+    for (Throwable current = e.getCause(); current != null && visited.add(current); current = current.getCause())
+      buffer.append(" -> ").append(describe(current));
+
+    return buffer.toString();
+  }
+
+  /** A throwable's message, or its simple class name when it has none - a link in the chain is never blank. */
+  private static String describe(final Throwable e) {
+    return e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
   }
 
   protected void loadFromSource(final String url, AnalyzedEntity.EntityType entityType, final AnalyzedSchema analyzedSchema)
