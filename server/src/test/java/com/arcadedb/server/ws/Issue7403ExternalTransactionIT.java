@@ -23,6 +23,7 @@ import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
+import com.arcadedb.server.http.HttpSession;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.utility.FileUtils;
 
@@ -33,6 +34,8 @@ import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -146,6 +149,63 @@ class Issue7403ExternalTransactionIT extends BaseGraphServerTest {
 
     // The first chunk is durable because the client committed it; the second never happened.
     assertThat(database.countType("Person", false)).isEqualTo(1);
+  }
+
+  /**
+   * A chunk that cannot take the caller's session lock within {@code HttpSession}'s five seconds is answered as
+   * an insert-session error naming the contention, not as an "Internal error".
+   * <p>
+   * {@code HttpSession.execute} signals that with a {@link com.arcadedb.exception.LockTimeoutException}, which
+   * is a {@code NeedRetryException} and therefore not one of the types
+   * {@code WebSocketInsertProtocol.execute} names - it would have fallen through to the generic catch and told
+   * the client the server had broken, when in truth its own two clients contended on one transaction
+   * (claude-review on PR #7811).
+   */
+  @Test
+  void aBusyExternalTransactionIsReportedAsAnInsertSessionErrorRatherThanAnInternalOne() throws Throwable {
+    final String transactionId = httpBegin();
+    final HttpSession httpSession = getServer(0).getHttpServer().getSessionManager()
+        .getSessionById(getServer(0).getSecurity().getUser("root"), transactionId);
+    assertThat(httpSession).isNotNull();
+
+    final CountDownLatch holding = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
+    final Thread hog = new Thread(() -> {
+      try {
+        // Occupies the session exactly as a long-running HTTP command on that transaction would.
+        httpSession.execute(getServer(0).getSecurity().getUser("root"), () -> {
+          holding.countDown();
+          release.await();
+          return null;
+        });
+      } catch (final Exception ignored) {
+      }
+    }, "issue7403-session-hog");
+    hog.setDaemon(true);
+    hog.start();
+
+    try (final var client = newClient()) {
+      assertThat(holding.await(10, TimeUnit.SECONDS)).isTrue();
+
+      final String sessionId = new JSONObject(client.send(startExternal(transactionId))).getString("sessionId");
+
+      // HttpSession.execute waits 5s for the lock, so the answer takes longer than the client helper's default.
+      client.sendWithoutWaiting(chunk(sessionId, 1, "blocked"));
+      final JSONObject refused = new JSONObject(client.popMessage(20_000));
+      assertThat(refused.getString("result", "")).isEqualTo("error");
+      assertThat(refused.getString("error", ""))
+          .as("contention on the caller's own transaction is not an internal error").isEqualTo("Insert session error");
+      assertThat(refused.getString("detail", "")).contains("is busy with another command");
+
+      release.countDown();
+      hog.join(10_000);
+
+      new JSONObject(client.send(control("rollback", sessionId)));
+    } finally {
+      release.countDown();
+    }
+
+    assertThat(httpTransaction("rollback", transactionId)).isEqualTo(204);
   }
 
   /** An unknown or expired transaction id is refused, never served against a fresh server-managed transaction. */

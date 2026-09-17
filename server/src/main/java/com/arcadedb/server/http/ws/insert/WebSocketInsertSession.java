@@ -25,6 +25,7 @@ import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -341,11 +342,18 @@ public class WebSocketInsertSession {
         work.run();
         return null;
       }, false);
+    } catch (final LockTimeoutException e) {
+      // An HTTP command is running on the caller's own transaction right now. Translated rather than allowed to
+      // propagate: LockTimeoutException is a NeedRetryException, which WebSocketInsertProtocol does not name, so
+      // it would have been answered "Internal error" - telling a client the server had broken when the truth is
+      // that its own two clients contended and this chunk can simply be sent again (claude-review on PR #7811).
+      throw new IllegalStateException("Transaction '" + externalTransactionId
+          + "' is busy with another command on it. Send this chunk again once that command has finished", e);
     } catch (final RuntimeException e) {
       throw e;
     } catch (final Exception e) {
-      // HttpSessionException (the sweep removed it between start and now) and LockTimeoutException are both
-      // checked here only because HttpSession.execute declares Exception; neither is an internal error.
+      // HttpSessionException - the transaction ended between this session's start and now - is checked here only
+      // because HttpSession.execute declares Exception. It is not an internal error either.
       throw new IllegalStateException(
           "Transaction '" + externalTransactionId + "' could not be used: " + e.getMessage(), e);
     }
