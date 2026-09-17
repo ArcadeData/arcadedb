@@ -23,8 +23,8 @@ import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
-import java.util.regex.Pattern;
 
 /**
  * Cypher split() function - splits a string by a delimiter.
@@ -72,6 +72,29 @@ public class CypherSplitFunction implements StatelessFunction {
       return characters;
     }
 
-    return List.of(str.split(Pattern.quote(delimiter), -1));
+    // The delimiter is a literal, so it is found with indexOf. String.split(Pattern.quote(delimiter), -1) compiled a
+    // regex on every call, once per row: a quoted pattern never takes String.split's fast path, not even for a
+    // one-character delimiter. The pieces are the ones that call returns - every occurrence, left to right and not
+    // overlapping, with the empty leading, inner and trailing pieces kept.
+    // indexOf compares UTF-16 units, the regex compares code points: an occurrence that starts or ends inside a
+    // surrogate pair of the string, which only a delimiter with a lone surrogate at that end can produce, is not one.
+    final boolean startsWithLowSurrogate = Character.isLowSurrogate(delimiter.charAt(0));
+    final boolean endsWithHighSurrogate = Character.isHighSurrogate(delimiter.charAt(delimiter.length() - 1));
+    final List<String> pieces = new ArrayList<>();
+    int from = 0;
+    int at = str.indexOf(delimiter);
+    while (at >= 0) {
+      final int end = at + delimiter.length();
+      if (startsWithLowSurrogate && at > 0 && Character.isHighSurrogate(str.charAt(at - 1))
+          || endsWithHighSurrogate && end < str.length() && Character.isLowSurrogate(str.charAt(end))) {
+        at = str.indexOf(delimiter, at + 1);
+        continue;
+      }
+      pieces.add(str.substring(from, at));
+      from = end;
+      at = str.indexOf(delimiter, from);
+    }
+    pieces.add(str.substring(from));
+    return Collections.unmodifiableList(pieces);
   }
 }
