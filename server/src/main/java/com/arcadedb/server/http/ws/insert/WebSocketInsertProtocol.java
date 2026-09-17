@@ -18,6 +18,8 @@
  */
 package com.arcadedb.server.http.ws.insert;
 
+import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
@@ -48,7 +50,9 @@ import java.util.logging.Level;
  * Client to server, on the existing {@code /ws} connection, as the {@code action} of a JSON text frame:
  * <ul>
  * <li>{@code start} - {@code database} (required), {@code sessionId} (optional; the server generates one when it
- *     is absent) and {@code options} ({@code targetType}, {@code transactionMode}, and the conflict options of
+ *     is absent), {@code transactionId} (optional; the {@code arcadedb-session-id} of a transaction already
+ *     begun with {@code POST /api/v1/begin}, which goes with {@code transactionMode: "none"} - see issue #7403)
+ *     and {@code options} ({@code targetType}, {@code transactionMode}, and the conflict options of
  *     issue #7404: {@code conflictMode}, {@code keyColumns}, {@code updateColumnsOnConflict},
  *     {@code validateOnly}). Answered with {@code started}, which echoes the modes the session runs under. A client-chosen id lives in ONE server-wide namespace, not one per user or per database -
  *     that is what makes "the same session id is refused to a second concurrent {@code start}" true whichever
@@ -61,7 +65,11 @@ import java.util.logging.Level;
  *     the session's {@code targetType}; an edge record names its endpoints with {@code @from} / {@code @to}
  *     (gRPC's {@code out} / {@code in} are accepted too). Answered with {@code batchAck}.</li>
  * <li>{@code commit} / {@code rollback} - {@code sessionId}. Answered with {@code committed}, whose
- *     {@code outcome} says which of the two it was and whose {@code summary} carries the full-session totals.</li>
+ *     {@code outcome} says which of the two it was and whose {@code summary} carries the full-session totals.
+ *     A session running on an externally-managed transaction ({@code transactionMode: "none"}) answers
+ *     {@code outcome: "detached"} to BOTH, because neither frame decides anything: the HTTP {@code /commit} or
+ *     {@code /rollback} that owns the transaction does, and saying {@code "commit"} there would tell a client
+ *     its rows were durable when nothing had been committed.</li>
  * </ul>
  * Server to client: {@code started}, {@code batchAck}, {@code committed}, and an {@code error} the server is free
  * to push unsolicited - which is what the idle sweep does when it rolls back a session the client walked away
@@ -93,9 +101,12 @@ public class WebSocketInsertProtocol {
   private static final String CLOSE_HOOK  = "arcadedb.ws.insert.closeHook";
 
   private final WebSocketInsertSessionManager sessionManager;
+  private final ContextConfiguration          configuration;
 
-  public WebSocketInsertProtocol(final WebSocketInsertSessionManager sessionManager) {
+  public WebSocketInsertProtocol(final WebSocketInsertSessionManager sessionManager,
+      final ContextConfiguration configuration) {
     this.sessionManager = sessionManager;
+    this.configuration = configuration;
     sessionManager.setExpiryListener((session, reason) -> {
       final WebSocketChannel channel = session.getChannel();
       if (channel != null && channel.isOpen())
@@ -153,7 +164,7 @@ public class WebSocketInsertProtocol {
       case "start" -> {
         final WebSocketInsertSession session = sessionManager.start(user, channel, channelId,
             message.getString("database", null), message.getString("sessionId", null),
-            message.getJSONObject("options", null));
+            message.getJSONObject("options", null), message.getString("transactionId", null));
 
         final JSONObject started = new JSONObject();
         started.put("result", "ok");
@@ -163,6 +174,8 @@ public class WebSocketInsertProtocol {
         started.put("transactionMode", session.options.transactionModeName());
         started.put("conflictMode", session.options.conflictModeName());
         started.put("validateOnly", session.options.validateOnly);
+        if (session.getExternalTransactionId() != null)
+          started.put("transactionId", session.getExternalTransactionId());
         send(channel, started);
       }
       case "chunk" -> {
@@ -178,6 +191,17 @@ public class WebSocketInsertProtocol {
         final long chunkSeq = message.getLong("chunkSeq", 0);
         if (chunkSeq < 1)
           throw new IllegalArgumentException("Property 'chunkSeq' is required and must be 1 or greater");
+
+        // The cap a client actually reasons about (issue #7403): 'wsMaxInsertFrameSize' bounds the BYTES before
+        // they are parsed, this one the ROWS after they are. Refused with an error frame that leaves the session
+        // open and the watermark where it was, so a client that splits the batch resends it under the same
+        // sequence and carries on.
+        final int maxRows = configuration.getValueAsInteger(GlobalConfiguration.SERVER_WS_MAX_INSERT_CHUNK_ROWS);
+        if (maxRows > 0 && records.length() > maxRows)
+          throw new IllegalArgumentException(
+              "Chunk " + chunkSeq + " carries " + records.length() + " records, more than the " + maxRows
+                  + " allowed by '" + GlobalConfiguration.SERVER_WS_MAX_INSERT_CHUNK_ROWS.getKey()
+                  + "'. Split it into smaller chunks");
 
         send(channel, session.applyChunk(chunkSeq, records));
       }
