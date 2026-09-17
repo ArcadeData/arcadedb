@@ -20,7 +20,9 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.*;
 import com.arcadedb.database.Record;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Type;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -42,6 +44,17 @@ public class ResultInternal implements Result {
   // Tracks properties explicitly removed via removeProperty so they do not fall through to the
   // backing element. Null until first removal (lazy init to avoid allocation overhead).
   protected Set<String> tombstones;
+  /**
+   * The type of the record a column-list projection read, plus that projection's alias-to-source-column map, so
+   * this row can answer {@link #getPropertyType(String)} for a plain projected column (issue #7638).
+   * <p>
+   * Two reference writes per row, and deliberately NOT a resolved {@code Type} per property: the map is built once
+   * per statement and shared by every row the projection produces, and the schema lookup happens only if someone
+   * asks - which today only a serializer does. Resolving eagerly would put a property lookup and a map insertion
+   * on the projection's hot path for an answer almost every row throws away.
+   */
+  protected DocumentType        projectionSourceType;
+  protected Map<String, String> projectionSourceColumns;
 
   public ResultInternal() {
     // Memory optimization: Use smaller initial capacity to reduce memory footprint
@@ -187,6 +200,55 @@ public class ResultInternal implements Result {
     if (!(result instanceof Record) && result instanceof Identifiable identifiable && identifiable.getIdentity() != null)
       result = (T) identifiable.getIdentity();
     return result;
+  }
+
+  /**
+   * Records where a column-list projection read its columns from, so {@link #getPropertyType(String)} can answer
+   * for them (issue #7638). Both arguments describe the projection as a whole, not this row.
+   *
+   * @param sourceType    the type of the record the projection read, or null when it read no typed record
+   * @param sourceColumns alias to source column name, for the projection items that are plain column references.
+   *                      Built once per statement and shared by every row, so it must never be mutated here
+   */
+  public ResultInternal setProjectionSource(final DocumentType sourceType, final Map<String, String> sourceColumns) {
+    this.projectionSourceType = sourceType;
+    this.projectionSourceColumns = sourceColumns;
+    return this;
+  }
+
+  /**
+   * THE PROJECTION IS ASKED FIRST, the backing element second - the same precedence {@link #getProperty(String)}
+   * itself applies, and for the same reason. {@code SELECT *, n + 1 AS d} keeps the backing element AND publishes
+   * a computed value under {@code d} in {@code content}, so the value this row answers for {@code d} is the
+   * computed one; answering with backing column {@code d}'s declared type would describe a value this row does not
+   * have. Asking the element first did exactly that (found in review).
+   * <p>
+   * A KEY PRESENT WITH A NULL VALUE is how the projection says "this alias is mine and it has no source column",
+   * which stops the lookup rather than letting it fall through to the element - a different answer from an ABSENT
+   * key, "this projection never mentioned this name", which does fall through. The second lookup that tells them
+   * apart runs only when the first returned null, so a plain column reference still costs one.
+   */
+  @Override
+  public Type getPropertyType(final String name) {
+    if (projectionSourceColumns != null) {
+      final String sourceColumn = projectionSourceColumns.get(name);
+      if (sourceColumn != null) {
+        if (projectionSourceType == null)
+          return null;
+        final Property property = projectionSourceType.getPolymorphicPropertyIfExists(sourceColumn);
+        return property != null ? property.getType() : null;
+      }
+      if (projectionSourceColumns.containsKey(name))
+        return null;
+    }
+
+    if (element != null) {
+      final DocumentType elementType = element.getType();
+      final Property declared = elementType != null ? elementType.getPolymorphicPropertyIfExists(name) : null;
+      if (declared != null)
+        return declared.getType();
+    }
+    return null;
   }
 
   /**

@@ -77,6 +77,15 @@ import java.util.function.BiFunction;
 public class PageManager extends LockContext {
   public static final PageManager INSTANCE = new PageManager();
 
+  /**
+   * The database-level files a snapshot window carries alongside its pages, in the order they are captured. See
+   * {@link #captureConfigurationFiles} for why {@code schema.prev.json} is one of them and why it has to be read
+   * inside the t0 barrier (issue #7637). Private: the array is mutable, and the published contract is the
+   * {@code PageSnapshot.SnapshotConfigFile} list, not this.
+   */
+  private static final String[] CONFIGURATION_FILE_NAMES = { LocalDatabase.CONFIGURATION_FILE_NAME,
+      LocalSchema.SCHEMA_FILE_NAME, LocalSchema.SCHEMA_PREV_FILE_NAME };
+
   // Package-private (instead of private) so the white-box regression test for #4925/#4933 can assert on
   // the cache content and RAM accounting directly, without reflection.
   volatile ConcurrentMap<PageId, CachedPage> readCache;
@@ -892,15 +901,25 @@ public class PageManager extends LockContext {
   }
 
   /**
-   * Reads {@code configuration.json} and {@code schema.json} whole, as the last step of the t0 barrier (#6114).
+   * Reads {@code configuration.json}, {@code schema.json} and {@code schema.prev.json} whole, as the last step of
+   * the t0 barrier (#6114).
    * <p>
-   * WHY INSIDE THE BARRIER. The two files describe the page set this window is about to serve: which buckets and
+   * WHY INSIDE THE BARRIER. The files describe the page set this window is about to serve: which buckets and
    * indexes exist, and which file backs each of them. Read afterwards - which is what every consumer did before
    * this - they are "the page files, plus whatever the configuration looked like shortly after", and the only thing
    * that made that safe was the database read lock the consumer held for its WHOLE operation, excluding DDL. Read
    * here, they belong to the same observation as the file list: this runs inside
    * {@code FileManager.executeWithFileSetLocked}, so no file can be created or dropped between the listing above
-   * and these two reads, and a backup no longer has to block DDL for its duration.
+   * and these reads, and a backup no longer has to block DDL for its duration.
+   * <p>
+   * WHY {@code schema.prev.json} IS ONE OF THEM, AND WHY IT HAS TO BE CAPTURED HERE (issue #7637). It is the copy
+   * {@code LocalSchema.readConfiguration()} falls back to when {@code schema.json} is missing, zero-length or
+   * unparseable, and the second arm of {@code DatabaseFactory.exists()}. A database restored from an archive that
+   * omits it has no corruption fallback at all until its first schema save recreates one, while the database it
+   * was copied from had one - so a restore quietly produced a less resilient database than its source. Read off
+   * the live filesystem AFTER t0 it would be worse than useless: two DDLs after t0 leave the previous copy holding
+   * the first one's result, which is a fallback describing a page set the archive does not contain. Captured
+   * inside the barrier it is genuinely older than the archived primary, which is the only version worth shipping.
    * <p>
    * WHAT THAT DOES NOT BUY. The file-set lock orders this against file creation and file drop, not against the
    * schema SAVE. #7457 has since moved {@code LocalSchema.recordFileChanges}'s save inside the write-locked DDL
@@ -912,7 +931,7 @@ public class PageManager extends LockContext {
    * <p>
    * WHY IT IS AFFORDABLE. The rest of this barrier works hard to avoid filesystem calls under the JVM-wide lock -
    * see {@code PageSnapshot.SnapshotFile.lastModified()} and the note on the t0 page count, both of which were
-   * moved out or made lock-free for exactly that reason. This is two small sequential reads of a few KB with a
+   * moved out or made lock-free for exactly that reason. These are small sequential reads of a few KB with a
    * fixed count, not one per bucket and index, and there is no later point at which the content would still be the
    * t0 one. It is the deliberate exception, not a precedent.
    * <p>
@@ -922,10 +941,10 @@ public class PageManager extends LockContext {
    */
   private List<PageSnapshot.SnapshotConfigFile> captureConfigurationFiles(final DatabaseInternal database)
       throws IOException {
-    final List<PageSnapshot.SnapshotConfigFile> captured = new ArrayList<>(2);
+    final List<PageSnapshot.SnapshotConfigFile> captured = new ArrayList<>(CONFIGURATION_FILE_NAMES.length);
     final File databaseDirectory = new File(database.getDatabasePath());
 
-    for (final String fileName : new String[] { LocalDatabase.CONFIGURATION_FILE_NAME, LocalSchema.SCHEMA_FILE_NAME }) {
+    for (final String fileName : CONFIGURATION_FILE_NAMES) {
       final File file = new File(databaseDirectory, fileName);
       try {
         // TIMESTAMP FIRST, BYTES SECOND. Both writers of these files publish by rename, so a rename landing

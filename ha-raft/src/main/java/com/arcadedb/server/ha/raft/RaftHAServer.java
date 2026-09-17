@@ -4198,9 +4198,25 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   static boolean resolvePersistStorage(final ContextConfiguration configuration) {
     if (isExplicitlyConfigured(configuration, GlobalConfiguration.HA_RAFT_PERSIST_STORAGE)) {
       final String sysProp = System.getProperty(GlobalConfiguration.HA_RAFT_PERSIST_STORAGE.getKey());
-      return sysProp != null
-          ? Boolean.parseBoolean(sysProp)
-          : configuration.getValueAsBoolean(GlobalConfiguration.HA_RAFT_PERSIST_STORAGE);
+      if (sysProp != null) {
+        // Parsed STRICTLY, through the same entry point every other reader of raw configuration text uses
+        // (issue #7296). Boolean.parseBoolean, which this replaced, maps everything that is not "true" to
+        // false - so `-Darcadedb.ha.raftPersistStorage=yes`, an operator affirming that the Raft log must
+        // survive a restart, silently made the storage ephemeral instead, which on a full-cluster cold restart
+        // is what turns a merely-lagging follower into a permanently diverged one. Refusing to guess is the
+        // rule #7222 established for exactly this shape; here it also happens to fail safe, the default being
+        // the durable side.
+        final Object coerced = GlobalConfiguration.HA_RAFT_PERSIST_STORAGE.coerceFromConfigurationSource(sysProp,
+            "system property '" + GlobalConfiguration.HA_RAFT_PERSIST_STORAGE.getKey() + "'");
+        if (coerced instanceof Boolean b)
+          return b;
+        // Refused: keep the compiled-in default. Read WITHOUT a cast, and biased to the durable side rather than
+        // to whatever a non-Boolean default would coerce to - a cast here would only turn a future change to this
+        // setting's declared default into a ClassCastException on a recovery path, and "not explicitly false" is
+        // the reading that cannot answer "wipe the Raft log" to a question nobody managed to ask.
+        return !Boolean.FALSE.equals(GlobalConfiguration.HA_RAFT_PERSIST_STORAGE.getDefValue());
+      }
+      return configuration.getValueAsBoolean(GlobalConfiguration.HA_RAFT_PERSIST_STORAGE);
     }
     return GlobalConfiguration.HA_RAFT_PERSIST_STORAGE.getValueAsBoolean();
   }

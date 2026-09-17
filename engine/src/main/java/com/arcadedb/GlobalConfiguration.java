@@ -2824,12 +2824,16 @@ public enum GlobalConfiguration {
   /**
    * Builds the set of allowed values for an integer option constrained to the inclusive range {@code [fromInclusive, toInclusive]}. The values are stored as
    * strings because {@link #setValue(Object)} validates against {@code value.toString()}.
+   * <p>
+   * Returned IMMUTABLE, like the {@code Set.of(...)} allow-lists every other constrained setting declares. These are
+   * fields of a JVM-wide enum singleton, so a mutable one is a way to widen or empty a setting's allow-list for the
+   * rest of the process - which is exactly the enforcement {@link #coerceFromAdminCommand(Object)} centralises.
    */
   private static Set<Object> integerRangeAsStrings(final int fromInclusive, final int toInclusive) {
     final Set<Object> set = new HashSet<>();
     for (int i = fromInclusive; i <= toInclusive; i++)
       set.add(Integer.toString(i));
-    return set;
+    return Set.copyOf(set);
   }
 
   public static void dumpConfiguration(final PrintStream out) {
@@ -2854,6 +2858,21 @@ public enum GlobalConfiguration {
     out.flush();
   }
 
+  /**
+   * Applies a {@code {"configuration": {...}}} document to this enum's own values.
+   * <p>
+   * The same document shape {@link ContextConfiguration#fromJSON(String)} reads, and since issue #7296 the same
+   * strict parse: it used {@link #setValue(Object)} directly, whose {@code Boolean} arm is
+   * {@code Boolean.parseBoolean}, so a {@code "yes"} written here became {@code false} without a word - the exact
+   * defect #7222 and #7262 fixed on every other channel, left standing on this one because its only caller today
+   * is a test. Wiring it up later would have reintroduced it silently, which is the reason to close it now rather
+   * than to note it.
+   * <p>
+   * A value that cannot be read is REPORTED and the setting left at what it held, as on every other
+   * configuration-source path: this is a document, so one unreadable entry must not discard the rest of it, and
+   * throwing from here would also be reachable from a static initializer through {@link #setValue(Object)}'s
+   * callbacks.
+   */
   public static void fromJSON(final String input) {
     if (input == null)
       return;
@@ -2862,9 +2881,8 @@ public enum GlobalConfiguration {
     final JSONObject cfg = json.getJSONObject("configuration");
     for (final String k : cfg.keySet()) {
       final GlobalConfiguration cfgEntry = findByKey(GlobalConfiguration.PREFIX + k);
-      if (cfgEntry != null) {
-        cfgEntry.setValue(cfg.get(k));
-      }
+      if (cfgEntry != null)
+        cfgEntry.setValueFromConfigurationSource(cfg.get(k), "configuration JSON document");
     }
   }
 
@@ -3203,16 +3221,25 @@ public enum GlobalConfiguration {
    * leaves the setting exactly where it was - the compiled-in default from {@link #readConfiguration()}, and
    * whatever the overlay already held from {@code fromJSON}.
    *
+   * <p>
+   * Public since issue #7296 so a component OUTSIDE this package that reads raw configuration text itself can
+   * apply the same parse instead of writing its own: {@code RaftHAServer.resolvePersistStorage} read
+   * {@code arcadedb.ha.raftPersistStorage} straight off {@code System.getProperty} with
+   * {@code Boolean.parseBoolean}, which turned {@code yes} - an operator AFFIRMING that the Raft log must
+   * survive a restart - into {@code false}, i.e. into wiping it. That is the read side of the same defect
+   * #7222 fixed on the write side.
+   *
    * @param iValue the value to coerce, typically the raw text a property, variable or configuration file carried
    * @param source what to name as its origin when reporting a value that cannot be read
    *
    * @return the coerced value, or {@code null} when it was refused (and when {@code iValue} itself is {@code null})
    */
-  Object coerceFromConfigurationSource(final Object iValue, final String source) {
+  public Object coerceFromConfigurationSource(final Object iValue, final String source) {
     try {
-      final Object coerced = coerceFromAdminCommand(iValue);
-      checkAllowed(coerced);
-      return coerced;
+      // The allow-list check that used to be made here moved INTO coerceFromAdminCommand for issue #7296, so
+      // every writer through that entry point gets it rather than this one alone. Nothing is lost here: this
+      // path still refuses exactly what it refused before, it just no longer owns the rule.
+      return coerceFromAdminCommand(iValue);
     } catch (final Exception e) {
       report(iValue, source, e);
       return null;
@@ -3221,8 +3248,10 @@ public enum GlobalConfiguration {
 
   /**
    * Refuses a value outside this setting's declared {@code allowed} set. Shared by BOTH writers -
-   * {@link #setValue(Object)} and {@link #coerceFromConfigurationSource(Object, String)} - so the two cannot come
-   * to disagree about what is allowed, or report it differently when they refuse.
+   * {@link #setValue(Object)} and {@link #coerceFromAdminCommand(Object)}, which every writer of raw external
+   * text goes through - so the two cannot come to disagree about what is allowed, or report it differently when
+   * they refuse. It was on {@code coerceFromConfigurationSource} rather than on the strict entry point until
+   * issue #7296, which left the administrative writers without it.
    * <p>
    * {@link #coerce(Object)} converts a value to the setting's TYPE and stops there, so a {@code String} setting with
    * an allow-list accepted anything that was a string. That was invisible while the only writer of raw external
@@ -3345,12 +3374,17 @@ public enum GlobalConfiguration {
    * <b>Every writer of raw external text now goes through this parse, and enumerating them is the point:</b> #7222
    * happened because such an enumeration went stale, and #7262 because it was still one short. In full:
    * <ol>
-   *   <li>{@code SET SERVER SETTING} and {@code SET DATABASE SETTING} over HTTP, and the {@code set_server_setting}
-   *       MCP tool, and {@code ALTER DATABASE ... SETTING} in SQL - directly, refusing loudly;</li>
+   *   <li>{@code SET SERVER SETTING} and {@code SET DATABASE SETTING} over HTTP <em>and over gRPC</em> - both go
+   *       through {@code ServerControlPlane.applySetting} - the {@code set_server_setting} MCP tool, and
+   *       {@code ALTER DATABASE ... SETTING} in SQL - directly, refusing loudly;</li>
    *   <li>system properties and environment variables, through
    *       {@link #setValueFromConfigurationSource(Object, String)} (#7222);</li>
    *   <li>the server configuration FILE, {@link ContextConfiguration#fromJSON(String)}, through
-   *       {@link #coerceFromConfigurationSource(Object, String)} (#7262).</li>
+   *       {@link #coerceFromConfigurationSource(Object, String)} (#7262), and this enum's own
+   *       {@link #fromJSON(String)} twin through the same (#7296);</li>
+   *   <li>{@code arcadedb.ha.raftPersistStorage} read straight off {@code System.getProperty} by
+   *       {@code RaftHAServer.resolvePersistStorage}, which is a READER of raw text rather than a writer and so
+   *       calls {@link #coerceFromConfigurationSource(Object, String)} without storing (#7296).</li>
    * </ol>
    * The last one used to store what it read straight into the overlay map with a plain {@code put}, touching
    * neither this method nor {@link #setValue(Object)}, so a {@code "yes"} written there survived as the string
@@ -3376,7 +3410,21 @@ public enum GlobalConfiguration {
         throw invalidValue(iValue, new IllegalArgumentException("only 'true' and 'false' are accepted"));
     }
 
-    return coerce(iValue);
+    final Object coerced = coerce(iValue);
+    // The allow-list belongs HERE, not one level up on each writer (issue #7296). It used to sit on
+    // coerceFromConfigurationSource only, so the configuration-file path refused an unlisted value and the
+    // ADMINISTRATIVE paths that share this entry point did not: SET SERVER SETTING over HTTP and over gRPC, the
+    // set_server_setting MCP tool and ALTER DATABASE ... SETTING all stored it verbatim and answered 200.
+    // `arcadedb.server.mode=prodction` was accepted that way, and AbstractServerHttpHandler compares the stored
+    // value with "production", so a deployment that believed it had asked for production mode kept the
+    // development behaviour - error-detail concealment included.
+    //
+    // This is the third report in that family (#7222, #7262, #7296) and each earlier fix was scoped to the
+    // writer the issue named, which moved the hole rather than closing it. Both halves of the strict parse - the
+    // type strictness above and the allow-list here - now live at the single point EVERY writer of raw external
+    // text goes through, so a new writer inherits them by using it and cannot get one without the other.
+    checkAllowed(coerced);
+    return coerced;
   }
 
   /**
@@ -3622,6 +3670,19 @@ public enum GlobalConfiguration {
 
   public Object getDefValue() {
     return defValue;
+  }
+
+  /**
+   * The values this setting declares as valid, or {@code null} when it constrains nothing beyond its type. Exposed
+   * for the issue #7296 guard test, which sweeps every declared setting and asserts that an allow-list is enforced
+   * on the administrative writers too - the enumeration that went stale twice before it was written down as a test.
+   * <p>
+   * Unmodifiable, and belt-and-braces: every declared set is immutable already. That is the property the rule
+   * depends on - these are fields of a JVM-wide singleton, so handing out a mutable one would let any caller widen
+   * or empty an allow-list for the rest of the process and walk straight past the check this issue centralised.
+   */
+  public Set<Object> getAllowed() {
+    return allowed != null ? Collections.unmodifiableSet(allowed) : null;
   }
 
   public Class<?> getType() {

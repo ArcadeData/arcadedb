@@ -28,9 +28,11 @@ import io.swagger.v3.oas.models.media.Schema;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -77,24 +79,23 @@ class Issue7577ClusterStatusSchemaMatchesTheHandlerTest {
   }
 
   /**
-   * The divergence vocabulary is a copy too, for the same reason and with the same failure: a cause added to
-   * {@code DivergenceCause} and not to the spec reaches operators through an enum that refuses it, so a typed
-   * client sees a quarantined database whose cause it cannot decode - which is the one field #7741 added because
-   * the database names alone read as a replication fault whatever put them there.
-   * <p>
-   * Read off the enum rather than listed here, so a new constant fails this without anyone remembering to.
+   * The {@code divergenceCauses} vocabulary is a copy too, for the same reason - {@code PluginApiSpec} lives in
+   * {@code arcadedb-server} and cannot see {@link DivergenceCause} - so it is checked against the original here.
+   * Without this, adding, renaming or removing a cause drifts the two lists apart silently, which is the failure
+   * mode #7577 and #7741 were about: #7741 added this very member to the response and not to the document.
    */
   @Test
-  void theDivergenceCauseEnumIsTheSetDivergenceCauseDeclares() {
-    final Schema<?> causes = (Schema<?>) property(clusterStatus(), "localResync").getProperties()
-        .get("divergenceCauses");
-    final List<Object> declared = new ArrayList<>(((Schema<?>) causes.getAdditionalProperties()).getEnum());
+  void theDivergenceCauseEnumIsTheSetTheStateMachineRecords() {
+    final Schema<?> localResync = property(clusterStatus(), "localResync");
+    final List<Object> declared = new ArrayList<>(
+        ((Schema<?>) localResync.getProperties().get("divergenceCauses")).getAdditionalProperties() instanceof Schema<?> values ?
+            values.getEnum() :
+            List.of());
 
-    final List<String> actual = new ArrayList<>();
-    for (final DivergenceCause cause : DivergenceCause.values())
-      actual.add(cause.name());
-
-    assertThat(declared).containsExactlyInAnyOrderElementsOf(actual);
+    assertThat(declared)
+        .as("the document must offer exactly the causes ArcadeStateMachine can record")
+        .containsExactlyInAnyOrderElementsOf(
+            Arrays.stream(DivergenceCause.values()).map(Enum::name).map(Object.class::cast).toList());
   }
 
   /** An alert is built as one chained expression, so every member it declares is on every alert. */
@@ -107,6 +108,21 @@ class Issue7577ClusterStatusSchemaMatchesTheHandlerTest {
     assertThat(alert.getRequired())
         .as("ClusterAlerts builds each alert whole, so an alert that is present is present whole")
         .containsExactlyInAnyOrderElementsOf(alert.getProperties().keySet());
+  }
+
+  /**
+   * The divergence-cause vocabulary is a copy too (issue #7741), for the same reason: {@code DivergenceCause}
+   * lives here and the spec lives in {@code arcadedb-server}. A cause added to the enum and not to the spec
+   * would reach operators through an enum that refuses the value they are being shown.
+   */
+  @Test
+  void theDivergenceCauseEnumIsTheSetTheHandlerEmits() {
+    final List<Object> declared = new ArrayList<>(
+        property(property(clusterStatus(), "localResync"), "divergenceCauses").getAdditionalProperties() instanceof Schema<?> values
+            ? values.getEnum() : List.of());
+
+    assertThat(declared).containsExactlyInAnyOrder(
+        Stream.of(DivergenceCause.values()).map(DivergenceCause::name).toArray());
   }
 
   /**
