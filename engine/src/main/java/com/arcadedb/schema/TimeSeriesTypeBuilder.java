@@ -259,9 +259,20 @@ public class TimeSeriesTypeBuilder {
         appendTimestamp(sql, col);
         continue;
       }
-      // A TIMESTAMP-role column that is NOT the one timestampColumnDefinition() found is dropped rather than
-      // rendered, and is unreachable: toSQL() runs validate() first, which refuses a builder carrying more than
-      // one TIMESTAMP column (issue #7740). That invariant is what makes the skip safe (claude review on PR #7757).
+
+      if (role == ColumnDefinition.ColumnRole.TIMESTAMP) {
+        // A SECOND timestamp column has no expression - the grammar has one TIMESTAMP clause because the type has
+        // one column - so it is refused here rather than dropped from the rendering. Unreachable through toSQL(),
+        // which runs validate() first, and guarded locally anyway so that the statement this renders cannot depend
+        // on the caller having run that check (claude review on PR #7757). timestampDefinition being null is the
+        // one case that is not a duplicate: the builder names a timestamp column no ColumnDefinition matches, the
+        // clause was rendered from the name above, and this column is a leftover the type never referenced.
+        if (timestampDefinition != null)
+          throw new SchemaException(
+              "A TIMESERIES type has exactly one TIMESTAMP column, and this builder carries a second one: '"
+                  + col.getName() + "'");
+        continue;
+      }
       if (role != ColumnDefinition.ColumnRole.TAG && role != ColumnDefinition.ColumnRole.FIELD)
         continue;
 

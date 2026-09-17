@@ -21,6 +21,7 @@ package com.arcadedb.schema;
 import com.arcadedb.TestHelper;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.parser.Statement;
 import org.junit.jupiter.api.Test;
@@ -237,6 +238,24 @@ class Issue7702InterleavedTagAndFieldOrderTest extends TestHelper {
         .hasMessageContaining("ts2");
 
     assertThat(database.getSchema().existsType("TwoTimestamps")).isFalse();
+  }
+
+  /**
+   * The rendering refuses a second TIMESTAMP column itself rather than dropping it, so the statement it produces
+   * cannot depend on the caller having run {@code validate()} first - which {@code toSQL()} does, making this
+   * unreachable through it (claude review on PR #7757).
+   */
+  @Test
+  void theRenderingRefusesASecondTimestampColumnRatherThanDroppingIt() {
+    final TimeSeriesTypeBuilder builder = database.getSchema().buildTimeSeriesType().withName("TwoTimestampColumns")
+        .withTimestamp("ts")
+        .withField("f1", Type.DOUBLE)
+        .withColumn(new ColumnDefinition("ts2", Type.LONG, ColumnDefinition.ColumnRole.TIMESTAMP));
+
+    // Through toSQL(), validate() speaks first and the rendering is never reached.
+    assertThatThrownBy(builder::toSQL)
+        .isInstanceOf(SchemaException.class)
+        .hasMessageContaining("exactly one TIMESTAMP column");
   }
 
   /**
