@@ -20,6 +20,7 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.server.LeaderForwardContext;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -94,7 +95,6 @@ class Issue7528LeaderProxyRemovedTest {
    */
   @Test
   void theOneHopMarkerIsUnchanged() {
-    assertThat(com.arcadedb.server.LeaderForwardContext.FORWARDED_TO_LEADER_HEADER)
-        .isEqualTo("X-ArcadeDB-Forwarded-To-Leader");
+    assertThat(LeaderForwardContext.FORWARDED_TO_LEADER_HEADER).isEqualTo("X-ArcadeDB-Forwarded-To-Leader");
   }
 }

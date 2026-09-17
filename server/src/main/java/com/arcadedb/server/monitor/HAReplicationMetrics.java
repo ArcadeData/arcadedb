@@ -27,6 +27,7 @@ import com.arcadedb.server.monitor.HAReplicationStatsProvider.PendingPhase2Stats
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.SchemaInstalmentSample;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.UnreferencedFilesSample;
 import com.arcadedb.server.security.PermissionRefreshMetrics;
+import com.arcadedb.server.security.ServerSecurity;
 
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -134,6 +135,13 @@ public final class HAReplicationMetrics implements MeterBinder, Closeable {
             + "counted the node authorizes against it, so this is 'the change reached this peer'.")
         .register(registry);
 
+    Gauge.builder("arcadedb.ha.security.refreshes_requested", () -> securityRefresh().refreshesRequested())
+        .description("Permission-refresh hand-offs made to the refresh worker, counted whether or not it took "
+            + "them. The accepted ones are this minus refreshes_coalesced, which is the only way to derive them: "
+            + "ThreadPoolExecutor.execute runs its rejection handler on the calling thread and returns normally, "
+            + "so the submit itself cannot tell the two apart.")
+        .register(registry);
+
     Gauge.builder("arcadedb.ha.security.refreshes_coalesced", () -> securityRefresh().refreshesCoalesced())
         .description("Permission-refresh hand-offs the worker did not take, because one was already queued or the "
             + "security service had stopped. The first case is coalescing and is harmless - the queued sweep "
@@ -148,6 +156,12 @@ public final class HAReplicationMetrics implements MeterBinder, Closeable {
     Gauge.builder("arcadedb.ha.security.sweeps_failed", () -> securityRefresh().sweepsFailed())
         .description("Sweeps that ended in the refresh worker's catch-all, meaning this node fell back to "
             + "converging only on the arcadedb.server.security.reloadEvery tick. Any non-zero value is actionable.")
+        .register(registry);
+
+    Gauge.builder("arcadedb.ha.security.databases_refreshed", () -> securityRefresh().databasesRefreshed())
+        .description("Databases whose cached permissions were re-derived, summed over every sweep. Read against "
+            + "sweeps_completed it gives the average breadth of a sweep, which is what makes a sudden drop - a "
+            + "node sweeping but finding nothing open to sweep - distinguishable from a node not sweeping.")
         .register(registry);
 
     Gauge.builder("arcadedb.ha.security.database_refresh_failures",
@@ -174,9 +188,8 @@ public final class HAReplicationMetrics implements MeterBinder, Closeable {
    * not installed - which is what a scrape taken during startup or shutdown must see rather than an exception.
    */
   private PermissionRefreshMetrics.Snapshot securityRefresh() {
-    return server.getSecurity() != null
-        ? server.getSecurity().getPermissionRefreshStats()
-        : new PermissionRefreshMetrics.Snapshot(0, 0, 0, 0, 0, 0, 0, 0, 0);
+    final ServerSecurity security = server.getSecurity();
+    return security != null ? security.getPermissionRefreshStats() : PermissionRefreshMetrics.Snapshot.ZERO;
   }
 
   /**

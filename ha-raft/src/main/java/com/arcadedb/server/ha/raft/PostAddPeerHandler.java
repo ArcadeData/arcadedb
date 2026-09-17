@@ -30,6 +30,7 @@ import io.undertow.server.HttpServerExchange;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.logging.Level;
 
@@ -136,20 +137,37 @@ public class PostAddPeerHandler extends AbstractServerHttpHandler {
    * witness semantics appear only once some peer is given a positive one, which is the same rule
    * {@code selectStepDownTargets} applies.
    *
-   * @throws IllegalArgumentException when the field is present but is not a number, or is negative - Ratis
-   *                                  rejects a negative priority, and answering 400 here names the field instead
-   *                                  of surfacing it as a failed membership change
+   * <b>Read through {@link BigDecimal#intValueExact()}, not {@code JSONObject.getInt}.</b> That method is
+   * {@code Number.intValue()} underneath, which SILENTLY narrows: {@code {"priority":0.5}} would arrive as
+   * {@code 0} and {@code {"priority":4294967296}} as {@code 0} again - and {@code 0} is not a harmless default
+   * here, it is the value that declares a witness as soon as any other peer carries a positive one. An operator
+   * who mistypes a priority would have been told the peer was added at the priority they asked for, and got the
+   * one value with the opposite meaning. {@code intValueExact} refuses a fractional part and an out-of-range
+   * magnitude in the same call, so both become a 400 naming the field.
+   *
+   * @throws IllegalArgumentException when the field is present but is not a number, is not a whole number, does
+   *                                  not fit in an {@code int}, or is negative - Ratis rejects a negative
+   *                                  priority, and answering 400 here names the field instead of surfacing it as
+   *                                  a failed membership change
    */
   static int readPriority(final JSONObject payload) {
     if (!payload.has("priority") || payload.isNull("priority"))
       return 0;
 
-    final int priority;
-    try {
-      priority = payload.getInt("priority");
-    } catch (final RuntimeException e) {
+    if (!(payload.get("priority") instanceof Number number))
       throw new IllegalArgumentException(
           "Field 'priority' must be a non-negative integer, the peer's Raft leader-election priority");
+
+    final int priority;
+    try {
+      // toString() rather than a doubleValue(): it is the one conversion that is lossless for every Number the
+      // JSON parser produces - Integer, Long, Double and BigDecimal alike - so nothing is rounded on the way
+      // into the check that exists to catch rounding.
+      priority = new BigDecimal(number.toString()).intValueExact();
+    } catch (final ArithmeticException | NumberFormatException e) {
+      throw new IllegalArgumentException("Field 'priority' must be a whole number that fits in a 32-bit integer, "
+          + "but was " + number + ". It is the peer's Raft leader-election priority, so a value rounded to fit "
+          + "would silently change which nodes can take leadership");
     }
 
     if (priority < 0)

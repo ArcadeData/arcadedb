@@ -89,6 +89,18 @@ public final class PermissionRefreshMetrics {
   public record Snapshot(long entriesApplied, long refreshesRequested, long refreshesCoalesced, long sweepsCompleted,
                          long sweepsFailed, long databasesRefreshed, long databaseRefreshFailures,
                          long lastEntryAppliedAt, long lastSweepAt) {
+
+    /**
+     * The reading for a server with no security service to ask - a scrape or an info request that lands before
+     * one is installed or after it is gone.
+     * <p>
+     * A constant rather than nine zeros written out at each reader: there are two of them (the
+     * {@code arcadedb.ha.security.*} gauges and {@code ha.securityRefresh}), and a record that gains a field
+     * must not be able to leave one of them reporting a stale shape. Zeros, not nulls, because "this node has
+     * done nothing" and "this node cannot say" are the same answer to every question these counters are asked -
+     * and an absent section is the one answer a dashboard cannot plot.
+     */
+    public static final Snapshot ZERO = new Snapshot(0, 0, 0, 0, 0, 0, 0, 0, 0);
   }
 
   /** A replicated group document has been installed and is in force on this node from now on. */
