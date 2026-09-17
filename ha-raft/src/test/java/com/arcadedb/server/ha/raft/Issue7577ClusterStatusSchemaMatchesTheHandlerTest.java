@@ -28,6 +28,7 @@ import io.swagger.v3.oas.models.media.Schema;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -75,6 +76,26 @@ class Issue7577ClusterStatusSchemaMatchesTheHandlerTest {
 
     assertThat(declared).containsExactlyInAnyOrder(ClusterAlerts.SEVERITY_INFO, ClusterAlerts.SEVERITY_WARNING,
         ClusterAlerts.SEVERITY_CRITICAL);
+  }
+
+  /**
+   * The {@code divergenceCauses} vocabulary is a copy too, for the same reason - {@code PluginApiSpec} lives in
+   * {@code arcadedb-server} and cannot see {@link DivergenceCause} - so it is checked against the original here.
+   * Without this, adding, renaming or removing a cause drifts the two lists apart silently, which is the failure
+   * mode #7577 and #7741 were about: #7741 added this very member to the response and not to the document.
+   */
+  @Test
+  void theDivergenceCauseEnumIsTheSetTheStateMachineRecords() {
+    final Schema<?> localResync = property(clusterStatus(), "localResync");
+    final List<Object> declared = new ArrayList<>(
+        ((Schema<?>) localResync.getProperties().get("divergenceCauses")).getAdditionalProperties() instanceof Schema<?> values ?
+            values.getEnum() :
+            List.of());
+
+    assertThat(declared)
+        .as("the document must offer exactly the causes ArcadeStateMachine can record")
+        .containsExactlyInAnyOrderElementsOf(
+            Arrays.stream(DivergenceCause.values()).map(Enum::name).map(Object.class::cast).toList());
   }
 
   /** An alert is built as one chained expression, so every member it declares is on every alert. */
