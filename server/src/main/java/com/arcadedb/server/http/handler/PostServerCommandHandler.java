@@ -22,6 +22,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.HAServerPlugin;
@@ -31,6 +32,7 @@ import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HttpString;
 
+import java.util.logging.Level;
 import java.io.File;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -557,6 +559,13 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     final JSONObject event = new JSONObject().put("status", "error");
     final Throwable reported = e.getCause() != null ? e.getCause() : e;
     event.put("exception", reported.getClass().getName());
+    if (isProductionMode())
+      // THE CONCEALED TEXT PROMISES A LOG ENTRY, AND THIS BRANCH IS THE ONE PLACE THAT CAN WRITE IT: streamOrRun
+      // HAS ALREADY SENT THE RESPONSE, SO THE FAILURE NEVER REACHES AbstractServerHttpHandler'S MAPPING, WHICH IS
+      // WHERE EVERY OTHER CONCEALED HTTP FAILURE IS LOGGED (PR #7755 REVIEW)
+      LogManager.instance().log(this, Level.SEVERE,
+          "Error on a control-plane operation, concealed from the client in production mode", e);
+
     event.put("message", isProductionMode() ? ArcadeDBServer.CONCEALED_ERROR_MESSAGE : failureMessage(e));
     return event;
   }

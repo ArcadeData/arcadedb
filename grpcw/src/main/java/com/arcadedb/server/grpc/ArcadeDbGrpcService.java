@@ -2003,7 +2003,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       LogManager.instance().log(this, Level.FINE, "rollbackTransaction(): rollback FAILED txId=%s err=%s", txId,
           cause.toString(), cause);
       if (!responded)
-        rsp.onError(Status.ABORTED.withDescription("Rollback failed: " + cause.getMessage()).asException());
+        rsp.onError(Status.ABORTED.withDescription(concealable("Rollback failed", cause)).asException());
     } finally {
       // The transaction was claimed above (removed from activeTransactions), so release its concurrency slot and
       // shut the executor down exactly once here.
@@ -3111,7 +3111,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
               // internal fault. Scoped to build() so genuine engine failures keep reporting as INTERNAL.
               errorSent[0] = true;
               out.onError(Status.FAILED_PRECONDITION.withDescription(
-                  "graphBatchLoad: " + e.getMessage()).asException());
+                  concealable("graphBatchLoad", e)).asException());
               return;
             }
             batchRef.set(batch);
@@ -3933,6 +3933,27 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    */
   private boolean concealErrors() {
     return arcadeServer != null && arcadeServer.isProductionMode();
+  }
+
+  /**
+   * A description for a failure this service maps DIRECTLY - keeping a status code it chose deliberately rather
+   * than one {@link GrpcErrorMapper} would classify - with the exception's own text concealed in production.
+   * <p>
+   * {@link #mapError} covers everything that goes through the mapper. These do not, because the status is the
+   * point: a rollback failure is {@code ABORTED} whatever the cause was, and a batch already owning the database
+   * is {@code FAILED_PRECONDITION}. Concealment still applies, because the leaking part is the MESSAGE and it is
+   * engine text either way (PR #7755 review).
+   * <p>
+   * Logs the throwable before returning, so the "check the server log" the concealed text promises is true. That
+   * promise is the whole reason concealment is acceptable: with it the operator still has the detail, without it
+   * the failure is simply gone.
+   */
+  private String concealable(final String prefix, final Throwable e) {
+    if (!concealErrors())
+      return prefix + ": " + e.getMessage();
+
+    LogManager.instance().log(this, Level.SEVERE, "%s (concealed from the client in production mode)", e, prefix);
+    return prefix + ": " + GrpcErrorMapper.CONCEALED_DESCRIPTION;
   }
 
   private Object[] toPropertyArray(final Map<String, GrpcValue> properties) {
@@ -5443,7 +5464,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    * INVALID_ARGUMENT with that message intact - a caller that crossed a documented limit has to be able to tell
    * that from a server fault, exactly as the HTTP surface distinguishes 400 from 500.
    */
-  private static StatusException toSearchStatus(final String operation, final Exception e) {
+  private StatusException toSearchStatus(final String operation, final Exception e) {
     if (e instanceof final StatusException se)
       return se;
     if (e instanceof final StatusRuntimeException sre)
@@ -5454,7 +5475,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // every other wire protocol uses (issue #7123) instead of collapsing to INTERNAL.
     if (e instanceof ServerSecurityException)
       return Status.PERMISSION_DENIED.withDescription(operation + ": " + e.getMessage()).asException();
-    return GrpcErrorMapper.statusCodeFor(e).toStatus().withDescription(operation + ": " + e.getMessage()).asException();
+    // THE CATCH-ALL CARRIES ENGINE TEXT - A SCHEMA NAME, A FILE PATH, AN INDEX - AND IS CONCEALED IN PRODUCTION
+    // LIKE EVERY OTHER FREE-FORM DESCRIPTION. THE ARM ABOVE IS NOT: A SECURITY REFUSAL IS A SENTENCE THIS SERVER
+    // WROTE ABOUT THE REQUEST, WHICH IS WHAT MAKES IT ACTIONABLE (PR #7755 REVIEW)
+    return GrpcErrorMapper.statusCodeFor(e).toStatus().withDescription(concealable(operation, e)).asException();
   }
 
   // Helper methods
