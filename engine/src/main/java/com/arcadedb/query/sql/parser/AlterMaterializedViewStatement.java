@@ -26,6 +26,8 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.MaterializedViewRefreshMode;
 
+import java.util.Map;
+
 public class AlterMaterializedViewStatement extends DDLStatement {
   public Identifier name;
   public String refreshMode;
@@ -76,14 +78,29 @@ public class AlterMaterializedViewStatement extends DDLStatement {
     return result;
   }
 
+  /**
+   * Overrides the two-arg form (not just the no-arg debug one), same fix as {@link CreateMaterializedViewStatement}
+   * and for the same reason: only that override lets this render as SQL inside an enclosing {@code IF}/script block
+   * instead of throwing {@code UnsupportedOperationException}.
+   */
   @Override
-  public String toString() {
-    final StringBuilder sb = new StringBuilder("ALTER MATERIALIZED VIEW ");
-    sb.append(name).append(" REFRESH ");
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
+    builder.append("ALTER MATERIALIZED VIEW ");
+    name.toString(params, builder);
+    builder.append(" REFRESH ");
     if ("PERIODIC".equalsIgnoreCase(refreshMode) && refreshInterval > 0)
-      sb.append("EVERY ").append(refreshInterval).append(' ').append(refreshUnit);
+      builder.append("EVERY ").append(refreshInterval).append(' ').append(refreshUnit);
     else
-      sb.append(refreshMode);
-    return sb.toString();
+      builder.append(refreshMode);
+  }
+
+  @Override
+  public AlterMaterializedViewStatement copy() {
+    final AlterMaterializedViewStatement result = new AlterMaterializedViewStatement();
+    result.name = name == null ? null : name.copy();
+    result.refreshMode = refreshMode;
+    result.refreshInterval = refreshInterval;
+    result.refreshUnit = refreshUnit;
+    return result;
   }
 }

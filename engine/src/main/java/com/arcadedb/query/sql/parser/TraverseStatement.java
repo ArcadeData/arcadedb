@@ -164,6 +164,7 @@ public class TraverseStatement extends Statement {
     result.target = target == null ? null : target.copy();
     result.whileClause = whileClause == null ? null : whileClause.copy();
     result.limit = limit == null ? null : limit.copy();
+    result.skip = skip == null ? null : skip.copy();
     result.strategy = strategy;
     result.maxDepth = maxDepth == null ? null : maxDepth.copy();
     result.postFilter = postFilter == null ? null : postFilter.copy();

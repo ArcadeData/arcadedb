@@ -55,5 +55,10 @@ public class AlignDatabaseStatement extends SimpleExecStatement {
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("ALIGN DATABASE");
   }
+
+  @Override
+  public AlignDatabaseStatement copy() {
+    return new AlignDatabaseStatement();
+  }
 }
 /* ParserGeneratorCC - OriginalChecksum=1fdf26fbfd4b324c2953b99f2dc55ff8 (do not edit this line) */

@@ -91,6 +91,18 @@ public class BucketIdentifier extends SimpleNode {
     }
   }
 
+  /**
+   * Without this, equals()/hashCode() fall back to identity (the {@link SimpleNode} default when
+   * {@code getIdentityElements()} is empty), so two instances naming the SAME bucket - notably an original and its
+   * {@code copy()} - never compare equal and a {@code Set<BucketIdentifier>} can neither dedupe them nor survive a
+   * copy with its iteration order intact (found alongside issue #7793, in {@code CheckDatabaseStatement}, the only
+   * caller that puts these in a {@code Set}).
+   */
+  @Override
+  protected Object[] getIdentityElements() {
+    return new Object[] { bucketId, bucketName, inputParam };
+  }
+
   @Override
   public Map<String, Object> toJSON() {
     final Map<String, Object> json = super.toJSON();

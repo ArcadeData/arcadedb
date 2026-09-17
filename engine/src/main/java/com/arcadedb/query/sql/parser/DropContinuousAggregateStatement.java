@@ -26,6 +26,8 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
+import java.util.Map;
+
 public class DropContinuousAggregateStatement extends DDLStatement {
   public Identifier name;
   public boolean ifExists = false;
@@ -70,8 +72,20 @@ public class DropContinuousAggregateStatement extends DDLStatement {
     return result;
   }
 
+  /** Overrides the two-arg form, not just the no-arg one - see {@link CreateMaterializedViewStatement} (issue #7800/#7794). */
   @Override
-  public String toString() {
-    return "DROP CONTINUOUS AGGREGATE " + (ifExists ? "IF EXISTS " : "") + name;
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
+    builder.append("DROP CONTINUOUS AGGREGATE ");
+    if (ifExists)
+      builder.append("IF EXISTS ");
+    name.toString(params, builder);
+  }
+
+  @Override
+  public DropContinuousAggregateStatement copy() {
+    final DropContinuousAggregateStatement result = new DropContinuousAggregateStatement();
+    result.name = name == null ? null : name.copy();
+    result.ifExists = ifExists;
+    return result;
   }
 }

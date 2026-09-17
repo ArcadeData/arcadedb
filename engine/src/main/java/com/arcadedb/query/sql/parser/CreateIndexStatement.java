@@ -533,6 +533,9 @@ public class CreateIndexStatement extends DDLStatement {
     if (name != null)
       name.toString(params, builder);
 
+    if (ifNotExists)
+      builder.append(" IF NOT EXISTS");
+
     if (typeName != null) {
       builder.append(" ON ");
       typeName.toString(params, builder);
@@ -602,12 +605,13 @@ public class CreateIndexStatement extends DDLStatement {
     result.keyTypes = keyTypes == null ? null : keyTypes.stream().map(x -> x.copy()).collect(Collectors.toList());
     result.engine = engine == null ? null : engine.copy();
     result.metadata = metadata == null ? null : metadata.copy();
+    result.ifNotExists = ifNotExists;
     return result;
   }
 
   @Override
   protected Object[] getIdentityElements() {
-    return new Object[] { name, typeName, propertyList, type, nullStrategy, keyTypes, engine, metadata };
+    return new Object[] { name, typeName, propertyList, type, nullStrategy, keyTypes, engine, metadata, ifNotExists };
   }
 
   public static class Property {
