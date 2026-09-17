@@ -62,9 +62,37 @@ public class Url extends SimpleNode {
     appendQuotedStringLiteral(builder, urlString);
   }
 
+  /**
+   * True only when {@code url} would actually re-lex as one of the grammar's FILE_URL/HTTP_URL/HTTPS_URL/
+   * CLASSPATH_URL tokens ({@code 'scheme://' URL_CHAR+}), not merely when it starts with one of those schemes.
+   * {@code URL_CHAR} excludes {@code " \t\r\n;} (SQLLexer.g4), so a scheme-prefixed value containing any of those -
+   * a space in a {@code file://} path, say - would otherwise render unquoted here and fail to reparse. Checking
+   * only the prefix was claude-review's second-round finding on this method.
+   */
   private static boolean isRecognizedScheme(final String url) {
-    return url != null && (url.startsWith("file://") || url.startsWith("http://") || url.startsWith("https://")
-        || url.startsWith("classpath://"));
+    final String remainder;
+    if (url == null)
+      return false;
+    else if (url.startsWith("file://"))
+      remainder = url.substring("file://".length());
+    else if (url.startsWith("http://"))
+      remainder = url.substring("http://".length());
+    else if (url.startsWith("https://"))
+      remainder = url.substring("https://".length());
+    else if (url.startsWith("classpath://"))
+      remainder = url.substring("classpath://".length());
+    else
+      return false;
+
+    if (remainder.isEmpty()) // URL_CHAR+ requires at least one character after the scheme
+      return false;
+
+    for (int i = 0; i < remainder.length(); i++) {
+      final char c = remainder.charAt(i);
+      if (c == '"' || c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == ';')
+        return false;
+    }
+    return true;
   }
 
   @Override

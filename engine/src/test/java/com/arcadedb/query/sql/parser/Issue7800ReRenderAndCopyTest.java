@@ -86,6 +86,20 @@ class Issue7800ReRenderAndCopyTest extends AbstractParserTest {
   }
 
   /**
+   * claude-review follow-up (third round): {@code isRecognizedScheme} checked only the scheme prefix, not whether
+   * the rest of the value could actually re-lex as the grammar's {@code FILE_URL} token ({@code URL_CHAR} excludes
+   * space among other characters), so a directly-constructed {@code file://} URL containing a space would render
+   * unquoted and fail to reparse.
+   */
+  @Test
+  void urlBuiltDirectlyWithSchemeAndDisallowedCharacterIsStillQuoted() {
+    final Url url = new Url("file://my backup.zip");
+    final StringBuilder builder = new StringBuilder();
+    url.toString(null, builder);
+    assertThat(builder.toString()).isEqualTo("'file://my backup.zip'");
+  }
+
+  /**
    * claude-review follow-up (second round): the fallback quoting escaped only the quote character and the
    * backslash, but the grammar's STRING_LITERAL rule also forbids a raw CR/LF inside the literal body.
    */
@@ -122,7 +136,9 @@ class Issue7800ReRenderAndCopyTest extends AbstractParserTest {
   /**
    * Item 3: TraverseStatement.copy() dropped skip. The grammar never exposes SKIP on TRAVERSE (only LIMIT does),
    * so this is set directly through the setter, exactly as the issue's own scope note says: latent, reachable only
-   * through the field/setter, not through SQL text.
+   * through the field/setter, not through SQL text. claude-review's third round also found that equals()/hashCode()
+   * still omitted skip even after copy() was fixed to preserve it - the same "silently drop a field" class of bug
+   * as DropIndexStatement.ifExists/UpdateStatement.returnCount above.
    */
   @Test
   void traverseCopyPreservesSkip() {
@@ -135,6 +151,13 @@ class Issue7800ReRenderAndCopyTest extends AbstractParserTest {
     final TraverseStatement copy = (TraverseStatement) stmt.copy();
     assertThat(copy.getSkip()).isNotNull();
     assertThat(copy.getSkip().getValue(null)).isEqualTo(5);
+    assertThat(copy).isEqualTo(stmt);
+    assertThat(copy.hashCode()).isEqualTo(stmt.hashCode());
+
+    final TraverseStatement noSkip = (TraverseStatement) new com.arcadedb.query.sql.antlr.SQLAntlrParser(null)
+        .parse("TRAVERSE out() FROM V LIMIT 10");
+    assertThat(stmt).isNotEqualTo(noSkip);
+    assertThat(stmt.hashCode()).isNotEqualTo(noSkip.hashCode());
   }
 
   /**
