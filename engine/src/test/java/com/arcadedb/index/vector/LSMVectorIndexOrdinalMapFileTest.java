@@ -24,6 +24,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.function.IntFunction;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -129,6 +130,45 @@ class LSMVectorIndexOrdinalMapFileTest {
     Files.write(mapPath(), whole);
 
     assertThat(map.read()).as("a payload that does not match its own hash must read as absent").isNull();
+  }
+
+  /**
+   * The format is versioned so it can evolve, and the check that enforces that sits BEHIND the hash check - so a
+   * test that only flips the version byte exercises the hash branch instead. This one repairs the hash afterwards,
+   * which is exactly what a future build writing version 2 would produce.
+   */
+  @Test
+  void aMapWrittenByAnUnknownFormatVersionReadsAsAbsent() throws Exception {
+    final LSMVectorIndexOrdinalMapFile map = mapFile();
+    map.write(new int[] { 0, 1, 2 }, id -> new RID(1, id));
+
+    final byte[] whole = Files.readAllBytes(mapPath());
+    assertThat(whole[0]).as("the version is the leading varint, one byte while it is small")
+        .isEqualTo((byte) LSMVectorIndexOrdinalMapFile.FORMAT_VERSION);
+    whole[0] = (byte) (LSMVectorIndexOrdinalMapFile.FORMAT_VERSION + 1);
+
+    final int payloadLength = whole.length - 8;
+    long hash = LSMVectorIndexOrdinalMapFile.hashOf(whole, payloadLength);
+    for (int i = whole.length - 1; i >= payloadLength; i--) {
+      whole[i] = (byte) hash;
+      hash >>>= 8;
+    }
+    Files.write(mapPath(), whole);
+
+    assertThat(map.read()).as("a layout this build does not know must not be read as one it does").isNull();
+  }
+
+  @Test
+  void theFingerprintReturnedByAWriteIsTheOneTheManifestWouldHaveComputed() {
+    final int[] vectorIds = { 0, 3, 11 };
+    final IntFunction<RID> rids = id -> id == 3 ? null : new RID(2, id * 5L);
+
+    final long returned = mapFile().write(vectorIds, rids);
+
+    assertThat(returned)
+        .as("the write accumulates the fingerprint from the RIDs it already resolved, so it must agree with the "
+            + "one-shot form the map-absent fallback path still uses")
+        .isEqualTo(LSMVectorIndexGraphManifest.fingerprintOf(vectorIds, rids));
   }
 
   @Test

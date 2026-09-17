@@ -144,13 +144,6 @@ public class LSMVectorIndexGraphManifest {
   }
 
   /**
-   * @return the ordinal map sidecar, for the paths that need its path or existence rather than its content
-   */
-  LSMVectorIndexOrdinalMapFile getOrdinalMapFile() {
-    return ordinalMap;
-  }
-
-  /**
    * Fingerprint of the ordinal &rarr; record correspondence a graph is built over: for every ordinal, the vector id
    * and the RID it resolves to. FNV-1a over the whole sequence, the same construction
    * {@code LocalBucket.offPageContentFingerprint} uses.
@@ -162,20 +155,35 @@ public class LSMVectorIndexGraphManifest {
    * @param ridOfVector  resolves a vector id to its RID, or {@code null} when the location is gone
    */
   public static long fingerprintOf(final int[] vectorIds, final IntFunction<RID> ridOfVector) {
-    long hash = FNV_OFFSET_BASIS;
-    hash = mixInt(hash, vectorIds.length);
-    for (final int vectorId : vectorIds) {
-      hash = mixInt(hash, vectorId);
-      final RID rid = ridOfVector.apply(vectorId);
-      if (rid == null) {
-        hash = mixInt(hash, -1);
-        hash = mixLong(hash, -1L);
-      } else {
-        hash = mixInt(hash, rid.getBucketId());
-        hash = mixLong(hash, rid.getPosition());
-      }
-    }
+    long hash = fingerprintSeed(vectorIds.length);
+    for (final int vectorId : vectorIds)
+      hash = fingerprintAccumulate(hash, vectorId, ridOfVector.apply(vectorId));
     return hash;
+  }
+
+  /**
+   * The two halves of {@link #fingerprintOf} as separate steps, for a caller that is already walking the ordinals
+   * and resolving their RIDs - {@link LSMVectorIndexOrdinalMapFile#write}, which would otherwise make the graph
+   * persist resolve every RID twice (PR #7844 review). Expressing the whole fingerprint in terms of them is what
+   * keeps the incremental form from drifting away from the one-shot one.
+   */
+  static long fingerprintSeed(final int vectorCount) {
+    return mixInt(FNV_OFFSET_BASIS, vectorCount);
+  }
+
+  /**
+   * Folds one ordinal into a fingerprint. An ordinal whose RID cannot be resolved contributes a distinct marker
+   * rather than nothing: skipping it would make an unresolvable ordinal invisible, so a live set that lost exactly
+   * that record would fingerprint the same.
+   */
+  static long fingerprintAccumulate(final long hash, final int vectorId, final RID rid) {
+    long next = mixInt(hash, vectorId);
+    if (rid == null) {
+      next = mixInt(next, -1);
+      return mixLong(next, -1L);
+    }
+    next = mixInt(next, rid.getBucketId());
+    return mixLong(next, rid.getPosition());
   }
 
   private static long mixInt(long hash, final int value) {
@@ -249,9 +257,12 @@ public class LSMVectorIndexGraphManifest {
     // The map first, the certificate second: a manifest is what makes the pages usable, so it must never be on disk
     // vouching for a generation whose map is still the previous one (issue #7842). The reverse order - map after
     // manifest - would leave exactly that window open across a crash.
-    ordinalMap.write(ordinalToVectorId, ridOfVector);
-    write(ordinalToVectorId.length, fingerprintOf(ordinalToVectorId, ridOfVector), null, false, unreachableOrdinals,
-        graphBytes);
+    //
+    // The fingerprint comes back from that same walk rather than from a second fingerprintOf() pass: both resolve a
+    // RID per ordinal, and doing it twice doubles the location-index reads of every graph persist of every index,
+    // for a number the first pass has already computed (PR #7844 review).
+    final long fingerprint = ordinalMap.write(ordinalToVectorId, ridOfVector);
+    write(ordinalToVectorId.length, fingerprint, null, false, unreachableOrdinals, graphBytes);
   }
 
   /**

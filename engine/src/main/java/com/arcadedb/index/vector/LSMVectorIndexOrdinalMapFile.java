@@ -139,8 +139,41 @@ public class LSMVectorIndexOrdinalMapFile {
    *
    * @param ordinalToVectorId the array the graph was built with, ascending
    * @param ridOfVector       resolves a vector id to its RID, or {@code null} when the location is already gone
+   *
+   * @return the {@link LSMVectorIndexGraphManifest#fingerprintOf} of the pairs just recorded, accumulated during the
+   * same walk. Returned rather than left to the caller because resolving it separately means a second RID lookup per
+   * ordinal on every graph persist of every index (PR #7844 review), and it is valid even when the write below
+   * fails: it describes the ordinals, not the file.
    */
-  void write(final int[] ordinalToVectorId, final IntFunction<RID> ridOfVector) {
+  long write(final int[] ordinalToVectorId, final IntFunction<RID> ridOfVector) {
+    // 14 bytes per entry is the worst case for the three varints below; the common case is a third of that, and
+    // the buffer grows on its own if this estimate is short. Computed in long arithmetic and clamped: an index
+    // large enough to overflow the int would otherwise ask for a NEGATIVE buffer and fail the write outright.
+    final Binary payload = new Binary((int) Math.min(Integer.MAX_VALUE - 8L, 16L + ordinalToVectorId.length * 14L));
+    payload.putUnsignedNumber(FORMAT_VERSION);
+    payload.putUnsignedNumber(ordinalToVectorId.length);
+
+    long fingerprint = LSMVectorIndexGraphManifest.fingerprintSeed(ordinalToVectorId.length);
+    int previousVectorId = 0;
+    for (final int vectorId : ordinalToVectorId) {
+      // Delta-encoded because the array is ascending by construction (LSMVectorIndex feeds it from
+      // VectorLocationIndex.getAllVectorIds(), which is sorted). putNumber is signed, so an array that ever
+      // stopped being ascending would still round-trip - it would only stop being compact.
+      payload.putNumber(vectorId - previousVectorId);
+      previousVectorId = vectorId;
+
+      // The one and only resolution of this ordinal's RID: it feeds both the file and the fingerprint.
+      final RID rid = ridOfVector.apply(vectorId);
+      fingerprint = LSMVectorIndexGraphManifest.fingerprintAccumulate(fingerprint, vectorId, rid);
+      if (rid == null) {
+        payload.putNumber(NO_RID_BUCKET);
+        payload.putUnsignedNumber(0);
+      } else {
+        payload.putNumber(rid.getBucketId());
+        payload.putUnsignedNumber(rid.getPosition());
+      }
+    }
+
     final Path temporary = path.resolveSibling(
         path.getFileName() + "." + Long.toHexString(System.nanoTime()) + ".tmp");
     try {
@@ -151,31 +184,6 @@ public class LSMVectorIndexOrdinalMapFile {
       // Same housekeeping as the manifest's, and for the same reason: a process killed between the write and the
       // move leaves a temporary nothing else would ever remove.
       deleteLeftoverTemporaries(parent);
-
-      // 14 bytes per entry is the worst case for the three varints below; the common case is a third of that, and
-      // the buffer grows on its own if this estimate is short. Computed in long arithmetic and clamped: an index
-      // large enough to overflow the int would otherwise ask for a NEGATIVE buffer and fail the write outright.
-      final Binary payload = new Binary((int) Math.min(Integer.MAX_VALUE - 8L, 16L + ordinalToVectorId.length * 14L));
-      payload.putUnsignedNumber(FORMAT_VERSION);
-      payload.putUnsignedNumber(ordinalToVectorId.length);
-
-      int previousVectorId = 0;
-      for (final int vectorId : ordinalToVectorId) {
-        // Delta-encoded because the array is ascending by construction (LSMVectorIndex feeds it from
-        // VectorLocationIndex.getAllVectorIds(), which is sorted). putNumber is signed, so an array that ever
-        // stopped being ascending would still round-trip - it would only stop being compact.
-        payload.putNumber(vectorId - previousVectorId);
-        previousVectorId = vectorId;
-
-        final RID rid = ridOfVector.apply(vectorId);
-        if (rid == null) {
-          payload.putNumber(NO_RID_BUCKET);
-          payload.putUnsignedNumber(0);
-        } else {
-          payload.putNumber(rid.getBucketId());
-          payload.putUnsignedNumber(rid.getPosition());
-        }
-      }
 
       final byte[] bytes = payload.toByteArray();
       final byte[] file = Arrays.copyOf(bytes, bytes.length + 8);
@@ -201,6 +209,7 @@ public class LSMVectorIndexOrdinalMapFile {
       }
       invalidate();
     }
+    return fingerprint;
   }
 
   /**
@@ -256,8 +265,14 @@ public class LSMVectorIndexOrdinalMapFile {
     }
   }
 
-  /** FNV-1a over the payload bytes, the same construction the manifest fingerprint uses. */
-  private static long hashOf(final byte[] bytes, final int length) {
+  /**
+   * FNV-1a over the payload bytes, the same construction the manifest fingerprint uses.
+   * <p>
+   * Package-private rather than private so a test can build a file this class would otherwise never write - one
+   * whose payload is intact and whose {@code formatVersion} this build does not know - and reach the version check
+   * behind the hash check.
+   */
+  static long hashOf(final byte[] bytes, final int length) {
     long hash = FNV_OFFSET_BASIS;
     for (int i = 0; i < length; i++) {
       hash ^= bytes[i] & 0xFFL;
