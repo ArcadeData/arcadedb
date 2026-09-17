@@ -26,6 +26,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.DateUtils;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDate;
@@ -243,17 +244,22 @@ class Issue7638DateColumnPrecisionTest extends TestHelper {
   }
 
   /**
-   * A day before the epoch. Integer division truncates towards zero, so {@code Date.getTime() / MS_IN_A_DAY} put
-   * every instant of 1969-12-31 on day 0 - the bug was unreachable while no DATE column could hold a {@code Date},
-   * and reachable the moment one could.
+   * A day before the epoch. Integer division truncates TOWARDS ZERO, so {@code getTime() / MS_IN_A_DAY} put a
+   * pre-epoch instant on the day AFTER the one it belongs to.
+   * <p>
+   * THE INSTANT IS DELIBERATELY NOT MIDNIGHT. At exactly midnight the division has no remainder and truncation
+   * and flooring agree, so a test written on {@code toEpochDay() * MS_IN_A_DAY} passes with or without the fix -
+   * this test was written that way at first and proved nothing (caught reviewing PR #7750). Noon is the case that
+   * separates them: 1969-12-31T12:00Z is day -1 floored and day 0 truncated.
    */
   @Test
   void aPreEpochDateRoundTripsOnTheDayItBelongsTo() {
     withDateImplementation(Date.class, () -> {
       final LocalDate beforeEpoch = LocalDate.of(1969, 12, 31);
+      final Date middayBeforeEpoch = new Date(beforeEpoch.toEpochDay() * 86_400_000L + 43_200_000L);
       database.transaction(() -> {
         database.getSchema().createDocumentType("Issue7638PreEpoch").createProperty("d", Type.DATE);
-        database.newDocument("Issue7638PreEpoch").set("d", beforeEpoch).save();
+        database.newDocument("Issue7638PreEpoch").set("d", middayBeforeEpoch).save();
       });
 
       database.transaction(() -> {
@@ -264,6 +270,37 @@ class Issue7638DateColumnPrecisionTest extends TestHelper {
         }
       });
     });
+  }
+
+  /**
+   * The same truncation, on the DEFAULT configuration rather than the {@code java.util.Date} one - so this is not
+   * a corner of an opt-in setting. {@code Type.getJavaImplementation} answers {@code LocalDate} for a DATE column
+   * by default, so {@code document.set("d", someJavaUtilDate)} coerces through {@code Type.convert}, which did the
+   * identical truncating division. Found reviewing PR #7750, next to the instance this issue had already fixed.
+   */
+  @Test
+  void aPreEpochJavaUtilDateOnADefaultDateColumnKeepsItsDay() {
+    final LocalDate beforeEpoch = LocalDate.of(1969, 12, 31);
+    final Date middayBeforeEpoch = new Date(beforeEpoch.toEpochDay() * 86_400_000L + 43_200_000L);
+
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Issue7638PreEpochDefault").createProperty("d", Type.DATE);
+      database.newDocument("Issue7638PreEpochDefault").set("d", middayBeforeEpoch).save();
+    });
+
+    database.transaction(() -> {
+      try (final ResultSet rs = database.query("sql", "SELECT FROM Issue7638PreEpochDefault")) {
+        final Result row = rs.next();
+        assertThat((Object) row.getProperty("d")).isEqualTo(beforeEpoch);
+        assertThat(new JsonSerializer(database).serializeResult(database, row).getString("d")).isEqualTo("1969-12-31");
+      }
+    });
+
+    // And the shared conversion both the write path and BinaryComparator.temporalAsLong go through
+    final Calendar calendar = Calendar.getInstance();
+    calendar.setTime(middayBeforeEpoch);
+    assertThat(DateUtils.dateToEpochDays(middayBeforeEpoch)).isEqualTo(beforeEpoch.toEpochDay());
+    assertThat(DateUtils.dateToEpochDays(calendar)).isEqualTo(beforeEpoch.toEpochDay());
   }
 
   /**

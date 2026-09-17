@@ -24,6 +24,8 @@ import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.util.Calendar;
 import java.util.Date;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -229,12 +231,18 @@ class Issue7628ExactIntegralComparisonTest {
    */
   @Test
   void aTemporalOperandThatIsNotANumberIsNormalisedRatherThanCastBlindly() {
-    final LocalDateTime laterDateTime = LocalDateTime.of(2026, 6, 12, 15, 30);
     final Date laterDate = new Date(1781236800000L);
+    final Calendar laterCalendar = Calendar.getInstance();
+    laterCalendar.setTime(laterDate);
+    // Every representation arcadedb.dateTimeImplementation/dateImplementation accepts, not just the two the first
+    // version of this test happened to use - each is a configuration a deployment can actually be running, and
+    // this entry point is the one that used to throw for all of them (raised reviewing PR #7750).
+    final Object[] representations = { LocalDateTime.of(2026, 6, 12, 15, 30), laterDate, laterCalendar,
+        laterDate.toInstant(), laterDate.toInstant().atZone(ZoneOffset.UTC) };
 
     for (final byte timestampType : new byte[] { BinaryTypes.TYPE_DATETIME, BinaryTypes.TYPE_DATE,
         BinaryTypes.TYPE_DATETIME_SECOND, BinaryTypes.TYPE_DATETIME_MICROS, BinaryTypes.TYPE_DATETIME_NANOS })
-      for (final Object temporal : new Object[] { laterDateTime, laterDate }) {
+      for (final Object temporal : representations) {
         assertThat(comparator.compare(1L, BinaryTypes.TYPE_LONG, temporal, timestampType))
             .as("LONG vs %s as type %d", temporal.getClass().getSimpleName(), timestampType).isNegative();
         assertThat(comparator.compare(1, BinaryTypes.TYPE_INT, temporal, timestampType))

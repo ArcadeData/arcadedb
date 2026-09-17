@@ -142,8 +142,12 @@ public class DateUtils {
       case null -> null;
       case LocalDate localDate -> localDate.toEpochDay();
       case LocalDateTime localDateTime -> localDateTime.toLocalDate().toEpochDay();
-      case Date date -> date.getTime() / MS_IN_A_DAY;
-      case Calendar calendar -> calendar.getTimeInMillis() / MS_IN_A_DAY;
+      // floorDiv, NOT '/': integer division truncates TOWARDS ZERO, so any pre-epoch instant that is not exactly
+      // midnight lands on the day AFTER the one it belongs to - 1969-12-31T12:00Z became day 0, 1970-01-01. Every
+      // other arm here floors (LocalDate.toEpochDay and friends), and so does the DATE branch of BinarySerializer
+      // since #7638, so these two were the ones left disagreeing with the rest (found reviewing PR #7750).
+      case Date date -> Math.floorDiv(date.getTime(), MS_IN_A_DAY);
+      case Calendar calendar -> Math.floorDiv(calendar.getTimeInMillis(), MS_IN_A_DAY);
       case Instant instant -> instant.atZone(UTC_ZONE_ID).toLocalDate().toEpochDay();
       case ZonedDateTime zonedDateTime -> zonedDateTime.toLocalDate().toEpochDay();
       case Number number -> number.longValue();
