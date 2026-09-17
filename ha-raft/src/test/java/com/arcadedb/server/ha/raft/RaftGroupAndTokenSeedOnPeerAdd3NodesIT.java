@@ -22,15 +22,21 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.security.ApiTokenConfiguration;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.utility.FileUtils;
+import org.apache.ratis.protocol.RaftPeer;
+import org.apache.ratis.protocol.RaftPeerId;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
-import java.util.List;
+import java.net.HttpURLConnection;
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
 
@@ -66,8 +72,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class RaftGroupAndTokenSeedOnPeerAdd3NodesIT extends BaseRaftHATest {
 
-  private static final String GROUP          = "seeded-readers";
-  private static final long   SEED_BUDGET_MS = 30_000;
+  private static final String GROUP = "seeded-readers";
 
   RaftGroupAndTokenSeedOnPeerAdd3NodesIT() {
     FileUtils.deleteRecursively(new File("./target/config"));
@@ -110,7 +115,7 @@ class RaftGroupAndTokenSeedOnPeerAdd3NodesIT extends BaseRaftHATest {
    * definitions after the seed, not with whatever it held.
    */
   @Test
-  void aGroupDefinedBeforeTheJoinIsSeededToTheNewPeer() {
+  void aGroupDefinedBeforeTheJoinIsSeededToTheNewPeer() throws Exception {
     final int leader = findLeaderIndex();
     assertThat(leader).isGreaterThanOrEqualTo(0);
     final int target = (leader + 1) % getServerCount();
@@ -125,8 +130,8 @@ class RaftGroupAndTokenSeedOnPeerAdd3NodesIT extends BaseRaftHATest {
     assertThat(hasGroup(target, GROUP))
         .as("the target must really be stale, or the seed below would have nothing to fix").isFalse();
 
-    final List<String> failed = security(leader).seedSecurityStateClusterWide(SEED_BUDGET_MS);
-    assertThat(failed).as("every document must seed on a healthy cluster").isEmpty();
+    assertThat(addPeerVia(leader, target)).as("the add-peer route must answer 200 on a healthy cluster")
+        .isEqualTo(200);
 
     awaitOn(target, () -> hasGroup(target, GROUP));
     assertThat(groupAccessOn(target, GROUP))
@@ -140,7 +145,7 @@ class RaftGroupAndTokenSeedOnPeerAdd3NodesIT extends BaseRaftHATest {
    * pattern an operator can see.
    */
   @Test
-  void anApiTokenMintedBeforeTheJoinAuthenticatesOnTheNewPeer() {
+  void anApiTokenMintedBeforeTheJoinAuthenticatesOnTheNewPeer() throws Exception {
     final int leader = findLeaderIndex();
     assertThat(leader).isGreaterThanOrEqualTo(0);
     final int target = (leader + 1) % getServerCount();
@@ -153,8 +158,7 @@ class RaftGroupAndTokenSeedOnPeerAdd3NodesIT extends BaseRaftHATest {
     assertThat(hasToken(target, plaintext))
         .as("the target must really be without the token, or the seed below proves nothing").isFalse();
 
-    final List<String> failed = security(leader).seedSecurityStateClusterWide(SEED_BUDGET_MS);
-    assertThat(failed).isEmpty();
+    assertThat(addPeerVia(leader, target)).isEqualTo(200);
 
     awaitOn(target, () -> hasToken(target, plaintext));
   }
@@ -166,7 +170,7 @@ class RaftGroupAndTokenSeedOnPeerAdd3NodesIT extends BaseRaftHATest {
    * submitting under the {@code ServerSecurity} monitor; this is the assertion that says so over real Raft.
    */
   @Test
-  void aTokenRevokedBeforeTheJoinDoesNotAuthenticateOnTheNewPeer() {
+  void aTokenRevokedBeforeTheJoinDoesNotAuthenticateOnTheNewPeer() throws Exception {
     final int leader = findLeaderIndex();
     assertThat(leader).isGreaterThanOrEqualTo(0);
     final int target = (leader + 1) % getServerCount();
@@ -187,8 +191,7 @@ class RaftGroupAndTokenSeedOnPeerAdd3NodesIT extends BaseRaftHATest {
     assertThat(hasToken(target, plaintext))
         .as("the target now holds the revoked token, which is the state the seed has to correct").isTrue();
 
-    final List<String> failed = security(leader).seedSecurityStateClusterWide(SEED_BUDGET_MS);
-    assertThat(failed).isEmpty();
+    assertThat(addPeerVia(leader, target)).isEqualTo(200);
 
     awaitOn(target, () -> !hasToken(target, plaintext));
     assertThat(hasToken(leader, plaintext))
@@ -196,6 +199,53 @@ class RaftGroupAndTokenSeedOnPeerAdd3NodesIT extends BaseRaftHATest {
   }
 
   // ---------------------------------------------------------------------------------------------------------
+
+  /**
+   * {@code POST /api/v1/cluster/peer} on {@code leader}, naming {@code target} - the whole route, over HTTP,
+   * through the real {@link PostAddPeerHandler}.
+   * <p>
+   * Driven through the endpoint rather than by calling {@code seedSecurityStateClusterWide} directly, because the
+   * coupling under test is <b>that the add-peer route seeds at all</b>: a test that calls the seed itself keeps
+   * passing if the handler stops calling it, while a peer admitted afterwards silently keeps its stale groups and
+   * tokens, which is the bug this IT exists for.
+   * <p>
+   * {@code target} is already a committed member, so the membership half is the idempotent no-op
+   * {@code RaftClusterManager.buildAddArgs} documents - which is what makes this runnable on a fixed-size
+   * in-process cluster, where there is no spare node to admit. The seed that follows it is not conditional on the
+   * configuration having changed, so it runs exactly as it does for a genuine admission; that is the half being
+   * asserted. The 200 also pins the other direction, since a seed that failed to commit is answered 503 with
+   * {@code failedSeeds} (issue #7521).
+   */
+  private int addPeerVia(final int leader, final int target) throws Exception {
+    final HttpURLConnection connection = (HttpURLConnection) new URI(
+        "http://127.0.0.1:" + getServer(leader).getHttpServer().getPort() + "/api/v1/cluster/peer")
+        .toURL().openConnection();
+    connection.setRequestMethod("POST");
+    connection.setRequestProperty("Authorization", "Basic " + Base64.getEncoder().encodeToString(
+        ("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes(StandardCharsets.UTF_8)));
+    try {
+      formatPayload(connection, new JSONObject()
+          .put("peerId", peerIdForIndex(target))
+          .put("address", raftAddressOf(target)));
+      connection.connect();
+      return connection.getResponseCode();
+    } finally {
+      connection.disconnect();
+    }
+  }
+
+  /**
+   * The Raft address the CLUSTER knows {@code serverIndex} by, read from the live configuration rather than
+   * rebuilt from the test's port arithmetic - so the payload names the peer the same way every other member
+   * does, which is what makes the add the idempotent no-op this helper relies on.
+   */
+  private String raftAddressOf(final int serverIndex) {
+    final RaftPeerId peerId = RaftPeerId.valueOf(peerIdForIndex(serverIndex));
+    for (final RaftPeer peer : getRaftPlugin(serverIndex).getRaftHAServer().getLivePeers())
+      if (peerId.equals(peer.getId()))
+        return peer.getAddress();
+    throw new IllegalStateException("Server " + serverIndex + " is not in the live Raft configuration");
+  }
 
   private ServerSecurity security(final int serverIndex) {
     return getServer(serverIndex).getSecurity();

@@ -3145,27 +3145,62 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * object is also the one holding the {@link ContextConfiguration} the probe's budget comes from.
    */
   void addPeer(final RaftPeer newPeer, final String name) {
-    ensureNotSelf(localPeerId, newPeer);
+    ensureNotSelf(localPeerId, getLocalRaftAddress(), newPeer);
     ensurePeerReachable(newPeer);
     clusterManager.addPeer(newPeer, name);
   }
 
+  /** This node's own Raft address as the cluster knows it, or {@code null} before {@code start()} resolved one. */
+  String getLocalRaftAddress() {
+    if (localPeerId == null)
+      return null;
+    for (final RaftPeer peer : getLivePeers())
+      if (localPeerId.equals(peer.getId()))
+        return peer.getAddress();
+    return null;
+  }
+
   /**
-   * Refuses an add that names this node itself (issue #7515).
+   * Refuses an add that names this node itself (issue #7515), whether by its id or by its address.
    * <p>
    * First, ahead of the reachability probe: this node is by definition reachable, so the probe would pass and the
    * request would go on to be the silent no-op {@link SelfJoinNotSupportedException} describes. It is also the
    * cheaper check of the two, and it is the one that identifies the mistake - an operator who meant "make this
    * node join that cluster" - rather than a network condition.
    * <p>
+   * <b>Both halves are needed because the two arrive independently.</b> {@code connect cluster} derives the id
+   * from the address, so for that verb they cannot disagree - but {@code POST /api/v1/cluster/peer} takes
+   * {@code peerId} and {@code address} as separate fields, and the embedded {@code HAServerPlugin.addPeer} the
+   * same. An id check alone therefore passes a payload that names this node's Raft address under some OTHER id:
+   * the reachability probe then succeeds, because this node is listening, and {@code RaftClusterManager.buildAddArgs}
+   * - which also compares by id - does not recognize it as a member either, so the {@code Mode.ADD} commits and the
+   * configuration ends up holding <b>two entries for one process</b>. That is precisely what
+   * {@link RaftPeerAddressResolver#peerIdForAddress} exists to prevent ("or the cluster ends up with two
+   * configuration entries for one process") and it is worse than the no-op this method was first written for,
+   * because it commits.
+   * <p>
+   * The address comparison is {@link #isSameHttpEndpoint}, the comparator {@link #isOwnHttpAddress} already uses
+   * for the identical question on the HTTP listener - case-insensitive, and treating the loopback spellings as one
+   * socket, so {@code localhost:2434} and {@code 127.0.0.1:2434} are recognized as the same node. It deliberately
+   * does not resolve hostnames: a declared host name is a statement about which node owns which port that this
+   * method has no business second-guessing, and answering "that is me" for a name that is not would refuse a
+   * legitimate join.
+   * <p>
    * Static and package-private for the same reason {@link PeerReachability}'s refusal rule is: the decision is a
-   * comparison of two ids and standing up a {@link RaftHAServer} to exercise it would test the fixture instead.
-   * {@code localPeerId} is null only before {@code start()} has resolved it, where there is no "this node" to
-   * compare against and the add cannot reach a cluster anyway.
+   * comparison of two ids and two addresses, and standing up a {@link RaftHAServer} to exercise it would test the
+   * fixture instead. Both local values are null only before {@code start()} has resolved them, where there is no
+   * "this node" to compare against and the add cannot reach a cluster anyway.
    */
-  static void ensureNotSelf(final RaftPeerId localPeerId, final RaftPeer newPeer) {
-    if (localPeerId != null && localPeerId.equals(newPeer.getId()))
+  static void ensureNotSelf(final RaftPeerId localPeerId, final String localRaftAddress, final RaftPeer newPeer) {
+    if (localPeerId == null)
+      return;
+
+    if (localPeerId.equals(newPeer.getId()))
       throw new SelfJoinNotSupportedException(localPeerId.toString(), newPeer.getAddress());
+
+    if (localRaftAddress != null && isSameHttpEndpoint(localRaftAddress, newPeer.getAddress()))
+      throw new SelfJoinNotSupportedException(localPeerId.toString(), newPeer.getAddress(),
+          newPeer.getId().toString());
   }
 
   /**
