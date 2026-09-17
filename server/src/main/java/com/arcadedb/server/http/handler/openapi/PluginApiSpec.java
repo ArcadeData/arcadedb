@@ -583,13 +583,17 @@ public class PluginApiSpec implements OpenApiContributor {
     schema.addProperty("snapshotDownloadInProgress", SpecBuilders.bool("A snapshot is being installed now"));
     schema.addProperty("divergedDatabases", SpecBuilders.arrayOf(SpecBuilders.string("Database name"),
         "Databases quarantined because this node's WAL diverged from the leader's"));
-    schema.addProperty("divergenceCauses", SpecBuilders.mapOf(
-        divergenceCauseSchema(),
-        """
-            Why each quarantined database was quarantined, keyed by database name - the same names \
-            'divergedDatabases' lists (issue #7741). The names alone read as a replication problem even when the \
-            cause is this node's own unreadable log segment, which is a different thing for an operator to do \
-            something about."""));
+    final Schema<String> cause = SpecBuilders.string("""
+        Why this database was quarantined. 'WAL_VERSION_GAP' means an intermediate transaction never reached \
+        this node; 'UNDECODABLE_LOG_ENTRY' a corrupt local log segment or an entry written by a newer node, \
+        which is not a replication fault; 'APPLY_ERROR' an unexpected error while applying a committed entry; \
+        'SNAPSHOT_INSTALL_INCOMPLETE' an install that did not reach the snapshot's index.""");
+    cause.setEnum(List.of("WAL_VERSION_GAP", "UNDECODABLE_LOG_ENTRY", "APPLY_ERROR", "SNAPSHOT_INSTALL_INCOMPLETE"));
+    // Declared since issue #7741 added it to the response. The vocabulary is written out here rather than read
+    // from DivergenceCause for the same reason the alert severities are - this module cannot see ha-raft - and
+    // Issue7577ClusterStatusSchemaMatchesTheHandlerTest over there is what keeps the two the same set.
+    schema.addProperty("divergenceCauses", SpecBuilders.mapOf(cause,
+        "Why each quarantined database was quarantined, keyed by database name. Same keys as 'divergedDatabases'"));
     schema.addProperty("snapshotAppliedFloor", SpecBuilders.integer(
         "Raft index the last installed snapshot brought this node to"));
     schema.addProperty("databaseAppliedFloors", SpecBuilders.mapOf(
@@ -599,23 +603,6 @@ public class PluginApiSpec implements OpenApiContributor {
     schema.setRequired(List.of("inProgress", "snapshotDownloadQueued", "snapshotDownloadInProgress",
         "divergedDatabases", "divergenceCauses", "snapshotAppliedFloor", "databaseAppliedFloors"));
     return schema;
-  }
-
-  /**
-   * The value side of {@code divergenceCauses}: why one database was quarantined, as a closed set.
-   * <p>
-   * The names are LITERALS rather than {@code DivergenceCause.values()} because this module cannot see that enum -
-   * {@code ha-raft} depends on {@code arcadedb-server}, not the other way round, which is the wire-protocol module
-   * rule. A repeated literal across that boundary needs enforcement rather than a comment asking the next editor,
-   * and it has it: {@code Issue7577ClusterStatusSchemaMatchesTheHandlerTest} compares this list against
-   * {@code DivergenceCause.values()} and fails the moment they drift. Same arrangement as the restore thread bound,
-   * which is repeated in {@code GlobalConfiguration} for the same reason and pinned the same way.
-   */
-  private static Schema<?> divergenceCauseSchema() {
-    final Schema<String> cause = SpecBuilders.string(
-        "Why that database was quarantined. A closed set: a client may branch on it");
-    cause.setEnum(List.of("WAL_VERSION_GAP", "UNDECODABLE_LOG_ENTRY", "APPLY_ERROR", "SNAPSHOT_INSTALL_INCOMPLETE"));
-    return cause;
   }
 
   private Schema<?> createAddPeerRequestSchema() {

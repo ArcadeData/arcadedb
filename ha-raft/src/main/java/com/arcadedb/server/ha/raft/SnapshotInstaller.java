@@ -24,6 +24,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
@@ -1954,13 +1955,40 @@ public final class SnapshotInstaller {
     deleteDirectoryIfExists(backupDir);
   }
 
-  private static void cleanupWalFiles(final Path dbDir) {
+  /**
+   * Removes the WAL files left in a freshly swapped-in snapshot directory, through the same lock-aware sweep the
+   * engine's own close-time cleanup uses (issue #7505).
+   * <p>
+   * This used to delete every {@code *.wal} in the directory by name alone, which is the failure class #7479
+   * reported and PR #7504 fixed in {@code TransactionManager.close()} - a second, unprotected copy of it. Under
+   * normal HA operation there is no live local instance holding these files at this point ({@code swapAndReopen}
+   * has already closed the local database), so the lock always succeeds and the outcome is unchanged; on a
+   * database directory shared with another live process - the case #7479 described - the sweep now leaves that
+   * instance's files alone instead of deleting them out from under it.
+   * <p>
+   * A skipped file is reported LOUDER here than in the engine sweep, and deliberately. There, a surviving orphan
+   * is inert. Here the directory is about to be reopened as the installed snapshot, and a WAL file that outlives
+   * the swap would be replayed on top of pages it was never written against - so an operator has to hear that the
+   * install completed with one still in place.
+   */
+  // @VisibleForTesting
+  static void cleanupWalFiles(final Path dbDir) {
     final File[] walFiles = dbDir.toFile().listFiles((dir, name) -> name.endsWith(".wal"));
-    if (walFiles != null)
-      for (final File walFile : walFiles)
-        if (!walFile.delete())
-          LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
-              "Failed to delete stale WAL file: %s", null, walFile.getName());
+    if (walFiles == null)
+      return;
+    for (final File walFile : walFiles)
+      switch (WALFile.deleteIfNotHeldByAnotherInstance(walFile)) {
+      case DELETED -> {
+        // Nothing to say: the file this snapshot replaces is gone, which is the expected outcome.
+      }
+      case SKIPPED_LOCKED -> LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
+          "WAL file '%s' is still open by another database instance and was left in place while installing the "
+              + "snapshot into '%s'. The database directory appears to be shared with another live process, which "
+              + "is not supported: that WAL may be replayed against the installed snapshot's pages",
+          null, walFile.getName(), dbDir);
+      case ERROR -> LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
+          "Failed to delete stale WAL file: %s", null, walFile.getName());
+      }
   }
 
   /**

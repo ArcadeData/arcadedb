@@ -287,6 +287,17 @@ public class ServerControlPlane {
     if (server.getStatus() != ArcadeDBServer.STATUS.ONLINE)
       return "Server not started yet";
 
+    // Checked BEFORE - and outside - the readinessRequiresHA gate below, because it answers a different question
+    // (issue #7118). That gate is opt-in and about a node that is BEHIND: still joining, still replaying, which a
+    // deployment can reasonably choose to serve from. A wedged replication-log writer is not that. Ratis rejects
+    // every append after it, so the node cannot catch up and cannot become caught up, and everything it serves is
+    // frozen at the moment the writer failed. Gating this on an opt-in switch would leave the default deployment
+    // - the one the issue describes, a 3-node cluster behind a Service - routing a third of its reads to a
+    // replica that silently stopped moving.
+    final String logFailure = haRaftLogFailure();
+    if (logFailure != null)
+      return "Replication log writer has failed on this node: " + logFailure;
+
     if (server.getConfiguration().getValueAsBoolean(GlobalConfiguration.SERVER_READINESS_REQUIRES_HA)
         && server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_ENABLED)) {
       final HAServerPlugin ha = server.getHA();
@@ -299,6 +310,32 @@ public class ServerControlPlane {
     }
 
     return null;
+  }
+
+  /**
+   * The HA layer's persistent log-write failure, or {@code null} when there is none to report - including when
+   * there is no HA layer at all. Reads {@link HAServerPlugin#getRaftLogFailure()}, the signal issue #7037 built
+   * for the {@code HealthMonitor}'s in-place restart and issue #7118 gave its second consumer.
+   * <p>
+   * Defensive against a plugin that throws: readiness is a probe, and a probe that propagates an exception is
+   * answered with a 500 the orchestrator reads as "unknown" rather than as the NOT READY the failing node
+   * deserves. A signal that cannot be read is treated as absent, leaving the gates below to decide.
+   * <p>
+   * Consulted without first testing {@code HA_ENABLED}, and that is what the null check here stands in for: a
+   * server with HA disabled registers no plugin, so {@link ArcadeDBServer#getHA()} is {@code null} and this is
+   * already the whole answer. Reading the setting as well would only add a second way to say the same thing, and
+   * a worse one - the plugin's presence is the fact, the setting is the intent that produced it.
+   */
+  private String haRaftLogFailure() {
+    final HAServerPlugin ha = server.getHA();
+    if (ha == null)
+      return null;
+    try {
+      return ha.getRaftLogFailure();
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "Cannot read the HA log-failure signal for the readiness probe", e);
+      return null;
+    }
   }
 
   // ---------------------------------------------------------------------------------------------
