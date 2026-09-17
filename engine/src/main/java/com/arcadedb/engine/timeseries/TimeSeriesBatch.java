@@ -168,6 +168,11 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
     } else
       // A fresh row is already zero everywhere, so only the columns whose absence is NOT zero are touched -
       // none at all on an all-integer schema, which is the bulk-ingest case this class is built for.
+      //
+      // "Already zero" is an invariant of this class, not just of the JVM: a fresh row is one at an index no
+      // fill has reached, and every backing array it can live in is freshly ALLOCATED - by the constructor or by
+      // grow(), which copies into a new array rather than reusing one. A growth path that ever recycled storage
+      // would have to fill these rows in full, like the stale branch above (claude-review on PR #7747).
       for (final int c : absentMarkerColumns)
         rawValues[c][row] = nullRaw[c];
     return row;
