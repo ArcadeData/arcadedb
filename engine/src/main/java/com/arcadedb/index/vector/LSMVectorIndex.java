@@ -2129,6 +2129,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // write happened to reopen the question. MUTABLE is also what reuseStalePrefixGraph() publishes for the
         // same situation - a graph that is correct to search but behind the live set. addAndGet, not set: a write
         // that landed while the validation above ran unlocked has already counted itself here.
+        //
+        // deadOrdinals itself is a count taken over a set that was not frozen, and deliberately so. A delete
+        // committed DURING the walk above may have been read as live, in which case this misses it - but that
+        // delete added itself to this very counter under its own write lock, so the total still moves; or it may
+        // have been read as dead, in which case both it and this count it and the total is one high. Neither
+        // direction can be wrong in the way that would matter: this number decides only WHEN the compaction runs,
+        // never what the graph answers. Which vectors a search may return is not read from here at all - it is
+        // re-read live, per traversed ordinal, by LiveVectorBitsFilter (issue #5558), which is why the walk can
+        // run unlocked in the first place. Freezing the live set across an O(N) walk would stall every reader and
+        // writer of this index to make a scheduling hint exact.
         mutationsSinceSerialize.addAndGet(deadOrdinals);
         this.graphState = GraphState.MUTABLE;
       } else if (graphState == GraphState.LOADING)
@@ -8730,8 +8740,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
     stats.put("estimatedRebuildWork", statsGraph != null ? estimateRebuildWork(statsGraph.size()) : 0L);
     stats.put("deltaScanWorkTarget",
         statsGraph != null ? deltaScanWorkTarget(statsGraph.size(), maxDeltaScanRatio()) : 0L);
-
-    // On-heap cache size of the live incremental builder (bounded, issue #3144)
 
     // Populate metrics from LSMVectorIndexMetrics
     metrics.populateStats(stats);
