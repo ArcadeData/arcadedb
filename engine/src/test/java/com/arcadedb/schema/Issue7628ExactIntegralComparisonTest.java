@@ -259,6 +259,53 @@ class Issue7628ExactIntegralComparisonTest {
   }
 
   /**
+   * The DECIMAL arm had both halves of the same defect, found in review after the integral and floating arms were
+   * fixed: it cast a temporal operand straight to {@code (Long)}, which threw {@code ClassCastException} for the
+   * {@code LocalDate}/{@code LocalDateTime}/{@code Date} a temporal column is actually materialised as, and it had
+   * no case at all for the three sub-millisecond types, which fell through to the unsupported-pair
+   * {@code IllegalArgumentException} at the bottom of {@code compare}.
+   */
+  @Test
+  void aDecimalAgainstEveryTemporalTypeAndRepresentationIsOrdered() {
+    final BigDecimal five = new BigDecimal("5");
+
+    for (final byte timestampType : new byte[] { BinaryTypes.TYPE_DATE, BinaryTypes.TYPE_DATETIME,
+        BinaryTypes.TYPE_DATETIME_SECOND, BinaryTypes.TYPE_DATETIME_MICROS, BinaryTypes.TYPE_DATETIME_NANOS }) {
+      assertThat(comparator.compare(five, BinaryTypes.TYPE_DECIMAL, 10L, timestampType))
+          .as("DECIMAL vs a stored long as type %d", timestampType).isNegative();
+
+      // The representations that used to be a ClassCastException here
+      assertThat(comparator.compare(five, BinaryTypes.TYPE_DECIMAL, LocalDateTime.of(2026, 6, 12, 15, 30),
+          timestampType)).as("DECIMAL vs LocalDateTime as type %d", timestampType).isNegative();
+      assertThat(comparator.compare(five, BinaryTypes.TYPE_DECIMAL, new Date(1781236800000L), timestampType))
+          .as("DECIMAL vs Date as type %d", timestampType).isNegative();
+    }
+  }
+
+  /**
+   * The boundary is symmetric, and round 9 of review noted only the positive side was exercised. A long past
+   * {@code -2^53} collapses onto a shared double exactly as its positive mirror does.
+   */
+  @Test
+  void theNegativeSideOfTheBoundaryIsExactToo() {
+    final long beyondNegative = -10_000_000_000_000_001L;
+    assertThat(Type.isExactAsDouble(beyondNegative)).isFalse();
+    assertThat((double) beyondNegative).as("the premise: it shares a double with its neighbour")
+        .isEqualTo(Type.widenFloat(-1.0E16f));
+
+    assertThat(BinaryComparator.equals(beyondNegative, -1.0E16f)).isFalse();
+    assertThat(BinaryComparator.equals(-10_000_000_000_000_000L, -1.0E16f)).isTrue();
+
+    for (long delta = -3; delta <= 3; delta++) {
+      final long value = -10_000_000_000_000_000L + delta;
+      assertThat(Integer.signum(comparator.compare(value, BinaryTypes.TYPE_LONG, -1.0E16f, BinaryTypes.TYPE_FLOAT)))
+          .as("LONG %d vs -1.0E16f", value).isEqualTo((int) Long.signum(delta));
+      assertThat(Integer.signum(comparator.compare(-1.0E16f, BinaryTypes.TYPE_FLOAT, value, BinaryTypes.TYPE_LONG)))
+          .as("the reverse of LONG %d vs -1.0E16f", value).isEqualTo(-(int) Long.signum(delta));
+    }
+  }
+
+  /**
    * Below the boundary nothing may change: the pair still meets at {@code double}, which is both exact and far
    * cheaper than a {@link BigDecimal} round trip on a hot comparison path.
    */
