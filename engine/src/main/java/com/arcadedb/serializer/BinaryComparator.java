@@ -228,9 +228,17 @@ public class BinaryComparator {
       case BinaryTypes.TYPE_SHORT:
         return ((BigDecimal) value1).compareTo(new BigDecimal((Short) value2));
       case BinaryTypes.TYPE_LONG:
+        return ((BigDecimal) value1).compareTo(new BigDecimal((Long) value2));
       case BinaryTypes.TYPE_DATETIME:
       case BinaryTypes.TYPE_DATE:
-        return ((BigDecimal) value1).compareTo(new BigDecimal((Long) value2));
+      case BinaryTypes.TYPE_DATETIME_SECOND:
+      case BinaryTypes.TYPE_DATETIME_MICROS:
+      case BinaryTypes.TYPE_DATETIME_NANOS:
+        // temporalAsLong, not a (Long) cast: a temporal column is materialised through the configured
+        // implementation, so this arm threw ClassCastException for a LocalDate/LocalDateTime/Date value - the same
+        // bug the integral and floating arms had. The three sub-millisecond types were missing outright and fell
+        // through to the unsupported-pair IllegalArgumentException at the bottom of this method (found in review).
+        return ((BigDecimal) value1).compareTo(BigDecimal.valueOf(temporalAsLong(value2, type2)));
       case BinaryTypes.TYPE_BYTE:
         return ((BigDecimal) value1).compareTo(new BigDecimal((Byte) value2));
       case BinaryTypes.TYPE_DECIMAL:
