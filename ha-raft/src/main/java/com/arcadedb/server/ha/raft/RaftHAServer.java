@@ -2033,6 +2033,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return httpAddresses;
   }
 
+  /**
+   * The live map of explicitly declared peer HTTPS endpoints - the optional 5th field of
+   * {@link GlobalConfiguration#HA_SERVER_LIST} - keyed by peer id, and not a copy, exactly like
+   * {@link #getHttpAddresses()}. Empty when no entry declared one, in which case
+   * {@link #getPeerHttpsAddress} derives the endpoint instead.
+   */
+  public Map<RaftPeerId, String> getHttpsAddresses() {
+    return httpsAddresses;
+  }
+
   public String getClusterName() {
     return clusterName;
   }

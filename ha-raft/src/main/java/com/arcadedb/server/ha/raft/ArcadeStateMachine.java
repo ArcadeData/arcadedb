@@ -3667,6 +3667,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
     if (leaderHttpAddr == null || raftHA.isOwnHttpAddress(leaderHttpAddr))
       return; // no leader to compare against yet
 
+    // The encrypted twin, read here rather than inside the task so both addresses come from one look at the
+    // cluster. It already carries the same two checks the HTTP one just made, and is null when SSL is off or
+    // no HTTPS endpoint resolves - in which case the probe stays on the plain listener (issue #7563).
+    final String leaderHttpsAddr = raftHA.getLeaderHttpsAddress();
+    // Read once, off the volatile, so the task cannot see a different server than the one this tick checked.
+    final ArcadeDBServer probeServer = this.server;
+
     // Floored at the snapshot cadence so a WAN cluster that has widened its watchdog does not get probed
     // more often than it resyncs.
     if (!claimBootstrapDivergenceCheckSlot(System.currentTimeMillis(),
@@ -3687,7 +3694,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // the worst case, not for the length of a download.
       lifecycleExecutor.submit(() -> {
         final Map<String, BootstrapBaseline> leaderStates = BootstrapElection.fetchBootstrapState(
-            leaderHttpAddr, clusterToken, pending, BOOTSTRAP_DIVERGENCE_PROBE_TIMEOUT_MS);
+            probeServer, leaderHttpAddr, leaderHttpsAddr, clusterToken, pending, BOOTSTRAP_DIVERGENCE_PROBE_TIMEOUT_MS);
         if (leaderStates == null) {
           // The throttle slot is spent whether or not the probe answered, exactly as the stale-snapshot
           // backstop spends its own on a failed attempt: the next try is the next check window, not the
