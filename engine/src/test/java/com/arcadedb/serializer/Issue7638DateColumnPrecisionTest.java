@@ -402,6 +402,20 @@ class Issue7638DateColumnPrecisionTest extends TestHelper {
           assertThat(new JsonSerializer(database).serializeResult(database, row).get("d")).isEqualTo(8);
         }
 
+        // A COMPUTED TEMPORAL, which is the case that actually reaches the formatter. The integer above proves
+        // the type lookup but not the formatting: formatTemporalForPrecision ignores a non-temporal value, so
+        // that assertion passed even while JsonSerializer was still resolving DATE for this alias by falling
+        // back to the element on the deliberate null. A datetime aliased onto the DATE column's name must keep
+        // its time of day rather than being rendered date-only.
+        try (final ResultSet rs = database.query("sql",
+            "SELECT *, date('2026-06-12 15:30:00', 'yyyy-MM-dd HH:mm:ss') AS d FROM Issue7638Collision")) {
+          final Result row = rs.next();
+          assertThat(row.getPropertyType("d")).isNull();
+          assertThat(new JsonSerializer(database).serializeResult(database, row).getString("d"))
+              .as("a computed timestamp must not inherit the colliding DATE column's date-only formatting")
+              .startsWith("2026-06-12 15:30:00");
+        }
+
         // The control: with no collision, `*` still reports the backing column's type
         try (final ResultSet rs = database.query("sql", "SELECT * FROM Issue7638Collision")) {
           final Result row = rs.next();

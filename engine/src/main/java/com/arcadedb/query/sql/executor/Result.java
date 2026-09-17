@@ -25,6 +25,8 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -84,12 +86,23 @@ public interface Result {
    * genuine DATE was serialized with a spurious time of day (issue #7638). Answering {@code null} is always safe:
    * the caller falls back to whatever it did before.
    *
+   * THIS IS THE WHOLE ANSWER, not one source a caller then falls back from. A row that knows about a projection
+   * answers from it FIRST and falls back to its backing record itself (see {@code ResultInternal}), so a caller
+   * that added its own "and if that was null, ask the record's schema" would undo the distinction: a computed
+   * alias colliding with a real column name answers null ON PURPOSE, and a second fallback turns that back into
+   * the column's type - which is the collision this method exists to prevent. Ask once, take the answer.
+   *
    * @param name the property name as this row publishes it, i.e. the projection alias
    *
    * @return the declared type of the source column, or null
    */
   default Type getPropertyType(final String name) {
-    return null;
+    if (!isElement())
+      return null;
+    final Document element = toElement();
+    final DocumentType elementType = element != null ? element.getType() : null;
+    final Property declared = elementType != null ? elementType.getPolymorphicPropertyIfExists(name) : null;
+    return declared != null ? declared.getType() : null;
   }
 
   Set<String> getPropertyNames();
