@@ -243,9 +243,18 @@ public class LSMVectorIndexOrdinalMapFile {
         return null;
       }
 
+      // Bounded against what is actually left in the file, not only against being negative (PR #7844 review). Three
+      // varints per entry means at least three bytes per entry, so a count above a third of the remaining payload
+      // cannot describe this file - and the three arrays below would be allocated from it before the loop ever
+      // ran short. That allocation raises an Error, not an Exception, so the catch at the bottom would NOT turn it
+      // into the "no usable map, rebuild instead" answer every other unreadable file gets here.
       final int count = (int) file.getUnsignedNumber();
-      if (count < 0)
+      if (count < 0 || count > (payloadLength - file.position()) / 3) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Vector graph ordinal map '%s' claims %d entries, which %d remaining bytes cannot hold: ignoring it",
+            path, count, payloadLength - file.position());
         return null;
+      }
 
       final int[] vectorIds = new int[count];
       final int[] bucketIds = new int[count];
