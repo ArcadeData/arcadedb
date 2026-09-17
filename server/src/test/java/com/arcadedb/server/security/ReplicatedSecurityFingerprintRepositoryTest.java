@@ -25,9 +25,12 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFileAttributeView;
+import java.nio.file.attribute.PosixFilePermission;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * The fail-open branches of {@link ReplicatedSecurityFingerprintRepository}, which
@@ -128,6 +131,24 @@ class ReplicatedSecurityFingerprintRepositoryTest {
         .doesNotThrowAnyException();
     assertThat(repository.get(ReplicatedSecurityFingerprintRepository.USERS))
         .as("and the node goes on judging correctly from memory until it restarts").isEqualTo("fp-users");
+  }
+
+  /**
+   * The file lands in the same configuration directory as {@code server-users.jsonl} and the API-token document,
+   * both of which are published owner-only on purpose. A convention that holds for three files in a directory and
+   * not the fourth is one nobody can rely on (claude-review on PR #7748).
+   */
+  @Test
+  void theFileIsPublishedOwnerOnly() throws IOException {
+    new ReplicatedSecurityFingerprintRepository(configDir.toString())
+        .record(ReplicatedSecurityFingerprintRepository.USERS, "fp-users");
+
+    final Path file = configDir.resolve(ReplicatedSecurityFingerprintRepository.FILE_NAME);
+    final PosixFileAttributeView posix = Files.getFileAttributeView(file, PosixFileAttributeView.class);
+    assumeTrue(posix != null, "POSIX permissions are not a thing on this filesystem");
+
+    assertThat(posix.readAttributes().permissions())
+        .containsExactlyInAnyOrder(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE);
   }
 
   /** The fsync skip: re-recording a value that has not moved must not touch the file at all. */

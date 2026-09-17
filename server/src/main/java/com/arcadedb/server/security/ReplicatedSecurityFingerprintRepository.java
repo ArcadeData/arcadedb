@@ -182,6 +182,14 @@ public class ReplicatedSecurityFingerprintRepository {
             channel.write(ByteBuffer.wrap(bytes));
             channel.force(true);
           }
+
+          // Owner-only before publishing, the same as every other file in this directory (claude-review on PR
+          // #7748). What is stored is a digest of a document rather than credential material, but an attacker
+          // who can read it can confirm a candidate copy of the security document - an exfiltrated backup, say -
+          // against what this node has installed, and a convention that holds for three files in a directory
+          // and not the fourth is one nobody can rely on.
+          SecurityUserFileRepository.applyOwnerOnlyPermissions(tmp);
+
           try {
             Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
           } catch (final AtomicMoveNotSupportedException e) {

@@ -94,7 +94,12 @@ public class SecurityUserFileRepository {
     }
   }
 
-  private static void applyOwnerOnlyPermissions(final Path path) {
+  /**
+   * Package-private rather than private since issue #7693: {@link ReplicatedSecurityFingerprintRepository} writes
+   * a fourth file into the same configuration directory and has to give it the same permissions, and a second
+   * copy of this would be a second place for the convention to drift (claude-review on PR #7748).
+   */
+  static void applyOwnerOnlyPermissions(final Path path) {
     try {
       final PosixFileAttributeView posixView = Files.getFileAttributeView(path, PosixFileAttributeView.class);
       if (posixView != null)
