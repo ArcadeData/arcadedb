@@ -2848,7 +2848,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           // were in the discarded Counts, so the summary under-reports inserted for this chunk. The
           // tests use single-row chunks; a precise per-chunk reconciliation is a separate follow-up.
           totals.received += c.getRowsCount();
-          totals.err(-1, commitErrorCode(e), exceptionMessage(e), "");
+          totals.err(-1, commitErrorCode(e), insertErrorMessage(e), "");
           // A structural failure (e.g. "options changed mid-stream") leaves the transaction still
           // active and bound to this pooled gRPC thread. Roll it back here (on the failing thread,
           // where it is bound) so its locks are released immediately and it is not leaked into a later
@@ -2952,7 +2952,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    * stream-level {@code Status.INTERNAL}. The engine auto-rolls back on commit failure, so any rows
    * that were optimistically counted as inserted/updated did not persist - reclassify them as failed.
    */
-  private static void recordCommitException(final Counts totals, final Exception e) {
+  private void recordCommitException(final Counts totals, final Exception e) {
     final long rolledBack = totals.inserted + totals.updated;
     totals.inserted = 0;
     totals.updated = 0;
@@ -2963,7 +2963,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     totals.errors.add(InsertError.newBuilder()
         .setRowIndex(-1)
         .setCode(commitErrorCode(e))
-        .setMessage(exceptionMessage(e))
+        .setMessage(insertErrorMessage(e))
         .setField("")
         .build());
   }
@@ -2988,8 +2988,25 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    * Returns a non-null human-readable message for an exception, falling back to the simple class name
    * when {@link Exception#getMessage()} is null.
    */
-  private static String exceptionMessage(final Exception e) {
-    return e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+  /**
+   * The free-form text of an {@code InsertError} - the per-row and per-chunk failure channel that
+   * {@code insertStream} and {@code insertBidirectional} report through - concealed and logged in production mode.
+   * <p>
+   * This channel is a protobuf MESSAGE FIELD rather than a gRPC {@code Status}, so none of the concealment applied
+   * to the status paths reached it: a {@link DuplicatedKeyException} here still carried the index name and the
+   * offending key VALUE, and a {@code DB_ERROR} wrapping an {@code IOException} still carried a file path, on the
+   * two RPCs that use it (PR #7755 review). It is the same defect class #7472 is about, on the one channel the
+   * audit did not cover.
+   * <p>
+   * The {@code code} beside it - {@code CONFLICT}, {@code DB_ERROR} - is NOT concealed, and that is the same split
+   * as everywhere else: a bounded, structured value a client branches on survives, the free text does not.
+   */
+  private String insertErrorMessage(final Throwable e) {
+    if (!concealErrors())
+      return e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+
+    GrpcErrorMapper.logConcealed(this, "insert", e);
+    return GrpcErrorMapper.CONCEALED_DESCRIPTION;
   }
 
   // --- 3) Client-streaming graph batch load ---
@@ -4251,7 +4268,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
                   // insertStream path. Per-row failures are already reported chunk-relative inside insertRows.
                   perChunk.errors.add(InsertError.newBuilder().setRowIndex(-1).setCode(
                           "DB_ERROR")
-                      .setMessage(String.valueOf(e.getMessage())).build());
+                      .setMessage(insertErrorMessage(e)).build());
                   ctx.totals.add(perChunk);
                   // intentionally do not advance watermark on failure; client may replay safely
 
@@ -4552,7 +4569,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       } catch (DuplicatedKeyException dup) {
         switch (ctx.opts.getConflictMode()) {
           case CONFLICT_IGNORE -> c.ignored++;
-          case CONFLICT_ABORT, UNRECOGNIZED -> c.err(c.received - 1, "CONFLICT", dup.getMessage(), "");
+          case CONFLICT_ABORT, UNRECOGNIZED -> c.err(c.received - 1, "CONFLICT", insertErrorMessage(dup), "");
           // A concurrent stream inserted this key after our check; the unique index proves it exists
           // now, so retry as an update instead of losing the row. Not exercised by
           // Issue4656InsertStreamConflictUpdateIT: the race needs two concurrent streams hitting the
@@ -4564,19 +4581,19 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
               else
                 // The match vanished between the conflict and the retry (transient MVCC window): report
                 // it as a retriable CONFLICT rather than guessing.
-                c.err(c.received - 1, "CONFLICT", dup.getMessage(), "");
+                c.err(c.received - 1, "CONFLICT", insertErrorMessage(dup), "");
             } catch (DuplicatedKeyException retryDup) {
               // A third writer can race the retry too: still a retriable conflict.
-              c.err(c.received - 1, "CONFLICT", retryDup.getMessage(), "");
+              c.err(c.received - 1, "CONFLICT", insertErrorMessage(retryDup), "");
             } catch (Exception retryEx) {
               // Anything else (IO error, etc.) is a real failure - do not mask it as a CONFLICT.
-              c.err(c.received - 1, "DB_ERROR", retryEx.getMessage(), "");
+              c.err(c.received - 1, "DB_ERROR", insertErrorMessage(retryEx), "");
             }
           }
-          case CONFLICT_ERROR -> c.err(c.received - 1, "CONFLICT", dup.getMessage(), "");
+          case CONFLICT_ERROR -> c.err(c.received - 1, "CONFLICT", insertErrorMessage(dup), "");
         }
       } catch (Exception e) {
-        c.err(c.received - 1, "DB_ERROR", e.getMessage(), "");
+        c.err(c.received - 1, "DB_ERROR", insertErrorMessage(e), "");
       }
 
       inBatch++;

@@ -32,8 +32,14 @@ import java.util.stream.Stream;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Issue #7472: every gRPC failure this module answers with must go through the concealment-aware mapping, and a new
- * one that does not must fail the build rather than leak quietly.
+ * Issue #7472: every gRPC failure this module answers with must state a concealment decision, and a new one that
+ * does not must fail the build rather than leak quietly.
+ * <p>
+ * "Every failure" means through EITHER channel, which is the correction this class needed: a failure reaches a
+ * client as a gRPC {@code Status}, or - for {@code insertStream} and {@code insertBidirectional} - as an
+ * {@code InsertError} field inside a normal response message. The first three scans below only ever knew about the
+ * first, and this class claimed to cover both while the protobuf channel leaked raw exception text on the two RPCs
+ * that use it (PR #7755 review).
  * <p>
  * The concealment-less overloads of {@link GrpcErrorMapper#toStatusRuntimeException} still exist - the tests use
  * them, and they are the honest spelling for a caller that has already decided - and they default {@code conceal}
@@ -145,35 +151,83 @@ class Issue7472EveryGrpcFailureIsConcealableTest {
   }
 
   /**
-   * Concealing is only half of it: the concealed text tells the operator to check the server log, so a call site
-   * that conceals must also be the one that WRITES that entry. This asks that no production source builds a
-   * concealed description by hand - every one goes through {@code GrpcErrorMapper.concealableDescription(...)},
-   * which conceals and logs together.
+   * Concealing is only half of it: the concealed text tells the operator to check the server log, so whatever
+   * conceals must also be what WRITES that entry. This asks that pairing directly - a method that uses
+   * {@link GrpcErrorMapper#CONCEALED_DESCRIPTION} must also call {@code logConcealed}.
    * <p>
-   * The gap this closes was invisible to the scans above and is the reason they are not enough on their own:
+   * The gap this closes was invisible to the scans above and is why they are not enough on their own:
    * {@code ArcadeDbGrpcAdminService}'s catch-all DID call {@code concealErrors()}, so it read as a stated decision,
-   * but it used the answer only to pick the text. It concealed the failure from the client and logged nothing
-   * anywhere - worse than not concealing, because then nobody had the detail (PR #7755 review).
+   * but it used the answer only to pick text. It concealed the failure from the client and logged nothing anywhere
+   * - worse than not concealing, because then nobody had the detail (PR #7755 review).
    */
   @Test
-  void noProductionSourceBuildsAConcealedDescriptionByHand() throws IOException {
+  void everyMethodThatConcealsAlsoLogs() throws IOException {
     final List<String> offenders = new ArrayList<>();
 
     try (final Stream<Path> sources = Files.walk(MAIN_SOURCES)) {
       for (final Path source : sources.filter(p -> p.toString().endsWith(".java")).toList()) {
-        // The mapper DEFINES the constant and is where the one honest use of it lives.
-        if (source.getFileName().toString().equals("GrpcErrorMapper.java"))
-          continue;
+        final String text = Files.readString(source, StandardCharsets.UTF_8);
+        for (int at = text.indexOf("CONCEALED_DESCRIPTION"); at > -1;
+            at = text.indexOf("CONCEALED_DESCRIPTION", at + 1)) {
+          // The declaration itself, and Javadoc mentions of it, are not uses.
+          final int lineStart = text.lastIndexOf('\n', at) + 1;
+          final String line = text.substring(lineStart, text.indexOf('\n', at) < 0 ? text.length() : text.indexOf('\n', at));
+          if (line.strip().startsWith("*") || line.contains("static final String CONCEALED_DESCRIPTION"))
+            continue;
 
-        for (final String statement : statementsMatching(Files.readString(source, StandardCharsets.UTF_8),
-            "CONCEALED_DESCRIPTION"))
-          offenders.add(source.getFileName() + ": " + statement.strip().replaceAll("\\s+", " "));
+          if (!enclosingMethod(text, at).contains("logConcealed("))
+            offenders.add(source.getFileName() + ": " + line.strip());
+        }
       }
     }
 
     assertThat(offenders)
-        .as("a concealed description must come from GrpcErrorMapper.concealableDescription(...), which also writes "
-            + "the log entry the concealed text promises - building it by hand conceals the failure from everyone")
+        .as("a method that conceals must also write the log entry the concealed text promises - otherwise the "
+            + "detail is not hidden from the client, it is destroyed")
+        .isEmpty();
+  }
+
+  /**
+   * The body of the method containing {@code at}, found by walking back to the nearest line that starts a member
+   * declaration at class-member indentation. Good enough for this module's formatting, and the test that guards
+   * the guard fails if it ever stops finding anything.
+   */
+  private static String enclosingMethod(final String text, final int at) {
+    int start = 0;
+    for (final java.util.regex.MatchResult m : Pattern.compile("(?m)^  (?:public|protected|private|static|final| )*[\\w<>,\\[\\]?. ]+\\([^)]*\\)[^;{]*\\{")
+        .matcher(text).results().toList()) {
+      if (m.start() > at)
+        break;
+      start = m.start();
+    }
+    final int end = text.indexOf("\n  }", at);
+    return text.substring(start, end > -1 ? end : text.length());
+  }
+
+  /**
+   * The OTHER response channel: {@code InsertError}'s free-form {@code message}, which is a protobuf field inside a
+   * successful response rather than a {@code Status}, and so touches none of the machinery the scans above check.
+   * <p>
+   * Every free-form insert message goes through {@code insertErrorMessage(...)}, which conceals and logs. A raw
+   * {@code .getMessage()} feeding an error row is what this refuses: that was a {@link DuplicatedKeyException}'s
+   * index name and offending KEY VALUE reaching a production client verbatim while every status-borne failure was
+   * concealed.
+   */
+  @Test
+  void noInsertErrorCarriesARawExceptionMessage() throws IOException {
+    final List<String> offenders = new ArrayList<>();
+
+    try (final Stream<Path> sources = Files.walk(MAIN_SOURCES)) {
+      for (final Path source : sources.filter(p -> p.toString().endsWith(".java")).toList())
+        for (final String token : List.of("InsertError.newBuilder(", ".err("))
+          for (final String statement : statementsMatching(Files.readString(source, StandardCharsets.UTF_8), token))
+            if (MESSAGE_OF_A_THROWABLE.matcher(statement).find())
+              offenders.add(source.getFileName() + ": " + statement.strip().replaceAll("\\s+", " "));
+    }
+
+    assertThat(offenders)
+        .as("an InsertError's message must come from insertErrorMessage(...), which conceals and logs it - a raw "
+            + "getMessage() here reaches a production client through a channel no Status concealment covers")
         .isEmpty();
   }
 
