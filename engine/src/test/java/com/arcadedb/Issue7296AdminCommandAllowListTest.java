@@ -85,27 +85,51 @@ class Issue7296AdminCommandAllowListTest {
   }
 
   /**
-   * The guard that ends the series. Every declared setting that HAS an allow-list must refuse a value outside it
+   * The guard that ends the series. EVERY declared setting that has an allow-list must refuse a value outside it
    * on the administrative path - not only the three the reports happened to name. A setting added later with an
    * allow-list and a writer that bypasses this parse fails here rather than in a fourth issue.
+   * <p>
+   * The probe is chosen per TYPE rather than skipping every non-String setting, which is what this swept before:
+   * a numeric setting handed {@code "no-such-value"} refuses it on the type first, and a test that cannot tell
+   * that refusal from the allow-list's would have passed on a numeric setting whose allow-list was never
+   * consulted. So each type gets a value it CAN represent and the set does not contain.
    */
   @Test
   void everySettingWithAnAllowListRefusesAnUnlistedValueOnTheAdminPath() {
     int checked = 0;
     for (final GlobalConfiguration setting : GlobalConfiguration.values()) {
-      if (setting.getAllowed() == null || setting.getType() != String.class)
-        // Only the String settings can carry an unlisted value all the way through coerce(): a numeric one refuses
-        // the probe below on its TYPE first, which proves nothing about the allow-list. Those are covered by the
-        // integer-range case above.
+      if (setting.getAllowed() == null)
         continue;
+      final Object unlisted = unlistedValueFor(setting);
+      assertThat(unlisted)
+          .as("setting '%s' declares an allow-list %s on a type this sweep has no probe for; add one rather than "
+              + "leaving it unswept", setting.getKey(), setting.getAllowed())
+          .isNotNull();
       ++checked;
-      final String unlisted = "no-such-value-7296";
       assertThatThrownBy(() -> setting.coerceFromAdminCommand(unlisted))
-          .as("setting '%s' declares an allow-list %s and must refuse a value outside it", setting.getKey(),
-              setting.getAllowed())
+          .as("setting '%s' declares an allow-list %s and must refuse the value %s, which is outside it",
+              setting.getKey(), setting.getAllowed(), unlisted)
           .isInstanceOf(IllegalArgumentException.class);
     }
     assertThat(checked).as("the sweep must actually have found allow-listed settings to check").isPositive();
+  }
+
+  /**
+   * A value {@code setting}'s declared TYPE accepts and its allow-list does not, or {@code null} when this sweep
+   * has no probe for that type - which the caller reports rather than skips, so a new kind of allow-listed setting
+   * is noticed here instead of going unchecked.
+   */
+  private static Object unlistedValueFor(final GlobalConfiguration setting) {
+    if (setting.getType() == String.class)
+      return "no-such-value-7296";
+    if (setting.getType() == Integer.class || setting.getType() == Long.class) {
+      // Walk up from 0 until a whole number the set does not contain: every numeric allow-list today is a
+      // contiguous range, so this stops immediately past its end and never depends on where that end is.
+      for (long candidate = 0; candidate < 100_000; candidate++)
+        if (!setting.getAllowed().contains(Long.toString(candidate)))
+          return setting.getType() == Integer.class ? (Object) (int) candidate : (Object) candidate;
+    }
+    return null;
   }
 
   /**
