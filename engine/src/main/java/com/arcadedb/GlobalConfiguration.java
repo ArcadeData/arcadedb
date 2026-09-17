@@ -2824,12 +2824,16 @@ public enum GlobalConfiguration {
   /**
    * Builds the set of allowed values for an integer option constrained to the inclusive range {@code [fromInclusive, toInclusive]}. The values are stored as
    * strings because {@link #setValue(Object)} validates against {@code value.toString()}.
+   * <p>
+   * Returned IMMUTABLE, like the {@code Set.of(...)} allow-lists every other constrained setting declares. These are
+   * fields of a JVM-wide enum singleton, so a mutable one is a way to widen or empty a setting's allow-list for the
+   * rest of the process - which is exactly the enforcement {@link #coerceFromAdminCommand(Object)} centralises.
    */
   private static Set<Object> integerRangeAsStrings(final int fromInclusive, final int toInclusive) {
     final Set<Object> set = new HashSet<>();
     for (int i = fromInclusive; i <= toInclusive; i++)
       set.add(Integer.toString(i));
-    return set;
+    return Set.copyOf(set);
   }
 
   public static void dumpConfiguration(final PrintStream out) {
@@ -3672,9 +3676,13 @@ public enum GlobalConfiguration {
    * The values this setting declares as valid, or {@code null} when it constrains nothing beyond its type. Exposed
    * for the issue #7296 guard test, which sweeps every declared setting and asserts that an allow-list is enforced
    * on the administrative writers too - the enumeration that went stale twice before it was written down as a test.
+   * <p>
+   * Unmodifiable, and belt-and-braces: every declared set is immutable already. That is the property the rule
+   * depends on - these are fields of a JVM-wide singleton, so handing out a mutable one would let any caller widen
+   * or empty an allow-list for the rest of the process and walk straight past the check this issue centralised.
    */
   public Set<Object> getAllowed() {
-    return allowed;
+    return allowed != null ? Collections.unmodifiableSet(allowed) : null;
   }
 
   public Class<?> getType() {
