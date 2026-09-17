@@ -72,6 +72,24 @@ import java.util.Map;
 import java.util.Set;
 import java.util.logging.Level;
 
+/**
+ * Reads a logical (JSONL) export back into a database: the schema line, then the documents, vertices, edges and
+ * TIMESERIES sample chunks {@code JsonlExporterFormat} wrote.
+ * <p>
+ * <b>Embedded only, like every other importer format</b> (issue #7701). The target is a {@code DatabaseInternal}
+ * from {@link #load} down, and {@code AbstractImporter} opens it with a local {@code DatabaseFactory}, so this
+ * class cannot drive a {@code RemoteDatabase} for a TIMESERIES sample - {@link #loadTimeSeriesSamples} writes
+ * through {@code LocalTimeSeriesType.getEngine()} - nor for a document, a vertex or an edge.
+ * <p>
+ * That is not a gap in what a remote CLIENT can do, because the restore it needs is a statement rather than a
+ * library: {@code IMPORT DATABASE '<url>'} is ordinary SQL, so a {@code RemoteDatabase} issues it like any other
+ * command and the server runs this importer against its own embedded database. {@code CREATE TIMESERIES TYPE}
+ * carries the per-column codecs (issue #7689) and the column ORDER (issue #7702) that a TIMESERIES restore needs,
+ * so the type it rebuilds on that path is the one the export recorded.
+ * {@code Issue7701RemoteTimeSeriesLogicalRestoreIT} drives the whole round trip through remote handles only.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
 public class JsonlImporterFormat extends AbstractImporterFormat {
 
   private ConsoleLogger          logger;
@@ -515,12 +533,13 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     final TimeSeriesType created = builder.create();
 
     // The order the type came back in has to be the order the export recorded, because the samples are POSITIONAL
-    // arrays and loadTimeSeriesSamples maps each one onto the type's CURRENT columns (issue #7740). The embedded
-    // builder stores the declaration as given, so this holds there by construction; a REMOTE schema renders the
-    // declaration as CREATE TIMESERIES TYPE, whose grammar has one slot for the timestamp, one for TAGS and one
-    // for FIELDS, and therefore regroups an export whose columns interleave them. Refused rather than imported
-    // into shifted columns - which, when the shifted pair happens to share a data type, is the kind of corruption
-    // that shows up as wrong readings months later rather than as an error here.
+    // arrays and loadTimeSeriesSamples maps each one onto the type's CURRENT columns (issue #7740). Both creation
+    // paths preserve it: the embedded builder stores the declaration as given, and since issue #7702 the SQL a
+    // REMOTE schema renders can spell an interleaved declaration too - CREATE TIMESERIES TYPE repeats its column
+    // groups instead of having one TAGS slot and one FIELDS slot. So this no longer refuses anything the tree can
+    // produce, and is kept as the check that PROVES it for each restore rather than as a comment claiming it:
+    // importing into shifted columns - which, when the shifted pair happens to share a data type, shows up as
+    // wrong readings months later rather than as an error here - must never be reachable by accident.
     final List<String> exported = new ArrayList<>(columns.length());
     for (int i = 0; i < columns.length(); i++)
       exported.add(columns.getJSONObject(i).getString("name"));
@@ -530,10 +549,10 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     if (!exported.equals(stored))
       throw new ImportException("TIMESERIES type '" + typeName + "' was created with its columns in a different "
           + "order than the export records - " + stored + " instead of " + exported + " - and its samples are "
-          + "positional, so importing them would put every value in the wrong column. This happens when the "
-          + "export interleaves TAG and FIELD columns and the target is a REMOTE database, whose CREATE "
-          + "TIMESERIES TYPE can only spell TIMESTAMP, then TAGS, then FIELDS. Import into an embedded database, "
-          + "or re-export from a type whose columns are declared in that order");
+          + "positional, so importing them would put every value in the wrong column. Every creation path in this "
+          + "build preserves the declared order, so this means the export was written by a build whose column "
+          + "order it cannot reproduce; re-export from a type whose columns are declared in the order this one "
+          + "stores them");
 
     return created;
   }
