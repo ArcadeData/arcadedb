@@ -63,6 +63,13 @@ public final class GrpcErrorMapper {
   public static final Metadata.Key<String> DUP_KEYS_KEY         = Metadata.Key.of("arcadedb-dup-keys",
       Metadata.ASCII_STRING_MARSHALLER);
 
+  /**
+   * The description a CONCEALED failure carries in place of the exception's own message, when the server runs in
+   * production mode. Deliberately identical for every failure: a message that varied would put back exactly the
+   * signal the concealment removes (issue #7472).
+   */
+  static final String CONCEALED_DESCRIPTION = "The request failed. Check the server log for the details";
+
   private GrpcErrorMapper() {
   }
 
@@ -88,12 +95,6 @@ public final class GrpcErrorMapper {
   public static StatusRuntimeException toStatusRuntimeException(final Throwable t, final String contextPrefix) {
     return toStatusRuntimeException(t, contextPrefix, null);
   }
-
-  /**
-   * The description a CONCEALED failure carries in place of the exception's own message. Deliberately identical for
-   * every failure: a message that varied would put back exactly the signal the concealment removes.
-   */
-  static final String CONCEALED_DESCRIPTION = "The request failed. Check the server log for the details";
 
   /**
    * Maps a throwable to a {@link StatusRuntimeException} suitable for {@code StreamObserver.onError()}.
