@@ -162,6 +162,18 @@ public class DatabaseAsyncCommand implements DatabaseAsyncTask {
   }
 
   /**
+   * Routed to this command's own {@code onError}, so a command that ended up in the executor's
+   * {@code pendingUnreplayableTasks} list - which happens when a statement committed the shared batch mid-execution
+   * and this command therefore straddles that commit (issue #7667) - still reports when the batch it left its
+   * remaining writes in is abandoned. Without the override this would be the interface's no-op default, and the
+   * submitter would be left holding only the {@code onComplete} it already received.
+   */
+  @Override
+  public void notifyBatchAbandoned(final Throwable cause) {
+    notifyError(cause);
+  }
+
+  /**
    * Reports a failure to the submitter's callback. Called by {@link #execute} for anything the command itself raised,
    * and by the pool runner for the few failures raised around it (the transaction it opens and commits).
    *

@@ -297,6 +297,13 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     // way completedTaskCount above does for tasks). Thread-confined, same as pendingBatchCommands - only
     // this worker ever calls commitBatch() on itself.
     private          int                        batchCommitAttempt       = 0;
+    // #7667: the shared batch transaction the CURRENTLY RUNNING task was handed, and its generation at the moment
+    // it was handed over. Non-null only for the duration of one message.execute() call (set by executeTask right
+    // before it, cleared in its finally), so no later caller - commitBatch()'s own begin(), above all - can read a
+    // stale snapshot and mistake its own fresh transaction for a mid-statement one. Thread-confined, same as
+    // pendingBatchCommands.
+    private          TransactionContext         taskBatchTx              = null;
+    private          long                       taskBatchTxGeneration    = 0;
 
     // #7615: single choke point for "the shared batch's non-durable bookkeeping is now moot" - every site
     // that commits, rolls back, or otherwise closes the shared batch transaction goes through here instead
@@ -309,6 +316,29 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
     boolean isReplayingBatch() {
       return replayingBatch;
+    }
+
+    /**
+     * Whether the shared batch transaction the running task was handed has since been committed and replaced by a
+     * fresh one (issue #7667).
+     * <p>
+     * {@code isTransactionActive()} cannot answer this. A statement that commits MID-EXECUTION and immediately
+     * begins another - {@code UPDATE/DELETE/MOVE VERTEX ... BATCH n} through {@code BatchStep}, {@code TRUNCATE
+     * TYPE}/{@code BUCKET}, {@code REBUILD INDEX}, all enumerated in {@code SQLQueryEngine}'s own javadoc - leaves a
+     * transaction active on return, just not THE one everything buffered in {@link #pendingBatchCommands} wrote to.
+     * Those writes went out with the mid-statement commit and are durable on disk; replaying them onto the new
+     * transaction (which is what {@link #commitBatch} does after a conflict) would apply them a second time, and
+     * telling their submitters {@code onError} (which is what {@link #notifyPendingBatchCommandsAndAbandon} does
+     * when the batch is abandoned) would deny a write that actually landed. Both are answered by treating this
+     * exactly as the out-of-band commit sites ({@code DatabaseAsyncIndexCompaction}, {@code DatabaseAsyncParkWorker},
+     * {@code DatabaseAsyncTransaction}) already treat their own commits: drop the buffered state without notifying.
+     * <p>
+     * Deliberately asked of the ORIGINAL context object rather than of {@code database.getTransaction()}: a nested
+     * transaction pushed and committed under the running task is a different context entirely, does not publish the
+     * shared batch, and so must not read as a replacement.
+     */
+    private boolean sharedBatchReplacedDuringTask() {
+      return taskBatchTx != null && taskBatchTx.getGeneration() != taskBatchTxGeneration;
     }
 
     private AsyncThread(final DatabaseInternal database, final int id) {
@@ -497,6 +527,17 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
           database.setWALFlush(currentSync);
         }
 
+        // #7667: snapshot the shared batch transaction and its generation BEFORE handing it to the task, so the
+        // classification below (and, while execute() is still on the stack, notifyPendingBatchCommandsAndAbandon)
+        // can tell "the transaction everything buffered wrote to is still the one in front of me" from "a
+        // statement committed it mid-execution and began another". Taken after the begin() above, so it is the
+        // transaction `message` actually runs in; null when none is active, in which case nothing is buffered
+        // against one either (every commit site clears the buffers).
+        if (!nested) {
+          taskBatchTx = database.isTransactionActive() ? database.getTransaction() : null;
+          taskBatchTxGeneration = taskBatchTx != null ? taskBatchTx.getGeneration() : 0;
+        }
+
         message.execute(this, database);
 
         if (!nested) {
@@ -508,9 +549,24 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
           if (!database.isTransactionActive())
             // That local rollback (unchanged, pre-existing behaviour: see Issue6470AsyncSuccessCallbackDurabilityTest)
             // discarded every write buffered before it too - drop the stale references so a LATER boundary
-            // commit that fails cannot replay writes this rollback already undid.
+            // commit that fails cannot replay writes this rollback already undid. #7667: and the same call covers
+            // the case where nothing is open because the task COMMITTED the batch part-way through and then failed
+            // before re-opening one - those writes are durable rather than undone, but either way there is nothing
+            // left here to replay onto a later transaction.
             clearBatchState();
-          else if (message instanceof final DatabaseAsyncCommand command) {
+          else if (sharedBatchReplacedDuringTask()) {
+            // #7667: the task committed the shared batch part-way through and left a DIFFERENT transaction open
+            // (UPDATE/DELETE/MOVE VERTEX ... BATCH n, TRUNCATE TYPE, REBUILD INDEX). Everything buffered before it
+            // is durable on disk already, so it must neither be replayed by a later commitBatch() - ten records
+            // where five were submitted - nor be told onError by a later abandon, which would deny a write that
+            // landed. This message itself straddles the mid-statement commit (part durable, part in the new
+            // transaction), so it cannot be replayed either: routed to pendingUnreplayableTasks, which turns
+            // retry-by-replay off for this batch instead of fabricating a duplicate, and still reports through
+            // notifyBatchAbandoned if that batch is ultimately given up on.
+            clearBatchState();
+            if (message instanceof final DatabaseAsyncCommand command ? !command.idempotent : message.writesToSharedBatch())
+              pendingUnreplayableTasks.add(message);
+          } else if (message instanceof final DatabaseAsyncCommand command) {
             if (!command.idempotent)
               pendingBatchCommands.add(command);
             // idempotent (a query): wrote nothing, batch replayability unaffected either way.
@@ -525,6 +581,10 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
             // nothing here a rolled-back commit could actually lose - counting it anyway would needlessly
             // disable the retry-by-replay for every command buffered ahead of it on the same worker.
             pendingUnreplayableTasks.add(message);
+
+          // #7667: the snapshot has been consumed - dropped BEFORE commitBatch() below, whose own retry begin()
+          // bumps the very generation it compares against.
+          taskBatchTx = null;
 
           count++;
 
@@ -552,6 +612,9 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
             database.rollback();
         }
       } finally {
+        // #7667: never leave a snapshot behind for the NEXT task - or for closeTransactionBoundaryIfDurabilityPolicyChanged(),
+        // which runs before the next one takes its own.
+        taskBatchTx = null;
         try {
           message.completed();
         } finally {
@@ -696,6 +759,17 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     void notifyPendingBatchCommandsAndAbandon(final Throwable cause) {
       if (pendingBatchCommands.isEmpty() && pendingUnreplayableTasks.isEmpty())
         return;
+
+      if (sharedBatchReplacedDuringTask()) {
+        // #7667, the mirror of the duplicate-replay case: the running task committed the shared batch part-way
+        // through and only then failed, so everything buffered ahead of it went out with that commit and is
+        // durable. `cause` belongs to whatever happened AFTER it, in the replacement transaction - reporting it
+        // to these commands would tell their submitters a write that landed did not. Dropped silently instead,
+        // exactly as the three out-of-band commit sites drop what they just made durable.
+        clearBatchState();
+        return;
+      }
+
       final List<DatabaseAsyncCommand> abandonedCommands = new ArrayList<>(pendingBatchCommands);
       final List<DatabaseAsyncTask>    abandonedTasks    = new ArrayList<>(pendingUnreplayableTasks);
       clearBatchState();

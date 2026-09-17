@@ -69,6 +69,9 @@ public class DatabaseAsyncParkWorker implements DatabaseAsyncTask {
           hook.accept(1);
 
         database.commit();
+        // #6470/#7673: a real, durable commit of the worker's shared batch, so the executor-wide durability
+        // signal fires here too, exactly as at the periodic boundary (commitBatch()).
+        async.onOk();
         // #7615: those commands are durably committed now - drop the stale references so a LATER periodic
         // boundary commit that fails and retries by replay (commitBatch()) cannot replay them a second time.
         async.clearPendingBatchCommands();

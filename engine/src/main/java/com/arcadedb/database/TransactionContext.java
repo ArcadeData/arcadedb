@@ -215,6 +215,13 @@ public class TransactionContext implements Transaction {
   private       List<Integer>                        lockedFiles;
   private       List<Integer>                        explicitLockedFiles   = null;
   private       long                                 txId                  = -1;
+  // #7667: bumped once per begin() on THIS context object. A TransactionContext is reused across begin/commit
+  // cycles (LocalDatabase.begin() only pushes a new one for a NESTED transaction), and txId is -1 outside the WAL
+  // window, so neither object identity nor txId can answer "is the transaction I am holding still the same one I
+  // was holding a moment ago". This can: a caller that snapshots it, runs arbitrary code, and finds it changed
+  // knows that code closed its transaction and opened a fresh one on the same context - which is exactly what a
+  // statement that commits mid-execution (BatchStep's `BATCH n`, TRUNCATE TYPE, REBUILD INDEX) does.
+  private       long                                 generation            = 0;
   private       STATUS                               status                = STATUS.INACTIVE;
   // Whether the 1st phase in progress ends by replaying the queued index operations - always true for an
   // originating commit. See isIndexChangesReplayed().
@@ -284,6 +291,9 @@ public class TransactionContext implements Transaction {
       throw new TransactionException("Transaction already begun");
 
     status = STATUS.BEGUN;
+    // #7667: after the "already begun" refusal above, so a rejected begin() never makes an unchanged transaction
+    // look replaced.
+    ++generation;
 
     // Read once per transaction (DATABASE-scope, constant for the DB lifetime): keeps the per-append hot path
     // to a plain field read instead of a configuration lookup.
@@ -319,6 +329,17 @@ public class TransactionContext implements Transaction {
       database.getSchema().getEmbedded().saveConfiguration();
 
     return phase1 != null ? phase1.result : null;
+  }
+
+  /**
+   * How many times a transaction has been begun on THIS context object, monotonically increasing for its whole life
+   * (issue #7667). Snapshot it, run code that may commit, and compare: a different value means the transaction the
+   * snapshot referred to was closed and another one opened in its place, so anything buffered against the first is
+   * already durable (or already discarded) and must not be replayed onto the second. Never reset by
+   * {@link #reset()} - resetting it would make the next begin() hand back a value a stale snapshot could match.
+   */
+  public long getGeneration() {
+    return generation;
   }
 
   public LocalTransactionExplicitLock lock() {

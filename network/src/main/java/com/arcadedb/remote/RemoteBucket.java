@@ -50,56 +50,56 @@ public class RemoteBucket implements Bucket {
 
   @Override
   public RID createRecord(Record record, boolean discardRecordAfter) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("createRecord() is not supported in remote database. Use SQL INSERT INTO bucket:<name> instead.");
   }
 
   @Override
   public void updateRecord(Record record, boolean discardRecordAfter) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("updateRecord() is not supported in remote database. Use SQL UPDATE instead.");
   }
 
   @Override
   public Binary getRecord(RID rid) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getRecord() is not supported in remote database. Use SQL SELECT FROM <rid> instead.");
   }
 
   @Override
   public boolean existsRecord(RID rid) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("existsRecord() is not supported in remote database. Use SQL SELECT FROM <rid> instead.");
   }
 
   @Override
   public void deleteRecord(RID rid) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("deleteRecord() is not supported in remote database. Use SQL DELETE FROM <rid> instead.");
   }
 
   @Override
   public void deleteRecord(RID rid, boolean force) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("deleteRecord() is not supported in remote database. Use SQL DELETE FROM <rid> instead.");
   }
 
   @Override
   public void scan(RawRecordCallback callback, ErrorRecordCallback errorRecordCallback) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("scan() is not supported in remote database. Use SQL SELECT FROM bucket:<name> instead.");
   }
 
   @Override
   public Iterator<Record> iterator() {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("iterator() is not supported in remote database. Use SQL SELECT FROM bucket:<name> instead.");
   }
 
   @Override
   public Iterator<Record> inverseIterator() {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("inverseIterator() is not supported in remote database. Use SQL SELECT FROM bucket:<name> ORDER BY @rid DESC instead.");
   }
 
   @Override
   public long count() {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("count() is not supported in remote database. Use SQL SELECT count(*) FROM bucket:<name> instead.");
   }
 
   @Override
   public int getFileId() {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getFileId() is not supported in remote database. File ids are an engine-level structure with no remote equivalent.");
   }
 }

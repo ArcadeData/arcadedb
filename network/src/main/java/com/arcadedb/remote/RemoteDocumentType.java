@@ -394,12 +394,12 @@ public class RemoteDocumentType implements DocumentType {
   // UNSUPPORTED METHODS. OPEN A NEW ISSUE TO REQUEST THE SUPPORT OF ADDITIONAL METHODS IN REMOTE
   @Override
   public boolean instanceOf(final String type) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("instanceOf() is not supported in remote database. Use getSuperTypes() and walk the hierarchy, or SQL SELECT FROM schema:types.");
   }
 
   @Override
   public List<DocumentType> getSubTypes() {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getSubTypes() is not supported in remote database. Use SQL SELECT FROM schema:types instead.");
   }
 
   @Override
@@ -410,52 +410,52 @@ public class RemoteDocumentType implements DocumentType {
   @Override
   public TypeIndex getOrCreateTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames,
       final int pageSize) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getOrCreateTypeIndex() is not supported in remote database. Use SQL CREATE INDEX IF NOT EXISTS instead.");
   }
 
   @Override
   public TypeIndex getOrCreateTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames,
       final int pageSize, Index.BuildIndexCallback callback) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getOrCreateTypeIndex() is not supported in remote database. Use SQL CREATE INDEX IF NOT EXISTS instead.");
   }
 
   @Override
   public TypeIndex getOrCreateTypeIndex(Schema.INDEX_TYPE indexType, boolean unique, String[] propertyNames, int pageSize,
       LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, Index.BuildIndexCallback callback) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getOrCreateTypeIndex() is not supported in remote database. Use SQL CREATE INDEX IF NOT EXISTS instead.");
   }
 
   @Override
   public TypeIndex createTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames,
       final int pageSize) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("createTypeIndex() is not supported in remote database. Use SQL CREATE INDEX instead.");
   }
 
   @Override
   public TypeIndex createTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames,
       final int pageSize, final Index.BuildIndexCallback callback) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("createTypeIndex() is not supported in remote database. Use SQL CREATE INDEX instead.");
   }
 
   @Override
   public TypeIndex createTypeIndex(final Schema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames,
       final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final Index.BuildIndexCallback callback) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("createTypeIndex() is not supported in remote database. Use SQL CREATE INDEX instead.");
   }
 
   @Override
   public RecordEvents getEvents() {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getEvents() is not supported in remote database. Record events are an in-process callback API and cannot fire on a remote client.");
   }
 
   @Override
   public Set<String> getPolymorphicPropertiesWithDefaultDefined() {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getPolymorphicPropertiesWithDefaultDefined() is not supported in remote database. Use SQL SELECT FROM schema:types instead.");
   }
 
   @Override
   public DocumentType setSuperTypes(List<DocumentType> newSuperTypes) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("setSuperTypes() is not supported in remote database. Use SQL ALTER TYPE <type> SUPERTYPE instead.");
   }
 
   @Override
@@ -487,12 +487,12 @@ public class RemoteDocumentType implements DocumentType {
 
   @Override
   public List<Bucket> getInvolvedBuckets() {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getInvolvedBuckets() is not supported in remote database. Buckets are an engine-level structure with no remote equivalent. Use SQL SELECT FROM schema:types to list the buckets of a type.");
   }
 
   @Override
   public List<Integer> getBucketIds(boolean polymorphic) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getBucketIds() is not supported in remote database. Buckets are an engine-level structure with no remote equivalent. Use SQL SELECT FROM schema:types to list the buckets of a type.");
   }
 
   @Override
@@ -503,52 +503,52 @@ public class RemoteDocumentType implements DocumentType {
 
   @Override
   public DocumentType removeBucket(Bucket bucket) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("removeBucket() is not supported in remote database. Use SQL ALTER TYPE <type> BUCKET instead.");
   }
 
   @Override
   public Bucket getBucketIdByRecord(Document record, boolean async) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getBucketIdByRecord() is not supported in remote database. Bucket selection happens on the server and has no remote equivalent.");
   }
 
   @Override
   public int getBucketIndexByKeys(List<String> propertyNames, Object[] keys, boolean async) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getBucketIndexByKeys() is not supported in remote database. Bucket selection happens on the server and has no remote equivalent.");
   }
 
   @Override
   public BucketSelectionStrategy getBucketSelectionStrategy() {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getBucketSelectionStrategy() is not supported in remote database. Use SQL SELECT FROM schema:types instead.");
   }
 
   @Override
   public DocumentType setBucketSelectionStrategy(BucketSelectionStrategy selectionStrategy) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("setBucketSelectionStrategy() is not supported in remote database. Use SQL ALTER TYPE <type> BUCKETSELECTIONSTRATEGY instead.");
   }
 
   @Override
   public DocumentType setBucketSelectionStrategy(String selectionStrategyName, Object... args) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("setBucketSelectionStrategy() is not supported in remote database. Use SQL ALTER TYPE <type> BUCKETSELECTIONSTRATEGY instead.");
   }
 
   @Override
   public Collection<TypeIndex> getAllIndexes(boolean polymorphic) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getAllIndexes() is not supported in remote database. Use SQL SELECT FROM schema:indexes instead.");
   }
 
   @Override
   public List<IndexInternal> getPolymorphicBucketIndexByBucketId(int bucketId, List<String> filterByProperties) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getPolymorphicBucketIndexByBucketId() is not supported in remote database. Bucket sub-indexes are an engine-level structure with no remote equivalent. Use SQL SELECT FROM schema:indexes instead.");
   }
 
   @Override
   public List<TypeIndex> getIndexesByProperties(String property1, String... propertiesN) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getIndexesByProperties() is not supported in remote database. Use SQL SELECT FROM schema:indexes instead.");
   }
 
   @Override
   public int getFirstBucketId() {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getFirstBucketId() is not supported in remote database. Bucket ids are an engine-level structure with no remote equivalent.");
   }
 
   @Override
@@ -569,6 +569,6 @@ public class RemoteDocumentType implements DocumentType {
 
   @Override
   public JSONObject toJSON() {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("toJSON() is not supported in remote database. Use SQL SELECT FROM schema:types instead.");
   }
 }

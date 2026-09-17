@@ -45,6 +45,11 @@ public class DatabaseAsyncIndexCompaction implements DatabaseAsyncTask {
           hook.accept(1);
 
         database.commit();
+        // #6470/#7673: a real, durable commit of the worker's shared batch, so the executor-wide durability
+        // signal fires here for the same reason commitBatch() and
+        // closeTransactionBoundaryIfDurabilityPolicyChanged() fire it - a listener counting durable batches
+        // must not silently miss the ones an out-of-band commit site published.
+        async.onOk();
         // #7615: those commands are durably committed now - drop the stale references so a LATER periodic
         // boundary commit that fails and retries by replay (commitBatch()) cannot replay them a second
         // time (this task runs with requiresActiveTx() == false, so it can land mid-batch on a worker that

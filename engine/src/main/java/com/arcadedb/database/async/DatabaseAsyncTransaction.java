@@ -88,6 +88,10 @@ public class DatabaseAsyncTransaction implements DatabaseAsyncTask {
     if (database.isTransactionActive()) {
       try {
         database.commit();
+        // #6470/#7673: the flush above is a real, durable commit of the worker's shared batch (not of THIS
+        // task's own transaction, which reports through onOkCallback below), so the executor-wide durability
+        // signal fires here too, exactly as at the periodic boundary (commitBatch()).
+        async.onOk();
         // #7615: those commands are durably committed now - drop the stale references so a LATER periodic
         // boundary commit that fails and retries by replay (commitBatch()) cannot replay them a second time.
         async.clearPendingBatchCommands();

@@ -43,67 +43,67 @@ public class RemoteProperty extends AbstractProperty {
 
   @Override
   public Property setDefaultValue(Object defaultValue) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("setDefaultValue() is not supported in remote database. Use SQL ALTER PROPERTY <type>.<property> DEFAULT instead.");
   }
 
   @Override
   public Property rename(String newName) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("rename() is not supported in remote database. Use SQL ALTER PROPERTY <type>.<property> NAME instead.");
   }
 
   @Override
   public Property setOfType(String ofType) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("setOfType() is not supported in remote database. ALTER PROPERTY has no OF TYPE setting: drop the property and declare it again with SQL CREATE PROPERTY.");
   }
 
   @Override
   public Property setReadonly(boolean readonly) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("setReadonly() is not supported in remote database. Use SQL ALTER PROPERTY <type>.<property> READONLY instead.");
   }
 
   @Override
   public Property setMandatory(boolean mandatory) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("setMandatory() is not supported in remote database. Use SQL ALTER PROPERTY <type>.<property> MANDATORY instead.");
   }
 
   @Override
   public Property setNotNull(boolean notNull) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("setNotNull() is not supported in remote database. Use SQL ALTER PROPERTY <type>.<property> NOTNULL instead.");
   }
 
   @Override
   public Property setHidden(boolean hidden) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("setHidden() is not supported in remote database. Use SQL ALTER PROPERTY <type>.<property> HIDDEN instead.");
   }
 
   @Override
   public Property setExternal(boolean external) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("setExternal() is not supported in remote database. Use SQL ALTER PROPERTY <type>.<property> EXTERNAL instead.");
   }
 
   @Override
   public Property setCompression(String compression) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("setCompression() is not supported in remote database. Use SQL ALTER PROPERTY <type>.<property> COMPRESSION instead.");
   }
 
   @Override
   public Property setMax(String max) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("setMax() is not supported in remote database. Use SQL ALTER PROPERTY <type>.<property> MAX instead.");
   }
 
   @Override
   public Property setMin(String min) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("setMin() is not supported in remote database. Use SQL ALTER PROPERTY <type>.<property> MIN instead.");
   }
 
   @Override
   public Property setRegexp(String regexp) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("setRegexp() is not supported in remote database. Use SQL ALTER PROPERTY <type>.<property> REGEXP instead.");
   }
 
   @Override
   public Object setCustomValue(String key, Object value) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("setCustomValue() is not supported in remote database. Use SQL ALTER PROPERTY <type>.<property> CUSTOM <key> = <value> instead.");
   }
 
   void reload(final Map<String, Object> entry) {
