@@ -446,15 +446,30 @@ public class ApiTokenConfiguration {
   }
 
   /**
-   * Resolves a plaintext token, evicting it if it has expired.
+   * Resolves a plaintext token, evicting it from memory if it has expired.
    * <p>
    * Deliberately NOT {@code synchronized}: this is the API-token authentication path, reached on every request
    * carrying one, and the writers it would contend with hold their monitor across a file write. The map
    * generation is read ONCE into a local, so the lookup and the eviction cannot straddle a
    * {@link #applyReplicated} swap and remove from a generation the hit did not come from. When they do straddle
-   * one, the eviction lands on a map that is no longer live and {@link #save} writes the newer generation
-   * instead - which is the right outcome: the replicated document wins, and the expired token is refused here
-   * either way.
+   * one, the eviction lands on a map that is no longer live and the newer generation keeps the entry - which is
+   * the right outcome: the replicated document wins, and the expired token is refused here either way.
+   * <p>
+   * <b>The eviction is not persisted</b> (issue #7525). It used to call {@link #save}, which since issue #7513
+   * writes through a temp file that is <i>fsynced</i> before the rename - so an expiry turned a request thread
+   * into an I/O thread, and made it queue behind every other writer on this object's monitor. The amortised
+   * cost is one write per token, at the moment it first expires; the tail is a batch of tokens minted with the
+   * same TTL, all first used again after it, fsyncing on Undertow workers at the same instant.
+   * <p>
+   * Leaving the entry in the file is safe, and is not a revocation that failed to stick:
+   * <ul>
+   *   <li>this method re-reads {@code expiresAt} on every lookup, so an expired entry authenticates nobody
+   *       whether or not it is still in the file;</li>
+   *   <li>{@link #load} drops expired entries and rewrites the file, so the store self-cleans at the next
+   *       restart;</li>
+   *   <li>{@link #createToken}, {@link #deleteToken} and {@link #applyReplicated} each rewrite the whole
+   *       document, so the entry disappears at the next token change in any case.</li>
+   * </ul>
    */
   public JSONObject getToken(final String plaintextToken) {
     final ConcurrentHashMap<String, JSONObject> current = tokens;
@@ -466,7 +481,6 @@ public class ApiTokenConfiguration {
     final long expiresAt = tokenJson.getLong("expiresAt", 0);
     if (expiresAt > 0 && expiresAt < System.currentTimeMillis()) {
       current.remove(hash);
-      save();
       return null;
     }
 
