@@ -94,6 +94,20 @@ class LSMVectorIndexOrdinalMapFileTest {
     assertThat(content.positions()[1]).isZero();
   }
 
+  /**
+   * A negative bucket id is the engine's own marker for an absent or unsaved RID, so one cannot be written as a real
+   * location without becoming indistinguishable from "no RID recorded" on the way back in.
+   */
+  @Test
+  void aRidWithTheSentinelBucketIsRecordedAsNoRidRatherThanAsALocation() {
+    final LSMVectorIndexOrdinalMapFile map = mapFile();
+
+    map.write(new int[] { 5 }, id -> new RID(-1, 99L));
+
+    final LSMVectorIndexOrdinalMapFile.Content content = map.read();
+    assertThat(content.hasRid(0)).as("it must read back as absent, never as a location at bucket -1").isFalse();
+  }
+
   @Test
   void anEmptyMapReadsBackEmptyRatherThanAbsent() {
     final LSMVectorIndexOrdinalMapFile map = mapFile();

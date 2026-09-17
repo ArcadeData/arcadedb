@@ -79,6 +79,11 @@ public class LSMVectorIndexOrdinalMapFile {
    * A bucket id no RID can carry, written in place of one for an ordinal whose vector id had already lost its
    * location when the graph was persisted. Such an ordinal is dead by definition, and the load path requires it to
    * be tombstoned rather than trying to match a RID that was never recorded.
+   * <p>
+   * That "no RID can carry it" is an invariant of the on-disk format, not merely of today's callers: a bucket id is
+   * an index into the database's file table and a saved record's is always non-negative, which is why {@code -1} is
+   * the value the rest of the engine already reserves for an absent or unsaved RID. {@link #write} rejects a RID
+   * that breaks it rather than writing a record indistinguishable from "none recorded" (PR #7844 review).
    */
   private static final int NO_RID_BUCKET = -1;
 
@@ -193,7 +198,10 @@ public class LSMVectorIndexOrdinalMapFile {
           // The one and only resolution of this ordinal's RID: it feeds both the file and the fingerprint.
           final RID rid = ridOfVector.apply(vectorId);
           fingerprint = LSMVectorIndexGraphManifest.fingerprintAccumulate(fingerprint, vectorId, rid);
-          if (rid == null) {
+          if (rid == null || rid.getBucketId() == NO_RID_BUCKET) {
+            // A negative bucket id is the engine's own marker for an absent or unsaved RID, so it cannot be told
+            // apart from "none recorded" once it is on disk. Recording it as absent is the same conclusion the load
+            // path would have to reach anyway, and it keeps the sentinel unambiguous (PR #7844 review).
             chunk.putNumber(NO_RID_BUCKET);
             chunk.putUnsignedNumber(0);
           } else {
@@ -285,14 +293,17 @@ public class LSMVectorIndexOrdinalMapFile {
       // cannot describe this file - and the three arrays below would be allocated from it before the loop ever
       // ran short. That allocation raises an Error, not an Exception, so the catch at the bottom would NOT turn it
       // into the "no usable map, rebuild instead" answer every other unreadable file gets here.
-      final int count = (int) file.getUnsignedNumber();
-      if (count < 0 || count > (payloadLength - file.position()) / 3) {
+      // Read as a long and range-checked BEFORE the narrowing cast: a value above 2^31 would otherwise wrap into an
+      // unrelated small positive count that passes every check below (PR #7844 review).
+      final long claimed = file.getUnsignedNumber();
+      if (claimed < 0 || claimed > (payloadLength - file.position()) / 3) {
         LogManager.instance().log(this, Level.WARNING,
             "Vector graph ordinal map '%s' claims %d entries, which %d remaining bytes cannot hold: ignoring it",
-            path, count, payloadLength - file.position());
+            path, claimed, payloadLength - file.position());
         return null;
       }
 
+      final int count = (int) claimed;
       final int[] vectorIds = new int[count];
       final int[] bucketIds = new int[count];
       final long[] positions = new long[count];

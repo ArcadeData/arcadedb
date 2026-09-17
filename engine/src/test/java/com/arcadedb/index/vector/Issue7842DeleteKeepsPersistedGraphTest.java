@@ -217,6 +217,11 @@ class Issue7842DeleteKeepsPersistedGraphTest {
               .as("the persisted graph must have been reused as a prefix").isEqualTo(1L);
           assertThat(index.getStats().get("graphReusesWithTombstonedNodes"))
               .as("and that reuse must be recorded as one carrying tombstoned nodes").isEqualTo(1L);
+          assertThat(index.getStats().get("mutationsSinceRebuild"))
+              .as("the prefix path must charge the tombstoned node too, not only the %d gap vectors - it reaches "
+                  + "mutationsSinceSerialize through ReuseCandidate rather than inline, so it is a separate route "
+                  + "from the one the no-gap case takes", GAP_VECTORS)
+              .isGreaterThan((long) GAP_VECTORS);
           assertThat(results.stream().map(Pair::getFirst))
               .as("a vector written after the persisted build must be searchable from the first query")
               .contains(gapRid);

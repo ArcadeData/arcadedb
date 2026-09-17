@@ -5641,14 +5641,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /** Visible for tests: the ordinal-to-vector-id map the next search would capture. */
+  int[] getOrdinalToVectorIdForTest() {
+    return ordinalToVectorId;
+  }
+
   /** Visible for tests: where this index's persisted graph lives, for a test that has to tamper with its sidecars. */
   Path getGraphFilePathForTest() {
     final LSMVectorIndexGraphFile gf = graphFile;
     return gf != null ? gf.getOSFile().toPath() : null;
-  }
-
-  int[] getOrdinalToVectorIdForTest() {
-    return ordinalToVectorId;
   }
 
   /**
