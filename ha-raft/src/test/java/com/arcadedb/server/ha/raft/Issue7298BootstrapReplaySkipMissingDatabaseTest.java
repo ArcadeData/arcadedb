@@ -25,9 +25,13 @@ import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
@@ -129,6 +133,73 @@ class Issue7298BootstrapReplaySkipMissingDatabaseTest {
     verify(server, never()).getBackupCoordinator();
     // The baseline is recorded before the skip either way, as it always was.
     assertThat(sm.getBootstrapBaseline(DB_NAME)).isNotNull();
+  }
+
+  /**
+   * The failed reinstall must not be a log line and nothing else. {@code applyTransaction} persists this
+   * database's applied index whatever happens in this method, so the entry reads as applied while the database is
+   * absent, and the replay that would retry it is not guaranteed to survive the next Ratis snapshot. The mark is
+   * what outlives that: it is persisted with the baselines, published by {@code ClusterAlerts}, and re-verified
+   * on the health tick.
+   * <p>
+   * Awaited rather than asserted outright: the mark is written by the one-shot retry, which runs on the
+   * lifecycleExecutor so that a failing install never blocks the Raft apply thread.
+   */
+  @Test
+  void aFailedReinstallIsRecordedDurablyRatherThanOnlyLogged() throws Exception {
+    final ArcadeDBServer server = mockServerWithDatabaseRegistered(false);
+    final ArcadeStateMachine sm = stateMachineOn(server);
+    sm.writePersistedAppliedIndex(ENTRY_INDEX, DB_NAME);
+
+    sm.applyBootstrapFingerprintEntry(bootstrapEntry(), ENTRY_INDEX);
+
+    await().atMost(Duration.ofSeconds(30))
+        .untilAsserted(() -> assertThat(sm.getBootstrapUnreconciledDatabases())
+            .as("a database this node had, lost, and could not pull back must be visible in the cluster status")
+            .contains(DB_NAME));
+  }
+
+  /**
+   * The bounded retry: the periodic bootstrap-divergence check reinstalls a marked database whose files are gone.
+   * Its absent-database arm used to {@code continue} unconditionally, which was right for the #6124 case it was
+   * written for - a database that is merely CLOSED still has files worth protecting - and wrong for this one,
+   * where there is nothing local to protect and nothing else retries.
+   * <p>
+   * The mark is set directly rather than by replaying an entry: this test is about what the periodic check does
+   * with a marked-and-missing database, and going through the apply path would race its asynchronous retry
+   * against the synchronous one being measured.
+   */
+  @Test
+  void thePeriodicCheckRetriesTheInstallWhenTheDirectoryIsGone() {
+    final ArcadeDBServer server = mockServerWithDatabaseRegistered(false);
+    final ArcadeStateMachine sm = stateMachineOn(server);
+    sm.markBootstrapUnreconciled(DB_NAME);
+
+    sm.reconcileBootstrapDivergence(Map.of(DB_NAME, new ArcadeStateMachine.BootstrapBaseline("0".repeat(64), 7L)));
+
+    verify(server, atLeastOnce()).getBackupCoordinator();
+    assertThat(sm.getBootstrapUnreconciledDatabases())
+        .as("the install failed again, so the mark stays for the next tick")
+        .contains(DB_NAME);
+  }
+
+  /**
+   * The other half of that rule: a marked database whose DIRECTORY is still on disk is only closed, and the check
+   * must leave it exactly as it was rather than reinstall over an operator's copy.
+   */
+  @Test
+  void thePeriodicCheckLeavesAClosedButPresentDatabaseAlone() throws Exception {
+    final ArcadeDBServer server = mockServerWithDatabaseRegistered(false);
+    final ArcadeStateMachine sm = stateMachineOn(server);
+    sm.markBootstrapUnreconciled(DB_NAME);
+    Files.createDirectories(serverDir.resolve(DB_NAME));
+
+    sm.reconcileBootstrapDivergence(Map.of(DB_NAME, new ArcadeStateMachine.BootstrapBaseline("0".repeat(64), 7L)));
+
+    verify(server, never()).getBackupCoordinator();
+    assertThat(sm.getBootstrapUnreconciledDatabases())
+        .as("a closed database keeps its mark: absence from the registry is not evidence of convergence")
+        .contains(DB_NAME);
   }
 
   /**
