@@ -637,6 +637,8 @@ public class HashIndex implements IndexInternal {
     json.put("properties", getPropertyNames());
     json.put("nullStrategy", getNullStrategy());
     json.put("unique", isUnique());
+    if (metadata.hasAnyCaseInsensitive())
+      json.put("collations", metadata.collations);
     return json;
   }
 

@@ -106,6 +106,34 @@ class Issue7766HashIndexCollateCiTest {
   }
 
   @Test
+  void uniqueHashCiIndexSurvivesACloseAndReopen() {
+    // HashIndex.toJSON() must persist "collations" the same way LSMTreeIndex.toJSON() does, otherwise the CI flag
+    // read back by setMetadata(JSONObject) on reload is empty and folding silently stops after a restart.
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Product");
+      database.command("sql", "CREATE PROPERTY Product.name STRING");
+      database.command("sql", "CREATE INDEX ON Product (name COLLATE CI) UNIQUE_HASH");
+      database.command("sql", "INSERT INTO Product SET name = 'Hello'");
+    });
+
+    database.close();
+    database = new DatabaseFactory(DB_PATH).open();
+
+    assertThat(catchThrowable(() -> database.transaction(() -> database.command("sql", "INSERT INTO Product SET name = 'HELLO'"))))
+        .as("the CI collation must still be enforced after the index metadata is reloaded from disk")
+        .isInstanceOf(DuplicatedKeyException.class);
+
+    database.transaction(() -> {
+      final List<String> indexed = new ArrayList<>();
+      try (final ResultSet rs = database.query("sql", "SELECT name FROM Product WHERE name.toLowerCase() = 'hello'")) {
+        while (rs.hasNext())
+          indexed.add(rs.next().getProperty("name"));
+      }
+      assertThat(indexed).containsExactly("Hello");
+    });
+  }
+
+  @Test
   void plainHashUniqueIndexWithNoCollationStillEnforcesExactCaseUniqueness() {
     // Control: without COLLATE CI, a HASH UNIQUE index behaves exactly as before - same spelling twice is refused,
     // different case is a different key and is accepted.
