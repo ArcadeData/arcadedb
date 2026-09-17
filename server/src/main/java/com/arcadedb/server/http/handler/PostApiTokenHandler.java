@@ -88,20 +88,6 @@ public class PostApiTokenHandler extends AbstractServerHttpHandler {
   }
 
   /**
-   * Whether a response body written back on this connection stays out of reach of anything on the path.
-   * Either the transport is encrypted, or the peer is on the loopback interface, where the bytes never
-   * reach a network - the same pair of conditions {@code GrpcTransportSecurityInterceptor} applies.
-   * <p>
-   * Read from the live connection, never from {@code X-Forwarded-Proto}: that header is written by the
-   * client and a caller asking for a token is exactly the caller who could set it. A TLS-terminating
-   * proxy that forwards from a non-loopback address therefore reads as unprotected here; an operator
-   * fronting a cleartext listener has moved the trust boundary to the proxy and states that by leaving
-   * {@link GlobalConfiguration#SERVER_API_TOKEN_REQUIRE_SECURE_TRANSPORT} off.
-   * <p>
-   * Fails closed on an address it cannot read as a resolved IP socket: answering "safe" for an address
-   * whose shape is unknown is the wrong direction to guess in.
-   */
-  /**
    * Decides what to do about the connection this mint arrived on: {@code null} to let it proceed, or the
    * refusal to answer with. Kept whole and static because the case that matters - a cleartext request from
    * a peer that is not on this machine - cannot be produced by a test that talks to 127.0.0.1, and a branch
@@ -130,6 +116,20 @@ public class PostApiTokenHandler extends AbstractServerHttpHandler {
     return null;
   }
 
+  /**
+   * Whether a response body written back on this connection stays out of reach of anything on the path.
+   * Either the transport is encrypted, or the peer is on the loopback interface, where the bytes never
+   * reach a network - the same pair of conditions {@code GrpcTransportSecurityInterceptor} applies.
+   * <p>
+   * Read from the live connection, never from {@code X-Forwarded-Proto}: that header is written by the
+   * client and a caller asking for a token is exactly the caller who could set it. A TLS-terminating
+   * proxy that forwards from a non-loopback address therefore reads as unprotected here; an operator
+   * fronting a cleartext listener has moved the trust boundary to the proxy and states that by leaving
+   * {@link GlobalConfiguration#SERVER_API_TOKEN_REQUIRE_SECURE_TRANSPORT} off.
+   * <p>
+   * Fails closed on an address it cannot read as a resolved IP socket: answering "safe" for an address
+   * whose shape is unknown is the wrong direction to guess in.
+   */
   static boolean isTransportSafeForSecrets(final String scheme, final InetSocketAddress peer) {
     if ("https".equalsIgnoreCase(scheme))
       return true;
