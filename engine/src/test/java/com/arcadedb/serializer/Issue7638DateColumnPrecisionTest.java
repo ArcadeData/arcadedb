@@ -249,7 +249,7 @@ class Issue7638DateColumnPrecisionTest extends TestHelper {
    * <p>
    * THE INSTANT IS DELIBERATELY NOT MIDNIGHT. At exactly midnight the division has no remainder and truncation
    * and flooring agree, so a test written on {@code toEpochDay() * MS_IN_A_DAY} passes with or without the fix -
-   * this test was written that way at first and proved nothing (caught reviewing PR #7750). Noon is the case that
+   * this test was written that way at first and proved nothing (caught in review). Noon is the case that
    * separates them: 1969-12-31T12:00Z is day -1 floored and day 0 truncated.
    */
   @Test
@@ -276,7 +276,7 @@ class Issue7638DateColumnPrecisionTest extends TestHelper {
    * The same truncation, on the DEFAULT configuration rather than the {@code java.util.Date} one - so this is not
    * a corner of an opt-in setting. {@code Type.getJavaImplementation} answers {@code LocalDate} for a DATE column
    * by default, so {@code document.set("d", someJavaUtilDate)} coerces through {@code Type.convert}, which did the
-   * identical truncating division. Found reviewing PR #7750, next to the instance this issue had already fixed.
+   * identical truncating division. Found in review, next to the instance this issue had already fixed.
    */
   @Test
   void aPreEpochJavaUtilDateOnADefaultDateColumnKeepsItsDay() {
@@ -376,7 +376,7 @@ class Issue7638DateColumnPrecisionTest extends TestHelper {
   }
 
   /**
-   * Found by CodeRabbit's review of PR #7750. {@code SELECT *, n + 1 AS d} keeps the backing element AND publishes
+   * Found by CodeRabbit's review. {@code SELECT *, n + 1 AS d} keeps the backing element AND publishes
    * a COMPUTED value under a name the element also has, so a type lookup that consulted the element first answered
    * with column {@code d}'s declared DATE for a value that is an integer - and would have applied DATE formatting
    * to any temporal the expression happened to produce. The projection is now asked first and says "mine, and no

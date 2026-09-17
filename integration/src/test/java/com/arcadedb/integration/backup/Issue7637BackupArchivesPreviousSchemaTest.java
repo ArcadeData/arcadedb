@@ -156,7 +156,7 @@ class Issue7637BackupArchivesPreviousSchemaTest {
   /**
    * The archive carries the generation that was current when the backup ran, and a later DDL does not retro-fit it.
    * <p>
-   * WHAT THIS DOES AND DOES NOT PIN, said plainly, because the difference was pointed out in review of PR #7750
+   * WHAT THIS DOES AND DOES NOT PIN, said plainly, because the difference was pointed out in review
    * and the method name used to overstate it. {@code backupDatabase()} returns only once the archive is written,
    * so both DDLs below land AFTER the whole backup - which means this test cannot distinguish "captured at t0"
    * from "read at some later point during the backup". It pins the end-to-end property that matters to an

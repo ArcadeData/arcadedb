@@ -221,7 +221,7 @@ public class ResultInternal implements Result {
    * itself applies, and for the same reason. {@code SELECT *, n + 1 AS d} keeps the backing element AND publishes
    * a computed value under {@code d} in {@code content}, so the value this row answers for {@code d} is the
    * computed one; answering with backing column {@code d}'s declared type would describe a value this row does not
-   * have. Asking the element first did exactly that (found reviewing PR #7750).
+   * have. Asking the element first did exactly that (found in review).
    * <p>
    * A KEY PRESENT WITH A NULL VALUE is how the projection says "this alias is mine and it has no source column",
    * which stops the lookup rather than letting it fall through to the element - a different answer from an ABSENT

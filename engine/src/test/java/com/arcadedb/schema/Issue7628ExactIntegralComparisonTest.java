@@ -169,7 +169,7 @@ class Issue7628ExactIntegralComparisonTest {
   }
 
   /**
-   * Found by the review of PR #7750, same family as #5900/#5947 and in the very switches this issue extends: the
+   * Found by the review, same family as #5900/#5947 and in the very switches this issue extends: the
    * three sub-millisecond timestamp types were missing from the widening lists that already carried {@code DATE}
    * and {@code DATETIME}, so an {@code INT}/{@code LONG}/{@code FLOAT}/{@code DOUBLE} against one of them fell
    * through to {@code default: return -1}. That is not merely imprecise, it is a hard antisymmetry violation:
@@ -222,7 +222,7 @@ class Issue7628ExactIntegralComparisonTest {
   }
 
   /**
-   * Found by CodeRabbit's review of PR #7750. A temporal column is STORED as a long but MATERIALISED through the
+   * Found by CodeRabbit's review. A temporal column is STORED as a long but MATERIALISED through the
    * configured {@code dateTimeImplementation}/{@code dateImplementation}, so a value reaching this comparator can
    * be a {@code LocalDateTime} or a {@code Date} rather than a {@code Number}. Casting it straight to
    * {@code Number} threw {@code ClassCastException} - pre-existing for DATE and DATETIME, and newly reachable for
@@ -236,7 +236,7 @@ class Issue7628ExactIntegralComparisonTest {
     laterCalendar.setTime(laterDate);
     // Every representation arcadedb.dateTimeImplementation/dateImplementation accepts, not just the two the first
     // version of this test happened to use - each is a configuration a deployment can actually be running, and
-    // this entry point is the one that used to throw for all of them (raised reviewing PR #7750).
+    // this entry point is the one that used to throw for all of them (raised in review).
     final Object[] representations = { LocalDateTime.of(2026, 6, 12, 15, 30), laterDate, laterCalendar,
         laterDate.toInstant(), laterDate.toInstant().atZone(ZoneOffset.UTC) };
 

@@ -667,7 +667,7 @@ public enum Type {
         else if (value instanceof Date date)
           // floorDiv, not '/': see DateUtils.dateToEpochDays. This is the DEFAULT coercion for a DATE column
           // (getJavaImplementation answers LocalDate), so a pre-epoch java.util.Date assigned to an ordinary DATE
-          // property used to round to the following day (#7638, found reviewing PR #7750).
+          // property used to round to the following day (#7638, found in review).
           return DateUtils.date(database, Math.floorDiv(date.getTime(), DateUtils.MS_IN_A_DAY), LocalDate.class);
         else if (value instanceof Calendar calendar)
           return DateUtils.date(database, Math.floorDiv(calendar.getTimeInMillis(), DateUtils.MS_IN_A_DAY),
@@ -1379,7 +1379,7 @@ public enum Type {
    * the value out of a record. A caller holding a primitive {@code float}/{@code double}, as two of the
    * {@link #castComparableNumber} branches below do, calls {@code Float.isFinite}/{@code Double.isFinite} directly
    * instead: routing those through here would box the operand on a comparison path that is otherwise
-   * allocation-free. The apparent inconsistency is that trade, not an oversight (raised reviewing PR #7750).
+   * allocation-free. The apparent inconsistency is that trade, not an oversight (raised in review).
    *
    * @param value the operand
    *

@@ -64,7 +64,7 @@ public class Projection extends SimpleNode {
    * happened to produce. A null VALUE says "this alias is this projection's, and it has no source column", which
    * a missing KEY - "this projection never mentioned it" - does not; the two are told apart by
    * {@code containsKey}, which is why a null value is stored rather than the entry being skipped (found reviewing
-   * PR #7750).
+   * review).
    * <p>
    * Computed once and never mutated afterwards, alongside {@link #excludes} and for the same reason: a
    * {@link Projection} is cached per statement and shared by every row and every thread executing it, so this must
@@ -205,7 +205,7 @@ public class Projection extends SimpleNode {
    * {@code HashSet} to the field and only then filled it, so a second thread could read a non-null, INCOMPLETE
    * set and fail to exclude a property that {@code SELECT *, !secret} had excluded. Building into a local fixes
    * the ordering, and {@code volatile} fixes the JMM half of it - without it a reader can see the reference
-   * before the collection's own internal state. Found reviewing PR #7750; {@code sourceColumns} was written this
+   * before the collection's own internal state. Found in review; {@code sourceColumns} was written this
    * way from the start, and {@code excludes} now matches it.
    */
   private void initExcludes() {
