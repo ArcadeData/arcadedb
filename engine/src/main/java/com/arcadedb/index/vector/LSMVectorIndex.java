@@ -2027,11 +2027,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * @return the decision, or {@code null} when this path cannot make one and the caller should rebuild
    */
   private PersistedGraphCheck reusePersistedGraphDespiteDeletions(final LSMVectorIndexGraphFile gf) {
-    if (metadata.quantizationType == VectorQuantizationType.PRODUCT)
+    if (metadata.quantizationType == VectorQuantizationType.PRODUCT) {
       // PQ codes are addressed by the same ordinal and are produced, wholesale, by the rebuild this path avoids.
       // Reusing a graph whose ordinal space has holes would pair it with a codebook built over a dense one, so
       // PRODUCT keeps the rebuild until the PQ format learns to carry holes of its own.
+      //
+      // Logged here rather than left to the caller's fallback line, which would say "no usable ordinal map is
+      // recorded" - true but beside the point for an index that would refuse one however good it was, and
+      // misleading to whoever is reading these logs to find out why a PQ index keeps rebuilding (PR #7844 review).
+      LogManager.instance().log(this, Level.INFO,
+          "Deleted vectors detected in index %s, which uses PRODUCT quantization: its PQ codes are addressed by the "
+              + "same ordinals the rebuild reassigns, so the graph is rebuilt from scratch rather than reused "
+              + "(issue #7842)", indexName);
       return null;
+    }
 
     final LSMVectorIndexGraphManifest.Content manifest = gf.getManifest().read();
     if (manifest == null || manifest.vectorCount() <= 0)
@@ -2111,10 +2120,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (extended == null)
         return null;
 
+      // The merge's own count, not the estimate that sized it: gap was read off locations.size() before the walk,
+      // so a write landing in between makes the two differ, and the one that describes what was actually queued is
+      // the one worth logging (PR #7844 review).
       LogManager.instance().log(this, Level.INFO,
           "Reusing the persisted graph of index %s as a prefix although %d of its %d nodes are now tombstoned: %d "
               + "live vectors are not in it yet (issues #6655, #7842)",
-          indexName, deadOrdinals, mapVectorIds.length, gap);
+          indexName, deadOrdinals, mapVectorIds.length, extended.length - mapVectorIds.length);
       return new PersistedGraphCheck(false,
           new ReuseCandidate(loadedGraph, extended, mapVectorIds.length, vectorProp, manifest.unreachableOrdinals(),
               deadOrdinals));
