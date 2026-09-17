@@ -55,7 +55,11 @@ public class DeleteApiTokenHandler extends AbstractServerHttpHandler {
     try {
       controlPlane.deleteApiToken(getQueryParameter(exchange, "token"));
     } catch (final ServerControlPlane.NotFoundException e) {
-      return new ExecutionResponse(404, new JSONObject().put("result", "Token not found").toString());
+      // 'error', not 'result': RemoteHttpComponent.manageException promotes 'error'/'detail'/'exception'
+      // into the thrown exception's message and nothing else, so a refusal filed under 'result' reached a
+      // Java caller as a bare "HTTP Error (httpErrorCode=404 ...)" with the sentence the server had
+      // written stripped out. Every sibling handler on these routes already answers 'error' (issue #7372).
+      return new ExecutionResponse(404, new JSONObject().put("error", "Token not found").toString());
     } catch (final IllegalArgumentException e) {
       return new ExecutionResponse(400, new JSONObject().put("error", e.getMessage()).toString());
     }

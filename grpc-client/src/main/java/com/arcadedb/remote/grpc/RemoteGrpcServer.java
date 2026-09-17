@@ -19,6 +19,7 @@
 package com.arcadedb.remote.grpc;
 
 import com.arcadedb.log.LogManager;
+import com.arcadedb.network.HostUtil;
 import com.arcadedb.remote.RemoteException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.grpc.AlignDatabaseRequest;
@@ -97,8 +98,6 @@ import io.grpc.stub.AbstractStub;
 import io.grpc.stub.BlockingClientCall;
 
 import javax.annotation.PreDestroy;
-import java.net.InetAddress;
-import java.net.UnknownHostException;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -199,7 +198,7 @@ public class RemoteGrpcServer implements AutoCloseable {
 
     this.plaintext = plaintext;
     this.allowInsecureCredentials = allowInsecureCredentials;
-    this.refuseCredentialsOverChannel = plaintext && !allowInsecureCredentials && !isLoopbackHost(this.host);
+    this.refuseCredentialsOverChannel = plaintext && !allowInsecureCredentials && !HostUtil.isLoopbackHost(this.host);
     this.interceptors = interceptors == null ? List.of() : List.copyOf(interceptors);
 
     this.userName = Objects.requireNonNull(user, "user");
@@ -1024,19 +1023,6 @@ public class RemoteGrpcServer implements AutoCloseable {
           + host + "'. Enable TLS, or explicitly opt in with allowInsecureCredentials=true.");
   }
 
-  private static boolean isLoopbackHost(final String host) {
-    if (host == null || host.isBlank())
-      return false;
-    final String h = host.trim();
-    if (h.equalsIgnoreCase("localhost"))
-      return true;
-    try {
-      return InetAddress.getByName(h).isLoopbackAddress();
-    } catch (final UnknownHostException e) {
-      // Unresolvable host: treat as non-loopback and fail closed.
-      return false;
-    }
-  }
 
   /**
    * Creates call credentials for authentication, naming no database. Used by the admin plane, whose

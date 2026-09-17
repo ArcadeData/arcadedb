@@ -259,6 +259,24 @@ class Issue7372RemoteServerSecurityControlPlaneIT extends BaseGraphServerTest {
   }
 
   /**
+   * A hash no token has is the server's 404, and the sentence it wrote - "Token not found" - reaches the
+   * caller rather than being replaced by a bare status line. That only holds because the route files the
+   * refusal under {@code error}: {@code RemoteHttpComponent.manageException} promotes {@code error},
+   * {@code detail} and {@code exception} into the message and drops everything else.
+   */
+  @Test
+  void deleteApiTokenOnAnUnknownHashSaysSo() {
+    final RemoteServer server = server();
+    try {
+      assertThatThrownBy(() -> server.deleteApiToken("0".repeat(64)))
+          .isInstanceOf(RuntimeException.class)
+          .hasMessageContaining("Token not found");
+    } finally {
+      server.close();
+    }
+  }
+
+  /**
    * With {@code arcadedb.server.apiTokenRequireSecureTransport} on, a mint from a loopback client still
    * succeeds: the bytes never reach a network, which is one of the two conditions the gate accepts. The
    * other - HTTPS - and the refusal itself are asserted in

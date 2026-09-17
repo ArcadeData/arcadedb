@@ -18,10 +18,8 @@
  */
 package com.arcadedb.remote;
 
-import java.net.InetAddress;
 import java.net.URI;
 import java.net.URLEncoder;
-import java.net.UnknownHostException;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
@@ -33,6 +31,7 @@ import java.util.Objects;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.network.HostUtil;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
@@ -349,43 +348,13 @@ public class RemoteServer extends RemoteHttpComponent {
       return;
 
     final URI uri = URI.create(url);
-    if ("https".equalsIgnoreCase(uri.getScheme()) || isLoopbackHost(uri.getHost()))
+    if ("https".equalsIgnoreCase(uri.getScheme()) || HostUtil.isLoopbackHost(uri.getHost()))
       return;
 
     throw new SecurityException(
         "Refusing to request an API token over a cleartext connection to non-loopback host '" + uri.getHost()
             + "': the token would be readable on the wire. Use https://, connect over loopback, or opt in explicitly "
             + "with setAllowInsecureApiTokenTransport(true)");
-  }
-
-  /**
-   * Whether {@code host} names this machine's loopback interface. Fails closed on a name that does not
-   * resolve: an unresolvable host is not a host known to be local.
-   * <p>
-   * <b>It answers for the resolution it performs, not for the one the socket will use.</b> A name is
-   * resolved here and resolved again, independently, by the JDK {@code HttpClient} when it dials - so a
-   * host name whose DNS answer an attacker can influence (rebinding, split horizon, a one-second TTL)
-   * could read as loopback here and carry the token somewhere else in the clear. Pinning the resolved
-   * address into the URL would close it and break TLS SNI and virtual hosting in exchange, which is a bad
-   * trade for a guard that is already the second of two. Configure the client with a literal address or
-   * with {@code localhost} and the gap does not arise; where it might, the transport that actually
-   * protects the token is TLS, and the server-side gate
-   * ({@code arcadedb.server.apiTokenRequireSecureTransport}) is the check that reads the live connection
-   * rather than a name.
-   */
-  static boolean isLoopbackHost(final String host) {
-    if (host == null || host.isBlank())
-      return false;
-
-    final String trimmed = host.trim();
-    if (trimmed.equalsIgnoreCase("localhost"))
-      return true;
-
-    try {
-      return InetAddress.getByName(trimmed).isLoopbackAddress();
-    } catch (final UnknownHostException e) {
-      return false;
-    }
   }
 
   /**

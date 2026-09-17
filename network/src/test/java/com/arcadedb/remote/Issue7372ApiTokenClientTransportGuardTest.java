@@ -19,6 +19,7 @@
 package com.arcadedb.remote;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.network.HostUtil;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -120,12 +121,17 @@ class Issue7372ApiTokenClientTransportGuardTest {
         .doesNotThrowAnyException();
   }
 
+  /**
+   * The loopback test the guard leans on lives in {@link HostUtil}, shared with {@code RemoteGrpcServer},
+   * which asks the same question before attaching call credentials to a plaintext channel. Asserted from
+   * here because this is the guard that consumes it.
+   */
   @Test
   void loopbackIsRecognisedUnderEverySpelling() {
-    assertThat(RemoteServer.isLoopbackHost("localhost")).isTrue();
-    assertThat(RemoteServer.isLoopbackHost("LOCALHOST")).isTrue();
-    assertThat(RemoteServer.isLoopbackHost("127.0.0.1")).isTrue();
-    assertThat(RemoteServer.isLoopbackHost("127.1.2.3")).isTrue();
+    assertThat(HostUtil.isLoopbackHost("localhost")).isTrue();
+    assertThat(HostUtil.isLoopbackHost("LOCALHOST")).isTrue();
+    assertThat(HostUtil.isLoopbackHost("127.0.0.1")).isTrue();
+    assertThat(HostUtil.isLoopbackHost("127.1.2.3")).isTrue();
   }
 
   /**
@@ -134,11 +140,11 @@ class Issue7372ApiTokenClientTransportGuardTest {
    */
   @Test
   void anythingNotKnownToBeLoopbackIsRefused() {
-    assertThat(RemoteServer.isLoopbackHost(null)).isFalse();
-    assertThat(RemoteServer.isLoopbackHost("")).isFalse();
-    assertThat(RemoteServer.isLoopbackHost("   ")).isFalse();
-    assertThat(RemoteServer.isLoopbackHost("198.51.100.7")).isFalse();
-    assertThat(RemoteServer.isLoopbackHost(UNRESOLVABLE_HOST)).isFalse();
+    assertThat(HostUtil.isLoopbackHost(null)).isFalse();
+    assertThat(HostUtil.isLoopbackHost("")).isFalse();
+    assertThat(HostUtil.isLoopbackHost("   ")).isFalse();
+    assertThat(HostUtil.isLoopbackHost("198.51.100.7")).isFalse();
+    assertThat(HostUtil.isLoopbackHost(UNRESOLVABLE_HOST)).isFalse();
   }
 
   /**
