@@ -22,6 +22,7 @@ import com.arcadedb.Constants;
 import com.arcadedb.database.Database;
 import com.arcadedb.engine.OperationProgress;
 import com.arcadedb.exception.DatabaseOperationInProgressException;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
@@ -932,7 +933,16 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
     respond(resp, "connectCluster", () -> {
       requireServerAdmin(authenticate(req.getCredentials()));
 
-      controlPlane.connectCluster(req.getServerAddress());
+      final ServerControlPlane.ConnectClusterResult result = controlPlane.connectCluster(req.getServerAddress());
+      // The join succeeded and part of the follow-up did not: UNAVAILABLE, which is this transport's 503 and
+      // the status the HTTP add-peer route has answered the identical condition since issue #7521 (issue
+      // #7532, absorbing #7550). Before this the RPC answered OK and the failure existed only as a SEVERE log
+      // line, so an operator joining a peer over gRPC had nothing to branch on while one joining it over
+      // POST /api/v1/cluster/peer got a hard failure. Re-issuing the RPC is idempotent on the membership
+      // change and reissues the seed, which is what makes UNAVAILABLE the honest status rather than a
+      // decorative one.
+      if (result.hasFailedSeeds())
+        throw Status.UNAVAILABLE.withDescription(result.errorMessage() + " " + result.detailMessage()).asException();
       return ConnectClusterResponse.newBuilder().build();
     });
   }
@@ -1127,6 +1137,15 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
     // could not be deleted), which is INTERNAL, not a precondition the caller can satisfy.
     if (e instanceof ServerControlPlane.OperationNotAvailableException)
       return Status.FAILED_PRECONDITION.withDescription(e.getMessage()).asException();
+    // A transient failure the caller fixes by sending the same request again - most concretely
+    // QuorumNotReachedException out of any admin operation that has to commit a Raft entry. The HTTP control
+    // plane answers every NeedRetryException 503 (AbstractServerHttpHandler), and UNAVAILABLE is the status
+    // that says the same thing here; without this arm it reached the catch-all below and came out INTERNAL,
+    // which tells a client the server broke rather than to retry (issue #7532, absorbing #7550). LAST of the
+    // named arms because it is a supertype: ServerIsNotTheLeaderException extends it and is answered further
+    // up with the redirect trailers it needs.
+    if (e instanceof NeedRetryException)
+      return Status.UNAVAILABLE.withDescription(e.getMessage()).asException();
     // THE CATCH-ALL: AN UNEXPECTED FAULT, WHOSE MESSAGE IS FREE-FORM ENGINE TEXT AND CAN CARRY FILE PATHS, SCHEMA
     // NAMES AND INTERNALS. THAT IS PRECISELY WHAT PRODUCTION MODE CONCEALS IN THE HTTP BODY'S 'detail' FIELD, AND
     // THIS SURFACE USED TO EMIT IT WHATEVER THE MODE SAID (ISSUE #7472). THE ARMS ABOVE ARE NOT CONCEALED: EACH IS
