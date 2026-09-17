@@ -37,7 +37,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * {@code split()} finds its delimiter as a literal. Its pieces must be the ones a quoted regex split with no limit
- * gives - the definition it had - for delimiters that are regex syntax, overlap themselves, or sit at either end.
+ * gives - the definition it had - for delimiters that are regex syntax, overlap themselves, sit at either end, or
+ * hold a lone surrogate that must not split a pair of the string.
  */
 class CypherSplitLiteralDelimiterTest {
   private Database database;
@@ -70,6 +71,14 @@ class CypherSplitLiteralDelimiterTest {
         Arguments.of("ab", "abc"),
         Arguments.of("한글,구분,,자", ","),
         Arguments.of("😀x😀😀y", "😀"),
+        // a lone surrogate never splits a pair of the string, but still matches an unpaired one
+        Arguments.of("😀", "\uD83D"),
+        Arguments.of("😀", "\uDE00"),
+        Arguments.of("a\uD83Db😀c\uD83D", "\uD83D"),
+        Arguments.of("\uDE00a😀b\uDE00", "\uDE00"),
+        Arguments.of("x\uDE00😀\uDE00y", "\uDE00😀"),
+        Arguments.of("x😀\uD83D😀y", "😀\uD83D"),
+        Arguments.of("\uD83D\uD83D\uDE00", "\uD83D"),
         Arguments.of("$1$2$", "$"));
   }
 
