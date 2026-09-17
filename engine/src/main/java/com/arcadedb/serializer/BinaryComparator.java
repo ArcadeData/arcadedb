@@ -186,6 +186,11 @@ public class BinaryComparator {
     case BinaryTypes.TYPE_DATETIME_SECOND:
     case BinaryTypes.TYPE_DATETIME_MICROS:
     case BinaryTypes.TYPE_DATETIME_NANOS: {
+      // KNOWN GAP, issue #7754: a BOOLEAN value2 reaches here and dateTimeToTimestampInferringStringPrecision has
+      // no case for it, so the null it answers NPEs on unboxing - while the reverse direction, BOOLEAN as type1,
+      // maps it to 1/0 and answers. Deliberately not patched in passing: whether that comparison should mean
+      // anything at all is the actual question, and whichever way it is settled BOTH directions have to implement
+      // it, or the comparator stops being antisymmetric (the failure mode of #5900, #5947 and #6997).
       final ChronoUnit higherPrecision = DateUtils.getHigherPrecision(value1, value2);
       final long v1 = DateUtils.dateTimeToTimestampInferringStringPrecision(value1, higherPrecision);
       final long v2 = DateUtils.dateTimeToTimestampInferringStringPrecision(value2, higherPrecision);
@@ -321,7 +326,7 @@ public class BinaryComparator {
    * easily as a {@code Number}. Casting it straight to {@code Number} threw {@code ClassCastException} - for
    * {@code DATE} and {@code DATETIME} that predates this class's current shape, and #7628 extended the same cast
    * to the three sub-millisecond types, turning their wrong answer into a crash instead of fixing it (found
-   * reviewing PR #7750).
+   * in review).
    * <p>
    * The conversion is the one the {@code DATE}/{@code DATETIME} branch of {@link #compare} already applies in the
    * opposite direction, which is why that direction answered instead of throwing - so normalising here is what
