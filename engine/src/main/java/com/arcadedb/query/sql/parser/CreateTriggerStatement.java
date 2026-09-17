@@ -187,19 +187,7 @@ public class CreateTriggerStatement extends DDLStatement {
     else
       // actionCodeQuoted IS ONLY SET BY THE PARSER. A STATEMENT BUILT ANY OTHER WAY (SETTING actionCode DIRECTLY)
       // WOULD OTHERWISE RENDER THE BARE WORD "null" HERE INSTEAD OF A QUOTED LITERAL (CLAUDE-REVIEW, ISSUE #7800)
-      appendQuoted(builder, actionCode);
-  }
-
-  private static void appendQuoted(final StringBuilder builder, final String value) {
-    builder.append('\'');
-    if (value != null)
-      for (int i = 0; i < value.length(); i++) {
-        final char c = value.charAt(i);
-        if (c == '\'' || c == '\\')
-          builder.append('\\');
-        builder.append(c);
-      }
-    builder.append('\'');
+      appendQuotedStringLiteral(builder, actionCode);
   }
 
   @Override

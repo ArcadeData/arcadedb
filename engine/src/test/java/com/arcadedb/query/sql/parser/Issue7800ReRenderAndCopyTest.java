@@ -86,6 +86,21 @@ class Issue7800ReRenderAndCopyTest extends AbstractParserTest {
   }
 
   /**
+   * claude-review follow-up (second round): the fallback quoting escaped only the quote character and the
+   * backslash, but the grammar's STRING_LITERAL rule also forbids a raw CR/LF inside the literal body.
+   */
+  @Test
+  void urlBuiltDirectlyWithNewlineIsEscapedAndReparses() {
+    final Url url = new Url("line1\nline2");
+    final StringBuilder builder = new StringBuilder();
+    url.toString(null, builder);
+    assertThat(builder.toString()).doesNotContain("\n");
+
+    // must reparse without throwing: a raw newline inside the '...' literal is a lexer/syntax error
+    new com.arcadedb.query.sql.antlr.SQLAntlrParser(null).parse("BACKUP DATABASE " + builder);
+  }
+
+  /**
    * Item 3: DROP INDEX copy() silently dropped ifExists. CodeRabbit also found that the class's (pre-existing,
    * manual) equals()/hashCode() never included it either, so the strict and idempotent forms compared equal.
    */

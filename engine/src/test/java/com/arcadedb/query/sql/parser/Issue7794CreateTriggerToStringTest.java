@@ -85,4 +85,27 @@ class Issue7794CreateTriggerToStringTest extends AbstractParserTest {
 
     assertThat(stmt.toString()).isEqualTo("CREATE TRIGGER t5 BEFORE CREATE ON TYPE User EXECUTE SQL 'SELECT 1'");
   }
+
+  /**
+   * claude-review follow-up (second round): the fallback quoting escaped only the quote character and the
+   * backslash, but the grammar's STRING_LITERAL rule also forbids a raw CR/LF inside the literal body - they must
+   * be written as the {@code \r}/{@code \n} escape sequences. A multi-line actionCode (realistic for a JAVASCRIPT/
+   * JAVA trigger body) must still reparse.
+   */
+  @Test
+  void quotesMultilineActionCodeWhenNotBuiltByTheParser() {
+    final CreateTriggerStatement stmt = new CreateTriggerStatement();
+    stmt.name = new Identifier("t6");
+    stmt.timing = new Identifier("BEFORE");
+    stmt.event = new Identifier("CREATE");
+    stmt.typeName = new Identifier("User");
+    stmt.actionType = new Identifier("JAVASCRIPT");
+    stmt.actionCode = "var x = 1;\nprint(x);";
+
+    final String rendered = stmt.toString();
+    assertThat(rendered).doesNotContain("\n");
+
+    // must reparse without throwing: a raw newline inside the '...' literal is a lexer/syntax error
+    new SQLAntlrParser(null).parse(rendered);
+  }
 }
