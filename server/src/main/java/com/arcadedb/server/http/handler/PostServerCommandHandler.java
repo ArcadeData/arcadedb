@@ -19,10 +19,10 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.HAServerPlugin;
@@ -32,12 +32,11 @@ import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HttpString;
 
-import java.util.logging.Level;
-import java.io.File;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.logging.Level;
 
 public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private static final String LIST_DATABASES       = "list databases";
