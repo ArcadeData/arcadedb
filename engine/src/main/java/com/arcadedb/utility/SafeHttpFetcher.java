@@ -213,10 +213,6 @@ public class SafeHttpFetcher {
   }
 
   /**
-   * {@link #body} for a stream the caller has already taken off the connection, or has wrapped (a
-   * {@code GZIPInputStream}, a {@code ZipInputStream}) before the timeout could be described.
-   */
-  /**
    * The {@link SocketTimeoutException} to report in place of {@code e}, naming the source, the wait and the setting
    * that relaxes it. Written once, because the wait can expire in either of two places - while the response headers
    * are being read ({@link #open}) or while the body is ({@link #body}) - and an operator should not have to learn
@@ -240,6 +236,10 @@ public class SafeHttpFetcher {
     return described;
   }
 
+  /**
+   * {@link #body} for a stream the caller has already taken off the connection, or has wrapped (a
+   * {@code GZIPInputStream}, a {@code ZipInputStream}) before the timeout could be described.
+   */
   public static InputStream describeTimeouts(final InputStream in, final String context, final String url,
       final int readTimeoutMs) {
     return new FilterInputStream(in) {

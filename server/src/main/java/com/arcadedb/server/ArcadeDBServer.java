@@ -314,7 +314,6 @@ public class ArcadeDBServer {
     return isProductionMode(configuration);
   }
 
-
   /**
    * {@link #isProductionMode()} for a caller that holds the configuration rather than the server - the HTTP handler
    * base class, which is constructed against an {@code HttpServer} whose server may be a test double. Static so the
