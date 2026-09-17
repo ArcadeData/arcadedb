@@ -138,17 +138,17 @@ public class RemoteSchema implements Schema {
 
   @Override
   public Trigger getTrigger(final String triggerName) {
-    throw new UnsupportedOperationException("getTrigger() is not supported in remote database. Triggers can be created and dropped remotely with SQL CREATE/DROP TRIGGER, but there is no SQL statement that lists them back.");
+    throw new UnsupportedOperationException("getTrigger() is not supported in remote database. Use SQL SELECT FROM schema:triggers instead.");
   }
 
   @Override
   public Trigger[] getTriggers() {
-    throw new UnsupportedOperationException("getTriggers() is not supported in remote database. Triggers can be created and dropped remotely with SQL CREATE/DROP TRIGGER, but there is no SQL statement that lists them back.");
+    throw new UnsupportedOperationException("getTriggers() is not supported in remote database. Use SQL SELECT FROM schema:triggers instead.");
   }
 
   @Override
   public Trigger[] getTriggersForType(final String typeName) {
-    throw new UnsupportedOperationException("getTriggersForType() is not supported in remote database. Triggers can be created and dropped remotely with SQL CREATE/DROP TRIGGER, but there is no SQL statement that lists them back.");
+    throw new UnsupportedOperationException("getTriggersForType() is not supported in remote database. Use SQL SELECT FROM schema:triggers instead.");
   }
 
   @Override
