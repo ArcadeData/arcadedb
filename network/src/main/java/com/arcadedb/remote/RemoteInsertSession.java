@@ -275,7 +275,13 @@ public class RemoteInsertSession implements AutoCloseable {
   static final class RemoteWebSocketListener implements WebSocket.Listener {
     private final LinkedBlockingQueue<String> queue  = new LinkedBlockingQueue<>();
     private final StringBuilder               buffer = new StringBuilder();
+    /** Set when the connection failed. Non-null is what tells a failure apart from an orderly close. */
     private volatile Throwable                failure;
+    /**
+     * Set when no further frame can arrive - by an orderly close AND by a failure, since a failed connection is
+     * a closed one. {@link #awaitFrame()} therefore reads {@link #failure} first and falls back to this, so the
+     * two are never confused: this one alone means the server closed, this one with a failure means it broke.
+     */
     private volatile boolean                  closed;
 
     LinkedBlockingQueue<String> getQueue() {

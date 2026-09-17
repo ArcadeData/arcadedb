@@ -1632,7 +1632,10 @@ public enum GlobalConfiguration {
       budget than 'wsMaxControlFrameSize'; an operator running a bulk loader raises this one deliberately. The \
       larger budget is granted when the connection's 'start' frame is dispatched and dropped again when its \
       'commit'/'rollback' is, so a connection that never opens an insert session is never charged more than \
-      'wsMaxControlFrameSize'. 0 or a negative value restores the unbounded behaviour.""",
+      'wsMaxControlFrameSize'. Raising it scales the worst case by more than itself: a connection may have up \
+      to 64 frames waiting to be applied (WebSocketInsertProtocol.MAX_PENDING_FRAMES, which is not itself \
+      configurable), so the per-connection buffering to budget for is this value times that queue depth. 0 or a \
+      negative value restores the unbounded behaviour.""",
       Long.class, 16 * 1024 * 1024L),
 
   SERVER_WS_MAX_INSERT_CHUNK_ROWS("arcadedb.server.wsMaxInsertChunkRows", SCOPE.SERVER, """
