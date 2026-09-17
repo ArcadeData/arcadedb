@@ -123,7 +123,14 @@ public class DateUtils {
     } else if (dateImplementation.equals(LocalDate.class)) {
       value = LocalDate.ofEpochDay(timestamp);
     } else if (dateImplementation.equals(LocalDateTime.class)) {
-      value = LocalDateTime.ofEpochSecond(timestamp / 1_000, (int) ((timestamp % 1_000) * 1_000_000), ZoneOffset.UTC);
+      // floorDiv/floorMod for the same reason as getDate() below: '%' keeps the dividend's sign, so a pre-epoch
+      // value yields a NEGATIVE nanoOfSecond and LocalDateTime.ofEpochSecond rejects it outright (found in
+      // review). NOTE, separately and deliberately left alone: every other arm here reads `timestamp` as a count
+      // of DAYS, which is what a DATE stores, while this one divides it as if it were millis. That is a
+      // pre-existing unit mismatch in this branch, not arithmetic, and changing it would change what a DATE
+      // column configured with LocalDateTime answers - a decision, not a fix.
+      value = LocalDateTime.ofEpochSecond(Math.floorDiv(timestamp, 1_000L),
+          (int) (Math.floorMod(timestamp, 1_000L) * 1_000_000L), ZoneOffset.UTC);
     } else
       throw new SerializationException("Error on deserialize date. Configured class '" + dateImplementation + "' is not supported");
     return value;
@@ -613,9 +620,18 @@ public class DateUtils {
       cal.setTimeInMillis(timestamp);
       return cal;
     } else if (dateImplementation.equals(LocalDate.class))
-      return LocalDate.ofEpochDay(timestamp / DateUtils.MS_IN_A_DAY);
+      // floorDiv, not '/': the fourth site of the truncating division #7638 fixed elsewhere, and reachable under
+      // the DEFAULT dateImplementation through asDate()/date()/sysdate(). 1969-12-31T12:00Z truncated to day 0
+      // and came back as 1970-01-01 (found in review).
+      return LocalDate.ofEpochDay(Math.floorDiv(timestamp, DateUtils.MS_IN_A_DAY));
     else if (dateImplementation.equals(LocalDateTime.class))
-      return LocalDateTime.ofEpochSecond(timestamp / 1_000, (int) ((timestamp % 1_000) * 1_000_000), ZoneOffset.UTC);
+      // floorDiv AND floorMod, for a worse version of the same bug: Java's '%' keeps the DIVIDEND's sign, so a
+      // pre-epoch timestamp with a sub-second component produced a NEGATIVE nanoOfSecond, which
+      // LocalDateTime.ofEpochSecond validates and rejects - asDateTime() did not merely misreport such an
+      // instant, it threw DateTimeException. floorMod pairs with floorDiv so second and nanosecond stay
+      // consistent: the seconds floor down and the remainder is the non-negative distance above that second.
+      return LocalDateTime.ofEpochSecond(Math.floorDiv(timestamp, 1_000L),
+          (int) (Math.floorMod(timestamp, 1_000L) * 1_000_000L), ZoneOffset.UTC);
     else
       return date;
   }

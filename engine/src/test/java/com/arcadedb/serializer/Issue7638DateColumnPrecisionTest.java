@@ -29,10 +29,16 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
 import org.junit.jupiter.api.Test;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.Calendar;
 import java.util.Date;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.TimeZone;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -424,6 +430,64 @@ class Issue7638DateColumnPrecisionTest extends TestHelper {
         }
       });
     });
+  }
+
+  /**
+   * The FOURTH site of the same truncating division, found in review after the commit that claimed to have fixed
+   * "everywhere it happens, not just one of three" - it was one of four. {@code DateUtils.getDate} is reached
+   * through {@code asDate()}/{@code asDateTime()}/{@code date()}/{@code sysdate()} under the DEFAULT
+   * implementations, so neither branch needs special configuration to hit.
+   * <p>
+   * The {@code LocalDateTime} branch was the worse of the two: Java's {@code %} keeps the DIVIDEND's sign, so a
+   * pre-epoch timestamp with a sub-second component produced a negative {@code nanoOfSecond}, which
+   * {@code LocalDateTime.ofEpochSecond} validates and rejects - it threw {@code DateTimeException} rather than
+   * merely answering the wrong instant.
+   */
+  @Test
+  void getDateFloorsPreEpochInstantsRatherThanTruncatingOrThrowing() {
+    assertThat(DateUtils.getDate("1969-12-31T12:00:00Z", LocalDate.class))
+        .as("noon before the epoch belongs to 1969-12-31, not to day 0")
+        .isEqualTo(LocalDate.of(1969, 12, 31));
+
+    assertThat(DateUtils.getDate("1969-12-31T12:00:00.250Z", LocalDateTime.class))
+        .as("a pre-epoch instant with a sub-second component used to throw DateTimeException")
+        .isEqualTo(LocalDateTime.of(1969, 12, 31, 12, 0, 0, 250_000_000));
+
+    // Post-epoch is unchanged, so the fix cannot have been a blanket shift
+    assertThat(DateUtils.getDate("2026-06-12T15:30:00.250Z", LocalDateTime.class))
+        .isEqualTo(LocalDateTime.of(2026, 6, 12, 15, 30, 0, 250_000_000));
+    assertThat(DateUtils.getDate("2026-06-12T12:00:00Z", LocalDate.class)).isEqualTo(DAY);
+  }
+
+  /**
+   * The sweep the previous rounds kept failing to finish: no millis-to-days or millis-to-seconds division in the
+   * engine may use {@code /} or {@code %}, because every one of them is this bug waiting for a pre-epoch value.
+   * Four sites were found one at a time across three review rounds; this fails on the fifth rather than waiting
+   * for someone to notice it.
+   */
+  @Test
+  void noEngineSourceStillDividesMillisByHandInsteadOfFlooring() throws Exception {
+    final List<String> offenders = new ArrayList<>();
+    final Path engineSources = Path.of("src", "main", "java");
+    try (final Stream<Path> files = Files.walk(engineSources)) {
+      for (final Path file : files.filter(f -> f.toString().endsWith(".java")).toList()) {
+        int lineNumber = 0;
+        for (final String line : Files.readAllLines(file)) {
+          lineNumber++;
+          final String code = line.trim();
+          if (code.startsWith("//") || code.startsWith("*"))
+            continue;
+          if (code.matches(".*[/%]\\s*(DateUtils\\.)?MS_IN_A_DAY.*")
+              || code.matches(".*timestamp\\s*[/%]\\s*1_000\\b.*"))
+            offenders.add(file + ":" + lineNumber + "  " + code);
+        }
+      }
+    }
+
+    assertThat(offenders)
+        .as("use Math.floorDiv/floorMod - '/' and '%' truncate towards zero and put every pre-epoch instant on "
+            + "the wrong day, or produce a negative nanoOfSecond that LocalDateTime rejects outright")
+        .isEmpty();
   }
 
   private void withDateImplementation(final Class<?> implementation, final Runnable body) {
