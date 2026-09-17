@@ -141,7 +141,11 @@ public class TruncateTypeStatement extends DDLStatement {
       // record-backed ones keep the index-drop/rebuild path, and each lightweight one in the same scope is cleared
       // afterwards with a targeted DELETE FROM - the only way to reach edges that allocate no record of their own
       // (issue #7668).
-      final List<String> lightweightTypeNames = new ArrayList<>();
+      // A LinkedHashSet, not a List (claude-review): ArcadeDB supports multiple inheritance, so a diamond
+      // hierarchy can reach the same lightweight type through two different parent branches, and de-duplicating
+      // the collected names here is simpler than relying on a second DELETE FROM against an already-empty type
+      // being harmless.
+      final Set<String> lightweightTypeNames = new LinkedHashSet<>();
       final boolean hasRecordBackedTypeInScope = collectTruncationScope(typez, polymorphic, lightweightTypeNames);
       if (hasRecordBackedTypeInScope) {
         if (transactional)
@@ -189,7 +193,7 @@ public class TruncateTypeStatement extends DDLStatement {
    * LSM-Tree tombstones, but the batch size still bounds how large a single committed transaction - one Raft log
    * entry in HA - gets for a type with a very large number of edges (issue #4817).
    */
-  private void truncateLightweightEdgeTypes(final Database db, final boolean transactional, final List<String> typeNames) {
+  private void truncateLightweightEdgeTypes(final Database db, final boolean transactional, final Collection<String> typeNames) {
     if (transactional) {
       for (final String name : typeNames)
         db.command("sql", "DELETE FROM " + name).close();
@@ -225,7 +229,7 @@ public class TruncateTypeStatement extends DDLStatement {
    * @return whether at least one type in the scope is record-backed (not a lightweight edge type)
    */
   private static boolean collectTruncationScope(final DocumentType type, final boolean polymorphic,
-      final List<String> lightweightTypeNames) {
+      final Set<String> lightweightTypeNames) {
     boolean hasRecordBackedType;
     if (type instanceof EdgeType edgeType && edgeType.isLightweight()) {
       lightweightTypeNames.add(Identifier.quote(type.getName()));
@@ -386,16 +390,26 @@ public class TruncateTypeStatement extends DDLStatement {
 
   private static List<IndexDefinition> collectIndexDefinitions(final DocumentType typez, final boolean polymorphic) {
     final List<IndexDefinition> defs = new ArrayList<>();
-    final Set<String> seen = new HashSet<>();
-    for (final TypeIndex index : typez.getAllIndexes(false))
+    collectIndexDefinitions(typez, polymorphic, new HashSet<>(), defs);
+    return defs;
+  }
+
+  /**
+   * Recurses through every subtype, not only the direct ones (CodeRabbit review on this PR): {@code getSubTypes()}
+   * returns one level, so a stopped-at-depth-one walk would leave an indexed grandchild's index live while
+   * {@code scanType(typeName, polymorphic, ...)} - which walks the full subtype tree regardless of depth - deletes
+   * its records, re-introducing the #4352 tombstone hazard for exactly the type this method exists to protect.
+   * This gap predates {@link #collectTruncationScope}, but that method's own full-depth recursion is what first
+   * makes a deep, lightweight-mixed hierarchy reach this code path at all, so it is fixed alongside it here.
+   */
+  private static void collectIndexDefinitions(final DocumentType type, final boolean polymorphic, final Set<String> seen,
+      final List<IndexDefinition> defs) {
+    for (final TypeIndex index : type.getAllIndexes(false))
       if (seen.add(index.getName()))
         defs.add(IndexDefinition.from(index));
     if (polymorphic)
-      for (final DocumentType sub : typez.getSubTypes())
-        for (final TypeIndex index : sub.getAllIndexes(false))
-          if (seen.add(index.getName()))
-            defs.add(IndexDefinition.from(index));
-    return defs;
+      for (final DocumentType sub : type.getSubTypes())
+        collectIndexDefinitions(sub, true, seen, defs);
   }
 
   private static final class IndexDefinition {

@@ -832,12 +832,17 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         // scheduleTask()'s post-offer check now accounts for on its side of this same race (search for issue
         // #7841 there). Reschedule it onto whatever pool is live right now instead of just notifying it
         // dropped: getBestSlot() throws the same "shut down" exception a genuine close would, so that case
-        // still falls through to completed() below exactly as before, and a momentarily-full live queue
-        // (waitIfQueueIsFull=false - this thread must not block its own shutdown/shrink on a peer's queue)
-        // falls through the same way rather than risk a hang here.
+        // still falls through to completed() below exactly as before.
+        //
+        // waitIfQueueIsFull=true, not false (CodeRabbit review): a one-shot non-blocking offer would drop the
+        // task the instant every live queue is momentarily full, which is not a terminal close and is exactly
+        // the loss this method exists to avoid. The wait this thread takes on is the same bounded one every
+        // other cross-slot hand-off in this class already uses - offerWaiting()'s stalled-queue detection still
+        // throws rather than hanging forever if the target genuinely wedges, and offerHelping() keeps this
+        // worker's OWN queue (and this same drain loop, via helpDeferredTasks) moving while it waits.
         boolean rescheduled = false;
         try {
-          rescheduled = getOwner().scheduleTask(-1, leftover, false, 0);
+          rescheduled = getOwner().scheduleTask(-1, leftover, true, 0);
         } catch (final Throwable e) {
           // No live pool to hand it to - fall through to completed() below.
         }
