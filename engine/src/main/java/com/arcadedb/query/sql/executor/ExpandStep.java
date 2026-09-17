@@ -25,6 +25,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
@@ -163,6 +164,11 @@ public class ExpandStep extends AbstractExecutionStep {
           nextSubsequence = iterator;
         } else if (projValue instanceof Iterable iterable) {
           nextSubsequence = iterable.iterator();
+        } else {
+          // A single non-collection value (scalar, Map, ...) is one element, not zero: treat it as a
+          // one-element sequence and let the per-element handling above wrap a Map as a row and anything
+          // else as {alias|value: x}, exactly as it does for the same value reached through a collection.
+          nextSubsequence = List.of(projValue).iterator();
         }
       } finally {
         if (context.isProfiling())

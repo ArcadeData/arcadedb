@@ -19,9 +19,9 @@
 package com.arcadedb.function.text;
 
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.utility.StringUtils;
 
 import java.util.Arrays;
-import java.util.IllegalFormatException;
 
 /**
  * text.format(format, args...) - Format string with arguments.
@@ -59,10 +59,6 @@ public class TextFormat extends AbstractTextFunction {
       return format;
 
     final Object[] formatArgs = Arrays.copyOfRange(args, 1, args.length);
-    try {
-      return String.format(format, formatArgs);
-    } catch (final IllegalFormatException e) {
-      throw new IllegalArgumentException("Invalid format string: " + e.getMessage(), e);
-    }
+    return StringUtils.format("text.format", format, formatArgs);
   }
 }

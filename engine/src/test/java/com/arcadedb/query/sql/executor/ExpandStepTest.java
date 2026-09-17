@@ -333,4 +333,65 @@ class ExpandStepTest extends TestHelper {
     assertThat(count).isEqualTo(2);
     result.close();
   }
+
+  /**
+   * Regression test for issue #7787: {@code ExpandStep}'s top-level dispatch had no else arm for a value that is
+   * neither {@code Identifiable}, {@code Result}, {@code Iterator} nor {@code Iterable}, so a bare scalar silently
+   * produced zero rows although the very same value inside a collection expands fine (proven by the collection-based
+   * tests above).
+   */
+  @Test
+  void expandOfAScalarProducesOneRow() {
+    database.getSchema().createDocumentType("ScalarExpand");
+
+    database.transaction(() -> database.newDocument("ScalarExpand").set("n", 42).save());
+
+    final ResultSet result = database.query("sql", "SELECT expand(n) FROM ScalarExpand");
+
+    assertThat(result.hasNext()).isTrue();
+    final Result item = result.next();
+    assertThat(item.<Integer>getProperty("value")).isEqualTo(42);
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+  }
+
+  @Test
+  void expandOfAScalarWithAliasUsesAliasAsPropertyName() {
+    database.getSchema().createDocumentType("ScalarExpandAlias");
+
+    database.transaction(() -> database.newDocument("ScalarExpandAlias").set("n", 42).save());
+
+    final ResultSet result = database.query("sql", "SELECT expand(n) AS renamed FROM ScalarExpandAlias");
+
+    assertThat(result.hasNext()).isTrue();
+    final Result item = result.next();
+    assertThat(item.getPropertyNames()).containsExactly("renamed");
+    assertThat(item.<Integer>getProperty("renamed")).isEqualTo(42);
+    result.close();
+  }
+
+  @Test
+  void expandOfAMapProducesOneMapBackedRow() {
+    database.getSchema().createDocumentType("MapExpand");
+
+    database.transaction(() -> database.newDocument("MapExpand").set("m", java.util.Map.of("a", 1)).save());
+
+    final ResultSet result = database.query("sql", "SELECT expand(m) FROM MapExpand");
+
+    assertThat(result.hasNext()).isTrue();
+    final Result item = result.next();
+    assertThat(item.<Integer>getProperty("a")).isEqualTo(1);
+    assertThat(result.hasNext()).isFalse();
+    result.close();
+  }
+
+  @Test
+  void expandOfALetScalarProducesOneRow() {
+    final ResultSet result = database.query("sql", "SELECT expand($x) FROM (SELECT 1) LET $x = 5");
+
+    assertThat(result.hasNext()).isTrue();
+    final Result item = result.next();
+    assertThat(item.<Integer>getProperty("value")).isEqualTo(5);
+    result.close();
+  }
 }

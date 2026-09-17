@@ -328,6 +328,35 @@ class OrderByStepTest extends TestHelper {
     }
   }
 
+  /**
+   * Regression test for issue #7786: {@code OrderByStep} read {@code QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP}
+   * straight off the {@code GlobalConfiguration} enum instead of through {@code db.getConfiguration()} as its
+   * siblings {@code DistinctExecutionStep} and {@code AggregateProjectionCalculationStep} do, so a per-database
+   * override (e.g. via {@code ALTER DATABASE}) was silently ignored for ORDER BY: a tightened per-database cap
+   * gave no protection at all, although the same setting already protects DISTINCT and GROUP BY.
+   * <p>
+   * The override is set on {@code database.getConfiguration()}, which is per-database and per-test (a fresh
+   * database is created for every test method by {@link com.arcadedb.TestHelper}), so no cleanup is needed.
+   */
+  @Test
+  void shouldHonourAPerDatabaseCap() {
+    database.getSchema().createDocumentType("TestOrderPerDbCap");
+    database.transaction(() -> {
+      for (int i = 0; i < 50; i++)
+        database.newDocument("TestOrderPerDbCap").set("value", i % 7).save();
+    });
+
+    database.getConfiguration().setValue(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP, 3L);
+
+    assertThatThrownBy(() -> {
+      final ResultSet result = database.query("sql", "SELECT FROM TestOrderPerDbCap ORDER BY value ASC");
+      while (result.hasNext())
+        result.next();
+      result.close();
+    }).isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("in-heap ORDER BY");
+  }
+
   @Test
   void shouldOrderByProjection() {
     database.getSchema().createDocumentType("TestOrderProjection");

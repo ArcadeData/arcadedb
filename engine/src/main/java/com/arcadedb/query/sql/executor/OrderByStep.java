@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.OrderBy;
@@ -34,6 +35,7 @@ public class OrderByStep extends AbstractExecutionStep {
   private final OrderBy orderBy;
   private       Integer maxResults;
   private final long    timeoutMillis;
+  private final long    maxElementsAllowed;
 
   List<Result> cachedResult = null;
   int          nextElement  = 0;
@@ -50,6 +52,10 @@ public class OrderByStep extends AbstractExecutionStep {
       this.maxResults = null;
     }
     this.timeoutMillis = timeoutMillis;
+    final Database db = context == null ? null : context.getDatabase();
+    this.maxElementsAllowed = db == null ?
+        GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getValueAsLong() :
+        db.getConfiguration().getValueAsLong(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP);
   }
 
   @Override
@@ -103,7 +109,6 @@ public class OrderByStep extends AbstractExecutionStep {
 
   private void init(final ExecutionStepInternal p, final CommandContext context) {
     final long timeoutBegin = System.currentTimeMillis();
-    final long maxElementsAllowed = GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getValueAsLong();
     boolean sorted = true;
     do {
       final ResultSet lastBatch = p.syncPull(context, DEFAULT_FETCH_RECORDS_PER_PULL);

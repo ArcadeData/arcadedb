@@ -41,7 +41,7 @@ public class ProfileStatement extends Statement {
 
   @Override
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
-    builder.append("EXPLAIN ");
+    builder.append("PROFILE ");
     statement.toString(params, builder);
   }
 
