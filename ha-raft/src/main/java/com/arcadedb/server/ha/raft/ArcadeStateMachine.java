@@ -3735,6 +3735,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
     for (final String dbName : getBootstrapUnreconciledDatabases()) {
       final BootstrapBaseline leaderState = leaderStates.get(dbName);
       if (leaderState == null) {
+        // Checked BEFORE the missing-directory retry below, deliberately: a leader that reports no state for
+        // this database is not a leader worth pulling it from - it does not have it open, and an install
+        // sourced from it would fail or, worse, succeed with nothing. The retry is throttled and self-healing,
+        // so deferring to the next tick costs one interval and nothing else; the alternative, retrying against
+        // a leader that just said it cannot speak for this database, costs a download every tick forever.
         LogManager.instance().log(this, Level.INFO,
             "Bootstrap divergence of '%s' could not be verified: the leader reported no state for it", dbName);
         continue;
