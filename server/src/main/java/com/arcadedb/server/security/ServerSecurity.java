@@ -149,6 +149,13 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * The handler's other caller is shutdown: once {@code stopService()} has run, a refresh submitted by a late
    * apply is dropped as well, which is what stopping means.
    */
+  /**
+   * What this node has done with the replicated group changes it received (issue #7529). Declared ahead of
+   * {@link #permissionsRefreshExecutor} on purpose: that field's initializer builds the rejection handler that
+   * records into this one, and a field initializer sees only the fields declared above it.
+   */
+  private final        PermissionRefreshMetrics           permissionRefreshMetrics   = new PermissionRefreshMetrics();
+
   private final        ThreadPoolExecutor                 permissionsRefreshExecutor = createPermissionsRefreshExecutor();
 
   /**
@@ -763,13 +770,32 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     }
   }
 
-  private static ThreadPoolExecutor createPermissionsRefreshExecutor() {
+  /**
+   * Instance method, not static: the rejection handler counts into {@link #permissionRefreshMetrics}, and a
+   * coalesced hand-off is the one event in this path that used to leave no trace at all above FINE (issue #7529).
+   */
+  private ThreadPoolExecutor createPermissionsRefreshExecutor() {
     return new ThreadPoolExecutor(0, 1, 30L, TimeUnit.SECONDS, new ArrayBlockingQueue<>(1), r -> {
       final Thread thread = new Thread(r, "arcadedb-security-permissions-refresh");
       thread.setDaemon(true);
       return thread;
-    }, (rejected, executor) -> LogManager.instance().log(ServerSecurity.class, Level.FINE,
-        "A cached-permission refresh is already queued or the server is stopping; this one is coalesced into it"));
+    }, (rejected, executor) -> {
+      permissionRefreshMetrics.refreshCoalesced();
+      LogManager.instance().log(ServerSecurity.class, Level.FINE,
+          "A cached-permission refresh is already queued or the server is stopping; this one is coalesced into it");
+    });
+  }
+
+  /**
+   * A reading of the replicated-permission refresh counters (issue #7529).
+   * <p>
+   * The surfaces are {@code GET /api/v1/server?mode=cluster} under {@code ha.securityRefresh} and the
+   * {@code arcadedb.ha.security.*} Micrometer meters {@code HAReplicationMetrics} binds, so an operator who has
+   * narrowed a permission can check that every peer enforced it instead of having to trust that no WARNING was
+   * logged anywhere.
+   */
+  public PermissionRefreshMetrics.Snapshot getPermissionRefreshStats() {
+    return permissionRefreshMetrics.snapshot();
   }
 
   /**
@@ -784,6 +810,10 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     if (server == null)
       return;
 
+    // Every hand-off is counted, taken or not: execute() runs the rejection handler on THIS thread and returns
+    // normally, so the submit cannot tell them apart. The handler counts the refusals separately, and the
+    // accepted ones are the difference (issue #7529).
+    permissionRefreshMetrics.refreshRequested();
     permissionsRefreshExecutor.execute(this::runDatabasePermissionsRefresh);
   }
 
@@ -799,6 +829,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       // Exception and deliberately not Throwable: an Error is not a refresh that failed, it is a JVM that is no
       // longer able to run one, and logging it here as though the node had merely lost its fast path would be a
       // lie about the state of the process. Let it kill the worker and reach the default handler.
+      permissionRefreshMetrics.sweepFailed();
       LogManager.instance().log(this, Level.SEVERE,
           "Error while refreshing the cached database permissions after a replicated group change; this node now "
               + "converges only on the '%s' reload tick", e, SecurityGroupFileRepository.FILE_NAME);
@@ -825,10 +856,15 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     if (server == null)
       return;
 
+    long refreshed = 0;
+    long failures = 0;
+
     for (final String databaseName : server.getDatabaseNames())
       try {
         updateSchema(server.getDatabase(databaseName));
+        ++refreshed;
       } catch (final Exception e) {
+        ++failures;
         // Guarded PER DATABASE, not once around the loop. server.getDatabase() can refuse a name this iteration
         // has already seen - it is dropped meanwhile, or its directory still carries the interrupted-snapshot
         // marker ArcadeDBServer.getDatabase() throws DatabaseNotAvailableException for - and a peer mid-snapshot
@@ -839,6 +875,11 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
             "Could not refresh the cached permissions of database '%s'; it converges on the '%s' reload tick, or "
                 + "when it is next opened", e, databaseName, SecurityGroupFileRepository.FILE_NAME);
       }
+
+    // Counted HERE rather than in the worker, so the number covers every source of a sweep - the replicated
+    // apply, the server-groups.json watcher and an inline refresh - and an operator comparing it against
+    // entriesApplied is comparing two numbers that mean the same thing on every node (issue #7529).
+    permissionRefreshMetrics.sweepCompleted(refreshed, failures);
   }
 
   public String getEncodedHash(final String password, final String salt, final int iterations) {
@@ -1532,6 +1573,10 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     // document in memory first, so this node authorizes against it from now on whether or not the write
     // succeeded. Scheduling after the throw below would leave the case that needs the refresh most - a narrowed
     // permission on a node whose configuration volume is full or read-only - waiting for the reload tick.
+    // Recorded next to the scheduling and for the same reason: from applyReplicated() onwards this node
+    // authorizes against the new document, so that is the moment 'this peer has the change' became true - whether
+    // or not the write below succeeded, and whether or not the refresh worker took the hand-off (issue #7529).
+    permissionRefreshMetrics.entryApplied();
     scheduleDatabasePermissionsRefresh();
 
     if (persistFailure != null) {

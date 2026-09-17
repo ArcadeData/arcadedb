@@ -197,7 +197,11 @@ public class CoreApiSpec implements OpenApiContributor {
         alias of POST /api/v1/cluster/peer - where <address> is one entry of arcadedb.ha.serverList \
         ([name@]host[:raftPort[:httpPort]] or the host:{raft:..,http:..} object form). It answers 400 \
         for a blank or malformed address and 500 when this server is not running an HA implementation \
-        that supports runtime membership""");
+        that supports runtime membership. Note the direction: it never makes THIS server join another \
+        cluster, and an address that resolves to this server is answered 400 rather than accepted as a \
+        no-op. To make a running server join a cluster it is not configured for, issue this same command \
+        on a server that is already a member of that cluster, or declare arcadedb.ha.serverList and \
+        restart""");
     postOp.setOperationId("executeServerCommand");
     postOp.addTagsItem("Server");
     postOp.setRequestBody(SpecBuilders.jsonBody("Command request with command and optional parameters", "CommandRequest", true));
@@ -931,7 +935,14 @@ public class CoreApiSpec implements OpenApiContributor {
     schema.addProperty("ha", SpecBuilders.freeFormObject("""
         Cluster topology and per-database replication state. Present with mode=cluster only, and only when \
         this server runs an HA implementation. The per-database rows are scoped to the caller's authorized \
-        databases; the topology members are not."""));
+        databases; the topology members are not.
+
+        Its 'securityRefresh' member says whether the replicated group changes THIS node received have been \
+        enforced here, not merely received: entriesApplied, refreshesRequested, refreshesCoalesced, \
+        sweepsCompleted, sweepsFailed, databasesRefreshed, databaseRefreshFailures, and the epoch-millisecond \
+        lastEntryAppliedAt / lastSweepAt. entriesApplied rising while sweepsCompleted does not is a node \
+        enforcing permissions it has already been told to replace; the same numbers are scrapable as the \
+        arcadedb.ha.security.* meters."""));
     schema.setRequired(List.of("user", "version", "serverName", "languages"));
     return schema;
   }

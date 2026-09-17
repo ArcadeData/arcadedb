@@ -2077,9 +2077,8 @@ public enum GlobalConfiguration {
   HA_PROXY_READ_TIMEOUT("arcadedb.ha.proxyReadTimeout", SCOPE.SERVER,
       """
       Milliseconds a follower waits for the leader to answer a request it forwarded before giving up and \
-      answering the client HTTP 504. The live reader is LeaderCommandForwarder: the commands of \
-      POST /api/v1/server and the POST/PUT/DELETE /api/v1/server/users routes. LeaderProxy reads it too, but \
-      nothing constructs LeaderProxy, so that path is dormant. \
+      answering the client HTTP 504. The reader is LeaderCommandForwarder: the commands of \
+      POST /api/v1/server and the POST/PUT/DELETE /api/v1/server/users routes. \
       The forward runs on an HTTP worker thread, so this is the bound that stops a wedged leader from parking \
       one indefinitely; 0 or a negative value does not disable it. The forwarded commands that legitimately run \
       for minutes - 'restore backup', 'restore database' and 'import database' - use \
@@ -2097,8 +2096,8 @@ public enum GlobalConfiguration {
 
   HA_PROXY_CONNECT_TIMEOUT("arcadedb.ha.proxyConnectTimeout", SCOPE.SERVER,
       """
-      Connect timeout in milliseconds for a follower dialling the leader, used by LeaderCommandForwarder (and \
-      by LeaderProxy, which nothing currently constructs), by the SQL write forward in RaftReplicatedDatabase \
+      Connect timeout in milliseconds for a follower dialling the leader, used by LeaderCommandForwarder, by \
+      the SQL write forward in RaftReplicatedDatabase \
       and by the /api/v1/batch relay in PostBatchHandler (issues #7526/#7527/#7542/#7543). Bounds the half of \
       the failure the response deadline cannot see: a leader whose host accepts no connection. Read once when \
       the HTTP client is built, because a java.net.http.HttpClient's connect timeout is fixed at build time - a \
@@ -2143,9 +2142,13 @@ public enum GlobalConfiguration {
       Re-read on every forward.""",
       Long.class, 600_000L),
 
-  HA_PROXY_MAX_BODY_SIZE("arcadedb.ha.proxyMaxBodySize", SCOPE.SERVER,
-      "Maximum request body size in bytes that the leader proxy will buffer and forward. Larger requests fall back to HTTP 400.",
-      Integer.class, 16 * 1024 * 1024),
+  // `arcadedb.ha.proxyMaxBodySize` used to be declared here. Its only reader was LeaderProxy, a transparent
+  // follower-to-leader HTTP proxy that nothing ever constructed, so the setting bounded nothing on any running
+  // server (issue #7528). Removed together with that class rather than wired into the forward paths that DO run:
+  // LeaderCommandForwarder relays an administrative body the handler has already parsed, PostBatchHandler streams
+  // a bulk load it must not buffer at all, and both are bounded on the INCOMING side by
+  // arcadedb.server.httpBodyContentMaxSize - a second cap on the outgoing hop would only be a way to lose a request
+  // the node had already accepted.
 
   HA_CLIENT_ELECTION_RETRY_COUNT("arcadedb.ha.clientElectionRetryCount", SCOPE.SERVER,
       "Number of retries performed by RemoteDatabase after receiving HTTP 503 NeedRetryException during an election.",

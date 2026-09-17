@@ -3145,8 +3145,27 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * object is also the one holding the {@link ContextConfiguration} the probe's budget comes from.
    */
   void addPeer(final RaftPeer newPeer, final String name) {
+    ensureNotSelf(localPeerId, newPeer);
     ensurePeerReachable(newPeer);
     clusterManager.addPeer(newPeer, name);
+  }
+
+  /**
+   * Refuses an add that names this node itself (issue #7515).
+   * <p>
+   * First, ahead of the reachability probe: this node is by definition reachable, so the probe would pass and the
+   * request would go on to be the silent no-op {@link SelfJoinNotSupportedException} describes. It is also the
+   * cheaper check of the two, and it is the one that identifies the mistake - an operator who meant "make this
+   * node join that cluster" - rather than a network condition.
+   * <p>
+   * Static and package-private for the same reason {@link PeerReachability}'s refusal rule is: the decision is a
+   * comparison of two ids and standing up a {@link RaftHAServer} to exercise it would test the fixture instead.
+   * {@code localPeerId} is null only before {@code start()} has resolved it, where there is no "this node" to
+   * compare against and the add cannot reach a cluster anyway.
+   */
+  static void ensureNotSelf(final RaftPeerId localPeerId, final RaftPeer newPeer) {
+    if (localPeerId != null && localPeerId.equals(newPeer.getId()))
+      throw new SelfJoinNotSupportedException(localPeerId.toString(), newPeer.getAddress());
   }
 
   /**

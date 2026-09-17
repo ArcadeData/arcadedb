@@ -180,7 +180,11 @@ public class PluginApiSpec implements OpenApiContributor {
             A 503 means the membership change succeeded and at least one of those seeds did not commit within \
             arcadedb.ha.securitySeedRetryTimeout: the peer IS a cluster member and serves requests against its \
             own copy of the documents that failed, which are named in 'failedSeeds'. Re-POST the same peer to \
-            reissue the seed - the membership change is idempotent. """ + RAFT_REQUIRED);
+            reissue the seed - the membership change is idempotent.
+
+            The optional 'priority' carries the peer's Raft leader-election priority, which before it could only \
+            be declared in arcadedb.ha.serverList at startup: a peer added at runtime always got the default and \
+            a witness admitted this way could be elected leader. """ + RAFT_REQUIRED);
     post.setRequestBody(SpecBuilders.jsonBody("Peer to add", "AddPeerRequest", true));
     post.setResponses(SpecBuilders.standardResponses("200",
         SpecBuilders.jsonResponse("Peer added and seeded", "ClusterActionResponse"),
@@ -610,6 +614,12 @@ public class PluginApiSpec implements OpenApiContributor {
     schema.addProperty("peerId", SpecBuilders.string("Peer identifier"));
     schema.addProperty("address", SpecBuilders.string("Peer address"));
     schema.addProperty("name", SpecBuilders.string("Optional display name"));
+    schema.addProperty("priority", SpecBuilders.integer(
+        "Raft leader-election priority, a non-negative integer. Defaults to 0, which is Ratis's own default and "
+            + "leaves the peer as electable as every other peer on a cluster where nobody names a priority. Once ANY "
+            + "peer carries a positive priority the priority-0 ones become witnesses that are never elected and are "
+            + "skipped as step-down targets, so 0 is how a witness is declared and a higher value how a preferred "
+            + "leader is. The same field the 'priority' of an arcadedb.ha.serverList entry sets."));
     schema.setRequired(List.of("peerId", "address"));
     return schema;
   }
