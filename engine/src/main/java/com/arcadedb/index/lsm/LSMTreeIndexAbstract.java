@@ -925,20 +925,26 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
         final RID rid = allValues.get(i);
 
         if (rid.getBucketId() < 0) {
-          // This is a deletion marker - convert to original RID
-          final RID originalRID = getOriginalRID(rid);
-          deletedRIDs.add(originalRID);
-
-          // For unique indexes, also mark the entire key as removed
-          if (mainIndex.isUnique()) {
+          // Two different deletion markers share the negative-bucketId encoding - see LSMTreeIndexCursor#next() and
+          // LSMTreeIndexCompactor#compactFull(), which resolve the same on-disk history and must stay in agreement
+          // with this method (issue #7765):
+          //   - REMOVED_ENTRY_RID = (-1, -1): a KEY-WIDE tombstone (remove(keys) with no RID), which kills every
+          //     RID at this key written before it, on EVERY index - not only a unique one. Decoding it through
+          //     getOriginalRID() would answer (-1, -1) again, matching no real record, and a per-RID
+          //     deletedRIDs-only check would then be a no-op for it.
+          //   - anything else: a PER-RID tombstone, which only removes that one RID.
+          if (rid.getBucketId() == -1 && rid.getPosition() == -1) {
             removedKeys.add(keys);
+          } else {
+            deletedRIDs.add(getOriginalRID(rid));
           }
           continue;
         }
 
-        // For unique indexes, check if the entire key has been removed
-        if (mainIndex.isUnique() && removedKeys.contains(keys)) {
-          // Skipping rid because key is in removedKeys (unique index)
+        // The walk is newest-to-oldest, so a key-wide tombstone already seen suppresses only the older entries
+        // still to come - a newer INSERT at the same key, visited earlier in this loop, is unaffected.
+        if (removedKeys.contains(keys)) {
+          // Skipping rid because key is in removedKeys
           continue;
         }
 

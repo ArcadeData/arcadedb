@@ -56,6 +56,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -79,6 +80,10 @@ public class HashIndex implements IndexInternal {
   private boolean                              valid  = true;
   private IndexMetadata                        metadata;
   protected HashIndexBucket                    bucket;
+  // CI collation flags per key component, mirrored from `metadata` - see #7766. `LSMTreeIndexAbstract` keeps the
+  // same kind of array for the same reason: HashIndexBucket has no collation concept of its own, so folding must
+  // happen here, in convertKeys(), on both the write and the lookup side.
+  private boolean[]                            caseInsensitiveKeys;
 
   // ─── FACTORY HANDLERS ────────────────────────────────────
 
@@ -456,6 +461,7 @@ public class HashIndex implements IndexInternal {
   public void setMetadata(final IndexMetadata metadata) {
     checkIsValid();
     this.metadata = metadata;
+    updateCaseInsensitiveKeys();
   }
 
   @Override
@@ -473,6 +479,24 @@ public class HashIndex implements IndexInternal {
       this.metadata.propertyNames = new ArrayList<>();
       for (int i = 0; i < jsonArray.length(); i++)
         metadata.propertyNames.add(jsonArray.getString(i));
+    }
+    final var collationsJSON = indexJSON.getJSONArray("collations", null);
+    if (collationsJSON != null)
+      metadata.collations = collationsJSON.toListOfStrings();
+
+    updateCaseInsensitiveKeys();
+  }
+
+  /**
+   * Propagates CI collation flags from {@link #metadata} to {@link #caseInsensitiveKeys}, mirroring
+   * {@code LSMTreeIndex.updateCaseInsensitiveKeys()} - see #7766.
+   */
+  private void updateCaseInsensitiveKeys() {
+    if (metadata != null && metadata.hasAnyCaseInsensitive()) {
+      final boolean[] flags = new boolean[metadata.propertyNames.size()];
+      for (int i = 0; i < flags.length; i++)
+        flags[i] = metadata.isCaseInsensitive(i);
+      caseInsensitiveKeys = flags;
     }
   }
 
@@ -613,6 +637,8 @@ public class HashIndex implements IndexInternal {
     json.put("properties", getPropertyNames());
     json.put("nullStrategy", getNullStrategy());
     json.put("unique", isUnique());
+    if (metadata.hasAnyCaseInsensitive())
+      json.put("collations", metadata.collations);
     return json;
   }
 
@@ -686,6 +712,12 @@ public class HashIndex implements IndexInternal {
         if (keys[i] == null)
           continue;
         convertedKeys[i] = Type.convert(getDatabase(), keys[i], BinaryTypes.getClassFromType(keyTypes[i]));
+
+        // Fold CI-collated String components the same way LSMTreeIndexAbstract#convertKeysToDeclaredTypes does, so
+        // writes and lookups agree on the same key: HashIndexBucket has no collation concept of its own (#7766).
+        if (convertedKeys[i] instanceof String string && caseInsensitiveKeys != null && i < caseInsensitiveKeys.length
+            && caseInsensitiveKeys[i])
+          convertedKeys[i] = string.toLowerCase(Locale.ROOT);
       }
       return convertedKeys;
     }
