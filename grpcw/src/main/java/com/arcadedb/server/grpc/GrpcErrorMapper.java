@@ -23,6 +23,7 @@ import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
 import io.grpc.Metadata;
@@ -33,6 +34,7 @@ import io.grpc.StatusRuntimeException;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.concurrent.ExecutionException;
+import java.util.logging.Level;
 
 /**
  * Central, consistent mapping from ArcadeDB engine exceptions to {@link io.grpc.Status} codes.
@@ -188,6 +190,13 @@ public final class GrpcErrorMapper {
     } else {
       code = statusCodeFor(cause);
     }
+
+    if (conceal)
+      // THE CONCEALED TEXT PROMISES THE OPERATOR A LOG ENTRY, SO THERE HAS TO BE ONE. NOTHING ELSE ON THIS PATH
+      // LOGS THE THROWABLE - GrpcLoggingInterceptor SEES THE MAPPED STATUS, NOT THE CAUSE - SO WITHOUT THIS THE
+      // DETAIL IS NOT CONCEALED FROM THE CLIENT, IT IS GONE (PR #7755 REVIEW)
+      LogManager.instance().log(GrpcErrorMapper.class, Level.SEVERE,
+          "%s (concealed from the client in production mode)", cause, contextPrefix != null ? contextPrefix : "gRPC");
 
     final String msg = conceal ?
         CONCEALED_DESCRIPTION :

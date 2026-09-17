@@ -26,6 +26,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -51,9 +52,45 @@ import static org.assertj.core.api.Assertions.assertThat;
 class Issue7472EveryGrpcFailureIsConcealableTest {
 
   private static final Path   MAIN_SOURCES = Path.of("src", "main", "java", "com", "arcadedb", "server", "grpc");
-  private static final String MAPPER_CALL  = "GrpcErrorMapper.toStatusRuntimeException(";
-  /** What a concealment-aware call site passes as its last argument, in either service. */
-  private static final String DECISION     = "concealErrors()";
+  /**
+   * Both mapper entry points a production call site can answer a failure through. {@code toStatusException} was
+   * added on main while this branch was open and needs the same guard: it delegates to
+   * {@code toStatusRuntimeException}, so a call that omits the decision leaks exactly the same way.
+   */
+  private static final List<String> MAPPER_CALLS = List.of("GrpcErrorMapper.toStatusRuntimeException(",
+      "GrpcErrorMapper.toStatusException(");
+  /**
+   * A description interpolating a THROWABLE's own message - {@code e.getMessage()}, {@code cause.getMessage()}.
+   * Not {@code request.getX()}, which is the caller's own input echoed back.
+   */
+  private static final Pattern MESSAGE_OF_A_THROWABLE =
+      Pattern.compile("\\b(e|ex|t|cause|error|throwable)\\.getMessage\\(\\)");
+
+  /**
+   * The shapes that mean "this service does not know what this failure is": the classification of last resort, and
+   * the status it produces for one. That is where ENGINE text lands, and engine text is what must not reach a
+   * client in production.
+   * <p>
+   * The guard is deliberately not broader. A per-outcome arm - {@code PERMISSION_DENIED} for a security refusal,
+   * {@code NOT_FOUND} for a user that does not exist - also reads {@code e.getMessage()}, but that message is a
+   * sentence ArcadeDB wrote ABOUT THE REQUEST, and it is what makes the refusal actionable; the HTTP body keeps
+   * exactly those in production too, in its {@code error} field. No syntactic rule can tell the two apart, so this
+   * asks the question it CAN answer precisely rather than a broader one it would answer wrongly.
+   */
+  private static final List<String> CATCH_ALL_SHAPES = List.of("GrpcErrorMapper.statusCodeFor(", "Status.INTERNAL");
+
+  /**
+   * What a concealment-aware call site passes as its last argument.
+   * <p>
+   * Two spellings, both honest. {@code concealErrors()} is what a service's own {@code mapError(...)} passes, and
+   * {@code conceal} is what a STATIC helper takes as a parameter because it has no instance to ask - {@code
+   * graphBatchLoadError} is the current example, and its caller resolves the flag from {@code concealErrors()}
+   * once, up front, because the error paths run on the stream's own threads.
+   * <p>
+   * What neither spelling permits is a call that simply omits the argument, which is the whole failure mode: it
+   * compiles, it answers the right status with the right trailers, and it leaks only in production.
+   */
+  private static final List<String> DECISIONS = List.of("concealErrors()", "conceal)", "conceal,");
 
   @Test
   void noProductionCallSiteMapsAFailureWithoutAConcealmentDecision() throws IOException {
@@ -67,14 +104,43 @@ class Issue7472EveryGrpcFailureIsConcealableTest {
           continue;
 
         for (final String statement : statementsCalling(Files.readString(source, StandardCharsets.UTF_8)))
-          if (!statement.contains(DECISION))
+          if (DECISIONS.stream().noneMatch(statement::contains))
             offenders.add(source.getFileName() + ": " + statement.strip());
       }
     }
 
     assertThat(offenders)
         .as("every gRPC failure must be mapped through a call that states whether to conceal - use this service's "
-            + "mapError(...) helper, which passes concealErrors()")
+            + "mapError(...) helper, which passes concealErrors(), or thread a 'conceal' parameter from it")
+        .isEmpty();
+  }
+
+  /**
+   * The OTHER way a description reaches a client: a status built DIRECTLY, keeping a code this service chose rather
+   * than one the mapper would classify. Those never touch {@code GrpcErrorMapper}, so the scan above cannot see
+   * them - and three of them were putting {@code e.getMessage()} on the wire in production while every mapped
+   * failure was concealed (PR #7755 review).
+   * <p>
+   * The rule is {@link #CATCH_ALL_SHAPES} narrow on purpose - see there for why a broader one would be wrong
+   * rather than merely stricter.
+   */
+  @Test
+  void noDirectStatusMappingPutsAThrowablesMessageOnTheWire() throws IOException {
+    final List<String> offenders = new ArrayList<>();
+
+    try (final Stream<Path> sources = Files.walk(MAIN_SOURCES)) {
+      for (final Path source : sources.filter(p -> p.toString().endsWith(".java")).toList())
+        for (final String statement : statementsMatching(Files.readString(source, StandardCharsets.UTF_8),
+            ".withDescription("))
+          if (MESSAGE_OF_A_THROWABLE.matcher(statement).find()
+              && CATCH_ALL_SHAPES.stream().anyMatch(statement::contains)
+              && DECISIONS.stream().noneMatch(statement::contains))
+            offenders.add(source.getFileName() + ": " + statement.strip().replaceAll("\\s+", " "));
+    }
+
+    assertThat(offenders)
+        .as("a status built directly from a throwable's message must conceal it in production - route it through "
+            + "concealable(...), which also writes the log entry the concealed text promises")
         .isEmpty();
   }
 
@@ -106,15 +172,27 @@ class Issue7472EveryGrpcFailureIsConcealableTest {
    */
   private static List<String> statementsCalling(final String source) {
     final List<String> statements = new ArrayList<>();
-    for (int at = source.indexOf(MAPPER_CALL); at > -1; at = source.indexOf(MAPPER_CALL, at + 1)) {
-      // Not a call: the class name appearing inside a comment or a Javadoc reference.
+    for (final String call : MAPPER_CALLS)
+      statements.addAll(statementsMatching(source, call));
+    return statements;
+  }
+
+  /**
+   * Every statement in {@code source} containing {@code token}, from the start of the line it begins on to the
+   * {@code ;} that ends it - so a call whose arguments wrap across lines is judged whole, and a token appearing
+   * MID-statement (as {@code .withDescription(} does) is judged with what precedes it too.
+   */
+  private static List<String> statementsMatching(final String source, final String token) {
+    final List<String> statements = new ArrayList<>();
+    for (int at = source.indexOf(token); at > -1; at = source.indexOf(token, at + 1)) {
+      // Not a call: the token appearing inside a comment or a Javadoc reference.
       final int lineStart = source.lastIndexOf('\n', at) + 1;
       final String before = source.substring(lineStart, at).strip();
       if (before.startsWith("//") || before.startsWith("*") || before.startsWith("/*"))
         continue;
 
       final int end = source.indexOf(';', at);
-      statements.add(source.substring(at, end > -1 ? end : source.length()));
+      statements.add(source.substring(lineStart, end > -1 ? end : source.length()));
     }
     return statements;
   }
