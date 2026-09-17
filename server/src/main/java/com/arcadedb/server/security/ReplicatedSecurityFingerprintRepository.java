@@ -59,9 +59,23 @@ import java.util.logging.Level;
  * file restored from a backup, no longer matches - and the node goes back to installing unconditionally, which is
  * the safe direction: it cannot refuse an entry its peers accept.
  * <p>
- * A write failure is not fatal and never fails an apply. The cost of losing it is one entry installed
- * unconditionally after the next restart, which is exactly the pre-#7509 behaviour; the cost of failing the apply
- * would be a node that stops applying committed security entries because a marker file could not be written.
+ * <b>A write failure is not fatal and never fails an apply, and what it leaves behind is a DIVERGENCE risk, not
+ * the pre-#7509 one</b> (CodeRabbit on PR #7748, correcting what this paragraph used to claim). Pre-#7509 a
+ * conditional entry did not exist, so every node installed and none of them disagreed. Here, a node that lost this
+ * write and then restarted comes up with no recorded fingerprint while its peers still have theirs, so a later
+ * entry carrying a precondition the cluster has moved past is REFUSED by the peers and INSTALLED here - which can
+ * put a revoked user, grant or token back on this one node. It is narrow: it needs the marker write to fail while
+ * the document's own write, into the same directory and moments earlier, succeeded; then a restart; then a
+ * genuine compare-and-set race as the first security entry afterwards. It is also self-closing, because the next
+ * security change that does persist records every document kind again. But it is real, and closing it properly
+ * means making the marker part of the replicated protocol - carried in the entry, or gated behind a resync - which
+ * is a change of a different size than this one and is filed separately.
+ * <p>
+ * Failing the apply instead is not the alternative it looks like: it would make a full or read-only configuration
+ * volume stop a node applying committed security entries, which is the crash-loop issue #7137 exists to prevent,
+ * and it would not make the marker durable either. So the failure is reported at SEVERE with the consequence
+ * named, and the instruction is the one #7137 and #7227 already give for the document's own write: fix the volume
+ * and reissue the security change, which records every fingerprint again.
  * <p>
  * <b>The first upgrade to a version carrying this file is the same one-entry window, by construction</b>
  * (claude-review on PR #7748). This file is new, so an already-converged cluster comes up with nothing recorded on
@@ -177,11 +191,14 @@ public class ReplicatedSecurityFingerprintRepository {
           Files.deleteIfExists(tmp);
         }
       } catch (final IOException | RuntimeException e) {
-        LogManager.instance().log(this, Level.WARNING,
-            "Could not write '%s'. The replicated security document IS installed on this node; what failed is "
-                + "recording that it came from the cluster, so a restart before the next security entry lets this "
-                + "node install one entry without the concurrency check of issue #7509: %s", e, FILE_NAME,
-            e.getMessage());
+        LogManager.instance().log(this, Level.SEVERE,
+            "Could not write '%s'. The replicated security document IS installed on this node and IS in force; what "
+                + "failed is recording that it came from the cluster. Until the next security change persists, a "
+                + "RESTART of this node would leave it without the fingerprint its peers still hold, and a later "
+                + "entry built from a document the cluster has moved past would then be refused by them and "
+                + "installed here - putting a revoked user, grant or token back on this node alone. Fix the "
+                + "configuration volume and reissue the security change, which records every document again: %s",
+            e, FILE_NAME, e.getMessage());
       }
     }
   }
