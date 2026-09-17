@@ -3421,11 +3421,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
       try {
         lifecycleExecutor.submit(() -> retryBootstrapInstall(dbName, hadLocalCopy));
       } catch (final RejectedExecutionException ree) {
-        // The remediation differs by branch, and naming the wrong one is the defect this whole change is about
-        // (claude-review on PR #7756). With a local copy the needsSnapshotDownload flag is set above, so the
-        // HealthMonitor backstop genuinely picks the download up on the next start. WITHOUT one that flag was
-        // never set, and the backstop only reinstalls databases the server has REGISTERED - which this one is
-        // not - so promising it here would tell an operator a recovery path exists that does not cover them.
+        // The remediation differs by branch, and naming the wrong one is the defect this whole change is about.
+        // With a local copy the needsSnapshotDownload flag is set above, so the HealthMonitor backstop genuinely
+        // picks the download up on the next start. WITHOUT one that flag was never set, and the backstop only
+        // reinstalls databases the server has REGISTERED - which this one is not - so promising it here would
+        // tell an operator a recovery path exists that does not cover them.
         if (hadLocalCopy)
           LogManager.instance().log(this, Level.WARNING,
               "Cannot schedule bootstrap snapshot retry for '%s': executor is shut down; "
