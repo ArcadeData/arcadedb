@@ -3146,8 +3146,39 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   void addPeer(final RaftPeer newPeer, final String name) {
     ensureNotSelf(localPeerId, getLocalRaftAddress(), newPeer);
+    ensureNoDuplicateAddress(getLivePeers(), newPeer);
     ensurePeerReachable(newPeer);
     clusterManager.addPeer(newPeer, name);
+  }
+
+  /**
+   * Refuses an add that would put a second peer id on an address the configuration already holds (issue #7515).
+   * <p>
+   * The generalization of {@link #ensureNotSelf}: that method answers for THIS node, this one for every member.
+   * The hazard is the same and so is its cause - {@code RaftClusterManager.buildAddArgs} compares by id alone, so
+   * an existing member's address submitted under a new id is not seen as a duplicate and the {@code Mode.ADD}
+   * commits. {@link DuplicatePeerAddressException} describes what that leaves behind.
+   * <p>
+   * Ordered after the self check so the self case keeps its own, more specific refusal: this node is a member
+   * too, so both would otherwise fire on it and the operator would get the message that explains less.
+   * <p>
+   * Reads {@link #getLivePeers()}, the same configuration {@code buildAddArgs} and the reachability probe
+   * consult, so a peer that is already a member under its own id still reaches the idempotent no-op rather than
+   * being refused here - {@code ensureNotSelf}'s sibling property, and what keeps a repeated
+   * {@code connect cluster} working.
+   */
+  static void ensureNoDuplicateAddress(final Collection<RaftPeer> livePeers, final RaftPeer newPeer) {
+    // Two passes, not one: a single loop that returns on the id match and throws on an address match answers
+    // whichever it happens to reach first, so a re-add of an existing member would be refused or allowed
+    // depending on the configuration's iteration order.
+    if (isPeerInConfig(livePeers, newPeer.getId()))
+      // Already a member under this very id: the add is the documented idempotent no-op, not a duplicate.
+      return;
+
+    for (final RaftPeer peer : livePeers)
+      if (isSameHttpEndpoint(peer.getAddress(), newPeer.getAddress()))
+        throw new DuplicatePeerAddressException(newPeer.getId().toString(), newPeer.getAddress(),
+            peer.getId().toString());
   }
 
   /** This node's own Raft address as the cluster knows it, or {@code null} before {@code start()} resolved one. */
