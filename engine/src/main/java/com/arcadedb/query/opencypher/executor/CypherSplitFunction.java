@@ -85,8 +85,7 @@ public class CypherSplitFunction implements StatelessFunction {
     int at = str.indexOf(delimiter);
     while (at >= 0) {
       final int end = at + delimiter.length();
-      if (startsWithLowSurrogate && at > 0 && Character.isHighSurrogate(str.charAt(at - 1))
-          || endsWithHighSurrogate && end < str.length() && Character.isLowSurrogate(str.charAt(end))) {
+      if (splitsSurrogatePair(str, at, end, startsWithLowSurrogate, endsWithHighSurrogate)) {
         at = str.indexOf(delimiter, at + 1);
         continue;
       }
@@ -96,5 +95,18 @@ public class CypherSplitFunction implements StatelessFunction {
     }
     pieces.add(str.substring(from));
     return Collections.unmodifiableList(pieces);
+  }
+
+  /**
+   * Whether the occurrence {@code [at, end)} of the delimiter would fall inside a UTF-16 surrogate pair of {@code
+   * str}. A delimiter starting with a lone low surrogate can only do this at {@code at}, by matching the low half of
+   * a pair whose high half sits right before it; a delimiter ending with a lone high surrogate can only do this at
+   * {@code end}, by matching the high half of a pair whose low half sits right after it. Every character strictly
+   * between {@code at} and {@code end} belongs to the delimiter match itself, so no third case exists.
+   */
+  private static boolean splitsSurrogatePair(final String str, final int at, final int end, final boolean startsWithLowSurrogate,
+      final boolean endsWithHighSurrogate) {
+    return startsWithLowSurrogate && at > 0 && Character.isHighSurrogate(str.charAt(at - 1))
+        || endsWithHighSurrogate && end < str.length() && Character.isLowSurrogate(str.charAt(end));
   }
 }
