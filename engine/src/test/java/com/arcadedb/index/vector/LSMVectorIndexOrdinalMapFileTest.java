@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.vector;
 
+import com.arcadedb.database.Binary;
 import com.arcadedb.database.RID;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -169,6 +170,32 @@ class LSMVectorIndexOrdinalMapFileTest {
         .as("the write accumulates the fingerprint from the RIDs it already resolved, so it must agree with the "
             + "one-shot form the map-absent fallback path still uses")
         .isEqualTo(LSMVectorIndexGraphManifest.fingerprintOf(vectorIds, rids));
+  }
+
+  /**
+   * A count is read back before the three arrays it sizes are allocated, so a file whose header claims far more
+   * entries than its payload can hold would allocate from that claim - and an OutOfMemoryError is an Error, which
+   * {@code read()}'s catch would not turn into the "no usable map" answer every other unreadable file gets.
+   */
+  @Test
+  void aMapClaimingMoreEntriesThanItCanHoldReadsAsAbsent() throws Exception {
+    final Binary payload = new Binary(16);
+    payload.putUnsignedNumber(LSMVectorIndexOrdinalMapFile.FORMAT_VERSION);
+    payload.putUnsignedNumber(Integer.MAX_VALUE);
+
+    final byte[] bytes = payload.toByteArray();
+    final byte[] file = java.util.Arrays.copyOf(bytes, bytes.length + 8);
+    long hash = LSMVectorIndexOrdinalMapFile.hashOf(bytes, bytes.length);
+    for (int i = file.length - 1; i >= bytes.length; i--) {
+      file[i] = (byte) hash;
+      hash >>>= 8;
+    }
+    Files.write(mapPath(), file);
+
+    assertThat(mapFile().read())
+        .as("the header hashes correctly and still describes nothing this file holds: it must be refused, not "
+            + "allocated from")
+        .isNull();
   }
 
   @Test
