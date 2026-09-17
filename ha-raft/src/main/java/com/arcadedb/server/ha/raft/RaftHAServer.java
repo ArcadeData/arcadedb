@@ -3166,6 +3166,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * consult, so a peer that is already a member under its own id still reaches the idempotent no-op rather than
    * being refused here - {@code ensureNotSelf}'s sibling property, and what keeps a repeated
    * {@code connect cluster} working.
+   * <p>
+   * <b>Advisory under concurrent adds, and cannot be more than that.</b> The configuration is read here and the
+   * {@code Mode.ADD} is issued afterwards, so two admin requests naming one address under two different ids can
+   * both pass - neither sees the other's uncommitted add - and both commit, which is the duplicate this method
+   * exists to refuse, reached by a race instead of by a single request. Serialising it here would not close the
+   * window either: neither add-peer route is leader-routed, so the two requests need not even be on the same
+   * node, and Ratis applies {@code Mode.ADD} with no address-uniqueness predicate of its own. Closing it properly
+   * means a uniqueness check on the leader at apply time, which is a larger change than issue #7515. What this
+   * catches is the reachable mistake - one operator, one request - and an operator running two adds of one
+   * address at once still has to reconcile the configuration afterwards.
    */
   static void ensureNoDuplicateAddress(final Collection<RaftPeer> livePeers, final RaftPeer newPeer) {
     // Two passes, not one: a single loop that returns on the id match and throws on an address match answers
