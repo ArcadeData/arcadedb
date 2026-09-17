@@ -37,7 +37,9 @@ class Issue7792CreateIndexIfNotExistsTest extends AbstractParserTest {
   @Test
   void reRendersIfNotExistsWithoutAName() {
     final Statement result = (Statement) checkRightSyntax("CREATE INDEX IF NOT EXISTS ON Foo (a) UNIQUE");
-    assertThat(result.toString()).contains("IF NOT EXISTS");
+    // exact match, not just .contains(): also pins down that dropping the name does not leave a double space
+    // between "CREATE INDEX" and "IF NOT EXISTS" (review finding on the initial version of this fix)
+    assertThat(result.toString()).isEqualTo("CREATE INDEX IF NOT EXISTS ON Foo (a) UNIQUE NULL_STRATEGY SKIP");
   }
 
   @Test

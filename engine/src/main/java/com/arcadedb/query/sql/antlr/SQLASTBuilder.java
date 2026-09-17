@@ -7805,7 +7805,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       urlString = removeQuotes(ctx.STRING_LITERAL().getText());
     }
 
-    return new Url(urlString);
+    final Url url = new Url(urlString);
+    if (ctx.STRING_LITERAL() != null)
+      // KEPT WITH ITS ORIGINAL QUOTES SO toString() CAN RE-RENDER THE EXACT LITERAL WITHOUT RE-ESCAPING
+      // ALREADY-ESCAPED TEXT (ISSUE #7800 REVIEW)
+      url.quotedLiteral = ctx.STRING_LITERAL().getText();
+    return url;
   }
 
   /**

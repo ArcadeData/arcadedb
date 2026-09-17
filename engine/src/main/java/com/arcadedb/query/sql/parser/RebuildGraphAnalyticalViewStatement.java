@@ -70,4 +70,9 @@ public class RebuildGraphAnalyticalViewStatement extends DDLStatement {
     result.name = name == null ? null : name.copy();
     return result;
   }
+
+  @Override
+  protected Object[] getIdentityElements() {
+    return new Object[] { name };
+  }
 }
