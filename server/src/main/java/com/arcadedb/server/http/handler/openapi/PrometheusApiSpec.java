@@ -301,11 +301,24 @@ public class PrometheusApiSpec implements OpenApiContributor {
     final Schema<Object> data = SpecBuilders.object("Evaluation result");
     data.addProperty("resultType", resultType);
     data.addProperty("result", result);
+    data.setRequired(List.of("resultType", "result"));
 
     final Schema<Object> schema = SpecBuilders.object("Prometheus query response");
-    schema.addProperty("status", SpecBuilders.string("Always 'success' on a 200"));
+    schema.addProperty("status", successStatus());
     schema.addProperty("data", data);
+    // The Prometheus envelope is two members and PromQLResponseFormatter writes both on every 200; the
+    // vocabulary of 'status' is closed and is what tells the success envelope from the error one (issue #7578,
+    // #7579).
+    schema.setRequired(List.of("status", "data"));
     return schema;
+  }
+
+  /** The {@code status} of a successful Prometheus envelope, whose only value is 'success'. */
+  private Schema<String> successStatus() {
+    final Schema<String> status = SpecBuilders.string(
+        "Always 'success' on a 200. The error envelope carries 'error' here instead");
+    status.setEnum(List.of("success"));
+    return status;
   }
 
   /**
@@ -340,27 +353,34 @@ public class PrometheusApiSpec implements OpenApiContributor {
 
   private Schema<?> createLabelsResponseSchema() {
     final Schema<Object> schema = SpecBuilders.object("Prometheus label response");
-    schema.addProperty("status", SpecBuilders.string("Always 'success' on a 200"));
+    schema.addProperty("status", successStatus());
     schema.addProperty("data", SpecBuilders.arrayOf(
-        SpecBuilders.string("Label name or value"), "Sorted names or values"));
+        SpecBuilders.string("Label name or value"), "Sorted names or values. Empty when nothing matched"));
+    schema.setRequired(List.of("status", "data"));
     return schema;
   }
 
   private Schema<?> createSeriesResponseSchema() {
     final Schema<Object> schema = SpecBuilders.object("Prometheus series response");
-    schema.addProperty("status", SpecBuilders.string("Always 'success' on a 200"));
-    schema.addProperty("data", SpecBuilders.arrayOf(
-        SpecBuilders.object("One series as a label map, including the '__name__' label"),
-        "Matching series"));
+    schema.addProperty("status", successStatus());
+    // The same label map the instant/range entries carry, so a generator emits one type for both rather than an
+    // empty model here and Map<String, String> there (issue #7577).
+    schema.addProperty("data", SpecBuilders.arrayOf(metricLabelsSchema(),
+        "Matching series. Empty when nothing matched"));
+    schema.setRequired(List.of("status", "data"));
     return schema;
   }
 
   private Schema<?> createErrorResponseSchema() {
+    final Schema<String> status = SpecBuilders.string("Always 'error'");
+    status.setEnum(List.of("error"));
+
     final Schema<Object> schema = SpecBuilders.object("Prometheus error envelope");
-    schema.addProperty("status", SpecBuilders.string("Always 'error'"));
+    schema.addProperty("status", status);
     schema.addProperty("errorType", SpecBuilders.string(
         "Prometheus error class, for example 'bad_data'"));
     schema.addProperty("error", SpecBuilders.string("Human-readable message"));
+    schema.setRequired(List.of("status", "errorType", "error"));
     return schema;
   }
 }

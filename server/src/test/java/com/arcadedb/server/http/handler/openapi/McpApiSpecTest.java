@@ -127,11 +127,15 @@ class McpApiSpecTest {
   @Test
   void invokeMcpDistinguishesJsonRpcErrorsFromTheStandardErrorSchema() {
     final Operation post = openAPI.getPaths().get("/api/v1/mcp").getPost();
+    // The envelope is a declared schema since issue #7577 - it used to be an un-named body, which rendered as a
+    // bare 'type: object' and told a client nothing. What matters here is unchanged: these three statuses are
+    // NOT the standard ErrorResponse, because they are raised by the JSON-RPC dispatcher rather than by the
+    // shared HTTP error path.
     for (final String jsonRpcErrorCode : List.of("403", "405", "503"))
       assertThat(refOf(post.getResponses().get(jsonRpcErrorCode)))
           .as("%s is raised by the JSON-RPC dispatcher as a JSON-RPC error envelope, not the standard "
               + "ErrorResponse", jsonRpcErrorCode)
-          .isNull();
+          .isEqualTo("#/components/schemas/JsonRpcMessage");
     for (final String frameworkErrorCode : List.of("401", "500"))
       assertThat(refOf(post.getResponses().get(frameworkErrorCode)))
           .as("%s is raised by the shared HTTP framework and uses the standard ErrorResponse",

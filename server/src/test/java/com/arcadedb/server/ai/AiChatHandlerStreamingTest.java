@@ -21,6 +21,11 @@ package com.arcadedb.server.ai;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
+import com.arcadedb.server.http.handler.openapi.AiApiSpec;
+import io.swagger.v3.oas.models.Components;
+import io.swagger.v3.oas.models.OpenAPI;
+import io.swagger.v3.oas.models.Paths;
+import io.swagger.v3.oas.models.media.Schema;
 import io.undertow.Handlers;
 import io.undertow.Undertow;
 import io.undertow.server.HttpServerExchange;
@@ -233,12 +238,42 @@ class AiChatHandlerStreamingTest extends BaseGraphServerTest {
     assertThat(done.getString("response", "")).contains("schema returned");
     assertThat(done.getString("chatId", null)).isNotBlank();
 
+    // Issue #7573: the stream this test just read is what the OpenAPI document now describes, so the two are
+    // checked against each other here rather than in a spec-only test. A stream the document cannot describe is
+    // a stream no client can be generated for, which is the whole of that issue - and the document used to name
+    // 'session' and 'tool_call' as events a caller sees, which the assertion above shows it does not.
+    assertThat(events).as("nothing to check the contract against otherwise").isNotEmpty();
+    final Schema<?> event = streamEventSchema();
+    for (final JSONObject observed : events) {
+      assertThat(event.getProperties().get("type").getEnum())
+          .as("event %s carries a 'type' the document does not declare", observed)
+          .contains(observed.getString("type", ""));
+      for (final String member : observed.keySet())
+        assertThat(event.getProperties().keySet())
+          .as("event %s carries member '%s', which the document does not declare", observed, member)
+          .contains(member);
+    }
+    assertThat(events.get(events.size() - 1).getString("type", ""))
+        .as("the document says a complete stream ends with 'done'")
+        .isEqualTo("done");
+    for (final String promised : List.of("response", "chatId"))
+      assertThat(done.has(promised)).as("the document names '%s' on the 'done' event", promised).isTrue();
+
     // The gateway-side callback received the locally-executed schema JSON.
     final JSONObject delivered = toolResultPosted.get(2, TimeUnit.SECONDS);
     assertThat(delivered.getString("id", null)).isEqualTo(issuedToolCallId);
     final JSONObject schemaResult = new JSONObject(delivered.getString("result", "{}"));
     assertThat(schemaResult.getString("database", null)).isEqualTo(getDatabaseName());
     assertThat(schemaResult.getJSONArray("types").length()).isGreaterThan(0);
+  }
+
+  /** The {@code AiChatStreamEvent} component, built the way {@code GetOpenApiHandler} builds the document. */
+  private static Schema<?> streamEventSchema() {
+    final OpenAPI openAPI = new OpenAPI();
+    openAPI.setPaths(new Paths());
+    openAPI.setComponents(new Components());
+    new AiApiSpec().contribute(openAPI);
+    return openAPI.getComponents().getSchemas().get("AiChatStreamEvent");
   }
 
   @Test

@@ -116,18 +116,24 @@ class PluginApiSpecTest {
   @Test
   void clusterStatusSchemaCarriesTheLeadershipAndPeerFields() {
     final Schema<?> schema = openAPI.getComponents().getSchemas().get("ClusterStatus");
+    // 'localAppliedIndex', 'localCommitIndex', 'localReplicationLag' and 'localResync' are written by
+    // GetClusterHandler on every answer and were declared nowhere until issue #7578's sweep read the handler.
     assertThat(schema.getProperties().keySet()).containsExactlyInAnyOrder(
         "implementation", "clusterName", "localPeerId", "capabilities", "raftState", "isLeader", "leaderReady",
         "leaderId", "leaderHttpAddress", "electionCount", "lastElectionTime", "uptime",
-        "peers", "databases", "databasePresence", "alerts");
+        "localAppliedIndex", "localCommitIndex", "localReplicationLag",
+        "peers", "databases", "databasePresence", "alerts", "localResync");
 
-    // Pinned to the exact set (not .contains(...)): GetClusterHandler writes exactly these 16 fields
-    // per peer, no more, no fewer.
+    // Pinned to the exact set (not .contains(...)): GetClusterHandler writes exactly these fields per peer, no
+    // more, no fewer. 'capabilitiesUnknownReason' joined them with issue #7578's sweep - the leader writes it
+    // when it knows WHY a peer's capabilities are unknown, and the two causes have nothing alike as remedies
+    // (issue #7256), so an undeclared one left a client unable to tell them apart.
     final Schema<?> peersProperty = schema.getProperties().get("peers");
     final Schema<?> peerItemSchema = peersProperty.getItems();
     assertThat(peerItemSchema.getProperties().keySet()).containsExactlyInAnyOrder(
         "id", "address", "httpAddress", "httpAddressAmbiguous", "role", "matchIndex", "nextIndex",
         "replicationLag", "lastContactMs", "replicaStatus", "laggingForMs", "lagging", "replicationRttMs",
+        "capabilitiesUnknownReason",
         "replicationRttP99Ms", "capabilities", "version");
   }
 
@@ -256,13 +262,26 @@ class PluginApiSpecTest {
         .containsExactlyInAnyOrder("200", "400", "401", "403", "500", "503");
   }
 
+  /**
+   * The follower branch. Issue #7577 split this schema into the two shapes the handler really answers with: as
+   * one object the two shared no member at all, so nothing could be declared required and a client had to probe
+   * for keys to tell them apart.
+   */
   @Test
   void verifyReportsPerFileChecksums() {
     final Schema<?> schema = openAPI.getComponents().getSchemas().get("VerifyDatabaseResponse");
-    assertThat(schema.getProperties().keySet())
-        .containsExactlyInAnyOrder("localChecksums", "files", "localServer", "result");
+    assertThat(schema.getOneOf())
+        .as("a follower answers one shape and a leader the other; they share no member")
+        .extracting(Schema::get$ref)
+        .containsExactly("#/components/schemas/VerifyDatabaseLocalResponse",
+            "#/components/schemas/VerifyDatabaseClusterResponse");
 
-    final Schema<?> filesProperty = schema.getProperties().get("files");
+    final Schema<?> local = openAPI.getComponents().getSchemas().get("VerifyDatabaseLocalResponse");
+    assertThat(local.getProperties().keySet())
+        .containsExactlyInAnyOrder("localChecksums", "files", "localServer", "sealedStoresIncluded",
+            "sealedStoresComplete");
+
+    final Schema<?> filesProperty = local.getProperties().get("files");
     final Schema<?> fileItemSchema = filesProperty.getItems();
     assertThat(fileItemSchema.getProperties().keySet())
         .containsExactlyInAnyOrder("name", "checksum", "size", "type");
@@ -273,10 +292,13 @@ class PluginApiSpecTest {
     // Correction: PostVerifyDatabaseHandler returns a completely different shape on the leader
     // ({"result": {...}}) than on a follower ({localChecksums, files, localServer}). The brief's
     // schema documented only the follower branch and silently dropped the leader branch.
-    final Schema<?> schema = openAPI.getComponents().getSchemas().get("VerifyDatabaseResponse");
-    final Schema<?> resultProperty = schema.getProperties().get("result");
+    final Schema<?> cluster = openAPI.getComponents().getSchemas().get("VerifyDatabaseClusterResponse");
+    assertThat(cluster.getProperties().keySet()).containsExactly("result");
+
+    final Schema<?> resultProperty = openAPI.getComponents().getSchemas().get("VerifyDatabaseClusterResult");
     assertThat(resultProperty.getProperties().keySet()).containsExactlyInAnyOrder(
-        "database", "files", "localServer", "localPeerId", "localChecksums", "peers", "overallStatus");
+        "database", "files", "localServer", "localPeerId", "localChecksums", "peers", "overallStatus",
+        "incompleteSealedStores");
 
     final Schema<?> resultPeersProperty = resultProperty.getProperties().get("peers");
     final Schema<?> peerResultItemSchema = resultPeersProperty.getItems();

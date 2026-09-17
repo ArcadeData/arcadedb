@@ -18,12 +18,14 @@
  */
 package com.arcadedb.server.http.handler.openapi;
 
+import com.arcadedb.engine.timeseries.AggregationType;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.Operation;
 import io.swagger.v3.oas.models.PathItem;
 import io.swagger.v3.oas.models.media.Schema;
 import io.swagger.v3.oas.models.responses.ApiResponse;
 
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -38,6 +40,18 @@ import java.util.List;
  * it was. All three are reads, so a session id that no longer resolves degrades rather than being refused.
  */
 public class GrafanaApiSpec implements OpenApiContributor {
+  /**
+   * The aggregation vocabulary both this spec and {@link TimeSeriesApiSpec} advertise, read from the enum
+   * {@code TimeSeriesHandlerUtils.resolveAggregationType} resolves against rather than written out - the same
+   * rule the vector spec follows for its own value sets (issue #7579).
+   * <p>
+   * Only the canonical upper-case spellings appear. The resolver upper-cases its input, so a client may send
+   * any casing; an OpenAPI enum is an exact-match list, and declaring a SUBSET of what the server accepts keeps
+   * every value the document allows acceptable, which is the safe direction. Declaring the case variants too
+   * would multiply the list by nothing useful.
+   */
+  static final List<String> AGGREGATION_TYPES =
+      Arrays.stream(AggregationType.values()).map(Enum::name).toList();
 
   @Override
   public void contribute(final OpenAPI openAPI) {
@@ -129,6 +143,8 @@ public class GrafanaApiSpec implements OpenApiContributor {
     final Schema<Object> schema = SpecBuilders.object("Data source health");
     schema.addProperty("status", SpecBuilders.string("Always 'ok' when the database is reachable"));
     schema.addProperty("database", SpecBuilders.string("Database the check ran against"));
+    // Both written unconditionally by GetGrafanaHealthHandler on the only path that answers 200 (issue #7578).
+    schema.setRequired(List.of("status", "database"));
     return schema;
   }
 
@@ -136,28 +152,35 @@ public class GrafanaApiSpec implements OpenApiContributor {
     final Schema<Object> field = SpecBuilders.object("One column, value or tag");
     field.addProperty("name", SpecBuilders.string("Column name"));
     field.addProperty("dataType", SpecBuilders.string("ArcadeDB column data type"));
+    field.setRequired(List.of("name", "dataType"));
 
     final Schema<Object> type = SpecBuilders.object("One queryable time-series type");
     type.addProperty("name", SpecBuilders.string("Type name"));
     type.addProperty("fields", SpecBuilders.arrayOf(field, "Value columns"));
     type.addProperty("tags", SpecBuilders.arrayOf(field, "Tag columns available as filters"));
+    type.setRequired(List.of("name", "fields", "tags"));
 
     final Schema<Object> schema = SpecBuilders.object("Queryable metadata");
     schema.addProperty("types", SpecBuilders.arrayOf(type, "Queryable time-series types"));
     schema.addProperty("aggregationTypes", SpecBuilders.arrayOf(
         SpecBuilders.string("Aggregation function name"), "Supported aggregation functions"));
+    // GetGrafanaMetadataHandler builds each type row whole and writes both top-level members on every answer
+    // (issue #7578).
+    schema.setRequired(List.of("types", "aggregationTypes"));
     return schema;
   }
 
   private Schema<?> createQueryRequestSchema() {
     final Schema<Object> aggregationRequest = SpecBuilders.object("One aggregation to compute");
     aggregationRequest.addProperty("field", SpecBuilders.string("Field name to aggregate"));
-    aggregationRequest.addProperty("type", SpecBuilders.string(
-        "Aggregation function. Required, one of SUM, AVG, MIN, MAX, COUNT, matched case-insensitively. "
-            + "A value that matches none is reported as an error frame on this target, leaving the other "
-            + "targets served."));
+    final Schema<String> aggregationType = SpecBuilders.string(
+        "Aggregation function, matched case-insensitively. A value that matches none is reported as an error "
+            + "frame on this target, leaving the other targets served.");
+    aggregationType.setEnum(List.copyOf(AGGREGATION_TYPES));
+    aggregationRequest.addProperty("type", aggregationType);
     aggregationRequest.addProperty("alias", SpecBuilders.string(
         "Output field name. Defaults to the field name suffixed with the lower-cased aggregation type."));
+    aggregationRequest.setRequired(List.of("field", "type"));
 
     final Schema<Object> aggregation = SpecBuilders.object(
         "Bucketed aggregation. Omit for raw samples.");
@@ -168,18 +191,24 @@ public class GrafanaApiSpec implements OpenApiContributor {
     aggregation.addProperty("requests", SpecBuilders.arrayOf(
         aggregationRequest,
         "Aggregations to compute. Must name at least one; an empty array is refused with an error frame."));
+    // 'bucketInterval' is the one member this endpoint may omit, unlike the /api/v1/ts sibling: it is derived
+    // from 'maxDataPoints' and the time range when absent (issue #7578).
+    aggregation.setRequired(List.of("requests"));
 
     final Schema<Object> target = SpecBuilders.object("One panel query");
     target.addProperty("refId", SpecBuilders.string(
         "Identifier echoed back as the result key. Defaults to 'A'."));
     target.addProperty("type", SpecBuilders.string("Time-series type name"));
-    target.addProperty("tags", SpecBuilders.object("Tag filter as name to value pairs"));
+    target.addProperty("tags", SpecBuilders.mapOf(SpecBuilders.string("Tag value the column must equal"),
+        "Tag filter as name to value pairs. All pairs must match"));
     target.addProperty("aggregation", aggregation);
     target.addProperty("fields", SpecBuilders.arrayOf(
         SpecBuilders.string("Field name"),
         "Fields to project on a raw (non-aggregated) query. All fields when omitted. Ignored when "
             + "'aggregation' is present. A name that is no column of the type is refused with an error frame "
             + "for this target rather than ignored."));
+    // A target names the type it queries; everything else has a default or is optional.
+    target.setRequired(List.of("type"));
 
     final Schema<Object> schema = SpecBuilders.object("Grafana panel query");
     schema.addProperty("targets", SpecBuilders.arrayOf(target, "Queries to execute"));
@@ -198,19 +227,24 @@ public class GrafanaApiSpec implements OpenApiContributor {
     final Schema<Object> frameField = SpecBuilders.object("One frame field");
     frameField.addProperty("name", SpecBuilders.string("Field name, 'time' for the time column"));
     frameField.addProperty("type", SpecBuilders.string("Grafana field type, for example time or number"));
+    frameField.setRequired(List.of("name", "type"));
 
     final Schema<Object> frameSchema = SpecBuilders.object("Frame schema");
     frameSchema.addProperty("fields", SpecBuilders.arrayOf(
         frameField, "Fields, positionally aligned with the value arrays"));
+    frameSchema.setRequired(List.of("fields"));
 
     final Schema<Object> frameData = SpecBuilders.object("Frame data");
     frameData.addProperty("values", SpecBuilders.arrayOf(
-        SpecBuilders.arrayOf(SpecBuilders.object("Value"), "One column of values"),
+        SpecBuilders.arrayOf(SpecBuilders.anyValue("One cell: a timestamp, a number, a string, or null"),
+            "One column of values"),
         "Column-major values, one array per field"));
+    frameData.setRequired(List.of("values"));
 
     final Schema<Object> frame = SpecBuilders.object("One DataFrame");
     frame.addProperty("schema", frameSchema);
     frame.addProperty("data", frameData);
+    frame.setRequired(List.of("schema", "data"));
 
     final Schema<Object> perTarget = SpecBuilders.object(
         "Result for one target. Carries 'error' instead of frames when the target could not be "
@@ -218,12 +252,17 @@ public class GrafanaApiSpec implements OpenApiContributor {
     perTarget.addProperty("frames", SpecBuilders.arrayOf(frame, "Frames produced by the target"));
     perTarget.addProperty("error", SpecBuilders.string(
         "Why the target could not be resolved. Present only when it failed; 'frames' is then empty."));
+    // 'frames' is written on both the success and the failure path - empty on the latter - so it is the one
+    // member a caller never has to null-check, which is exactly what makes 'error' the discriminator
+    // (issue #7578).
+    perTarget.setRequired(List.of("frames"));
 
     final Schema<Object> results = SpecBuilders.object("Results keyed by target refId");
     results.setAdditionalProperties(perTarget);
 
     final Schema<Object> schema = SpecBuilders.object("Grafana DataFrame response");
     schema.addProperty("results", results);
+    schema.setRequired(List.of("results"));
     return schema;
   }
 }

@@ -21,6 +21,7 @@ package com.arcadedb.server.http.handler.openapi;
 import com.arcadedb.query.search.FullTextQuery;
 import com.arcadedb.query.search.HybridSearch;
 import com.arcadedb.query.search.VectorLeg;
+import com.arcadedb.schema.FullTextIndexMetadata;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.Operation;
 import io.swagger.v3.oas.models.PathItem;
@@ -38,6 +39,14 @@ import java.util.List;
  * document and the enforcement cannot drift: {@link VectorLeg#MAX_K}, {@link VectorLeg#MAX_EF_SEARCH},
  * {@link FullTextQuery#MAX_LIMIT} and the {@link HybridSearch} expansion caps are the same values the MCP tool
  * schemas advertise and the gRPC RPCs enforce.
+ * <p>
+ * The closed VALUE SETS are read the same way, for the same reason (issue #7579). {@code fusionStrategy},
+ * {@code expand.direction}, a fused hit's {@code sources} and the full-text {@code similarity} are each a fixed
+ * vocabulary the server enforces, and each used to be a bare {@code string} whose members appeared only in the
+ * description - so a generated client got a {@code String} where it could have had an enum, and a typo was a 400
+ * from the server rather than a compile error in the caller. They come from {@link HybridSearch#FUSION_STRATEGIES},
+ * {@link HybridSearch#EXPAND_DIRECTIONS}, {@link HybridSearch#LEG_NAMES} and
+ * {@link FullTextIndexMetadata#SIMILARITIES}.
  */
 public class VectorApiSpec implements OpenApiContributor {
 
@@ -203,15 +212,20 @@ public class VectorApiSpec implements OpenApiContributor {
         refused rather than silently dropped. Omit both to search without a full-text leg."""));
     schema.addProperty("fulltextIndexName", SpecBuilders.string(
         "Full-text index the full-text leg searches. Required whenever 'fulltextQuery' is given, and refused without it"));
-    schema.addProperty("fusionStrategy", SpecBuilders.string(
-        "How the legs are combined. Only RRF can consume the graph expansion leg, which is ranked by traversal order"));
+    schema.addProperty("fusionStrategy", enumString(
+        "How the legs are combined. Matched case-insensitively on input and echoed upper-cased. Only "
+            + HybridSearch.STRATEGY_RRF + " can consume the graph expansion leg, which is ranked by traversal "
+            + "order and carries no score, so naming another strategy alongside 'expand' is refused. Defaults to "
+            + HybridSearch.STRATEGY_RRF + " when omitted",
+        HybridSearch.FUSION_STRATEGIES));
     schema.addProperty("weights", weightsSchema());
 
     final Schema<Object> expand = SpecBuilders.object("""
         Optional graph expansion leg, seeded from the union of the retrieval legs and ranked by breadth-first \
         discovery order.""");
     expand.addProperty("edgeTypes", SpecBuilders.arrayOf(SpecBuilders.string(null), "Edge types to walk"));
-    expand.addProperty("direction", SpecBuilders.string("out, in, or both"));
+    expand.addProperty("direction", enumString("Which way to walk the edges. Defaults to '"
+        + HybridSearch.DIRECTION_OUT + "'", HybridSearch.EXPAND_DIRECTIONS));
     expand.addProperty("maxDepth", boundedInteger("Hops to walk from a seed", 1, HybridSearch.MAX_DEPTH, 1));
     schema.addProperty("expand", expand);
 
@@ -231,7 +245,8 @@ public class VectorApiSpec implements OpenApiContributor {
     schema.addProperty("fused", SpecBuilders.bool("""
         False when only one leg produced rows: fusion needs at least two sources, so the response carries that \
         leg's native distance or score instead of a fused one."""));
-    schema.addProperty("fusionStrategy", SpecBuilders.string("Strategy actually applied; absent when 'fused' is false"));
+    schema.addProperty("fusionStrategy", enumString(
+        "Strategy actually applied, upper-cased; absent when 'fused' is false", HybridSearch.FUSION_STRATEGIES));
     schema.addProperty("truncated", SpecBuilders.bool("True when the result window was filled"));
     schema.addProperty("count", SpecBuilders.integer("Number of results returned"));
     schema.addProperty("results", SpecBuilders.arrayOf(fusedHitSchema(), "Fused hits, best first"));
@@ -286,7 +301,8 @@ public class VectorApiSpec implements OpenApiContributor {
     final Schema<Object> fullText = SpecBuilders.object(
         "The full-text leg, present whenever it ran - including when it matched nothing");
     fullText.addProperty("indexName", SpecBuilders.string("Full-text index that was searched"));
-    fullText.addProperty("similarity", SpecBuilders.string("Similarity function that index scores with, e.g. BM25"));
+    fullText.addProperty("similarity", enumString("Similarity function that index scores with",
+        FullTextIndexMetadata.SIMILARITIES));
     fullText.addProperty("count", SpecBuilders.integer("Rows the full-text leg contributed to fusion"));
     // Each sub-object is written as one expression, so a leg that is present is present whole: there is no
     // state in which 'fulltext' exists without its index name. Same for 'expand' below.
@@ -294,7 +310,8 @@ public class VectorApiSpec implements OpenApiContributor {
 
     final Schema<Object> expand = SpecBuilders.object(
         "The graph expansion leg, present whenever the request carried 'expand'");
-    expand.addProperty("direction", SpecBuilders.string("Direction walked: out, in or both"));
+    expand.addProperty("direction", enumString("Direction walked, echoed from the request",
+        HybridSearch.EXPAND_DIRECTIONS));
     expand.addProperty("edgeTypes", SpecBuilders.arrayOf(SpecBuilders.string(null),
         "Edge types walked; empty when the request named none, which walks them all"));
     expand.addProperty("maxDepth", SpecBuilders.integer("Hops walked from a seed"));
@@ -331,7 +348,8 @@ public class VectorApiSpec implements OpenApiContributor {
   private Schema<?> createFullTextResponseSchema() {
     final Schema<Object> schema = SpecBuilders.object("Documents matching the full-text query");
     schema.addProperty("indexName", SpecBuilders.string("Index that was searched"));
-    schema.addProperty("similarity", SpecBuilders.string("Similarity function the index scores with, e.g. BM25"));
+    schema.addProperty("similarity", enumString("Similarity function the index scores with",
+        FullTextIndexMetadata.SIMILARITIES));
     schema.addProperty("count", SpecBuilders.integer("Number of results returned"));
     schema.addProperty("results", SpecBuilders.arrayOf(hitSchema(), "Hits, highest score first"));
     schema.setRequired(List.of("indexName", "similarity", "count", "results"));
@@ -361,8 +379,8 @@ public class VectorApiSpec implements OpenApiContributor {
         "Sparse or full-text score, present instead of 'fusedScore' on an unfused sparse or full-text response"));
     hit.addProperty("distance", SpecBuilders.number(
         "Vector distance, present instead of 'fusedScore' on an unfused dense response"));
-    hit.addProperty("sources", SpecBuilders.arrayOf(SpecBuilders.string(null),
-        "Which legs contributed this hit: vector, fulltext, expand"));
+    hit.addProperty("sources", SpecBuilders.arrayOf(enumString(null, HybridSearch.LEG_NAMES),
+        "Which legs contributed this hit. Never empty: a hit is in the list because some leg produced it"));
     hit.addProperty("depth", SpecBuilders.integer("Hops from the seed, for a hit the expansion leg contributed"));
     hit.addProperty("path", SpecBuilders.arrayOf(SpecBuilders.string(null),
         "Record ids from the seed to this hit, seed included"));
@@ -373,6 +391,22 @@ public class VectorApiSpec implements OpenApiContributor {
     // exclusive, and 'depth'/'path' belong to an expansion hit only.
     hit.setRequired(List.of("rid", "sources", "properties"));
     return hit;
+  }
+
+  /**
+   * A string property whose accepted values are a closed set, read from the constant the server enforces it with.
+   * <p>
+   * The counterpart of {@link #boundedInteger} for a vocabulary rather than a range: a generated client gets an
+   * enum instead of a bare {@code String}, so a typo is a compile error in the caller rather than a 400 from the
+   * server (issue #7579).
+   */
+  private Schema<?> enumString(final String description, final List<String> values) {
+    final Schema<String> schema = SpecBuilders.string(description);
+    // A copy, not the constant itself. Swagger's Schema exposes addEnumItemObject, so handing the document a
+    // reference to a shared constant would put one mutable list at several points in it - the same defect class
+    // PrometheusApiSpec.samplePair avoids by returning a fresh schema per call.
+    schema.setEnum(List.copyOf(values));
+    return schema;
   }
 
   /**

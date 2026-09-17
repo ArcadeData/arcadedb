@@ -21,6 +21,7 @@ package com.arcadedb.schema;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.CollectionUtils;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -57,6 +58,16 @@ public class FullTextIndexMetadata extends IndexMetadata {
    * Legacy term-coordination (match-count) similarity. Default for indexes created before BM25 support, preserving their ranking.
    */
   public static final String SIMILARITY_CLASSIC = "CLASSIC";
+
+  /**
+   * Every accepted similarity name, in the order {@link #setSimilarity} lists them in its refusal.
+   * <p>
+   * The value set is closed and enforced here, so every surface that advertises it - the OpenAPI document's
+   * {@code FullTextSearchResponse.similarity}, the hybrid response's per-leg {@code similarity} - reads it from
+   * this list rather than writing the two names out, which is how the document and the check stay the same set
+   * (issue #7579).
+   */
+  public static final List<String> SIMILARITIES = List.of(SIMILARITY_BM25, SIMILARITY_CLASSIC);
 
   // These mirror BM25Scorer.DEFAULT_K1 / DEFAULT_B by value. They are intentionally not a reference to that class: BM25Scorer
   // lives in com.arcadedb.index.fulltext and depends on schema, not the other way round, so referencing it here would invert the
@@ -520,11 +531,11 @@ public class FullTextIndexMetadata extends IndexMetadata {
    */
   public void setSimilarity(final String similarity) {
     if (similarity == null)
-      throw new IllegalArgumentException("Full-text similarity cannot be null. Valid values: " + SIMILARITY_BM25 + ", " + SIMILARITY_CLASSIC);
+      throw new IllegalArgumentException("Full-text similarity cannot be null. Valid values: " + String.join(", ", SIMILARITIES));
     final String upper = similarity.toUpperCase();
-    if (!SIMILARITY_BM25.equals(upper) && !SIMILARITY_CLASSIC.equals(upper))
+    if (!SIMILARITIES.contains(upper))
       throw new IllegalArgumentException(
-          "Unknown full-text similarity '" + similarity + "'. Valid values: " + SIMILARITY_BM25 + ", " + SIMILARITY_CLASSIC);
+          "Unknown full-text similarity '" + similarity + "'. Valid values: " + String.join(", ", SIMILARITIES));
     this.similarity = upper;
   }
 
