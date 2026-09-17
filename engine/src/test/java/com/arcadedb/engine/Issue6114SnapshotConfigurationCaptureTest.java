@@ -52,6 +52,8 @@ class Issue6114SnapshotConfigurationCaptureTest extends TestHelper {
     schema.createDocumentType("AtT0");
 
     final String liveSchemaAtT0 = Files.readString(schema.getConfigurationFile().toPath(), StandardCharsets.UTF_8);
+    final String previousSchemaAtT0 = Files.readString(
+        new File(database.getDatabasePath(), LocalSchema.SCHEMA_PREV_FILE_NAME).toPath(), StandardCharsets.UTF_8);
 
     try (final PageSnapshot snapshot = db.getPageManager().openSnapshot(db)) {
       final List<PageSnapshot.SnapshotConfigFile> captured = snapshot.getConfigurationFiles();
@@ -81,6 +83,19 @@ class Issue6114SnapshotConfigurationCaptureTest extends TestHelper {
       assertThat(capturedTypes.keySet())
           .as("a type created after t0 has no pages in this window, so it must not be in its schema either")
           .doesNotContain("AfterT0");
+
+      // AND THE PREVIOUS COPY IS PINNED AT t0 TOO, not merely present in the captured set (issue #7637). This is
+      // where that claim is decidable: the DDL above ran while this window was open, so the live schema.prev.json
+      // now holds the generation the window is serving as its PRIMARY. A window that re-read the file instead of
+      // capturing it would serve that newer copy - a fallback describing a page set the archive does not contain,
+      // which is the whole reason the capture is inside the barrier rather than after it.
+      final String capturedPrevious = new String(
+          configurationFile(snapshot, LocalSchema.SCHEMA_PREV_FILE_NAME).content(), StandardCharsets.UTF_8);
+      assertThat(capturedPrevious).isEqualTo(previousSchemaAtT0);
+      assertThat(Files.readString(new File(database.getDatabasePath(), LocalSchema.SCHEMA_PREV_FILE_NAME).toPath(),
+          StandardCharsets.UTF_8))
+          .as("the DDL must really have moved the live previous copy on, or this proves nothing")
+          .isNotEqualTo(capturedPrevious);
     }
   }
 
