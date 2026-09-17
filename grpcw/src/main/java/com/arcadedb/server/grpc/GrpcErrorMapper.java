@@ -136,6 +136,20 @@ public final class GrpcErrorMapper {
    * <p>
    * The gRPC surfaces reported the raw message whatever {@code arcadedb.server.mode} said, so they silently opted
    * out of the concealment the rest of the server applies (issue #7472).
+   * <p>
+   * EVERY branch is concealed here, the classified ones included, and that is DELIBERATELY not what
+   * {@code ArcadeDbGrpcAdminService.toStatus} does - it conceals only its catch-all and leaves its classified arms
+   * alone. The two are not inconsistent, they are answering about different messages. The admin service's arms
+   * carry sentences the SERVER wrote about the REQUEST ("Usage: delete backup &lt;database&gt; &lt;fileName&gt;",
+   * "token name already issued"), which are bounded and carry nothing the caller did not send. The exceptions that
+   * reach here carry ENGINE text: a {@link DuplicatedKeyException}'s message embeds the index name and the
+   * offending key VALUE - actual stored data - and a {@link DatabaseOperationInProgressException}'s names a
+   * database. Classified is not the same as safe to echo, so do not "fix" one of these to match the other.
+   * <p>
+   * What survives concealment is what a client can act on without reading prose: the status CODE, the
+   * {@link #EXCEPTION_CLASS_KEY} trailer, the duplicated-key trailers - which carry the same index and keys, but to
+   * a DRIVER rebuilding a typed exception rather than into a human-readable description - and the leader-redirect
+   * address and sentence, which this server put there rather than an exception.
    *
    * @param conceal true when the server runs in production mode - see {@code ArcadeDBServer.isProductionMode()}
    */
