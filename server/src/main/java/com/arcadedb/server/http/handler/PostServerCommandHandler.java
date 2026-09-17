@@ -557,9 +557,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     final JSONObject event = new JSONObject().put("status", "error");
     final Throwable reported = e.getCause() != null ? e.getCause() : e;
     event.put("exception", reported.getClass().getName());
-    event.put("message", isProductionMode() ?
-        "The operation failed. Check the server log for the details" :
-        failureMessage(e));
+    event.put("message", isProductionMode() ? ArcadeDBServer.CONCEALED_ERROR_MESSAGE : failureMessage(e));
     return event;
   }
 

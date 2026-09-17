@@ -23,6 +23,7 @@ import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
+import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
 import io.grpc.Metadata;
 import io.grpc.Status;
@@ -65,10 +66,10 @@ public final class GrpcErrorMapper {
 
   /**
    * The description a CONCEALED failure carries in place of the exception's own message, when the server runs in
-   * production mode. Deliberately identical for every failure: a message that varied would put back exactly the
-   * signal the concealment removes (issue #7472).
+   * production mode - {@link ArcadeDBServer#CONCEALED_ERROR_MESSAGE}, so this transport and the control plane's SSE
+   * frames say the same thing rather than two things that merely mean the same (issue #7472).
    */
-  static final String CONCEALED_DESCRIPTION = "The request failed. Check the server log for the details";
+  static final String CONCEALED_DESCRIPTION = ArcadeDBServer.CONCEALED_ERROR_MESSAGE;
 
   private GrpcErrorMapper() {
   }
