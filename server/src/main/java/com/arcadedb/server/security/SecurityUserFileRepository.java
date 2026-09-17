@@ -23,6 +23,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
 import java.nio.ByteBuffer;
@@ -48,9 +49,8 @@ public class SecurityUserFileRepository {
   private volatile     long   fileLastModified = -1;
 
   public SecurityUserFileRepository(String securityConfPath) {
-    if (!securityConfPath.endsWith(File.separator))
-      securityConfPath += File.separator;
-    this.securityConfPath = securityConfPath;
+    // EITHER SEPARATOR CONVENTION (ISSUE #7588)
+    this.securityConfPath = FileUtils.appendSeparatorIfMissing(securityConfPath);
   }
 
   public void save(final List<JSONObject> configuration) throws IOException {

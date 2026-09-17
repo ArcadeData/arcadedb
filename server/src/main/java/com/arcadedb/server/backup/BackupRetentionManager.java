@@ -94,6 +94,29 @@ public class BackupRetentionManager {
       return 0;
     }
 
+    return applyRetention(databaseName, config);
+  }
+
+  /**
+   * Applies {@code config}'s retention policy to a database's backup directory WITHOUT requiring that database to be
+   * registered here.
+   * <p>
+   * Registration follows the auto-backup SCHEDULE, and an on-demand {@code trigger backup} does not need one: it can
+   * name any database on the server, including one absent from the auto-backup configuration entirely. Such a
+   * database's archives were never pruned - the scheduler prunes what it knows about, and it does not know about
+   * that database - so triggering backups for it grew the directory forever, which is the disk-growth problem #7392
+   * set out to fix surviving in a narrower form (issue #7472).
+   * <p>
+   * The caller supplies the EFFECTIVE config ({@code BackupConfigLoader.getEffectiveConfig}), which falls back to
+   * the server-level defaults, so an unconfigured database is pruned by the same policy a configured one with no
+   * overrides would be - rather than by no policy at all.
+   *
+   * @param databaseName the database whose backup sub-directory is pruned
+   * @param config       the effective backup configuration for it
+   *
+   * @return number of backup files deleted
+   */
+  public int applyRetention(final String databaseName, final DatabaseBackupConfig config) {
     final DatabaseBackupConfig.RetentionConfig retention = config.getRetention();
     if (retention == null) {
       LogManager.instance().log(this, Level.FINE,

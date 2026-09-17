@@ -54,6 +54,7 @@ public class Parser {
   private final long              total;
   private       char              currentChar;
   private       int               peeked   = NOTHING_PEEKED;
+  private       boolean           beforeFirstChar = true;
   private       boolean           endOfStream;
   private       boolean           skipLeadingComments;
   private final boolean           compressed;
@@ -89,6 +90,24 @@ public class Parser {
   }
 
   /**
+   * Whether {@link #nextChar()} has never run since this parser was built or last {@link #reset()}, so
+   * {@link #getCurrentChar()} answers a placeholder rather than a character of the source.
+   * <p>
+   * That placeholder is {@code 0}, and {@code 0} is also a character a source can legitimately carry: a genuine NUL
+   * read from the source has {@link #isEndOfStream()} false and {@code getCurrentChar()} {@code 0}, exactly like a
+   * parser that has read nothing. A caller distinguishing the two on the character value alone therefore drops the
+   * NUL and works on a line one character shorter than the source says (issue #7501). It is the same sentinel
+   * collision {@link LeadingCommentInputStream}'s {@link #NOT_READ} and {@link #peeked}'s {@link #NOTHING_PEEKED}
+   * exist to avoid, on the one reader that still had it.
+   * <p>
+   * A boolean and not a sentinel {@code char}: every {@code char} value is a legal character, which is the problem
+   * itself.
+   */
+  public boolean isBeforeFirstChar() {
+    return beforeFirstChar;
+  }
+
+  /**
    * Whether the last {@link #nextChar()} hit the end of the source rather than reading a character. The flag
    * {@link #END_OF_STREAM} cannot be, since {@code nextChar()} narrows {@code -1} to a {@code char} and so reports
    * the end of the source as a character value (issue #7494).
@@ -108,6 +127,7 @@ public class Parser {
     }
 
     endOfStream = read < 0;
+    beforeFirstChar = false;
     currentChar = (char) read;
     return currentChar;
   }
@@ -140,6 +160,7 @@ public class Parser {
 
   public void reset() throws IOException {
     currentChar = 0;
+    beforeFirstChar = true;
     peeked = NOTHING_PEEKED;
     endOfStream = false;
     position.set(0);

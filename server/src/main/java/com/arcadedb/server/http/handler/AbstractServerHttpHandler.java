@@ -67,7 +67,6 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.IdentityHashMap;
-import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
@@ -1644,13 +1643,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * these must stay visible with default logging in production - demoting them to FINE is how a
    * BufferUnderflowException on a read-only command went undiagnosable (issue #5374).
    */
-  private Level getInternalErrorLogLevel() {
+  protected Level getInternalErrorLogLevel() {
     return "development".equals(httpServer.getServer().getConfiguration().getValueAsString(GlobalConfiguration.SERVER_MODE)) ?
             Level.SEVERE :
             Level.WARNING;
   }
 
-  private Level getUserSevereErrorLogLevel() {
+  protected Level getUserSevereErrorLogLevel() {
     return "development".equals(httpServer.getServer().getConfiguration().getValueAsString(GlobalConfiguration.SERVER_MODE)) ?
             Level.INFO :
             Level.FINE;
@@ -1661,9 +1660,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * free-form cause chain ({@code detail}), which can leak file paths and engine internals; the bounded
    * {@code exception} class name and structured {@code exceptionArgs} are still emitted because the remote driver
    * and HA rely on them. {@code development} and {@code test} keep the full verbose body to aid debugging.
+   * <p>
+   * The decision itself lives on {@link com.arcadedb.server.ArcadeDBServer#isProductionMode()} so every surface
+   * that conceals reads ONE answer - this used to be the only place that asked, and the surfaces added since
+   * (the control plane's SSE progress stream, the gRPC error paths) silently opted out (issue #7472).
    */
-  private boolean isProductionMode() {
-    return "production".equals(httpServer.getServer().getConfiguration().getValueAsString(GlobalConfiguration.SERVER_MODE));
+  protected boolean isProductionMode() {
+    return ArcadeDBServer.isProductionMode(httpServer.getServer().getConfiguration());
   }
 
   /**

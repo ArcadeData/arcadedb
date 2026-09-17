@@ -1283,6 +1283,23 @@ public enum GlobalConfiguration {
 
   NETWORK_SOCKET_TIMEOUT("arcadedb.network.socketTimeout", SCOPE.SERVER, "TCP/IP Socket timeout (in ms)", Integer.class, 30000),
 
+  NETWORK_REMOTE_FETCH_CONNECT_TIMEOUT("arcadedb.network.remoteFetchConnectTimeout", SCOPE.SERVER, """
+      Connect timeout, in milliseconds, for an OUTBOUND fetch of a caller-supplied URL - `IMPORT DATABASE`,
+      `RESTORE DATABASE` and the openCypher `LOAD CSV` - applied to every hop of the redirect chain. 0 means the
+      JDK default, which is no timeout at all: a host that accepts nothing and refuses nothing would block the
+      calling thread indefinitely. A negative value is not one the JDK accepts, so it falls back to the 30s
+      default rather than failing the fetch it was read for.""", Integer.class, 30_000),
+
+  NETWORK_REMOTE_FETCH_READ_TIMEOUT("arcadedb.network.remoteFetchReadTimeout", SCOPE.SERVER, """
+      Read timeout, in milliseconds, for an OUTBOUND fetch of a caller-supplied URL - `IMPORT DATABASE`,
+      `RESTORE DATABASE` and the openCypher `LOAD CSV`. It bounds EACH read, not the transfer: a large remote
+      source may legitimately take much longer than this to arrive, as long as it keeps sending. 0 means the JDK
+      default, which is no timeout at all - a source that stops sending and never closes the socket (a hung HTTP
+      connection, a proxy that holds the socket open after the origin dies) then blocks the calling thread for as
+      long as the socket stays open, which is what issue #7500 is about. Raise it for a slow origin rather than
+      disabling it. A negative value is not one the JDK accepts, so it falls back to the 30s default rather than
+      failing the fetch it was read for.""", Integer.class, 30_000),
+
   NETWORK_SOCKET_KEEP_ALIVE("arcadedb.network.socketKeepAlive", SCOPE.SERVER, """
       Enable TCP keepalive (SO_KEEPALIVE) on every wire-protocol socket. The Postgres and Redis executors drop the
       socket read timeout to infinite once a connection is authenticated, because an authenticated client legitimately

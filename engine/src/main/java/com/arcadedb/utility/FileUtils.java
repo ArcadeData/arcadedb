@@ -190,6 +190,96 @@ public class FileUtils {
     return pos > -1 ? path.substring(pos + 1) : path;
   }
 
+  // A PATH THAT IS ITSELF A ROOT - "/" OR "C:/" - HAS NO LAST SEGMENT, SO THIS ANSWERS "". THAT IS THE HONEST
+  // ANSWER AND IT IS WHAT LocalDatabase THEN USES AS THE DATABASE NAME, WHICH IS WHY A ROOT IS NOT A USABLE
+  // DATABASE PATH ON EITHER PLATFORM. PRE-EXISTING FOR "/" AND UNCHANGED BY #7588: stripTrailingSeparator KEEPS A
+  // ROOT'S SEPARATOR PRECISELY SO THE PATH STILL NAMES THE ROOT, RATHER THAN SILENTLY NAMING SOMETHING ELSE
+
+  /**
+   * Whether {@code path} ends with a path separator in EITHER convention, not only this JVM's own
+   * {@link File#separator}. Same reason as {@link #lastIndexOfSeparator(String)}: a path an embedder, a
+   * configuration file or an environment variable supplies is routinely written with {@code '/'} even on Windows,
+   * and a check that only knows {@code '\'} answers "no separator" for one (issue #7588).
+   */
+  public static boolean endsWithSeparator(final String path) {
+    return !path.isEmpty() && isSeparator(path.charAt(path.length() - 1));
+  }
+
+  /**
+   * Whether {@code path} starts with a path separator in either convention - an absolute, root-relative path. Used
+   * by the guards that refuse one, which must not be escapable by writing the path the other way round.
+   */
+  public static boolean startsWithSeparator(final String path) {
+    return !path.isEmpty() && isSeparator(path.charAt(0));
+  }
+
+  /** Whether {@code c} is a path separator in either convention. */
+  public static boolean isSeparator(final char c) {
+    return c == '/' || c == '\\';
+  }
+
+  /**
+   * {@code path} guaranteed to end with a separator, appending this JVM's {@link File#separator} only when it does
+   * not already end with one of EITHER convention - so {@code "C:/data/"} on Windows stays as it is rather than
+   * becoming {@code "C:/data/\"}.
+   * <p>
+   * Carries the same trade-off {@link #isSeparator(char)} does, in the other direction: a POSIX directory whose
+   * name genuinely ENDS in a backslash is read as already separated and gets nothing appended, so a later
+   * {@code directory + name} glues the two into one path segment instead of nesting them. Accepted for the same
+   * reason - a backslash in a POSIX directory name is pathological, a '/'-written Windows path is everyday - and
+   * noted here because the trade-off is not confined to the name-parsing side of it (PR #7755 review).
+   */
+  public static String appendSeparatorIfMissing(final String path) {
+    return endsWithSeparator(path) ? path : path + File.separator;
+  }
+
+  /**
+   * {@code path} without its trailing separator, in either convention, or unchanged when it has none.
+   * <p>
+   * A path that IS a root keeps its separator, because stripping it changes which directory the path names rather
+   * than just tidying it. Two forms of root:
+   * <ul>
+   *   <li>the POSIX root {@code "/"} (and {@code "\\"}), which would otherwise become the empty string;</li>
+   *   <li>a Windows DRIVE root, {@code "C:/"} or {@code "C:\\"}, which would otherwise become {@code "C:"} - and
+   *   {@code "C:"} is drive-RELATIVE on Windows: it names the current directory on drive C:, not the volume root.
+   *   {@code DatabaseFactory} keeps this value and {@code LocalDatabase} hands it to {@code new File(...)} and
+   *   {@code Path.of(...)}, so the difference is which directory the database is opened in (PR #7755 review).</li>
+   * </ul>
+   */
+  public static String stripTrailingSeparator(final String path) {
+    if (!endsWithSeparator(path) || isRoot(path))
+      return path;
+    return path.substring(0, path.length() - 1);
+  }
+
+  /**
+   * Whether {@code path} is ABSOLUTE in either platform's terms, regardless of which platform this JVM runs on:
+   * it starts with a separator, or it is Windows drive-qualified ({@code "C:\\backup.zip"}, {@code "C:/backup.zip"}).
+   * <p>
+   * For the guards that refuse an absolute caller-supplied path. {@link #startsWithSeparator(String)} alone is not
+   * that question on Windows: a drive-qualified path starts with a LETTER and is absolute all the same, so a guard
+   * asking only about the leading separator lets it through (PR #7755 review).
+   */
+  public static boolean isAbsolutePath(final String path) {
+    if (startsWithSeparator(path))
+      return true;
+    // DRIVE-QUALIFIED: A LETTER, A COLON, AND A SEPARATOR OR NOTHING. "C:backup.zip" IS DRIVE-RELATIVE RATHER THAN
+    // ABSOLUTE, BUT IT IS STILL A PATH ON ANOTHER DRIVE, SO IT IS REFUSED TOO
+    return path.length() >= 2 && path.charAt(1) == ':' && Character.isLetter(path.charAt(0));
+  }
+
+  /**
+   * Whether {@code path} names a file-system root that its trailing separator is PART OF rather than trailing
+   * punctuation on: {@code "/"}, {@code "\\"}, or a Windows drive root such as {@code "C:/"}.
+   */
+  private static boolean isRoot(final String path) {
+    if (path.length() == 1)
+      return true;
+    // A DRIVE ROOT IS EXACTLY THREE CHARACTERS: A LETTER, A COLON AND THE SEPARATOR. "C:/data/" IS NOT ONE, AND ITS
+    // TRAILING SEPARATOR IS THE ORDINARY KIND
+    return path.length() == 3 && path.charAt(1) == ':' && Character.isLetter(path.charAt(0));
+  }
+
   public static void deleteRecursively(final File rootFile) {
     for (int attempt = 0; attempt < 3; attempt++) {
       try {

@@ -122,6 +122,18 @@ public class ArcadeDBServer {
   public static final String                                SNAPSHOT_PENDING_FILE                = ".snapshot-pending";
 
   /**
+   * What a client is told instead of an internal message when {@link #isProductionMode()} holds and the surface has
+   * nowhere to omit the detail from - the gRPC status description, the SSE {@code error} frame - as opposed to the
+   * HTTP JSON body, which simply leaves its {@code detail} field out.
+   * <p>
+   * ONE string for every such surface, and deliberately the same for every failure: a message that varied would put
+   * back precisely the signal the concealment removes, and a message that varied BY SURFACE would make the setting
+   * mean one thing here and another thing there, which is what issue #7472 is about.
+   */
+  public static final String                                CONCEALED_ERROR_MESSAGE              =
+      "The request failed. Check the server log for the details";
+
+  /**
    * The two steps the startup {@code restore:} command publishes - {@link RestoreProgress#STEP_EXTRACT} then
    * {@link RestoreProgress#STEP_ACTIVATE}. One fewer than {@code ServerControlPlane.performRestore}'s three:
    * this command restores straight into the final directory, so there is no temporary directory to swap in, and
@@ -279,6 +291,36 @@ public class ArcadeDBServer {
 
   public ContextConfiguration getConfiguration() {
     return configuration;
+  }
+
+  /** The configured {@code arcadedb.server.mode}: {@code development}, {@code test} or {@code production}. */
+  public String getMode() {
+    return configuration.getValueAsString(GlobalConfiguration.SERVER_MODE);
+  }
+
+  /**
+   * Whether this server runs in {@code production} mode, where an error answered to a client CONCEALS the free-form
+   * internal detail - a cause chain that can carry file paths, engine internals and schema names - and reports only
+   * the bounded, structured parts a driver needs to act: the status/class, the leader address, the duplicated-key
+   * details. {@code development} and {@code test} keep the full text to aid debugging.
+   * <p>
+   * Asked HERE and not re-derived per surface, so the setting means one thing everywhere. It used to be a private
+   * helper on the HTTP handler base class, and the two surfaces added since - the control plane's SSE progress
+   * stream and the gRPC error paths - reported raw internal messages regardless of it. Both are root-gated, so the
+   * exposure was to an already-privileged caller; but concealment is either a policy or it is not, and a surface
+   * that opts out silently makes it unreliable as one (issue #7472).
+   */
+  public boolean isProductionMode() {
+    return isProductionMode(configuration);
+  }
+
+  /**
+   * {@link #isProductionMode()} for a caller that holds the configuration rather than the server - the HTTP handler
+   * base class, which is constructed against an {@code HttpServer} whose server may be a test double. Static so the
+   * rule itself is written once and every surface reads the SAME one, whichever handle on the configuration it has.
+   */
+  public static boolean isProductionMode(final ContextConfiguration configuration) {
+    return "production".equals(configuration.getValueAsString(GlobalConfiguration.SERVER_MODE));
   }
 
   /**
@@ -497,7 +539,7 @@ public class ArcadeDBServer {
     LogManager.instance().log(this, Level.INFO, "Available query languages: %s",
         QueryEngineManager.getInstance().getAvailableLanguages());
 
-    final String mode = configuration.getValueAsString(GlobalConfiguration.SERVER_MODE);
+    final String mode = getMode();
 
     final String msg = "ArcadeDB Server started in '%s' mode (CPUs=%d MAXRAM=%s)".formatted(mode,
         Runtime.getRuntime().availableProcessors(), FileUtils.getSizeAsString(Runtime.getRuntime().maxMemory()));

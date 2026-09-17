@@ -22,7 +22,9 @@ import com.arcadedb.exception.DatabaseOperationInProgressException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
+import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
 import io.grpc.Metadata;
 import io.grpc.Status;
@@ -32,6 +34,7 @@ import io.grpc.StatusRuntimeException;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.concurrent.ExecutionException;
+import java.util.logging.Level;
 
 /**
  * Central, consistent mapping from ArcadeDB engine exceptions to {@link io.grpc.Status} codes.
@@ -62,6 +65,13 @@ public final class GrpcErrorMapper {
    */
   public static final Metadata.Key<String> DUP_KEYS_KEY         = Metadata.Key.of("arcadedb-dup-keys",
       Metadata.ASCII_STRING_MARSHALLER);
+
+  /**
+   * The description a CONCEALED failure carries in place of the exception's own message, when the server runs in
+   * production mode - {@link ArcadeDBServer#CONCEALED_ERROR_MESSAGE}, so this transport and the control plane's SSE
+   * frames say the same thing rather than two things that merely mean the same (issue #7472).
+   */
+  static final String CONCEALED_DESCRIPTION = ArcadeDBServer.CONCEALED_ERROR_MESSAGE;
 
   private GrpcErrorMapper() {
   }
@@ -112,6 +122,41 @@ public final class GrpcErrorMapper {
    */
   public static StatusRuntimeException toStatusRuntimeException(final Throwable t, final String contextPrefix,
       final HAServerPlugin ha) {
+    return toStatusRuntimeException(t, contextPrefix, ha, false);
+  }
+
+  /**
+   * Same as {@link #toStatusRuntimeException(Throwable, String, HAServerPlugin)}, with the server's production-mode
+   * concealment applied.
+   * <p>
+   * In production the free-form part of the description - the exception's own message, which can carry file paths,
+   * engine internals and schema names - is replaced by {@link #CONCEALED_DESCRIPTION}. Everything a client can ACT
+   * on survives, and for exactly the reason the HTTP body keeps its {@code exception}/{@code exceptionArgs} fields:
+   * the status CODE, the {@link #EXCEPTION_CLASS_KEY} trailer the driver rebuilds the typed exception from, the
+   * duplicated-key trailers and the leader-redirect address and sentence are all bounded, structured values rather
+   * than free text, and the remote driver and HA depend on them.
+   * <p>
+   * The gRPC surfaces reported the raw message whatever {@code arcadedb.server.mode} said, so they silently opted
+   * out of the concealment the rest of the server applies (issue #7472).
+   * <p>
+   * EVERY branch is concealed here, the classified ones included, and that is DELIBERATELY not what
+   * {@code ArcadeDbGrpcAdminService.toStatus} does - it conceals only its catch-all and leaves its classified arms
+   * alone. The two are not inconsistent, they are answering about different messages. The admin service's arms
+   * carry sentences the SERVER wrote about the REQUEST ("Usage: delete backup &lt;database&gt; &lt;fileName&gt;",
+   * "token name already issued"), which are bounded and carry nothing the caller did not send. The exceptions that
+   * reach here carry ENGINE text: a {@link DuplicatedKeyException}'s message embeds the index name and the
+   * offending key VALUE - actual stored data - and a {@link DatabaseOperationInProgressException}'s names a
+   * database. Classified is not the same as safe to echo, so do not "fix" one of these to match the other.
+   * <p>
+   * What survives concealment is what a client can act on without reading prose: the status CODE, the
+   * {@link #EXCEPTION_CLASS_KEY} trailer, the duplicated-key trailers - which carry the same index and keys, but to
+   * a DRIVER rebuilding a typed exception rather than into a human-readable description - and the leader-redirect
+   * address and sentence, which this server put there rather than an exception.
+   *
+   * @param conceal true when the server runs in production mode - see {@code ArcadeDBServer.isProductionMode()}
+   */
+  public static StatusRuntimeException toStatusRuntimeException(final Throwable t, final String contextPrefix,
+      final HAServerPlugin ha, final boolean conceal) {
     final Throwable cause = unwrap(t);
 
     // Pass through statuses already chosen upstream (security, resource-exhausted, etc.).
@@ -146,8 +191,15 @@ public final class GrpcErrorMapper {
       code = statusCodeFor(cause);
     }
 
-    final String msg = cause.getMessage() != null ? cause.getMessage() : cause.toString();
+    if (conceal)
+      logConcealed(GrpcErrorMapper.class, contextPrefix, cause);
+
+    final String msg = conceal ?
+        CONCEALED_DESCRIPTION :
+        cause.getMessage() != null ? cause.getMessage() : cause.toString();
     final String prefixed = contextPrefix != null && !contextPrefix.isBlank() ? contextPrefix + ": " + msg : msg;
+    // THE LEADER-REDIRECT SENTENCE SURVIVES CONCEALMENT: IT IS AN ADDRESS THIS SERVER PUT THERE, NOT INTERNAL
+    // DETAIL FROM AN EXCEPTION, AND IT IS THE ONLY THING THAT MAKES A FOLLOWER'S REFUSAL ACTIONABLE
     final String description = redirect != null ? prefixed + ". " + redirect : prefixed;
 
     return code.toStatus().withDescription(description).withCause(cause).asRuntimeException(trailers);
@@ -204,11 +256,50 @@ public final class GrpcErrorMapper {
    * @param trailers      the caller's own trailers, added to in place and carried by the returned exception
    */
   static StatusException toStatusException(final Throwable t, final String contextPrefix, final HAServerPlugin ha,
-      final Metadata trailers) {
-    final StatusRuntimeException mapped = toStatusRuntimeException(t, contextPrefix, ha);
+      final Metadata trailers, final boolean conceal) {
+    final StatusRuntimeException mapped = toStatusRuntimeException(t, contextPrefix, ha, conceal);
     if (mapped.getTrailers() != null)
       trailers.merge(mapped.getTrailers());
     return mapped.getStatus().asException(trailers);
+  }
+
+  /**
+   * The description for a failure a caller maps DIRECTLY - keeping a status code it chose rather than one this
+   * class would classify - with the exception's text concealed, and LOGGED, when the server runs in production.
+   * <p>
+   * One method for both halves because they are one decision: the concealed text tells the operator to check the
+   * server log, and nothing else on these paths writes that entry - {@code GrpcLoggingInterceptor} sees the mapped
+   * status rather than the cause, and {@code GrpcUnaryCall.respond} logs only the client-cancel race. A caller that
+   * concealed without logging would not be hiding the detail from the client, it would be destroying it, which is
+   * strictly worse than not concealing at all (PR #7755 review).
+   *
+   * @param requester the logging context, normally the calling service instance
+   */
+  static String concealableDescription(final Object requester, final String prefix, final Throwable e,
+      final boolean conceal) {
+    if (!conceal)
+      // THE CLASS NAME WHEN THERE IS NO MESSAGE, LIKE insertErrorMessage AND Importer.describe: A LINK THAT READS
+      // "null" NAMES THE FAILURE LESS WELL THAN ITS TYPE DOES
+      return prefix + ": " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
+
+    logConcealed(requester, prefix, e);
+    return prefix + ": " + CONCEALED_DESCRIPTION;
+  }
+
+  /**
+   * Writes the entry a concealed answer promises, at the level the failure deserves.
+   * <p>
+   * {@code SEVERE} only for a fault the SERVER is responsible for. Everything else is something the caller did - a
+   * duplicated key, a validation refusal, a security denial - and a routine one at that: an upsert-by-insert-and-
+   * retry workload produces unique-constraint violations by design, and logging those at {@code SEVERE} would both
+   * cost a hot path and drain the word of its meaning for whoever is alerting on it. That is the split
+   * {@code AbstractServerHttpHandler} already draws between {@code getInternalErrorLogLevel()} and
+   * {@code getUserSevereErrorLogLevel()}, and this is the gRPC side of the same line (PR #7755 review).
+   */
+  static void logConcealed(final Object requester, final String context, final Throwable cause) {
+    final Level level = ErrorCategory.of(cause) == ErrorCategory.SERVER ? Level.SEVERE : Level.FINE;
+    LogManager.instance().log(requester, level, "%s (concealed from the client in production mode)", cause,
+        context != null ? context : "gRPC");
   }
 
   private static void addDuplicatedKeyTrailers(final Metadata trailers, final DuplicatedKeyException dup) {

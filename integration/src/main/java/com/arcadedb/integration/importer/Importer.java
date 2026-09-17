@@ -22,9 +22,23 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 
 import java.io.IOException;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.Map;
+import java.util.Set;
 
 public class Importer extends AbstractImporter {
+  /**
+   * The source URL currently being read, recorded BEFORE the read rather than after it succeeds, so a failure while
+   * reading can name it. {@link AbstractImporter#source} cannot: it is assigned only once the sniff has succeeded.
+   * <p>
+   * Plain instance state, reset at the top of {@link #load()}, because an {@code Importer} is single-use and
+   * single-threaded - every caller constructs a fresh one and {@code load()} walks its four routes in sequence. That
+   * is the same assumption {@link AbstractImporter#source}, {@code parser}, {@code format} and {@code context}
+   * already make; concurrent {@code load()} calls on ONE instance would race on all five alike.
+   */
+  private String loadingUrl;
+
   public Importer(final String[] args) {
     super(args);
   }
@@ -81,6 +95,7 @@ public class Importer extends AbstractImporter {
 
   public Map<String, Object> load() {
     source = null;
+    loadingUrl = null;
 
     try {
       final int cfgValue = settings.getIntValue("maxValueSampling", 100);
@@ -118,7 +133,7 @@ public class Importer extends AbstractImporter {
       if (settings.probeOnly)
         throw new IllegalArgumentException(e);
       else
-        throw new ImportException("Error on parsing source '" + source + "'", e);
+        throw new ImportException(importFailureMessage(e), e);
     } finally {
       stopImporting();
       if (database != null) {
@@ -130,13 +145,66 @@ public class Importer extends AbstractImporter {
     return context.toMap();
   }
 
+  /**
+   * The message an import failure is reported with.
+   * <p>
+   * It used to be {@code "Error on parsing source '" + source + "'"} and nothing else, which failed the caller twice
+   * over: {@code source} is only assigned once the sniff has SUCCEEDED, so anything that goes wrong while reading the
+   * source - the case a remote import most often hits - named the source {@code null}; and the cause's own message,
+   * the only part that says WHAT went wrong, appeared nowhere in the text a client is shown. A read timeout on a
+   * stalled remote source then reached the operator as {@code "Error on parsing source 'null'"}, naming neither the
+   * timeout nor the setting that relaxes it (issues #7500, #7346, #7461).
+   * <p>
+   * The URL is the one being read when the failure happened, which is known from the start, and the cause's message
+   * is appended. In production mode the server conceals this whole string before it reaches a client - see
+   * {@code ArcadeDBServer.isProductionMode()} - so naming the cause here costs nothing there and everything is still
+   * in the server log.
+   */
+  private String importFailureMessage(final Exception e) {
+    final String where = loadingUrl != null ? loadingUrl : source != null ? source.toString() : settings.url;
+    return "Error on parsing source '" + where + "': " + causeChain(e);
+  }
+
+  /**
+   * {@code e} and its causes as one line, {@code outermost -> cause -> cause}.
+   * <p>
+   * The WHOLE chain and not just {@code e.getMessage()}, because the message that says what actually went wrong is
+   * rarely the outermost one. A read timeout hit while a FORMAT is consuming the source - after the sniff has
+   * already succeeded - arrives here wrapped as {@code ImportException("Error on importing CSV", timeout)}, and
+   * reporting only that wrapper threw away the timeout, the wait and the setting name that the fetch layer had gone
+   * to the trouble of putting in the cause (issues #7500, #7346, #7461).
+   * <p>
+   * Stops on a cause already seen, by identity, so a cyclic chain cannot loop.
+   */
+  private static String causeChain(final Throwable e) {
+    final StringBuilder buffer = new StringBuilder(128).append(describe(e));
+
+    final Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+    visited.add(e);
+    for (Throwable current = e.getCause(); current != null && visited.add(current); current = current.getCause())
+      buffer.append(" -> ").append(describe(current));
+
+    return buffer.toString();
+  }
+
+  /** A throwable's message, or its simple class name when it has none - a link in the chain is never blank. */
+  private static String describe(final Throwable e) {
+    return e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+  }
+
   protected void loadFromSource(final String url, AnalyzedEntity.EntityType entityType, final AnalyzedSchema analyzedSchema)
       throws IOException {
     if (url == null)
       // SKIP IT
       return;
 
-    final SourceDiscovery sourceDiscovery = new SourceDiscovery(url, settings.allowLocalUrls);
+    // THE SOURCE BEING READ, RECORDED BEFORE THE READ RATHER THAN AFTER IT SUCCEEDS, SO A FAILURE CAN NAME IT
+    loadingUrl = url;
+
+    final SourceDiscovery sourceDiscovery = new SourceDiscovery(url, settings.allowLocalUrls)
+        // SO A REMOTE FETCH IS BOUNDED BY THE TIMEOUT THE OPERATOR CONFIGURED, WHICH LIVES IN THIS OVERLAY AND NOT
+        // IN THE GlobalConfiguration ENUM (PR #7755 REVIEW)
+        .setConfiguration(database != null ? database.getConfiguration() : null);
 
     if (settings.probeOnly) {
       sourceDiscovery.getSource();
