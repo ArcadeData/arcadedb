@@ -260,22 +260,6 @@ public class CreateTimeSeriesTypeStatement extends DDLStatement {
       builder.append(")");
   }
 
-  /**
-   * {@code <count> <unit>} for a duration in milliseconds, in the SAME units the parser reads - the unit table
-   * lives once, on {@link TimeSeriesTypeBuilder#renderSQLDuration}, so the two renderings cannot drift apart
-   * (claude review on PR #7721).
-   * <p>
-   * A duration that is not a whole number of seconds - which the grammar cannot express at all - falls back to
-   * milliseconds with no unit rather than throwing: {@code toString} renders whatever the statement happens to
-   * carry, including a value that got there through a hand-built AST, and a printer that throws would take
-   * {@code EXPLAIN} and the statement cache down with it. No in-tree path reaches that fallback: the only
-   * constructors are the parser's no-arg one and {@link #copy()}, and the grammar's smallest unit is SECONDS.
-   */
-  private static String renderDuration(final long millis) {
-    final String rendered = TimeSeriesTypeBuilder.renderSQLDuration(millis);
-    return rendered != null ? rendered : String.valueOf(millis);
-  }
-
   @Override
   public CreateTimeSeriesTypeStatement copy() {
     final CreateTimeSeriesTypeStatement result = new CreateTimeSeriesTypeStatement();

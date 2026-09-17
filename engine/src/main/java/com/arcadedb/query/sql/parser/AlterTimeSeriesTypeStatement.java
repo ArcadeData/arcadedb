@@ -81,8 +81,11 @@ public class AlterTimeSeriesTypeStatement extends DDLStatement {
     if (addPolicy) {
       builder.append(" ADD DOWNSAMPLING POLICY");
       for (final DownsamplingTier tier : tiers) {
-        builder.append(" AFTER ").append(tier.afterMs());
-        builder.append(" GRANULARITY ").append(tier.granularityMs());
+        // Rendered through the unit, not the bare millisecond count: downsamplingTierClause's grammar rule
+        // requires a tsTimeUnit after each INTEGER_LITERAL, so a bare count does not survive print-and-reparse
+        // (issue #7791, the same defect #7689 fixed on the sibling CREATE statement).
+        builder.append(" AFTER ").append(renderDuration(tier.afterMs()));
+        builder.append(" GRANULARITY ").append(renderDuration(tier.granularityMs()));
       }
     } else
       builder.append(" DROP DOWNSAMPLING POLICY");

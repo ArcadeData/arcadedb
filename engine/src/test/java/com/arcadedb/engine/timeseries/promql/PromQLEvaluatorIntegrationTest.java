@@ -313,10 +313,11 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
   }
 
   @Test
-  void queryUsesIterateQueryPath() {
-    // Verify that evaluateVectorSelector uses the lazy iterator path (iterateQuery)
-    // rather than the eager-loading query() path. We verify this indirectly by
-    // confirming that a large dataset is evaluated correctly.
+  void queryUsesTheForEachRowFoldingPath() {
+    // evaluateVectorSelector() folds rows into its answer through TimeSeriesEngine#forEachRow rather than
+    // collecting them via iterateQuery()/query() first (issue #7696) - the latter materialise every matching
+    // row before the caller sees the first one. We verify this indirectly by confirming a dataset is still
+    // evaluated correctly end to end.
     createTypeAndInsertData("promql_iter_test");
 
     final PromQLEvaluator evaluator = new PromQLEvaluator(getDatabaseInternal());
