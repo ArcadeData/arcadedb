@@ -665,9 +665,13 @@ public enum Type {
         else if (value instanceof Number number)
           return DateUtils.date(database, number.longValue(), LocalDate.class);
         else if (value instanceof Date date)
-          return DateUtils.date(database, date.getTime() / DateUtils.MS_IN_A_DAY, LocalDate.class);
+          // floorDiv, not '/': see DateUtils.dateToEpochDays. This is the DEFAULT coercion for a DATE column
+          // (getJavaImplementation answers LocalDate), so a pre-epoch java.util.Date assigned to an ordinary DATE
+          // property used to round to the following day (#7638, found reviewing PR #7750).
+          return DateUtils.date(database, Math.floorDiv(date.getTime(), DateUtils.MS_IN_A_DAY), LocalDate.class);
         else if (value instanceof Calendar calendar)
-          return DateUtils.date(database, calendar.getTimeInMillis() / DateUtils.MS_IN_A_DAY, LocalDate.class);
+          return DateUtils.date(database, Math.floorDiv(calendar.getTimeInMillis(), DateUtils.MS_IN_A_DAY),
+              LocalDate.class);
         else if (value instanceof String valueAsString) {
           if (FileUtils.isLong(valueAsString))
             return DateUtils.date(database, Long.parseLong(value.toString()), LocalDate.class);
