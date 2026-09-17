@@ -45,10 +45,34 @@ public class Url extends SimpleNode {
 
   @Override
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
-    if (quotedLiteral != null)
+    if (quotedLiteral != null) {
       builder.append(quotedLiteral);
-    else
+      return;
+    }
+
+    if (isRecognizedScheme(urlString)) {
       builder.append(urlString);
+      return;
+    }
+
+    // quotedLiteral IS ONLY SET BY THE PARSER (SQLASTBuilder.visitUrl). A Url BUILT ANY OTHER WAY - the two-arg
+    // constructor is public - WITH A urlString THAT ISN'T ONE OF THE SCHEME-PREFIXED FORMS WOULD OTHERWISE RENDER
+    // RAW AND UNPARSEABLE HERE, THE SAME TRAP CreateTriggerStatement.actionCodeQuoted HAS (CODERABBIT, ISSUE #7800).
+    // THIS FALLBACK QUOTES A PLAIN, ALREADY-DECODED VALUE, SO NO DOUBLE-ESCAPING RISK APPLIES TO IT.
+    builder.append('\'');
+    if (urlString != null)
+      for (int i = 0; i < urlString.length(); i++) {
+        final char c = urlString.charAt(i);
+        if (c == '\'' || c == '\\')
+          builder.append('\\');
+        builder.append(c);
+      }
+    builder.append('\'');
+  }
+
+  private static boolean isRecognizedScheme(final String url) {
+    return url != null && (url.startsWith("file://") || url.startsWith("http://") || url.startsWith("https://")
+        || url.startsWith("classpath://"));
   }
 
   @Override

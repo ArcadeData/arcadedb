@@ -72,6 +72,20 @@ class Issue7800ReRenderAndCopyTest extends AbstractParserTest {
   }
 
   /**
+   * CodeRabbit follow-up: {@code quotedLiteral} is only set by the parser, but {@code Url}'s two-arg constructor is
+   * public. A {@code Url} built any other way (with a plain, non-scheme-prefixed value and no {@code quotedLiteral})
+   * must still be quoted on render instead of printed raw and unparseable - the same fallback gap as
+   * {@code CreateTriggerStatement.actionCode}/{@code actionCodeQuoted}.
+   */
+  @Test
+  void urlBuiltDirectlyWithoutAQuotedLiteralIsStillQuotedOnRender() {
+    final Url url = new Url("mybackup.zip");
+    final StringBuilder builder = new StringBuilder();
+    url.toString(null, builder);
+    assertThat(builder.toString()).isEqualTo("'mybackup.zip'");
+  }
+
+  /**
    * Item 3: DROP INDEX copy() silently dropped ifExists. CodeRabbit also found that the class's (pre-existing,
    * manual) equals()/hashCode() never included it either, so the strict and idempotent forms compared equal.
    */
