@@ -191,17 +191,21 @@ public class TimeSeriesTypeBuilder {
    * build time, is the point: the alternative is invalid SQL reaching the server.
    */
   public List<String> toSQL() {
+    // validate() is the whole of it. There used to be a validateForSQL() beside it holding the states the grammar
+    // could not express: a non-default per-column codec (issue #5475), which CREATE TIMESERIES TYPE has carried
+    // since issue #7689, and the single-TIMESTAMP rule, which moved into validate() because it is the TYPE's rule
+    // and not the grammar's (issue #7740). Interleaved TAG and FIELD columns were the last of them, and the
+    // grammar carries those too since issue #7702. What remains SQL-only is the precision membership test and the
+    // whole-seconds duration test, both of which have to fail where the value is rendered, not before.
     validate();
-    validateForSQL();
-    // NOTE on the column ORDER, which is the one thing this rendering cannot carry (issue #7740): the grammar has
-    // one slot for the timestamp, one for TAGS and one for FIELDS, so renderCreate() regroups a declaration that
-    // interleaves them. The embedded create() stores the order as GIVEN - it must, because the order is the
-    // type's identity: column indices are positions in it and a sample is a positional array, and reordering it
-    // would break a logical restore, which maps an export's sample arrays onto the type it just rebuilt. So the
-    // same builder body can produce the same COLUMNS in a different ORDER here than embedded, and a caller who
-    // depends on the order declares it canonically or creates the type embedded. The one path where that
-    // difference would corrupt rather than surprise refuses it outright: JsonlImporterFormat compares the type it
-    // gets back against the export's own column list.
+    // The column ORDER survives this rendering (issue #7702). It did not until the grammar could repeat a column
+    // group: with one TAGS slot and one FIELDS slot, renderCreate() had to REGROUP a declaration that interleaves
+    // the roles, so the same builder body produced the same columns in a different order here than embedded. The
+    // order is the type's identity - a column index is a position in it and a sample is a positional array - so
+    // that difference was not cosmetic: it landed a logical restore's sample values in the wrong columns, which,
+    // when the shifted pair happens to share a data type, shows up as wrong readings months later rather than as
+    // an error. renderCreate() now emits one group per RUN of consecutive same-role columns, and a declaration
+    // that never interleaves renders exactly the one TAGS and one FIELDS group it always did.
 
     return List.of(renderCreate());
   }
@@ -210,20 +214,7 @@ public class TimeSeriesTypeBuilder {
     final StringBuilder sql = new StringBuilder(128);
     sql.append("CREATE TIMESERIES TYPE ").append(quote(typeName));
 
-    sql.append(" TIMESTAMP ").append(quote(timestampColumn));
-    if (precision != null) {
-      // Already upper-cased by withPrecision; what is checked here is membership, because the grammar names
-      // exactly four and anything else has no expression at all.
-      if (!SQL_PRECISIONS.contains(precision))
-        throw new SchemaException("Precision '" + precision + "' has no CREATE TIMESERIES TYPE expression. Supported: "
-            + String.join(", ", SQL_PRECISIONS));
-      sql.append(" PRECISION ").append(precision);
-    }
-
-    appendCodec(sql, timestampColumnDefinition());
-
-    appendColumnList(sql, " TAGS (", ColumnDefinition.ColumnRole.TAG);
-    appendColumnList(sql, " FIELDS (", ColumnDefinition.ColumnRole.FIELD);
+    appendColumnMembers(sql);
 
     if (shards > 0)
       sql.append(" SHARDS ").append(shards);
@@ -239,17 +230,65 @@ public class TimeSeriesTypeBuilder {
     return sql.toString();
   }
 
-  private void appendColumnList(final StringBuilder sql, final String header, final ColumnDefinition.ColumnRole role) {
-    boolean first = true;
+  /**
+   * Appends the columns in DECLARATION order (issue #7702): the TIMESTAMP clause where it was declared, and each
+   * run of consecutive TAG or FIELD columns as one parenthesised group.
+   * <p>
+   * Three fixed slots used to stand here - the timestamp, then every TAG, then every FIELD - which is what the
+   * grammar could spell at the time. They regrouped a declaration the engine stores as given, so the same builder
+   * body created one type embedded and another through SQL; see the note on {@link #toSQL()}.
+   * <p>
+   * A builder carrying a {@link #timestampColumn} name with no matching column definition - which
+   * {@link #withColumn} cannot produce and a subclass could - still renders the clause, from the name alone, so
+   * the type keeps its timestamp. The clause is then emitted first, there being no position to place it at.
+   */
+  private void appendColumnMembers(final StringBuilder sql) {
+    final ColumnDefinition timestampDefinition = timestampColumnDefinition();
+    if (timestampDefinition == null)
+      appendTimestamp(sql, null);
+
+    ColumnDefinition.ColumnRole openRole = null;
     for (final ColumnDefinition col : columns) {
-      if (col.getRole() != role)
+      final ColumnDefinition.ColumnRole role = col.getRole();
+
+      if (col == timestampDefinition) {
+        if (openRole != null) {
+          sql.append(')');
+          openRole = null;
+        }
+        appendTimestamp(sql, col);
         continue;
-      sql.append(first ? header : ", ").append(quote(col.getName())).append(' ').append(col.getDataType().name());
+      }
+      if (role != ColumnDefinition.ColumnRole.TAG && role != ColumnDefinition.ColumnRole.FIELD)
+        continue;
+
+      if (role != openRole) {
+        if (openRole != null)
+          sql.append(')');
+        sql.append(role == ColumnDefinition.ColumnRole.TAG ? " TAGS (" : " FIELDS (");
+        openRole = role;
+      } else
+        sql.append(", ");
+
+      sql.append(quote(col.getName())).append(' ').append(col.getDataType().name());
       appendCodec(sql, col);
-      first = false;
     }
-    if (!first)
+    if (openRole != null)
       sql.append(')');
+  }
+
+  /** The {@code TIMESTAMP name [PRECISION p] [CODEC c]} clause. */
+  private void appendTimestamp(final StringBuilder sql, final ColumnDefinition timestampDefinition) {
+    sql.append(" TIMESTAMP ").append(quote(timestampColumn));
+    if (precision != null) {
+      // Already upper-cased by withPrecision; what is checked here is membership, because the grammar names
+      // exactly four and anything else has no expression at all.
+      if (!SQL_PRECISIONS.contains(precision))
+        throw new SchemaException("Precision '" + precision + "' has no CREATE TIMESERIES TYPE expression. Supported: "
+            + String.join(", ", SQL_PRECISIONS));
+      sql.append(" PRECISION ").append(precision);
+    }
+    appendCodec(sql, timestampDefinition);
   }
 
   /**
@@ -386,19 +425,6 @@ public class TimeSeriesTypeBuilder {
   }
 
   /**
-   * Same as {@link #validate()} plus the checks that only a SQL-rendered create has to pass.
-   */
-  private void validateForSQL() {
-    // A non-default per-column codec used to be refused here: the grammar could not name one, so rendering the
-    // column without it would have silently recreated it with the default (issue #5475's failure). CREATE
-    // TIMESERIES TYPE carries a CODEC clause since issue #7689, so the codec renders instead.
-    //
-    // The single-TIMESTAMP rule used to live here too and now lives in validate(), which toSQL() runs first:
-    // the grammar having one slot for it is a consequence of the type having one, not the reason (issue #7740).
-
-  }
-
-  /**
    * Creates the type and returns it.
    * <p>
    * This implementation creates it in place, in the embedded database the builder was constructed with. A remote
@@ -432,9 +458,8 @@ public class TimeSeriesTypeBuilder {
     // export's own column list and then maps each exported sample ARRAY onto the type's current order, so a
     // restore of a type whose FIELD precedes its TAGs would have landed every value in the wrong column; and
     // Issue7371PromQLDiscoveryProjectionIT builds exactly that layout on purpose, because it is the one that
-    // catches a projection indexing bug. The divergence #7740 reports is closed at the other end: a declaration
-    // the grammar cannot spell is REFUSED by toSQL() rather than regrouped into a different type - see
-    // validateForSQL().
+    // catches a projection indexing bug. toSQL() now preserves the same order rather than regrouping it, so the
+    // two paths agree on it instead of one of them having to refuse (issue #7702).
     for (final ColumnDefinition col : columns)
       type.addTsColumn(col);
 

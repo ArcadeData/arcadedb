@@ -36,10 +36,31 @@ public class Importer extends AbstractImporter {
    * handler {@code database} had before - there is no getter on {@code DatabaseAsyncExecutor} to read it back (see
    * {@code CSVImporterFormat.loadVertices}). If the caller had a custom handler of their own registered before
    * calling {@link #load()}, it is gone afterward.
+   * <p>
+   * The database must be an EMBEDDED one (issue #7701): every format writes through {@code DatabaseInternal}, so
+   * a client that only reaches its target over the network imports by issuing {@code IMPORT DATABASE '<url>'} as
+   * SQL - which is what {@code ImportDatabaseStatement} does with this very constructor, on the server side of the
+   * connection. The cast is checked so that handing this a non-embedded database says which of the two it is,
+   * rather than raising a {@code ClassCastException} naming a class the caller never mentioned.
    */
   public Importer(final Database database, final String url) {
-    super((DatabaseInternal) database);
+    super(asEmbedded(database));
     settings.url = url;
+  }
+
+  /**
+   * The embedded database behind {@code database}, or a refusal naming the supported alternative.
+   * <p>
+   * {@code null} passes through, as the cast this replaced did: it means "no database yet", and
+   * {@code openDatabase()} then opens one from {@code settings.database}.
+   */
+  private static DatabaseInternal asEmbedded(final Database database) {
+    if (database == null || database instanceof DatabaseInternal)
+      return (DatabaseInternal) database;
+    throw new IllegalArgumentException("The importer loads into an embedded database, and '"
+        + database.getClass().getSimpleName() + "' is not one. To import into a database you reach over the "
+        + "network, run the SQL statement IMPORT DATABASE '<url>' on it: the server executes it against its own "
+        + "embedded instance");
   }
 
   public static void main(final String[] args) {

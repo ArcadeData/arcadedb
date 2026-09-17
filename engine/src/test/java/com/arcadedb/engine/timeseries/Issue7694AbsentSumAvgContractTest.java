@@ -59,7 +59,7 @@ class Issue7694AbsentSumAvgContractTest {
   /**
    * Asserting the bucket is really there is what makes an absent answer read afterwards evidence about the SEED
    * that {@code newInitializedValues()} laid down for that request index, rather than about the bucket's
-   * existence: {@code getValue} answers a plain {@code 0.0} for a bucket it has never heard of.
+   * existence - which, since issue #7698, answers absent as well.
    */
   private static void assertBucketExists(final MultiColumnAggregationResult result, final long bucketTs) {
     assertThat(result.getBucketTimestamps())
@@ -143,24 +143,26 @@ class Issue7694AbsentSumAvgContractTest {
   }
 
   /**
-   * A bucket NO request ever touched is a different thing from an empty request inside a bucket that exists, and
-   * it still answers {@code 0.0} rather than absent - the "unknown bucket" arm of {@code getValue}, which predates
-   * the whole policy. It is not reachable through any of the four readers, because all four iterate
-   * {@code getBucketTimestamps()} and so never ask for a bucket that is not in it. Pinned as the known residue of
-   * this decision rather than silently left, and tracked by issue #7698.
+   * A bucket NO request ever touched used to be the one residue of this decision - it answered {@code 0.0} for
+   * every aggregate, SUM and MIN alike, from an arm of {@code getValue} that predates the whole policy. Issue
+   * #7698 closed it: the bucket that does not exist now answers absent like the request that was offered nothing,
+   * because they are the same question. It is still absent from {@code getBucketTimestamps()}, which is why no
+   * reader in {@code src/main} could observe either answer.
+   *
+   * @see Issue7698AbsentBucketThatDoesNotExistTest
    */
   @Test
-  void aBucketNoRequestEverTouchedStillAnswersZeroAndIsNotInTheTimestamps() {
+  void aBucketNoRequestEverTouchedAnswersAbsentAndIsNotInTheTimestamps() {
     final MultiColumnAggregationResult mapMode = new MultiColumnAggregationResult(sumThenCount());
     mapMode.accumulate(1000L, 1, 7.0);
     assertThat(mapMode.getBucketTimestamps()).as("no reader can reach 2000L: it is not a bucket")
         .doesNotContain(2000L);
-    assertThat(mapMode.getValue(2000L, 0)).isEqualTo(0.0);
+    assertThat(mapMode.getValue(2000L, 0)).isNaN();
 
     final MultiColumnAggregationResult flatMode = new MultiColumnAggregationResult(sumThenCount(), 0L, 1000L, 16);
     flatMode.accumulate(1000L, 1, 7.0);
     assertThat(flatMode.getBucketTimestamps()).doesNotContain(2000L);
-    assertThat(flatMode.getValue(2000L, 0)).isEqualTo(0.0);
+    assertThat(flatMode.getValue(2000L, 0)).isNaN();
   }
 
   // ---- the #7089 half: offered, but nothing real ----
