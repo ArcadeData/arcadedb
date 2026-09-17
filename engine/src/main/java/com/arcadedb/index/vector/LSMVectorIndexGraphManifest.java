@@ -95,7 +95,7 @@ public class LSMVectorIndexGraphManifest {
    * @param closeDeferredRebuild {@code true} when the pages this manifest describes are known stale because the
    *                             most recent {@code close()} chose to defer the rebuild that would otherwise have
    *                             brought them up to date (issue #6657), rather than run it synchronously. Always
-   *                             {@code false} again once a build actually completes - {@link #write(int[], IntFunction, int[], long)}
+   *                             {@code false} again once a build actually completes - {@link #write(int[], IntFunction, boolean, int[], long)}
    *                             and {@link #markUnusable(String)} both clear it - so it answers specifically "did the
    *                             last close skip a rebuild", not the broader "is a rebuild owed" that
    *                             {@code vectorCount}/{@code fingerprint} against the live index already answers.
@@ -126,7 +126,7 @@ public class LSMVectorIndexGraphManifest {
    * The ordinal &rarr; record correspondence itself, as opposed to the fingerprint of it this file carries (issue
    * #7842). Owned here rather than by {@link LSMVectorIndexGraphFile} so that the two sidecars can never describe
    * different generations of the same pages: every {@link #invalidate()}, {@link #markUnusable} and
-   * {@link #write(int[], IntFunction, int[], long)} on this object drives it too.
+   * {@link #write(int[], IntFunction, boolean, int[], long)} on this object drives it too.
    */
   private final LSMVectorIndexOrdinalMapFile ordinalMap;
 
@@ -253,22 +253,30 @@ public class LSMVectorIndexGraphManifest {
    * @param graphBytes          see {@link Content#graphBytes()}; {@code 0} records none
    */
   public void write(final int[] ordinalToVectorId, final IntFunction<RID> ridOfVector,
-      final int[] unreachableOrdinals, final long graphBytes) {
+      final boolean recordOrdinalMap, final int[] unreachableOrdinals, final long graphBytes) {
     // The map first, the certificate second: a manifest is what makes the pages usable, so it must never be on disk
     // vouching for a generation whose map is still the previous one (issue #7842). The reverse order - map after
     // manifest - would leave exactly that window open across a crash.
     //
     // The fingerprint comes back from that same walk rather than from a second fingerprintOf() pass: both resolve a
     // RID per ordinal, and doing it twice doubles the location-index reads of every graph persist of every index,
-    // for a number the first pass has already computed (PR #7844 review).
-    final long fingerprint = ordinalMap.write(ordinalToVectorId, ridOfVector);
+    // for a number the first pass has already computed (PR #7844 review). Either branch below is ONE walk.
+    final long fingerprint;
+    if (recordOrdinalMap)
+      fingerprint = ordinalMap.write(ordinalToVectorId, ridOfVector);
+    else {
+      // Dropped rather than merely left alone: an index that stops recording a map must not keep the one its last
+      // persist wrote, or a later load would pair this generation's pages with the previous generation's ordinals.
+      ordinalMap.invalidate();
+      fingerprint = fingerprintOf(ordinalToVectorId, ridOfVector);
+    }
     write(ordinalToVectorId.length, fingerprint, null, false, unreachableOrdinals, graphBytes);
   }
 
   /**
    * Records a count and a fingerprint without the array behind them, and therefore WITHOUT an ordinal map: the map
    * is dropped, so a graph certified this way is read back the pre-issue-#7842 way, by re-deriving what its ordinals
-   * mean from the live set. Prefer {@link #write(int[], IntFunction, int[], long)}, which records both; this exists
+   * mean from the live set. Prefer {@link #write(int[], IntFunction, boolean, int[], long)}, which records both; this exists
    * for callers that hold only the two numbers.
    */
   public void write(final int vectorCount, final long fingerprint, final int[] unreachableOrdinals,
@@ -284,7 +292,7 @@ public class LSMVectorIndexGraphManifest {
    * or falls back to {@link #UNUSABLE_VECTOR_COUNT} when nothing has ever been persisted here, so a first-ever
    * build that a large index's close deferred is recorded too.
    * <p>
-   * Cleared automatically the next time {@link #write(int[], IntFunction, int[], long)} or
+   * Cleared automatically the next time {@link #write(int[], IntFunction, boolean, int[], long)} or
    * {@link #markUnusable(String)} runs,
    * which is exactly when a rebuild - deferred or not - actually completes.
    * <p>

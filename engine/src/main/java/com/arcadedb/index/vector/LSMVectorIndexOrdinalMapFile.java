@@ -22,13 +22,14 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.RID;
 import com.arcadedb.log.LogManager;
 
+import java.io.BufferedOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
-import java.util.Arrays;
 import java.util.function.IntFunction;
 import java.util.logging.Level;
 
@@ -80,6 +81,16 @@ public class LSMVectorIndexOrdinalMapFile {
    * be tombstoned rather than trying to match a RID that was never recorded.
    */
   private static final int NO_RID_BUCKET = -1;
+
+  /**
+   * Worst case for one entry's three varints: 5 for the zigzagged int delta, 5 for the zigzagged bucket id, and 10
+   * for the RID position, which {@code putUnsignedNumber} writes 7 bits at a time and so can take the full
+   * {@code ceil(64/7)} for a large one.
+   */
+  private static final int MAX_ENTRY_BYTES = 20;
+
+  /** How much the streaming encoder buffers before draining it to the file. */
+  private static final int CHUNK_BYTES = 64 * 1024;
 
   /**
    * What a persisted ordinal map says, once its hash has verified it.
@@ -146,39 +157,18 @@ public class LSMVectorIndexOrdinalMapFile {
    * fails: it describes the ordinals, not the file.
    */
   long write(final int[] ordinalToVectorId, final IntFunction<RID> ridOfVector) {
-    // 20 bytes per entry is the ACTUAL worst case for the three varints below, and is meant as a bound rather than
-    // as a guess: 5 for the zigzagged int delta, 5 for the zigzagged bucket id, and 10 for the RID position, which
-    // putUnsignedNumber writes 7 bits at a time and so can take the full ceil(64/7) for a large one (PR #7844
-    // review). The common case is a quarter of that, and Binary grows on its own if this were ever short - the
-    // estimate only decides whether the write reallocates. Computed in long arithmetic and clamped: an index large
-    // enough to overflow the int would otherwise ask for a NEGATIVE buffer and fail the write outright.
-    final Binary payload = new Binary((int) Math.min(Integer.MAX_VALUE - 8L, 16L + ordinalToVectorId.length * 20L));
-    payload.putUnsignedNumber(FORMAT_VERSION);
-    payload.putUnsignedNumber(ordinalToVectorId.length);
-
-    long fingerprint = LSMVectorIndexGraphManifest.fingerprintSeed(ordinalToVectorId.length);
-    int previousVectorId = 0;
-    for (final int vectorId : ordinalToVectorId) {
-      // Delta-encoded because the array is ascending by construction (LSMVectorIndex feeds it from
-      // VectorLocationIndex.getAllVectorIds(), which is sorted). putNumber is signed, so an array that ever
-      // stopped being ascending would still round-trip - it would only stop being compact.
-      payload.putNumber(vectorId - previousVectorId);
-      previousVectorId = vectorId;
-
-      // The one and only resolution of this ordinal's RID: it feeds both the file and the fingerprint.
-      final RID rid = ridOfVector.apply(vectorId);
-      fingerprint = LSMVectorIndexGraphManifest.fingerprintAccumulate(fingerprint, vectorId, rid);
-      if (rid == null) {
-        payload.putNumber(NO_RID_BUCKET);
-        payload.putUnsignedNumber(0);
-      } else {
-        payload.putNumber(rid.getBucketId());
-        payload.putUnsignedNumber(rid.getPosition());
-      }
-    }
-
     final Path temporary = path.resolveSibling(
         path.getFileName() + "." + Long.toHexString(System.nanoTime()) + ".tmp");
+
+    // Streamed in fixed-size chunks rather than encoded whole and then copied twice (PR #7844 review). Building the
+    // payload in one Binary cost 20 bytes per ordinal up front - 200 MB at 10M vectors - and toByteArray() plus the
+    // hash-trailer copy put two more arrays of that size next to it, all live at once. That peak lands on the graph
+    // persist, which is precisely the moment issue #7842 exists to keep off the heap, so the encoder holds one
+    // buffer of a fixed size instead and the hash is accumulated as the bytes leave it.
+    final Binary chunk = new Binary(CHUNK_BYTES + MAX_ENTRY_BYTES);
+    long fingerprint = LSMVectorIndexGraphManifest.fingerprintSeed(ordinalToVectorId.length);
+    long hash = FNV_OFFSET_BASIS;
+
     try {
       final Path parent = path.getParent();
       if (parent != null && !Files.exists(parent))
@@ -188,15 +178,41 @@ public class LSMVectorIndexOrdinalMapFile {
       // move leaves a temporary nothing else would ever remove.
       deleteLeftoverTemporaries(parent);
 
-      final byte[] bytes = payload.toByteArray();
-      final byte[] file = Arrays.copyOf(bytes, bytes.length + 8);
-      long hash = hashOf(bytes, bytes.length);
-      for (int i = file.length - 1; i >= bytes.length; i--) {
-        file[i] = (byte) hash;
-        hash >>>= 8;
+      try (final OutputStream out = new BufferedOutputStream(Files.newOutputStream(temporary))) {
+        chunk.putUnsignedNumber(FORMAT_VERSION);
+        chunk.putUnsignedNumber(ordinalToVectorId.length);
+
+        int previousVectorId = 0;
+        for (final int vectorId : ordinalToVectorId) {
+          // Delta-encoded because the array is ascending by construction (LSMVectorIndex feeds it from
+          // VectorLocationIndex.getAllVectorIds(), which is sorted). putNumber is signed, so an array that ever
+          // stopped being ascending would still round-trip - it would only stop being compact.
+          chunk.putNumber(vectorId - previousVectorId);
+          previousVectorId = vectorId;
+
+          // The one and only resolution of this ordinal's RID: it feeds both the file and the fingerprint.
+          final RID rid = ridOfVector.apply(vectorId);
+          fingerprint = LSMVectorIndexGraphManifest.fingerprintAccumulate(fingerprint, vectorId, rid);
+          if (rid == null) {
+            chunk.putNumber(NO_RID_BUCKET);
+            chunk.putUnsignedNumber(0);
+          } else {
+            chunk.putNumber(rid.getBucketId());
+            chunk.putUnsignedNumber(rid.getPosition());
+          }
+
+          // Drained on the entry boundary, so the buffer never has to grow: MAX_ENTRY_BYTES of headroom past
+          // CHUNK_BYTES is what guarantees the next entry fits whatever this one left behind.
+          if (chunk.size() >= CHUNK_BYTES)
+            hash = drain(out, chunk, hash);
+        }
+        hash = drain(out, chunk, hash);
+
+        // The trailer, over everything above it. Big-endian, which is what Binary.getLong() reads back.
+        for (int shift = 56; shift >= 0; shift -= 8)
+          out.write((int) (hash >>> shift) & 0xFF);
       }
 
-      Files.write(temporary, file);
       try {
         Files.move(temporary, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
       } catch (final AtomicMoveNotSupportedException e) {
@@ -213,6 +229,24 @@ public class LSMVectorIndexOrdinalMapFile {
       invalidate();
     }
     return fingerprint;
+  }
+
+  /**
+   * Hashes what the encoder has buffered, writes it out and empties the buffer.
+   *
+   * @return the hash with those bytes folded in
+   */
+  private static long drain(final OutputStream out, final Binary chunk, final long hash) throws IOException {
+    final int length = chunk.size();
+    if (length == 0)
+      return hash;
+
+    final byte[] content = chunk.getContent();
+    final int offset = chunk.getContentBeginOffset();
+    final long next = hashOf(content, offset, length, hash);
+    out.write(content, offset, length);
+    chunk.clear();
+    return next;
   }
 
   /**
@@ -285,8 +319,13 @@ public class LSMVectorIndexOrdinalMapFile {
    * behind the hash check.
    */
   static long hashOf(final byte[] bytes, final int length) {
-    long hash = FNV_OFFSET_BASIS;
-    for (int i = 0; i < length; i++) {
+    return hashOf(bytes, 0, length, FNV_OFFSET_BASIS);
+  }
+
+  /** The same hash, resumable, so the streaming write can fold one buffer at a time into it. */
+  private static long hashOf(final byte[] bytes, final int offset, final int length, final long seed) {
+    long hash = seed;
+    for (int i = offset; i < offset + length; i++) {
       hash ^= bytes[i] & 0xFFL;
       hash *= FNV_PRIME;
     }
