@@ -194,14 +194,13 @@ public class JsonSerializer {
       // arcadedb.dateImplementation=java.util.Date and a DATETIME one just as well, so a genuine DATE came out
       // with a spurious 00:00:00. Result.getPropertyType() answers for exactly that case, from the type the
       // projection recorded for the column it read.
-      // THE ROW IS ASKED FIRST, the backing document's schema second. For a row with no projection metadata
-      // getPropertyType() falls through to that same schema, so the two orders agree everywhere except the one
-      // case where they must not: SELECT *, n + 1 AS d keeps the element AND publishes a computed value under a
-      // name the element also has, and the schema would describe the column rather than the value actually here.
-      final Type projectedType = result.getPropertyType(propertyName);
-      final Type schemaPropertyType = projectedType != null ?
-          projectedType :
-          type != null && type.existsProperty(propertyName) ? type.getProperty(propertyName).getType() : null;
+      // THE ROW IS THE ONLY SOURCE ASKED. getPropertyType() already falls back to the backing record's schema
+      // when the projection has nothing to say about the name, so adding a second fallback here would undo the
+      // one case the first exists for: SELECT *, <expression> AS d keeps the element AND publishes a computed
+      // value under a name the element also has, and the row answers null ON PURPOSE for it. Falling back to
+      // type.getProperty(d) on that null handed the computed value the COLUMN's type back - a DATE verdict that
+      // strips the time component off a computed timestamp, and a wrong @props hint (issue #7638).
+      final Type schemaPropertyType = result.getPropertyType(propertyName);
 
       if (includeTypeHints) {
         final Type propertyType;
