@@ -36,7 +36,6 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
-import java.util.logging.Level;
 
 public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private static final String LIST_DATABASES       = "list databases";
@@ -561,8 +560,12 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     if (isProductionMode())
       // THE CONCEALED TEXT PROMISES A LOG ENTRY, AND THIS BRANCH IS THE ONE PLACE THAT CAN WRITE IT: streamOrRun
       // HAS ALREADY SENT THE RESPONSE, SO THE FAILURE NEVER REACHES AbstractServerHttpHandler'S MAPPING, WHICH IS
-      // WHERE EVERY OTHER CONCEALED HTTP FAILURE IS LOGGED (PR #7755 REVIEW)
-      LogManager.instance().log(this, Level.SEVERE,
+      // WHERE EVERY OTHER CONCEALED HTTP FAILURE IS LOGGED (PR #7755 REVIEW).
+      // AT THIS CLASS'S OWN INTERNAL-ERROR LEVEL RATHER THAN A FLAT SEVERE, SO THE LEVEL FOLLOWS THE SAME RULE THE
+      // REST OF THE HTTP SURFACE USES AND A PRODUCTION SERVER UNDER FLOOD PROTECTION IS NOT DROWNED BY IT. THE
+      // gRPC SIDE SPLITS ON ErrorCategory INSTEAD BECAUSE ITS PATH CARRIES ROUTINE CALLER-CAUSED FAILURES - A
+      // DUPLICATED KEY ON EVERY UPSERT RETRY - WHICH A RESTORE OR IMPORT REACHING HERE NEVER IS
+      LogManager.instance().log(this, getInternalErrorLogLevel(),
           "Error on a control-plane operation, concealed from the client in production mode", e);
 
     event.put("message", isProductionMode() ? ArcadeDBServer.CONCEALED_ERROR_MESSAGE : failureMessage(e));

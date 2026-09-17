@@ -190,6 +190,11 @@ public class FileUtils {
     return pos > -1 ? path.substring(pos + 1) : path;
   }
 
+  // A PATH THAT IS ITSELF A ROOT - "/" OR "C:/" - HAS NO LAST SEGMENT, SO THIS ANSWERS "". THAT IS THE HONEST
+  // ANSWER AND IT IS WHAT LocalDatabase THEN USES AS THE DATABASE NAME, WHICH IS WHY A ROOT IS NOT A USABLE
+  // DATABASE PATH ON EITHER PLATFORM. PRE-EXISTING FOR "/" AND UNCHANGED BY #7588: stripTrailingSeparator KEEPS A
+  // ROOT'S SEPARATOR PRECISELY SO THE PATH STILL NAMES THE ROOT, RATHER THAN SILENTLY NAMING SOMETHING ELSE
+
   /**
    * Whether {@code path} ends with a path separator in EITHER convention, not only this JVM's own
    * {@link File#separator}. Same reason as {@link #lastIndexOfSeparator(String)}: a path an embedder, a
