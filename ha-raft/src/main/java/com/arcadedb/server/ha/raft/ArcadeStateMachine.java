@@ -3417,14 +3417,26 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
       // We are inside the catch on the Raft StateMachineUpdater thread: a RejectedExecutionException from
       // a shut-down executor (server stopping) must not escape, or it would reach applyTransaction's
-      // critical-error halt - the very outcome this handler exists to prevent. On the hadLocalCopy path the
-      // flag stays set, so the HealthMonitor backstop still drives the download once the server is up again.
+      // critical-error halt - the very outcome this handler exists to prevent.
       try {
         lifecycleExecutor.submit(() -> retryBootstrapInstall(dbName, hadLocalCopy));
       } catch (final RejectedExecutionException ree) {
-        LogManager.instance().log(this, Level.WARNING,
-            "Cannot schedule bootstrap snapshot retry for '%s': executor is shut down; "
-                + "the HealthMonitor backstop will retry once the server is available", null, dbName);
+        // The remediation differs by branch, and naming the wrong one is the defect this whole change is about
+        // (claude-review on PR #7756). With a local copy the needsSnapshotDownload flag is set above, so the
+        // HealthMonitor backstop genuinely picks the download up on the next start. WITHOUT one that flag was
+        // never set, and the backstop only reinstalls databases the server has REGISTERED - which this one is
+        // not - so promising it here would tell an operator a recovery path exists that does not cover them.
+        if (hadLocalCopy)
+          LogManager.instance().log(this, Level.WARNING,
+              "Cannot schedule bootstrap snapshot retry for '%s': executor is shut down; "
+                  + "the HealthMonitor backstop will retry once the server is available", null, dbName);
+        else
+          LogManager.instance().log(this, Level.SEVERE,
+              "Cannot schedule the reinstall of database '%s', which was applied on this node in a previous session "
+                  + "and is missing now: the executor is shut down. Nothing retries it automatically - the node is "
+                  + "stopping, and on the next start this entry replays and reinstalls it. If it does not come back, "
+                  + "run POST /api/v1/cluster/resync/%s on this node once a leader is reachable.",
+              null, dbName, dbName);
       }
     }
   }
