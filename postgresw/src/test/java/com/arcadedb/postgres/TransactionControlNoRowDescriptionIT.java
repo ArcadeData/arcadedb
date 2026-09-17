@@ -143,6 +143,31 @@ class TransactionControlNoRowDescriptionIT extends PostgresWireProtocolTestBase 
   }
 
   @Test
+  @DisplayName("[#7846] ROLLBACK TO outside an explicit transaction is refused without wedging the session")
+  void rollbackToOutsideAnExplicitTransactionIsRefusedButLeavesTheSessionIdle() throws Exception {
+    try (final Socket socket = new Socket()) {
+      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+      authenticate(out, in);
+
+      assertTimeoutPreemptively(Duration.ofSeconds(10), () -> {
+        // No BEGIN: setErrorInTx() is a no-op without an explicit transaction (explicitTransactionStarted ==
+        // false), matching every other refused statement in autocommit mode - there is nothing pending to
+        // lose, so the session must not be left wedged in an aborted state the client can never end.
+        sendSimpleQuery(out, "ROLLBACK TO sp1");
+        final List<WireMessage> response = readUntilReadyForQuery(in);
+        assertThat(messageTypesOf(response)).as("ROLLBACK TO is refused even in autocommit mode").contains('E');
+        assertThat(readyForQueryStatusOf(response)).as("autocommit mode is left idle, not aborted").isEqualTo('I');
+
+        sendSimpleQuery(out, "SELECT 1");
+        final List<WireMessage> select = readUntilReadyForQuery(in);
+        assertThat(messageTypesOf(select)).as("the session still accepts statements").contains('T', 'D', 'C');
+      });
+    }
+  }
+
+  @Test
   @DisplayName("A language-prefixed {sql}BEGIN still gets the bare BEGIN command tag")
   void languagePrefixedTransactionControlGetsTheRightCommandTag() throws Exception {
     try (final Socket socket = new Socket()) {
