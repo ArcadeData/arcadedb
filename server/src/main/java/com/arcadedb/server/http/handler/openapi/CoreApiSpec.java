@@ -422,7 +422,17 @@ public class CoreApiSpec implements OpenApiContributor {
             A load that fails before it has acknowledged anything still answers with its real status \
             code and the buffered error body, because the status line has not been sent yet: the 400 \
             and 408 below apply to a streaming request too. Only a failure raised after the first \
-            progress line is reported in band under a 200.""");
+            progress line is reported in band under a 200.
+
+            Read the answer while you upload. The streamed answer grows with the size of the load and \
+            is written over the same connection the body arrives on, so a client that sends everything \
+            before reading anything can fill the socket buffers and stall both directions. A response \
+            write that makes no progress for 'arcadedb.server.httpStreamingWriteTimeout' therefore \
+            closes the connection and fails the load rather than holding the server thread.
+
+            This endpoint is NOT idempotent, in either encoding: an 'X-Request-Id' is echoed and \
+            logged but gives no replay protection here, because the body is never buffered and so \
+            cannot be part of the replay key. Two loads sharing one correlation id are two loads.""");
 
     post.addParametersItem(SpecBuilders.pathParam("database", "Database name"));
     post.addParametersItem(batchNdJsonAcceptParam());
