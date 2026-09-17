@@ -85,11 +85,14 @@ public final class TimeSeriesNaN {
    * class's policy is a MEASUREMENT of zero: it enters the SUM and drags the AVG toward it, where
    * {@link #ABSENT} would have been skipped by every aggregate.
    * <p>
-   * {@code null} is zero rather than absent on purpose, and that is not a policy choice made here: it is what
-   * the sealed layer stores for it. Both {@link ColumnDefinition#integerValueOf(Object)} and
-   * {@link ColumnDefinition#numericValueOf(Object)} write a null out as zero, so a null sample reads back as a
-   * real zero once compacted, and the mutable layer answering {@link #ABSENT} for it would recreate the very
-   * disagreement this method exists to remove.
+   * {@code null} is zero rather than absent, and that is not a policy choice made here: it is what the column
+   * STORES for it, so answering anything else would recreate the very disagreement this method exists to remove.
+   * Since issue #7743 that answer depends on the column and is decided before the value ever reaches this method:
+   * a floating-point column writes a null out as {@link #ABSENT} on both layers - {@link TimeSeriesBatch#rawNull}
+   * on the mutable page, {@link ColumnDefinition#storedNumericValueOf} in the {@code GORILLA_XOR} encoder and in
+   * the block statistics - so a null measurement arrives here as a NaN {@link Double} and is skipped by every
+   * aggregate, which is what a client saying "no measurement here" asked for. Every other numeric column has no
+   * value to spend on absence, writes the null out as a real zero, and reads it back through this arm.
    * <p>
    * The remaining arm - a value that is neither null, a boolean nor a number - is a column the sealed layer
    * cannot read as a number at all ({@code DICTIONARY} and {@code DELTA_OF_DELTA} have no numeric decoder, and

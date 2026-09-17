@@ -259,8 +259,34 @@ public final class ColumnDefinition {
   }
 
   /**
+   * Numeric view of a value as THIS column stores it, for the {@code GORILLA_XOR} encoder and for the
+   * min/max/sum block statistics the aggregation push-down answers from (issue #7743).
+   * <p>
+   * The one thing it adds over {@link #numericValueOf(Object)} is the null: a floating-point column stores it
+   * as {@link TimeSeriesNaN#ABSENT}, because it can, and every other column as zero, because it cannot. Both
+   * halves have to be spelled here rather than at each call site, because the statistics describe the bytes and
+   * would otherwise declare a minimum of zero for a block whose encoder wrote no zero.
+   *
+   * @see TimeSeriesBatch#rawNull(byte) the same rule on the mutable side
+   */
+  public double storedNumericValueOf(final Object value) {
+    if (value == null)
+      return storesAbsentMarker() ? TimeSeriesNaN.ABSENT : 0.0;
+    return numericValueOf(value);
+  }
+
+  /**
+   * Whether "no measurement" has a representation in this column's stored form: a floating-point column has
+   * NaN, and nothing else has anything (issue #7743).
+   */
+  public boolean storesAbsentMarker() {
+    return dataType == Type.DOUBLE || dataType == Type.FLOAT;
+  }
+
+  /**
    * Numeric view of a stored value, for the min/max/sum block statistics used by aggregation
-   * push-down. {@code null} counts as zero, matching what the column stores for it.
+   * push-down. {@code null} counts as zero, which is what a column with no absent marker stores for it;
+   * a floating-point column goes through {@link #storedNumericValueOf(Object)} instead.
    */
   public static double numericValueOf(final Object value) {
     if (value == null)

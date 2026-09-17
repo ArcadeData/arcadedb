@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.TagFilter;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
+import com.arcadedb.engine.timeseries.TimeSeriesNaN;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.LocalTimeSeriesType;
@@ -154,6 +155,22 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
               if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP && value instanceof Long)
                 value = DateUtils.dateTime(context.getDatabase(), (Long) value, ChronoUnit.MILLIS, LocalDateTime.class,
                     ChronoUnit.MILLIS);
+
+              // The absent marker becomes SQL NULL at the SQL boundary (issue #7743). NaN is what the storage
+              // layers use for "no measurement here" - it is what a null field value is stored as on a
+              // floating-point column - and NULL is what SQL calls the same thing: sum() and avg() skip it,
+              // min() does not return it, and count(*) still counts the row. Handing the NaN through instead
+              // would make a plain SELECT sum(value) answer NaN for a series with one gap in it, while the
+              // aggregation push-down over the very same rows answers the total of the real samples. The HTTP
+              // read paths already encode it this way (AbstractServerHttpHandler.putSampleValue).
+              //
+              // Only NaN, not every non-finite: an infinity IS a value in SQL arithmetic, and the JSON layer
+              // folds it in only because JSON cannot write one. Asked of TimeSeriesNaN rather than spelled out
+              // here, so the two SQL boundaries cannot drift apart from the storage layer's own definition of
+              // absence (claude-review on PR #7747). A non-floating Number can never be NaN, so the widened
+              // instanceof costs nothing but covers Float without a second arm.
+              if (value instanceof Number n && TimeSeriesNaN.isAbsent(n.doubleValue()))
+                value = null;
 
               result.setProperty(col.getName(), value);
             }

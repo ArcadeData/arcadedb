@@ -451,7 +451,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // resync. Scoped per-database so a gap in one database never masks a genuine bug raised while
   // applying an entry for an unrelated, healthy database. Cleared when a snapshot resync completes
   // (it resyncs all databases) and restores consistent state.
-  private final Set<String> divergedDatabases = ConcurrentHashMap.newKeySet();
+  // Keyed by database name, valued by WHY it was quarantined (issue #7741): a WAL version gap is a replication
+  // problem and an undecodable local entry is a corrupt log segment on THIS node, and an operator told only the
+  // first is sent to look at the leader for a bad disk of their own. The map is the set - keySet() is what every
+  // membership test reads - so the cause cannot go missing or outlive the quarantine it describes.
+  private final Map<String, DivergenceCause> divergedDatabases = new ConcurrentHashMap<>();
 
   // Bounded escalation (issue #4740): a node that can never resync (no stable leader reachable)
   // must not stay in "swallow unexpected errors" mode forever, silently degrading. Each error
@@ -1212,8 +1216,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private void handleUnexpectedApplyError(final long index, final String databaseName, final RuntimeException t) {
     if (databaseName != null && !databaseName.isEmpty()) {
       // Mark the database diverged on the first error so subsequent errors for it route here too.
-      // add() returns true only the first time, which is when we kick off the targeted resync.
-      if (divergedDatabases.add(databaseName)) {
+      // putIfAbsent() returns null only the first time, which is when we kick off the targeted resync. The cause
+      // recorded with it is what the operator-facing alert says (issue #7741): an entry this node cannot decode
+      // is a corrupt local log segment, not a replication fault, and pointing at the leader for it wastes the
+      // one person who can see the bad disk.
+      if (divergedDatabases.putIfAbsent(databaseName,
+          t instanceof RaftLogEntryDecodeException ? DivergenceCause.UNDECODABLE_LOG_ENTRY : DivergenceCause.APPLY_ERROR)
+          == null) {
         LogManager.instance().log(this, Level.SEVERE,
             "Unexpected error applying Raft entry for database '%s' at index %d; quarantining the database and "
                 + "triggering a targeted snapshot resync instead of halting the node (issue #4797): %s",
@@ -2034,15 +2043,38 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // needed for that, so it holds whatever happened to the leadership, the Raft client or the context in between.
     final LocalCommit local = localCommits.claim(databaseName, walTransactionIdOfCommittedEntry(decoded, entryIndex),
         decoded.walData());
+    RuntimeException applyFailure = null;
     try {
       if (local != null)
         publishLocalCommit(local, decoded, entryIndex);
       else
         applyReplicatedTransaction(decoded, entryIndex);
+    } catch (final RuntimeException e) {
+      // Kept only so the release below can attach its own failure to this one instead of dropping it; rethrown
+      // unchanged, so the apply path sees exactly what it saw before.
+      applyFailure = e;
+      throw e;
     } finally {
       // Applied, published or reconciled, the local copy of every page of this entry now carries its version, so the
       // reservation taken at append time has done its job. A no-op on a follower, whose ledger is empty.
-      pageVersions.release(databaseName, pages, decoded.walData());
+      //
+      // Nothing thrown here may escape (issue #7741): with no Pages in hand - a leader applying an entry it did
+      // not append - release() parses them out of the WAL payload, and a payload that cannot be parsed is exactly
+      // the state the try block has just failed on. Letting that throw would REPLACE the failure being reported,
+      // and since #7495 that failure is the RaftLogEntryDecodeException whose whole purpose is to quarantine the
+      // database instead of skipping the entry silently. The release is bookkeeping; the apply result is not.
+      try {
+        pageVersions.release(databaseName, pages, decoded.walData());
+      } catch (final RuntimeException e) {
+        // Attached to the apply's own failure when there is one, so the pair is diagnosable from a single stack
+        // trace, and logged when the apply succeeded and there is nothing to attach it to.
+        if (applyFailure != null)
+          applyFailure.addSuppressed(e);
+        else
+          LogManager.instance().log(this, Level.WARNING,
+              "Cannot release the page-version reservations of the Raft entry at index %d (db=%s): %s. The stale-reservation "
+                  + "sweep clears them; the entry's own outcome is unaffected", e, entryIndex, databaseName, e.getMessage());
+      }
     }
   }
 
@@ -2227,7 +2259,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // the HealthMonitor's periodic check). Every subsequent committed entry for this database will
       // hit the same gap until the resync lands: those log a throttled one-liner (no per-entry stack
       // trace) so the log is not flooded and the download is not starved of CPU/IO on small nodes.
-      if (divergedDatabases.add(decoded.databaseName())) {
+      if (divergedDatabases.putIfAbsent(decoded.databaseName(), DivergenceCause.WAL_VERSION_GAP) == null) {
         LogManager.instance().log(this, Level.SEVERE,
             "WAL version gap on follower - state divergence detected, triggering snapshot resync (db=%s, txId=%d): %s",
             decoded.databaseName(), walTx.txId, e.getMessage());
@@ -4635,7 +4667,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // nothing is known about.
       final long floor = Math.max(0L, readPersistedAppliedIndex(dbName));
       staleDatabaseAppliedFloors.put(dbName, floor);
-      markStateDiverged(dbName);
+      // Named, because the alert quotes it: nothing failed while APPLYING anything here, the install is what did
+      // not finish the job, and an operator sent to look for an apply error would find none (issue #7741).
+      markStateDiverged(dbName, DivergenceCause.SNAPSHOT_INSTALL_INCOMPLETE);
       LogManager.instance().log(this, Level.SEVERE,
           "Snapshot install did not bring database '%s' to snapshotIndex=%d: keeping it marked diverged and "
               + "clamping its LINEARIZABLE / read-your-writes reads at appliedIndex=%d until a resync succeeds. "
@@ -4764,7 +4798,22 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   // @VisibleForTesting
   void markStateDiverged(final String dbName) {
-    divergedDatabases.add(dbName);
+    markStateDiverged(dbName, DivergenceCause.APPLY_ERROR);
+  }
+
+  /**
+   * {@link #markStateDiverged(String)} naming why, which is what the cluster status document reports
+   * (issue #7741).
+   * <p>
+   * The FIRST cause a quarantine is recorded with is the one it keeps: {@code putIfAbsent} deliberately, which is
+   * the behaviour the {@code Set.add()} this replaced already had. A quarantined database goes on failing - every
+   * later committed entry for it hits the same wall - so the last cause would be noise from a database that is
+   * already waiting for a resync, while the first is the one that describes what went wrong. The map is cleared
+   * when the resync lands, so the next quarantine records afresh (claude-review on PR #7747).
+   */
+  // @VisibleForTesting
+  void markStateDiverged(final String dbName, final DivergenceCause cause) {
+    divergedDatabases.putIfAbsent(dbName, cause);
   }
 
   /**
@@ -4786,7 +4835,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   // @VisibleForTesting
   boolean isDatabaseDiverged(final String dbName) {
-    return divergedDatabases.contains(dbName);
+    return divergedDatabases.containsKey(dbName);
   }
 
   // @VisibleForTesting
@@ -4846,20 +4895,36 @@ public class ArcadeStateMachine extends BaseStateMachine {
    *
    * @param snapshotDownloadQueued     a snapshot download is flagged but has not started
    * @param snapshotDownloadInProgress a snapshot download is running
-   * @param divergedDatabases          databases quarantined on a WAL version gap and awaiting a resync
-   *                                   (issues #4740, #4797), sorted
    * @param snapshotAppliedFloor       the node-wide stale-snapshot read floor, or {@code -1} when there is none
    *                                   (issue #6111)
    * @param databaseAppliedFloors      per-database read floors left by a snapshot install that could not bring
    *                                   them up to date, keyed by database name (issue #6760)
+   * @param divergenceCauses           the databases quarantined and awaiting a resync (issues #4740, #4797), each
+   *                                   with WHY it was quarantined (issue #7741)
    */
   public record LocalResyncState(boolean snapshotDownloadQueued, boolean snapshotDownloadInProgress,
-                                 List<String> divergedDatabases, long snapshotAppliedFloor,
-                                 Map<String, Long> databaseAppliedFloors) {
+                                 long snapshotAppliedFloor, Map<String, Long> databaseAppliedFloors,
+                                 Map<String, DivergenceCause> divergenceCauses) {
 
     public LocalResyncState {
-      divergedDatabases = List.copyOf(divergedDatabases);
       databaseAppliedFloors = Map.copyOf(databaseAppliedFloors);
+      divergenceCauses = Map.copyOf(divergenceCauses);
+    }
+
+    /**
+     * The quarantined databases, sorted so a status poll payload is stable between ticks on an unchanged node.
+     * <p>
+     * DERIVED from {@link #divergenceCauses} rather than carried beside it (claude-review on PR #7747): the two
+     * were the same set spelled twice, and a future caller updating one and not the other would have published a
+     * name with no cause or a cause with no name. Computed per call, which costs an allocation only on a node
+     * that is actually holding something back - the same trade {@link #getLocalResyncState} makes.
+     */
+    public List<String> divergedDatabases() {
+      if (divergenceCauses.isEmpty())
+        return List.of();
+      final List<String> names = new ArrayList<>(divergenceCauses.keySet());
+      Collections.sort(names);
+      return names;
     }
 
     /**
@@ -4868,7 +4933,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
      * here rather than re-deriving it.
      */
     public boolean inProgress() {
-      return snapshotDownloadQueued || snapshotDownloadInProgress || !divergedDatabases.isEmpty()
+      return snapshotDownloadQueued || snapshotDownloadInProgress || !divergenceCauses.isEmpty()
           || snapshotAppliedFloor >= 0 || !databaseAppliedFloors.isEmpty();
     }
   }
@@ -4887,18 +4952,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // A healthy node - the overwhelming majority of calls, since the readiness probe polls this - copies
     // nothing: both immutable empties are shared constants and the record's own copyOf calls return them
     // unchanged. Only a node that actually has something in flight pays for the copies.
-    final List<String> diverged;
-    if (divergedDatabases.isEmpty())
-      diverged = List.of();
-    else {
-      diverged = new ArrayList<>(divergedDatabases);
-      // Sorted so a status poll payload is stable between ticks on an unchanged node.
-      Collections.sort(diverged);
-    }
+    final Map<String, DivergenceCause> causes = divergedDatabases.isEmpty()
+        ? Map.of() : new HashMap<>(divergedDatabases);
     final Map<String, Long> floors = staleDatabaseAppliedFloors.isEmpty()
         ? Map.of() : new HashMap<>(staleDatabaseAppliedFloors);
-    return new LocalResyncState(needsSnapshotDownload.get(), snapshotDownloadInProgress.get(), diverged,
-        staleSnapshotAppliedFloor.get(), floors);
+    return new LocalResyncState(needsSnapshotDownload.get(), snapshotDownloadInProgress.get(),
+        staleSnapshotAppliedFloor.get(), floors, causes);
   }
 
   /**

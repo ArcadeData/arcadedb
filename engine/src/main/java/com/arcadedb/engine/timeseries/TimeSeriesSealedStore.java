@@ -393,6 +393,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     try {
       final List<Object[]> results = new ArrayList<>();
       final int tsColIdx = findTimestampColumnIndex();
+      // The filter's own columns are read even when the projection leaves them out, and the row is narrowed once
+      // it has passed (issue #7733).
+      final TagProjection projection = TagProjection.of(columnIndices, tagFilter);
 
       for (final BlockEntry entry : blockDirectory) {
         if (entry.maxTimestamp < fromTs || entry.minTimestamp > toTs)
@@ -405,7 +408,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           continue;
 
         final long[] timestamps = decompressTimestamps(entry, tsColIdx);
-        final Object[][] decompressedCols = decompressColumns(entry, columnIndices, tsColIdx);
+        final Object[][] decompressedCols = decompressColumns(entry, projection.scanIndices(), tsColIdx);
 
         final int resultCols = decompressedCols.length + 1;
         for (int i = 0; i < timestamps.length; i++) {
@@ -418,11 +421,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
             row[c + 1] = decompressedCols[c][i];
 
           // For SLOW_PATH blocks (mixed tag values), apply per-row filtering.
-          // Use matchesMapped() so the filter works correctly when columnIndices is a subset.
-          if (tagMatch == BlockMatchResult.SLOW_PATH && !tagFilter.matchesMapped(row, columnIndices))
+          // Use matchesMapped() so the filter works correctly when the row is a subset of the columns.
+          if (tagMatch == BlockMatchResult.SLOW_PATH && !tagFilter.matchesMapped(row, projection.scanIndices()))
             continue;
 
-          results.add(row);
+          results.add(projection.narrow(row));
         }
       }
       return results;
@@ -537,16 +540,20 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     try {
       final int tsColIdx = findTimestampColumnIndex();
       final int dirSize = blockDirectory.size();
+      // See scanRange: a condition on a column outside the projection is applied, not silently refused (#7733).
+      final TagProjection projection = TagProjection.of(columnIndices, tagFilter);
 
       // Loop-invariant for the whole walk, so built once rather than per block: a projection does not vary from
-      // block to block, and neither does the timestamp column (claude-review on PR #7730).
-      BitSet projection = null;
-      int projectionWidth = 0;
+      // block to block, and neither does the timestamp column (claude-review on PR #7730). Named apart from the
+      // TagProjection above because they answer different questions: this one is the membership test the
+      // combinations fast path reads a DECLARATION through, and never widens - #7710's walk takes no filter.
+      BitSet combinationColumns = null;
+      int combinationWidth = 0;
       if (combinationsOnly && columnIndices != null) {
-        projection = new BitSet();
+        combinationColumns = new BitSet();
         for (final int idx : columnIndices)
-          projection.set(idx);
-        projectionWidth = columnIndices.length;
+          combinationColumns.set(idx);
+        combinationWidth = columnIndices.length;
       }
 
       // Binary search: find first block whose maxTimestamp >= fromTs
@@ -584,7 +591,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
         if (combinationsOnly) {
           // The whole point of issue #7710: one row off the directory entry, with no file read and no decode.
-          final Object[] combination = declaredSingleCombination(entry, projection, projectionWidth, tsColIdx,
+          final Object[] combination = declaredSingleCombination(entry, combinationColumns, combinationWidth, tsColIdx,
               fromTs, toTs);
           if (combination != null) {
             if (metrics != null)
@@ -609,7 +616,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
             metrics.addFastPathBlock();
         }
 
-        final Object[][] decompCols = decompressColumns(entry, columnIndices, tsColIdx);
+        final Object[][] decompCols = decompressColumns(entry, projection.scanIndices(), tsColIdx);
         final int resultCols = decompCols.length + 1;
 
         for (int i = start; i < end; i++) {
@@ -617,12 +624,12 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           row[0] = ts[i];
           for (int c = 0; c < decompCols.length; c++)
             row[c + 1] = decompCols[c][i];
-          // Use matchesMapped() so the filter works correctly when columnIndices is a subset.
-          if (tagMatch == BlockMatchResult.SLOW_PATH && !tagFilter.matchesMapped(row, columnIndices))
+          // Use matchesMapped() so the filter works correctly when the row is a subset of the columns.
+          if (tagMatch == BlockMatchResult.SLOW_PATH && !tagFilter.matchesMapped(row, projection.scanIndices()))
             continue;
           if (metrics != null)
             metrics.addMaterializedRows(1);
-          if (!visitor.visit(row))
+          if (!visitor.visit(projection.narrow(row)))
             return false;
         }
       }
@@ -792,6 +799,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     try {
       final List<Object[]> results = new ArrayList<>();
       final int tsColIdx = findTimestampColumnIndex();
+      // The filter's own columns are read even when the projection leaves them out, and the row is narrowed
+      // once it has passed (issue #7733).
+      final TagProjection projection = TagProjection.of(columnIndices, tagFilter);
       final int dirSize = blockDirectory.size();
       if (dirSize == 0)
         return results;
@@ -850,20 +860,20 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
         // Columns stay unboxed: only the rows that survive the tag filter and make the top-N are
         // materialised, instead of boxing every value of the block (issue #5416).
-        final RawColumn[] rawCols = decompressColumnsRaw(entry, columnIndices, tsColIdx);
+        final RawColumn[] rawCols = decompressColumnsRaw(entry, projection.scanIndices(), tsColIdx);
         final int resultCols = rawCols.length + 1;
 
         // Rows inside a block are ascending, so walking backwards yields descending order and the
         // first `need` matches found are the newest ones in this block.
         int taken = 0;
         for (int i = end - 1; i >= start && taken < need; i--) {
-          if (tagMatch == BlockMatchResult.SLOW_PATH && !matchesRawColumns(rawCols, i, tagFilter, columnIndices))
+          if (tagMatch == BlockMatchResult.SLOW_PATH && !matchesRawColumns(rawCols, i, tagFilter, projection.scanIndices()))
             continue;
           final Object[] row = new Object[resultCols];
           row[0] = ts[i];
           for (int c = 0; c < rawCols.length; c++)
             row[c + 1] = rawCols[c].valueAt(i);
-          results.add(row);
+          results.add(projection.narrow(row));
           taken++;
         }
         if (metrics != null)
@@ -915,6 +925,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     try {
       final List<Object[]> results = new ArrayList<>();
       final int tsColIdx = findTimestampColumnIndex();
+      // The filter's own columns are read even when the projection leaves them out, and the row is narrowed
+      // once it has passed (issue #7733).
+      final TagProjection projection = TagProjection.of(columnIndices, tagFilter);
       final int dirSize = blockDirectory.size();
       if (dirSize == 0)
         return results;
@@ -973,7 +986,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
         // Columns stay unboxed: only the rows that survive the tag filter and make the bottom-N are
         // materialised, instead of boxing every value of the block (same reason as issue #5416).
-        final RawColumn[] rawCols = decompressColumnsRaw(entry, columnIndices, tsColIdx);
+        final RawColumn[] rawCols = decompressColumnsRaw(entry, projection.scanIndices(), tsColIdx);
         final int resultCols = rawCols.length + 1;
 
         // Rows inside a block are ascending, so the first `need` matches found are the oldest ones in it.
@@ -987,13 +1000,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           // It keeps a block from materialising `need` rows when a handful of its oldest already lose.
           if (results.size() >= need && ts[i] > cutoffTs)
             break;
-          if (tagMatch == BlockMatchResult.SLOW_PATH && !matchesRawColumns(rawCols, i, tagFilter, columnIndices))
+          if (tagMatch == BlockMatchResult.SLOW_PATH && !matchesRawColumns(rawCols, i, tagFilter, projection.scanIndices()))
             continue;
           final Object[] row = new Object[resultCols];
           row[0] = ts[i];
           for (int c = 0; c < rawCols.length; c++)
             row[c + 1] = rawCols[c].valueAt(i);
-          results.add(row);
+          results.add(projection.narrow(row));
           taken++;
         }
         if (metrics != null)
@@ -1602,7 +1615,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
           // Compute stats for numeric columns
           if (hasNumericStats(c)) {
-            final double[] stats = reduceNumericStats(chunkValues);
+            final double[] stats = reduceNumericStats(columns.get(c), chunkValues);
             mins[c] = stats[0];
             maxs[c] = stats[1];
             sums[c] = stats[2];
@@ -2037,7 +2050,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       case GORILLA_XOR -> {
         final double[] doubles = new double[values.length];
         for (int i = 0; i < values.length; i++)
-          doubles[i] = ColumnDefinition.numericValueOf(values[i]);
+          doubles[i] = col.storedNumericValueOf(values[i]);
         yield GorillaXORCodec.encode(doubles);
       }
       case SIMPLE8B -> {
@@ -2627,12 +2640,14 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
   /**
    * {@link #reduceNumericStats(double[])} over the boxed values a write path holds, unboxed exactly the way
-   * {@link #compressColumn} unboxes them so the statistics describe the bytes that get written.
+   * {@link #compressColumn} unboxes them so the statistics describe the bytes that get written. Which is why it
+   * takes the column: a null is the absent marker on a floating-point column and a zero on every other, and the
+   * declared minimum has to agree with the encoder about that (issue #7743).
    */
-  static double[] reduceNumericStats(final Object[] values) {
+  static double[] reduceNumericStats(final ColumnDefinition col, final Object[] values) {
     final double[] unboxed = new double[values.length];
     for (int i = 0; i < values.length; i++)
-      unboxed[i] = ColumnDefinition.numericValueOf(values[i]);
+      unboxed[i] = col.storedNumericValueOf(values[i]);
     return reduceNumericStats(unboxed);
   }
 
@@ -3415,6 +3430,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
   /**
    * Mirrors {@link TagFilter#matchesMapped(Object[], int[])} against the raw, still unboxed columns.
+   * <p>
+   * {@code columnIndices} is the set of columns the RAW COLUMNS were decompressed from, which since issue #7733
+   * is the projection widened by whatever the filter needs - see {@link TagProjection}. A condition whose column
+   * is absent from it is one the scan cannot evaluate at all, and answering {@code false} for it is the last
+   * resort rather than the normal case it used to be.
    */
   private static boolean matchesRawColumns(final RawColumn[] rawColumns, final int rowIdx, final TagFilter tagFilter,
       final int[] columnIndices) {

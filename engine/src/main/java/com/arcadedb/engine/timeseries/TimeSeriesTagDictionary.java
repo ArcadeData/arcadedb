@@ -26,6 +26,7 @@ import com.arcadedb.engine.Component;
 import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.MutablePage;
+import com.arcadedb.engine.OwnTransaction;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.PaginatedComponentFile;
@@ -282,10 +283,10 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
    */
   public void initHeaderPage() throws IOException {
     final DatabaseInternal db = database.getWrappedDatabaseInstance();
-    db.begin();
-    // Only this method's own nested transaction may be rolled back below: if begin() had failed there
-    // would be no nested transaction, and rolling back "the active one" would discard the caller's.
-    boolean ownTransaction = true;
+    // Only this method's own transaction may be rolled back below, and only while it is still on the thread's
+    // stack: rolling back "the active one" would discard the caller's, both when begin() never pushed one and
+    // after a failed commit() has popped ours (issue #7732).
+    final OwnTransaction tx = OwnTransaction.begin(db);
     try {
       final MutablePage headerPage = db.getTransaction().addPage(new PageId(database, fileId, 0), pageSize);
       headerPage.writeInt(HEADER_MAGIC_OFFSET, MAGIC_VALUE);
@@ -293,13 +294,11 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
       headerPage.writeInt(HEADER_ENTRY_COUNT_OFFSET, 0);
       headerPage.writeInt(HEADER_DATA_PAGE_COUNT, 0);
       pageCount.set(1);
-      db.commit();
-      ownTransaction = false;
+      tx.commit();
     } catch (final Exception e) {
       throw e instanceof IOException io ? io : new IOException("Failed to initialise TimeSeries tag dictionary header", e);
     } finally {
-      if (ownTransaction && db.isTransactionActive())
-        db.rollback();
+      tx.rollbackIfMine();
     }
   }
 
@@ -549,21 +548,19 @@ public class TimeSeriesTagDictionary extends PaginatedComponent {
 
       // Route through the wrapped database so the pages are shipped to followers under HA.
       final DatabaseInternal db = database.getWrappedDatabaseInstance();
-      db.begin();
-      // See initHeaderPage(): roll back only our own nested transaction, never a caller's. This one
-      // usually IS nested - the ingest path calls it from inside the append transaction.
-      boolean ownTransaction = true;
+      // See initHeaderPage(): roll back only our own transaction, never a caller's. This one usually IS nested -
+      // the ingest path calls it from inside the append transaction - which is exactly the case a failed commit
+      // used to charge to the caller (issue #7732).
+      final OwnTransaction tx = OwnTransaction.begin(db);
       final int[] appended;
       try {
         appended = appendEntries(db.getTransaction(), encoded);
-        db.commit();
-        ownTransaction = false;
+        tx.commit();
       } catch (final Exception e) {
         throw e instanceof IOException io ? io :
             new IOException("Failed to append to TimeSeries tag dictionary '" + getName() + "'", e);
       } finally {
-        if (ownTransaction && db.isTransactionActive())
-          db.rollback();
+        tx.rollbackIfMine();
       }
 
       // Publish to RAM only now: before the commit, disk is the single source of truth, so a failed
