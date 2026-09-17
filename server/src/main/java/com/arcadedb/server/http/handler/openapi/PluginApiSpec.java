@@ -583,6 +583,10 @@ public class PluginApiSpec implements OpenApiContributor {
     schema.addProperty("snapshotDownloadInProgress", SpecBuilders.bool("A snapshot is being installed now"));
     schema.addProperty("divergedDatabases", SpecBuilders.arrayOf(SpecBuilders.string("Database name"),
         "Databases quarantined because this node's WAL diverged from the leader's"));
+    schema.addProperty("divergenceCauses", SpecBuilders.mapOf(
+        SpecBuilders.string("Why that database was quarantined: WAL_VERSION_GAP, UNDECODABLE_LOG_ENTRY or APPLY_ERROR"),
+        """
+            Why each quarantined database was quarantined, keyed by database name - the same names             'divergedDatabases' lists (issue #7741). The names alone read as a replication problem even when the             cause is this node's own unreadable log segment, which is a different thing for an operator to do             something about."""));
     schema.addProperty("snapshotAppliedFloor", SpecBuilders.integer(
         "Raft index the last installed snapshot brought this node to"));
     schema.addProperty("databaseAppliedFloors", SpecBuilders.mapOf(
@@ -590,7 +594,7 @@ public class PluginApiSpec implements OpenApiContributor {
         "Per-database applied floor, keyed by database name"));
     // Built as one chained expression by GetClusterHandler.buildLocalResync, so it is present whole.
     schema.setRequired(List.of("inProgress", "snapshotDownloadQueued", "snapshotDownloadInProgress",
-        "divergedDatabases", "snapshotAppliedFloor", "databaseAppliedFloors"));
+        "divergedDatabases", "divergenceCauses", "snapshotAppliedFloor", "databaseAppliedFloors"));
     return schema;
   }
 
