@@ -38,7 +38,6 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.FileUtils;
 
-import java.io.File;
 import java.lang.reflect.InvocationTargetException;
 import java.util.HashMap;
 import java.util.Map;
