@@ -583,10 +583,17 @@ public class PluginApiSpec implements OpenApiContributor {
     schema.addProperty("snapshotDownloadInProgress", SpecBuilders.bool("A snapshot is being installed now"));
     schema.addProperty("divergedDatabases", SpecBuilders.arrayOf(SpecBuilders.string("Database name"),
         "Databases quarantined because this node's WAL diverged from the leader's"));
-    schema.addProperty("divergenceCauses", SpecBuilders.mapOf(
-        SpecBuilders.string("Why that database was quarantined: WAL_VERSION_GAP, UNDECODABLE_LOG_ENTRY or APPLY_ERROR"),
-        """
-            Why each quarantined database was quarantined, keyed by database name - the same names             'divergedDatabases' lists (issue #7741). The names alone read as a replication problem even when the             cause is this node's own unreadable log segment, which is a different thing for an operator to do             something about."""));
+    final Schema<String> cause = SpecBuilders.string("""
+        Why this database was quarantined. 'WAL_VERSION_GAP' means an intermediate transaction never reached \
+        this node; 'UNDECODABLE_LOG_ENTRY' a corrupt local log segment or an entry written by a newer node, \
+        which is not a replication fault; 'APPLY_ERROR' an unexpected error while applying a committed entry; \
+        'SNAPSHOT_INSTALL_INCOMPLETE' an install that did not reach the snapshot's index.""");
+    cause.setEnum(List.of("WAL_VERSION_GAP", "UNDECODABLE_LOG_ENTRY", "APPLY_ERROR", "SNAPSHOT_INSTALL_INCOMPLETE"));
+    // Declared since issue #7741 added it to the response. The vocabulary is written out here rather than read
+    // from DivergenceCause for the same reason the alert severities are - this module cannot see ha-raft - and
+    // Issue7577ClusterStatusSchemaMatchesTheHandlerTest over there is what keeps the two the same set.
+    schema.addProperty("divergenceCauses", SpecBuilders.mapOf(cause,
+        "Why each quarantined database was quarantined, keyed by database name. Same keys as 'divergedDatabases'"));
     schema.addProperty("snapshotAppliedFloor", SpecBuilders.integer(
         "Raft index the last installed snapshot brought this node to"));
     schema.addProperty("databaseAppliedFloors", SpecBuilders.mapOf(

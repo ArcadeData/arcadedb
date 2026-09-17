@@ -165,6 +165,84 @@ public class WALFile extends LockContext {
     FileUtils.deleteFile(new File(filePath));
   }
 
+  /** What {@link #deleteIfNotHeldByAnotherInstance(File)} did with the file it was handed. */
+  public enum SweepOutcome {
+    /** The file is gone: it was deleted, or it was already gone when the sweep reached it. */
+    DELETED,
+    /** Somebody else has the file open, so it was left alone. */
+    SKIPPED_LOCKED,
+    /** The file should have been deleted and could not be. */
+    ERROR
+  }
+
+  /**
+   * Deletes {@code walFile} only if an exclusive lock on it can be acquired first (issue #7479). A file no live
+   * instance tracks is either a genuine orphan from an earlier unclean shutdown of the same database - nothing
+   * holds it open, the lock succeeds instantly, and it is deleted - or a WAL file another live instance still has
+   * open (every {@link WALFile} has held an exclusive lock on itself for its whole life since that same issue), in
+   * which case the lock fails and the file is left untouched instead of being deleted out from under that
+   * instance.
+   * <p>
+   * The probe is a {@link WALFile} itself, not a raw handle kept open across the delete: on Windows a process
+   * cannot delete a file through which it still holds an open, non-share-delete handle - even its own - so the
+   * handle used to prove nobody else has the file open must be closed (releasing the lock as a side effect) BEFORE
+   * {@code delete()} is attempted, exactly as {@link #drop()} already does for the ordinary case.
+   * <p>
+   * Accepted trade-off (raised in review): closing the probe before deleting reopens a THIRD instance's window to
+   * acquire the lock and start using the file in between - the opposite choice from holding the lock through the
+   * delete, which an earlier revision did, until that was found to make the delete itself fail silently on
+   * Windows (see above). Between "closeable by Windows, briefly racy against a third instance" and "safe against a
+   * third instance, broken on Windows", this keeps the former: the scenario this whole method exists for is
+   * already "more than one instance should not share this directory", so a THIRD one racing into the exact same
+   * window is a corner of that corner.
+   * <p>
+   * Lives HERE rather than on {@code TransactionManager}, where it was written, because a database directory has
+   * more than one {@code *.wal} sweep over it and the second one had no protection at all: HA's
+   * {@code SnapshotInstaller.cleanupWalFiles} deleted every {@code *.wal} in the directory by name after a
+   * snapshot swap, which on a shared directory reproduces the exact corruption #7479 reported. One implementation,
+   * next to the lock it depends on, so a third sweep cannot be written without it (issue #7505).
+   *
+   * @param walFile the {@code *.wal} file to remove
+   *
+   * @return what happened to it; never {@code null}
+   */
+  public static SweepOutcome deleteIfNotHeldByAnotherInstance(final File walFile) {
+    if (!walFile.exists())
+      // Already gone - its owner's own clean shutdown, or a concurrent sweep, beat us to it. Opening it
+      // below would otherwise recreate it as an empty file just to delete it again.
+      return SweepOutcome.DELETED;
+
+    try {
+      final boolean nobodyElseHasItOpen;
+      final WALFile probe = new WALFile(walFile.getPath());
+      try {
+        nobodyElseHasItOpen = probe.acquiredLock();
+      } finally {
+        probe.close();
+      }
+
+      if (!nobodyElseHasItOpen) {
+        // Someone else already has it open - either a live peer instance still using it, or (rarer) another
+        // closing instance's own sweep racing this one over the same ownerless orphan. Either way it is not
+        // this sweep's to remove: the file survives, and whoever does hold it will remove it if it turns
+        // out to be an orphan after all.
+        LogManager.instance().log(WALFile.class, Level.WARNING,
+            "Skipped removing WAL file '%s': it is still open, either by a live database instance or a competing cleanup",
+            null, walFile);
+        return SweepOutcome.SKIPPED_LOCKED;
+      }
+
+      if (!walFile.delete()) {
+        LogManager.instance().log(WALFile.class, Level.WARNING, "Error on removing WAL file '%s'", null, walFile);
+        return SweepOutcome.ERROR;
+      }
+      return SweepOutcome.DELETED;
+    } catch (final IOException e) {
+      LogManager.instance().log(WALFile.class, Level.WARNING, "Error on removing WAL file '%s'", e, walFile);
+      return SweepOutcome.ERROR;
+    }
+  }
+
   public WALTransaction getFirstTransaction() throws WALException {
     return getTransaction(0);
   }
