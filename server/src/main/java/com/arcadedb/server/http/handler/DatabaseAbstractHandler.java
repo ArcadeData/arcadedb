@@ -193,7 +193,7 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
           else
             response.set(execute(exchange, user, database, payload));
           return null;
-        });
+        }, participatesInSessionTransaction());
       } else {
         if (finalAtomicTransaction)
           executeInTransaction(exchange, user, database, payload, response, retries);
@@ -349,6 +349,34 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
   protected boolean carriesSessionId(final HttpServerExchange exchange) {
     final HeaderValues sessionId = exchange.getRequestHeaders().get(SESSION_ID_HEADER);
     return sessionId != null && !sessionId.isEmpty();
+  }
+
+  /**
+   * Whether a failure raised by this handler must roll back the session's transaction (issue #7734).
+   * <p>
+   * True for every handler that runs INSIDE the caller's transaction, which is the default and what
+   * {@code HttpSession.execute} has always done: the command failed part way, so what it was running in cannot
+   * be trusted.
+   * <p>
+   * False for a route whose documented contract is that it does not participate in that transaction - the three
+   * {@code /api/v1/ts} routes, which resolve the session for its LOCK, PRINCIPAL and IDLE CLOCK (issue #7402)
+   * but write through {@code TimeSeriesShard.appendSamples}' own nested begin/commit, or read without touching
+   * it. Before #7402 those routes extended {@link AbstractServerHttpHandler} and never resolved a session at
+   * all, so nothing they did could reach a client's transaction; moving them onto this class put them inside
+   * {@code HttpSession.execute}'s rollback arm, where a 400 from a malformed line-protocol body - refused before
+   * one byte reached the engine - and a 413 from a read answering "too many rows" both destroyed a transaction
+   * the client opened with {@code /begin} and still believed it owned, leaving the session registered so its
+   * later {@code /commit} reported nothing lost.
+   * <p>
+   * This is deliberately a property of the HANDLER rather than of the individual failure. The two sharp cases
+   * are pure client input, but the contract the routes publish is not "these two errors are harmless": it is
+   * that the samples are durable before the caller commits anything and the reads detach from the session. A
+   * per-exception rule would have to be re-derived every time one of those routes grew a new failure mode.
+   *
+   * @see PostTimeSeriesWriteHandler
+   */
+  protected boolean participatesInSessionTransaction() {
+    return true;
   }
 
   protected boolean requiresDatabase() {

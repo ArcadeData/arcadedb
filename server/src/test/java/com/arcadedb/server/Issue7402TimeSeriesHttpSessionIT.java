@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpSessionManager;
@@ -430,6 +431,56 @@ class Issue7402TimeSeriesHttpSessionIT extends BaseGraphServerTest {
     assertThat(countDocuments(rootAuth(), null))
         .as("the rollback still took the witness, so the transaction was real throughout")
         .isZero();
+  }
+
+  /**
+   * Issue #7734, the failure half of the invariant the test above states on the success path. Issue #7402 moved
+   * the three {@code /api/v1/ts} routes onto {@code DatabaseAbstractHandler}, which runs a session-scoped request
+   * inside {@code HttpSession.execute} - and that method's {@code catch} arm rolls back the session's
+   * transaction, the one the client opened with {@code /begin} and still believes it owns. The session stays
+   * registered, so the later {@code /commit} answers without reporting that anything was lost.
+   * <p>
+   * {@code POST /ts/{db}/query} answers 413 when the ceiling actually cuts the result: a READ that declines to
+   * answer used to destroy a WRITE transaction. (The write route is fixed the same way and asserted at unit
+   * level in {@code Issue7734TimeSeriesRouteKeepsSessionTransactionTest}: its own reachable throw is a per-type
+   * ACL denial rather than the body parser, which swallows a malformed line and skips it.)
+   * <p>
+   * <p>
+   * The ceiling is lowered on the live server for the duration, because the fixture's two samples are the
+   * cheapest way to exceed one - the alternative is seeding a few thousand of them to exceed the default, which
+   * would say nothing more.
+   */
+  @Test
+  void aTimeSeriesReadRefusedForTooManyRowsLeavesTheSessionTransactionIntact() throws Exception {
+    seed();
+    final int ceiling = getServer(0).getConfiguration()
+        .getValueAsInteger(GlobalConfiguration.SERVER_HTTP_QUERY_MAX_RESULT_ROWS);
+    getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_HTTP_QUERY_MAX_RESULT_ROWS, 1);
+
+    // The session is opened INSIDE the try, so a failure to open it still restores the ceiling on the way out:
+    // this server is shared with every test that runs after this one, and leaving the ceiling at 1 would answer
+    // 413 to reads that have nothing to do with this test (CodeRabbit).
+    String session = null;
+    try {
+      session = beginSession(rootAuth());
+      command(rootAuth(), session, "INSERT INTO " + DOC_TYPE + " SET name = 'witness'");
+      assertThat(countDocuments(rootAuth(), session)).isEqualTo(1L);
+
+      final HttpResponse<String> refused = post("/ts/" + getDatabaseName() + "/query", rootAuth(), session,
+          new JSONObject().put("type", TYPE).put("from", 0).put("to", 10_000).put("limit", 100).toString(),
+          "application/json");
+      assertThat(refused.statusCode())
+          .as("the stated limit is above the server ceiling and the result is cut: %s", refused.body())
+          .isEqualTo(413);
+
+      assertThat(countDocuments(rootAuth(), session))
+          .as("#7734: a read that refuses to answer must not roll back the transaction it was read inside")
+          .isEqualTo(1L);
+    } finally {
+      getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_HTTP_QUERY_MAX_RESULT_ROWS, ceiling);
+      if (session != null)
+        rollback(rootAuth(), session);
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────────────────

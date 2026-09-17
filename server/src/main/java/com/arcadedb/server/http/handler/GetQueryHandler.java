@@ -162,12 +162,21 @@ public class GetQueryHandler extends AbstractQueryHandler {
   }
 
   /**
-   * A buffered GET query is short enough to answer on the IO thread, which is what this handler has always done.
-   * A streamed one is not: it writes blocking output for as long as the client takes to read it, and blocking an
-   * IO thread starves every other connection the server is serving on it.
+   * A buffered, session-less GET query is short enough to answer on the IO thread, which is what this handler has
+   * always done. Two kinds of request are not:
+   * <ul>
+   * <li>a STREAMED one, which writes blocking output for as long as the client takes to read it;</li>
+   * <li>one that names a session (issue #7684), because {@code DatabaseAbstractHandler.execute} then runs it
+   * inside {@code HttpSession.execute}, which waits up to five seconds on the session lock. "Short" is a
+   * property of the query; the lock wait is not, and it is reached by nothing worse than a client issuing two
+   * requests on one session at the same time, or retrying one whose predecessor is still running.</li>
+   * </ul>
+   * Blocking an IO thread starves every other connection multiplexed onto it, so neither cost is paid by the
+   * caller that incurred it. A session-less buffered GET keeps answering on the IO thread, so nothing gets
+   * slower for the common case.
    */
   @Override
   protected boolean mustExecuteOnWorkerThread(final HttpServerExchange exchange) {
-    return isNdJsonRequested(exchange);
+    return isNdJsonRequested(exchange) || carriesSessionId(exchange);
   }
 }
