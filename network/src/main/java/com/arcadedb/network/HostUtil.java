@@ -17,6 +17,9 @@ package com.arcadedb.network;/*
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import java.net.InetAddress;
+import java.net.UnknownHostException;
+
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -98,5 +101,38 @@ public class HostUtil {
       throw new IllegalArgumentException("Invalid host " + host);
 
     return port;
+  }
+
+  /**
+   * Whether {@code host} names this machine's loopback interface, the question both remote clients ask
+   * before letting secret material travel: {@code RemoteServer.createApiToken} over HTTP and
+   * {@code RemoteGrpcServer} before attaching call credentials to a plaintext channel. It lives here
+   * rather than in either of them because it had been written twice, byte for byte, and two copies of a
+   * security check drift (issue #7372).
+   * <p>
+   * Fails closed on a name that does not resolve: an unresolvable host is not a host known to be local.
+   * <p>
+   * <b>It answers for the resolution it performs, not for the one the socket will use.</b> The name is
+   * resolved again, independently, when the client dials - so a host name whose DNS answer an attacker
+   * can influence (rebinding, split horizon, a one-second TTL) could read as loopback here and carry the
+   * secret elsewhere in the clear. Pinning the resolved address into the URL would close that and break
+   * TLS SNI and virtual hosting in exchange, which is a bad trade for a check that is the second of two:
+   * the server refuses the same combination from its side, where it reads the live connection rather
+   * than a name.
+   */
+  public static boolean isLoopbackHost(final String host) {
+    if (host == null || host.isBlank())
+      return false;
+
+    final String trimmed = host.trim();
+    if (trimmed.equalsIgnoreCase("localhost"))
+      return true;
+
+    try {
+      return InetAddress.getByName(trimmed).isLoopbackAddress();
+    } catch (final UnknownHostException e) {
+      // Unresolvable host: treat as non-loopback and fail closed.
+      return false;
+    }
   }
 }

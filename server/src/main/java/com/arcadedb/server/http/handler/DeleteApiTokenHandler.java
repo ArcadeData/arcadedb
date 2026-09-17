@@ -55,7 +55,14 @@ public class DeleteApiTokenHandler extends AbstractServerHttpHandler {
     try {
       controlPlane.deleteApiToken(getQueryParameter(exchange, "token"));
     } catch (final ServerControlPlane.NotFoundException e) {
-      return new ExecutionResponse(404, new JSONObject().put("result", "Token not found").toString());
+      // 'error', not 'result': RemoteHttpComponent.manageException promotes 'error'/'detail'/'exception'
+      // into the thrown exception's message and nothing else, so a refusal filed under 'result' reached a
+      // Java caller as a bare "HTTP Error (httpErrorCode=404 ...)" with the sentence the server had
+      // written stripped out. Every sibling handler on these routes already answers 'error' (issue #7372).
+      // e.getMessage(), not the same sentence written out again: DeleteGroupHandler and PutUserHandler
+      // forward theirs, and a literal copied from ServerControlPlane stops matching it the moment that
+      // message grows the detail - the token hash, say - that made it worth changing.
+      return new ExecutionResponse(404, new JSONObject().put("error", e.getMessage()).toString());
     } catch (final IllegalArgumentException e) {
       return new ExecutionResponse(400, new JSONObject().put("error", e.getMessage()).toString());
     }
