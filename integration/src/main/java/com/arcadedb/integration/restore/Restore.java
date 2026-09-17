@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.integration.restore.format.AbstractRestoreFormat;
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.integration.restore.format.FullRestoreFormat;
 import com.arcadedb.utility.ProgressCallback;
 
@@ -109,6 +110,16 @@ public class Restore {
    * server command handler calls this reflectively with the value it already validated the URL against, so the
    * fetch cannot land on a stricter-or-looser answer than the pre-check that accepted the command (issue #6381).
    */
+  /**
+   * The settings overlay this restore's remote fetch reads its timeouts from - a server's own
+   * {@code ContextConfiguration}. Mirrors {@link #setAllowLocalUrls(boolean)}: the caller resolves it against its
+   * configuration because a fresh restore has no database to ask (PR #7755 review).
+   */
+  public Restore setConfiguration(final ContextConfiguration configuration) {
+    settings.configuration = configuration;
+    return this;
+  }
+
   public Restore setAllowLocalUrls(final boolean allowLocalUrls) {
     settings.allowLocalUrls = allowLocalUrls;
     return this;

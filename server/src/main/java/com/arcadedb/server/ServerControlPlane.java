@@ -1817,6 +1817,9 @@ public class ServerControlPlane {
         // FullRestoreFormat must agree with this server's own configuration rather than falling back to the static
         // default, or a per-server override that let the command through would still have the fetch refuse it.
         clazz.getMethod("setAllowLocalUrls", boolean.class).invoke(restorer, isRestoreImportLocalUrlsAllowed());
+        // AND THIS SERVER'S OWN OVERLAY, SO THE FETCH TIMEOUTS ARE THE ONES THE OPERATOR CONFIGURED. THE RESTORER
+        // CANNOT ASK THE TARGET DATABASE FOR THEM - A FRESH RESTORE HAS NOT CREATED IT YET (PR #7755 REVIEW)
+        clazz.getMethod("setConfiguration", ContextConfiguration.class).invoke(restorer, server.getConfiguration());
         clazz.getMethod("setLogger", loggerClass()).invoke(restorer, progressLogger(listener));
         RestoreProgress.installCallback(clazz, restorer, progress, RESTORE_STEPS);
 

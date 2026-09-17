@@ -18,6 +18,7 @@
  */
 package com.arcadedb.integration.restore.format;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.integration.importer.ConsoleLogger;
@@ -274,12 +275,16 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
       // null AND FALLS BACK TO THE STATIC GLOBAL DEFAULT.
       final boolean allowLocalUrls = settings.allowLocalUrls != null ?
           settings.allowLocalUrls : GlobalConfiguration.SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS.getValueAsBoolean();
-      // THE TARGET DATABASE'S OVERLAY WHEN THERE IS ONE, SO THE FETCH TIMEOUTS ARE THE OPERATOR'S: BOTH ARE
-      // SCOPE.SERVER SETTINGS AND A ContextConfiguration NEVER WRITES THROUGH TO THE ENUM (PR #7755 REVIEW).
-      // A RESTORE THAT CREATES ITS TARGET HAS NO DATABASE YET, AND null FALLS BACK TO THE ENUM
+      // THE CALLER'S OVERLAY FIRST, THE TARGET DATABASE'S ONLY AS A FALLBACK. BOTH TIMEOUTS ARE SCOPE.SERVER AND A
+      // ContextConfiguration NEVER WRITES THROUGH TO THE ENUM, SO READING THE ENUM MEANS IGNORING WHAT THE OPERATOR
+      // CONFIGURED. THE DATABASE ALONE IS NOT ENOUGH: A FRESH RESTORE HAS NO TARGET DATABASE YET AT FETCH TIME, SO
+      // THAT BRANCH WAS null EVERY TIME ON THE ONE PATH THAT MATTERS - THE SERVER'S OWN RESTORE (PR #7755 REVIEW)
+      final ContextConfiguration configuration = settings.configuration != null ?
+          settings.configuration :
+          database != null ? database.getConfiguration() : null;
+
       final HttpURLConnection connection = SafeHttpFetcher.open(settings.inputFileURL,
-          address -> !allowLocalUrls && RESERVED_ADDRESSES.isBlocked(address), "RESTORE DATABASE",
-          database != null ? database.getConfiguration() : null);
+          address -> !allowLocalUrls && RESERVED_ADDRESSES.isBlocked(address), "RESTORE DATABASE", configuration);
 
       // body() and not getInputStream(): the read timeout the fetch applies is reported as a timeout naming the
       // setting that relaxes it, rather than as a bare "Read timed out" inside a restore failure (issue #7500).

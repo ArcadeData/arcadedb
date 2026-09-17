@@ -278,7 +278,9 @@ public final class GrpcErrorMapper {
   static String concealableDescription(final Object requester, final String prefix, final Throwable e,
       final boolean conceal) {
     if (!conceal)
-      return prefix + ": " + e.getMessage();
+      // THE CLASS NAME WHEN THERE IS NO MESSAGE, LIKE insertErrorMessage AND Importer.describe: A LINK THAT READS
+      // "null" NAMES THE FAILURE LESS WELL THAN ITS TYPE DOES
+      return prefix + ": " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
 
     logConcealed(requester, prefix, e);
     return prefix + ": " + CONCEALED_DESCRIPTION;

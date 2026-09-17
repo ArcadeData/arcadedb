@@ -18,6 +18,7 @@
  */
 package com.arcadedb.integration.restore;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.utility.FileUtils;
 
 import java.util.HashMap;
@@ -57,6 +58,16 @@ public class RestoreSettings {
    * it explicitly so the fetch-time check agrees with whatever pre-check already accepted the command (issue #6381).
    */
   public       Boolean             allowLocalUrls;
+  /**
+   * The settings overlay the fetch TIMEOUTS are read from, or null for a CLI caller with none.
+   * <p>
+   * Threaded the same way {@link #allowLocalUrls} is, and for the same reason: the caller resolves it against its
+   * own configuration and hands it down. {@code FullRestoreFormat} cannot get it from the target database, because
+   * a fresh restore has no target database yet at fetch time - so reading it there gave null every time and the
+   * fetch silently fell back to the {@code GlobalConfiguration} enum, which an {@code ALTER SERVER SETTING} never
+   * writes to (PR #7755 review).
+   */
+  public       ContextConfiguration configuration;
   public final Map<String, String> options              = new HashMap<>();
 
   protected void parseParameters(final String[] args) {

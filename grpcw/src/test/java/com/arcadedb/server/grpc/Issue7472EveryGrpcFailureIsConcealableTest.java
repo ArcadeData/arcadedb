@@ -28,6 +28,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.MatchResult;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
@@ -196,7 +197,7 @@ class Issue7472EveryGrpcFailureIsConcealableTest {
    */
   private static String enclosingMethod(final String text, final int at) {
     int start = 0;
-    for (final java.util.regex.MatchResult m : Pattern.compile("(?m)^  (?:public|protected|private|static|final| )*[\\w<>,\\[\\]?. ]+\\([^)]*\\)[^;{]*\\{")
+    for (final MatchResult m : Pattern.compile("(?m)^  (?:public|protected|private|static|final| )*[\\w<>,\\[\\]?. ]+\\([^)]*\\)[^;{]*\\{")
         .matcher(text).results().toList()) {
       if (m.start() > at)
         break;
