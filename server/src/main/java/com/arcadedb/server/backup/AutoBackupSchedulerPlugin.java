@@ -261,6 +261,35 @@ public class AutoBackupSchedulerPlugin implements ServerPlugin {
     scheduler.triggerImmediateBackup(databaseName, dbConfig);
   }
 
+  /**
+   * Prunes {@code databaseName}'s archives under {@code backupDirectory} with that database's EFFECTIVE retention
+   * policy, for a backup this plugin did not run - the control plane's {@code trigger backup}, which performs the
+   * backup inline rather than through {@link BackupScheduler}.
+   * <p>
+   * Two things were missing, and they compound. That inline path applied no retention AT ALL, and
+   * {@link BackupRetentionManager#applyRetention(String)} could not have helped it for a database ABSENT from the
+   * auto-backup configuration, because retention registration follows the SCHEDULE and {@code trigger backup} can
+   * name any database on the server. So an operator triggering backups for an unscheduled database grew the
+   * directory forever - the disk-growth problem #7392 set out to fix, surviving in a narrower form (issue #7472).
+   * <p>
+   * The policy is the effective one, which falls back to the server-level defaults, so an unconfigured database is
+   * pruned the way a configured one with no overrides would be. The retention manager is built for the directory
+   * the archive was actually WRITTEN to rather than reusing this plugin's own: the two agree whenever the plugin
+   * resolved a directory, and when they do not it is that directory the new archive is in.
+   * <p>
+   * A no-op when auto-backup is disabled, which is the documented behaviour of an on-demand archive with no
+   * scheduler: it stays until {@code delete backup} removes it.
+   *
+   * @return number of archives deleted
+   */
+  public int applyRetention(final String backupDirectory, final String databaseName) {
+    if (!enabled || configLoader == null || backupConfig == null)
+      return 0;
+
+    return new BackupRetentionManager(backupDirectory).applyRetention(databaseName,
+        configLoader.getEffectiveConfig(backupConfig, databaseName));
+  }
+
   @Override
   public void stopService() {
     if (scheduler != null) {

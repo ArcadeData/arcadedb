@@ -1078,7 +1078,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
     // gRPC has no equivalent of the HTTP handler's forwardToLeaderIfReplica, which proxies the request body to
     // the leader, so naming the leader is how this transport reproduces that gate.
     if (e instanceof ServerIsNotTheLeaderException) {
-      final StatusRuntimeException mapped = GrpcErrorMapper.toStatusRuntimeException(e, operation, ha());
+      final StatusRuntimeException mapped = GrpcErrorMapper.toStatusRuntimeException(e, operation, ha(), concealErrors());
       return new StatusException(mapped.getStatus(), mapped.getTrailers());
     }
     if (e instanceof AdminAuthorizationException)
@@ -1127,7 +1127,23 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
     // could not be deleted), which is INTERNAL, not a precondition the caller can satisfy.
     if (e instanceof ServerControlPlane.OperationNotAvailableException)
       return Status.FAILED_PRECONDITION.withDescription(e.getMessage()).asException();
-    return Status.INTERNAL.withDescription(operation + ": " + e.getMessage()).asException();
+    // THE CATCH-ALL: AN UNEXPECTED FAULT, WHOSE MESSAGE IS FREE-FORM ENGINE TEXT AND CAN CARRY FILE PATHS, SCHEMA
+    // NAMES AND INTERNALS. THAT IS PRECISELY WHAT PRODUCTION MODE CONCEALS IN THE HTTP BODY'S 'detail' FIELD, AND
+    // THIS SURFACE USED TO EMIT IT WHATEVER THE MODE SAID (ISSUE #7472). THE ARMS ABOVE ARE NOT CONCEALED: EACH IS
+    // AN ARCADEDB-AUTHORED, BOUNDED SENTENCE FOR ONE CLASSIFIED OUTCOME - THE GRPC ANALOGUE OF THE HTTP BODY'S
+    // 'error' FIELD, WHICH PRODUCTION MODE KEEPS BECAUSE IT IS WHAT MAKES THE REFUSAL ACTIONABLE
+    return Status.INTERNAL
+        .withDescription(operation + ": " + (concealErrors() ? GrpcErrorMapper.CONCEALED_DESCRIPTION : e.getMessage()))
+        .asException();
+  }
+
+  /**
+   * Whether this server conceals the free-form part of an error from the client - see
+   * {@code ArcadeDBServer.isProductionMode()}, the ONE place the decision is made so the setting means the same
+   * thing on every surface (issue #7472).
+   */
+  private boolean concealErrors() {
+    return server != null && server.isProductionMode();
   }
 
   // Defense-in-depth: GrpcAuthInterceptor already authenticates these body credentials centrally

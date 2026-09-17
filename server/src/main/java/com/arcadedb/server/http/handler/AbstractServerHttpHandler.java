@@ -1661,9 +1661,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * free-form cause chain ({@code detail}), which can leak file paths and engine internals; the bounded
    * {@code exception} class name and structured {@code exceptionArgs} are still emitted because the remote driver
    * and HA rely on them. {@code development} and {@code test} keep the full verbose body to aid debugging.
+   * <p>
+   * The decision itself lives on {@link com.arcadedb.server.ArcadeDBServer#isProductionMode()} so every surface
+   * that conceals reads ONE answer - this used to be the only place that asked, and the surfaces added since
+   * (the control plane's SSE progress stream, the gRPC error paths) silently opted out (issue #7472).
    */
-  private boolean isProductionMode() {
-    return "production".equals(httpServer.getServer().getConfiguration().getValueAsString(GlobalConfiguration.SERVER_MODE));
+  protected boolean isProductionMode() {
+    return ArcadeDBServer.isProductionMode(httpServer.getServer().getConfiguration());
   }
 
   /**

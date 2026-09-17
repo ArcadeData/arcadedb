@@ -843,16 +843,33 @@ public class CSVImporterFormat extends AbstractImporterFormat {
    */
   protected long skipEntries(final AnalyzedEntity.EntityType entityType, final ImporterSettings settings) {
     return switch (entityType) {
-      case VERTEX -> settings.verticesSkipEntries != null ? settings.verticesSkipEntries : defaultHeaderSkipEntries();
-      case EDGE -> settings.edgesSkipEntries != null ? settings.edgesSkipEntries : defaultHeaderSkipEntries();
-      // A SUPPLIED HEADER MEANS THE FILE HAS NO HEADER LINE, SO THERE IS NOTHING TO SKIP. THE DOCUMENTS ROUTE ONLY:
-      // -verticesHeader AND -edgesHeader HAVE NEVER SUPPRESSED THE DEFAULT SKIP AND STILL DO NOT, WHICH IS ISSUE
-      // #7499 - CHANGING IT IS A BEHAVIOUR CHANGE FOR ANYONE PASSING A HEADER AND RELYING ON THE SKIP, SO IT IS NOT
-      // FOLDED INTO A HELPER WHOSE POINT IS TO PRESERVE WHAT EACH ROUTE ALREADY DID
-      case DOCUMENT, DATABASE -> settings.documentsSkipEntries != null ?
-          settings.documentsSkipEntries :
-          settings.documentsHeader == null ? defaultHeaderSkipEntries() : 0L;
+      case VERTEX -> skipEntries(settings.verticesSkipEntries, settings.verticesHeader);
+      case EDGE -> skipEntries(settings.edgesSkipEntries, settings.edgesHeader);
+      // DATABASE IS THE DOCUMENTS ROUTE, WHICH IS WHERE load() SENDS IT
+      case DOCUMENT, DATABASE -> skipEntries(settings.documentsSkipEntries, settings.documentsHeader);
     };
+  }
+
+  /**
+   * The rule all three routes read, from that route's own pair of options.
+   * <p>
+   * The explicit option wins whenever it is set, including when it is set to something a supplied header would
+   * otherwise have overridden - a caller who writes {@code -verticesSkipEntries 1} alongside {@code -verticesHeader}
+   * has asked for a row to go and gets it.
+   * <p>
+   * Otherwise a SUPPLIED HEADER MEANS THE FILE HAS NO HEADER LINE, so there is nothing to skip. Only
+   * {@code -documentsHeader} used to say that: {@code -vertices file.csv -verticesHeader id,name} skipped the file's
+   * first row as a header even though the caller had just supplied one, and the first DATA row was silently dropped.
+   * The workaround was an explicit {@code -verticesSkipEntries 0}, which is also why it stayed invisible - whoever
+   * noticed the missing row added the zero and moved on (issue #7499).
+   *
+   * @param skipEntries the route's {@code -*SkipEntries} option, or null when unset
+   * @param header      the route's {@code -*Header} option, or null when unset
+   */
+  private long skipEntries(final Long skipEntries, final String header) {
+    if (skipEntries != null)
+      return skipEntries;
+    return header == null ? defaultHeaderSkipEntries() : 0L;
   }
 
   /**
