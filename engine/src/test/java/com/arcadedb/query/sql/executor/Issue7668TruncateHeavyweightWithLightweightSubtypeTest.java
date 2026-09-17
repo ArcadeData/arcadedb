@@ -154,6 +154,57 @@ class Issue7668TruncateHeavyweightWithLightweightSubtypeTest extends TestHelper 
     assertIndexSize("StrongKnows[since]", 1);
   }
 
+  /**
+   * A LIGHTWEIGHT type sandwiched between two heavyweight, indexed ones (CodeRabbit review on this PR): {@code
+   * getSubTypes()} returns direct subtypes only, so an index-collection walk that stops at depth one would miss
+   * VeryCloseFollows' index entirely while the record-backed scan beneath it - which walks the full subtype tree
+   * regardless of depth - deletes its records anyway, reintroducing the #4352 tombstone hazard for exactly the
+   * type this fix exists to protect, two levels down instead of one.
+   */
+  @Test
+  void truncatePolymorphicClearsAnIndexTwoLevelsBelowALightweightIntermediateType() {
+    database.command("sql", "CREATE VERTEX TYPE Person");
+    database.command("sql", "CREATE EDGE TYPE Follows");
+    database.command("sql", "CREATE EDGE TYPE CloseFollows EXTENDS Follows LIGHTWEIGHT");
+    database.command("sql", "CREATE EDGE TYPE VeryCloseFollows EXTENDS CloseFollows");
+    database.command("sql", "CREATE PROPERTY VeryCloseFollows.since STRING");
+    database.command("sql", "CREATE INDEX ON VeryCloseFollows(since) UNIQUE");
+
+    final RID p1, p2;
+    database.begin();
+    try {
+      p1 = database.newVertex("Person").set("name", "p1").save().getIdentity();
+      p2 = database.newVertex("Person").set("name", "p2").save().getIdentity();
+      database.lookupByRID(p1, true).asVertex().modify().newEdge("VeryCloseFollows", p2).set("since", "2020").save();
+    } finally {
+      database.commit();
+    }
+
+    assertCount("VeryCloseFollows", 1);
+    assertIndexSize("VeryCloseFollows[since]", 1);
+
+    final List<Integer> indexFileIdsBeforeTruncate =
+        List.copyOf(((TypeIndex) database.getSchema().getIndexByName("VeryCloseFollows[since]")).getFileIds());
+
+    database.command("sql", "TRUNCATE TYPE Follows POLYMORPHIC UNSAFE");
+
+    assertCount("VeryCloseFollows", 0);
+    assertIndexSize("VeryCloseFollows[since]", 0);
+    assertThat(((TypeIndex) database.getSchema().getIndexByName("VeryCloseFollows[since]")).getFileIds())
+        .as("VeryCloseFollows' index is two levels below the LIGHTWEIGHT type collectTruncationScope routed "
+            + "through: collectIndexDefinitions must recurse the same full depth to find and protect it")
+        .isNotEqualTo(indexFileIdsBeforeTruncate);
+
+    database.begin();
+    try {
+      database.lookupByRID(p1, true).asVertex().modify().newEdge("VeryCloseFollows", p2).set("since", "2020").save();
+    } finally {
+      database.commit();
+    }
+    assertCount("VeryCloseFollows", 1);
+    assertIndexSize("VeryCloseFollows[since]", 1);
+  }
+
   private void assertCount(final String typeName, final long expected) {
     try (final ResultSet rs = database.query("sql", "SELECT count(*) as cnt FROM " + typeName)) {
       assertThat(rs.next().<Long>getProperty("cnt")).isEqualTo(expected);

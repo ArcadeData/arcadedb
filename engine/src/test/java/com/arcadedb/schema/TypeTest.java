@@ -1366,6 +1366,16 @@ class TypeTest extends TestHelper {
     result = Type.castComparableNumber(1.0f, new BigInteger("2"));
     assertThat(result[0]).isInstanceOf(BigDecimal.class);
     assertThat(result[1]).isInstanceOf(BigDecimal.class);
+
+    // Non-finite must not reach floatToBigDecimal(), which throws NumberFormatException on NaN/Infinity -
+    // both sides fall back to double instead (CodeRabbit review).
+    result = Type.castComparableNumber(Float.NaN, new BigInteger("2"));
+    assertThat(result[0]).isInstanceOf(Double.class);
+    assertThat((Double) result[0]).isNaN();
+    assertThat(result[1]).isInstanceOf(Double.class);
+
+    result = Type.castComparableNumber(Float.POSITIVE_INFINITY, new BigInteger("2"));
+    assertThat(result[0]).isEqualTo(Double.POSITIVE_INFINITY);
   }
 
   @Test
@@ -1386,6 +1396,16 @@ class TypeTest extends TestHelper {
     result = Type.castComparableNumber(1.0, new BigInteger("2"));
     assertThat(result[0]).isInstanceOf(BigDecimal.class);
     assertThat(result[1]).isInstanceOf(BigDecimal.class);
+
+    // Non-finite must not reach BigDecimal.valueOf(), which throws NumberFormatException on NaN/Infinity - right
+    // falls back to double instead, left is already a Double (CodeRabbit review).
+    result = Type.castComparableNumber(Double.NaN, new BigInteger("2"));
+    assertThat((Double) result[0]).isNaN();
+    assertThat(result[1]).isInstanceOf(Double.class);
+
+    result = Type.castComparableNumber(Double.NEGATIVE_INFINITY, new BigInteger("2"));
+    assertThat(result[0]).isEqualTo(Double.NEGATIVE_INFINITY);
+    assertThat(result[1]).isInstanceOf(Double.class);
   }
 
   @Test
@@ -1465,6 +1485,26 @@ class TypeTest extends TestHelper {
     assertThat(result[1]).isInstanceOf(BigDecimal.class);
     assertThat(((BigDecimal) result[0])).isEqualByComparingTo(new BigDecimal("2"));
     assertThat(((BigDecimal) result[1])).isEqualByComparingTo(new BigDecimal("1"));
+
+    // Non-finite Float/Double must not reach BigDecimal.valueOf()/floatToBigDecimal(), which throw
+    // NumberFormatException on NaN/Infinity - both sides fall back to double instead (CodeRabbit review).
+    result = Type.castComparableNumber(new BigInteger("2"), Float.NaN);
+    assertThat(result[0]).isInstanceOf(Double.class);
+    assertThat(result[1]).isInstanceOf(Double.class);
+    assertThat((Double) result[1]).isNaN();
+
+    result = Type.castComparableNumber(new BigInteger("2"), Float.POSITIVE_INFINITY);
+    assertThat(result[0]).isInstanceOf(Double.class);
+    assertThat(result[1]).isEqualTo(Double.POSITIVE_INFINITY);
+
+    result = Type.castComparableNumber(new BigInteger("2"), Double.NaN);
+    assertThat(result[0]).isInstanceOf(Double.class);
+    assertThat((Double) result[0]).isEqualTo(new BigInteger("2").doubleValue());
+    assertThat(result[1]).isInstanceOf(Double.class);
+    assertThat((Double) result[1]).isNaN();
+
+    result = Type.castComparableNumber(new BigInteger("2"), Double.NEGATIVE_INFINITY);
+    assertThat(result[1]).isEqualTo(Double.NEGATIVE_INFINITY);
   }
 
   @Test

@@ -1494,8 +1494,17 @@ public enum Type {
           right = BigDecimal.valueOf(right.longValue());
         }
       } else if (right instanceof BigInteger bigInteger1) {
-        left = floatToBigDecimal(left.floatValue());
-        right = new BigDecimal(bigInteger1);
+        // Same non-finite guard as the Long branch above: floatToBigDecimal() throws NumberFormatException on
+        // NaN/Infinity, which BigDecimal cannot represent at all, so a non-finite float meets the BigInteger in
+        // double instead - Double.compare() already orders NaN/Infinity totally (issue #7669 review, CodeRabbit).
+        final float float1 = left.floatValue();
+        if (Float.isFinite(float1)) {
+          left = floatToBigDecimal(float1);
+          right = new BigDecimal(bigInteger1);
+        } else {
+          left = widenFloat(float1);
+          right = bigInteger1.doubleValue();
+        }
       }
 
     } else if (left instanceof Double) {
@@ -1516,8 +1525,14 @@ public enum Type {
       } else if (right instanceof Byte || right instanceof Short || right instanceof Integer)
         right = right.doubleValue();
       else if (right instanceof BigInteger bigInteger1) {
-        left = BigDecimal.valueOf(left.doubleValue());
-        right = new BigDecimal(bigInteger1);
+        // Same guard as the Long branch above: BigDecimal.valueOf(double) throws NumberFormatException on
+        // NaN/Infinity (issue #7669 review, CodeRabbit).
+        final double double1 = left.doubleValue();
+        if (Double.isFinite(double1)) {
+          left = BigDecimal.valueOf(double1);
+          right = new BigDecimal(bigInteger1);
+        } else
+          right = bigInteger1.doubleValue();
       }
 
     } else if (left instanceof BigInteger bigInteger) {
@@ -1530,11 +1545,23 @@ public enum Type {
         left = new BigDecimal(bigInteger);
         right = new BigDecimal(long1);
       } else if (right instanceof Float float1) {
-        left = new BigDecimal(bigInteger);
-        right = floatToBigDecimal(float1);
+        // Non-finite guard, symmetric with the Float branch's own BigInteger arm above (issue #7669 review,
+        // CodeRabbit): floatToBigDecimal() throws NumberFormatException on NaN/Infinity.
+        if (Float.isFinite(float1)) {
+          left = new BigDecimal(bigInteger);
+          right = floatToBigDecimal(float1);
+        } else {
+          left = bigInteger.doubleValue();
+          right = widenFloat(float1);
+        }
       } else if (right instanceof Double double1) {
-        left = new BigDecimal(bigInteger);
-        right = BigDecimal.valueOf(double1);
+        // Non-finite guard, symmetric with the Double branch's own BigInteger arm above (issue #7669 review,
+        // CodeRabbit): BigDecimal.valueOf(double) throws NumberFormatException on NaN/Infinity.
+        if (Double.isFinite(double1)) {
+          left = new BigDecimal(bigInteger);
+          right = BigDecimal.valueOf(double1);
+        } else
+          left = bigInteger.doubleValue();
       } else if (right instanceof Short short1) {
         left = new BigDecimal(bigInteger);
         right = new BigDecimal(short1);
