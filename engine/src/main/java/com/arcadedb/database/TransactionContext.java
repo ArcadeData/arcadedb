@@ -335,7 +335,7 @@ public class TransactionContext implements Transaction {
     return phase1 != null ? phase1.result : null;
   }
 
-   /**
+  /**
    * How many transactions have been successfully COMMITTED on THIS context object, monotonically increasing for its
    * whole life (issue #7667). Snapshot it, run code that may commit, and compare: a different value means the
    * transaction the snapshot referred to was published, so anything buffered against it is already durable and must
