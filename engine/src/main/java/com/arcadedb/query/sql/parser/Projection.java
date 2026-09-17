@@ -45,7 +45,11 @@ public class Projection extends SimpleNode {
 
   public List<ProjectionItem> items;
   // runtime
-  private Set<String> excludes;
+  /**
+   * The aliases {@code SELECT *, !alias} excludes. Volatile, and published by a single write in
+   * {@link #initExcludes()} - see that method for why a shared, per-statement {@link Projection} needs both.
+   */
+  private volatile Set<String> excludes;
   /**
    * Alias to source column name, for the projection items that are plain, unqualified column references
    * ({@code d}, or {@code d AS x} - not {@code d.sub}, not an expression, not a nested projection). Lets a row
@@ -56,7 +60,7 @@ public class Projection extends SimpleNode {
    * {@link Projection} is cached per statement and shared by every row and every thread executing it, so this must
    * not become per-row work, and the map handed to a row must be safe to read concurrently.
    */
-  private Map<String, String> sourceColumns;
+  private volatile Map<String, String> sourceColumns;
 
   public Projection(final List<ProjectionItem> items, final boolean distinct) {
     this.items = items;
@@ -110,6 +114,12 @@ public class Projection extends SimpleNode {
 
   public Result calculateSingle(final CommandContext context, final Result record) {
     initExcludes();
+    // ONE READ OF EACH, held for the whole row. Both fields are volatile (see initExcludes), and re-reading them
+    // per use would both cost a volatile read per property and let one row see two different - though
+    // content-identical - instances if an initialization race is in flight.
+    final Set<String> excludedAliases = excludes;
+    final Map<String, String> projectedColumns = sourceColumns;
+
     if (isExpand())
       throw new IllegalStateException("This is an expand projection, it cannot be calculated as a single result" + this);
 
@@ -135,7 +145,7 @@ public class Projection extends SimpleNode {
         // Do not reinstate it here: hiding a property from a projection but not from the record that backs it is
         // not a security boundary, it only makes the two spellings of "give me everything" return different rows.
         for (final String alias : record.getPropertyNames()) {
-          if (excludes.contains(alias))
+          if (excludedAliases.contains(alias))
             continue;
           Object value = item.convert(record.getProperty(alias));
           if (item.nestedProjection != null) {
@@ -145,10 +155,10 @@ public class Projection extends SimpleNode {
         }
 
         record.getElement().ifPresent(doc -> {
-          if (!excludes.contains(RID_PROPERTY) && doc.getIdentity() != null) {
+          if (!excludedAliases.contains(RID_PROPERTY) && doc.getIdentity() != null) {
             result.setProperty(RID_PROPERTY, doc.getIdentity());
           }
-          if (!excludes.contains(Property.TYPE_PROPERTY)) {
+          if (!excludedAliases.contains(Property.TYPE_PROPERTY)) {
             result.setProperty(Property.TYPE_PROPERTY, doc.getType().getName());
           }
 
@@ -161,10 +171,10 @@ public class Projection extends SimpleNode {
     // Two reference writes, so a column-list projection's non-element row can still say which column each value
     // came from (issue #7638). Skipped entirely when there is nothing to say - an untyped source, or a projection
     // with no plain column reference in it.
-    if (!sourceColumns.isEmpty()) {
+    if (!projectedColumns.isEmpty()) {
       final Document sourceElement = record.isElement() ? record.toElement() : null;
       if (sourceElement != null && sourceElement.getType() != null)
-        result.setProjectionSource(sourceElement.getType(), sourceColumns);
+        result.setProjectionSource(sourceElement.getType(), projectedColumns);
     }
 
     for (final String key : record.getMetadataKeys()) {
@@ -174,19 +184,33 @@ public class Projection extends SimpleNode {
     return result;
   }
 
+  /**
+   * Computes the two per-statement lookups this projection needs, once.
+   * <p>
+   * BOTH ARE BUILT INTO A LOCAL AND PUBLISHED BY A SINGLE WRITE, and both fields are {@code volatile}. A
+   * {@link Projection} belongs to a statement held in the SQL statement cache and is shared by every thread
+   * executing that statement, so a racing initialization here is expected rather than exotic. Racing to compute
+   * the same value twice is harmless - the result is identical and the loser's copy is simply dropped - but
+   * publishing a HALF-BUILT one is not, and {@code excludes} used to do exactly that: it assigned the empty
+   * {@code HashSet} to the field and only then filled it, so a second thread could read a non-null, INCOMPLETE
+   * set and fail to exclude a property that {@code SELECT *, !secret} had excluded. Building into a local fixes
+   * the ordering, and {@code volatile} fixes the JMM half of it - without it a reader can see the reference
+   * before the collection's own internal state. Found reviewing PR #7750; {@code sourceColumns} was written this
+   * way from the start, and {@code excludes} now matches it.
+   */
   private void initExcludes() {
     if (excludes == null) {
+      Set<String> resolvedExcludes = null;
       for (final ProjectionItem item : items) {
         if (item.exclude) {
-          if (excludes == null)
-            excludes = new HashSet<>();
+          if (resolvedExcludes == null)
+            resolvedExcludes = new HashSet<>();
 
-          excludes.add(item.getProjectionAliasAsString());
+          resolvedExcludes.add(item.getProjectionAliasAsString());
         }
       }
 
-      if (excludes == null)
-        excludes = Collections.emptySet();
+      excludes = resolvedExcludes != null ? Collections.unmodifiableSet(resolvedExcludes) : Collections.emptySet();
     }
 
     if (sourceColumns == null) {
