@@ -2322,10 +2322,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // it is already in that graph, a rebuild does not remove it, and counting it would let an index whose last
         // build orphaned a node rebuild itself on every reopen. Same reasoning, and same consequences, as the
         // re-queue buildGraphFromScratchExclusively does at the end of a build.
-        // Only the gap counts as pending work. A node the persisted graph leaves unreachable is not a mutation -
-        // see the comment above. A node that answers for a DELETED vector is: it is in the graph, a rebuild is
-        // what removes it, and counting it is what puts it on the ordinary threshold's schedule rather than on a
-        // second one of its own (issue #7842).
+        // A node that answers for a DELETED vector, on the other hand, IS pending work: it is in the graph, a
+        // rebuild is what removes it, and counting it is what puts it on the ordinary threshold's schedule rather
+        // than on a second one of its own (issue #7842).
         this.mutationsSinceSerialize.addAndGet(queuedIntoDelta + candidate.tombstonedOrdinals());
       } finally {
         lock.writeLock().unlock();
@@ -4015,7 +4014,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // The length the write ended on, so the next session measures the JVector footer from what was actually
     // written instead of re-deriving it from a page count that the async flush thread is still catching up to
     // (issue #7362).
+    // PRODUCT is the one quantization reusePersistedGraphDespiteDeletions() refuses to consult a map for - its PQ
+    // codes are addressed by the same ordinal and are produced wholesale by the rebuild - so recording one would be
+    // a temp file and an atomic rename per persist, forever, for a file nothing will ever read (PR #7844 review).
+    // The two conditions are the same decision stated twice and have to move together.
     persistedTo.getManifest().write(graphOrdinalToVectorId, vectorIndex()::getRid,
+        metadata.quantizationType != VectorQuantizationType.PRODUCT,
         unreachable != null ? unreachable : EMPTY_ORDINALS,
         persistedTo.getLastWrittenGraphBytes());
   }

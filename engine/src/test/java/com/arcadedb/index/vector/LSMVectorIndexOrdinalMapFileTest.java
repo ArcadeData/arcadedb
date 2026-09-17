@@ -25,6 +25,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.function.IntFunction;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -104,6 +105,29 @@ class LSMVectorIndexOrdinalMapFileTest {
     assertThat(content.size()).isZero();
   }
 
+  /**
+   * The encoder drains a fixed buffer rather than building the whole payload, so the entry that straddles a drain
+   * boundary - and the hash across those boundaries - is the thing that would break if the chunking were wrong.
+   * 40,000 entries is several drains at any plausible buffer size.
+   */
+  @Test
+  void aMapSpanningManyWriteChunksRoundTrips() {
+    final LSMVectorIndexOrdinalMapFile map = mapFile();
+    final int[] vectorIds = new int[40_000];
+    for (int i = 0; i < vectorIds.length; i++)
+      vectorIds[i] = i * 3;
+
+    map.write(vectorIds, id -> new RID(id % 17, id * 1_000_003L));
+
+    final LSMVectorIndexOrdinalMapFile.Content content = map.read();
+    assertThat(content).as("a payload spanning several write chunks must still hash and parse whole").isNotNull();
+    assertThat(content.vectorIds()).containsExactly(vectorIds);
+    for (int ordinal = 0; ordinal < vectorIds.length; ordinal++) {
+      assertThat(content.bucketIds()[ordinal]).isEqualTo(vectorIds[ordinal] % 17);
+      assertThat(content.positions()[ordinal]).isEqualTo(vectorIds[ordinal] * 1_000_003L);
+    }
+  }
+
   @Test
   void aMissingMapReadsAsAbsent() {
     assertThat(mapFile().read()).isNull();
@@ -115,7 +139,7 @@ class LSMVectorIndexOrdinalMapFileTest {
     map.write(new int[] { 0, 1, 2, 3 }, id -> new RID(1, id));
 
     final byte[] whole = Files.readAllBytes(mapPath());
-    Files.write(mapPath(), java.util.Arrays.copyOf(whole, whole.length - 5));
+    Files.write(mapPath(), Arrays.copyOf(whole, whole.length - 5));
 
     assertThat(map.read()).as("a short read must never be trusted as a whole map").isNull();
   }
@@ -184,7 +208,7 @@ class LSMVectorIndexOrdinalMapFileTest {
     payload.putUnsignedNumber(Integer.MAX_VALUE);
 
     final byte[] bytes = payload.toByteArray();
-    final byte[] file = java.util.Arrays.copyOf(bytes, bytes.length + 8);
+    final byte[] file = Arrays.copyOf(bytes, bytes.length + 8);
     long hash = LSMVectorIndexOrdinalMapFile.hashOf(bytes, bytes.length);
     for (int i = file.length - 1; i >= bytes.length; i--) {
       file[i] = (byte) hash;
@@ -196,6 +220,27 @@ class LSMVectorIndexOrdinalMapFileTest {
         .as("the header hashes correctly and still describes nothing this file holds: it must be refused, not "
             + "allocated from")
         .isNull();
+  }
+
+  /**
+   * A caller that will never read a map back - a PRODUCT-quantized index, whose load path refuses to consult one -
+   * must not merely skip writing it: a map left over from before that decision would pair this generation's pages
+   * with the previous generation's ordinals.
+   */
+  @Test
+  void aManifestWrittenWithoutRecordingAMapDropsWhateverMapWasThere() {
+    final LSMVectorIndexGraphManifest manifest = new LSMVectorIndexGraphManifest(graphPath());
+    final int[] vectorIds = { 0, 1 };
+    final IntFunction<RID> rids = id -> new RID(1, id);
+    manifest.write(vectorIds, rids, true, null, 0L);
+    assertThat(manifest.readOrdinalMap()).isNotNull();
+
+    manifest.write(vectorIds, rids, false, null, 0L);
+
+    assertThat(manifest.readOrdinalMap()).isNull();
+    assertThat(manifest.read().fingerprint())
+        .as("the certificate itself is unaffected: the same one walk still produces it")
+        .isEqualTo(LSMVectorIndexGraphManifest.fingerprintOf(vectorIds, rids));
   }
 
   @Test
@@ -213,7 +258,7 @@ class LSMVectorIndexOrdinalMapFileTest {
   @Test
   void writingTheManifestWithoutAnArrayDropsTheMap() {
     final LSMVectorIndexGraphManifest manifest = new LSMVectorIndexGraphManifest(graphPath());
-    manifest.write(new int[] { 0, 1 }, id -> new RID(1, id), null, 0L);
+    manifest.write(new int[] { 0, 1 }, id -> new RID(1, id), true, null, 0L);
     assertThat(manifest.readOrdinalMap()).isNotNull();
 
     manifest.write(2, 1234L, LSMVectorIndexGraphManifest.NO_UNREACHABLE_ORDINALS, 0L);
@@ -226,7 +271,7 @@ class LSMVectorIndexOrdinalMapFileTest {
   @Test
   void markingTheManifestUnusableDropsTheMap() {
     final LSMVectorIndexGraphManifest manifest = new LSMVectorIndexGraphManifest(graphPath());
-    manifest.write(new int[] { 0, 1 }, id -> new RID(1, id), null, 0L);
+    manifest.write(new int[] { 0, 1 }, id -> new RID(1, id), true, null, 0L);
 
     manifest.markUnusable("simulated persist failure");
 
@@ -236,7 +281,7 @@ class LSMVectorIndexOrdinalMapFileTest {
   @Test
   void invalidatingTheManifestDropsTheMap() {
     final LSMVectorIndexGraphManifest manifest = new LSMVectorIndexGraphManifest(graphPath());
-    manifest.write(new int[] { 0, 1 }, id -> new RID(1, id), null, 0L);
+    manifest.write(new int[] { 0, 1 }, id -> new RID(1, id), true, null, 0L);
 
     manifest.invalidate();
 
@@ -247,7 +292,7 @@ class LSMVectorIndexOrdinalMapFileTest {
   @Test
   void markingTheCloseDeferredKeepsTheMap() {
     final LSMVectorIndexGraphManifest manifest = new LSMVectorIndexGraphManifest(graphPath());
-    manifest.write(new int[] { 0, 1 }, id -> new RID(1, id), null, 0L);
+    manifest.write(new int[] { 0, 1 }, id -> new RID(1, id), true, null, 0L);
 
     manifest.markCloseDeferred();
 
