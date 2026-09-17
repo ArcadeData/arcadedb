@@ -259,6 +259,9 @@ public class TimeSeriesTypeBuilder {
         appendTimestamp(sql, col);
         continue;
       }
+      // A TIMESTAMP-role column that is NOT the one timestampColumnDefinition() found is dropped rather than
+      // rendered, and is unreachable: toSQL() runs validate() first, which refuses a builder carrying more than
+      // one TIMESTAMP column (issue #7740). That invariant is what makes the skip safe (claude review on PR #7757).
       if (role != ColumnDefinition.ColumnRole.TAG && role != ColumnDefinition.ColumnRole.FIELD)
         continue;
 
