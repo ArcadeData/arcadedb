@@ -18,6 +18,7 @@
  */
 package com.arcadedb.utility;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 
 import java.io.FilterInputStream;
@@ -99,21 +100,48 @@ public class SafeHttpFetcher {
    */
   public static HttpURLConnection open(final String url, final Predicate<InetAddress> blocked, final String context)
       throws IOException {
-    return open(url, blocked, context, DEFAULT_MAX_REDIRECTS, configuredConnectTimeoutMs(), configuredReadTimeoutMs());
+    return open(url, blocked, context, (ContextConfiguration) null);
+  }
+
+  /**
+   * {@link #open(String, Predicate, String)} with the timeouts read from {@code configuration}.
+   *
+   * @param configuration the settings overlay the CALLER is governed by - a server's own
+   *                      {@code ContextConfiguration}, or a database's - or null for a CLI/embedded caller that has
+   *                      none. See {@link #configuredReadTimeoutMs(ContextConfiguration)} for why passing it matters.
+   */
+  public static HttpURLConnection open(final String url, final Predicate<InetAddress> blocked, final String context,
+      final ContextConfiguration configuration) throws IOException {
+    return open(url, blocked, context, DEFAULT_MAX_REDIRECTS, configuredConnectTimeoutMs(configuration),
+        configuredReadTimeoutMs(configuration));
   }
 
   /**
    * The configured connect timeout, in milliseconds, or {@link #DEFAULT_CONNECT_TIMEOUT_MS} when the setting is
-   * absent. Read per fetch rather than cached in a static, so a change through {@code ALTER SERVER SETTING} takes
-   * effect on the next fetch instead of at the next restart.
+   * absent. Read per fetch rather than cached in a static, so a change takes effect on the next fetch instead of at
+   * the next restart.
    */
-  public static int configuredConnectTimeoutMs() {
-    return timeoutOrDefault(GlobalConfiguration.NETWORK_REMOTE_FETCH_CONNECT_TIMEOUT, DEFAULT_CONNECT_TIMEOUT_MS);
+  public static int configuredConnectTimeoutMs(final ContextConfiguration configuration) {
+    return timeoutOrDefault(configuration, GlobalConfiguration.NETWORK_REMOTE_FETCH_CONNECT_TIMEOUT,
+        DEFAULT_CONNECT_TIMEOUT_MS);
   }
 
-  /** The configured read timeout, in milliseconds. See {@link #configuredConnectTimeoutMs()}. */
-  public static int configuredReadTimeoutMs() {
-    return timeoutOrDefault(GlobalConfiguration.NETWORK_REMOTE_FETCH_READ_TIMEOUT, DEFAULT_READ_TIMEOUT_MS);
+  /**
+   * The configured read timeout, in milliseconds. See {@link #configuredConnectTimeoutMs(ContextConfiguration)}.
+   * <p>
+   * {@code configuration} is not optional in any meaningful sense for a SERVER-side caller, and this is why: both
+   * settings are {@code SCOPE.SERVER}, and a {@code ContextConfiguration} is a plain overlay that NEVER writes
+   * through to the {@link GlobalConfiguration} enum. A server configuration file, {@code ALTER SERVER SETTING} and
+   * the {@code SET SERVER SETTING} command all store into that overlay, so a fetch reading the enum alone would go
+   * on using the default (or a {@code -D} system property) while the operator's 1-second timeout sat in the
+   * overlay, applied to nothing (PR #7755 review; the same trap as {@code LocalBucket}'s per-database read).
+   * <p>
+   * Null is for a caller that genuinely has no overlay - the CLI importer, an embedded restore - where the enum IS
+   * the whole configuration.
+   */
+  public static int configuredReadTimeoutMs(final ContextConfiguration configuration) {
+    return timeoutOrDefault(configuration, GlobalConfiguration.NETWORK_REMOTE_FETCH_READ_TIMEOUT,
+        DEFAULT_READ_TIMEOUT_MS);
   }
 
   /**
@@ -121,8 +149,11 @@ public class SafeHttpFetcher {
    * from the middle of a fetch, about a setting the operator changed elsewhere - so it falls back to the default
    * instead. Zero is kept: it is the JDK's documented "no timeout", and an operator who sets it means it.
    */
-  private static int timeoutOrDefault(final GlobalConfiguration setting, final int fallback) {
-    final int configured = setting.getValueAsInteger();
+  private static int timeoutOrDefault(final ContextConfiguration configuration, final GlobalConfiguration setting,
+      final int fallback) {
+    final int configured = configuration != null ?
+        configuration.getValueAsInteger(setting) :
+        setting.getValueAsInteger();
     return configured >= 0 ? configured : fallback;
   }
 

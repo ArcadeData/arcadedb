@@ -223,12 +223,50 @@ public class FileUtils {
   }
 
   /**
-   * {@code path} without its trailing separator, in either convention, or unchanged when it has none. The path
-   * itself is returned when it IS a single separator: stripping that would turn the file-system root into the
-   * current directory.
+   * {@code path} without its trailing separator, in either convention, or unchanged when it has none.
+   * <p>
+   * A path that IS a root keeps its separator, because stripping it changes which directory the path names rather
+   * than just tidying it. Two forms of root:
+   * <ul>
+   *   <li>the POSIX root {@code "/"} (and {@code "\\"}), which would otherwise become the empty string;</li>
+   *   <li>a Windows DRIVE root, {@code "C:/"} or {@code "C:\\"}, which would otherwise become {@code "C:"} - and
+   *   {@code "C:"} is drive-RELATIVE on Windows: it names the current directory on drive C:, not the volume root.
+   *   {@code DatabaseFactory} keeps this value and {@code LocalDatabase} hands it to {@code new File(...)} and
+   *   {@code Path.of(...)}, so the difference is which directory the database is opened in (PR #7755 review).</li>
+   * </ul>
    */
   public static String stripTrailingSeparator(final String path) {
-    return path.length() > 1 && endsWithSeparator(path) ? path.substring(0, path.length() - 1) : path;
+    if (!endsWithSeparator(path) || isRoot(path))
+      return path;
+    return path.substring(0, path.length() - 1);
+  }
+
+  /**
+   * Whether {@code path} is ABSOLUTE in either platform's terms, regardless of which platform this JVM runs on:
+   * it starts with a separator, or it is Windows drive-qualified ({@code "C:\\backup.zip"}, {@code "C:/backup.zip"}).
+   * <p>
+   * For the guards that refuse an absolute caller-supplied path. {@link #startsWithSeparator(String)} alone is not
+   * that question on Windows: a drive-qualified path starts with a LETTER and is absolute all the same, so a guard
+   * asking only about the leading separator lets it through (PR #7755 review).
+   */
+  public static boolean isAbsolutePath(final String path) {
+    if (startsWithSeparator(path))
+      return true;
+    // DRIVE-QUALIFIED: A LETTER, A COLON, AND A SEPARATOR OR NOTHING. "C:backup.zip" IS DRIVE-RELATIVE RATHER THAN
+    // ABSOLUTE, BUT IT IS STILL A PATH ON ANOTHER DRIVE, SO IT IS REFUSED TOO
+    return path.length() >= 2 && path.charAt(1) == ':' && Character.isLetter(path.charAt(0));
+  }
+
+  /**
+   * Whether {@code path} names a file-system root that its trailing separator is PART OF rather than trailing
+   * punctuation on: {@code "/"}, {@code "\\"}, or a Windows drive root such as {@code "C:/"}.
+   */
+  private static boolean isRoot(final String path) {
+    if (path.length() == 1)
+      return true;
+    // A DRIVE ROOT IS EXACTLY THREE CHARACTERS: A LETTER, A COLON AND THE SEPARATOR. "C:/data/" IS NOT ONE, AND ITS
+    // TRAILING SEPARATOR IS THE ORDINARY KIND
+    return path.length() == 3 && path.charAt(1) == ':' && Character.isLetter(path.charAt(0));
   }
 
   public static void deleteRecursively(final File rootFile) {

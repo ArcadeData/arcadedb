@@ -577,4 +577,43 @@ class FileUtilsTest {
     assertThat(FileUtils.stripTrailingSeparator("\\")).isEqualTo("\\");
     assertThat(FileUtils.stripTrailingSeparator("")).isEmpty();
   }
+
+  /**
+   * A Windows DRIVE root keeps its separator for the same reason the POSIX root does, and it is the sharper case:
+   * {@code "C:"} is not an invalid path that would fail loudly, it is a VALID and drive-RELATIVE one naming the
+   * current directory on drive C:. {@code DatabaseFactory} stores this value and {@code LocalDatabase} hands it to
+   * {@code new File(...)}, so stripping it silently opens the database somewhere else (PR #7755 review).
+   */
+  @Test
+  void stripTrailingSeparatorKeepsAWindowsDriveRoot() {
+    assertThat(FileUtils.stripTrailingSeparator("C:/")).isEqualTo("C:/");
+    assertThat(FileUtils.stripTrailingSeparator("C:\\")).isEqualTo("C:\\");
+    assertThat(FileUtils.stripTrailingSeparator("z:/")).as("the drive letter's case is not the question").isEqualTo("z:/");
+
+    // A directory UNDER a drive root is an ordinary path, and its trailing separator is ordinary punctuation.
+    assertThat(FileUtils.stripTrailingSeparator("C:/data/")).isEqualTo("C:/data");
+    assertThat(FileUtils.stripTrailingSeparator("C:\\data\\")).isEqualTo("C:\\data");
+    // And a three-character path that is NOT a drive root is stripped as usual.
+    assertThat(FileUtils.stripTrailingSeparator("ab/")).isEqualTo("ab");
+    assertThat(FileUtils.stripTrailingSeparator("1:/")).as("a digit is not a drive letter").isEqualTo("1:");
+  }
+
+  /**
+   * "Absolute" has to mean absolute on EITHER platform for a guard that refuses one: a Windows drive-qualified path
+   * starts with a letter, so a leading-separator test never sees it, and {@code RestoreSettings} was handing exactly
+   * such a path to {@code new File(...)} as a local input (PR #7755 review).
+   */
+  @Test
+  void isAbsolutePathCoversDriveQualifiedPathsToo() {
+    assertThat(FileUtils.isAbsolutePath("/etc/passwd")).isTrue();
+    assertThat(FileUtils.isAbsolutePath("\\windows\\system32")).isTrue();
+    assertThat(FileUtils.isAbsolutePath("C:\\backup.zip")).isTrue();
+    assertThat(FileUtils.isAbsolutePath("C:/backup.zip")).isTrue();
+    assertThat(FileUtils.isAbsolutePath("C:")).as("a bare drive is still another drive").isTrue();
+
+    assertThat(FileUtils.isAbsolutePath("backups/db.zip")).isFalse();
+    assertThat(FileUtils.isAbsolutePath("db.zip")).isFalse();
+    assertThat(FileUtils.isAbsolutePath("")).isFalse();
+    assertThat(FileUtils.isAbsolutePath("ab:cd")).as("a colon after more than one character is not a drive").isFalse();
+  }
 }

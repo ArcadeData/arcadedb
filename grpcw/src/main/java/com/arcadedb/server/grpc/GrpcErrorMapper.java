@@ -210,7 +210,8 @@ public final class GrpcErrorMapper {
    * <p>
    * Package-visible (not just used by {@link #toStatusRuntimeException}) for the handlers - {@code graphBatchLoad}
    * is the current example - that must attach their own trailers (a partial-commit summary) alongside the
-   * classified code rather than the trailer set this class builds for {@code EXCEPTION_CLASS_KEY}/dup-key details.
+   * classified code rather than the trailer set this class builds for {@code EXCEPTION_CLASS_KEY}/dup-key details;
+   * they reach it through {@link #toStatusException}.
    */
   static Status.Code statusCodeFor(final Throwable cause) {
     return switch (ErrorCategory.of(cause)) {
@@ -230,38 +231,31 @@ public final class GrpcErrorMapper {
   }
 
   /**
-   * Same classification as {@link #toStatusRuntimeException}, but layers this class's own trailers (the
-   * exception class name, and for a {@link DuplicatedKeyException} the index/keys) onto a trailer set the
-   * caller already owns, rather than building a standalone one - for a handler like {@code graphBatchLoad}
-   * that must attach its own trailers (a partial-commit summary) alongside these. Before this, such a handler
-   * had to call {@link #statusCodeFor} directly and lost the {@code DUP_INDEX_KEY}/{@code DUP_KEYS_KEY}
-   * trailers that {@code executeCommand}/{@code createRecord} attach for the identical
-   * {@link DuplicatedKeyException} (code review on issue #7123).
+   * The exact answer {@link #toStatusRuntimeException(Throwable, String, HAServerPlugin)} builds - status code,
+   * description and this class's own trailers - layered onto a trailer set the caller already owns, as a
+   * {@link StatusException}. For a handler like {@code graphBatchLoad} that must attach its own trailers (a
+   * partial-commit summary) alongside these.
    * <p>
-   * Also preserves a status already chosen upstream, the same as {@link #toStatusRuntimeException} - a
-   * {@code getDatabase()} auth/authz refusal reaches {@code graphBatchLoad} as a raw
-   * {@link StatusRuntimeException}/{@link StatusException} the same way it reaches every other RPC, and
-   * without this check {@link ErrorCategory#of} would not recognise it and fold it into {@code SERVER}
-   * (code review on issue #7123).
+   * It delegates rather than classifying again, which is the point: the hand-rolled variant this replaced knew
+   * about the duplicated-key trailers and the already-mapped pass-through but <b>not</b> about
+   * {@link ServerIsNotTheLeaderException}, so a leader refusal raised deep in the load - the replicated database
+   * declining a schema change on a follower, as opposed to the explicit up-front leadership check - was
+   * classified by {@link ErrorCategory} as {@link ErrorCategory#RETRY}, answered {@code ABORTED}, and dropped the
+   * leader address the exception was built to carry. A client that retried went back to the same follower, which
+   * refused again for the same reason, because nothing had told it where the leader was; the HTTP surface answers
+   * the same refusal with the leader's address (issue #7624). One classification path cannot diverge from itself.
+   *
+   * @param t             the throwable to map (may be an {@link ExecutionException} wrapping the cause)
+   * @param contextPrefix optional short prefix for the client-facing description (e.g. "graphBatchLoad")
+   * @param ha            this server's HA plugin, or null when HA is inactive or unavailable to the caller
+   * @param trailers      the caller's own trailers, added to in place and carried by the returned exception
    */
-  static Status.Code classifyAndAddTrailers(final Throwable t, final Metadata trailers) {
-    final Throwable cause = unwrap(t);
-    if (cause instanceof StatusRuntimeException sre) {
-      if (sre.getTrailers() != null)
-        trailers.merge(sre.getTrailers());
-      return sre.getStatus().getCode();
-    }
-    if (cause instanceof StatusException se) {
-      if (se.getTrailers() != null)
-        trailers.merge(se.getTrailers());
-      return se.getStatus().getCode();
-    }
-    trailers.put(EXCEPTION_CLASS_KEY, cause.getClass().getName());
-    if (cause instanceof DuplicatedKeyException dup) {
-      addDuplicatedKeyTrailers(trailers, dup);
-      return Status.Code.ALREADY_EXISTS;
-    }
-    return statusCodeFor(cause);
+  static StatusException toStatusException(final Throwable t, final String contextPrefix, final HAServerPlugin ha,
+      final Metadata trailers, final boolean conceal) {
+    final StatusRuntimeException mapped = toStatusRuntimeException(t, contextPrefix, ha, conceal);
+    if (mapped.getTrailers() != null)
+      trailers.merge(mapped.getTrailers());
+    return mapped.getStatus().asException(trailers);
   }
 
   private static void addDuplicatedKeyTrailers(final Metadata trailers, final DuplicatedKeyException dup) {

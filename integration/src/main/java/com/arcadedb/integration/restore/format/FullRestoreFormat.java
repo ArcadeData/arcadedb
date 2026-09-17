@@ -274,8 +274,12 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
       // null AND FALLS BACK TO THE STATIC GLOBAL DEFAULT.
       final boolean allowLocalUrls = settings.allowLocalUrls != null ?
           settings.allowLocalUrls : GlobalConfiguration.SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS.getValueAsBoolean();
+      // THE TARGET DATABASE'S OVERLAY WHEN THERE IS ONE, SO THE FETCH TIMEOUTS ARE THE OPERATOR'S: BOTH ARE
+      // SCOPE.SERVER SETTINGS AND A ContextConfiguration NEVER WRITES THROUGH TO THE ENUM (PR #7755 REVIEW).
+      // A RESTORE THAT CREATES ITS TARGET HAS NO DATABASE YET, AND null FALLS BACK TO THE ENUM
       final HttpURLConnection connection = SafeHttpFetcher.open(settings.inputFileURL,
-          address -> !allowLocalUrls && RESERVED_ADDRESSES.isBlocked(address), "RESTORE DATABASE");
+          address -> !allowLocalUrls && RESERVED_ADDRESSES.isBlocked(address), "RESTORE DATABASE",
+          database != null ? database.getConfiguration() : null);
 
       // body() and not getInputStream(): the read timeout the fetch applies is reported as a timeout naming the
       // setting that relaxes it, rather than as a bare "Read timed out" inside a restore failure (issue #7500).

@@ -118,11 +118,14 @@ public class RestoreSettings {
     if (databaseDirectory == null)
       throw new IllegalArgumentException("Missing database url. Use -d <database-directory>");
 
-    // EITHER SEPARATOR CONVENTION. THE MESSAGE HAS ALWAYS SAID "start with '/'" WHILE THE CHECK ASKED ONLY ABOUT
-    // THIS JVM'S File.separator, SO ON WINDOWS A '/'-ROOTED PATH - EXACTLY THE ONE THE MESSAGE NAMES - WALKED PAST
-    // THE GUARD THE MESSAGE DESCRIBES (ISSUE #7588)
-    if (inputFileURL.contains("..") || FileUtils.startsWithSeparator(inputFileURL))
-      throw new IllegalArgumentException("Invalid backup file: cannot contain '..' or start with '/' or '\\'");
+    // ABSOLUTE IN EITHER PLATFORM'S TERMS. THE MESSAGE HAS ALWAYS SAID "start with '/'" WHILE THE CHECK ASKED ONLY
+    // ABOUT THIS JVM'S File.separator, SO ON WINDOWS A '/'-ROOTED PATH - EXACTLY THE ONE THE MESSAGE NAMES - WALKED
+    // PAST THE GUARD THE MESSAGE DESCRIBES (ISSUE #7588). AND A DRIVE-QUALIFIED PATH LIKE "C:\backup.zip" STARTS
+    // WITH A LETTER, SO A LEADING-SEPARATOR TEST ALONE NEVER SAW IT AT ALL, THOUGH FullRestoreFormat HANDS IT
+    // STRAIGHT TO new File(...) AS A LOCAL INPUT (PR #7755 REVIEW)
+    if (inputFileURL.contains("..") || FileUtils.isAbsolutePath(inputFileURL))
+      throw new IllegalArgumentException(
+          "Invalid backup file: cannot contain '..', start with '/' or '\\', or name a drive such as 'C:'");
   }
 
   /**

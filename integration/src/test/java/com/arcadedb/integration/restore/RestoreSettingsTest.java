@@ -128,7 +128,10 @@ class RestoreSettingsTest {
    */
   @Test
   void anAbsoluteInputFileIsRefusedInEitherSeparatorConvention() {
-    for (final String rooted : new String[] { "/etc/passwd", "\\windows\\system32\\config\\sam" })
+    // Drive-qualified paths are absolute on Windows and start with a LETTER, so a leading-separator test alone
+    // never saw them, while FullRestoreFormat hands them to new File(...) as local inputs (PR #7755 review).
+    for (final String rooted : new String[] { "/etc/passwd", "\\windows\\system32\\config\\sam",
+        "C:\\backup.zip", "C:/backup.zip" })
       assertThatThrownBy(() -> validatedSettings(rooted))
           .as(rooted)
           .isInstanceOf(IllegalArgumentException.class)

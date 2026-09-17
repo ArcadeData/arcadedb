@@ -18,6 +18,7 @@
  */
 package com.arcadedb.integration.importer;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.integration.importer.format.CSVImporterFormat;
 import com.arcadedb.integration.importer.format.FormatImporter;
@@ -61,6 +62,12 @@ public class SourceDiscovery {
   private static final String CLASSPATH_PREFIX   = "classpath://";
   private              String  url;
   private final        Boolean allowLocalUrls;
+  /**
+   * The importing database's settings overlay, or null for a CLI caller. Only the fetch TIMEOUTS are read from it,
+   * and only because they are {@code SCOPE.SERVER} settings a {@code ContextConfiguration} never writes through to
+   * the enum for (PR #7755 review).
+   */
+  private              ContextConfiguration configuration;
   private              long    limitBytes         = 10000000;
   private              long    limitEntries       = 0;
 
@@ -127,6 +134,15 @@ public class SourceDiscovery {
     return source;
   }
 
+  /**
+   * Hands this discovery the importing database's configuration, so a remote fetch is bounded by the timeout the
+   * OPERATOR configured rather than by the enum default. Null-tolerant: a CLI import has no overlay.
+   */
+  public SourceDiscovery setConfiguration(final ContextConfiguration configuration) {
+    this.configuration = configuration;
+    return this;
+  }
+
   private Source getSourceFromURL(final String url) throws IOException {
     final int sep = url.lastIndexOf(RESOURCE_SEPARATOR);
     final String urlPath = sep > -1 ? url.substring(0, sep) : url;
@@ -143,7 +159,8 @@ public class SourceDiscovery {
     final boolean blockLocalNetworks = allowLocalUrls != null ?
         !allowLocalUrls : GlobalConfiguration.SERVER_SECURITY_IMPORT_BLOCK_LOCAL_NETWORKS.getValueAsBoolean();
 
-    final HttpURLConnection connection = ImportSecurityValidator.openRemoteConnection(urlPath, blockLocalNetworks);
+    final HttpURLConnection connection = ImportSecurityValidator.openRemoteConnection(urlPath, blockLocalNetworks,
+        configuration);
 
     // EVERY READ OF A REMOTE SOURCE IS BOUNDED BY NETWORK_REMOTE_FETCH_READ_TIMEOUT, WHICH openRemoteConnection
     // APPLIES. SafeHttpFetcher.body() IS WHAT MAKES THAT BOUND LEGIBLE WHEN IT FIRES: SINCE #7494 THE SNIFFER BLOCKS
@@ -157,7 +174,8 @@ public class SourceDiscovery {
             source.inputStream.close();
             connection.disconnect();
 
-            final HttpURLConnection connection1 = ImportSecurityValidator.openRemoteConnection(urlPath, blockLocalNetworks);
+            final HttpURLConnection connection1 = ImportSecurityValidator.openRemoteConnection(urlPath,
+                blockLocalNetworks, configuration);
             final InputStream body1 = SafeHttpFetcher.body(connection1, IMPORT_CONTEXT);
 
             if (source.inputStream instanceof GZIPInputStream)

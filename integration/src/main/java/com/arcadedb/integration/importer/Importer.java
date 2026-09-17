@@ -180,7 +180,10 @@ public class Importer extends AbstractImporter {
     // THE SOURCE BEING READ, RECORDED BEFORE THE READ RATHER THAN AFTER IT SUCCEEDS, SO A FAILURE CAN NAME IT
     loadingUrl = url;
 
-    final SourceDiscovery sourceDiscovery = new SourceDiscovery(url, settings.allowLocalUrls);
+    final SourceDiscovery sourceDiscovery = new SourceDiscovery(url, settings.allowLocalUrls)
+        // SO A REMOTE FETCH IS BOUNDED BY THE TIMEOUT THE OPERATOR CONFIGURED, WHICH LIVES IN THIS OVERLAY AND NOT
+        // IN THE GlobalConfiguration ENUM (PR #7755 REVIEW)
+        .setConfiguration(database != null ? database.getConfiguration() : null);
 
     if (settings.probeOnly) {
       sourceDiscovery.getSource();

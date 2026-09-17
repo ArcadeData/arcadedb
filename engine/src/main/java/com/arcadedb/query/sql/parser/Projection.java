@@ -20,6 +20,7 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.database.Document;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -28,6 +29,7 @@ import com.arcadedb.schema.Property;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -43,7 +45,32 @@ public class Projection extends SimpleNode {
 
   public List<ProjectionItem> items;
   // runtime
-  private Set<String> excludes;
+  /**
+   * The aliases {@code SELECT *, !alias} excludes. Volatile, and published by a single write in
+   * {@link #initExcludes()} - see that method for why a shared, per-statement {@link Projection} needs both.
+   */
+  private volatile Set<String> excludes;
+  /**
+   * What every explicit (non-{@code *}) projection item publishes under its alias: the name of the source column
+   * for a plain, unqualified column reference ({@code d}, or {@code d AS x} - not {@code d.sub}, not an
+   * expression, not a nested projection), and a NULL VALUE for everything else. Lets a row this projection
+   * produces report the schema type of the column each value came from, which its Java class does not always say
+   * (issue #7638, and see {@link com.arcadedb.query.sql.executor.Result#getPropertyType}).
+   * <p>
+   * COMPUTED ITEMS ARE RECORDED TOO, as the marker, and that is not redundant. {@code SELECT *, n + 1 AS d} keeps
+   * the backing element AND publishes a computed value under a name the element also has, so a lookup that fell
+   * through to the element would answer with column {@code d}'s declared type for a value that is not column
+   * {@code d}'s at all - a DATE verdict for an integer, and DATE formatting for any temporal the expression
+   * happened to produce. A null VALUE says "this alias is this projection's, and it has no source column", which
+   * a missing KEY - "this projection never mentioned it" - does not; the two are told apart by
+   * {@code containsKey}, which is why a null value is stored rather than the entry being skipped (found reviewing
+   * review).
+   * <p>
+   * Computed once and never mutated afterwards, alongside {@link #excludes} and for the same reason: a
+   * {@link Projection} is cached per statement and shared by every row and every thread executing it, so this must
+   * not become per-row work, and the map handed to a row must be safe to read concurrently.
+   */
+  private volatile Map<String, String> sourceColumns;
 
   public Projection(final List<ProjectionItem> items, final boolean distinct) {
     this.items = items;
@@ -97,6 +124,12 @@ public class Projection extends SimpleNode {
 
   public Result calculateSingle(final CommandContext context, final Result record) {
     initExcludes();
+    // ONE READ OF EACH, held for the whole row. Both fields are volatile (see initExcludes), and re-reading them
+    // per use would both cost a volatile read per property and let one row see two different - though
+    // content-identical - instances if an initialization race is in flight.
+    final Set<String> excludedAliases = excludes;
+    final Map<String, String> projectedColumns = sourceColumns;
+
     if (isExpand())
       throw new IllegalStateException("This is an expand projection, it cannot be calculated as a single result" + this);
 
@@ -122,7 +155,7 @@ public class Projection extends SimpleNode {
         // Do not reinstate it here: hiding a property from a projection but not from the record that backs it is
         // not a security boundary, it only makes the two spellings of "give me everything" return different rows.
         for (final String alias : record.getPropertyNames()) {
-          if (excludes.contains(alias))
+          if (excludedAliases.contains(alias))
             continue;
           Object value = item.convert(record.getProperty(alias));
           if (item.nestedProjection != null) {
@@ -132,10 +165,10 @@ public class Projection extends SimpleNode {
         }
 
         record.getElement().ifPresent(doc -> {
-          if (!excludes.contains(RID_PROPERTY) && doc.getIdentity() != null) {
+          if (!excludedAliases.contains(RID_PROPERTY) && doc.getIdentity() != null) {
             result.setProperty(RID_PROPERTY, doc.getIdentity());
           }
-          if (!excludes.contains(Property.TYPE_PROPERTY)) {
+          if (!excludedAliases.contains(Property.TYPE_PROPERTY)) {
             result.setProperty(Property.TYPE_PROPERTY, doc.getType().getName());
           }
 
@@ -145,6 +178,15 @@ public class Projection extends SimpleNode {
       }
     }
 
+    // Two reference writes, so a column-list projection's non-element row can still say which column each value
+    // came from (issue #7638). Skipped entirely when there is nothing to say - an untyped source, or a projection
+    // with no plain column reference in it.
+    if (!projectedColumns.isEmpty()) {
+      final Document sourceElement = record.isElement() ? record.toElement() : null;
+      if (sourceElement != null && sourceElement.getType() != null)
+        result.setProjectionSource(sourceElement.getType(), projectedColumns);
+    }
+
     for (final String key : record.getMetadataKeys()) {
       if (!result.getMetadataKeys().contains(key))
         result.setMetadata(key, record.getMetadata(key));
@@ -152,19 +194,55 @@ public class Projection extends SimpleNode {
     return result;
   }
 
+  /**
+   * Computes the two per-statement lookups this projection needs, once.
+   * <p>
+   * BOTH ARE BUILT INTO A LOCAL AND PUBLISHED BY A SINGLE WRITE, and both fields are {@code volatile}. A
+   * {@link Projection} belongs to a statement held in the SQL statement cache and is shared by every thread
+   * executing that statement, so a racing initialization here is expected rather than exotic. Racing to compute
+   * the same value twice is harmless - the result is identical and the loser's copy is simply dropped - but
+   * publishing a HALF-BUILT one is not, and {@code excludes} used to do exactly that: it assigned the empty
+   * {@code HashSet} to the field and only then filled it, so a second thread could read a non-null, INCOMPLETE
+   * set and fail to exclude a property that {@code SELECT *, !secret} had excluded. Building into a local fixes
+   * the ordering, and {@code volatile} fixes the JMM half of it - without it a reader can see the reference
+   * before the collection's own internal state. Found in review; {@code sourceColumns} was written this
+   * way from the start, and {@code excludes} now matches it.
+   */
   private void initExcludes() {
     if (excludes == null) {
+      Set<String> resolvedExcludes = null;
       for (final ProjectionItem item : items) {
         if (item.exclude) {
-          if (excludes == null)
-            excludes = new HashSet<>();
+          if (resolvedExcludes == null)
+            resolvedExcludes = new HashSet<>();
 
-          excludes.add(item.getProjectionAliasAsString());
+          resolvedExcludes.add(item.getProjectionAliasAsString());
         }
       }
 
-      if (excludes == null)
-        excludes = Collections.emptySet();
+      excludes = resolvedExcludes != null ? Collections.unmodifiableSet(resolvedExcludes) : Collections.emptySet();
+    }
+
+    if (sourceColumns == null) {
+      Map<String, String> resolved = null;
+      for (final ProjectionItem item : items) {
+        if (item.exclude || item.isAll())
+          continue;
+
+        final Expression expression = item.getExpression();
+        // isBaseIdentifier() is exactly "a bare column name and nothing else": no traversal, no method, no
+        // arithmetic - so getDefaultAlias() names the source column, and the value published under the item's
+        // alias IS that column's value (ProjectionItem.convert only unwraps iterators and result sets). Anything
+        // else - an expression, a nested projection - publishes a value with no source column, and is recorded as
+        // the marker rather than skipped, so a lookup cannot fall through to a same-named backing property.
+        final boolean plainColumn = item.nestedProjection == null && expression != null && expression.isBaseIdentifier();
+
+        if (resolved == null)
+          resolved = new HashMap<>(items.size());
+        resolved.put(item.getProjectionAliasAsString(),
+            plainColumn ? expression.getDefaultAlias().getStringValue() : null);
+      }
+      sourceColumns = resolved != null ? Collections.unmodifiableMap(resolved) : Collections.emptyMap();
     }
   }
 

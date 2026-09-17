@@ -1710,7 +1710,14 @@ public class ArcadeDBServer {
                 LogManager.instance().log(this, Level.INFO, "Creating default database '%s'...", null, dbName);
                 database = createDatabase(dbName, defaultDbMode);
               }
-              try (final var rs = database.command("sql", "import database " + commandParams)) {
+              // THE SERVER'S OWN ContextConfiguration, NOT THE EMPTY ONE THE TWO-ARGUMENT command() OVERLOAD BUILDS.
+              // ImportDatabaseStatement RESOLVES SERVER_SECURITY_IMPORT_BLOCK_LOCAL_NETWORKS FROM
+              // context.getConfiguration(), SO AN EMPTY OVERLAY READ THE PROCESS-WIDE STATIC VALUE AND A SERVER
+              // THAT HAD OVERRIDDEN THE FLAG FOR ITSELF ANSWERED ITS OWN 'IMPORT DATABASE' VERB ONE WAY AND ITS
+              // BOOT-TIME IMPORT ANOTHER (ISSUE #7632, AS #6474 AND #7468 CLOSED FOR THE VERB AND FOR 'restore:').
+              // THE CONFIGURATION HAS TO TRAVEL WITH THE COMMAND BECAUSE A DATABASE THE SERVER OPENS INHERITS NONE
+              // - DatabaseFactory GETS A PATH AND NOTHING ELSE. UNSET KEYS STILL FALL BACK TO THE STATIC VALUE.
+              try (final var rs = database.command("sql", "import database " + commandParams, configuration)) {
                 // ImportDatabaseStatement REPORTS EXACTLY ONE CLASS OF FAILURE IN-BAND RATHER THAN BY THROWING: A
                 // FAILED probeOnly PROBE, AND (SINCE ISSUE #7461) A 'WITH ...' SETTING VALUE THE IMPORTER REFUSES,
                 // BOTH AS THE SINGLE ROW {"result":"FAIL","reason":...}. DISCARDING THAT ROW USED TO LEAVE dbName
