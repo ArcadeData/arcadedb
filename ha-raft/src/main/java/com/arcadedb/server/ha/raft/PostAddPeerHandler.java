@@ -155,8 +155,10 @@ public class PostAddPeerHandler extends AbstractServerHttpHandler {
       return 0;
 
     if (!(payload.get("priority") instanceof Number number))
-      throw new IllegalArgumentException(
-          "Field 'priority' must be a non-negative integer, the peer's Raft leader-election priority");
+      // Naming the value, like the three refusals below: an operator reading a log line needs to see what was
+      // sent, not only which field was wrong.
+      throw new IllegalArgumentException("Field 'priority' must be a non-negative integer, the peer's Raft "
+          + "leader-election priority, but was " + payload.get("priority"));
 
     final int priority;
     try {

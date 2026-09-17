@@ -3173,9 +3173,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * exists to refuse, reached by a race instead of by a single request. Serialising it here would not close the
    * window either: neither add-peer route is leader-routed, so the two requests need not even be on the same
    * node, and Ratis applies {@code Mode.ADD} with no address-uniqueness predicate of its own. Closing it properly
-   * means a uniqueness check on the leader at apply time, which is a larger change than issue #7515. What this
-   * catches is the reachable mistake - one operator, one request - and an operator running two adds of one
-   * address at once still has to reconcile the configuration afterwards.
+   * means a uniqueness check on the leader at apply time, plus a decision about what a node does when it finds a
+   * configuration already in that state - tracked as issue #7802. What this catches is the reachable mistake -
+   * one operator, one request - and an operator running two adds of one address at once still has to reconcile
+   * the configuration afterwards.
    */
   static void ensureNoDuplicateAddress(final Collection<RaftPeer> livePeers, final RaftPeer newPeer) {
     // Two passes, not one: a single loop that returns on the id match and throws on an address match answers
