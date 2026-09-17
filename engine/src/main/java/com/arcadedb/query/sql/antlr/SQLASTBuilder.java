@@ -7802,7 +7802,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     } else if (ctx.CLASSPATH_URL() != null) {
       urlString = ctx.CLASSPATH_URL().getText();
     } else if (ctx.STRING_LITERAL() != null) {
-      urlString = removeQuotes(ctx.STRING_LITERAL().getText());
+      // DECODED (not just unquoted) SO urlString HOLDS THE ACTUAL TARGET - BackupDatabaseStatement.getUrlString()
+      // USES IT AS THE BACKUP FILE PATH, SO AN UN-DECODED \n WOULD TARGET THE WRONG PATH ON RE-PARSE (ISSUE #7800
+      // REVIEW). SAME CONVENTION AS DefineFunctionStatement.code, WHICH ALSO DECODES ALONGSIDE A codeQuoted CACHE.
+      urlString = BaseExpression.decode(removeQuotes(ctx.STRING_LITERAL().getText()));
     }
 
     final Url url = new Url(urlString);

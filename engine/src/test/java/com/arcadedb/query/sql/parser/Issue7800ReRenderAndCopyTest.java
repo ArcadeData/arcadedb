@@ -72,6 +72,22 @@ class Issue7800ReRenderAndCopyTest extends AbstractParserTest {
   }
 
   /**
+   * CodeRabbit follow-up (fourth round): {@code urlString} used to be the un-decoded literal body (quotes stripped,
+   * escapes untouched), and {@code BackupDatabaseStatement} uses {@code Url.getUrlString()} as the actual backup
+   * file path - so a URL containing an escape sequence would target a path with a literal backslash-n instead of
+   * the real character. {@code urlString} is now decoded the same way {@code DefineFunctionStatement.code} already
+   * is, while {@code quotedLiteral} stays the raw source text for rendering.
+   */
+  @Test
+  void backupDatabaseUrlIsDecodedForExecutionButRendersVerbatim() {
+    final BackupDatabaseStatement stmt = (BackupDatabaseStatement) new com.arcadedb.query.sql.antlr.SQLAntlrParser(null)
+        .parse("BACKUP DATABASE 'line1\\nline2'");
+
+    assertThat(stmt.url.getUrlString()).isEqualTo("line1\nline2");
+    assertThat(stmt.toString()).isEqualTo("BACKUP DATABASE 'line1\\nline2'");
+  }
+
+  /**
    * CodeRabbit follow-up: {@code quotedLiteral} is only set by the parser, but {@code Url}'s two-arg constructor is
    * public. A {@code Url} built any other way (with a plain, non-scheme-prefixed value and no {@code quotedLiteral})
    * must still be quoted on render instead of printed raw and unparseable - the same fallback gap as
