@@ -874,19 +874,22 @@ public class PostgresNetworkExecutor extends Thread {
       profile.addEngineNanos(System.nanoTime() - engineStart);
 
       final long serStart = System.nanoTime();
-      Map<String, PostgresType> columns = catalogAnswer != null ? catalogAnswer.columns()
-          : getColumns(cachedResultSet, resolveQueryTargetType(parsedStatement), resolveAliasToSourceProperty(parsedStatement));
-      if (columns.isEmpty() && cachedResultSet.isEmpty()) {
-        final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(query.query, query.language, NO_PARAMETERS,
-            parsedStatement);
-        if (schemaColumns != null)
-          columns = schemaColumns;
-      }
       if (!transactionControl) {
+        Map<String, PostgresType> columns = catalogAnswer != null ? catalogAnswer.columns()
+            : getColumns(cachedResultSet, resolveQueryTargetType(parsedStatement), resolveAliasToSourceProperty(parsedStatement));
+        if (columns.isEmpty() && cachedResultSet.isEmpty()) {
+          final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(query.query, query.language, NO_PARAMETERS,
+              parsedStatement);
+          if (schemaColumns != null)
+            columns = schemaColumns;
+        }
         writeRowDescription(columns);
         writeDataRows(cachedResultSet, columns);
       }
-      writeCommandComplete(queryText, cachedResultSet.size());
+      // query.query is the language-prefix-stripped text (getTag matches bare "BEGIN"/"COMMIT"/... against it); the raw
+      // queryText still carries a "{sql}" prefix when the client sends one, which getTag doesn't recognise and answers
+      // with an empty command tag instead of e.g. "BEGIN".
+      writeCommandComplete(query.query, cachedResultSet.size());
       profile.addSerializationNanos(System.nanoTime() - serStart);
 
     } catch (final PostgresCopyStatement.CopyException e) {
