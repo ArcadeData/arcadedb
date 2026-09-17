@@ -1011,10 +1011,10 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
    * stream would send the 200 this class exists to avoid sending prematurely.
    */
   private static final class NdJsonBatchResponse implements AutoCloseable {
-    private final HttpServerExchange                       exchange;
+    private final HttpServerExchange                     exchange;
     /** The write-side bound of issue #7381; {@code NONE} when the budget is not positive. */
-    private final WriteBoundedOutputStream.WriteWatchdog   watchdog;
-    private       NdJsonResultStream                       stream;
+    private final WriteBoundedOutputStream.WriteWatchdog watchdog;
+    private       NdJsonResultStream                     stream;
 
     private NdJsonBatchResponse(final HttpServerExchange exchange,
         final WriteBoundedOutputStream.WriteWatchdog watchdog) {

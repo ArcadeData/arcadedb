@@ -244,6 +244,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         "Field '" + field + "' must be an integer between " + Integer.MIN_VALUE + " and " + Integer.MAX_VALUE, cause);
   }
 
+  /**
+   * Reads the request body as text. An override that returns {@code null} because the route streams its body
+   * instead of buffering it must also override {@link #bodyReachesIdempotencyKey()} to say so: the body is a
+   * field of the idempotency key, and a key built without it cannot tell two payloads of the same route apart
+   * (issue #7381). An override that returns the body as BYTES says so through {@link #idempotencyBodyBytes}
+   * instead (issue #7704).
+   */
   protected String parseRequestPayload(final HttpServerExchange e) {
     if (!e.isInIoThread() && !e.isBlocking())
       e.startBlocking();
