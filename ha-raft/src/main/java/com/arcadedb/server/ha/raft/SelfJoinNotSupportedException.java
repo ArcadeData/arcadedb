@@ -57,14 +57,42 @@ public class SelfJoinNotSupportedException extends IllegalArgumentException {
    *                has to be able to tell which one was refused
    */
   public SelfJoinNotSupportedException(final String peerId, final String address) {
-    super("Cannot add peer '" + peerId + "' at " + address + ": that is this node itself. Adding a peer grows THIS"
-        + " node's cluster with the server named by the address; it never makes this node join another one. To"
-        + " make this node a member of a cluster it is not configured for, issue the request from a server that"
-        + " is ALREADY a member of that cluster - 'connect cluster " + address + "', or POST /api/v1/cluster/peer"
-        + " there - or declare the cluster in " + GlobalConfiguration.HA_SERVER_LIST.getKey() + " and restart this"
-        + " node. There is deliberately no runtime self-join: a membership change is issued by the target"
-        + " cluster's leader, so this node cannot commit one into a cluster it is not yet part of, and a running"
-        + " node carries a Raft log of its own that inserting it into a foreign group would place under a second"
-        + " history.");
+    super("Cannot add peer '" + peerId + "' at " + address + ": that is this node itself. " + howToActuallyJoin(address));
+  }
+
+  /**
+   * The same refusal for a request that named this node's Raft <b>address</b> under a different id.
+   * <p>
+   * A separate message because the mistake is a different one and so is the damage. The id-matched case is a
+   * no-op: {@code RaftClusterManager.buildAddArgs} finds the id already in the configuration and skips the
+   * change. This case is not - no component on the path compares addresses, so the {@code Mode.ADD} COMMITS and
+   * leaves the configuration holding two entries for one process, which is the split-brain the derived-id rule
+   * of {@code RaftPeerAddressResolver.peerIdForAddress} exists to prevent. Naming the submitted id is what makes
+   * that legible: the operator sees the id they chose next to the node it actually resolves to.
+   *
+   * @param peerId          this node's own Raft peer id
+   * @param address         the Raft address the request named, which is this node's own
+   * @param submittedPeerId the id the request asked to admit that address under
+   */
+  public SelfJoinNotSupportedException(final String peerId, final String address, final String submittedPeerId) {
+    super("Cannot add peer '" + submittedPeerId + "' at " + address + ": that address is this node's own Raft"
+        + " address, which the cluster already knows as '" + peerId + "'. Admitting it again under a second id"
+        + " would leave the Raft configuration holding two entries for one process, and the two would vote"
+        + " separately. " + howToActuallyJoin(address));
+  }
+
+  /**
+   * The actionable half, shared by both refusals: what the verb does, and the two things that do work. Kept in
+   * one place so the two messages cannot drift into telling an operator different stories.
+   */
+  private static String howToActuallyJoin(final String address) {
+    return "Adding a peer grows THIS node's cluster with the server named by the address; it never makes this"
+        + " node join another one. To make this node a member of a cluster it is not configured for, issue the"
+        + " request from a server that is ALREADY a member of that cluster - 'connect cluster " + address + "',"
+        + " or POST /api/v1/cluster/peer there - or declare the cluster in "
+        + GlobalConfiguration.HA_SERVER_LIST.getKey() + " and restart this node. There is deliberately no runtime"
+        + " self-join: a membership change is issued by the target cluster's leader, so this node cannot commit"
+        + " one into a cluster it is not yet part of, and a running node carries a Raft log of its own that"
+        + " inserting it into a foreign group would place under a second history.";
   }
 }

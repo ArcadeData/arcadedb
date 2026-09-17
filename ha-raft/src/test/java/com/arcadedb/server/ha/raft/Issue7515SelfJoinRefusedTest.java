@@ -43,12 +43,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class Issue7515SelfJoinRefusedTest {
 
-  private static final RaftPeerId LOCAL = RaftPeerId.valueOf("127.0.0.1_2434");
+  private static final RaftPeerId LOCAL         = RaftPeerId.valueOf("127.0.0.1_2434");
+  private static final String     LOCAL_ADDRESS = "127.0.0.1:2434";
 
   /** The reported case: the address an operator types is their own node's, and it is refused rather than accepted. */
   @Test
   void addingThisNodeToItsOwnClusterIsRefused() {
-    assertThatThrownBy(() -> RaftHAServer.ensureNotSelf(LOCAL, peer(LOCAL, "127.0.0.1:2434")))
+    assertThatThrownBy(() -> RaftHAServer.ensureNotSelf(LOCAL, LOCAL_ADDRESS, peer(LOCAL, "127.0.0.1:2434")))
         .isInstanceOf(SelfJoinNotSupportedException.class)
         // An IllegalArgumentException, because the shared mappers key HTTP 400 / gRPC INVALID_ARGUMENT on that
         // type - the same choice UnreachablePeerException made, and for the same reason: the request named
@@ -62,7 +63,7 @@ class Issue7515SelfJoinRefusedTest {
    */
   @Test
   void theRefusalNamesBothWaysOfActuallyJoiningACluster() {
-    assertThatThrownBy(() -> RaftHAServer.ensureNotSelf(LOCAL, peer(LOCAL, "127.0.0.1:2434")))
+    assertThatThrownBy(() -> RaftHAServer.ensureNotSelf(LOCAL, LOCAL_ADDRESS, peer(LOCAL, "127.0.0.1:2434")))
         .hasMessageContaining("127.0.0.1_2434")
         .hasMessageContaining("127.0.0.1:2434")
         .hasMessageContaining("this node itself")
@@ -77,7 +78,7 @@ class Issue7515SelfJoinRefusedTest {
    */
   @Test
   void addingAnyOtherPeerIsUntouched() {
-    assertThatCode(() -> RaftHAServer.ensureNotSelf(LOCAL, peer(RaftPeerId.valueOf("127.0.0.1_2435"), "127.0.0.1:2435")))
+    assertThatCode(() -> RaftHAServer.ensureNotSelf(LOCAL, LOCAL_ADDRESS, peer(RaftPeerId.valueOf("127.0.0.1_2435"), "127.0.0.1:2435")))
         .doesNotThrowAnyException();
   }
 
@@ -87,14 +88,14 @@ class Issue7515SelfJoinRefusedTest {
    */
   @Test
   void aNodeWithNoResolvedLocalIdRefusesNothing() {
-    assertThatCode(() -> RaftHAServer.ensureNotSelf(null, peer(LOCAL, "127.0.0.1:2434")))
+    assertThatCode(() -> RaftHAServer.ensureNotSelf(null, LOCAL_ADDRESS, peer(LOCAL, "127.0.0.1:2434")))
         .doesNotThrowAnyException();
   }
 
   /** The id is what identifies the node, not the spelling of the address the request happened to use. */
   @Test
   void theSameNodeUnderADifferentAddressSpellingIsStillRefused() {
-    assertThatThrownBy(() -> RaftHAServer.ensureNotSelf(LOCAL, peer(LOCAL, "localhost:2434")))
+    assertThatThrownBy(() -> RaftHAServer.ensureNotSelf(LOCAL, LOCAL_ADDRESS, peer(LOCAL, "localhost:2434")))
         .isInstanceOf(SelfJoinNotSupportedException.class)
         .hasMessageContaining("localhost:2434");
   }
@@ -105,7 +106,62 @@ class Issue7515SelfJoinRefusedTest {
     final RaftPeer derived = RaftPeerAddressResolver.parseJoinTarget("127.0.0.1:2434", 2434, "").peer();
 
     assertThat(derived.getId()).isEqualTo(LOCAL);
-    assertThatThrownBy(() -> RaftHAServer.ensureNotSelf(LOCAL, derived))
+    assertThatThrownBy(() -> RaftHAServer.ensureNotSelf(LOCAL, LOCAL_ADDRESS, derived))
+        .isInstanceOf(SelfJoinNotSupportedException.class);
+  }
+
+  /**
+   * The hole an id-only guard leaves. {@code POST /api/v1/cluster/peer} takes {@code peerId} and {@code address}
+   * as separate fields, so a payload can name THIS node's Raft address under some other id. That one is worse
+   * than the no-op the id check was written for: nothing else on the path compares addresses either, so the
+   * reachability probe passes (this node is listening), {@code buildAddArgs} does not recognize the id as a
+   * member, and the {@code Mode.ADD} COMMITS - leaving the configuration with two entries for one process.
+   */
+  @Test
+  void addingThisNodeUnderADifferentPeerIdIsRefused() {
+    assertThatThrownBy(() -> RaftHAServer.ensureNotSelf(LOCAL, LOCAL_ADDRESS,
+        peer(RaftPeerId.valueOf("a_second_identity"), LOCAL_ADDRESS)))
+        .isInstanceOf(SelfJoinNotSupportedException.class)
+        .hasMessageContaining("a_second_identity")
+        .hasMessageContaining("127.0.0.1_2434")
+        .hasMessageContaining("two entries for one process");
+  }
+
+  /**
+   * And it holds across the loopback spellings, which is how a single-machine cluster is usually written: one
+   * node declared {@code localhost} and the next {@code 127.0.0.1} are one socket written two ways, the same
+   * equivalence {@code isOwnHttpAddress} already applies to the HTTP listener.
+   */
+  @Test
+  void aLoopbackSpellingOfThisNodesAddressIsStillThisNode() {
+    assertThatThrownBy(() -> RaftHAServer.ensureNotSelf(LOCAL, LOCAL_ADDRESS,
+        peer(RaftPeerId.valueOf("localhost_2434"), "localhost:2434")))
+        .isInstanceOf(SelfJoinNotSupportedException.class);
+  }
+
+  /**
+   * The bound that keeps the address arm from refusing real joins: same host, DIFFERENT port is another node -
+   * which is exactly how an in-process test cluster and a multi-instance host are laid out.
+   */
+  @Test
+  void anotherNodeOnTheSameHostIsNotRefused() {
+    assertThatCode(() -> RaftHAServer.ensureNotSelf(LOCAL, LOCAL_ADDRESS,
+        peer(RaftPeerId.valueOf("127.0.0.1_2435"), "127.0.0.1:2435")))
+        .doesNotThrowAnyException();
+
+    assertThatCode(() -> RaftHAServer.ensureNotSelf(LOCAL, LOCAL_ADDRESS,
+        peer(RaftPeerId.valueOf("otherhost_2434"), "otherhost:2434")))
+        .doesNotThrowAnyException();
+  }
+
+  /** Before start() resolved a local address there is nothing to compare an address against. */
+  @Test
+  void aNodeWithNoResolvedLocalAddressRefusesOnlyByIdentity() {
+    assertThatCode(() -> RaftHAServer.ensureNotSelf(LOCAL, null,
+        peer(RaftPeerId.valueOf("a_second_identity"), LOCAL_ADDRESS)))
+        .doesNotThrowAnyException();
+
+    assertThatThrownBy(() -> RaftHAServer.ensureNotSelf(LOCAL, null, peer(LOCAL, LOCAL_ADDRESS)))
         .isInstanceOf(SelfJoinNotSupportedException.class);
   }
 

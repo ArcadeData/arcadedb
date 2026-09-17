@@ -48,15 +48,16 @@ import java.util.concurrent.atomic.AtomicLong;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class PermissionRefreshMetrics {
-  private final AtomicLong entriesApplied         = new AtomicLong();
-  private final AtomicLong refreshesRequested     = new AtomicLong();
-  private final AtomicLong refreshesCoalesced     = new AtomicLong();
-  private final AtomicLong sweepsCompleted        = new AtomicLong();
-  private final AtomicLong sweepsFailed           = new AtomicLong();
+  // Declared in the order Snapshot takes them, so the two read as one list side by side.
+  private final AtomicLong entriesApplied          = new AtomicLong();
+  private final AtomicLong refreshesRequested      = new AtomicLong();
+  private final AtomicLong refreshesCoalesced      = new AtomicLong();
+  private final AtomicLong sweepsCompleted         = new AtomicLong();
+  private final AtomicLong sweepsFailed            = new AtomicLong();
+  private final AtomicLong databasesRefreshed      = new AtomicLong();
   private final AtomicLong databaseRefreshFailures = new AtomicLong();
-  private final AtomicLong databasesRefreshed     = new AtomicLong();
-  private final AtomicLong lastEntryAppliedAt     = new AtomicLong();
-  private final AtomicLong lastSweepAt            = new AtomicLong();
+  private final AtomicLong lastEntryAppliedAt      = new AtomicLong();
+  private final AtomicLong lastSweepAt             = new AtomicLong();
 
   /**
    * An immutable reading of every counter, taken field by field.
