@@ -48,7 +48,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * entry carried the whole vector. Only a rebuild drains the buffer, and a rebuild is triggered by the index going
  * quiet - so an ingest that never goes quiet grows a second complete copy of the corpus in RAM. At the reporter's
  * scale, 4.2M records of 768-dimension embeddings, that copy is 12.9 GB and it was two thirds of what killed a
- * {@code -Xmx16g} load. It is the same second copy issue #3144 removed from {@link GrowableVectorValues}, on the
+ * {@code -Xmx16g} load. It is the same second copy issue #3144 removed from the graph build's vector reader, on the
  * one path that still had it.
  * <p>
  * The vector is persisted before the entry is queued, so the payload in the entry is a cache and nothing more. Past

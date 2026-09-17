@@ -891,7 +891,12 @@ public class VectorLocationIndex {
     return rid != null && isLocationOf(vectorId, rid.getBucketId(), rid.getPosition());
   }
 
-  private boolean isLocationOf(final int vectorId, final int bucketId, final long position) {
+  /**
+   * The allocation-free form of {@link #isLocationOf(int, RID)}, for a caller that already holds the two words - the
+   * persisted ordinal map validated on a graph load, which would otherwise materialize one {@link RID} per ordinal
+   * just to throw it away (issue #7842).
+   */
+  public boolean isLocationOf(final int vectorId, final int bucketId, final long position) {
     final Chunk chunk = chunkOf(vectorId);
     if (chunk == null)
       return false;
