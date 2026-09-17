@@ -31,6 +31,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
@@ -69,7 +70,17 @@ import java.util.logging.Level;
  * genuine compare-and-set race as the first security entry afterwards. It is also self-closing, because the next
  * security change that does persist records every document kind again. But it is real, and closing it properly
  * means making the marker part of the replicated protocol - carried in the entry, or gated behind a resync - which
- * is a change of a different size than this one and is filed separately.
+ * is a change of a different size than this one and is filed separately, as issue #7752.
+ * <p>
+ * <b>"No recorded fingerprint" is what a failed write leaves behind because {@link #save()} makes it so</b>
+ * (issue #7536). Left to itself, a failed write leaves the PREVIOUS record on disk, and that is the worse of the
+ * two outcomes by a wide margin: a node whose baseline is one change behind its peers' refuses the very next
+ * entry they accept, with no race and no second coincidence, and it goes on refusing, because nothing it refuses
+ * moves its baseline forward. A node with no record installs and is back on its peers' baseline as soon as the
+ * next entry applies. {@code save()} therefore REMOVES the file when it cannot rewrite it - see
+ * {@code discardStaleRecord} - which turns the unconditional split of #7536 into the race-conditional one of
+ * #7752. The document that was recorded stays in force in memory, so the running node judges correctly until it
+ * restarts; only the restart loses it.
  * <p>
  * Failing the apply instead is not the alternative it looks like: it would make a full or read-only configuration
  * volume stop a node applying committed security entries, which is the crash-loop issue #7137 exists to prevent,
@@ -98,6 +109,9 @@ public class ReplicatedSecurityFingerprintRepository {
   // Read once at construction and written through on every update, so the common path - one lookup per applied
   // security entry - touches no filesystem.
   private final Map<String, String> fingerprints = new ConcurrentHashMap<>();
+  // What the last successful write put on disk, which is NOT the same as what is in force here: a write that
+  // failed leaves the two apart, and record() has to know that to skip a write safely (issue #7536).
+  private final Map<String, String> persisted    = new ConcurrentHashMap<>();
 
   public ReplicatedSecurityFingerprintRepository(final String securityConfPath) {
     // Taken as given: {@code new File(parent, child)} joins with a separator whether or not the parent carries
@@ -130,10 +144,18 @@ public class ReplicatedSecurityFingerprintRepository {
    * them is the last to have installed.
    */
   public void record(final String document, final String fingerprint) {
-    if (fingerprint == null || fingerprint.equals(fingerprints.get(document)))
+    if (fingerprint == null)
       return;
 
     fingerprints.put(document, fingerprint);
+
+    // Compared against what reached the DISK, not against what is in force here (issue #7536). Both are the same
+    // value on every path that worked, so the fsync skip above still applies to every replay; they differ only
+    // after a write that failed, and there the old comparison made the loss permanent - the identical document
+    // could never repair the file, and only a change to a different one would.
+    if (fingerprint.equals(persisted.get(document)))
+      return;
+
     save();
   }
 
@@ -146,8 +168,10 @@ public class ReplicatedSecurityFingerprintRepository {
       final JSONObject root = new JSONObject(Files.readString(file.toPath(), DatabaseFactory.getDefaultCharset()));
       for (final String document : root.keySet()) {
         final String fingerprint = root.getString(document, null);
-        if (fingerprint != null && !fingerprint.isEmpty())
+        if (fingerprint != null && !fingerprint.isEmpty()) {
           fingerprints.put(document, fingerprint);
+          persisted.put(document, fingerprint);
+        }
       }
     } catch (final Exception e) {
       // A file this node cannot read is treated as absent, which costs the compare-and-set one entry and is the
@@ -160,54 +184,118 @@ public class ReplicatedSecurityFingerprintRepository {
   }
 
   private void save() {
+    final Map<String, String> snapshot = new LinkedHashMap<>(fingerprints);
     final JSONObject root = new JSONObject();
-    for (final Map.Entry<String, String> entry : fingerprints.entrySet())
+    for (final Map.Entry<String, String> entry : snapshot.entrySet())
       root.put(entry.getKey(), entry.getValue());
     final byte[] bytes = root.toString().getBytes(DatabaseFactory.getDefaultCharset());
 
+    final File file = new File(securityConfPath, FILE_NAME);
     synchronized (saveLock) {
       try {
-        final File file = new File(securityConfPath, FILE_NAME);
         final File dir = file.getParentFile();
         if (dir != null && !dir.exists())
           dir.mkdirs();
 
-        // Same temp-file-then-atomic-rename shape the documents themselves use: a crash mid-write can only
-        // damage the throwaway file, so this one is either the previous complete value or the new one - never a
-        // truncated string that would read as a fingerprint matching nothing.
-        final Path target = file.toPath();
-        final Path tmp = Files.createTempFile(target.getParent(), FILE_NAME, ".tmp");
-        try {
-          try (final FileChannel channel = FileChannel.open(tmp, StandardOpenOption.WRITE)) {
-            channel.write(ByteBuffer.wrap(bytes));
-            channel.force(true);
-          }
+        writeAtomically(file.toPath(), bytes);
 
-          // Owner-only before publishing, the same as every other file in this directory (claude-review on PR
-          // #7748). What is stored is a digest of a document rather than credential material, but an attacker
-          // who can read it can confirm a candidate copy of the security document - an exfiltrated backup, say -
-          // against what this node has installed, and a convention that holds for three files in a directory
-          // and not the fourth is one nobody can rely on.
-          SecurityUserFileRepository.applyOwnerOnlyPermissions(tmp);
-
-          try {
-            Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-          } catch (final AtomicMoveNotSupportedException e) {
-            Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
-          }
-        } finally {
-          Files.deleteIfExists(tmp);
-        }
+        persisted.clear();
+        persisted.putAll(snapshot);
       } catch (final IOException | RuntimeException e) {
-        LogManager.instance().log(this, Level.SEVERE,
-            "Could not write '%s'. The replicated security document IS installed on this node and IS in force; what "
-                + "failed is recording that it came from the cluster. Until the next security change persists, a "
-                + "RESTART of this node would leave it without the fingerprint its peers still hold, and a later "
-                + "entry built from a document the cluster has moved past would then be refused by them and "
-                + "installed here - putting a revoked user, grant or token back on this node alone. Fix the "
-                + "configuration volume and reissue the security change, which records every document again: %s",
-            e, FILE_NAME, e.getMessage());
+        discardStaleRecord(file, e);
       }
     }
+  }
+
+  /**
+   * The atomic write, isolated from {@link #save()}'s failure policy so a test can inject the one failure that
+   * policy is entirely about, and so the two read as what they are: a write, and what to do when it does not
+   * happen. Package-private and overridable rather than private for that reason only - production has one
+   * implementation, this one.
+   * <p>
+   * Same temp-file-then-atomic-rename shape the documents themselves use: a crash mid-write can only damage the
+   * throwaway file, so the target is either the previous complete value or the new one - never a truncated
+   * string that would read as a fingerprint matching nothing.
+   */
+  void writeAtomically(final Path target, final byte[] bytes) throws IOException {
+    final Path tmp = Files.createTempFile(target.getParent(), FILE_NAME, ".tmp");
+    try {
+      try (final FileChannel channel = FileChannel.open(tmp, StandardOpenOption.WRITE)) {
+        channel.write(ByteBuffer.wrap(bytes));
+        channel.force(true);
+      }
+
+      // Owner-only before publishing, the same as every other file in this directory (claude-review on PR
+      // #7748). What is stored is a digest of a document rather than credential material, but an attacker
+      // who can read it can confirm a candidate copy of the security document - an exfiltrated backup, say -
+      // against what this node has installed, and a convention that holds for three files in a directory
+      // and not the fourth is one nobody can rely on.
+      SecurityUserFileRepository.applyOwnerOnlyPermissions(tmp);
+
+      try {
+        Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+      } catch (final AtomicMoveNotSupportedException e) {
+        Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
+      }
+    } finally {
+      // Swallowed rather than propagated, because by here the rename may ALREADY have published the new value:
+      // letting a cleanup failure out would send save() into discardStaleRecord and delete the record that had
+      // just been written correctly, turning a stray temp file into the loss this class exists to avoid.
+      try {
+        Files.deleteIfExists(tmp);
+      } catch (final IOException | RuntimeException e) {
+        LogManager.instance().log(this, Level.FINE, "Could not remove the temporary file '%s'", e, tmp);
+      }
+    }
+  }
+
+  /**
+   * Removes the marker file after a write that failed, so what survives the next restart is NOTHING rather than
+   * the fingerprint of a document the cluster has moved past (issue #7536). Called with {@link #saveLock} held.
+   * <p>
+   * <b>The stale value is the harmful one, not the missing one.</b> {@code ServerSecurity.isSuperseded} takes the
+   * recorded fingerprint as the baseline it compares an entry's precondition against. One change behind its
+   * peers', this node refuses the very next entry they accept, and keeps refusing - nothing it refuses can move
+   * its baseline forward - so a single lost write splits the cluster's security state for good, with no race and
+   * no second coincidence. With no marker the node answers "I cannot judge" and installs, which is what every
+   * node does before the first replicated document of that kind lands, and it is back on its peers' baseline as
+   * soon as that entry applies. The remaining exposure - the first entry after such a restart being itself a
+   * superseded one - needs the race the stale marker did not, and is issue #7752, which closes it by carrying
+   * the baseline in the replicated protocol rather than in a local file.
+   * <p>
+   * Removing the file discards all three document kinds, not only the one being recorded, because they share one
+   * document and a rewrite is precisely what just failed. Unlinking is also the one operation still likely to
+   * succeed on a volume that has no room left. It is conservative in the same direction, and self-closing: the
+   * next security change that persists records every kind again.
+   */
+  private void discardStaleRecord(final File file, final Exception writeFailure) {
+    // Cleared whether or not the unlink succeeds, so the next record() of an UNCHANGED fingerprint still
+    // attempts the write instead of short-circuiting on a value only memory ever had.
+    persisted.clear();
+
+    try {
+      Files.deleteIfExists(file.toPath());
+    } catch (final IOException | RuntimeException e) {
+      writeFailure.addSuppressed(e);
+      LogManager.instance().log(this, Level.SEVERE,
+          "Could not write '%s', and the record it already held could not be removed either. The replicated "
+              + "security document IS installed on this node and IS in force; what failed is recording that it "
+              + "came from the cluster. A RESTART of this node would therefore read a fingerprint OLDER than the "
+              + "document beside it, and this node would then refuse the replicated security entries its peers "
+              + "accept - and go on refusing them, because nothing it refuses moves that fingerprint forward. Fix "
+              + "the configuration volume, delete '%s' and reissue the security change: %s",
+          writeFailure, FILE_NAME, FILE_NAME, writeFailure.getMessage());
+      return;
+    }
+
+    LogManager.instance().log(this, Level.SEVERE,
+        "Could not write '%s'. The replicated security document IS installed on this node and IS in force; what "
+            + "failed is recording that it came from the cluster, so '%s' has been REMOVED rather than left "
+            + "naming a document this node has moved past. Until the next security change persists, a RESTART of "
+            + "this node leaves it unable to judge an entry's compare-and-set precondition: it installs the next "
+            + "replicated document of each kind unconditionally, which rejoins its peers' baseline but costs that "
+            + "one entry's lost-update protection (issue #7752). Fix the configuration volume and reissue the "
+            + "security change, which records every document again: %s",
+        writeFailure, FILE_NAME, FILE_NAME, writeFailure.getMessage());
   }
 }
