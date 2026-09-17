@@ -75,7 +75,7 @@ public class RemoteMaterializedView implements MaterializedView {
 
   @Override
   public DocumentType getBackingType() {
-    throw new UnsupportedOperationException("getBackingType() is not supported in remote materialized view");
+    throw new UnsupportedOperationException("getBackingType() is not supported in remote database. Use SQL SELECT FROM schema:types instead.");
   }
 
   @Override
@@ -140,12 +140,12 @@ public class RemoteMaterializedView implements MaterializedView {
 
   @Override
   public void refresh() {
-    throw new UnsupportedOperationException("refresh() is not supported in remote materialized view. Use SQL REFRESH MATERIALIZED VIEW instead.");
+    throw new UnsupportedOperationException("refresh() is not supported in remote database. Use SQL REFRESH MATERIALIZED VIEW instead.");
   }
 
   @Override
   public void drop() {
-    throw new UnsupportedOperationException("drop() is not supported in remote materialized view. Use SQL DROP MATERIALIZED VIEW instead.");
+    throw new UnsupportedOperationException("drop() is not supported in remote database. Use SQL DROP MATERIALIZED VIEW instead.");
   }
 
   @Override
