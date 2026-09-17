@@ -124,6 +124,9 @@ public class PostgresNetworkExecutor extends Thread {
   /** Bind-message parameter length denoting a NULL value (wire value -1, read unsigned). */
   private static final long                                           NULL_PARAM_LENGTH = 0xFFFFFFFFL;
   private static final Object[]                                       NO_PARAMETERS     = new Object[0];
+  /** Shared between the simple and extended query protocol's identical ROLLBACK TO refusal (issue #7846). */
+  private static final String                                         ROLLBACK_TO_NOT_SUPPORTED_MESSAGE =
+      "ROLLBACK TO SAVEPOINT is not supported by this server: it cannot discard the writes made since the savepoint";
   /** Case-insensitive {@code TO} separator for the {@code SET <param> TO <value>} syntax. */
   private static final Pattern                                        SET_TO_SEPARATOR  = Pattern.compile("(?i)\\s+TO\\s+");
   /** Case-insensitive {@code SESSION}/{@code LOCAL} scope modifier leading a {@code SET} command (issue #6701). */
@@ -819,9 +822,7 @@ public class PostgresNetworkExecutor extends Thread {
       // statement is refused once the session is aborted - is the only reply that cannot silently lose data.
       if (query.query.toUpperCase(Locale.ENGLISH).startsWith("ROLLBACK TO ")) {
         setErrorInTx();
-        writeError(ERROR_SEVERITY.ERROR,
-            "ROLLBACK TO SAVEPOINT is not supported by this server: it cannot discard the writes made since the savepoint",
-            PostgresCopyStatement.SQLSTATE_FEATURE_NOT_SUPPORTED);
+        writeError(ERROR_SEVERITY.ERROR, ROLLBACK_TO_NOT_SUPPORTED_MESSAGE, PostgresCopyStatement.SQLSTATE_FEATURE_NOT_SUPPORTED);
         return;
       }
 
@@ -2451,9 +2452,7 @@ public class PostgresNetworkExecutor extends Thread {
         // without resurrecting it (issue #6660), so the rest of this pipelined request is handled the same
         // way it is for any other rejected Parse.
         setErrorInTx();
-        writeError(ERROR_SEVERITY.ERROR,
-            "ROLLBACK TO SAVEPOINT is not supported by this server: it cannot discard the writes made since the savepoint",
-            PostgresCopyStatement.SQLSTATE_FEATURE_NOT_SUPPORTED);
+        writeError(ERROR_SEVERITY.ERROR, ROLLBACK_TO_NOT_SUPPORTED_MESSAGE, PostgresCopyStatement.SQLSTATE_FEATURE_NOT_SUPPORTED);
         return;
       } else if (upperCaseText.startsWith("SET ")) {
         // Strip a trailing ';' before dispatch, mirroring what queryCommand() already does for its own
