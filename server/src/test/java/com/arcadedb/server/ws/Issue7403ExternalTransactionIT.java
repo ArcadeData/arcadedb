@@ -20,6 +20,7 @@ package com.arcadedb.server.ws;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
@@ -155,7 +156,7 @@ class Issue7403ExternalTransactionIT extends BaseGraphServerTest {
    * A chunk that cannot take the caller's session lock within {@code HttpSession}'s five seconds is answered as
    * an insert-session error naming the contention, not as an "Internal error".
    * <p>
-   * {@code HttpSession.execute} signals that with a {@link com.arcadedb.exception.LockTimeoutException}, which
+   * {@code HttpSession.execute} signals that with a {@link LockTimeoutException}, which
    * is a {@code NeedRetryException} and therefore not one of the types
    * {@code WebSocketInsertProtocol.execute} names - it would have fallen through to the generic catch and told
    * the client the server had broken, when in truth its own two clients contended on one transaction

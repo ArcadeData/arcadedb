@@ -24,9 +24,11 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -113,7 +115,7 @@ class Issue7403FrameSizeCapsIT extends BaseGraphServerTest {
     }
 
     // The abandoned session is rolled back by the connection-close hook, as any other dropped connection is.
-    org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(10))
+    Awaitility.await().atMost(Duration.ofSeconds(10))
         .until(() -> getServer(0).getHttpServer().getInsertSessionManager().getOpenSessionCount() == 0);
   }
 
