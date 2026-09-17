@@ -50,6 +50,7 @@ import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.TimeSeriesType;
 import com.arcadedb.schema.TimeSeriesTypeBuilder;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.TypeFullTextIndexBuilder;
@@ -511,7 +512,30 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       builder.withDownsamplingTiers(parsed);
     }
 
-    return builder.create();
+    final TimeSeriesType created = builder.create();
+
+    // The order the type came back in has to be the order the export recorded, because the samples are POSITIONAL
+    // arrays and loadTimeSeriesSamples maps each one onto the type's CURRENT columns (issue #7740). The embedded
+    // builder stores the declaration as given, so this holds there by construction; a REMOTE schema renders the
+    // declaration as CREATE TIMESERIES TYPE, whose grammar has one slot for the timestamp, one for TAGS and one
+    // for FIELDS, and therefore regroups an export whose columns interleave them. Refused rather than imported
+    // into shifted columns - which, when the shifted pair happens to share a data type, is the kind of corruption
+    // that shows up as wrong readings months later rather than as an error here.
+    final List<String> exported = new ArrayList<>(columns.length());
+    for (int i = 0; i < columns.length(); i++)
+      exported.add(columns.getJSONObject(i).getString("name"));
+    final List<String> stored = new ArrayList<>(created.getTsColumns().size());
+    for (final ColumnDefinition col : created.getTsColumns())
+      stored.add(col.getName());
+    if (!exported.equals(stored))
+      throw new ImportException("TIMESERIES type '" + typeName + "' was created with its columns in a different "
+          + "order than the export records - " + stored + " instead of " + exported + " - and its samples are "
+          + "positional, so importing them would put every value in the wrong column. This happens when the "
+          + "export interleaves TAG and FIELD columns and the target is a REMOTE database, whose CREATE "
+          + "TIMESERIES TYPE can only spell TIMESTAMP, then TAGS, then FIELDS. Import into an embedded database, "
+          + "or re-export from a type whose columns are declared in that order");
+
+    return created;
   }
 
   /**
