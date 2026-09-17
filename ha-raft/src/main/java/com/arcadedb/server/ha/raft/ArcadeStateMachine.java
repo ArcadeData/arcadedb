@@ -3232,17 +3232,43 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // data loss, just a SEVERE log line); a genuinely-behind copy re-installs from the leader, which
     // is the correct action anyway. From the first post-upgrade apply onwards the per-database map is
     // authoritative.
-    if (persistedApplied >= index) {
+    // The premise of the skip below is asked BEFORE the skip, not one line after it (issue #7298). The sibling
+    // guard in applyInstallDatabaseEntry had the identical defect and #7221 fixed it there only: a persisted
+    // applied index says a PREVIOUS session applied this entry, and says nothing about whether its effect is
+    // still on this node. The index lives in <databaseDirectory>/.raft/applied-index, a sibling of the
+    // per-database directories rather than a file inside them, so the wipe-and-resync recovery this repo's own
+    // runbook prescribes - stop the follower, delete the bad copy, start it again - leaves the entry intact
+    // while the database it describes is gone.
+    final boolean registeredLocally = server.existsDatabase(dbName);
+
+    if (persistedApplied >= index && registeredLocally) {
       HALog.log(this, HALog.BASIC,
-          "Bootstrap baseline for '%s' already applied (persistedAppliedIndex=%d >= entryIndex=%d); skipping verification",
+          "Bootstrap baseline for '%s' already applied (persistedAppliedIndex=%d >= entryIndex=%d) and the database is "
+              + "registered on this node; skipping verification",
           dbName, persistedApplied, index);
       return;
     }
 
-    if (!server.existsDatabase(dbName)) {
-      // Late joiner with no local copy of this database. The follow-on INSTALL_DATABASE_ENTRY
-      // (or natural Raft replay) will create the database and install the leader's snapshot;
-      // we just record the baseline.
+    if (!registeredLocally) {
+      if (persistedApplied >= index) {
+        // The database WAS here - a previous session applied this very entry against it - and is not here now.
+        // Falling through to the "late joiner" arm below would be wrong for a second reason beyond the log line:
+        // that arm waits for a follow-on INSTALL_DATABASE_ENTRY, and a bootstrap-baselined database has none in
+        // the log. It predates the cluster; the baseline entry is precisely the record of a database that was
+        // never created through Raft. So nothing else in the log brings it back, and the node would keep running
+        // permanently short of a database the cluster believes it has. Pull it from the leader, which is the
+        // action #7221's own fix takes in the same situation on the install path.
+        LogManager.instance().log(this, Level.WARNING,
+            "Bootstrap baseline for '%s' was applied in a previous session (persistedAppliedIndex=%d >= entryIndex=%d) "
+                + "but the database is not registered on this node now; reinstalling it from the leader",
+            dbName, persistedApplied, index);
+        installFromLeaderForBootstrapWithRetry(dbName, false);
+        return;
+      }
+
+      // Late joiner with no local copy of this database, and no evidence it ever had one. The follow-on
+      // INSTALL_DATABASE_ENTRY (or natural Raft replay) will create the database and install the leader's
+      // snapshot; we just record the baseline.
       LogManager.instance().log(this, Level.INFO,
           """
           Bootstrap baseline recorded for '%s' (lastTxId=%d); database not yet present locally, \
@@ -3336,54 +3362,106 @@ public class ArcadeStateMachine extends BaseStateMachine {
         reinstalling from leader-shipped full snapshot""",
         dbName, localLastTxId, localFingerprint.substring(0, Math.min(8, localFingerprint.length())),
         chosenLastTxId, chosenFingerprint.substring(0, Math.min(8, chosenFingerprint.length())));
+    installFromLeaderForBootstrapWithRetry(dbName, true);
+  }
+
+  /**
+   * Runs {@link #installFromLeaderForBootstrap} for one of the bootstrap arms and converts a failure into an
+   * asynchronous retry rather than letting it reach {@link #applyTransaction}'s critical-error halt.
+   * <p>
+   * Applied on the Raft {@code StateMachineUpdater} thread: letting a failure propagate shuts the server down
+   * and leaves the database closed, and a transient leader unavailability during restart must not do that -
+   * {@code install()} downloads before touching the live files, so a failed download leaves whatever was here
+   * exactly as it was.
+   * <p>
+   * Extracted for issue #7298, which gave this recovery a SECOND caller: the replay-skip arm, when the database
+   * the skip is about turns out not to be on this node any more. The two callers differ in one fact that decides
+   * both the safety net and the retry, so it is a parameter rather than a re-derived guess -
+   * {@code server.existsDatabase} inside the catch cannot tell "the install deregistered it" from "it was never
+   * here".
+   *
+   * @param hadLocalCopy whether a local copy of {@code dbName} existed when the install was started. When it did,
+   *                     a database left deregistered is reopened and the ordinary full-resync path carries the
+   *                     retry. When it did not, neither applies: reopening would throw on a database that does
+   *                     not exist, and {@code triggerSnapshotDownload} only reinstalls the databases this server
+   *                     already has registered, so the retry has to be this same targeted install again
+   */
+  private void installFromLeaderForBootstrapWithRetry(final String dbName, final boolean hadLocalCopy) {
     try {
       installFromLeaderForBootstrap(dbName);
     } catch (final RuntimeException e) {
-      // Applied on the Raft StateMachineUpdater thread: letting this propagate trips the critical-error
-      // halt and shuts the server down, leaving the database closed. A transient leader unavailability
-      // during restart must not do that - install downloads before touching the live files, so the
-      // local copy is intact. Keep it and retry asynchronously.
       LogManager.instance().log(this, Level.SEVERE,
-          "Failed to install snapshot during bootstrap for database '%s': %s. "
-              + "Keeping the local copy and scheduling an async retry once a leader is reachable.",
-          dbName, e.getMessage());
-      // Safety net: install rolls back + reopens on failure; reopen here if left deregistered for any reason.
-      // This branch should be unreachable on the normal failed-download case - install() is download-before-
-      // close, so a download failure never touches the live files and leaves the DB open. It guards against
-      // unexpected future changes (or a failure in a later install phase) that could leave it deregistered.
-      if (!server.existsDatabase(dbName)) {
-        try {
-          server.getDatabase(dbName);
-        } catch (final Exception reopenEx) {
-          // Deliberate last resort: the database is both unusable and unreopenable, so there is nothing
-          // safe to serve. Unlike the transient leader-unavailable case above (local copy intact, retried
-          // async), this is unrecoverable locally, so we intentionally DO let it reach applyTransaction's
-          // critical-error halt rather than mask data loss behind a node that keeps running.
-          throw new RuntimeException("Cannot reopen database '" + dbName + "' after a failed bootstrap install", reopenEx);
+          "Failed to install snapshot during bootstrap for database '%s': %s. Scheduling an async retry once a "
+              + "leader is reachable.", dbName, e.getMessage());
+
+      if (hadLocalCopy) {
+        // Safety net: install rolls back + reopens on failure; reopen here if left deregistered for any reason.
+        // This branch should be unreachable on the normal failed-download case - install() is download-before-
+        // close, so a download failure never touches the live files and leaves the DB open. It guards against
+        // unexpected future changes (or a failure in a later install phase) that could leave it deregistered.
+        if (!server.existsDatabase(dbName)) {
+          try {
+            server.getDatabase(dbName);
+          } catch (final Exception reopenEx) {
+            // Deliberate last resort: the database is both unusable and unreopenable, so there is nothing
+            // safe to serve. Unlike the transient leader-unavailable case above (local copy intact, retried
+            // async), this is unrecoverable locally, so we intentionally DO let it reach applyTransaction's
+            // critical-error halt rather than mask data loss behind a node that keeps running.
+            throw new RuntimeException("Cannot reopen database '" + dbName + "' after a failed bootstrap install", reopenEx);
+          }
         }
+        // Flag the pending download and run it off-thread; clearing the flag lets the HealthMonitor
+        // persistent-lag backstop re-arm if this retry also fails on a still-quiet cluster.
+        needsSnapshotDownload.set(true);
       }
-      // Flag the pending download and run it off-thread; clearing the flag lets the HealthMonitor
-      // persistent-lag backstop re-arm if this retry also fails on a still-quiet cluster.
-      needsSnapshotDownload.set(true);
+
       // We are inside the catch on the Raft StateMachineUpdater thread: a RejectedExecutionException from
       // a shut-down executor (server stopping) must not escape, or it would reach applyTransaction's
-      // critical-error halt - the very outcome this handler exists to prevent. The flag stays set, so the
-      // HealthMonitor backstop still drives the download once the server is up again.
+      // critical-error halt - the very outcome this handler exists to prevent. On the hadLocalCopy path the
+      // flag stays set, so the HealthMonitor backstop still drives the download once the server is up again.
       try {
-        lifecycleExecutor.submit(() -> {
-          if (needsSnapshotDownload.compareAndSet(true, false))
-            triggerSnapshotDownload();
-          else
-            // Another path (notifyLeaderChanged or the watchdog) already cleared the flag and is driving
-            // the download; skip this retry. Logged so operators can trace why this submission did nothing.
-            LogManager.instance().log(this, Level.INFO,
-                "Bootstrap snapshot retry skipped for '%s': download already triggered by another path", dbName);
-        });
+        lifecycleExecutor.submit(() -> retryBootstrapInstall(dbName, hadLocalCopy));
       } catch (final RejectedExecutionException ree) {
         LogManager.instance().log(this, Level.WARNING,
             "Cannot schedule bootstrap snapshot retry for '%s': executor is shut down; "
                 + "the HealthMonitor backstop will retry once the server is available", null, dbName);
       }
+    }
+  }
+
+  /**
+   * The off-thread half of {@link #installFromLeaderForBootstrapWithRetry}. Never throws: it runs on the
+   * {@code lifecycleExecutor}, where an escaping exception is only logged by the executor and helps nobody.
+   */
+  private void retryBootstrapInstall(final String dbName, final boolean hadLocalCopy) {
+    if (hadLocalCopy) {
+      if (needsSnapshotDownload.compareAndSet(true, false))
+        triggerSnapshotDownload();
+      else
+        // Another path (notifyLeaderChanged or the watchdog) already cleared the flag and is driving
+        // the download; skip this retry. Logged so operators can trace why this submission did nothing.
+        LogManager.instance().log(this, Level.INFO,
+            "Bootstrap snapshot retry skipped for '%s': download already triggered by another path", dbName);
+      return;
+    }
+
+    // No local copy, so the full resync above has nothing to iterate over: it reinstalls the databases this
+    // server has REGISTERED, and this one is exactly the one it does not have. Retry the targeted install.
+    if (server.existsDatabase(dbName)) {
+      LogManager.instance().log(this, Level.INFO,
+          "Bootstrap snapshot retry skipped for '%s': the database is registered again, another path installed it", dbName);
+      return;
+    }
+    try {
+      installFromLeaderForBootstrap(dbName);
+    } catch (final RuntimeException e) {
+      // One retry, then say so plainly and name the way out. Looping here would hold the single-threaded
+      // lifecycleExecutor against every other lifecycle task for as long as the leader stays unreachable.
+      LogManager.instance().log(this, Level.SEVERE,
+          "Database '%s' was applied on this node in a previous session but is missing now, and reinstalling it from "
+              + "the leader failed again: %s. The node is running WITHOUT it. Once a leader is reachable, run "
+              + "POST /api/v1/cluster/resync/%s on this node, or restart it to replay this entry.",
+          e, dbName, e.getMessage(), dbName);
     }
   }
 

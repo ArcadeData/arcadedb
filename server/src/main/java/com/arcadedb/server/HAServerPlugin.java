@@ -111,6 +111,36 @@ public interface HAServerPlugin extends ServerPlugin {
     return false;
   }
 
+  /**
+   * Describes the persistent replication-log write failure that has wedged this node's HA layer, or {@code null}
+   * while the log writer is healthy (issue #7118).
+   * <p>
+   * A node in this state cannot append anything to the replicated log, so it cannot catch up and cannot become
+   * caught up: whatever it holds is frozen at the moment the writer failed. It is therefore consulted by
+   * {@code ServerControlPlane.notReadyReason()}, which is what removes the pod from the Kubernetes Service -
+   * without it a wedged follower kept answering 200 on {@code /api/v1/ready} and the Service kept routing reads
+   * to a replica that could no longer move, serving STALE data with no error anywhere on the request path.
+   * <p>
+   * Deliberately NOT behind {@code arcadedb.server.readinessRequiresHA}. That switch is opt-in because it gates a
+   * node that is merely BEHIND - still joining, still replaying - and a deployment can reasonably choose to serve
+   * from one. This is not that: the Raft implementation sets this only from Ratis's own {@code notifyLogFailed},
+   * after which every later append is rejected until the log writer is restarted, so there is no deployment for
+   * which "in the Service" is the right answer. Same reasoning as {@link #isCrashLoopEscalated()}, which
+   * {@code isLive()} consults unconditionally for the same kind of terminal condition.
+   * <p>
+   * The condition is recoverable: {@code HealthMonitor} restarts the log writer in place (issue #7037) and this
+   * goes back to {@code null} when it succeeds, at which point the node rejoins the Service on its own. The
+   * restart budget is bounded, so when it is exhausted the node stays out rather than silently coming back.
+   * <p>
+   * Returns {@code null} when this HA implementation has no such signal - HA disabled, or a non-Raft
+   * implementation.
+   *
+   * @return a human-readable description of the failure, suitable for a readiness response body, or {@code null}
+   */
+  default String getRaftLogFailure() {
+    return null;
+  }
+
   String getClusterName();
 
   Map<String, Object> getStats();

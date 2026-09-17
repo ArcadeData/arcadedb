@@ -97,7 +97,7 @@ class Issue7577ClusterStatusSchemaMatchesTheHandlerTest {
   @Test
   void localResyncDeclaresWhatBuildLocalResyncWrites() {
     final JSONObject emitted = GetClusterHandler.buildLocalResync(
-        new ArcadeStateMachine.LocalResyncState(false, false, List.of(), -1L, Map.of()), Set.of());
+        new ArcadeStateMachine.LocalResyncState(false, false, -1L, Map.of(), Map.of()), Set.of());
 
     final Schema<?> declared = property(clusterStatus(), "localResync");
 
