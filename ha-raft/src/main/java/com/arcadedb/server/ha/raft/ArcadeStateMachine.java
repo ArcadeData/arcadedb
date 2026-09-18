@@ -297,6 +297,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
       this::isLocalNodeRaftLeader, this::securitySeedRetryBudgetMs, this::seedSecurityStateClusterWide);
 
   /**
+   * Brings THIS node's security documents back in step when it rejoined without a membership change, or caught
+   * up by a snapshot install that carried none of them (issue #7833). See {@link SecurityCatchUp}.
+   */
+  private final SecurityCatchUp securityCatchUp = new SecurityCatchUp();
+
+  /**
    * Removes dropped database directories away from the apply loop. Deliberately not the lifecycleExecutor: a
    * deletion is unbounded in the size of the database and would delay the snapshot-download triggers that
    * executor carries.
@@ -1599,6 +1605,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
     } else {
       LogManager.instance().log(this, Level.INFO, "This node is now REPLICA (leader: %s)", leaderName);
       raftHA.stopLagMonitor();
+
+      // Issue #7833: this node may have come back while still a Raft member, in which case no configuration
+      // entry was written and nothing seeded it the cluster's security documents. Once per start, and only as a
+      // replica - the leader is the reference this asks against. Off this thread and off lifecycleExecutor: it
+      // waits for catch-up and then dials the leader, neither of which belongs on a Ratis callback or on the
+      // single-threaded executor the snapshot-download triggers queue on.
+      securityCatchUp.onFirstLeaderObserved(this.server, raftHA);
     }
 
     // If a snapshot gap was detected during reinitialize(), trigger the download now
@@ -1709,6 +1722,25 @@ public class ArcadeStateMachine extends BaseStateMachine {
       throw new IllegalStateException(
           "this node has no HA plugin, so the security documents cannot be replicated to the joining peer");
     return srv.getSecurity().seedSecurityStateClusterWide(retryBudgetMs);
+  }
+
+  /**
+   * Runs the cluster security seed on this node and reports what it could not commit (issues #7833, #7834).
+   * <p>
+   * The entry point {@link PostSecuritySeedHandler} and the local short circuit in
+   * {@link ClusterSecuritySeedQuery} both end here, which is the point: there is one seeder per cluster and it
+   * lives on the leader. See {@link MembershipSecuritySeeder#seedNowAndReport} for what an outstanding seed does
+   * with a second request.
+   *
+   * @param reason what the seed is for, carried through to the log lines the run writes
+   * @param mayReuseRecentSeed whether a seed that just finished may answer this request; see
+   *               {@link MembershipSecuritySeeder#seedNowAndReport} for why only an admission may say true
+   *
+   * @throws IllegalStateException when no seed could be run or its outcome could not be read
+   */
+  public List<String> seedSecurityNowAndReport(final String reason, final long timeoutMs,
+      final boolean mayReuseRecentSeed) {
+    return membershipSecuritySeeder.seedNowAndReport(reason, timeoutMs, mayReuseRecentSeed);
   }
 
   /** Package-private test seam (issue #7531): substitutes the seeder the configuration callback drives. */
@@ -1865,6 +1897,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // outcome issue #6760 exists to prevent, so the notify has to come after the re-arm, not before it.
       if (raftHA != null)
         raftHA.notifyApplied();
+
+      // Issue #7833: a snapshot install is the one catch-up path that provably skips the security entries - the
+      // three documents live under <server-root>/config/, outside the database directory, and no snapshot
+      // carries them. Ask the leader whether this node is still in step, AFTER the install is fully recorded so
+      // the request cannot be answered against a half-installed node.
+      if (raftHA != null)
+        securityCatchUp.afterSnapshotInstall(this.server, raftHA);
 
       return installedTermIndex;
 
@@ -5275,6 +5314,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     lifecycleExecutor.shutdownNow();
     snapshotInstallExecutor.shutdownNow();
     membershipSecuritySeeder.close();
+    securityCatchUp.close();
     deferredDatabaseDeleter.close();
     super.close();
   }

@@ -279,24 +279,28 @@ public class ServerControlPlane {
     // and the new peer would run with a stale user set, a stale group document and a stale token store until
     // the next cluster-wide change of each kind.
     //
-    // Through ServerSecurity rather than a bare replicateSecurityUsers (issue #7521). That call seeded the
-    // users document only - this verb never grew the groups and API-token half #7373 gave the add-peer route
-    // - and it read the payload OUTSIDE the security monitor, which is the window #7373 closed on the other
-    // route: a revocation committing between the read and the submit is undone on every node by a seed that
-    // carries a whole document. It also retries within a bounded budget, because the submit waits for a Raft
-    // commit and its usual failure is an absent quorum at this instant.
+    // ASKED OF THE LEADER rather than run here (issue #7834). This verb does not require the local node to be
+    // the leader - only the membership change underneath it is routed there - while the leader already seeds
+    // every membership change of its own accord (issue #7531). Two seeders meant two JVMs, each holding only
+    // its own ServerSecurity monitor, and that monitor is precisely what stops a revocation committing mid-seed
+    // from being undone by the whole document a seed carries (issue #7373). One seeder, on the leader, is the
+    // fix; the seed there still reads each document under that monitor and still retries within a bounded
+    // budget. It stays UNCONDITIONAL - see ServerSecurity.seedSecurityStateClusterWide for why a precondition
+    // would refuse the very peer a seed is sent to repair.
     //
     // Still best-effort in the sense that matters to the caller: the peer is already a committed member and a
     // seed failure does not - and must not - fail the join, or the caller would retry a join that already
     // happened. What it is not is silent.
     //
     // The catch is the contract, not defensiveness: NOTHING raised while seeding may escape and be read as a
-    // failed join, because by this point the peer is a committed member. seedSecurityStateClusterWide already
-    // collects a per-document failure rather than throwing, so what this covers is everything around them -
-    // a server whose security store is not installed, most of all.
+    // failed join, because by this point the peer is a committed member. That now includes the IOException the
+    // request itself can raise when the leader cannot be reached.
     try {
-      final List<String> failedSeeds = server.getSecurity().seedSecurityStateClusterWide(
-          server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_SECURITY_SEED_RETRY_TIMEOUT));
+      // An empty Optional means this HA implementation has no leader-side seeder; the local seed is then what it
+      // has always been. On Raft it is never empty.
+      final List<String> failedSeeds = ha.seedSecurityStateForAdmission(serverAddress)
+          .orElseGet(() -> server.getSecurity().seedSecurityStateClusterWide(
+              server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_SECURITY_SEED_RETRY_TIMEOUT)));
       if (!failedSeeds.isEmpty())
         LogManager.instance().log(this, Level.SEVERE,
             "Connect cluster joined '%s' but these security documents could not be seeded to it: %s. That peer is a "

@@ -24,6 +24,7 @@ import java.io.IOException;
 import java.net.http.HttpClient;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * Public interface for the High Availability server plugin. Consumed by HTTP handlers,
@@ -519,5 +520,38 @@ public interface HAServerPlugin extends ServerPlugin {
     // See replicateSecurityUsers(String, String) for why this delegates rather than no-oping.
     replicateSecurityApiTokens(apiTokensJson);
     return true;
+  }
+
+  /**
+   * Has the cluster's <b>leader</b> seed the security documents after this node admitted a peer, and reports
+   * what it could not commit (issue #7834).
+   * <p>
+   * {@code POST /api/v1/cluster/peer} and {@code connect cluster} used to call
+   * {@code ServerSecurity.seedSecurityStateClusterWide} directly, on whichever node ran the admission. Since the
+   * leader seeds every membership change of its own accord (issue #7531) that made two seeders per admission,
+   * on two nodes, each holding only its own {@code ServerSecurity} monitor - and that monitor is what keeps a
+   * revocation committing mid-seed from being undone by the whole document a seed carries (issue #7373). A
+   * revocation landing between the two could be resurrected by whichever submit was second.
+   * <p>
+   * So the admitting node asks rather than seeds. What it still gets back is the report issue #7521 made a
+   * contract: the route answers 503 with a {@code failedSeeds} array, and the verb logs SEVERE naming the
+   * documents.
+   * <p>
+   * <b>An empty {@link Optional} is not an empty failure list.</b> It means this HA implementation has no
+   * leader-side seeder to ask, and the caller then seeds locally through
+   * {@code ServerSecurity.seedSecurityStateClusterWide} exactly as it always did - which is the default, so an
+   * implementation that predates this method keeps the behaviour it was written against instead of silently
+   * seeding nothing.
+   *
+   * @param admittedPeer the peer that was just admitted, for the log line the leader writes
+   *
+   * @return the names of the documents that could not be seeded - empty when all of them committed - or an
+   * empty {@code Optional} when there is no leader-side seeder and the caller must seed locally
+   *
+   * @throws IOException when the leader could not be reached or did not report the seed's outcome; a join whose
+   *                     seed outcome is UNKNOWN must not be reported as a join whose seed succeeded
+   */
+  default Optional<List<String>> seedSecurityStateForAdmission(final String admittedPeer) throws IOException {
+    return Optional.empty();
   }
 }

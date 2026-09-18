@@ -19,7 +19,10 @@
 package com.arcadedb.server.ha.raft;
 
 import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.SNIHostName;
+import javax.net.ssl.SNIServerName;
 import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.TrustManagerFactory;
 import java.io.IOException;
@@ -28,7 +31,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.KeyStore;
 import java.security.PrivateKey;
+import java.security.cert.Certificate;
+import java.security.cert.X509Certificate;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
@@ -58,7 +65,14 @@ final class RaftTestPki {
   private static final String CA_ALIAS = "ca";
   /** Short on purpose: these certificates must never outlive the test run that created them. */
   private static final String VALIDITY_DAYS = "2";
-  private static final String SUBJECT_ALT_NAMES = "san=dns:localhost,ip:127.0.0.1";
+  /**
+   * The names every in-process test node is dialled by, and therefore the ones a single certificate has to
+   * cover for the cluster fixture to work. {@link #create(Path, String, String)} takes an override so a suite
+   * can issue a certificate for the WRONG name and prove the hostname check is actually performed (issue
+   * #7836) - without one, every certificate in the suite matches every dial and nothing would notice if the
+   * check stopped happening.
+   */
+  static final String SUBJECT_ALT_NAMES = "san=dns:localhost,ip:127.0.0.1";
   /** Hang detector for the keytool subprocess, not a latency bound: generous on purpose. */
   private static final long   KEYTOOL_TIMEOUT_SECONDS = 120;
   /**
@@ -90,6 +104,19 @@ final class RaftTestPki {
    * {@code label} so several independent authorities can share one directory.
    */
   static RaftTestPki create(final Path directory, final String label) throws Exception {
+    return create(directory, label, SUBJECT_ALT_NAMES);
+  }
+
+  /**
+   * {@link #create(Path, String)} with the subject alternative names the node certificate is issued for, in
+   * keytool's {@code -ext} syntax ({@code "san=dns:...,ip:..."}).
+   * <p>
+   * The names are what a TLS client checks the certificate against, so this is the knob a hostname-verification
+   * test turns: issue for a name the dial does NOT ask for and the handshake must fail; issue for several and
+   * each of them must be accepted (issue #7836). They are applied to BOTH the self-signed request and the
+   * CA-signed answer, because {@code keytool -gencert} does not copy the request's extensions.
+   */
+  static RaftTestPki create(final Path directory, final String label, final String subjectAltNames) throws Exception {
     Files.createDirectories(directory);
 
     final Path caStore = directory.resolve(label + "-ca.keystore");
@@ -114,13 +141,13 @@ final class RaftTestPki {
 
     // Node key pair, certificate request, and the CA-signed certificate answering it.
     keytool("-genkeypair", "-alias", NODE_ALIAS, "-keyalg", "RSA", "-keysize", "2048", "-sigalg", "SHA256withRSA",
-        "-dname", "CN=localhost", "-validity", VALIDITY_DAYS, "-ext", SUBJECT_ALT_NAMES,
+        "-dname", "CN=localhost", "-validity", VALIDITY_DAYS, "-ext", subjectAltNames,
         "-keystore", nodeStore.toString(), "-storetype", "PKCS12", "-storepass", PASSWORD, "-keypass", PASSWORD);
     keytool("-certreq", "-alias", NODE_ALIAS, "-keystore", nodeStore.toString(), "-storetype", "PKCS12",
         "-storepass", PASSWORD, "-file", csr.toString());
     keytool("-gencert", "-alias", CA_ALIAS, "-keystore", caStore.toString(), "-storetype", "PKCS12",
         "-storepass", PASSWORD, "-infile", csr.toString(), "-outfile", nodeCert.toString(), "-rfc",
-        "-validity", VALIDITY_DAYS, "-ext", SUBJECT_ALT_NAMES, "-ext", "eku=serverAuth,clientAuth");
+        "-validity", VALIDITY_DAYS, "-ext", subjectAltNames, "-ext", "eku=serverAuth,clientAuth");
 
     // Re-import the signed certificate so the node keystore holds a key entry with a complete chain, which
     // is what KeyManagerFactory needs to present a client certificate.
@@ -211,6 +238,68 @@ final class RaftTestPki {
     socket.setEnabledProtocols(new String[] { TLS_1_2 });
     socket.setSoTimeout(HANDSHAKE_TIMEOUT_MS);
     return socket;
+  }
+
+  /**
+   * {@link #connect(SSLContext, String, int)} with the two knobs a name test needs: the name sent in the TLS
+   * {@code server_name} extension, and whether JSSE checks the certificate against the name at all (issue
+   * #7836).
+   * <p>
+   * Separating them is the point. {@code endpointIdentification} on is what an {@code HttpClient} does and
+   * what a peer dial therefore inherits; off leaves only the trust chain, which is how a test tells "this
+   * certificate is not trusted" apart from "this certificate is trusted but is for another name" - two
+   * failures that look identical from an {@code IOException}.
+   *
+   * @param sniName                the name to advertise in the SNI extension, or {@code null} to send none
+   * @param endpointIdentification whether to verify the certificate covers {@code host}
+   */
+  static SSLSocket connect(final SSLContext context, final String host, final int port, final String sniName,
+      final boolean endpointIdentification) throws IOException {
+    final SSLSocket socket = (SSLSocket) context.getSocketFactory().createSocket(host, port);
+    socket.setEnabledProtocols(new String[] { TLS_1_2 });
+    socket.setSoTimeout(HANDSHAKE_TIMEOUT_MS);
+
+    final SSLParameters parameters = socket.getSSLParameters();
+    if (sniName != null)
+      parameters.setServerNames(List.of(new SNIHostName(sniName)));
+    parameters.setEndpointIdentificationAlgorithm(endpointIdentification ? "HTTPS" : null);
+    socket.setSSLParameters(parameters);
+    return socket;
+  }
+
+  /**
+   * The names {@code socket} advertised in its TLS {@code server_name} extension, read back from the socket's
+   * own parameters.
+   * <p>
+   * It is what makes an SNI test fail if {@link #connect(SSLContext, String, int, String, boolean)} ever stops
+   * setting them (CodeRabbit on PR #7854): the certificate a single-keystore listener returns is the same
+   * whatever SNI asks for, so asserting on the certificate alone cannot tell a request that carried the
+   * extension from one that did not.
+   */
+  static List<String> requestedServerNames(final SSLSocket socket) {
+    final List<String> names = new ArrayList<>();
+    for (final SNIServerName name : socket.getSSLParameters().getServerNames())
+      if (name instanceof final SNIHostName host)
+        names.add(host.getAsciiName());
+    return names;
+  }
+
+  /** The subject alternative names of the certificate {@code socket}'s peer presented, as keytool spells them. */
+  static List<String> peerSubjectAlternativeNames(final SSLSocket socket) throws Exception {
+    final Certificate[] chain = socket.getSession().getPeerCertificates();
+    if (chain.length == 0 || !(chain[0] instanceof X509Certificate certificate))
+      return List.of();
+
+    final Collection<List<?>> names = certificate.getSubjectAlternativeNames();
+    if (names == null)
+      return List.of();
+
+    final List<String> result = new ArrayList<>(names.size());
+    for (final List<?> name : names)
+      // [0] is the GeneralName tag (2 = dNSName, 7 = iPAddress), [1] the value. Only the value is asserted on.
+      if (name.size() > 1 && name.get(1) != null)
+        result.add(name.get(1).toString());
+    return result;
   }
 
   private static KeyStore load(final Path store) throws Exception {
