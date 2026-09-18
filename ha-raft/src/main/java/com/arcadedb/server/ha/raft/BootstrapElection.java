@@ -338,6 +338,11 @@ class BootstrapElection {
       peerAddresses.put(peer.getId(), url);
     }
 
+    // The fallback is the rule, but it is not silent: these probes carry the cluster token, and an operator who
+    // set arcadedb.ssl.enabled has no other way to learn that some of them went out in the clear (issue #7546).
+    if (useSSL && peerAddresses.values().stream().anyMatch(url -> url.startsWith("http://")))
+      PlainHttpFallbackNotice.sayOnce(BootstrapElection.class, "probing its bootstrap-state");
+
     // One client for the whole fan-out, closed when it has finished. collectRemoteStatesWithRetry cancels a
     // timed-out future rather than waiting on it, so a send CAN still be running when close() is reached;
     // close() is an orderly shutdown that waits for it, and every request below carries its own
@@ -584,6 +589,8 @@ class BootstrapElection {
     final String url = chooseUrl(httpAddr, httpsAddr, useSSL);
     if (url == null)
       return null;
+    if (useSSL && url.startsWith("http://"))
+      PlainHttpFallbackNotice.sayOnce(BootstrapElection.class, "probing its bootstrap-state");
     try {
       final HttpRequest request = bootstrapStateRequestTo(url, clusterToken, timeoutMs);
       final HttpResponse<String> response;
