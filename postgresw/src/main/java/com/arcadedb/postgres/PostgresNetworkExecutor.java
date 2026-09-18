@@ -171,6 +171,19 @@ public class PostgresNetworkExecutor extends Thread {
   private long     processIdSequence          = 0;
   private boolean  explicitTransactionStarted = false;
   private boolean  errorInTransaction         = false;
+  /**
+   * The extended query protocol's "discard every message until Sync" state (issue #7775). PostgreSQL enters it on
+   * EVERY ErrorResponse raised by a Parse/Bind/Describe/Execute/Close, whether or not a transaction block is open,
+   * and leaves it only at the next Sync; the run of messages a Sync terminates is an implicit transaction block,
+   * so that Sync discards the block instead of committing it.
+   * <p>
+   * It is deliberately NOT the same flag as {@link #errorInTransaction}, which is the aborted-block state an
+   * explicit BEGIN puts the session in (SQLSTATE 25P02, ReadyForQuery 'E') and which only the client's own
+   * COMMIT/ROLLBACK/END can clear (issue #7851). The two coincide inside an explicit transaction and come apart
+   * in autocommit - where only this one is set - and after a Sync inside an aborted block - where only
+   * {@code errorInTransaction} survives.
+   */
+  private boolean  skipUntilSync              = false;
 
   private interface ReadMessageCallback {
     void read(char type, long length) throws IOException;
@@ -332,6 +345,7 @@ public class PostgresNetworkExecutor extends Thread {
         }
       } finally {
         ACTIVE_SESSIONS.remove(pid);
+        rollbackPendingTransaction();
       }
 
     } finally {
@@ -344,10 +358,19 @@ public class PostgresNetworkExecutor extends Thread {
     if (DEBUG)
       LogManager.instance().log(this, Level.INFO, "PSQL: sync (thread=%s)", Thread.currentThread().threadId());
 
-    if (errorInTransaction) {
-      // DISCARDED PREVIOUS MESSAGES TILL THIS POINT
-      database.rollback();
-      errorInTransaction = false;
+    if (skipUntilSync || errorInTransaction) {
+      // DISCARDED PREVIOUS MESSAGES TILL THIS POINT. The block the discarded messages belonged to goes with
+      // them: PostgreSQL rolls back the WHOLE run of extended-protocol messages this Sync terminates when any
+      // one of them failed, whether that run was an explicit BEGIN block or the implicit one a pipeline in
+      // autocommit forms (issue #7775) - which is what a JDBC executeBatch() or a psycopg3 pipeline sends.
+      // Committing it persisted the statements that ran before the failure.
+      skipUntilSync = false;
+      if (database.isTransactionActive())
+        database.rollback();
+      // errorInTransaction is deliberately NOT cleared here (issue #7851): Sync does not end a transaction
+      // block, so an explicit BEGIN whose statement failed stays aborted - status 'E', every further statement
+      // refused with 25P02 - until the client sends COMMIT/ROLLBACK/END, exactly as real PostgreSQL requires and
+      // exactly as queryCommand()'s own aborted branch already behaves on the simple query protocol.
     } else if (!explicitTransactionStarted) {
       if (database.isTransactionActive())
         database.commit();
@@ -368,7 +391,7 @@ public class PostgresNetworkExecutor extends Thread {
     final byte closeType = channel.readByte();
     final String prepStatementOrPortal = readString();
 
-    if (errorInTransaction)
+    if (skipExtendedProtocolMessage())
       return;
 
     if (closeType == 'P')
@@ -392,7 +415,7 @@ public class PostgresNetworkExecutor extends Thread {
           .log(this, Level.INFO, "PSQL: describe '%s' type=%s (errorInTransaction=%s thread=%s)", portalName, (char) type,
               errorInTransaction, Thread.currentThread().threadId());
 
-    if (errorInTransaction)
+    if (skipExtendedProtocolMessage())
       return;
 
     // Describe('S') names a PREPARED STATEMENT (registered by PARSE); Describe('P') names a bound PORTAL
@@ -432,6 +455,7 @@ public class PostgresNetworkExecutor extends Thread {
         // already ran it) reuses the materialized result instead of running it again: issue #6458's follow-up
         // Execute(s) depend on this same fullResultSet being run exactly once.
         try {
+          beginImplicitTransactionBlock();
           final ResultSet resultSet = runPortalQuery(portal);
           // Materializes the whole result now (issue #6458): Describe needs every row's columns, not just the
           // first, to catch a property that only shows up on a later row (documents can be sparse) - and the
@@ -448,12 +472,12 @@ public class PostgresNetworkExecutor extends Thread {
           // The one reply Describe is owed is an ErrorResponse here; the client discards everything up to its
           // Sync, exactly as after a failed Execute. Without it the refusal (or any other failure of the query)
           // reached the server log only and the client waited for a RowDescription that never came.
-          setErrorInTx();
+          setExtendedProtocolError();
           writeError(ERROR_SEVERITY.ERROR, "Syntax error on executing query: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()), sqlStateFor(e));
         } catch (final PostgresProtocolException e) {
           throw e;
         } catch (final Exception e) {
-          setErrorInTx();
+          setExtendedProtocolError();
           writeError(ERROR_SEVERITY.ERROR, "Error on executing query: " + e.getMessage(), sqlStateFor(e));
         }
       } else if (portal.isExpectingResult && portal.columns != null) {
@@ -584,7 +608,7 @@ public class PostgresNetworkExecutor extends Thread {
       final int limit = (int) channel.readUnsignedInt();
       profile.addDeserializationNanos(System.nanoTime() - deserStart);
 
-      if (errorInTransaction)
+      if (skipExtendedProtocolMessage())
         return;
 
       // Do NOT remove the portal here (issue #6458): a limit-hit Execute suspends rather than finishes, and
@@ -601,6 +625,8 @@ public class PostgresNetworkExecutor extends Thread {
         LogManager.instance()
             .log(this, Level.INFO, "PSQL: execute (portal=%s) (limit=%d)-> %s (thread=%s)", portalName, limit, portal,
                 Thread.currentThread().threadId());
+
+      beginImplicitTransactionBlock();
 
       if (portal.ignoreExecution)
         // SAVEPOINT/RELEASE/SET never produce rows: Execute must answer CommandComplete, not NoData - NoData
@@ -731,17 +757,17 @@ public class PostgresNetworkExecutor extends Thread {
         }
       }
     } catch (final PostgresCopyStatement.CopyException e) {
-      setErrorInTx();
+      setExtendedProtocolError();
       writeError(ERROR_SEVERITY.ERROR, e.getMessage(), e.sqlState);
     } catch (final CommandParsingException e) {
       // The "Syntax error" wording assumes only genuine parse failures reach this arm, which holds because this
       // path runs an already-parsed statement and execution failures are CommandExecutionException. If a
       // CommandParsingException ever wraps a non-parse cause here, sqlStateFor reports that cause - correctly, and
       // clients branch on the SQLSTATE - while this text would still read "Syntax error".
-      setErrorInTx();
+      setExtendedProtocolError();
       writeError(ERROR_SEVERITY.ERROR, "Syntax error on executing query: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()), sqlStateFor(e));
     } catch (final Exception e) {
-      setErrorInTx();
+      setExtendedProtocolError();
       writeError(ERROR_SEVERITY.ERROR, "Error on executing query: " + e.getMessage(), sqlStateFor(e));
     } finally {
       if (portal != null)
@@ -776,8 +802,7 @@ public class PostgresNetworkExecutor extends Thread {
           // warning): there is nothing left to commit, so both end keywords just discard the transaction.
           if (database.isTransactionActive())
             database.rollback();
-          explicitTransactionStarted = false;
-          errorInTransaction = false;
+          endTransactionBlockState();
           // The tag is always "ROLLBACK" here, even if the client sent COMMIT/END: see the comment above.
           writeCommandComplete("ROLLBACK", 0);
         } else if (queryText.isEmpty()) {
@@ -866,13 +891,13 @@ public class PostgresNetworkExecutor extends Thread {
       } else if (isCommitStatement(upperCaseText)) {
         if (explicitTransactionStarted && database.isTransactionActive())
           database.commit();
-        explicitTransactionStarted = false;
+        endTransactionBlockState();
         transactionControl = true;
         resultSet = new IteratorResultSet(Collections.emptyIterator());
       } else if (isRollbackStatement(upperCaseText)) {
         if (explicitTransactionStarted && database.isTransactionActive())
           database.rollback();
-        explicitTransactionStarted = false;
+        endTransactionBlockState();
         transactionControl = true;
         resultSet = new IteratorResultSet(Collections.emptyIterator());
       } else {
@@ -1500,6 +1525,14 @@ public class PostgresNetworkExecutor extends Thread {
       if (!sampleRows.isEmpty()) {
         // Use the sample row to discover columns
         final Map<String, PostgresType> cols = getColumns(sampleRows, docType, Map.of());
+        // A property the type DECLARES but the one sampled row happens not to carry is part of the type's shape
+        // all the same, so the sample is WIDENED with the schema rather than trusted on its own (issue #7470):
+        // sampling alone dropped such a column from every row of the answer - silently, and for COPY ... TO STDOUT
+        // that means an export that looks complete and is not. The sampled types stay authoritative where the two
+        // overlap: a schemaless property has no declaration to read, and a declared one can hold a narrower
+        // runtime type that the row is the only witness of (issue #6447).
+        collectDeclaredColumns(docType, cols);
+        moveSystemColumnsLast(cols);
         if (DEBUG)
           LogManager.instance().log(this, Level.INFO,
               "PSQL: getColumnsFromType('%s') -> sampleQuery='%s', found %d rows, columns=%s (thread=%s)",
@@ -1515,15 +1548,7 @@ public class PostgresNetworkExecutor extends Thread {
       columns.put(TYPE_PROPERTY, PostgresType.VARCHAR);
       columns.put(CAT_PROPERTY, PostgresType.CHAR);
 
-      // Add all defined properties from the type
-      for (final String propName : docType.getPropertyNames()) {
-        final Property prop = docType.getProperty(propName);
-        if (prop != null && prop.getType() != null) {
-          columns.put(propName, PostgresType.getTypeFromArcade(prop.getType(), prop.getOfType()));
-        } else {
-          columns.put(propName, PostgresType.VARCHAR);
-        }
-      }
+      collectDeclaredColumns(docType, columns);
 
       return columns;
 
@@ -1533,6 +1558,37 @@ public class PostgresNetworkExecutor extends Thread {
             typeName, e.getMessage());
       return null;
     }
+  }
+
+  private static final String[] SYSTEM_COLUMNS = { RID_PROPERTY, TYPE_PROPERTY, CAT_PROPERTY };
+
+  /**
+   * Re-appends the {@code @rid}/{@code @type}/{@code @cat} columns at the end of the map, where
+   * {@link #getColumns(List, DocumentType, Map)} puts them, after another source has added columns behind them.
+   */
+  private static void moveSystemColumnsLast(final Map<String, PostgresType> columns) {
+    for (final String systemColumn : SYSTEM_COLUMNS) {
+      final PostgresType type = columns.remove(systemColumn);
+      if (type != null)
+        columns.put(systemColumn, type);
+    }
+  }
+
+  /**
+   * Adds every property {@code docType} declares - its supertypes' included - that {@code columns} does not
+   * already name, typed from the schema. The order is stable: the type's own properties in declaration order,
+   * then each supertype's, depth first. {@code getPolymorphicPropertyNames()} answers the same set through a
+   * {@code HashSet}, whose iteration order would make an exported column order vary from run to run.
+   */
+  private static void collectDeclaredColumns(final DocumentType docType, final Map<String, PostgresType> columns) {
+    for (final String propName : docType.getPropertyNames()) {
+      final Property prop = docType.getProperty(propName);
+      columns.putIfAbsent(propName, prop != null && prop.getType() != null
+          ? PostgresType.getTypeFromArcade(prop.getType(), prop.getOfType())
+          : PostgresType.VARCHAR);
+    }
+    for (final DocumentType superType : docType.getSuperTypes())
+      collectDeclaredColumns(superType, columns);
   }
 
   /**
@@ -2086,6 +2142,8 @@ public class PostgresNetworkExecutor extends Thread {
       if (row == null)
         continue;
 
+      checkRowFitsAnnouncedColumns(row, columns);
+
       if (binary) {
         payload.putShort((short) names.length);
         for (int i = 0; i < names.length; i++)
@@ -2115,6 +2173,41 @@ public class PostgresNetworkExecutor extends Thread {
     if (DEBUG)
       LogManager.instance().log(this, Level.INFO, "PSQL:-> %d row(s) copied out (thread=%s)", count, Thread.currentThread().threadId());
     return count;
+  }
+
+  /**
+   * Refuses a row carrying a property the {@code CopyOutResponse} did not announce, instead of streaming the row
+   * without it (issue #7470).
+   * <p>
+   * A COPY stream fixes its column set before the first row, the way {@code RowDescription} fixes it for a query,
+   * and a type in this schemaless engine can hold rows of different shapes - so a column set resolved from the
+   * declared schema and a sampled row is a good answer, not a provably complete one. Dropping what it did not
+   * predict is the one outcome an export must not have: the file looks complete and the loss surfaces downstream.
+   * The message names the column and the way to get it: list the columns in the COPY itself, which fixes them by
+   * construction and is then exact.
+   * <p>
+   * A query whose projection already names its columns cannot trip this - its rows carry exactly those - so the
+   * check costs a map lookup per property on the paths where it can never fire.
+   */
+  private static void checkRowFitsAnnouncedColumns(final Result row, final Map<String, PostgresType> columns) {
+    if (row.isElement())
+      for (final String name : row.getElement().get().getPropertyNames())
+        if (!columns.containsKey(name))
+          throw unannouncedCopyColumn(name, columns);
+    for (final String name : row.getPropertyNames())
+      if (!columns.containsKey(name))
+        throw unannouncedCopyColumn(name, columns);
+  }
+
+  private static PostgresCopyStatement.CopyException unannouncedCopyColumn(final String name,
+      final Map<String, PostgresType> columns) {
+    return new PostgresCopyStatement.CopyException(
+        "a row of this COPY carries column \"" + name + "\", which is not among the columns the stream announced ("
+            + String.join(", ", columns.keySet())
+            + "): this type stores rows of different shapes, and a COPY cannot add a column once its stream has "
+            + "started. List the columns to export in the COPY itself - COPY <table> (" + name
+            + ", ...) TO STDOUT, or COPY (SELECT " + name + ", ... FROM <table>) TO STDOUT - so its column set is "
+            + "exact", PostgresCopyStatement.SQLSTATE_FEATURE_NOT_SUPPORTED);
   }
 
   /**
@@ -2237,7 +2330,7 @@ public class PostgresNetworkExecutor extends Thread {
             // either reintroduce an unbounded read or block the connection thread indefinitely if the
             // declared bytes never arrive. Tell the client why, then close the connection outright
             // rather than gamble on realigning the stream.
-            setErrorInTx();
+            setExtendedProtocolError();
             writeError(ERROR_SEVERITY.FATAL, "Postgres bind parameter too large: " + paramSize + " bytes (max "
                 + server.getConfiguration().getValueAsInteger(GlobalConfiguration.POSTGRES_MAX_PARAM_SIZE) + ")", "08P01");
             shutdown = true;
@@ -2299,11 +2392,20 @@ public class PostgresNetworkExecutor extends Thread {
         // The Bind message is already fully consumed off the wire at this point (parameter values and
         // result-format codes), so no drain is needed. Mirror the simple-query fix from #6542/#6457: refuse
         // with an ErrorResponse instead of silently returning, so the client knows this Bind never ran
-        // (issue #6545). errorInTransaction stays set until COMMIT/ROLLBACK/END ends the block.
+        // (issue #6545). errorInTransaction stays set until COMMIT/ROLLBACK/END ends the block, and this
+        // refusal is an ErrorResponse like any other, so it also puts the session into skip-until-Sync -
+        // the Execute that the client already pipelined behind this Bind must not run against whatever
+        // portal happens to still be registered under that name.
+        setExtendedProtocolError();
         writeError(ERROR_SEVERITY.ERROR,
             "current transaction is aborted, commands ignored until end of transaction block", "25P02");
         return;
       }
+
+      if (skipUntilSync)
+        // Discarded until the next Sync, with no reply: the ErrorResponse that opened this state is the only
+        // answer the client is owed for everything up to its Sync.
+        return;
 
       // Store this Bind's own portal under the portal name (which may be empty for unnamed portal) - always,
       // even when portalName equals sourcePreparedStatement, since this is a fresh clone now rather than the
@@ -2351,7 +2453,7 @@ public class PostgresNetworkExecutor extends Thread {
         // still goes out and the client will see the failure.
         drainedCleanly = false;
       }
-      setErrorInTx();
+      setExtendedProtocolError();
       writeError(ERROR_SEVERITY.ERROR, "Error on parsing bind message: " + e.getMessage(), sqlStateFor(e));
       if (!drainedCleanly)
         shutdown = true;
@@ -2421,8 +2523,12 @@ public class PostgresNetworkExecutor extends Thread {
         if (isTransactionEndStatement(abortedUpperCaseText)) {
           if (database.isTransactionActive())
             database.rollback();
-          explicitTransactionStarted = false;
-          errorInTransaction = false;
+          // Clears skipUntilSync as well, so the Bind/Execute the client pipelines behind this Parse (that is
+          // how it sends the recovering statement, and there is no Sync in between - see the #6548 tests) are
+          // not discarded by the state the failure left behind. Accepting the recovery here rather than only
+          // after a Sync is a deliberate leniency of this server over real PostgreSQL, and clearing all three
+          // flags is what makes it complete: half-clearing it answered the Parse and then swallowed its Bind.
+          endTransactionBlockState();
           // Real Postgres treats a COMMIT/END of an aborted transaction the same as ROLLBACK - there is
           // nothing left to commit - so the command tag executeCommand() later writes must read ROLLBACK
           // regardless of which of the three keywords the client actually sent (see queryCommand()).
@@ -2433,6 +2539,13 @@ public class PostgresNetworkExecutor extends Thread {
         }
         return;
       }
+
+      if (skipUntilSync)
+        // Autocommit, and an earlier message in this same pipeline already errored: PostgreSQL discards every
+        // message up to the client's Sync (issue #7775), so this statement must not be parsed, registered or
+        // answered. The aborted-block branch above runs first on purpose - a transaction-end statement is the
+        // one thing that is still accepted, per the note there.
+        return;
 
       if (portal.query.isEmpty()) {
         emptyQueryResponse();
@@ -2451,7 +2564,7 @@ public class PostgresNetworkExecutor extends Thread {
         // the ErrorResponse. bindCommand() already drains a Bind that names a missing prepared statement
         // without resurrecting it (issue #6660), so the rest of this pipelined request is handled the same
         // way it is for any other rejected Parse.
-        setErrorInTx();
+        setExtendedProtocolError();
         writeError(ERROR_SEVERITY.ERROR, ROLLBACK_TO_NOT_SUPPORTED_MESSAGE, PostgresCopyStatement.SQLSTATE_FEATURE_NOT_SUPPORTED);
         return;
       } else if (upperCaseText.startsWith("SET ")) {
@@ -2548,13 +2661,13 @@ public class PostgresNetworkExecutor extends Thread {
       writeMessage("parse complete", null, '1', 4);
 
     } catch (final PostgresCopyStatement.CopyException e) {
-      setErrorInTx();
+      setExtendedProtocolError();
       writeError(ERROR_SEVERITY.ERROR, e.getMessage(), e.sqlState);
     } catch (final CommandParsingException e) {
-      setErrorInTx();
+      setExtendedProtocolError();
       writeError(ERROR_SEVERITY.ERROR, "Syntax error on parsing query: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()), sqlStateFor(e));
     } catch (final Exception e) {
-      setErrorInTx();
+      setExtendedProtocolError();
       writeError(ERROR_SEVERITY.ERROR, "Error on parsing query: " + e.getMessage(), sqlStateFor(e));
     }
   }
@@ -3200,6 +3313,67 @@ public class PostgresNetworkExecutor extends Thread {
   private void setErrorInTx() {
     if (explicitTransactionStarted)
       errorInTransaction = true;
+  }
+
+  /**
+   * Records an ErrorResponse raised while handling an extended-protocol message: the session enters
+   * {@link #skipUntilSync} whatever the transaction state is, and additionally aborts the transaction block when
+   * one is open. Every Parse/Bind/Describe/Execute/Close failure goes through here rather than through
+   * {@link #setErrorInTx()} alone; the simple query protocol ('Q') keeps the latter, since it ends each statement
+   * with its own ReadyForQuery and never forms a multi-statement block for a Sync to discard.
+   */
+  private void setExtendedProtocolError() {
+    skipUntilSync = true;
+    setErrorInTx();
+  }
+
+  /**
+   * Opens the implicit transaction block a run of extended-protocol messages terminated by one Sync forms, when the
+   * client has not opened an explicit one. PostgreSQL rolls that whole block back when any statement in it fails, so
+   * the block has to be a real transaction: without it every write statement opened and committed its own
+   * statement-level implicit transaction ({@code Statement.beginImplicitTransaction}, issue #7096), which made a
+   * failed pipeline - a JDBC {@code executeBatch()}, a psycopg3 pipeline - leave the statements that ran before the
+   * failure behind (issue #7775). An already-active transaction is joined rather than nested, which is what makes the
+   * statement-level one stand down; {@link #syncCommand()} then commits or discards the block as a whole.
+   */
+  private void beginImplicitTransactionBlock() {
+    if (!explicitTransactionStarted && !database.isTransactionActive())
+      database.begin();
+  }
+
+  /**
+   * Discards whatever transaction this connection still holds when its loop ends: a client that disconnects between
+   * an Execute and its Sync - or inside an explicit BEGIN it never ends - would otherwise leave the transaction's
+   * buffered pages and locks behind on a thread that is about to die. Runs on the executor's own thread, where the
+   * transaction lives; {@link #close()} cannot do it, since the cancel-request path calls that from another
+   * connection's thread.
+   */
+  private void rollbackPendingTransaction() {
+    try {
+      if (database != null && database.isTransactionActive())
+        database.rollback();
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "PSQL: error on discarding the transaction of a closing connection", e);
+    }
+  }
+
+  /**
+   * True while an extended-protocol message must not be run: either the backend is discarding messages until the
+   * next Sync, or an explicit transaction block is aborted and stays so until the client ends it.
+   */
+  private boolean skipExtendedProtocolMessage() {
+    return skipUntilSync || errorInTransaction;
+  }
+
+  /**
+   * Clears every trace of a failure, called on the one event that ends a transaction block: the client's own
+   * COMMIT/ROLLBACK/END. {@link #skipUntilSync} goes with the rest - the block those discarded messages belonged
+   * to is over, so the statements the client sends next belong to a new one.
+   */
+  private void endTransactionBlockState() {
+    explicitTransactionStarted = false;
+    errorInTransaction = false;
+    skipUntilSync = false;
   }
 
   private record Query(String language, String query) {
