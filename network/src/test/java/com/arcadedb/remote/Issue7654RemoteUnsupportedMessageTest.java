@@ -164,12 +164,14 @@ class Issue7654RemoteUnsupportedMessageTest {
     return 0;
   }
 
+  /** A type whose schema lookups are mocked, so every refusal below is the method's own, not a missing field. */
   private static RemoteDocumentType newDocumentType() {
     final RemoteDatabase database = mock(RemoteDatabase.class);
     when(database.getSchema()).thenReturn(mock(RemoteSchema.class));
     return new RemoteDocumentType(database, documentTypeRecord());
   }
 
+  /** A property built from a minimal record, enough for every setter on it to reach its own refusal. */
   private static RemoteProperty newProperty() {
     final Map<String, Object> record = new HashMap<>();
     record.put("name", "testProperty");
@@ -178,10 +180,12 @@ class Issue7654RemoteUnsupportedMessageTest {
     return new RemoteProperty(mock(DocumentType.class), record);
   }
 
+  /** A view built from a minimal record: only the fields its constructor dereferences are present. */
   private static RemoteMaterializedView newMaterializedView() {
     return new RemoteMaterializedView(materializedViewRecord());
   }
 
+  /** The server row {@link RemoteDocumentType}'s constructor reads. */
   private static Result documentTypeRecord() {
     final Map<String, Object> values = new HashMap<>();
     values.put("name", "TestType");
@@ -194,6 +198,7 @@ class Issue7654RemoteUnsupportedMessageTest {
     return resultOf(values);
   }
 
+  /** The server row {@link RemoteMaterializedView}'s constructor reads. */
   private static Result materializedViewRecord() {
     final Map<String, Object> values = new HashMap<>();
     values.put("name", "TestView");
@@ -204,6 +209,13 @@ class Issue7654RemoteUnsupportedMessageTest {
     return resultOf(values);
   }
 
+  /**
+   * Mocks a {@link Result} answering {@code values}, the one shape both factories above need.
+   *
+   * @param values the properties the row should carry
+   *
+   * @return a {@link Result} answering them
+   */
   private static Result resultOf(final Map<String, Object> values) {
     final Result record = mock(Result.class);
     when(record.getPropertyNames()).thenReturn(values.keySet());
