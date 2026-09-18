@@ -34,13 +34,13 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Ensure SHA pinned actions
-        uses: zgosalvez/github-actions-ensure-sha-pinned-actions@ca46236c6ce584ae24bc6283ba8dcf4b3ec8a066 # v5.0.4
+        uses: zgosalvez/github-actions-ensure-sha-pinned-actions@60e3a74c7b74a319e8e53e46bc455205f7173e1a # v5.0.8
       - name: Check test database paths
         run: ./.github/scripts/check-test-database-paths.sh
       - name: Run pre-commit
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13.0"
           cache: "pip"
@@ -92,16 +92,16 @@ jobs:
     outputs:
       image-tag: arcadedata/arcadedb:latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+      - name: Set up JDK 21
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
           distribution: "temurin"
-          java-version: 17
+          java-version: 21
 
       - name: Cache local Maven repository
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.m2/repository
           key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
@@ -109,10 +109,10 @@ jobs:
             ${{ runner.os }}-maven-
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
+        uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: Get project version
         id: get-version
@@ -164,13 +164,13 @@ jobs:
       contents: read
       checks: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+      - name: Set up JDK 21
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
           distribution: "temurin"
-          java-version: 17
+          java-version: 21
           cache: "maven"
 
       - name: Download ArcadeDB Maven artifacts
@@ -304,13 +304,13 @@ jobs:
       contents: read
       checks: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+      - name: Set up JDK 21
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
           distribution: "temurin"
-          java-version: 17
+          java-version: 21
           cache: "maven"
 
       - name: Download ArcadeDB Maven artifacts
@@ -405,11 +405,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+      - name: Set up JDK 21
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
           distribution: "temurin"
-          java-version: 17
+          java-version: 21
           cache: "maven"
 
       - name: Download ArcadeDB Maven artifacts
@@ -497,11 +497,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+      - name: Set up JDK 21
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
           distribution: "temurin"
-          java-version: 17
+          java-version: 21
           cache: "maven"
 
       - name: Download ArcadeDB Maven artifacts
@@ -618,13 +618,13 @@ jobs:
       contents: read
       checks: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+      - name: Set up JDK 21
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
           distribution: "temurin"
-          java-version: 17
+          java-version: 21
           cache: "maven"
 
       - name: Download ArcadeDB Maven artifacts
@@ -692,99 +692,17 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  ha-integration-tests:
-    runs-on: ubuntu-latest
-    needs: build-and-package
-    # Defense-in-depth safety net for issue #5973 (livelocked this job for 6h): normal runs finish
-    # in well under 60 minutes.
-    timeout-minutes: 90
-    permissions:
-      contents: read
-      checks: write
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Set up JDK 21
-        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
-        with:
-          distribution: "temurin"
-          java-version: 21
-          cache: "maven"
-
-      - name: Download ArcadeDB Maven artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: arcadedb-maven-artifacts
-          path: /tmp
-
-      - name: Install ArcadeDB Maven artifacts
-        run: |
-          mkdir -p ~/.m2/repository
-          tar -xzf /tmp/arcadedb-m2.tgz -C ~/.m2/repository
-
-      - name: Run HA Integration Tests with Coverage
-        run: ./mvnw verify -DskipTests -Pintegration -Pcoverage  --batch-mode --errors --fail-never --show-version -pl ha-raft
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Check no test leaked a databases/ directory
-        run: ./.github/scripts/check-test-database-paths.sh --runtime
-
-      # See the unit-tests job: the reporter is allowed to fail, the check below is the verdict.
-      - name: HA IT Tests Reporter
-        uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
-        continue-on-error: true
-        if: success() || failure()
-        with:
-          name: HA IT Tests Report
-          path: "**/failsafe-reports/TEST*.xml"
-          list-tests: "failed"
-          list-suites: "failed"
-          reporter: java-junit
-
-      - name: Check test results
-        if: success() || failure()
-        run: ./.github/scripts/check-test-results.py failsafe-reports
-
-      # A red lane has to name the failing test without a re-run. The reporter check run above is
-      # best-effort by design - an API outage makes it a no-op - the per-job log endpoint serves only
-      # runner setup and cleanup while any job of the run is still in flight, and nothing else this lane
-      # uploads carries a per-test verdict. The report XML is exactly the answer to "which test failed",
-      # so it is kept whenever the lane goes red (issue #6322).
-      - name: Upload HA integration test reports
-        if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: ha-integration-test-reports
-          path: |
-            **/surefire-reports/TEST*.xml
-            **/failsafe-reports/TEST*.xml
-          # A step that failed before Maven wrote any report has nothing to keep, and the red already
-          # belongs to that step: an empty match here must not add a second, misleading failure.
-          if-no-files-found: ignore
-          retention-days: 7
-
-      - name: Upload HA integration test coverage reports
-        if: success() || failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: ha-integration-coverage-reports
-          path: |
-            **/jacoco*.xml
-          if-no-files-found: error
-          retention-days: 1
-
   builder-tests:
     runs-on: ubuntu-latest
     needs: build-and-package
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+      - name: Set up JDK 21
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
           distribution: "temurin"
-          java-version: 17
+          java-version: 21
           cache: "maven"
 
       - name: Download ArcadeDB Maven artifacts
@@ -814,13 +732,13 @@ jobs:
       contents: read
       checks: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+      - name: Set up JDK 21
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
           distribution: "temurin"
-          java-version: 17
+          java-version: 21
           cache: "maven"
 
       - name: Download ArcadeDB Maven artifacts
@@ -888,10 +806,10 @@ jobs:
       contents: read
       checks: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Node
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           # Node 24.9+ required: testcontainers@12 pulls archiver@8 (pure ESM), and
           # Jest's require(ESM) bridge only works on Node 24.9+ (synchronous vm module APIs).
@@ -911,7 +829,7 @@ jobs:
       - name: E2E Node.js Tests
         working-directory: e2e-js
         run: |
-          npm install
+          npm ci
           npm test
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1039,10 +957,10 @@ jobs:
       contents: read
       checks: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Node
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
           cache: "npm"
@@ -1060,7 +978,7 @@ jobs:
       - name: Install Playwright Browsers
         working-directory: e2e-studio
         run: |
-          npm install
+          npm ci
           npm run install-browsers
 
       - name: E2E Studio Tests
@@ -1100,10 +1018,10 @@ jobs:
       contents: read
       checks: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13.0"
           cache: "pip"
@@ -1161,10 +1079,10 @@ jobs:
       contents: read
       checks: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up .NET
-        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7 # v5.2.0
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: "10.0"
           cache: true
@@ -1219,10 +1137,10 @@ jobs:
       contents: read
       checks: write
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Go
-        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           # Track the module's go directive so the toolchain always matches
           # go.mod instead of a hardcoded version that can drift after dep bumps.
@@ -1284,12 +1202,17 @@ jobs:
   # `needs` must list every job whose coverage is downloaded below. It is not an optimisation: a
   # download only sees artifacts already uploaded, so a producer missing from this list is a race
   # the merge loses whenever that job is the slow one. ha-integration-tests was missing here and
-  # takes ~55 minutes - the longest job in the workflow - so its reports were usually absent and
+  # took ~80 minutes - the longest job in the workflow - so its reports were usually absent and
   # the whole ha-raft module was published as uncovered (#5701). check-workflow-artifact-deps.py
   # in the lint job now enforces the rule for every workflow.
+  #
+  # That lane has since moved to its own nightly workflow (ha-integration-tests.yml), so ha-raft
+  # coverage is no longer part of this merge at all. Not the #5701 race returning: this is a constant,
+  # deliberate absence rather than an intermittent one, and an artifact cannot cross runs, so restoring
+  # it means publishing from that workflow rather than adding a download back here.
   coverage-report:
     runs-on: ubuntu-latest
-    needs: [ unit-tests, integration-tests, slow-unit-tests, vector-unit-tests, opencypher-tck-tests, ha-integration-tests ]
+    needs: [ unit-tests, integration-tests, slow-unit-tests, vector-unit-tests, opencypher-tck-tests ]
     # Coverage is still worth publishing when a suite reported failing tests: the suites run with
     # --fail-never, so JaCoCo writes its report and the job records the failure afterwards.
     #
@@ -1298,10 +1221,11 @@ jobs:
     # missing artifact would only add a second red check to an already-red build. Skipping keeps
     # the collector's failure meaning what it says: a suite that should have uploaded, and did not.
     #
-    # This reads any one skipped suite as "none of them ran", which holds because all six hang off
+    # This reads any one skipped suite as "none of them ran", which holds because all five hang off
     # build-and-package and so skip together. Give one of them a path filter or a condition of its
-    # own and that stops being true: the other five would still have coverage worth publishing,
-    # and this condition would drop it. Revisit here if a suite ever gains its own gate.
+    # own and that stops being true: the other four would still have coverage worth publishing,
+    # and this condition would drop it. Revisit here if a suite ever gains its own gate. That is the
+    # reason ha-integration-tests left this workflow entirely rather than gaining an `if:` here.
     #
     # vector-unit-tests and opencypher-tck-tests carry engine coverage that used to arrive inside
     # unit-tests. They are listed here, in the downloads, and in the collector call for that reason:
@@ -1313,10 +1237,9 @@ jobs:
       && needs.slow-unit-tests.result != 'skipped'
       && needs.vector-unit-tests.result != 'skipped'
       && needs.opencypher-tck-tests.result != 'skipped'
-      && needs.integration-tests.result != 'skipped'
-      && needs.ha-integration-tests.result != 'skipped' }}
+      && needs.integration-tests.result != 'skipped' }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # continue-on-error keeps a missing artifact from failing the step with a bare "Artifact not
       # found", so the collector below can report which suite is missing and why it matters.
@@ -1357,13 +1280,6 @@ jobs:
           path: integration-coverage
 
 
-      - name: Download HA integration test coverage reports
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        continue-on-error: true
-        with:
-          name: ha-integration-coverage-reports
-          path: ha-integration-coverage
-
       # Fails when a suite contributed no report, so nothing downstream publishes a merge that is
       # missing a module. The steps below deliberately carry no `if`, so they are skipped on failure.
       - name: Get coverage files
@@ -1374,8 +1290,7 @@ jobs:
             slow-unit-tests=slow-unit-coverage \
             vector-unit-tests=vector-unit-coverage \
             opencypher-tck-tests=opencypher-tck-coverage \
-            integration-tests=integration-coverage \
-            ha-integration-tests=ha-integration-coverage
+            integration-tests=integration-coverage
 
       - name: Codacy coverage reporter
         uses: codacy/codacy-coverage-reporter-action@89d6c85cfafaec52c72b6c5e8b2878d33104c699 # v1.3.0
@@ -1385,7 +1300,7 @@ jobs:
           coverage-reports: ${{ steps.coverage-files-generator.outputs.COVERAGE_FILES }}
 
       - name: Upload coverage reports to Codecov
-        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6.0.0
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           fail_ci_if_error: false
           disable_search: true
@@ -1421,7 +1336,6 @@ jobs:
       - vector-unit-tests
       - opencypher-tck-tests
       - integration-tests
-      - ha-integration-tests
       - builder-tests
       - java-e2e-tests
       - js-e2e-tests

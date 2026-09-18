@@ -1,0 +1,124 @@
+# HA integration tests, on a schedule rather than on every push.
+#
+# This lane lived in `Java CI - test` until now, where it ran on every pull_request and every push to
+# main with no condition of its own. It is the longest job in the project - 31 completed runs over
+# 2026-09-17/18 averaged 80m01s (median 79m38s, range 77m21s-85m18s), against a repository that takes
+# 50-100 commits a day - and it gates nothing: every one of those 31 runs was red, so no merge decision
+# has been made on its verdict for as long as the sample goes back. Eighty minutes of runner time per
+# push, spent on an answer nobody could act on.
+#
+# Split out here rather than given an `if:` inside `mvn-test.yml`, because a job skipped in place there
+# is worse than one that never ran:
+#
+#   * `ci-status` treats every `needs` result that is not `success` as a failure, and a skipped job
+#     reports `skipped` - so guarding it in place would have turned the single required check red on
+#     every pull request.
+#   * `coverage-report`'s condition reads any one skipped suite as "none of them ran", which holds only
+#     while all six skip together. Its own comment says so: "Give one of them a path filter or a
+#     condition of its own and that stops being true."
+#
+# Both are lists this workflow simply is not in, so neither problem arises.
+#
+# WHAT THIS COSTS: an HA regression can now sit unnoticed for up to a day, and the bisect range is a
+# night of commits rather than one. That is the deliberate trade. `workflow_dispatch` is kept so an HA
+# change can be verified on demand before it merges, and a path-filtered `pull_request` trigger on
+# `ha-raft/**` is the obvious thing to add back - but not while the lane is red on every run, because a
+# check that always fails teaches reviewers to ignore it, which is the state this is leaving.
+name: HA Integration Tests
+
+on:
+  schedule:
+    # 06:23 UTC = 02:23 EDT / 01:23 EST, night in US Eastern year-round (cron has no DST). Off the hour
+    # on purpose: GitHub queues scheduled workflows hardest at :00, and a delayed start on an 80-minute
+    # job is time the runner is holding rather than working.
+    - cron: "23 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ha-integration-tests:
+    runs-on: ubuntu-latest
+    # Defense-in-depth safety net for issue #5973, which livelocked this job for 6 hours. Raised from 90
+    # to 120: a normal run finishes in ~80 minutes, but a slow runner has been seen taking 90m15s, and at
+    # 90 that run was killed mid-suite and reported as `cancelled` - which hides the list of tests that
+    # actually failed behind a word that reads like somebody pressed a button. 120 keeps the livelock net
+    # while leaving the failure list intact.
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: "temurin"
+          java-version: 21
+          cache: "maven"
+
+      # In `mvn-test.yml` this lane downloaded `arcadedb-maven-artifacts` from `build-and-package`. There
+      # is no such producer here, and `check-workflow-artifact-deps.py` rightly refuses a download whose
+      # producer it cannot find in the same workflow, so the modules are installed directly. One build of
+      # the reactor against an 80-minute test run is not a cost worth a second job to avoid.
+      - name: Install ArcadeDB modules
+        run: ./mvnw clean install -DskipTests --batch-mode --errors --show-version
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # `-Pcoverage` is deliberately absent, where the shared workflow had it. Its only consumer was
+      # `coverage-report`, which lives in `mvn-test.yml` and cannot read an artifact from another run, so
+      # generating a JaCoCo report here would be work nothing reads. The visible consequence is stated in
+      # this PR rather than papered over: the merged coverage published by `mvn-test.yml` no longer
+      # includes the ha-raft module, so Codecov records a one-time drop of whatever this lane covered.
+      # That is the same SHAPE as issue #5701 - ha-raft missing from the merge - but not the same bug:
+      # #5701 was a race that dropped it silently and intermittently, this is a deliberate, constant
+      # absence. Wiring it back means having this workflow publish its own report, not restoring a
+      # cross-run download, which is not a thing GitHub artifacts do.
+      - name: Run HA Integration Tests
+        run: ./mvnw verify -DskipTests -Pintegration --batch-mode --errors --fail-never --show-version -pl ha-raft
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check no test leaked a databases/ directory
+        run: ./.github/scripts/check-test-database-paths.sh --runtime
+
+      # See the unit-tests job in mvn-test.yml: the reporter is allowed to fail, the check below is the
+      # verdict.
+      - name: HA IT Tests Reporter
+        uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
+        continue-on-error: true
+        if: success() || failure()
+        with:
+          name: HA IT Tests Report
+          path: "**/failsafe-reports/TEST*.xml"
+          list-tests: "failed"
+          list-suites: "failed"
+          reporter: java-junit
+
+      - name: Check test results
+        if: success() || failure()
+        run: ./.github/scripts/check-test-results.py failsafe-reports
+
+      # A red lane has to name the failing test without a re-run. The reporter check run above is
+      # best-effort by design - an API outage makes it a no-op - the per-job log endpoint serves only
+      # runner setup and cleanup while any job of the run is still in flight, and nothing else this lane
+      # uploads carries a per-test verdict. The report XML is exactly the answer to "which test failed",
+      # so it is kept whenever the lane goes red (issue #6322). It matters more here than it did in the
+      # shared workflow: nobody is watching a nightly at 02:23, so the artifact IS the report.
+      - name: Upload HA integration test reports
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ha-integration-test-reports
+          path: |
+            **/surefire-reports/TEST*.xml
+            **/failsafe-reports/TEST*.xml
+          # A step that failed before Maven wrote any report has nothing to keep, and the red already
+          # belongs to that step: an empty match here must not add a second, misleading failure.
+          if-no-files-found: ignore
+          # 7 days in the shared workflow, 30 here. A nightly is read days after it ran, and a run that
+          # expired before anyone opened it answers nothing.
+          retention-days: 30
