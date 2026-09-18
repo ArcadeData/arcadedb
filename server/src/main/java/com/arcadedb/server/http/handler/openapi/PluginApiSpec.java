@@ -386,8 +386,13 @@ public class PluginApiSpec implements OpenApiContributor {
         "400", "401", "403", "500");
     responses.addApiResponse("409", SpecBuilders.errorResponse(
         "This node is not the Raft leader; the answer names the one it believes leads"));
-    responses.addApiResponse("503", SpecBuilders.errorResponse(
-        "The seed ran but one or more documents did not commit, or it could not be run at all"));
+    // The partial-seed 503 carries the SAME body as the 200 - upToDate/seeded/failedSeeds - and failedSeeds is
+    // the part a client acts on, so declaring a generic error here hid the one field that matters
+    // (CodeRabbit on PR #7854). The other 503 this route can answer, "the seed could not be run at all", puts
+    // its reason in `error`, which the schema carries as an optional property rather than a second shape.
+    responses.addApiResponse("503", SpecBuilders.jsonResponse(
+        "The seed ran but one or more documents did not commit (see failedSeeds), or it could not be run at all "
+            + "(see error)", "SecuritySeedResponse"));
     post.setResponses(responses);
 
     final PathItem pathItem = new PathItem();
@@ -866,7 +871,12 @@ public class PluginApiSpec implements OpenApiContributor {
     schema.addProperty("seeded", SpecBuilders.bool("True when the documents were submitted to the cluster"));
     schema.addProperty("failedSeeds", SpecBuilders.arrayOf(SpecBuilders.string("Document name"),
         "The documents that did not commit, empty when all of them did"));
-    schema.setRequired(List.of("upToDate", "seeded", "failedSeeds"));
+    schema.addProperty("error", SpecBuilders.string(
+        "Why the seed could not be run or its outcome could not be read. Present only on the 503 that carries "
+            + "no failedSeeds, since in that case which documents failed is exactly what is not known."));
+    // failedSeeds is not required: the "could not be run at all" 503 names the reason in `error` instead, and
+    // claiming an empty list there would tell a client that nothing failed.
+    schema.setRequired(List.of("seeded"));
     return schema;
   }
 

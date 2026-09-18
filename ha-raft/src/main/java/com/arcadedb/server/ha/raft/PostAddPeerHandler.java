@@ -104,10 +104,15 @@ public class PostAddPeerHandler extends AbstractServerHttpHandler {
           .orElseGet(() -> httpServer.getServer().getSecurity().seedSecurityStateClusterWide(
               httpServer.getServer().getConfiguration()
                   .getValueAsLong(GlobalConfiguration.HA_SECURITY_SEED_RETRY_TIMEOUT)));
-    } catch (final IOException e) {
+    } catch (final IOException | IllegalStateException e) {
       // The peer IS a committed member by now, so this must not be answered as a failed add. What is unknown is
       // the seed, and "unknown" is reported as a failure of all three rather than as none: a 503 naming them
       // tells the operator to reissue, which is the action that repairs it either way.
+      //
+      // IllegalStateException as well as IOException (CodeRabbit on PR #7854): the first is what
+      // seedSecurityNowAndReport raises when the seed could not be run or its outcome could not be read, and on
+      // the leader that call is reached directly rather than over HTTP - so it is the LOCAL path's version of
+      // exactly the same "the membership change stands, the seed is unknown" case.
       LogManager.instance().log(this, Level.SEVERE,
           "Peer '%s' was added but the leader could not be asked to seed the security documents: %s. It is a "
               + "cluster member serving requests against its own copy of them; re-POST the peer to retry the seed",

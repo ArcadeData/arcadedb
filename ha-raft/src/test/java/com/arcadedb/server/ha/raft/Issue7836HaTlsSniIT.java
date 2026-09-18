@@ -49,6 +49,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <li>a name NOT in the SAN changes nothing about what the listener presents - so it would be refused by a
  * client that verifies, which {@link Issue7836HaTlsWrongCertificateNameIT} shows happening.</li>
  * </ul>
+ * Each test asserts the {@code server_name} extension was actually sent before asserting what came back, so
+ * neither can pass against a dial that stopped setting SNI (CodeRabbit on PR #7854).
  * Tagged {@code slow}: it generates a certificate authority with {@code keytool} and starts a cluster with two
  * listeners per node.
  *
@@ -109,6 +111,9 @@ class Issue7836HaTlsSniIT extends BaseRaftHASslTest {
         getServer(0).getHttpServer().getHttpsPort(), ALIAS_NAME, false)) {
       socket.startHandshake();
 
+      assertThat(RaftTestPki.requestedServerNames(socket))
+          .as("the dial must actually carry the server_name extension, or the rest asserts nothing about SNI")
+          .containsExactly(ALIAS_NAME);
       assertThat(RaftTestPki.peerSubjectAlternativeNames(socket))
           .as("the identity served for SNI '%s' must certify it", ALIAS_NAME)
           .contains(ALIAS_NAME, "localhost");
@@ -127,6 +132,9 @@ class Issue7836HaTlsSniIT extends BaseRaftHASslTest {
         getServer(0).getHttpServer().getHttpsPort(), FOREIGN_NAME, false)) {
       socket.startHandshake();
 
+      assertThat(RaftTestPki.requestedServerNames(socket))
+          .as("the foreign name really was asked for")
+          .containsExactly(FOREIGN_NAME);
       assertThat(RaftTestPki.peerSubjectAlternativeNames(socket))
           .as("a single-keystore listener answers every SNI with the same identity")
           .contains("localhost", ALIAS_NAME)

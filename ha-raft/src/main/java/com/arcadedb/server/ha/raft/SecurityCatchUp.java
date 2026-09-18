@@ -84,6 +84,18 @@ final class SecurityCatchUp implements AutoCloseable {
 
   /** How long the once-per-start request waits for this node to finish catching up before asking anyway. */
   private static final long CATCH_UP_WAIT_MS      = 30_000L;
+  /**
+   * How many times a request that failed for a transient reason is retried, and the wait before the first
+   * retry (doubled each time).
+   * <p>
+   * Without this the once-per-start request was spent whether or not it SUCCEEDED (CodeRabbit on PR #7854):
+   * the latch was taken before the work ran, so a leader that was not resolvable for a moment, or a connection
+   * refused while the leader was still binding its listener, burned the attempt for the lifetime of the node.
+   * On a quiet cluster - one where no security change and no snapshot install follows - that leaves a member
+   * serving the users, groups and tokens it came back with, which is the whole of issue #7833.
+   */
+  private static final int  TRANSIENT_ATTEMPTS    = 4;
+  private static final long TRANSIENT_BACKOFF_MS  = 2_000L;
   /** Poll period of that wait. Short: it is a local read of two longs. */
   private static final long CATCH_UP_POLL_MS      = 200L;
 
@@ -118,6 +130,17 @@ final class SecurityCatchUp implements AutoCloseable {
   }
 
   /**
+   * Re-arms the once-per-start request, so the NEXT leader this node observes asks again.
+   * <p>
+   * Called when the request could not be completed for a transient reason after its own retries are spent. The
+   * latch exists to stop a re-election on a healthy node from dialling, not to make one unlucky moment
+   * permanent.
+   */
+  private void rearm() {
+    requestedSinceStart.set(false);
+  }
+
+  /**
    * A leader-initiated snapshot install has just finished. This is the catch-up path that provably skips the
    * security entries, so the request is made every time rather than once.
    */
@@ -137,13 +160,46 @@ final class SecurityCatchUp implements AutoCloseable {
 
   private void run(final ArcadeDBServer server, final RaftHAServer raft, final String reason,
       final boolean waitForCatchUp) {
+    long backoffMs = TRANSIENT_BACKOFF_MS;
+    for (int attempt = 1; ; attempt++) {
+      if (attemptOnce(server, raft, reason, waitForCatchUp && attempt == 1))
+        return;
+
+      if (attempt >= TRANSIENT_ATTEMPTS) {
+        // Out of attempts, and the node is still a follower holding documents nobody is going to send it. The
+        // once-per-start latch is released so the next leader this node sees asks again, rather than the gap
+        // lasting until a snapshot install, a replicated change, or an operator notices.
+        rearm();
+        LogManager.instance().log(this, Level.WARNING,
+            "Gave up asking the leader to check this node's security documents after %s (%d attempts); the next "
+                + "leader change will try again", reason, TRANSIENT_ATTEMPTS);
+        return;
+      }
+
+      try {
+        Thread.sleep(backoffMs);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        rearm();
+        return;
+      }
+      backoffMs *= 2;
+    }
+  }
+
+  /**
+   * One attempt. {@code true} when the question was answered - including "this node leads, so there is nobody
+   * to ask" - and {@code false} when it failed for a reason a later attempt might not hit.
+   */
+  private boolean attemptOnce(final ArcadeDBServer server, final RaftHAServer raft, final String reason,
+      final boolean waitForCatchUp) {
     try {
       if (waitForCatchUp)
         awaitCatchUp(raft);
 
       final HAServerPlugin ha = server.getHA();
       if (!(ha instanceof final RaftHAPlugin plugin))
-        return;
+        return true;
       if (plugin.isLeader()) {
         // The leader IS the reference this request compares against, so there is nobody to ask - including in
         // the window this catches: a node that finished a snapshot install, or restarted, and then won the
@@ -163,7 +219,7 @@ final class SecurityCatchUp implements AutoCloseable {
                 + "validate its %s, %s and %s against - they are the cluster's reference from here. Re-issue the "
                 + "security changes if this node's config directory was restored out of band", reason,
             "server-users.jsonl", "server-groups.json", "server-api-tokens.json");
-        return;
+        return true;
       }
 
       final List<String> failed = ClusterSecuritySeedQuery.seedForCatchUp(server, plugin, reason);
@@ -176,12 +232,19 @@ final class SecurityCatchUp implements AutoCloseable {
                 + "commit: %s. Until they do, this node serves requests against its own copy of them - which can "
                 + "still hold a user dropped, a group narrowed or a token revoked while it was away. Re-POST this "
                 + "node to %s on any member to retry", reason, String.join(", ", failed), "/api/v1/cluster/peer");
+      // Answered, whether or not every document committed: a partial failure is the leader's report, not a
+      // transport failure, and retrying it here would submit the same documents again.
+      return true;
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return true;
     } catch (final Exception e) {
-      // Best effort by contract: this runs on a background worker with no caller, and a node that cannot reach
-      // the leader right now is a node whose next restart - or next replicated security change - covers it.
-      LogManager.instance().log(this, Level.WARNING,
+      // Transient by assumption - an unresolvable leader, a refused connection, a timeout - so the caller
+      // retries. What is NOT retried is a leader that answered: see the return above.
+      LogManager.instance().log(this, Level.FINE,
           "Could not ask the leader to bring this node's security documents back in step after %s: %s", reason,
           e.getMessage());
+      return false;
     }
   }
 

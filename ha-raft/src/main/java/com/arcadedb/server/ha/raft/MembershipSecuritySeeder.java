@@ -79,6 +79,16 @@ import java.util.logging.Level;
  */
 public class MembershipSecuritySeeder implements AutoCloseable {
 
+  /**
+   * How recently a finished seed may have finished to answer a request instead of a new seed being run.
+   * <p>
+   * Sized as the round trip the duplicate comes from: the admitting node issues its request as soon as
+   * {@code addPeer} returns, so the gap it has to cover is one HTTP call on a cluster network. Generous enough
+   * to absorb a slow one, short enough that an unrelated request - a node's own catch-up, an operator
+   * re-POSTing a peer minutes later - gets a fresh seed rather than a stale answer.
+   */
+  static final long REUSE_WINDOW_MS = 5_000L;
+
   private final BooleanSupplier  isLeader;
   private final LongSupplier     retryBudgetMs;
   private final SecuritySeed     seed;
@@ -112,6 +122,22 @@ public class MembershipSecuritySeeder implements AutoCloseable {
    * why this fold does not need a second seed to be correct.
    */
   private       CompletableFuture<List<String>> outstandingSeed;
+  /**
+   * The seed that finished most recently, and when, or {@code null} before the first one. Guarded by
+   * {@code this}.
+   * <p>
+   * The fold above only catches a request that arrives while a seed is still outstanding. An admitting node's
+   * request can also arrive just AFTER the membership change's seed finished - it is a round trip behind the
+   * configuration entry - and that would schedule a second seed for the same admission, which is the duplicate
+   * issue #7834 is about (CodeRabbit on PR #7854). A seed that finished moments ago is reported instead.
+   * <p>
+   * <b>Reusing it is sound for the same reason the fold is.</b> A seed carries the security documents as they
+   * are when it runs, and membership is not one of them, so a run that finished just before the request is the
+   * same document set a run started just after it would have submitted. {@link #REUSE_WINDOW_MS} bounds how
+   * far back that argument is allowed to reach.
+   */
+  private       CompletableFuture<List<String>> lastCompletedSeed;
+  private       long                            lastCompletedSeedAt;
 
   /**
    * Production form: seeds on a dedicated single daemon worker.
@@ -249,10 +275,27 @@ public class MembershipSecuritySeeder implements AutoCloseable {
    *                               "nothing failed" from a seed that never happened
    */
   public List<String> seedNowAndReport(final long timeoutMs) {
+    synchronized (this) {
+      // A seed that finished moments ago answers this request; see lastCompletedSeed for why that is the same
+      // answer a new one would produce.
+      if (lastCompletedSeed != null && System.currentTimeMillis() - lastCompletedSeedAt <= REUSE_WINDOW_MS
+          && (outstandingSeed == null || outstandingSeed.isDone())) {
+        LogManager.instance().log(this, Level.FINE,
+            "A cluster security seed finished %dms ago; reporting its outcome instead of running a second one",
+            System.currentTimeMillis() - lastCompletedSeedAt);
+        return report(lastCompletedSeed, timeoutMs);
+      }
+    }
+
     final CompletableFuture<List<String>> seed = schedule("a request from the node that admitted a peer");
     if (seed == null)
       throw new IllegalStateException("the security seed could not be scheduled; this node may be stopping");
 
+    return report(seed, timeoutMs);
+  }
+
+  /** Waits for {@code seed} and turns every way that can fail into the one exception this class reports. */
+  private static List<String> report(final CompletableFuture<List<String>> seed, final long timeoutMs) {
     try {
       return seed.get(Math.max(1L, timeoutMs), TimeUnit.MILLISECONDS);
     } catch (final InterruptedException e) {
@@ -315,6 +358,7 @@ public class MembershipSecuritySeeder implements AutoCloseable {
     try {
       final List<String> failed = seed.seed(retryBudgetMs.getAsLong());
       result.complete(List.copyOf(failed));
+      recordCompletion(result);
       if (failed.isEmpty())
         // "Committed", not "the peer now holds them": what the submit waits for is a Raft commit, which a
         // quorum satisfies. The joining peer applies the entries when it catches up, and nothing here observes
@@ -338,6 +382,7 @@ public class MembershipSecuritySeeder implements AutoCloseable {
       // completed with it rather than only logged, because seedNowAndReport has a caller that must not read
       // "nothing failed" from a seed that threw.
       result.completeExceptionally(t);
+      // Deliberately NOT recorded for reuse: an admission must not be answered by a seed that threw.
       LogManager.instance().log(this, Level.SEVERE,
           "The security seed run for %s could not be run at all: %s. The peer(s) it was for are cluster "
               + "members serving requests against their own security documents", t, reason, t.getMessage());
@@ -355,6 +400,21 @@ public class MembershipSecuritySeeder implements AutoCloseable {
   // @VisibleForTesting
   CompletableFuture<List<String>> scheduleForTest(final String reason) {
     return schedule(reason);
+  }
+
+  /** Publishes a finished seed for {@link #REUSE_WINDOW_MS}, so a request a round trip behind it is answered. */
+  private synchronized void recordCompletion(final CompletableFuture<List<String>> result) {
+    lastCompletedSeed = result;
+    lastCompletedSeedAt = System.currentTimeMillis();
+  }
+
+  /**
+   * Drops the retained result, so the next request runs a fresh seed. Test seam: it is what
+   * {@link #REUSE_WINDOW_MS} passing does, without the test waiting for it.
+   */
+  // @VisibleForTesting
+  synchronized void forgetCompletedSeedForTest() {
+    lastCompletedSeed = null;
   }
 
   /** The peers of the last configuration observed, or {@code null} before the first one. Test seam. */
@@ -377,6 +437,7 @@ public class MembershipSecuritySeeder implements AutoCloseable {
     synchronized (this) {
       pending = outstandingSeed;
       outstandingSeed = null;
+      lastCompletedSeed = null;
     }
     if (pending != null)
       pending.completeExceptionally(new IllegalStateException("this node is stopping; the security seed was abandoned"));
