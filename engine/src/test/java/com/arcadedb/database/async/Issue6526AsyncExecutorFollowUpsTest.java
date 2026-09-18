@@ -479,18 +479,25 @@ class Issue6526AsyncExecutorFollowUpsTest extends TestHelper {
         final List<Throwable> taskErrors = new CopyOnWriteArrayList<>();
         async.onError(taskErrors::add);
 
+        // Counted down after the producer's first accepted task (CodeRabbit review): without this, the producer
+        // thread could still be waiting for its first OS scheduling slice when the churn loop below finishes,
+        // leaving scheduled/executed both at 0 and every assertion in this repeat vacuously true.
+        final CountDownLatch producerScheduledOnce = new CountDownLatch(1);
         final AtomicBoolean stop = new AtomicBoolean();
         final Thread producer = new Thread(() -> {
           while (!stop.get()) {
             try {
-              if (async.scheduleTask(async.getSlot(3), new CountingTask(executed, completed), true, 0))
+              if (async.scheduleTask(async.getSlot(3), new CountingTask(executed, completed), true, 0)) {
                 scheduled.incrementAndGet();
+                producerScheduledOnce.countDown();
+              }
             } catch (final Throwable e) {
               producerFailures.add(e);
             }
           }
         }, "issue7841-bucket-producer-" + repeat);
         producer.start();
+        assertThat(producerScheduledOnce.await(30, TimeUnit.SECONDS)).as("repeat %d", repeat).isTrue();
 
         try {
           for (int churn = 0; churn < 20; churn++) {

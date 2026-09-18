@@ -840,11 +840,22 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         // other cross-slot hand-off in this class already uses - offerWaiting()'s stalled-queue detection still
         // throws rather than hanging forever if the target genuinely wedges, and offerHelping() keeps this
         // worker's OWN queue (and this same drain loop, via helpDeferredTasks) moving while it waits.
+        //
+        // Retried up to 3 times, not trusted on the first exception (CodeRabbit review): scheduleTask() throws
+        // for two different reasons here - a genuine terminal close (executorThreads nulled, checked before
+        // each attempt) or a live peer that merely stalled long enough to trip that same stall detector. Only
+        // the first means there is truly nowhere to hand this task; the second means getBestSlot()'s pick over
+        // the (possibly changed) queue sizes on the next attempt might land on a different, unstalled worker,
+        // so it is worth retrying rather than completing a task the executor could still run. Bounded rather
+        // than unconditional so a pool that is genuinely, permanently wedged does not turn this drain into an
+        // unbounded wait of its own.
         boolean rescheduled = false;
-        try {
-          rescheduled = getOwner().scheduleTask(-1, leftover, true, 0);
-        } catch (final Throwable e) {
-          // No live pool to hand it to - fall through to completed() below.
+        for (int attempt = 0; !rescheduled && attempt < 3 && executorThreads != null; attempt++) {
+          try {
+            rescheduled = getOwner().scheduleTask(-1, leftover, true, 0);
+          } catch (final Throwable e) {
+            // Stalled, not necessarily closed - loop around for another attempt, or fall through below.
+          }
         }
         if (rescheduled)
           continue;
