@@ -631,7 +631,8 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
    * Where a remote shutdown is dialled: the peer's HTTPS endpoint when SSL is enabled and
    * {@link PeerDialAddress} resolved one, its plain-HTTP endpoint otherwise.
    * <p>
-   * This dial relays the cluster token in an {@code Authorization: Bearer} header, and until issue #7563 it
+   * This dial relays the cluster token in the {@code X-ArcadeDB-Cluster-Token} header (issue #7837; it used to
+   * be an unauthenticatable {@code Authorization: Bearer}), and until issue #7563 it
    * was hardcoded to {@code http://} - so on a cluster with {@code arcadedb.ssl.enabled} set it was one of
    * the two peer-to-peer dials still putting that token on the wire in clear text. The rule here is the one
    * every sibling applies ({@code LeaderDial}, {@code SnapshotInstaller}, {@link PeerCapabilityQuery},
@@ -759,10 +760,13 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
    */
   // @VisibleForTesting
   static RaftPeerId resolveShutdownTarget(final RaftHAServer raft, final String serverName) {
+    if (serverName == null || serverName.isEmpty())
+      throw new ServerException("Cannot shut down a server without naming it");
+
     final List<RaftPeerId> matches = new ArrayList<>();
     for (final var peer : raft.getRaftGroup().getPeers()) {
       final String httpAddr = raft.getHttpAddresses().get(peer.getId());
-      if (httpAddr != null && (peer.getId().toString().contains(serverName) || httpAddr.contains(serverName)))
+      if (httpAddr != null && (namesPeer(peer.getId().toString(), serverName) || namesPeer(httpAddr, serverName)))
         matches.add(peer.getId());
     }
     if (matches.isEmpty())
@@ -771,6 +775,38 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
       throw new ServerException("Server name '" + serverName + "' matches " + matches.size() + " peers " + matches
           + "; name one of them exactly");
     return matches.getFirst();
+  }
+
+  /**
+   * Whether {@code candidate} - a peer id ({@code host_raftPort}) or a declared address ({@code host:port}) -
+   * is the thing an operator named when they typed {@code serverName}.
+   * <p>
+   * The name has to be a <b>whole name</b>, not any substring. A plain {@code contains} was the previous rule
+   * and it shuts down the wrong node: in a cluster of {@code arcadedb-10} and {@code arcadedb-2},
+   * {@code shutdown arcadedb-1} is a substring of exactly ONE peer, so the ambiguity guard sees nothing to
+   * refuse and stops {@code arcadedb-10} (claude-review on PR #7854). The ambiguity guard only ever covered
+   * the case where the mistake happens to hit two peers at once; this covers the case where it hits one.
+   * <p>
+   * "Whole name" means the candidate either IS the name, or continues past it with a character that ends a
+   * name rather than extends one: {@code .} between DNS labels, {@code _} before a peer id's Raft port,
+   * {@code :} before an address's port. So {@code arcadedb-1} still names {@code arcadedb-1_2435},
+   * {@code arcadedb-1:2481} and the Kubernetes {@code arcadedb-1.arcadedb.ns.svc.cluster.local} - the
+   * shorthand an operator actually types - and no longer names {@code arcadedb-10} anything.
+   * <p>
+   * {@code -} is deliberately NOT a boundary: it is an ordinary character inside a DNS label, and treating it
+   * as one would make {@code arcadedb} name every pod of a StatefulSet. That would be refused as ambiguous
+   * rather than acted on, so it is safe either way - but "no such server" is the clearer answer to a name that
+   * is not a server's name.
+   */
+  // @VisibleForTesting
+  static boolean namesPeer(final String candidate, final String serverName) {
+    if (candidate == null || !candidate.startsWith(serverName))
+      return false;
+    if (candidate.length() == serverName.length())
+      return true;
+
+    final char next = candidate.charAt(serverName.length());
+    return next == '.' || next == '_' || next == ':';
   }
 
   /**

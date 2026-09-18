@@ -28,9 +28,8 @@ import java.util.logging.Level;
  * The one line a cluster gets when {@code arcadedb.ssl.enabled} is set and a peer-to-peer dial still has to go
  * out over the plain listener, because no {@code https} endpoint resolves for the peer it is reaching.
  * <p>
- * Every such dial carries the cluster token - {@code X-ArcadeDB-Cluster-Token} on the probes, an
- * {@code Authorization} header on the shutdown command - so that fallback puts a shared secret on the wire in
- * clear text. Falling back rather than refusing is deliberate and is the package-wide rule: the plain listener
+ * Every such dial carries the cluster token in the {@code X-ArcadeDB-Cluster-Token} header, the shutdown
+ * command included since issue #7837 - so that fallback puts a shared secret on the wire in clear text. Falling back rather than refusing is deliberate and is the package-wide rule: the plain listener
  * is the one that is always bound, and an SSL cluster that never declared the optional 5th field of
  * {@code arcadedb.ha.serverList} would otherwise be unable to bootstrap, resync or be administered at all. But
  * silence is not part of that rule, and it was: an operator who believes the cluster is encrypted end to end
