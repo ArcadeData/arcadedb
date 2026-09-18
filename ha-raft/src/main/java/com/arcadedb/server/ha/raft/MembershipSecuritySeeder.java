@@ -104,10 +104,13 @@ public class MembershipSecuritySeeder implements AutoCloseable {
    * <p>
    * <b>Not registered with {@code PoolMetrics}.</b> That binder is a {@code MeterBinder} over the engine's
    * process-wide singletons, bound once through their {@code getInstance()} accessors; it has no surface for
-   * a per-server pool such as this one, which belongs to a state-machine instance. The same reasoning is
-   * already written down for the other HA housekeeping executor in {@code RaftLogCompactionScheduler}.
-   * Surfacing this pool and {@code ServerSecurity.permissionsRefreshExecutor} - the pool this one is shaped
-   * after, and which is not surfaced either - is tracked as issue #7856.
+   * a per-server pool such as this one, which belongs to a state-machine instance. The module's other
+   * housekeeping executor is excluded from that binder too ({@code RaftLogCompactionScheduler}), but on a
+   * different ground and not a precedent for this one: that pool is excluded because it is uninteresting - one
+   * bounded task every few minutes, no queue to back up - whereas this one has a one-slot queue and drops on
+   * saturation, so its drop count is exactly what an operator would want and the obstacle is structural rather
+   * than editorial. Surfacing this pool and {@code ServerSecurity.permissionsRefreshExecutor} - the pool this
+   * one is shaped after, and which is not surfaced either - is tracked as issue #7856.
    */
   public MembershipSecuritySeeder(final BooleanSupplier isLeader, final LongSupplier retryBudgetMs,
       final SecuritySeed seed) {
@@ -150,6 +153,23 @@ public class MembershipSecuritySeeder implements AutoCloseable {
    * snapshot install - and therefore never blocks and never throws: the seed itself goes to {@link #executor},
    * and a failure to schedule it is logged rather than propagated back into Ratis. The membership update below
    * is done under this instance's monitor because those two callers can arrive concurrently.
+   * <p>
+   * <b>{@code term} and {@code index} are for the log lines only, and a stale one is deliberately not
+   * rejected.</b> The two callers really are different threads, so the monitor is not merely cheap insurance,
+   * but an index guard on top of it would be wrong in one direction and unnecessary in the other:
+   * <ul>
+   *   <li><b>Unnecessary for the seed decision.</b> Only the leader seeds, and a leader never reaches the
+   *       snapshot-install call site: {@code SnapshotInstallationHandler} answers {@code NOT_LEADER} unless
+   *       {@code state.recognizeLeader} accepts the sender, and then calls
+   *       {@code changeToFollowerAndPersistMetadata} before installing. So on the node that decides to seed,
+   *       this method is driven only by {@code applyLogToStateMachine}, i.e. the single apply loop delivering
+   *       committed entries in index order, and no stale update can regress the baseline that decision reads.</li>
+   *   <li><b>Wrong for the baseline.</b> The snapshot path fires only when the installed configuration differs
+   *       from the one this node holds, immediately after {@code state.truncate(proto.getIndex())} - it is the
+   *       authoritative membership replacing one this node took from entries now being truncated away, and its
+   *       index is legitimately lower. Rejecting it would leave the baseline holding a membership the log no
+   *       longer contains.</li>
+   * </ul>
    * <p>
    * <b>The baseline advances before the seed is dispatched, and is not rolled back if the dispatch does not
    * happen.</b> That is deliberate - the baseline tracks what Ratis committed, not what this seeder managed to
