@@ -3384,9 +3384,17 @@ public class PostgresNetworkExecutor extends Thread {
    * done whatever it needs, BEGIN's own {@code database.begin()} included. Left to this method, COMMIT and ROLLBACK
    * would open an empty transaction of their own - nothing is active by the time they run - and hand it to Sync to
    * commit, the very cost the isIdempotent() gate above removes from reads.
+   * <p>
+   * {@code executed} is the same exemption reached from the other side: several Parse branches compute the whole
+   * answer there and mark the portal done - a catalog query whose filters are not bound parameters, SHOW and the
+   * system queries through {@code createResultSet}, the aborted-block recovery portal - and none of them sets any of
+   * the flags above or leaves a {@code sqlStatement} for the idempotency check to read. Their Execute runs nothing,
+   * so a transaction opened for them would only be an empty one for Sync to commit, and connection setup issues
+   * several of them per connection. It is also what makes a second Execute of an already-materialized portal (a
+   * Describe that ran the query, a resumed cursor) not open a second transaction.
    */
   private void beginImplicitTransactionBlock(final PostgresPortal portal) {
-    if (portal.ignoreExecution || portal.catalogQuery || portal.transactionControl != null)
+    if (portal.ignoreExecution || portal.catalogQuery || portal.transactionControl != null || portal.executed)
       return;
     if (portal.sqlStatement != null && portal.sqlStatement.isIdempotent())
       return;
