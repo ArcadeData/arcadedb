@@ -273,7 +273,13 @@ public class GetServerHandler extends AbstractServerHttpHandler {
         final boolean hidden = cfg.isHidden();
         final Map<String, Object> map = new LinkedHashMap<>();
         map.put("key", cfg.getKey());
-        map.put("value", hidden ? "*****" : convertValue(cfg.getKey(), cfg.getValue()));
+        // The EFFECTIVE value, resolved through this server's overlay, not the process-wide enum (issue #7784).
+        // ContextConfiguration.setValue writes the overlay and never touches the enum, so a setting overridden by
+        // the server configuration file, by the embedding application or live by SET SERVER SETTING was rendered
+        // at the enum's value - next to "overridden": true, and equal to "default", a response contradicting
+        // itself on its own terms while every handler ran on the other number. Same resolution the DATABASE-scope
+        // sibling in FetchFromSchemaDatabaseStep already uses; "default" stays on the enum's declared default.
+        map.put("value", hidden ? "*****" : convertValue(cfg.getKey(), srvCfg.getValue(cfg)));
         map.put("description", cfg.getDescription());
         map.put("overridden", contextKeys.contains(cfg.getKey()));
         map.put("default", hidden ? "*****" : convertValue(cfg.getKey(), cfg.getDefValue()));

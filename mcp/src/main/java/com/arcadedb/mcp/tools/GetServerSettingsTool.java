@@ -67,7 +67,10 @@ public class GetServerSettingsTool {
       final boolean hidden = cfg.isHidden();
       final JSONObject setting = new JSONObject();
       setting.put("key", cfg.getKey());
-      setting.put("value", hidden ? "*****" : normalize(cfg.getValue()));
+      // The EFFECTIVE value, resolved through this server's overlay rather than the process-wide enum: the
+      // sibling of the GetServerHandler fix for issue #7784. An LLM asked to diagnose the configuration was
+      // handed the enum's numbers while the server ran on the overlay's.
+      setting.put("value", hidden ? "*****" : normalize(srvCfg.getValue(cfg)));
       setting.put("description", cfg.getDescription());
       setting.put("overridden", contextKeys.contains(cfg.getKey()));
       setting.put("default", hidden ? "*****" : normalize(cfg.getDefValue()));
