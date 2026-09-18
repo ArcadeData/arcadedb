@@ -7653,12 +7653,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
         (txStatus == TransactionContext.STATUS.COMMIT_1ST_PHASE && tx.isIndexChangesReplayed());
   }
 
-  /** Whether no id appears in both of a journal's id sets. Assertion support for {@link #undoReplay}. */
-  private static boolean disjoint(final VectorIndexReplayUndo undo) {
-    for (int i = 0; i < undo.allocatedCount; i++)
-      for (int j = 0; j < undo.tombstonedCount; j++)
-        if (undo.allocatedIds[i] == undo.tombstonedIds[j])
-          return false;
+  /**
+   * Whether no id the journal tombstoned is also one it allocated. Assertion support for {@link #undoReplay},
+   * which passes the set it has already built for its own sweep.
+   */
+  private static boolean disjoint(final IntHashSet allocated, final VectorIndexReplayUndo undo) {
+    for (int i = 0; i < undo.tombstonedCount; i++)
+      if (allocated.contains(undo.tombstonedIds[i]))
+        return false;
     return true;
   }
 
@@ -7739,18 +7741,26 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // by identity - see VectorIndexReplayUndo.locationsAtReplay - and compensate only the counters below.
       final boolean locationsStillOurs = locations == undo.locationsAtReplay;
 
-      assert !locationsStillOurs || disjoint(undo) :
+      // Built once and used twice - by the assertion below and by the delta-buffer sweep further down - so the
+      // invariant check costs O(tombstoned) rather than the O(allocated x tombstoned) a nested scan would, on a
+      // path where assertions are live (see the note on disjointness above). Sized in TABLE slots, which is what
+      // the constructor takes: at the element count itself the set would rehash on the last few adds.
+      final IntHashSet allocated;
+      if (locationsStillOurs && undo.allocatedCount > 0) {
+        allocated = new IntHashSet(undo.allocatedCount * 2);
+        for (int i = 0; i < undo.allocatedCount; i++)
+          allocated.add(undo.allocatedIds[i]);
+      } else
+        allocated = null;
+
+      assert allocated == null || disjoint(allocated, undo) :
           "an id was both allocated and tombstoned by one replay: TransactionIndexContext.commit() no longer "
               + "replays every REMOVE before any ADD, which this compensation depends on";
 
-      if (locationsStillOurs && undo.allocatedCount > 0) {
-        // Sized in TABLE slots, which is what the constructor takes: at the element count itself the set would
-        // rehash on the last few adds.
-        final IntHashSet allocated = new IntHashSet(undo.allocatedCount * 2);
+      if (allocated != null) {
         final VectorCache cache = searchVectorCache;
         for (int i = 0; i < undo.allocatedCount; i++) {
           final int id = undo.allocatedIds[i];
-          allocated.add(id);
           locations.forget(id);
           // A search that ran between the replay and the abort could have pulled the uncommitted vector into the
           // shared cache, where it would outlive the id itself (the same reason the delete path evicts, #5412).

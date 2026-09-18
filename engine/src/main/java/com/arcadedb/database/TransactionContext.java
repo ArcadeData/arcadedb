@@ -2317,6 +2317,12 @@ public class TransactionContext implements Transaction {
    * A failure here must never replace the exception that caused the rollback (the same rule
    * {@link #concludePhase2} applies to rollback failures), so each journal is isolated: one that throws is logged
    * and the rest still run.
+   * <p>
+   * {@code Throwable}, not {@code Exception}, and for a sharper reason than breadth: a compensation guards its
+   * invariants with {@code assert}, whose {@code AssertionError} is an {@link Error}. Assertions are on under
+   * Surefire, so an invariant that broke would escape this loop, escape {@code rollback()} - which is called from
+   * bare {@code finally} blocks that do not catch it - and skip {@link #reset()}, the only thing that releases
+   * this transaction's file locks. A tripwire must not be able to wedge the database it is guarding.
    */
   private void undoIndexReplay() {
     final Map<IndexInternal, IndexReplayUndo> undos = indexReplayUndo;
@@ -2326,7 +2332,7 @@ public class TransactionContext implements Transaction {
     for (final Map.Entry<IndexInternal, IndexReplayUndo> entry : undos.entrySet())
       try {
         entry.getValue().undoIndexReplay();
-      } catch (final Exception e) {
+      } catch (final Throwable e) {
         LogManager.instance().log(this, Level.WARNING,
             "Error while compensating the replay of index '%s' of the rolled back tx %d (the primary error is "
                 + "propagated)", e, entry.getKey().getName(), txId);
