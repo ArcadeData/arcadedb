@@ -29,6 +29,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -455,7 +456,7 @@ class Issue6526AsyncExecutorFollowUpsTest extends TestHelper {
     final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) ((DatabaseInternal) database).async();
 
     final AtomicBoolean loadStop = new AtomicBoolean();
-    final List<Thread> loadThreads = new java.util.ArrayList<>();
+    final List<Thread> loadThreads = new ArrayList<>();
     for (int i = 0; i < 8; i++) {
       final Thread t = new Thread(() -> {
         long x = 0;

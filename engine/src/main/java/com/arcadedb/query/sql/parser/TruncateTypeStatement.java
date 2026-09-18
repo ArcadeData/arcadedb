@@ -148,6 +148,13 @@ public class TruncateTypeStatement extends DDLStatement {
       final Set<String> lightweightTypeNames = new LinkedHashSet<>();
       final boolean hasRecordBackedTypeInScope = collectTruncationScope(typez, polymorphic, lightweightTypeNames);
       if (hasRecordBackedTypeInScope) {
+        // Two independently-committed operations in the non-transactional case, not one atomic unit (claude-review):
+        // truncateInOwnTransaction() commits its own drop/delete/rebuild transaction(s) before this method returns
+        // to it, and truncateLightweightEdgeTypes() below opens and commits a separate one. If the second throws,
+        // the type is left with its indexes already rebuilt but a lightweight subtype's edges still live - readable
+        // from the exception this method then propagates, not silently. This is not a new hole: the record-backed
+        // path was never atomic across its own drop/rebuild steps either, and a failed truncate has always meant
+        // "check what state this left the type in", not "nothing happened".
         if (transactional)
           truncateInCallerTransaction(db);
         else
