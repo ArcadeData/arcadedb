@@ -98,15 +98,16 @@ public class ExecuteCommandTool {
 
     // Reuse the already-parsed statement when possible (SQL). For other engines (Cypher, Gremlin,
     // GraphQL) analyzed.execute() returns null and the command is re-parsed by database.command().
-    final JSONArray records = new JSONArray();
-    database.transaction(() -> {
+    // The rows are collected per ATTEMPT and only the committed attempt's are returned: see
+    // MCPToolUtils.collectInTransaction for why an accumulator that outlives a retry lies (issue #7904). The
+    // 'limit' cap is counted on that per-attempt array for the same reason - as a local of the block it
+    // restarted at 0 on every attempt while the rows it caps accumulated, so two attempts could return 2 x limit.
+    final JSONArray records = MCPToolUtils.collectInTransaction(database, attemptRecords -> {
       final ResultSet analyzedResultSet = analyzed.execute(Collections.emptyMap());
       try (final ResultSet resultSet = analyzedResultSet != null ? analyzedResultSet : database.command(language, command)) {
-        int count = 0;
-        while (resultSet.hasNext() && count < limit) {
+        while (resultSet.hasNext() && attemptRecords.length() < limit) {
           final Result row = resultSet.next();
-          records.put(serializer.serializeResult(database, row));
-          count++;
+          attemptRecords.put(serializer.serializeResult(database, row));
         }
       }
     });
