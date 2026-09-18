@@ -72,12 +72,21 @@ public class PostgresPortal {
    */
   public boolean                   catalogQuery         = false;
   /**
-   * True for a {@code COMMIT}/{@code ROLLBACK} portal (in any of their recognized spellings): its Execute runs no
-   * statement and needs no transaction of its own, because {@code parseCommand()} has already made the state-machine
-   * transition the keyword asks for. A {@code BEGIN} portal is deliberately NOT one of these - its Execute is where
-   * the engine transaction actually opens.
+   * Which transaction-control statement this portal carries, or null for everything else. Parse only RECORDS it here
+   * (the keyword is recognized there because it must never reach the SQL grammar, issue #6543); the session flag and
+   * the engine transaction are moved by {@code executeCommand()}, which is where PostgreSQL applies a transaction
+   * command too. Applying it at Parse let a client that prepares a statement without running it - Parse and Sync,
+   * no Bind or Execute - open, commit or roll back a transaction it never executed.
    */
-  public boolean                   endsTransactionBlock = false;
+  public TransactionControl        transactionControl;
+
+  /**
+   * The three transaction-control statements this server recognizes ahead of the SQL grammar, in any of their
+   * accepted spellings ({@code BEGIN WORK}, {@code COMMIT TRANSACTION}, {@code END}, ...).
+   */
+  public enum TransactionControl {
+    BEGIN, COMMIT, ROLLBACK
+  }
   /**
    * Non-null when the statement is a {@code COPY ... TO STDOUT} (issue #7188): Describe answers {@code NoData},
    * since a COPY returns no result set, and Execute streams the rows as {@code CopyData} instead of
@@ -143,7 +152,7 @@ public class PostgresPortal {
     portal.ignoreExecution = template.ignoreExecution;
     portal.isExpectingResult = template.isExpectingResult;
     portal.catalogQuery = template.catalogQuery;
-    portal.endsTransactionBlock = template.endsTransactionBlock;
+    portal.transactionControl = template.transactionControl;
     portal.copyStatement = template.copyStatement;
     portal.executed = template.executed;
     portal.cachedResultSet = template.cachedResultSet;
