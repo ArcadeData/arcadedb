@@ -24,6 +24,7 @@ import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
+import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider;
 import com.arcadedb.server.http.HttpServer;
@@ -41,6 +42,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -638,6 +640,18 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
    * two guards every other one inherits - an address that identifies two peers at once, and an address that is
    * this node's own (issues #6191, #6202, #7563). Shutting down the wrong node, or oneself, on an operator
    * command naming another, is the failure those guards exist to prevent.
+   * <p>
+   * The name is matched against every peer rather than against the first that answers to it. {@code contains}
+   * is what an operator's shorthand needs - a peer is named {@code host_raftPort}, and nobody types that - but
+   * it makes {@code arcadedb-1} a match for {@code arcadedb-10} as well, and stopping at the first of the two
+   * would shut down whichever the group happened to list first. Two matches is a refusal, not a coin toss
+   * (CodeRabbit on PR #7838).
+   * <p>
+   * A name that resolves to THIS node stops this node. {@link PeerDialAddress} refuses a self-dial, and rightly
+   * - posting the command to our own listener would come straight back here - but the refusal is the wrong
+   * answer to give an operator who asked for a shutdown and would get an error with the node still up. The
+   * request is simply the local one spelled with a name, so it is answered by the local path
+   * {@code ServerControlPlane.shutdownServer("")} takes.
    */
   @Override
   public void shutdownRemoteServer(final String serverName) {
@@ -645,22 +659,22 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     if (raft == null)
       throw new RuntimeException("Raft HA server not started");
 
-    RaftPeerId targetPeer = null;
-    for (final var peer : raft.getRaftGroup().getPeers()) {
-      final String httpAddr = raft.getHttpAddresses().get(peer.getId());
-      if (httpAddr != null && (peer.getId().toString().contains(serverName) || httpAddr.contains(serverName))) {
-        targetPeer = peer.getId();
-        break;
-      }
+    final RaftPeerId targetPeer = resolveShutdownTarget(raft, serverName);
+    if (targetPeer.equals(raft.getLocalPeerId())) {
+      shutdownThisNode(serverName);
+      return;
     }
-    if (targetPeer == null)
-      throw new ServerException("Cannot find server '" + serverName + "' in the cluster");
 
     final PeerDialAddress dial = PeerDialAddress.resolve(raft, targetPeer, "peer");
     if (dial.refused())
       throw new ServerException("Refusing to shut down server '" + serverName + "': " + dial.refusal());
 
-    final String url = shutdownUrl(dial, configuration.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL));
+    final boolean useSSL = configuration.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
+    final String url = shutdownUrl(dial, useSSL);
+    if (useSSL && url.startsWith("http://"))
+      // Same fallback as every sibling dial, and said out loud for the same reason: the command below carries
+      // the cluster token, so an operator who set arcadedb.ssl.enabled should not have to guess (issue #7546).
+      PlainHttpFallbackNotice.sayOnce(RaftHAPlugin.class, "sending it the shutdown command");
     final String token = raft.getClusterToken();
 
     final HttpRequest.Builder request = HttpRequest.newBuilder()
@@ -684,6 +698,46 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
       throw new ServerException("Interrupted while shutting down remote server '" + serverName + "'", e);
     } catch (final IOException e) {
       throw new RuntimeException("Failed to shutdown remote server '" + serverName + "'", e);
+    }
+  }
+
+  /**
+   * The one peer {@code serverName} names, or a {@link ServerException} saying why it names none or several.
+   * <p>
+   * Separated from the dial so the naming rules are testable without a live cluster to shut down, which the
+   * self-naming case in particular cannot be: the branch it selects ends in {@code System.exit}.
+   *
+   * @throws ServerException when no peer matches, or when more than one does
+   */
+  // @VisibleForTesting
+  static RaftPeerId resolveShutdownTarget(final RaftHAServer raft, final String serverName) {
+    final List<RaftPeerId> matches = new ArrayList<>();
+    for (final var peer : raft.getRaftGroup().getPeers()) {
+      final String httpAddr = raft.getHttpAddresses().get(peer.getId());
+      if (httpAddr != null && (peer.getId().toString().contains(serverName) || httpAddr.contains(serverName)))
+        matches.add(peer.getId());
+    }
+    if (matches.isEmpty())
+      throw new ServerException("Cannot find server '" + serverName + "' in the cluster");
+    if (matches.size() > 1)
+      throw new ServerException("Server name '" + serverName + "' matches " + matches.size() + " peers " + matches
+          + "; name one of them exactly");
+    return matches.getFirst();
+  }
+
+  /**
+   * Stops this node, for the case where the peer an operator named IS this node. Delegated to
+   * {@code ServerControlPlane.shutdownServer("")} rather than restated here, so a local stop keeps scheduling
+   * itself a second out the one way it always has - the caller's own response still has to be written before
+   * the JVM exits.
+   */
+  private void shutdownThisNode(final String serverName) {
+    LogManager.instance().log(this, Level.INFO,
+        "Shutdown of server '%s' names this node; stopping locally instead of dialling our own listener", serverName);
+    try {
+      new ServerControlPlane(server).shutdownServer("");
+    } catch (final IOException e) {
+      throw new ServerException("Failed to shut down this server, named '" + serverName + "'", e);
     }
   }
 
