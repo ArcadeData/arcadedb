@@ -115,7 +115,18 @@ public class PostSecuritySeedHandler extends AbstractServerHttpHandler {
           new JSONObject().put("error", "This node has no security store to seed from").toString());
 
     final String reason = payload.getString("reason", "a peer request");
-    final JSONObject fingerprints = payload.getJSONObject("fingerprints", null);
+
+    final JSONObject fingerprints;
+    try {
+      // The two-argument form substitutes the default only for an ABSENT or null field; a field that is
+      // present and is not an object throws (claude-review on PR #7854). Caught so a garbled internal RPC is
+      // answered 400 - "your request is wrong" - rather than 500, which says this node is.
+      fingerprints = payload.getJSONObject("fingerprints", null);
+    } catch (final RuntimeException e) {
+      return new ExecutionResponse(400, new JSONObject()
+          .put("error", "'fingerprints' must be an object of document digests: " + e.getMessage()).toString());
+    }
+
     if (fingerprints != null && isUpToDate(security, fingerprints)) {
       LogManager.instance().log(this, Level.FINE,
           "Security seed requested for %s: the caller already holds every document this node does; nothing submitted",
@@ -155,6 +166,8 @@ public class PostSecuritySeedHandler extends AbstractServerHttpHandler {
    * document out of step is an admin-rate event, not something to build a selective path for.
    */
   private static boolean isUpToDate(final ServerSecurity security, final JSONObject fingerprints) {
+    // Read with defaults rather than required: a digest that is absent cannot match, which is the answer a
+    // caller that sent an incomplete set should get - seed it - and needs no error of its own.
     return security.usersFingerprint().equals(fingerprints.getString(ReplicatedSecurityFingerprintRepository.USERS, ""))
         && security.groupsFingerprint()
         .equals(fingerprints.getString(ReplicatedSecurityFingerprintRepository.GROUPS, ""))

@@ -75,13 +75,21 @@ public final class ClusterSecuritySeedQuery {
    * <p>
    * The address this dials was resolved a moment earlier, so a 409 is an election that landed in between - a
    * transient condition, and one that resolves into a different address rather than the same one succeeding.
-   * Small, because every attempt is a fresh resolve and a round trip, and because the caller (an admission, or
-   * a node's own catch-up) has its own retry: an operator re-POSTs the peer, and a node asks again at its next
-   * restart or snapshot install.
+   * Every attempt is a fresh resolve and a round trip, so the count stays small; what makes the WAIT long
+   * enough is {@link #notLeaderBackoffMs}, not the count.
    */
   private static final int NOT_LEADER_ATTEMPTS = 3;
-  /** Long enough for an election to name a new leader, short enough not to hold an admission open. */
-  private static final long NOT_LEADER_BACKOFF_MS = 500L;
+  /**
+   * Floor for the wait between those attempts, for a configuration that names no election timeout.
+   * <p>
+   * The wait itself is derived from {@code arcadedb.ha.electionTimeoutMax} rather than fixed
+   * (claude-review on PR #7854). A fixed 500ms gave the whole retry ~1.5s, while that timeout defaults to
+   * <b>10 seconds</b>: an election that took as long as the cluster is configured to allow would outlast the
+   * retry, and the admitting node would then report a failed seed to an operator for an admission whose seed
+   * was about to succeed. Since issue #7521 that report is a 503 with a {@code failedSeeds} array, so a
+   * premature one is not cosmetic - it asks an operator to chase a peer that is converging.
+   */
+  private static final long NOT_LEADER_MIN_BACKOFF_MS = 500L;
 
   private ClusterSecuritySeedQuery() {
   }
@@ -93,6 +101,16 @@ public final class ClusterSecuritySeedQuery {
   public static long reportTimeoutMs(final ContextConfiguration configuration) {
     return Math.max(0L, configuration.getValueAsLong(GlobalConfiguration.HA_SECURITY_SEED_RETRY_TIMEOUT))
         + SEED_REPORT_MARGIN_MS;
+  }
+
+  /**
+   * How long to wait for an election to name a new leader before re-resolving, taken from the cluster's own
+   * {@code arcadedb.ha.electionTimeoutMax} so the two cannot drift apart: a deployment that widens its election
+   * timeout for a WAN link or a bulk-load workload widens this with it, without a second setting to remember.
+   */
+  private static long notLeaderBackoffMs(final ContextConfiguration configuration) {
+    return Math.max(NOT_LEADER_MIN_BACKOFF_MS,
+        configuration.getValueAsLong(GlobalConfiguration.HA_ELECTION_TIMEOUT_MAX));
   }
 
   /**
@@ -148,7 +166,7 @@ public final class ClusterSecuritySeedQuery {
             "The node dialled for the security seed is no longer the leader; re-resolving (attempt %d of %d)",
             attempt, NOT_LEADER_ATTEMPTS);
         try {
-          Thread.sleep(NOT_LEADER_BACKOFF_MS);
+          Thread.sleep(notLeaderBackoffMs(server.getConfiguration()));
         } catch (final InterruptedException interrupted) {
           Thread.currentThread().interrupt();
           throw new IOException("interrupted while waiting to re-request the cluster security seed", interrupted);
