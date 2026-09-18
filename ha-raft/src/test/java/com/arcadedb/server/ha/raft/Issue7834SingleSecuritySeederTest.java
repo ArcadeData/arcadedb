@@ -208,14 +208,23 @@ class Issue7834SingleSecuritySeederTest {
     final RecordingSeed seed = new RecordingSeed();
     final MembershipSecuritySeeder seeder = seeder(seed, SAME_THREAD);
 
-    final CompletableFuture<List<String>> first =
-        seeder.scheduleForTest("this node rejoining the cluster as an existing member");
-    assertThat(first).as("a caller with nothing outstanding gets its own run").isNotNull();
+    seeder.seedNowAndReport("this node rejoining the cluster as an existing member", TIMEOUT_MS, false);
 
-    // The fold hands back the SAME future, which is how a second caller inherits the first one's reason - and
-    // is why the hardcoded string was invisible on the admission path and not on the catch-up one.
-    seed.release = new CountDownLatch(0);
-    assertThat(seed.calls.get()).isEqualTo(1);
+    assertThat(seeder.lastRunReasonForTest())
+        .as("the run must be reported under what its caller asked for, not a hardcoded admission")
+        .isEqualTo("this node rejoining the cluster as an existing member");
+  }
+
+  /** And the membership hook's own reason survives the same way, naming the peers that joined. */
+  @Test
+  void theMembershipHooksReasonNamesThePeersThatJoined() {
+    final RecordingSeed seed = new RecordingSeed();
+    final MembershipSecuritySeeder seeder = seeder(seed, SAME_THREAD);
+
+    seeder.onConfigurationChanged(1, 10, peers("arcadedb-0", "arcadedb-1"));
+    seeder.onConfigurationChanged(1, 11, peers("arcadedb-0", "arcadedb-1", "arcadedb-2"));
+
+    assertThat(seeder.lastRunReasonForTest()).contains("arcadedb-2").contains("Raft configuration");
   }
 
   /**

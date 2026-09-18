@@ -95,6 +95,12 @@ public class PostSecuritySeedHandler extends AbstractServerHttpHandler {
   @Override
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
       final JSONObject payload) {
+    // Before checkRootUser, which dereferences the user (claude-review on PR #7854). A request that carries
+    // neither credentials nor the cluster-token pair arrives here with a null principal, and an NPE would
+    // answer it 500 - this node is broken - for a request that is simply unauthenticated.
+    if (user == null)
+      return new ExecutionResponse(401,
+          new JSONObject().put("error", "This route requires the root user or the cluster token").toString());
     checkRootUser(user);
 
     final RaftHAServer raftHAServer = plugin.getRaftHAServer();
