@@ -123,6 +123,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Function;
@@ -144,9 +145,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
   public static final  int               DEF_PAGE_SIZE   = 262_144;
   private static final VectorTypeSupport vts             = VectorizationProvider.getInstance().getVectorTypeSupport();
 
-  // JVM-wide semaphore limiting the number of concurrent async graph rebuilds across all indexes
-  // and databases.  Multiple concurrent rebuilds are extremely memory-intensive and can cause OOM
-  // kills (issue #3868).  The permit count is read once at class-load time from the configuration.
+  // JVM-wide semaphore limiting the number of concurrent graph rebuilds across all indexes and databases.
+  // Multiple concurrent rebuilds are extremely memory-intensive and can cause OOM kills (issue #3868). The permit
+  // count is read once at class-load time from the configuration.
+  //
+  // Held by every build big enough to matter, wherever it was dispatched from - not only the async ones it was
+  // introduced for (issue #7814). The build a SEARCH falls through to when there is no usable graph on disk took
+  // no permit at all until then, and that is the one that fires for every index of a database at once, on the
+  // first query to reach each of them after a reopen: see buildGraphFromScratchUnderRebuildPermit(). It is always
+  // acquired BEFORE graphBuildLock, never after, because startAsyncGraphRebuild()'s thread holds it while waiting
+  // for that lock.
   private static final int       MAX_CONCURRENT_REBUILDS = GlobalConfiguration.VECTOR_INDEX_MAX_CONCURRENT_REBUILDS
       .getValueAsInteger();
   private static final Semaphore REBUILD_SEMAPHORE       = new Semaphore(MAX_CONCURRENT_REBUILDS);
@@ -280,6 +288,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   // Serializes graph builds for this index (issue #5391). Held only by builders, never by readers or writers.
   private final ReentrantLock graphBuildLock = new ReentrantLock();
+
+  // A search thread has decided to build this index's graph from scratch and has not published it yet (issue
+  // #7814). Both are guarded by graphBuildLock, and the flag exists because the deciding thread RELEASES that
+  // lock before it builds: it has to, since the build queues for the JVM-wide REBUILD_SEMAPHORE and that permit
+  // is always taken before graphBuildLock, never after (see ensureGraphAvailable()). A second search arriving in
+  // that window would otherwise repeat the whole O(live vector count) validation walk, reach the same answer and
+  // queue for a second full build of the same corpus - the cost this gate exists to bound, doubled. It waits on
+  // the condition instead, and rechecks: a build that FAILED clears the flag without publishing anything, and
+  // the waiter then decides for itself exactly as it would have.
+  private       boolean       searchRebuildPending   = false;
+  private final Condition     searchRebuildPublished = graphBuildLock.newCondition();
 
   // Set only inside flush()'s two SKIP branches (issue #6657) - never by the branch that actually attempts a
   // synchronous build, successfully or not - so releaseBackgroundResources()'s recheck of the same flag (see
@@ -1652,8 +1671,27 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // full-rebuild validation off this same lock for (issue #5391; PR #6712 review).
     ReuseCandidate prefixReuseCandidate = null;
 
+    // Whether this thread is the one that has to build the graph from scratch. Decided under graphBuildLock and
+    // acted on after it is released, for the reason spelled out where it is set (issue #7814).
+    boolean buildFromScratch = false;
+
     graphBuildLock.lock();
     try {
+      // A from-scratch build another search thread has already decided on runs outside this lock (issue #7814),
+      // so waiting it out here is what keeps this thread from repeating the O(live vector count) validation walk
+      // below only to queue for a second build of the same corpus. Rechecked rather than assumed on wake-up: a
+      // build that failed signals without having published anything, and this thread then decides for itself.
+      while (searchRebuildPending && graphNotYetMaterialised()) {
+        try {
+          searchRebuildPublished.await();
+        } catch (final InterruptedException e) {
+          // The caller is being cancelled. Restore the flag for whoever checks it next and stop waiting; the
+          // decision below is still correct, only no longer worth deferring to another thread.
+          Thread.currentThread().interrupt();
+          break;
+        }
+      }
+
       // Double-check after acquiring the lock
       if (!graphNotYetMaterialised())
         return; // Another thread already resolved this while we waited for graphBuildLock
@@ -1663,13 +1701,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
         return;
       prefixReuseCandidate = check.prefix();
 
-      // No persisted graph, load failed, or it was stale with no usable prefix - build from scratch.
-      // buildGraphFromScratch() acquires graphBuildLock itself; since it is reentrant this is safe to call
-      // while already holding it. Skipped when the stale graph was instead reused as a prefix above (issue
-      // #6655): that already put the index to work as MUTABLE, and a synchronous rebuild here would throw
-      // that work away and pay for it again.
-      if (prefixReuseCandidate == null)
-        buildGraphFromScratch();
+      // No persisted graph, load failed, or it was stale with no usable prefix - build from scratch. Skipped
+      // when the stale graph was instead reused as a prefix above (issue #6655): that already put the index to
+      // work as MUTABLE, and a synchronous rebuild here would throw that work away and pay for it again.
+      //
+      // DECIDED here and PERFORMED after this lock is released (issue #7814), the same shape the prefix branch
+      // below already has. The build now queues for the JVM-wide REBUILD_SEMAPHORE, and this lock must not be
+      // held across that wait: every other acquisition of that permit in this class takes it BEFORE
+      // graphBuildLock - startAsyncGraphRebuild()'s daemon thread does, and so does the inactivity timer's
+      // synchronous arm - and the timer dispatches an async rebuild for an index this session has never loaded
+      // (issue #6798), which is precisely the state this method is in. Waiting for a permit while holding the
+      // lock its holder is blocked on is a deadlock, broken only by the permit timeout ten minutes later.
+      buildFromScratch = prefixReuseCandidate == null;
+      if (buildFromScratch)
+        searchRebuildPending = true;
     } finally {
       // Cleared in a finally rather than on the success paths only, because the latch means "still to be decided",
       // not "decided successfully" (issue #6772): a graph loaded, a rebuild from scratch, and a load that threw and
@@ -1686,9 +1731,29 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // rebuildGraphBeforeSearch(), read that null as "small graph" and run the whole synchronous rebuild this fix
       // removes - the same cost back, gated on a race instead of on a promotion (PR #6784 review). Ownership of the
       // latch passes to reuseStalePrefixGraph(), which clears it under the same mutex once the graph is published.
-      if (prefixReuseCandidate == null)
+      // The from-scratch branch is the second exception, for the same reason as the prefix one: it has decided
+      // but not yet built, and buildGraphFromScratchWithRetry() clears the latch itself the moment it starts.
+      if (prefixReuseCandidate == null && !buildFromScratch)
         persistedGraphUnresolved = false;
       graphBuildLock.unlock();
+    }
+
+    if (buildFromScratch) {
+      try {
+        buildGraphFromScratchUnderRebuildPermit(true);
+      } finally {
+        graphBuildLock.lock();
+        try {
+          searchRebuildPending = false;
+          // Normally already false - the build clears it as its first act under this same lock - but a build
+          // that never got that far, because queueing for the permit was interrupted, must not leave the latch
+          // set against a decision that has been made and abandoned.
+          persistedGraphUnresolved = false;
+          searchRebuildPublished.signalAll();
+        } finally {
+          graphBuildLock.unlock();
+        }
+      }
     }
 
     if (prefixReuseCandidate != null) {
@@ -1770,9 +1835,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       LogManager.instance().log(this, Level.INFO,
           """
-              Deleted vectors detected in index %s and no usable ordinal map is recorded next to its graph - \
-              rebuilding from scratch to ensure ordinal consistency (issues #3135, #7842)""",
-          indexName);
+              Deleted vectors detected in index %s of database %s (%d deleted, %d live) and no usable ordinal map \
+              is recorded next to its graph - rebuilding it from scratch over those %d vectors to ensure ordinal \
+              consistency (issues #3135, #7842)""",
+          indexName, getDatabase().getName(), vectorIndex().getDeletedCount(), vectorIndex().size(),
+          vectorIndex().size());
       return PersistedGraphCheck.UNUSABLE;
     }
 
@@ -4305,9 +4372,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // Small graph or first-ever build: synchronous rebuild (fast enough to not block noticeably).
       // buildGraphFromScratch() manages its own locking internally - do not wrap in an external
       // write lock, as that would prevent the internal lock release during graph build (issue #3722).
+      //
+      // "Small" here is the RESIDENT graph, and a null one reaches this arm too - which on a session that
+      // ingested before it searched is not a small build at all but a first build over everything written so far
+      // (issue #7814). Routed through the permit for that case; the method itself skips the permit below the same
+      // ASYNC_REBUILD_MIN_GRAPH_SIZE threshold, so a genuinely small index still rebuilds inline and unqueued.
       if (graphState == GraphState.MUTABLE && mutationsSinceSerialize.get() > 0
           && (graphIndex == null || graphIndex.size() < ASYNC_REBUILD_MIN_GRAPH_SIZE))
-        buildGraphFromScratch();
+        buildGraphFromScratchUnderRebuildPermit(false);
     } else if (!asyncRebuildInProgress && (mutations >= threshold || deltaScanOverBudget()))
       // Large graph (>= 1000 vectors): async rebuild once either trigger fires - enough mutations have piled up,
       // or the linear delta scan those mutations left behind has outgrown the graph walk it supplements
@@ -4527,6 +4599,171 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * Runs a from-scratch graph build reached from a SEARCH thread under the same JVM-wide concurrency bound an
+   * async rebuild takes, instead of straight past it (issue #7814).
+   * <p>
+   * {@code VECTOR_INDEX_MAX_CONCURRENT_REBUILDS} exists because concurrent graph builds are what exhaust the heap
+   * (issue #3868), but until this method the only builds that honoured it were the ones with a background thread
+   * to honour it on: {@link #startAsyncGraphRebuild()} and the inactivity timer's small-graph arm. The build a
+   * search falls through to when there is no usable graph on disk took no permit at all - and that is the build
+   * that fires for EVERY index of a database at once, on the first query to reach each of them after a reopen.
+   * Eight large indexes rebuilding concurrently on eight request threads is the reported failure: the heap pinned
+   * at its ceiling, {@link OutOfMemoryError} surfacing in unrelated handlers, and the node restarted under it.
+   * <p>
+   * <b>It waits; it never declines.</b> {@link #admitOnlineRebuild()}'s refusal is not extended here, and its
+   * javadoc says why: a build with no later trigger to retry it turns "slower" into "never" when refused. This one
+   * has no trigger at all - the caller is a search that has nothing to return without it, and a search with no
+   * graph does not fail loudly, it returns an empty result set (see
+   * {@code findNeighborsFromVector}'s {@code graphIndex == null} branch). Serializing costs latency and returns
+   * the right answer; refusing would silently return the wrong one. The heap check is therefore taken here for
+   * its RECLAIM half only - {@link #reclaimHeapForRebuild} - which is a pure improvement over the nothing that
+   * came before it.
+   * <p>
+   * <b>A build too small to matter takes no permit.</b> Below {@link #ASYNC_REBUILD_MIN_GRAPH_SIZE} - the same
+   * threshold this class already uses to separate a build cheap enough to run inline from one worth a background
+   * thread - queueing would trade milliseconds of work for however long the permit holder's rebuild takes, which
+   * is the wrong trade for an index that cannot threaten the heap in the first place.
+   * <p>
+   * <b>On timeout it proceeds rather than fails.</b> The bound is
+   * {@code VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS}, ten minutes by default, and it exists for a permit holder
+   * that is stuck rather than slow - the async path documents the same case. Proceeding without the permit is
+   * exactly the pre-issue-#7814 behaviour, so the degraded case is never worse than what it replaces, and it is
+   * counted ({@code searchRebuildsWithoutPermit}) and logged at WARNING so it can be told apart from the
+   * ordinary case, which is the whole point of bounding it.
+   *
+   * @param abandonIfResolvedWhileWaiting re-ask, once the permit is in hand, whether the graph is still missing -
+   *                                      for the caller whose whole reason to build is that it was. What the
+   *                                      permit was being held BY may well have been this index's own async
+   *                                      rebuild (the inactivity timer dispatches one for an index this session
+   *                                      has never loaded, issue #6798), and rebuilding what it just published
+   *                                      would pay for the same corpus twice. False for
+   *                                      {@link #rebuildGraphBeforeSearch()}, whose graph is already resolved and
+   *                                      which is building for a different reason.
+   */
+  private void buildGraphFromScratchUnderRebuildPermit(final boolean abandonIfResolvedWhileWaiting) {
+    final int scope = rebuildScopeSize();
+    if (scope < ASYNC_REBUILD_MIN_GRAPH_SIZE) {
+      buildGraphFromScratch();
+      return;
+    }
+
+    boolean acquired = REBUILD_SEMAPHORE.tryAcquire();
+    try {
+      if (!acquired) {
+        final long timeoutMs = GlobalConfiguration.VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS.getValueAsLong();
+        metrics.incrementSearchRebuildsQueuedForPermit();
+        LogManager.instance().log(this, Level.INFO,
+            """
+                Query on vector index %s needs a graph built over %d vectors and is waiting up to %d ms for one of \
+                the %d JVM-wide rebuild permits that %s allows, so this build does not run alongside every other \
+                index's""",
+            indexName, scope, timeoutMs, MAX_CONCURRENT_REBUILDS,
+            GlobalConfiguration.VECTOR_INDEX_MAX_CONCURRENT_REBUILDS.getKey());
+        try {
+          acquired = REBUILD_SEMAPHORE.tryAcquire(timeoutMs, TimeUnit.MILLISECONDS);
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+          throw new IndexException(
+              "Interrupted while waiting for a rebuild permit for vector index '" + indexName + "'", e);
+        }
+        if (!acquired) {
+          metrics.incrementSearchRebuildsWithoutPermit();
+          LogManager.instance().log(this, Level.WARNING,
+              """
+                  Timed out after %d ms waiting for a rebuild permit for vector index %s, and a query cannot be \
+                  answered without the graph, so the build of %d vectors proceeds WITHOUT one. Another vector \
+                  index has held a permit for at least that long - if this recurs, that index's rebuild is likely \
+                  stuck, and until it is not, concurrent rebuilds are unbounded again (issue #7814)""",
+              timeoutMs, indexName, scope);
+        }
+      }
+
+      if (abandonIfResolvedWhileWaiting && !graphNotYetMaterialised())
+        return; // Someone published a graph while this thread queued - most likely whoever held the permit.
+
+      reclaimHeapForRebuild(scope);
+      buildGraphFromScratch();
+    } finally {
+      if (acquired)
+        REBUILD_SEMAPHORE.release();
+    }
+  }
+
+  /**
+   * How many vectors a from-scratch build would walk right now: the live persisted set plus whatever is still
+   * only in the delta buffer.
+   * <p>
+   * Deliberately not {@link #inactivityRebuildScopeSize()}, which answers 0 whenever nothing is persisted next to
+   * the index so that a first build is never gated by the "is a rebuild worth it" policy. The question here is
+   * the opposite one - how much heap is about to be claimed - and a reopened index with half a million vectors
+   * and no graph file beside them is the most expensive build there is, not a free one.
+   * <p>
+   * {@code size()} rather than {@code getActiveCount()}, for the reason {@link #inactivityRebuildScopeSize()}
+   * gives: on this backend a resident location IS a live vector, and {@code size()} is O(1) where the popcount
+   * walks every allocated chunk.
+   */
+  private int rebuildScopeSize() {
+    return Math.max(vectorIndex().size(), 0) + deltaVectors.size();
+  }
+
+  /**
+   * Gives up as much of the evictable page read cache as a from-scratch build needs to fit the heap that
+   * {@code VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT} allows it (issue #7814), and never declines the build.
+   * <p>
+   * This is {@link #admitOnlineRebuild()}'s reclaim half without its refusal half, and the estimate is the
+   * OFFLINE one: the caller has no resident graph to keep alive while it builds - that is why it is building -
+   * so charging the online path's extra term would ask for heap nobody is holding.
+   * <p>
+   * When even the whole cache does not close the gap the build still goes ahead, because the caller is a search
+   * that returns an empty result set without it. Everything reclaimable is handed over first anyway: past this
+   * point the only remaining outcomes are a build that fits and one that does not, and the pages cost a disk read
+   * to get back where the {@link OutOfMemoryError} costs the node.
+   *
+   * @param nodes how many vectors the build will walk, from {@link #rebuildScopeSize()}
+   */
+  private void reclaimHeapForRebuild(final int nodes) {
+    final int percent = getDatabase().getConfiguration()
+        .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT);
+    if (percent <= 0 || nodes <= 0)
+      return; // gate disabled by configuration, or nothing to build
+
+    final PageManager pageManager = getDatabase().getPageManager();
+    if (pageManager == null)
+      return;
+
+    final long estimate = VectorHeapBudget.estimateRebuildHeapBytes(nodes, metadata.dimensions,
+        computeGraphBuildCacheCapacity(nodes), false);
+    final long reclaimable = pageManager.getReadCacheRAM();
+    final long availableHeap = VectorHeapBudget.availableHeapBytes();
+    final long reclaimNeeded = VectorHeapBudget.reclaimNeededFor(estimate, percent, availableHeap, reclaimable);
+    if (reclaimNeeded == 0L)
+      return; // it already fits
+
+    final long freed = pageManager.reclaimReadCacheRAM(reclaimNeeded > 0L ? reclaimNeeded : reclaimable);
+    if (reclaimNeeded > 0L) {
+      LogManager.instance().log(this, Level.INFO,
+          """
+              Freed %d MB of the %d MB page read cache so the graph build of vector index %s (about %d MB for %d \
+              vectors) fits the %d MB of available heap that %s allows it. Those pages are read back from disk on \
+              demand, and the cache is process-wide, so some of them may belong to another database""",
+          freed / (1024 * 1024), reclaimable / (1024 * 1024), indexName, estimate / (1024 * 1024), nodes,
+          availableHeap / (1024 * 1024), GlobalConfiguration.VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT.getKey());
+      return;
+    }
+
+    LogManager.instance().log(this, Level.WARNING,
+        """
+            The graph of vector index %s needs about %d MB for %d vectors, which does not fit the %d MB of the %d \
+            MB currently available heap that %s allows it even after giving up the %d MB of evictable page cache. \
+            It is built anyway: a query cannot be answered without the graph, and no later trigger would retry a \
+            build that was declined here. Give the JVM more heap, or lower %s, if this index is to be searched \
+            while the heap is this tight""",
+        indexName, estimate / (1024 * 1024), nodes, VectorHeapBudget.budgetBytes(percent) / (1024 * 1024),
+        availableHeap / (1024 * 1024), GlobalConfiguration.VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT.getKey(),
+        freed / (1024 * 1024), GlobalConfiguration.VECTOR_INDEX_GRAPH_BUILD_CACHE_MAX_HEAP_PERCENT.getKey());
+  }
+
+  /**
    * Decides whether an ONLINE rebuild - one that keeps the old graph resident so searches keep working - is going
    * to fit the heap that is actually available, and declines the cycle when it will not (issue #6503).
    * <p>
@@ -4538,6 +4775,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * Only the online path is gated. A first build, a rebuild on close, {@code REBUILD INDEX} and
    * {@code COMPACT INDEX} are lifecycle- or operator-driven, have no later trigger to retry them, and in the
    * close case have already released the old graph - declining one of those would turn "slower" into "never".
+   * That reasoning is why issue #7814 did NOT extend this refusal to the build a search falls through to, which
+   * has no later trigger either and whose caller returns an empty result set without a graph. What that build
+   * takes from here is the reclaim half only, as {@link #reclaimHeapForRebuild}, plus the concurrency bound of
+   * {@code REBUILD_SEMAPHORE} - the term that was actually unbounded.
    * <p>
    * <b>What issue #7184 changed, on both sides of the comparison.</b> A deferral costs every subsequent query a
    * linear scan of a delta buffer that keeps growing, and nothing else bounds that scan, so a gate that refuses a
@@ -9808,9 +10049,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * Test-only hook: saturates the JVM-wide {@link #REBUILD_SEMAPHORE} so that any async graph rebuild dispatched
    * afterwards parks in {@link #startAsyncGraphRebuild()} before it touches anything, letting a test assert on the
    * state a search left behind - {@code deltaVectorsCount}, {@code mutationsSinceRebuild}, {@code graphState},
-   * {@code graphRebuildCount} - instead of racing the rebuild that consumes it. Both acquire sites are
-   * {@code tryAcquire} on background threads and no search path takes a permit, so holding them all cannot stall a
-   * query.
+   * {@code graphRebuildCount} - instead of racing the rebuild that consumes it.
+   * <p>
+   * <b>A query that has to BUILD a graph does now take a permit</b> ({@code buildGraphFromScratchUnderRebuildPermit},
+   * issue #7814), so holding the permits parks such a query for up to
+   * {@code VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS}. Every caller below is a test of a REUSE path, where the search
+   * publishes a persisted graph rather than building one and takes no permit; a test that means to observe a
+   * from-scratch build must release the permits before it searches, or hold them precisely to observe that the
+   * build queues.
    * <p>
    * Must be paired with {@link #releaseAllRebuildPermitsForTest()} in a {@code finally} block: the permits are
    * JVM-wide, so a leaked acquisition starves every later vector rebuild in the same JVM. Blocks until the permits
@@ -9829,6 +10075,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /** Test-only hook: releases the permits taken by {@link #acquireAllRebuildPermitsForTest()}. */
   static void releaseAllRebuildPermitsForTest() {
     REBUILD_SEMAPHORE.release(MAX_CONCURRENT_REBUILDS);
+  }
+
+  /**
+   * Test-only hook: whether {@link #graphBuildLock} is currently held by anyone.
+   * <p>
+   * Pins the ordering invariant issue #7814 rests on. A rebuild permit is taken BEFORE this lock everywhere in
+   * this class, never after, because {@link #startAsyncGraphRebuild()}'s thread holds the permit while it waits
+   * for this lock - so a search that waited for a permit while holding it would deadlock the pair until the
+   * permit timeout expired ten minutes later. Nothing in the type system says so, and the failure is a stall
+   * rather than an exception, so a test asserts it directly: while a search is parked on the permit, this must
+   * answer {@code false}.
+   */
+  boolean graphBuildLockHeldForTest() {
+    return graphBuildLock.isLocked();
   }
 
   /** Charges one query's brute-force scan of {@code scanned} buffered vectors to the amortization window. */
