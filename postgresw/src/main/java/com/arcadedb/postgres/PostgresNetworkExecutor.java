@@ -653,6 +653,7 @@ public class PostgresNetworkExecutor extends Thread {
             .log(this, Level.INFO, "PSQL: execute (portal=%s) (limit=%d)-> %s (thread=%s)", portalName, limit, portal,
                 Thread.currentThread().threadId());
 
+      applyTransactionControl(portal);
       beginImplicitTransactionBlock(portal);
 
       if (portal.ignoreExecution)
@@ -2657,24 +2658,19 @@ public class PostgresNetworkExecutor extends Thread {
             // clause) - "BEGIN TRANSACTION"/"COMMIT WORK"/"ROLLBACK TRANSACTION"/etc. all fail to parse as SQL.
             // Checking first, the same way queryCommand's simple-query dispatch already does, keeps this
             // branch from ever calling parse() on text the grammar was never going to accept (issue #6543).
+            // Recognized here, but APPLIED at Execute (see applyTransactionControl): Parse prepares a statement,
+            // it does not run one, and a client is free to Parse a statement and Sync without ever binding it -
+            // pgjdbc and psycopg3 both prepare ahead of use. Moving the state at Parse meant a Parse("COMMIT")
+            // alone made the next Sync commit the open transaction, and a Parse("ROLLBACK") discarded it on the
+            // spot, in both cases without the client having executed anything.
             if (isBeginStatement(upperCaseText)) {
-              explicitTransactionStarted = true;
+              portal.transactionControl = PostgresPortal.TransactionControl.BEGIN;
               setEmptyResultSet(portal);
             } else if (isCommitStatement(upperCaseText)) {
-              // No explicit database.commit() here: clearing the flag makes the Sync that follows this
-              // Execute take its implicit-commit branch (see syncCommand()), which is what actually
-              // persists the transaction.
-              explicitTransactionStarted = false;
-              portal.endsTransactionBlock = true;
+              portal.transactionControl = PostgresPortal.TransactionControl.COMMIT;
               setEmptyResultSet(portal);
             } else if (isRollbackStatement(upperCaseText)) {
-              // Unlike COMMIT, ROLLBACK cannot lean on Sync's implicit-commit branch - clearing the flag
-              // without rolling back here would make the next Sync COMMIT the transaction instead (issue
-              // #6543), the opposite of what the client asked for.
-              if (explicitTransactionStarted && database.isTransactionActive())
-                database.rollback();
-              explicitTransactionStarted = false;
-              portal.endsTransactionBlock = true;
+              portal.transactionControl = PostgresPortal.TransactionControl.ROLLBACK;
               setEmptyResultSet(portal);
             } else {
               final SQLQueryEngine sqlEngine = (SQLQueryEngine) database.getQueryEngine("sql");
@@ -3384,13 +3380,13 @@ public class PostgresNetworkExecutor extends Thread {
    * in the "block" committed itself statement by statement and the client's ROLLBACK then found nothing to roll back
    * and silently kept them, while ReadyForQuery reported 'T' throughout. Executing the BEGIN portal opens the
    * transaction here instead, which is the moment PostgreSQL starts the block on too - at Execute, not at Parse.
-   * COMMIT and ROLLBACK are excluded for the opposite reason: Parse has already made their transition (ROLLBACK
-   * rolls back there, COMMIT leaves the transaction for the next Sync to persist), so by the time their Execute runs
-   * there is often nothing active, and opening one would hand Sync an empty transaction to commit - the very cost
-   * the isIdempotent() gate above removes from reads.
+   * A transaction-control portal is exempt here because {@link #applyTransactionControl(PostgresPortal)} has just
+   * done whatever it needs, BEGIN's own {@code database.begin()} included. Left to this method, COMMIT and ROLLBACK
+   * would open an empty transaction of their own - nothing is active by the time they run - and hand it to Sync to
+   * commit, the very cost the isIdempotent() gate above removes from reads.
    */
   private void beginImplicitTransactionBlock(final PostgresPortal portal) {
-    if (portal.ignoreExecution || portal.catalogQuery || portal.endsTransactionBlock)
+    if (portal.ignoreExecution || portal.catalogQuery || portal.transactionControl != null)
       return;
     if (portal.sqlStatement != null && portal.sqlStatement.isIdempotent())
       return;
@@ -3411,6 +3407,35 @@ public class PostgresNetworkExecutor extends Thread {
         database.rollback();
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "PSQL: error on discarding the transaction of a closing connection", e);
+    }
+  }
+
+  /**
+   * Applies the transaction-control statement a portal carries, at Execute, which is where PostgreSQL applies one -
+   * {@code parseCommand()} only recognizes the keyword and records it, so that a statement merely prepared and never
+   * run cannot move the session's transaction state. A no-op for every other portal.
+   * <p>
+   * COMMIT deliberately does not call {@code database.commit()}: clearing the flag is what makes the Sync that ends
+   * this pipeline take its implicit-commit branch (see {@link #syncCommand()}), which is what actually persists the
+   * transaction. ROLLBACK cannot lean on that - clearing the flag without rolling back here would make the next Sync
+   * COMMIT the transaction instead (issue #6543), the opposite of what the client asked for.
+   */
+  private void applyTransactionControl(final PostgresPortal portal) {
+    if (portal.transactionControl == null)
+      return;
+
+    switch (portal.transactionControl) {
+    case BEGIN -> {
+      explicitTransactionStarted = true;
+      if (!database.isTransactionActive())
+        database.begin();
+    }
+    case COMMIT -> explicitTransactionStarted = false;
+    case ROLLBACK -> {
+      if (explicitTransactionStarted && database.isTransactionActive())
+        database.rollback();
+      explicitTransactionStarted = false;
+    }
     }
   }
 

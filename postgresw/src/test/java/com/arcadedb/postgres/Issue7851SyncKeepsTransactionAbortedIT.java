@@ -71,7 +71,8 @@ class Issue7851SyncKeepsTransactionAbortedIT extends PostgresWireProtocolTestBas
   }
 
   private static final String TYPE_NAME  = "Issue7851Aborted";
-  private static final String BLOCK_TYPE = "Issue7851Block";
+  private static final String BLOCK_TYPE  = "Issue7851Block";
+  private static final String PARSED_TYPE = "Issue7851Parsed";
 
   @Test
   @DisplayName("[#7851] Sync after an error inside an explicit transaction reports 'E' and refuses further statements")
@@ -213,6 +214,44 @@ class Issue7851SyncKeepsTransactionAbortedIT extends PostgresWireProtocolTestBas
         .isEqualTo(1);
     assertThat(database.query("sql", "SELECT id FROM " + BLOCK_TYPE).next().<Integer>getProperty("id"))
         .as("the surviving row is the one the client committed").isEqualTo(2);
+  }
+
+  @Test
+  @DisplayName("[#7851] a COMMIT that was only parsed, never executed, does not make the next Sync commit")
+  void transactionControlTakesEffectAtExecuteNotAtParse() throws Exception {
+    try (final Socket socket = new Socket()) {
+      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+      authenticate(out, in);
+
+      assertTimeoutPreemptively(Duration.ofSeconds(30), () -> {
+        sendSimpleQuery(out, "CREATE DOCUMENT TYPE " + PARSED_TYPE + " IF NOT EXISTS");
+        assertThat(messageTypesOf(readUntilReadyForQuery(in))).doesNotContain('E');
+
+        sendSimpleQuery(out, "BEGIN");
+        assertThat(readyForQueryStatusOf(readUntilReadyForQuery(in))).isEqualTo('T');
+
+        runExtendedStatement(out, "ins", "INSERT INTO " + PARSED_TYPE + " SET id = 1");
+        assertThat(readyForQueryStatusOf(readUntilReadyForQuery(in))).isEqualTo('T');
+
+        // Parse alone, with no Bind and no Execute, then Sync - which is how pgjdbc and psycopg3 prepare a
+        // statement ahead of using it. Parse prepares; it does not run. Applying the keyword there made this
+        // Sync take its implicit-commit branch and persist the row above, for a COMMIT the client never ran.
+        sendParse(out, "pendingCommit", "COMMIT");
+        assertThat(readWireMessage(in).type()).as("ParseComplete for the prepared COMMIT").isEqualTo('1');
+        sendSync(out);
+        assertThat(readyForQueryStatusOf(readUntilReadyForQuery(in)))
+            .as("a COMMIT that was only prepared leaves the transaction open").isEqualTo('T');
+
+        sendSimpleQuery(out, "ROLLBACK");
+        assertThat(readyForQueryStatusOf(readUntilReadyForQuery(in))).isEqualTo('I');
+      });
+    }
+
+    assertThat(getServerDatabase(0, getDatabaseName()).countType(PARSED_TYPE, true))
+        .as("the row was written inside a block the client rolled back, so nothing may remain")
+        .isZero();
   }
 
   private static void runExtendedStatement(final DataOutputStream out, final String name, final String query) throws Exception {
