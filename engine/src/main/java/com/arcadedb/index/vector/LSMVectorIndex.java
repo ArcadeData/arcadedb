@@ -7850,6 +7850,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // meanwhile has already repointed it (to -1 and to the new file's last page respectively), so putting the
       // old number back would aim the next insert at a page of a file that no longer exists.
       //
+      // Not gated on mutablePagesCreated: the cursor moves whenever a page is WRITTEN, not only when one is
+      // created - persistVectorWithLocation and persistDeletionTombstones both set it from getTotalPages() - 1
+      // when they find it at -1 - so gating would leave the value this replay installed behind on the common
+      // path. The cost of resetting it anyway is one getTotalPages() call, which is a counter read, not a scan.
+      //
       // The one unconditional write in an otherwise conditioned method, and it discards no other writer's work:
       // no CONCURRENT TRANSACTION can have advanced this cursor, because advancing it means writing this index's
       // pages and this transaction holds that file's commit lock until reset(); and the only other writers - a
