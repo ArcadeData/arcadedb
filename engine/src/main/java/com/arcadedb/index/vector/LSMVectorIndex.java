@@ -1826,13 +1826,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (viaOrdinalMap != null)
         return viaOrdinalMap;
 
+      final int liveVectors = vectorIndex().size();
       LogManager.instance().log(this, Level.INFO,
           """
               Deleted vectors detected in index %s of database %s (%d deleted, %d live) and no usable ordinal map \
               is recorded next to its graph - rebuilding it from scratch over those %d vectors to ensure ordinal \
               consistency (issues #3135, #7842)""",
-          indexName, getDatabase().getName(), vectorIndex().getDeletedCount(), vectorIndex().size(),
-          vectorIndex().size());
+          indexName, getDatabase().getName(), vectorIndex().getDeletedCount(), liveVectors, liveVectors);
       return PersistedGraphCheck.UNUSABLE;
     }
 
@@ -4811,6 +4811,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private void reclaimHeapForRebuild(final int nodes) {
     final int percent = getDatabase().getConfiguration()
         .getValueAsInteger(GlobalConfiguration.VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT);
+    // The nodes test is defence in depth rather than a live branch: the only caller reaches this after its own
+    // scope check, so nothing under ASYNC_REBUILD_MIN_GRAPH_SIZE arrives here today. It stands because every
+    // arithmetic term below is derived from it, and a future caller passing 0 would otherwise reclaim against an
+    // estimate of nothing.
     if (percent <= 0 || nodes <= 0)
       return; // gate disabled by configuration, or nothing to build
 
