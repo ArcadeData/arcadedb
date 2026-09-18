@@ -70,7 +70,8 @@ class Issue7851SyncKeepsTransactionAbortedIT extends PostgresWireProtocolTestBas
     readMessageOfType(in, 'Z'); // drain AuthenticationOk/BackendKeyData/ParameterStatus.../ReadyForQuery
   }
 
-  private static final String TYPE_NAME = "Issue7851Aborted";
+  private static final String TYPE_NAME  = "Issue7851Aborted";
+  private static final String BLOCK_TYPE = "Issue7851Block";
 
   @Test
   @DisplayName("[#7851] Sync after an error inside an explicit transaction reports 'E' and refuses further statements")
@@ -175,6 +176,43 @@ class Issue7851SyncKeepsTransactionAbortedIT extends PostgresWireProtocolTestBas
         assertThat(readyForQueryStatusOf(readUntilReadyForQuery(in))).isEqualTo('I');
       });
     }
+  }
+
+  @Test
+  @DisplayName("[#7851] a BEGIN sent over the extended protocol opens a real transaction that ROLLBACK discards")
+  void anExtendedProtocolBeginIsARealTransactionBlock() throws Exception {
+    try (final Socket socket = new Socket()) {
+      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+      authenticate(out, in);
+
+      assertTimeoutPreemptively(Duration.ofSeconds(30), () -> {
+        sendSimpleQuery(out, "CREATE DOCUMENT TYPE " + BLOCK_TYPE + " IF NOT EXISTS");
+        assertThat(messageTypesOf(readUntilReadyForQuery(in))).doesNotContain('E');
+
+        // BEGIN through Parse/Bind/Execute rather than a simple Query - what pgx in extended mode, and any
+        // pipelining client, sends. parseCommand()'s BEGIN branch only raises explicitTransactionStarted, so
+        // without an engine transaction behind it every write below committed itself and the ROLLBACK found
+        // nothing to undo, all while ReadyForQuery reported 'T'.
+        assertThat(readyForQueryStatusOf(runAndRead(out, in, "b1", "BEGIN"))).isEqualTo('T');
+        assertThat(readyForQueryStatusOf(runAndRead(out, in, "i1", "INSERT INTO " + BLOCK_TYPE + " SET id = 1")))
+            .isEqualTo('T');
+        assertThat(readyForQueryStatusOf(runAndRead(out, in, "r1", "ROLLBACK"))).isEqualTo('I');
+
+        assertThat(readyForQueryStatusOf(runAndRead(out, in, "b2", "BEGIN"))).isEqualTo('T');
+        assertThat(readyForQueryStatusOf(runAndRead(out, in, "i2", "INSERT INTO " + BLOCK_TYPE + " SET id = 2")))
+            .isEqualTo('T');
+        assertThat(readyForQueryStatusOf(runAndRead(out, in, "c2", "COMMIT"))).isEqualTo('I');
+      });
+    }
+
+    final Database database = getServerDatabase(0, getDatabaseName());
+    assertThat(database.countType(BLOCK_TYPE, true))
+        .as("the rolled-back block leaves nothing behind; only the committed one persists")
+        .isEqualTo(1);
+    assertThat(database.query("sql", "SELECT id FROM " + BLOCK_TYPE).next().<Integer>getProperty("id"))
+        .as("the surviving row is the one the client committed").isEqualTo(2);
   }
 
   private static void runExtendedStatement(final DataOutputStream out, final String name, final String query) throws Exception {

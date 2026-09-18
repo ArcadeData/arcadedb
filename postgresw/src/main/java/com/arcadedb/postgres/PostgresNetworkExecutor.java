@@ -2413,22 +2413,25 @@ public class PostgresNetworkExecutor extends Thread {
       }
       resultFormatSectionRead = true;
 
+      // The Bind message is already fully consumed off the wire at this point (parameter values and
+      // result-format codes), so neither exit below needs a drain.
+      if (skipUntilSync)
+        // Discarded until the next Sync, with no reply: the ErrorResponse that opened this state is the only
+        // answer the client is owed for everything up to its Sync. Checked BEFORE the aborted-block refusal
+        // below, the way describeCommand() and executeCommand() check it, so a Bind the client had already
+        // pipelined behind the failing message gets no second ErrorResponse of its own.
+        return;
+
       if (errorInTransaction) {
-        // The Bind message is already fully consumed off the wire at this point (parameter values and
-        // result-format codes), so no drain is needed. Mirror the simple-query fix from #6542/#6457: refuse
-        // with an ErrorResponse instead of silently returning, so the client knows this Bind never ran
-        // (issue #6545). errorInTransaction stays set until COMMIT/ROLLBACK/END ends the block, and this
-        // refusal is an ErrorResponse like any other, so it also puts the session into skip-until-Sync -
-        // the Execute that the client already pipelined behind this Bind must not run against whatever
-        // portal happens to still be registered under that name.
+        // Reached when the block is aborted but the discard state is not set: the failure came from the simple
+        // query protocol, or a Sync has since been processed. Mirror the simple-query fix from #6542/#6457 and
+        // refuse with an ErrorResponse instead of silently returning, so the client knows this Bind never ran
+        // (issue #6545). errorInTransaction stays set until COMMIT/ROLLBACK/END ends the block, and this refusal
+        // is an ErrorResponse like any other, so it re-enters skip-until-Sync - the Execute the client already
+        // pipelined behind this Bind must not run against whatever portal is still registered under that name.
         refuseInAbortedTransaction();
         return;
       }
-
-      if (skipUntilSync)
-        // Discarded until the next Sync, with no reply: the ErrorResponse that opened this state is the only
-        // answer the client is owed for everything up to its Sync.
-        return;
 
       // Store this Bind's own portal under the portal name (which may be empty for unnamed portal) - always,
       // even when portalName equals sourcePreparedStatement, since this is a fresh clone now rather than the
@@ -3366,13 +3369,21 @@ public class PostgresNetworkExecutor extends Thread {
    * deciding again. The proof that a portal cannot write comes from the parsed statement ({@code isIdempotent()},
    * which is how the engine itself classifies a statement) or from the portal being one of the kinds that execute
    * nothing at all; anything unproven - another language, a statement this server did not parse - opens one.
+   * <p>
+   * An EXPLICIT block opened over this protocol needs the same treatment, which is why the guard asks the database
+   * and not {@code explicitTransactionStarted}: {@code parseCommand()}'s BEGIN branch only raises that flag - unlike
+   * {@code queryCommand()}'s, which calls {@code database.begin()} beside it - so a client that sends BEGIN through
+   * Parse/Bind/Execute (pgx in extended mode, any pipelining client) had no engine transaction at all. Every write
+   * in the "block" committed itself statement by statement and the client's ROLLBACK then found nothing to roll back
+   * and silently kept them, while ReadyForQuery reported 'T' throughout. Executing the BEGIN portal opens the
+   * transaction here instead, which is the moment PostgreSQL starts the block on too - at Execute, not at Parse.
    */
   private void beginImplicitTransactionBlock(final PostgresPortal portal) {
     if (portal.ignoreExecution || portal.catalogQuery)
       return;
     if (portal.sqlStatement != null && portal.sqlStatement.isIdempotent())
       return;
-    if (!explicitTransactionStarted && !database.isTransactionActive())
+    if (!database.isTransactionActive())
       database.begin();
   }
 
