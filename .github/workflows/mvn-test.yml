@@ -692,88 +692,6 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  ha-integration-tests:
-    runs-on: ubuntu-latest
-    needs: build-and-package
-    # Defense-in-depth safety net for issue #5973 (livelocked this job for 6h): normal runs finish
-    # in well under 60 minutes.
-    timeout-minutes: 90
-    permissions:
-      contents: read
-      checks: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up JDK 21
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
-        with:
-          distribution: "temurin"
-          java-version: 21
-          cache: "maven"
-
-      - name: Download ArcadeDB Maven artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: arcadedb-maven-artifacts
-          path: /tmp
-
-      - name: Install ArcadeDB Maven artifacts
-        run: |
-          mkdir -p ~/.m2/repository
-          tar -xzf /tmp/arcadedb-m2.tgz -C ~/.m2/repository
-
-      - name: Run HA Integration Tests with Coverage
-        run: ./mvnw verify -DskipTests -Pintegration -Pcoverage  --batch-mode --errors --fail-never --show-version -pl ha-raft
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Check no test leaked a databases/ directory
-        run: ./.github/scripts/check-test-database-paths.sh --runtime
-
-      # See the unit-tests job: the reporter is allowed to fail, the check below is the verdict.
-      - name: HA IT Tests Reporter
-        uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
-        continue-on-error: true
-        if: success() || failure()
-        with:
-          name: HA IT Tests Report
-          path: "**/failsafe-reports/TEST*.xml"
-          list-tests: "failed"
-          list-suites: "failed"
-          reporter: java-junit
-
-      - name: Check test results
-        if: success() || failure()
-        run: ./.github/scripts/check-test-results.py failsafe-reports
-
-      # A red lane has to name the failing test without a re-run. The reporter check run above is
-      # best-effort by design - an API outage makes it a no-op - the per-job log endpoint serves only
-      # runner setup and cleanup while any job of the run is still in flight, and nothing else this lane
-      # uploads carries a per-test verdict. The report XML is exactly the answer to "which test failed",
-      # so it is kept whenever the lane goes red (issue #6322).
-      - name: Upload HA integration test reports
-        if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: ha-integration-test-reports
-          path: |
-            **/surefire-reports/TEST*.xml
-            **/failsafe-reports/TEST*.xml
-          # A step that failed before Maven wrote any report has nothing to keep, and the red already
-          # belongs to that step: an empty match here must not add a second, misleading failure.
-          if-no-files-found: ignore
-          retention-days: 7
-
-      - name: Upload HA integration test coverage reports
-        if: success() || failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: ha-integration-coverage-reports
-          path: |
-            **/jacoco*.xml
-          if-no-files-found: error
-          retention-days: 1
-
   builder-tests:
     runs-on: ubuntu-latest
     needs: build-and-package
@@ -1284,12 +1202,17 @@ jobs:
   # `needs` must list every job whose coverage is downloaded below. It is not an optimisation: a
   # download only sees artifacts already uploaded, so a producer missing from this list is a race
   # the merge loses whenever that job is the slow one. ha-integration-tests was missing here and
-  # takes ~55 minutes - the longest job in the workflow - so its reports were usually absent and
+  # took ~80 minutes - the longest job in the workflow - so its reports were usually absent and
   # the whole ha-raft module was published as uncovered (#5701). check-workflow-artifact-deps.py
   # in the lint job now enforces the rule for every workflow.
+  #
+  # That lane has since moved to its own nightly workflow (ha-integration-tests.yml), so ha-raft
+  # coverage is no longer part of this merge at all. Not the #5701 race returning: this is a constant,
+  # deliberate absence rather than an intermittent one, and an artifact cannot cross runs, so restoring
+  # it means publishing from that workflow rather than adding a download back here.
   coverage-report:
     runs-on: ubuntu-latest
-    needs: [ unit-tests, integration-tests, slow-unit-tests, vector-unit-tests, opencypher-tck-tests, ha-integration-tests ]
+    needs: [ unit-tests, integration-tests, slow-unit-tests, vector-unit-tests, opencypher-tck-tests ]
     # Coverage is still worth publishing when a suite reported failing tests: the suites run with
     # --fail-never, so JaCoCo writes its report and the job records the failure afterwards.
     #
@@ -1298,10 +1221,11 @@ jobs:
     # missing artifact would only add a second red check to an already-red build. Skipping keeps
     # the collector's failure meaning what it says: a suite that should have uploaded, and did not.
     #
-    # This reads any one skipped suite as "none of them ran", which holds because all six hang off
+    # This reads any one skipped suite as "none of them ran", which holds because all five hang off
     # build-and-package and so skip together. Give one of them a path filter or a condition of its
-    # own and that stops being true: the other five would still have coverage worth publishing,
-    # and this condition would drop it. Revisit here if a suite ever gains its own gate.
+    # own and that stops being true: the other four would still have coverage worth publishing,
+    # and this condition would drop it. Revisit here if a suite ever gains its own gate. That is the
+    # reason ha-integration-tests left this workflow entirely rather than gaining an `if:` here.
     #
     # vector-unit-tests and opencypher-tck-tests carry engine coverage that used to arrive inside
     # unit-tests. They are listed here, in the downloads, and in the collector call for that reason:
@@ -1313,8 +1237,7 @@ jobs:
       && needs.slow-unit-tests.result != 'skipped'
       && needs.vector-unit-tests.result != 'skipped'
       && needs.opencypher-tck-tests.result != 'skipped'
-      && needs.integration-tests.result != 'skipped'
-      && needs.ha-integration-tests.result != 'skipped' }}
+      && needs.integration-tests.result != 'skipped' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -1357,13 +1280,6 @@ jobs:
           path: integration-coverage
 
 
-      - name: Download HA integration test coverage reports
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        continue-on-error: true
-        with:
-          name: ha-integration-coverage-reports
-          path: ha-integration-coverage
-
       # Fails when a suite contributed no report, so nothing downstream publishes a merge that is
       # missing a module. The steps below deliberately carry no `if`, so they are skipped on failure.
       - name: Get coverage files
@@ -1374,8 +1290,7 @@ jobs:
             slow-unit-tests=slow-unit-coverage \
             vector-unit-tests=vector-unit-coverage \
             opencypher-tck-tests=opencypher-tck-coverage \
-            integration-tests=integration-coverage \
-            ha-integration-tests=ha-integration-coverage
+            integration-tests=integration-coverage
 
       - name: Codacy coverage reporter
         uses: codacy/codacy-coverage-reporter-action@89d6c85cfafaec52c72b6c5e8b2878d33104c699 # v1.3.0
@@ -1421,7 +1336,6 @@ jobs:
       - vector-unit-tests
       - opencypher-tck-tests
       - integration-tests
-      - ha-integration-tests
       - builder-tests
       - java-e2e-tests
       - js-e2e-tests
