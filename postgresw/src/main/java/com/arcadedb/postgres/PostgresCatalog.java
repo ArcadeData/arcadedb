@@ -919,14 +919,32 @@ public class PostgresCatalog {
 
     for (final PostgresType type : types) {
       // Built on singletonRow() like every other row, so the owner a type query joins on typowner is on the row
-      // (issue #7868), with pg_namespace OVERWRITTEN to pg_catalog afterwards: that is what typnamespace says
-      // these types are in, so the join column and the joined row agree.
+      // (issue #7868), re-pointed at pg_catalog afterwards: that is the schema typnamespace says these types are
+      // in, so the join column and the joined row agree.
       final Row row = describeType(singletonRow(context), type);
-      rows.add(row.with("pg_namespace", "oid", row.of("pg_type").get("typnamespace"), "nspname", PG_CATALOG_SCHEMA,
-          "nspowner", OWNER_OID).complete());
+      rows.add(inSchema(row, row.of("pg_type").get("typnamespace"), PG_CATALOG_SCHEMA).complete());
     }
 
     return rows;
+  }
+
+  /**
+   * Re-points the columns that say WHICH SCHEMA a row is about, on every relation that has any - not only
+   * {@code pg_namespace}. {@link #singletonRow} sets them all to the database's own schema, which is right for
+   * every row except a type row: the types this protocol produces live in {@code pg_catalog}, which is what
+   * {@code pg_type.typnamespace} already says, so a type row has to move them all together or the relations it
+   * carries contradict each other - pg_namespace answering {@code pg_catalog} while
+   * {@code information_schema.schemata} and {@code usage_privileges} still named the user's schema (found in
+   * review of issue #7868).
+   * <p>
+   * The CATALOG columns are deliberately not moved: in PostgreSQL a catalog is a database, not a schema, and
+   * these rows are all in the one database this connection is on whichever schema they describe.
+   */
+  private static Row inSchema(final Row row, final Object oid, final String name) {
+    return row//
+        .with("pg_namespace", "oid", oid, "nspname", name, "nspowner", OWNER_OID)//
+        .with("information_schema.schemata", "schema_name", name)//
+        .with("information_schema.usage_privileges", "object_schema", name, "object_name", name);
   }
 
   /**

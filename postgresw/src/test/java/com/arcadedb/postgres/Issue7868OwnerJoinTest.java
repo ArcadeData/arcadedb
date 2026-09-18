@@ -198,6 +198,41 @@ class Issue7868OwnerJoinTest {
         .hasSize(PostgresTypeCatalog.types().size());
   }
 
+  /**
+   * Found in review: a type row is the one row whose subject lives in {@code pg_catalog} rather than in the
+   * database's own schema, and only {@code pg_namespace} was moved there - {@code information_schema.schemata}
+   * and {@code usage_privileges} still named the user's schema on the same row, so the relations it carries
+   * contradicted each other. They move together now.
+   */
+  @Test
+  void everyRelationOnATypeRowAgreesOnWhichSchemaTheTypeIsIn() {
+    final PostgresCatalog.Answer answer = resolve(
+        "SELECT t.typname, n.nspname, s.schema_name, s.catalog_name, p.object_schema, p.object_name, p.object_catalog "
+            + "FROM pg_type t, pg_namespace n, information_schema.schemata s, information_schema.usage_privileges p");
+
+    assertThat(answer.rows).hasSize(PostgresTypeCatalog.types().size());
+    assertThat(answer.rows).allSatisfy(row -> {
+      assertThat(row.get("nspname")).isEqualTo("pg_catalog");
+      assertThat(row.get("schema_name")).as("schemata is the information_schema spelling of pg_namespace")
+          .isEqualTo("pg_catalog");
+      assertThat(row.get("object_schema")).isEqualTo("pg_catalog");
+      assertThat(row.get("object_name")).isEqualTo("pg_catalog");
+      // A catalog is a DATABASE, not a schema, so these stay put whichever schema the row describes.
+      assertThat(row.get("catalog_name")).isEqualTo(database.getName());
+      assertThat(row.get("object_catalog")).isEqualTo(database.getName());
+    });
+
+    // And a row that is NOT about a type still names the database's own schema everywhere.
+    final PostgresCatalog.Answer schemas = resolve(
+        "SELECT n.nspname, s.schema_name, p.object_schema FROM pg_namespace n, information_schema.schemata s, "
+            + "information_schema.usage_privileges p");
+    assertThat(schemas.rows).allSatisfy(row -> {
+      assertThat(row.get("nspname")).isEqualTo(database.getName());
+      assertThat(row.get("schema_name")).isEqualTo(database.getName());
+      assertThat(row.get("object_schema")).isEqualTo(database.getName());
+    });
+  }
+
   /** And pg_namespace alone is still a question about schemas, one row. */
   @Test
   void pgNamespaceOnItsOwnIsStillASchemaQuery() {
