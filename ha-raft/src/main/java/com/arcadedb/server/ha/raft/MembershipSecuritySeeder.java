@@ -138,6 +138,13 @@ public class MembershipSecuritySeeder implements AutoCloseable {
    */
   private       CompletableFuture<List<String>> lastCompletedSeed;
   private       long                            lastCompletedSeedAt;
+  /**
+   * Set by {@link #close()}, and never cleared: a seed still running then may finish afterwards, and its
+   * result must not repopulate the slot this node has just abandoned (claude-review on PR #7854).
+   */
+  private       boolean                          closed;
+  /** What {@link #runSeed} was last entered for; read back by a test that the reason is not hardcoded. */
+  private       String                           lastRunReason;
 
   /**
    * Production form: seeds on a dedicated single daemon worker.
@@ -365,6 +372,9 @@ public class MembershipSecuritySeeder implements AutoCloseable {
    * @param result completed with the outcome, for {@link #seedNowAndReport}'s caller
    */
   private void runSeed(final String reason, final CompletableFuture<List<String>> result) {
+    synchronized (this) {
+      lastRunReason = reason;
+    }
     try {
       final List<String> failed = seed.seed(retryBudgetMs.getAsLong());
       // Recorded BEFORE the future is completed: a caller that sees the outstanding seed done must also see
@@ -422,6 +432,8 @@ public class MembershipSecuritySeeder implements AutoCloseable {
 
   /** Publishes a finished seed for {@link #REUSE_WINDOW_MS}, so a request a round trip behind it is answered. */
   private synchronized void recordCompletion(final CompletableFuture<List<String>> result) {
+    if (closed)
+      return;
     lastCompletedSeed = result;
     lastCompletedSeedAt = System.currentTimeMillis();
   }
@@ -433,6 +445,12 @@ public class MembershipSecuritySeeder implements AutoCloseable {
   // @VisibleForTesting
   synchronized void forgetCompletedSeedForTest() {
     lastCompletedSeed = null;
+  }
+
+  /** The reason the last run was scheduled under, which is what its log lines name. Test seam. */
+  // @VisibleForTesting
+  synchronized String lastRunReasonForTest() {
+    return lastRunReason;
   }
 
   /** The peers of the last configuration observed, or {@code null} before the first one. Test seam. */
@@ -453,6 +471,7 @@ public class MembershipSecuritySeeder implements AutoCloseable {
     // wait out its own timeout on a worker that has just been interrupted.
     final CompletableFuture<List<String>> pending;
     synchronized (this) {
+      closed = true;
       pending = outstandingSeed;
       outstandingSeed = null;
       lastCompletedSeed = null;
