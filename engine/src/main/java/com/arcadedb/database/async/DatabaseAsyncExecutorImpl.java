@@ -876,6 +876,16 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         if (rescheduled)
           continue;
 
+        // A judged trade-off, not an oversight (CodeRabbit review): the 3 attempts above can be exhausted by a
+        // live pool whose picks keep stalling rather than by a genuine close (executorThreads still non-null),
+        // and completing the task here without running it is technically a loss in that narrow case. The
+        // alternative - retry unconditionally until executorThreads actually goes null - would let a single
+        // permanently wedged peer turn THIS worker's shutdown/shrink into an unbounded wait too, which is
+        // exactly the failure mode {@code offerWaiting}'s own stall detector and every other bound in this class
+        // exists to avoid (see the file-level rule on avoiding the common ForkJoinPool and the #5062/#4953
+        // review history throughout this class). Three attempts against a pool whose worst-case single-attempt
+        // duration is itself bounded by that same stall detector is judged the right place to stop: bounded and
+        // loud beats unbounded and silent, consistent with how the rest of this class already trades.
         try {
           leftover.completed();
         } catch (final Throwable e) {
