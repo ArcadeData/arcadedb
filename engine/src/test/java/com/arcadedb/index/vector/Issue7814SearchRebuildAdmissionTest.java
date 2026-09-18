@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
@@ -268,6 +269,100 @@ class Issue7814SearchRebuildAdmissionTest {
         assertThat(index.getStats().get("graphRebuildCount"))
             .as("the two searches must share one build of the corpus, not run one each")
             .isEqualTo(1L);
+      } finally {
+        db.drop();
+      }
+    }
+  }
+
+  /**
+   * A search interrupted while waiting for another thread's build must fail loudly rather than take the build over.
+   * <p>
+   * Falling through would let it decide to build the same corpus a second time, and at
+   * {@code maxConcurrentRebuilds} above 1 there is a second permit for it to take - so both would build at once,
+   * which is the doubled cost the pending flag exists to prevent. The alternatives to failing are that duplicate
+   * build or the empty result set a search with no graph returns, so the exception is the only honest answer.
+   */
+  @Test
+  void aSearchInterruptedWhileWaitingForAnothersBuildFailsRatherThanStartingItsOwn() throws Exception {
+    populateAndCrashWithoutPersistingAGraph(NUM_VECTORS);
+
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+      final Database db = factory.open();
+      try {
+        final LSMVectorIndex index = vectorIndex(db);
+        final CountDownLatch ownerReturned = new CountDownLatch(1);
+        final CountDownLatch waiterReturned = new CountDownLatch(1);
+        final AtomicReference<Throwable> ownerFailure = new AtomicReference<>();
+        final AtomicReference<Throwable> waiterFailure = new AtomicReference<>();
+
+        LSMVectorIndex.acquireAllRebuildPermitsForTest();
+        final Thread owner = new Thread(() -> {
+          try {
+            index.findNeighborsFromVector(embedding(1), 5, 64);
+          } catch (final Throwable t) {
+            ownerFailure.set(t);
+          } finally {
+            ownerReturned.countDown();
+          }
+        }, "Issue7814-owner");
+        owner.setDaemon(true);
+
+        final Thread waiter = new Thread(() -> {
+          try {
+            index.findNeighborsFromVector(embedding(2), 5, 64);
+          } catch (final Throwable t) {
+            waiterFailure.set(t);
+          } finally {
+            waiterReturned.countDown();
+          }
+        }, "Issue7814-waiter");
+        waiter.setDaemon(true);
+
+        boolean permitsHeld = true;
+        try {
+          owner.start();
+          // Only once the owner has taken the decision and is queueing for the permit can the second search park
+          // on it rather than race it to the decision.
+          Awaitility.await("the owning search queues for the permit")
+              .atMost(REACHES_THE_PERMIT)
+              .pollInterval(Duration.ofMillis(50))
+              .untilAsserted(() -> assertThat(index.getStats().get("searchRebuildsQueuedForPermit"))
+                  .isEqualTo(1L));
+
+          waiter.start();
+          Awaitility.await("the second search parks on the owner's build")
+              .atMost(REACHES_THE_PERMIT)
+              .pollInterval(Duration.ofMillis(50))
+              .untilAsserted(() -> assertThat(waiter.getState()).isEqualTo(Thread.State.WAITING));
+
+          waiter.interrupt();
+          assertThat(waiterReturned.await(REACHES_THE_PERMIT.toMillis(), TimeUnit.MILLISECONDS))
+              .as("the interrupted search must return rather than keep waiting").isTrue();
+          assertThat(waiterFailure.get())
+              .as("and it must say why, instead of silently returning the empty result set a search with no graph "
+                  + "produces")
+              .isInstanceOf(IndexException.class);
+          assertThat(index.getStats().get("searchRebuildsQueuedForPermit"))
+              .as("the interrupted search must not have taken the build over: only the owner ever queued")
+              .isEqualTo(1L);
+
+          LSMVectorIndex.releaseAllRebuildPermitsForTest();
+          permitsHeld = false;
+
+          assertThat(ownerReturned.await(COMPLETES_THE_BUILD.toMillis(), TimeUnit.MILLISECONDS))
+              .as("the owning search must still be answered").isTrue();
+        } finally {
+          if (permitsHeld)
+            LSMVectorIndex.releaseAllRebuildPermitsForTest();
+          owner.interrupt();
+          owner.join(COMPLETES_THE_BUILD.toMillis());
+          waiter.join(COMPLETES_THE_BUILD.toMillis());
+        }
+
+        assertThat(ownerFailure.get()).as("the owning search must not have failed").isNull();
+        assertThat(index.getStats().get("graphRebuildCount"))
+            .as("exactly one build of the corpus, not one per search thread").isEqualTo(1L);
       } finally {
         db.drop();
       }

@@ -1685,10 +1685,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
         try {
           searchRebuildPublished.await();
         } catch (final InterruptedException e) {
-          // The caller is being cancelled. Restore the flag for whoever checks it next and stop waiting; the
-          // decision below is still correct, only no longer worth deferring to another thread.
+          // The caller is being cancelled. It must NOT fall through and decide to build: the build it would be
+          // deciding on is already in flight on another thread, and at maxConcurrentRebuilds above 1 there is a
+          // second permit for it to take, so both would build the same corpus at once - the doubled cost this
+          // flag exists to prevent. Failing loudly is what the permit wait one level down already does for the
+          // same interrupt, and it is the only answer here that is neither a duplicate build nor the empty
+          // result set a search with no graph returns.
           Thread.currentThread().interrupt();
-          break;
+          throw new IndexException(
+              "Interrupted while waiting for the graph of vector index '" + indexName + "' to be built", e);
         }
       }
 
@@ -1744,10 +1749,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
       } finally {
         graphBuildLock.lock();
         try {
+          // The only site that clears it: the thread that set it is the thread that owes the build, whether the
+          // build ran, was abandoned as already done, or threw.
           searchRebuildPending = false;
-          // Normally already false - the build clears it as its first act under this same lock - but a build
-          // that never got that far, because queueing for the permit was interrupted, must not leave the latch
-          // set against a decision that has been made and abandoned.
+          // Normally already false - buildGraphFromScratchWithRetry() clears this one as its first act under
+          // this same lock - but a build that never got that far, because queueing for the permit was
+          // interrupted, must not leave the latch set against a decision made and abandoned.
           persistedGraphUnresolved = false;
           searchRebuildPublished.signalAll();
         } finally {
@@ -4740,7 +4747,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
       return; // it already fits
 
     final long freed = pageManager.reclaimReadCacheRAM(reclaimNeeded > 0L ? reclaimNeeded : reclaimable);
-    if (reclaimNeeded > 0L) {
+
+    // Asked whether the reclaim DELIVERED, not whether it was requested. The cache is a process-wide LRU and can
+    // shrink between getReadCacheRAM() and this call - another database's rebuild reclaiming the same pages, or
+    // ordinary eviction - so a short reclaim leaves the build running on heap it was not actually given.
+    // admitOnlineRebuild() turns that into a decline; this path cannot decline, so it says so instead, and saying
+    // "fits" on a reclaim that fell short is precisely the reading an operator must not be given while diagnosing
+    // a repeat of issue #7814.
+    if (reclaimNeeded > 0L && freed >= reclaimNeeded) {
       LogManager.instance().log(this, Level.INFO,
           """
               Freed %d MB of the %d MB page read cache so the graph build of vector index %s (about %d MB for %d \
@@ -4748,6 +4762,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
               demand, and the cache is process-wide, so some of them may belong to another database""",
           freed / (1024 * 1024), reclaimable / (1024 * 1024), indexName, estimate / (1024 * 1024), nodes,
           availableHeap / (1024 * 1024), GlobalConfiguration.VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT.getKey());
+      return;
+    }
+
+    if (reclaimNeeded > 0L) {
+      LogManager.instance().log(this, Level.WARNING,
+          """
+              The page read cache gave up %d MB of the %d MB the graph build of vector index %s (about %d MB for \
+              %d vectors) needed to fit the heap that %s allows it - it was %d MB when measured a moment earlier, \
+              so something else reclaimed from the same process-wide cache first. The build proceeds anyway, on \
+              heap it was not actually given: a query cannot be answered without the graph, and no later trigger \
+              would retry a build that was declined here""",
+          freed / (1024 * 1024), reclaimNeeded / (1024 * 1024), indexName, estimate / (1024 * 1024), nodes,
+          GlobalConfiguration.VECTOR_INDEX_REBUILD_MAX_HEAP_PERCENT.getKey(), reclaimable / (1024 * 1024));
       return;
     }
 
