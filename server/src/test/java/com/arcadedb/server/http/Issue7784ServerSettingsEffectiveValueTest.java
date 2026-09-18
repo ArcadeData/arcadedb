@@ -84,6 +84,25 @@ class Issue7784ServerSettingsEffectiveValueTest extends BaseGraphServerTest {
     assertThat(setting.getBoolean("overridden")).isTrue();
   }
 
+  /**
+   * The endpoint always redacted these credentials; the guard is here because the routine that does it moved to
+   * {@code GlobalConfiguration.publishableValue}, shared with the MCP tool and the SQL {@code schema:database}
+   * step, and a consolidation that quietly lost the redaction is exactly what a test has to refuse.
+   */
+  @Test
+  void theCredentialsEmbeddedInDefaultDatabasesAreRedacted() throws Exception {
+    getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_DEFAULT_DATABASES,
+        "reportedb[reporter:hunter2];plaindb");
+    try {
+      final JSONObject setting = settingFromEndpoint(GlobalConfiguration.SERVER_DEFAULT_DATABASES.getKey());
+
+      assertThat(setting.getString("value")).doesNotContain("hunter2");
+      assertThat(setting.getString("value")).isEqualTo("reportedb[reporter:*****];plaindb");
+    } finally {
+      getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_DEFAULT_DATABASES, (Object) null);
+    }
+  }
+
   private JSONObject settingFromEndpoint(final String key) throws Exception {
     final JSONArray settings = get("/api/v1/server?mode=default").getJSONArray("settings");
     for (int i = 0; i < settings.length(); i++) {

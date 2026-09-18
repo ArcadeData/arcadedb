@@ -3779,6 +3779,79 @@ public enum GlobalConfiguration {
     return hidden || key.contains("clusterToken") || key.contains("Password") || key.contains("password");
   }
 
+  /**
+   * How this setting's value may be published to a reader entitled to see the configuration at all: the value
+   * itself when it carries no secret, {@code "*****"} for a {@link #isHidden() hidden} setting, and - for the one
+   * setting whose value EMBEDS credentials rather than being one - the value with those credentials replaced.
+   * <p>
+   * {@code arcadedb.server.defaultDatabases} is that setting: {@code mydb[user:password]} is a legitimate value an
+   * operator writes, so the setting is not hidden as a whole, and publishing it verbatim hands out the passwords
+   * inside it. {@code GetServerHandler} redacted it; the MCP {@code get_server_settings} tool and the SQL
+   * {@code schema:database} step each carried a smaller copy of this routine that did not - three divergent copies
+   * of one rule, which is how issue #7784 turned a latent exposure into a live one the moment those endpoints
+   * started reporting the OVERLAY's value, where a real deployment's default databases actually are. One copy,
+   * next to {@link #isHidden()}, because that is already the single source of truth for what must not be shown.
+   * <p>
+   * A {@link Class}-typed value is rendered by name, the way {@link #externalizeValue} persists one: the object
+   * itself has no useful JSON form.
+   */
+  public Object publishableValue(final Object value) {
+    if (isHidden())
+      return "*****";
+
+    if (this == SERVER_DEFAULT_DATABASES && value instanceof String databases && !databases.isEmpty())
+      return redactDefaultDatabaseCredentials(databases);
+
+    if (value instanceof Class<?> clazz)
+      return clazz.getName();
+
+    return value;
+  }
+
+  /**
+   * Replaces the password of every {@code db[user:password,...]} credential in a
+   * {@code arcadedb.server.defaultDatabases} value, keeping everything else exactly as written - the database
+   * names, the separators, the user names and the entries that carry no credentials at all. What an operator
+   * needs from this report is WHICH databases and users are configured; the passwords are the only part that
+   * cannot be shown, so they are the only part replaced.
+   */
+  private static String redactDefaultDatabaseCredentials(final String databases) {
+    final String[] entries = databases.split(";");
+    final StringBuilder redacted = new StringBuilder(databases.length());
+    for (int e = 0; e < entries.length; e++) {
+      if (e > 0)
+        redacted.append(';');
+
+      final String entry = entries[e];
+      final int credentialsBegin = entry.indexOf('[');
+      final int credentialsEnd = entry.lastIndexOf(']');
+      if (credentialsBegin < 0 || credentialsEnd < credentialsBegin) {
+        // No credential block: nothing in it to hide.
+        redacted.append(entry);
+        continue;
+      }
+
+      redacted.append(entry, 0, credentialsBegin + 1);
+
+      final String[] credentials = entry.substring(credentialsBegin + 1, credentialsEnd).split(",");
+      for (int c = 0; c < credentials.length; c++) {
+        if (c > 0)
+          redacted.append(',');
+
+        final String credential = credentials[c];
+        final int separator = credential.indexOf(':');
+        if (separator < 0)
+          // No ':' means there is no password in it, only a user name.
+          redacted.append(credential);
+        else
+          redacted.append(credential, 0, separator + 1).append("*****");
+      }
+
+      redacted.append(entry, credentialsEnd, entry.length());
+    }
+    return redacted.toString();
+  }
+
   public Object getDefValue() {
     return defValue;
   }

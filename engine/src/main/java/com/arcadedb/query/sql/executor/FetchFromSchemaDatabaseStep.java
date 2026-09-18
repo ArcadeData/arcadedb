@@ -72,10 +72,13 @@ public class FetchFromSchemaDatabaseStep extends AbstractExecutionStep {
               if (cfg.getScope() == GlobalConfiguration.SCOPE.DATABASE) {
                 final Map<String, Object> map = new LinkedHashMap<>();
                 map.put("key", cfg.getKey());
-                map.put("value", convertValue(cfg.getKey(), dbCfg.getValue(cfg)));
+                // Same redaction as the two SCOPE.SERVER readers: GlobalConfiguration.publishableValue is the
+                // single source of truth for what may be shown, in place of the "contains password" copy this
+                // step carried.
+                map.put("value", cfg.publishableValue(dbCfg.getValue(cfg)));
                 map.put("description", cfg.getDescription());
                 map.put("overridden", contextKeys.contains(cfg.getKey()));
-                map.put("default", convertValue(cfg.getKey(), cfg.getDefValue()));
+                map.put("default", cfg.publishableValue(cfg.getDefValue()));
 
                 settings.add(map);
               }
@@ -108,16 +111,5 @@ public class FetchFromSchemaDatabaseStep extends AbstractExecutionStep {
       result += " (" + getCostFormatted() + ")";
     }
     return result;
-  }
-
-  private Object convertValue(final String key, Object value) {
-    if (key.toLowerCase(Locale.ENGLISH).contains("password"))
-      // MASK SENSITIVE DATA
-      value = "*****";
-
-    if (value instanceof Class<?> class1)
-      value = class1.getName();
-
-    return value;
   }
 }

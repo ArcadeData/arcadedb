@@ -60,31 +60,25 @@ public class GetServerSettingsTool {
       if (cfg.getScope() == GlobalConfiguration.SCOPE.DATABASE)
         continue;
 
-      // Redact every secret setting using the single source of truth (GlobalConfiguration.isHidden(),
-      // which already flags clusterToken/*password*), instead of an ad-hoc "contains password" check that
-      // leaked arcadedb.ha.clusterToken in clear and enabled cluster-forwarded-auth root impersonation
-      // (GHSA-p9wc-4fhr-78wm, sibling of the GetServerHandler fix for GHSA-46hj-24h4-j8gf).
-      final boolean hidden = cfg.isHidden();
+      // Redaction is GlobalConfiguration.publishableValue's, the single source of truth for it: isHidden()
+      // masks a secret setting whole (GHSA-p9wc-4fhr-78wm, sibling of the GetServerHandler fix for
+      // GHSA-46hj-24h4-j8gf), and arcadedb.server.defaultDatabases keeps its database and user names while its
+      // embedded passwords are replaced. This tool used to carry a smaller copy of that rule that did the
+      // Class-to-name rendering and nothing else, so the credentials in that one setting reached the model.
       final JSONObject setting = new JSONObject();
       setting.put("key", cfg.getKey());
       // The EFFECTIVE value, resolved through this server's overlay rather than the process-wide enum: the
       // sibling of the GetServerHandler fix for issue #7784. An LLM asked to diagnose the configuration was
       // handed the enum's numbers while the server ran on the overlay's.
-      setting.put("value", hidden ? "*****" : normalize(srvCfg.getValue(cfg)));
+      setting.put("value", cfg.publishableValue(srvCfg.getValue(cfg)));
       setting.put("description", cfg.getDescription());
       setting.put("overridden", contextKeys.contains(cfg.getKey()));
-      setting.put("default", hidden ? "*****" : normalize(cfg.getDefValue()));
+      setting.put("default", cfg.publishableValue(cfg.getDefValue()));
       settings.put(setting);
     }
 
     final JSONObject result = new JSONObject();
     result.put("settings", settings);
     return result;
-  }
-
-  private static Object normalize(final Object value) {
-    if (value instanceof Class<?> clazz)
-      return clazz.getName();
-    return value;
   }
 }
