@@ -331,7 +331,12 @@ public class PostgresNetworkExecutor extends Thread {
               return;
 
           } catch (final Exception e) {
-            setErrorInTx();
+            // An exception escaping a handler outright, rather than through its own catch. The message type is no
+            // longer in scope here, so this is the conservative answer for both protocols: raising skipUntilSync
+            // means the Sync that ends an extended-protocol pipeline discards it instead of committing a block one
+            // of whose messages blew up unanswered. The simple query protocol catches everything inside
+            // queryCommand(), so what reaches here from it is a dead socket, where the flag is never read again.
+            setExtendedProtocolError();
 
             if (e instanceof PostgresProtocolException) {
               LogManager.instance().log(this, Level.SEVERE, e.getMessage(), e);
@@ -2660,6 +2665,7 @@ public class PostgresNetworkExecutor extends Thread {
               // Execute take its implicit-commit branch (see syncCommand()), which is what actually
               // persists the transaction.
               explicitTransactionStarted = false;
+              portal.endsTransactionBlock = true;
               setEmptyResultSet(portal);
             } else if (isRollbackStatement(upperCaseText)) {
               // Unlike COMMIT, ROLLBACK cannot lean on Sync's implicit-commit branch - clearing the flag
@@ -2668,6 +2674,7 @@ public class PostgresNetworkExecutor extends Thread {
               if (explicitTransactionStarted && database.isTransactionActive())
                 database.rollback();
               explicitTransactionStarted = false;
+              portal.endsTransactionBlock = true;
               setEmptyResultSet(portal);
             } else {
               final SQLQueryEngine sqlEngine = (SQLQueryEngine) database.getQueryEngine("sql");
@@ -3377,9 +3384,13 @@ public class PostgresNetworkExecutor extends Thread {
    * in the "block" committed itself statement by statement and the client's ROLLBACK then found nothing to roll back
    * and silently kept them, while ReadyForQuery reported 'T' throughout. Executing the BEGIN portal opens the
    * transaction here instead, which is the moment PostgreSQL starts the block on too - at Execute, not at Parse.
+   * COMMIT and ROLLBACK are excluded for the opposite reason: Parse has already made their transition (ROLLBACK
+   * rolls back there, COMMIT leaves the transaction for the next Sync to persist), so by the time their Execute runs
+   * there is often nothing active, and opening one would hand Sync an empty transaction to commit - the very cost
+   * the isIdempotent() gate above removes from reads.
    */
   private void beginImplicitTransactionBlock(final PostgresPortal portal) {
-    if (portal.ignoreExecution || portal.catalogQuery)
+    if (portal.ignoreExecution || portal.catalogQuery || portal.endsTransactionBlock)
       return;
     if (portal.sqlStatement != null && portal.sqlStatement.isIdempotent())
       return;

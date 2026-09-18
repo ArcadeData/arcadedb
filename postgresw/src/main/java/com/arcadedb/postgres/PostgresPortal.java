@@ -72,6 +72,13 @@ public class PostgresPortal {
    */
   public boolean                   catalogQuery         = false;
   /**
+   * True for a {@code COMMIT}/{@code ROLLBACK} portal (in any of their recognized spellings): its Execute runs no
+   * statement and needs no transaction of its own, because {@code parseCommand()} has already made the state-machine
+   * transition the keyword asks for. A {@code BEGIN} portal is deliberately NOT one of these - its Execute is where
+   * the engine transaction actually opens.
+   */
+  public boolean                   endsTransactionBlock = false;
+  /**
    * Non-null when the statement is a {@code COPY ... TO STDOUT} (issue #7188): Describe answers {@code NoData},
    * since a COPY returns no result set, and Execute streams the rows as {@code CopyData} instead of
    * {@code DataRow}. {@link #sqlStatement} then holds the parsed query INSIDE the COPY.
@@ -136,6 +143,7 @@ public class PostgresPortal {
     portal.ignoreExecution = template.ignoreExecution;
     portal.isExpectingResult = template.isExpectingResult;
     portal.catalogQuery = template.catalogQuery;
+    portal.endsTransactionBlock = template.endsTransactionBlock;
     portal.copyStatement = template.copyStatement;
     portal.executed = template.executed;
     portal.cachedResultSet = template.cachedResultSet;
