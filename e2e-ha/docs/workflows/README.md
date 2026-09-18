@@ -1,0 +1,64 @@
+# e2e-ha test workflows, animated
+
+One looping SVG per integration test in this module. The left rail is the call sequence, the stage
+shows what the Raft cluster is doing, the bottom bar carries the contract being exercised. No
+scripts and no external fonts, so each one renders in GitHub markdown, an IDE preview and a browser.
+
+**Start here: [`index.html`](index.html)** - a local page that lists every diagram and switches
+between them. Open it with `open index.html` (any browser; a plain `file://` URL is enough).
+
+A browser is the only reliable viewer: the animation is SMIL, which macOS Preview, Quick Look and
+the IntelliJ SVG preview render as a blank stage because they only ever draw frame 0.
+
+## The diagrams
+
+| Diagram | Test class | @Test methods |
+|---|---|---|
+| [simple-ha-scenario](simple-ha-scenario.svg) | `SimpleHaScenarioIT` | 1 |
+| [three-instances-scenario](three-instances-scenario.svg) | `ThreeInstancesScenarioIT` | 1 |
+| [load-three-instances-scenario](load-three-instances-scenario.svg) | `LoadThreeInstancesScenarioIT` | 2 |
+| [drop-database-scenario](drop-database-scenario.svg) | `DropDatabaseScenarioIT` | 1 |
+| [import-database-scenario](import-database-scenario.svg) | `ImportDatabaseScenarioIT` | 1 |
+| [restore-database-scenario](restore-database-scenario.svg) | `RestoreDatabaseScenarioIT` | 1 |
+| [user-management-scenario](user-management-scenario.svg) | `UserManagementScenarioIT` | 1 |
+| [user-seed-on-peer-add-scenario](user-seed-on-peer-add-scenario.svg) | `UserSeedOnPeerAddScenarioIT` | 1 |
+| [leader-failover](leader-failover.svg) | `LeaderFailoverIT` | 3 |
+| [rolling-restart](rolling-restart.svg) | `RollingRestartIT` | 3 |
+| [network-partition](network-partition.svg) | `NetworkPartitionIT` | 3 |
+| [network-partition-recovery](network-partition-recovery.svg) | `NetworkPartitionRecoveryIT` | 3 |
+| [split-brain](split-brain.svg) | `SplitBrainIT` | 4 |
+| [network-delay](network-delay.svg) | `NetworkDelayIT` | 4 |
+| [packet-loss](packet-loss.svg) | `PacketLossIT` | 5 |
+
+A class with several `@Test` methods is drawn from its primary method; the siblings are listed on a
+variants card inside the animation, so no method is silently dropped.
+
+## Regenerating
+
+```bash
+cd e2e-ha/docs/workflows
+python3 build_all.py      # rewrites every *.svg, then index.html
+```
+
+No dependencies beyond a Python 3 interpreter. The build prints a warning for any caption, detail or
+step label too long for the panel it is drawn in - text that overflows is a silent defect in a
+generated image, so treat those warnings as failures.
+
+## Adding or editing a diagram
+
+`workflow_svg.py` holds the stage geometry and the primitives; `build_all.py` declares the scenes,
+one function per test class:
+
+```python
+layout(3)                                  # 2- or 3-node stage; layout(2, proxy=True) for toxiproxy
+scenes = boot(3) + [                       # boot() = containers, start, election, database + schema
+    Scene(step="...", caption="...", detail="...", dur=3.4,
+          body=[node_state(0, "LEADER", GREEN, "writing"), raft_link(0, 1, "replicate")]),
+]
+emit("my-slug", "MyIT - myTest()", "subtitle", scenes, "MyIT.java", ["myTest"], "one-line blurb")
+```
+
+Primitives: `node_state(i, badge, color, sub)`, `node_off(i)`, `isolated(i)`, `node_progress(i, frac)`,
+`stamp(i, verdict)` / `cross_stamp(i, verdict)`, `client_to(i, label)`, `raft_link(i, j, label)`,
+`cut(i, j)`, `toxic(i, label)`, `code_card(y, lines, title=)`, `variants_card(lines)`, `chip(x, y, label)`.
+Scene bodies are plain SVG strings drawn in order, so put cards first and arrows last.

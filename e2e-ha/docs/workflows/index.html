@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ArcadeDB e2e-ha test workflows</title>
+<style>
+:root{--bg:#0b1220;--panel:#141f36;--edge:#25344f;--text:#e7eefc;--muted:#8ea3c4;--blue:#41b6f7}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);
+ font-family:ui-sans-serif,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+header{padding:28px 32px 14px}
+h1{margin:0 0 6px;font-size:22px}
+header p{margin:0;color:var(--muted);font-size:13.5px;max-width:860px;line-height:1.5}
+main{display:grid;grid-template-columns:320px 1fr;gap:18px;padding:14px 32px 32px;align-items:start}
+nav{background:var(--panel);border:1px solid var(--edge);border-radius:14px;padding:8px;position:sticky;top:14px}
+nav button{display:block;width:100%;text-align:left;background:none;border:0;color:var(--muted);
+ font:inherit;font-size:13px;padding:9px 12px;border-radius:9px;cursor:pointer;line-height:1.35}
+nav button:hover{background:#ffffff0d;color:var(--text)}
+nav button.on{background:#41b6f71f;border:1px solid #41b6f766;color:var(--text);font-weight:600}
+nav button small{display:block;color:var(--muted);font-weight:400;font-size:11px;margin-top:2px;
+ font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+section{background:var(--panel);border:1px solid var(--edge);border-radius:14px;padding:18px}
+section h2{margin:0 0 4px;font-size:17px}
+section p.blurb{margin:0 0 12px;color:var(--muted);font-size:13px;line-height:1.5}
+img{width:100%;height:auto;border-radius:12px;display:block;background:var(--bg)}
+ul.meta{list-style:none;display:flex;flex-wrap:wrap;gap:8px;padding:0;margin:12px 0 0}
+ul.meta li{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;
+ color:var(--muted);border:1px solid var(--edge);border-radius:9px;padding:4px 9px}
+a{color:var(--blue)}
+@media (max-width:900px){main{grid-template-columns:1fr}nav{position:static}}
+</style>
+</head>
+<body>
+<header>
+  <h1>ArcadeDB e2e-ha test workflows</h1>
+  <p>One looping animation per integration test in <code>e2e-ha</code>: the left rail is the call
+     sequence, the stage shows what the Raft cluster is doing, the bottom bar carries the contract being
+     exercised. Classes with several <code>@Test</code> methods are drawn from their primary method, with
+     the siblings listed on a variants card. Regenerate everything with
+     <code>python3 build_all.py</code>.</p>
+</header>
+<main>
+  <nav id="nav"></nav>
+  <section>
+    <h2 id="title"></h2>
+    <p class="blurb" id="blurb"></p>
+    <img id="svg" alt="">
+    <ul class="meta" id="meta"></ul>
+  </section>
+</main>
+<script>
+const DIAGRAMS = [
+  {
+    "slug": "simple-ha-scenario",
+    "title": "SimpleHaScenarioIT - twoNodeRaftReplication()",
+    "java": "SimpleHaScenarioIT.java",
+    "methods": [
+      "twoNodeRaftReplication"
+    ],
+    "blurb": "The baseline: two nodes, one leader, schema and data must reach the follower.",
+    "scenes": 8,
+    "loop": 28
+  },
+  {
+    "slug": "three-instances-scenario",
+    "title": "ThreeInstancesScenarioIT - threeNodeReplication()",
+    "java": "ThreeInstancesScenarioIT.java",
+    "methods": [
+      "threeNodeReplication"
+    ],
+    "blurb": "Three nodes, writes issued from all of them, absolute counts then equality.",
+    "scenes": 9,
+    "loop": 31
+  },
+  {
+    "slug": "load-three-instances-scenario",
+    "title": "LoadThreeInstancesScenarioIT - threeNodeReplication()",
+    "java": "LoadThreeInstancesScenarioIT.java",
+    "methods": [
+      "threeNodeReplication",
+      "threeNodeReplicationMulti"
+    ],
+    "blurb": "The volume variant: 500-user batches per node, plus a threaded run with friendships and likes.",
+    "scenes": 9,
+    "loop": 31
+  },
+  {
+    "slug": "drop-database-scenario",
+    "title": "DropDatabaseScenarioIT - dropDatabaseReplicatedAcrossCluster()",
+    "java": "DropDatabaseScenarioIT.java",
+    "methods": [
+      "dropDatabaseReplicatedAcrossCluster"
+    ],
+    "blurb": "Drop issued on a replica, so the forward-to-leader path is what is really under test.",
+    "scenes": 9,
+    "loop": 31
+  },
+  {
+    "slug": "import-database-scenario",
+    "title": "ImportDatabaseScenarioIT - importDatabaseReplicatedAcrossCluster()",
+    "java": "ImportDatabaseScenarioIT.java",
+    "methods": [
+      "importDatabaseReplicatedAcrossCluster"
+    ],
+    "blurb": "An import runs on the leader and reaches the peers as ordinary replicated transactions.",
+    "scenes": 7,
+    "loop": 25
+  },
+  {
+    "slug": "restore-database-scenario",
+    "title": "RestoreDatabaseScenarioIT - restoreDatabaseReplicatedAcrossCluster()",
+    "java": "RestoreDatabaseScenarioIT.java",
+    "methods": [
+      "restoreDatabaseReplicatedAcrossCluster"
+    ],
+    "blurb": "Backup on node 0, drop everywhere, force leadership back, restore, verify all three.",
+    "scenes": 9,
+    "loop": 32
+  },
+  {
+    "slug": "user-management-scenario",
+    "title": "UserManagementScenarioIT - userCreateAndDropReplicatedAcrossCluster()",
+    "java": "UserManagementScenarioIT.java",
+    "methods": [
+      "userCreateAndDropReplicatedAcrossCluster"
+    ],
+    "blurb": "Security replication measured the only way that counts: by logging in on each peer.",
+    "scenes": 8,
+    "loop": 28
+  },
+  {
+    "slug": "user-seed-on-peer-add-scenario",
+    "title": "UserSeedOnPeerAddScenarioIT - peerAddEndpointPreservesExistingUsers()",
+    "java": "UserSeedOnPeerAddScenarioIT.java",
+    "methods": [
+      "peerAddEndpointPreservesExistingUsers"
+    ],
+    "blurb": "A wiring smoke test for /api/v1/cluster/peer that must leave user state intact.",
+    "scenes": 7,
+    "loop": 25
+  },
+  {
+    "slug": "leader-failover",
+    "title": "LeaderFailoverIT - leaderFailover()",
+    "java": "LeaderFailoverIT.java",
+    "methods": [
+      "leaderFailover",
+      "repeatedLeaderFailures",
+      "leaderFailoverDuringWrites"
+    ],
+    "blurb": "The leader is stopped outright; the majority must elect, keep writing, and re-absorb it.",
+    "scenes": 11,
+    "loop": 39
+  },
+  {
+    "slug": "rolling-restart",
+    "title": "RollingRestartIT - rollingRestart()",
+    "java": "RollingRestartIT.java",
+    "methods": [
+      "rollingRestart",
+      "rapidRollingRestart",
+      "rollingRestartWithContinuousWrites"
+    ],
+    "blurb": "Zero-downtime maintenance: one node down at a time, writes continuing throughout.",
+    "scenes": 9,
+    "loop": 32
+  },
+  {
+    "slug": "network-partition",
+    "title": "NetworkPartitionIT - leaderPartitionWithQuorum()",
+    "java": "NetworkPartitionIT.java",
+    "methods": [
+      "leaderPartitionWithQuorum",
+      "singleFollowerPartition",
+      "noQuorumScenario"
+    ],
+    "blurb": "Docker network disconnect as a real partition: who may still write, and who catches up.",
+    "scenes": 10,
+    "loop": 36
+  },
+  {
+    "slug": "network-partition-recovery",
+    "title": "NetworkPartitionRecoveryIT - partitionRecovery()",
+    "java": "NetworkPartitionRecoveryIT.java",
+    "methods": [
+      "partitionRecovery",
+      "multiplePartitionCycles",
+      "asymmetricPartitionRecovery"
+    ],
+    "blurb": "The minority never wrote, so healing is a replay - no conflict resolution exists or is needed.",
+    "scenes": 10,
+    "loop": 35
+  },
+  {
+    "slug": "split-brain",
+    "title": "SplitBrainIT - splitBrainPrevention()",
+    "java": "SplitBrainIT.java",
+    "methods": [
+      "splitBrainPrevention",
+      "completePartitionNoQuorum",
+      "clusterReformation",
+      "quorumLossRecovery"
+    ],
+    "blurb": "Quorum enforcement: divergent writes are impossible, so healing is truncate-and-replay.",
+    "scenes": 10,
+    "loop": 36
+  },
+  {
+    "slug": "network-delay",
+    "title": "NetworkDelayIT - symmetricDelay()",
+    "java": "NetworkDelayIT.java",
+    "methods": [
+      "symmetricDelay",
+      "asymmetricLeaderDelay",
+      "highLatencyWithJitter",
+      "extremeLatency"
+    ],
+    "blurb": "Latency injected on port 2434 only, so consensus slows down while HTTP stays fast.",
+    "scenes": 9,
+    "loop": 32
+  },
+  {
+    "slug": "packet-loss",
+    "title": "PacketLossIT - lowPacketLoss()",
+    "java": "PacketLossIT.java",
+    "methods": [
+      "lowPacketLoss",
+      "moderatePacketLoss",
+      "highPacketLoss",
+      "directionalPacketLoss",
+      "intermittentPacketLoss"
+    ],
+    "blurb": "Dropped consensus traffic at 5% to 50%, one-way and intermittent.",
+    "scenes": 9,
+    "loop": 32
+  }
+];
+const SRC = "../../src/test/java/com/arcadedb/containers/ha";
+const nav = document.getElementById('nav');
+function show(i) {
+  const d = DIAGRAMS[i];
+  document.getElementById('title').textContent = d.title;
+  document.getElementById('blurb').textContent = d.blurb;
+  const img = document.getElementById('svg');
+  img.src = d.slug + '.svg?' + Date.now();   // force the animation to restart from scene 1
+  img.alt = d.title;
+  document.getElementById('meta').innerHTML =
+    ['<li>' + d.scenes + ' scenes</li>', '<li>' + d.loop + 's loop</li>',
+     '<li>' + d.methods.length + ' @Test method' + (d.methods.length > 1 ? 's' : '') + '</li>',
+     '<li><a href="' + SRC + '/' + d.java + '">' + d.java + '</a></li>'].join('');
+  [...nav.children].forEach((b, j) => b.classList.toggle('on', i === j));
+  location.hash = d.slug;
+}
+DIAGRAMS.forEach((d, i) => {
+  const b = document.createElement('button');
+  b.innerHTML = d.title.split(' - ')[0] + '<small>' + d.title.split(' - ').slice(1).join(' - ') + '</small>';
+  b.onclick = () => show(i);
+  nav.appendChild(b);
+});
+const from = DIAGRAMS.findIndex(d => d.slug === location.hash.slice(1));
+show(from >= 0 ? from : 0);
+</script>
+</body>
+</html>
