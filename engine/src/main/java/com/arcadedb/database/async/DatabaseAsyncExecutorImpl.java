@@ -2450,7 +2450,12 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
           // reported exactly as before. #5062 review r4 (point 4): completed() is deliberately NOT invoked on
           // the removed task here - the scheduling caller is still on the stack, so no waiter can be parked on
           // it yet, and the retry either runs it or reports the same terminal failure directly.
-          if (attempt >= 3)
+          // attempt >= 2, not 3 (claude-review): this check runs AFTER an attempt already failed, so it gates
+          // the NEXT one - attempt 0 failing recurses to 1, 1 failing recurses to 2, 2 failing throws here,
+          // for 3 total tries (the initial call plus two retries). >= 3 would have allowed a fourth, one more
+          // than drainQueueNotifyingWaiters()'s sibling loop actually runs, despite both being written to the
+          // same "3 attempts" intent.
+          if (attempt >= 2)
             throw new DatabaseOperationException(
                 "Async executor has been shut down; cannot schedule asynchronous task " + task);
           return scheduleTask(-1, task, waitIfQueueIsFull, applyBackPressureOnPercentage, attempt + 1);
