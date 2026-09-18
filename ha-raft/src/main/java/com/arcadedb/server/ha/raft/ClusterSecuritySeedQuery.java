@@ -184,7 +184,7 @@ public final class ClusterSecuritySeedQuery {
 
     if (plugin.isLeader())
       // No dial: the seeder is in this JVM. See the class note - this is the invariant, not a shortcut.
-      return raft.getStateMachine().seedSecurityNowAndReport(reportTimeoutMs(server.getConfiguration()));
+      return raft.getStateMachine().seedSecurityNowAndReport(reason, reportTimeoutMs(server.getConfiguration()));
 
     final LeaderDial dial = LeaderDial.resolve(plugin, LeaderDial.newConnectTimeoutBoundedClient(
         server.getConfiguration()));

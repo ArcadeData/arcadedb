@@ -106,7 +106,7 @@ class Issue7834SingleSecuritySeederTest {
     final RecordingSeed seed = new RecordingSeed();
     seed.failures = List.of("groups", "API tokens");
 
-    assertThat(seeder(seed, SAME_THREAD).seedNowAndReport(TIMEOUT_MS))
+    assertThat(seeder(seed, SAME_THREAD).seedNowAndReport("a test request", TIMEOUT_MS))
         .as("a caller that has an operator waiting must learn which documents did not commit")
         .containsExactly("groups", "API tokens");
   }
@@ -114,7 +114,7 @@ class Issue7834SingleSecuritySeederTest {
   /** And the success answer: nothing failed, which is what turns into a 200 on the admission route. */
   @Test
   void aSeedThatCommittedEverythingReportsNoFailures() {
-    assertThat(seeder(new RecordingSeed(), SAME_THREAD).seedNowAndReport(TIMEOUT_MS)).isEmpty();
+    assertThat(seeder(new RecordingSeed(), SAME_THREAD).seedNowAndReport("a test request", TIMEOUT_MS)).isEmpty();
   }
 
   /**
@@ -126,7 +126,7 @@ class Issue7834SingleSecuritySeederTest {
     final RecordingSeed seed = new RecordingSeed();
     seed.blowUp = new IllegalStateException("no security store on this node");
 
-    assertThatThrownBy(() -> seeder(seed, SAME_THREAD).seedNowAndReport(TIMEOUT_MS))
+    assertThatThrownBy(() -> seeder(seed, SAME_THREAD).seedNowAndReport("a test request", TIMEOUT_MS))
         .isInstanceOf(IllegalStateException.class)
         .hasMessageContaining("no security store on this node");
   }
@@ -192,10 +192,30 @@ class Issue7834SingleSecuritySeederTest {
     seeder.onConfigurationChanged(1, 11, peers("arcadedb-0", "arcadedb-1", "arcadedb-2"));
     assertThat(seed.calls.get()).as("the membership change seeded, and finished").isEqualTo(1);
 
-    assertThat(seeder.seedNowAndReport(TIMEOUT_MS))
+    assertThat(seeder.seedNowAndReport("a test request", TIMEOUT_MS))
         .as("the admission reports that seed's outcome")
         .containsExactly("groups");
     assertThat(seed.calls.get()).as("one admission, one seed").isEqualTo(1);
+  }
+
+  /**
+   * The reason a caller gives is the one the run reports under. It used to be hardcoded to an admission's
+   * phrasing, which the issue #7833 catch-up - the one caller with no concurrent membership seed to fold into,
+   * so the one whose string actually reaches the log - then reported itself as (claude-review on PR #7854).
+   */
+  @Test
+  void theCallersOwnReasonIsWhatTheRunIsScheduledUnder() {
+    final RecordingSeed seed = new RecordingSeed();
+    final MembershipSecuritySeeder seeder = seeder(seed, SAME_THREAD);
+
+    final CompletableFuture<List<String>> first =
+        seeder.scheduleForTest("this node rejoining the cluster as an existing member");
+    assertThat(first).as("a caller with nothing outstanding gets its own run").isNotNull();
+
+    // The fold hands back the SAME future, which is how a second caller inherits the first one's reason - and
+    // is why the hardcoded string was invisible on the admission path and not on the catch-up one.
+    seed.release = new CountDownLatch(0);
+    assertThat(seed.calls.get()).isEqualTo(1);
   }
 
   /**
@@ -208,9 +228,9 @@ class Issue7834SingleSecuritySeederTest {
     final RecordingSeed seed = new RecordingSeed();
     final MembershipSecuritySeeder seeder = seeder(seed, SAME_THREAD);
 
-    seeder.seedNowAndReport(TIMEOUT_MS);
+    seeder.seedNowAndReport("a test request", TIMEOUT_MS);
     seeder.forgetCompletedSeedForTest();
-    seeder.seedNowAndReport(TIMEOUT_MS);
+    seeder.seedNowAndReport("a test request", TIMEOUT_MS);
 
     assertThat(seed.calls.get())
         .as("a request that cannot reuse anything is a seed of its own")
@@ -243,7 +263,7 @@ class Issue7834SingleSecuritySeederTest {
     final MembershipSecuritySeeder seeder = seeder(seed, worker);
     final ExecutorService caller = Executors.newSingleThreadExecutor();
     try {
-      final var report = caller.submit(() -> seeder.seedNowAndReport(TIMEOUT_MS));
+      final var report = caller.submit(() -> seeder.seedNowAndReport("a test request", TIMEOUT_MS));
       assertThat(seed.started.await(TIMEOUT_MS, TimeUnit.MILLISECONDS)).isTrue();
 
       seeder.close();

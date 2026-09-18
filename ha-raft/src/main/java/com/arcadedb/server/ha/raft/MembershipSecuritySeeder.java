@@ -266,6 +266,11 @@ public class MembershipSecuritySeeder implements AutoCloseable {
    * merely serialising it: by the time an admitting node can call this, the membership change has committed and
    * the configuration callback above has already scheduled the seed for it. See {@link #outstandingSeed}.
    *
+   * @param reason    what the seed is FOR, in the caller's own words, because it is what the log lines this
+   *                  run writes will name. Hardcoding an admission's phrasing here made the issue #7833
+   *                  catch-up - the one caller with no concurrent membership seed to fold into, so the one
+   *                  whose string actually reaches the log - report itself as a peer admission
+   *                  (claude-review on PR #7854)
    * @param timeoutMs how long to wait for the seed to finish before giving up on REPORTING it; the seed itself
    *                  is not cancelled, since it is the work the joining peer needs either way
    *
@@ -274,7 +279,7 @@ public class MembershipSecuritySeeder implements AutoCloseable {
    * @throws IllegalStateException when no seed could be run or awaited at all, so a caller never reads
    *                               "nothing failed" from a seed that never happened
    */
-  public List<String> seedNowAndReport(final long timeoutMs) {
+  public List<String> seedNowAndReport(final String reason, final long timeoutMs) {
     synchronized (this) {
       // A seed that finished moments ago answers this request; see lastCompletedSeed for why that is the same
       // answer a new one would produce.
@@ -287,7 +292,7 @@ public class MembershipSecuritySeeder implements AutoCloseable {
       }
     }
 
-    final CompletableFuture<List<String>> seed = schedule("a request from the node that admitted a peer");
+    final CompletableFuture<List<String>> seed = schedule(reason);
     if (seed == null)
       throw new IllegalStateException("the security seed could not be scheduled; this node may be stopping");
 

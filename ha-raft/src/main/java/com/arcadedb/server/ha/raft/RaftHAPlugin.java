@@ -756,6 +756,14 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
    * Separated from the dial so the naming rules are testable without a live cluster to shut down, which the
    * self-naming case in particular cannot be: the branch it selects ends in {@code System.exit}.
    *
+   * <p>
+   * <b>Reads {@code getRaftGroup().getPeers()} directly</b>, rather than through one of the reconciled-membership
+   * accessors this module steers "which peers exist" questions toward, and that is the right source here
+   * (claude-review on PR #7854). Those accessors answer "who counts as a replica" - who to replicate to, who to
+   * wait for a quorum from - and filter accordingly. This question is different: an operator typed a name, and
+   * the only useful answer is the peer that name DECLARES, including one that a configuration change has not
+   * finished committing. Filtering it out would answer "no such server" for a node that is plainly there.
+   *
    * @throws ServerException when no peer matches, or when more than one does
    */
   // @VisibleForTesting
