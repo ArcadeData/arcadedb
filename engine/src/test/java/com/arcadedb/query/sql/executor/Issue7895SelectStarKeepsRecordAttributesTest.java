@@ -158,4 +158,54 @@ class Issue7895SelectStarKeepsRecordAttributesTest {
       }
     });
   }
+
+  /**
+   * Found in review: {@code SELECT *, !@rid} excludes a RECORD ATTRIBUTE, and the projection implements that by
+   * never writing the value - not by {@code removeProperty()}, so no tombstone is recorded. The seed, which only
+   * consulted tombstones, put {@code @rid} straight back, contradicting the statement and the seed's own javadoc.
+   * The exclusion now travels with the row.
+   */
+  @Test
+  void anExcludedRecordAttributeIsNotSeededBackIn() throws Exception {
+    TestHelper.executeInNewDatabase("issue7895ExcludedAttributes", (db) -> {
+      db.command("sql", "CREATE VERTEX TYPE V1");
+      db.command("sql", "CREATE EDGE TYPE E1");
+      db.command("sql", "CREATE VERTEX V1 SET name = 'a'");
+      db.command("sql", "CREATE VERTEX V1 SET name = 'b'");
+      db.command("sql", "CREATE EDGE E1 FROM (SELECT FROM V1 WHERE name = 'a') TO (SELECT FROM V1 WHERE name = 'b') SET w = 5");
+
+      try (final ResultSet rs = db.query("sql", "SELECT *, !@rid FROM V1 LIMIT 1")) {
+        final JSONObject json = rs.next().toJSON();
+        assertThat(json.has("@rid")).as("the statement excluded @rid").isFalse();
+        assertThat(json.getString("@type")).as("and only @rid").isEqualTo("V1");
+        assertThat(json.getString("@cat")).isEqualTo("v");
+      }
+
+      try (final ResultSet rs = db.query("sql", "SELECT *, !@type FROM V1 LIMIT 1")) {
+        final JSONObject json = rs.next().toJSON();
+        assertThat(json.has("@type")).isFalse();
+        assertThat(json.has("@rid")).isTrue();
+      }
+
+      // The shape DistinctExecutionStepTest uses: both attributes gone, the row's own columns kept.
+      try (final ResultSet rs = db.query("sql", "SELECT *, !@rid, !@type FROM V1 LIMIT 1")) {
+        final JSONObject json = rs.next().toJSON();
+        assertThat(json.has("@rid")).isFalse();
+        assertThat(json.has("@type")).isFalse();
+        assertThat(json.getString("name")).isEqualTo("a");
+      }
+
+      // On an edge, where the seed also has @cat/@in/@out to write: only @rid goes, the rest stay. (@cat/@in/@out
+      // are not excludable - the grammar's exclusion accepts @rid and @type and nothing else - so the seed is the
+      // only thing that can write them, and the guard must not overreach and drop them too.)
+      try (final ResultSet rs = db.query("sql", "SELECT *, !@rid FROM E1")) {
+        final JSONObject json = rs.next().toJSON();
+        assertThat(json.has("@rid")).isFalse();
+        assertThat(json.getString("@cat")).isEqualTo("e");
+        assertThat(json.has("@in")).isTrue();
+        assertThat(json.has("@out")).isTrue();
+        assertThat(json.getInt("w")).isEqualTo(5);
+      }
+    });
+  }
 }

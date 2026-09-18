@@ -60,6 +60,21 @@ public class ResultInternal implements Result {
    */
   protected DocumentType        projectionSourceType;
   protected Map<String, String> projectionSourceColumns;
+  /**
+   * The aliases a {@code SELECT *, !alias} projection excluded, or null when it excluded nothing.
+   * <p>
+   * Read by {@link #toJSON()} alone, and only for the record attributes it seeds. The exclusion is NOT a
+   * {@link #tombstones} entry: {@code Projection#calculateSingle} implements {@code !alias} by never writing the
+   * value, which is a different thing from {@code removeProperty()}'s "written, then taken back" - turning one
+   * into the other would change what {@link #getProperty} answers for an excluded column, which the projection
+   * deliberately leaves reading through to the record. So the exclusion has to travel as itself (found in review
+   * of issue #7895: {@code SELECT *, !@rid} had its {@code @rid} put back by the seed).
+   * <p>
+   * One reference write per row, of a set built once per statement and shared by every row it produces, exactly
+   * as {@link #projectionSourceColumns} is - and written only by the {@code *} branch, the only one that leaves
+   * an element on the row for the seed to read.
+   */
+  protected Set<String>         projectionExcludes;
 
   public ResultInternal() {
     // Memory optimization: Use smaller initial capacity to reduce memory footprint
@@ -218,6 +233,18 @@ public class ResultInternal implements Result {
   public ResultInternal setProjectionSource(final DocumentType sourceType, final Map<String, String> sourceColumns) {
     this.projectionSourceType = sourceType;
     this.projectionSourceColumns = sourceColumns;
+    return this;
+  }
+
+  /**
+   * Records which aliases the projection that built this row excluded, so {@link #toJSON()} does not seed back a
+   * record attribute the statement asked it to drop. See the {@link #projectionExcludes} field javadoc.
+   *
+   * @param excludes the projection's exclusion set, built once per statement and shared by every row, so it must
+   *                 never be mutated here
+   */
+  public ResultInternal setProjectionExcludes(final Set<String> excludes) {
+    this.projectionExcludes = excludes;
     return this;
   }
 
@@ -409,8 +436,11 @@ public class ResultInternal implements Result {
    * <p>
    * The category is read from the instance first and from the schema type second: a {@link DetachedDocument} of a
    * vertex or an edge is neither a {@link Vertex} nor an {@link Edge}, and answering {@code "d"} for it would say
-   * the row is a document. An explicitly removed attribute stays removed - {@code SELECT *, !@rid} means what it
-   * says.
+   * the row is a document.
+   * <p>
+   * An attribute the statement dropped stays dropped, by EITHER of the two ways a row can drop one:
+   * {@code removeProperty()}'s {@link #tombstones}, and the {@code SELECT *, !@rid} exclusion the projection
+   * records in {@link #projectionExcludes} - which is not a tombstone and has to be asked separately.
    */
   private void putStructuralAttributes(final JSONObject json) {
     final DocumentType type = element.getType();
@@ -433,8 +463,11 @@ public class ResultInternal implements Result {
   }
 
   private void putStructuralAttribute(final JSONObject json, final String name, final Object value) {
-    if (tombstones == null || !tombstones.contains(name))
-      json.put(name, value);
+    if (tombstones != null && tombstones.contains(name))
+      return;
+    if (projectionExcludes != null && projectionExcludes.contains(name))
+      return;
+    json.put(name, value);
   }
 
   public Optional<Document> getElement() {

@@ -146,6 +146,12 @@ public class Projection extends SimpleNode {
 
       if (item.isAll()) {
         result.setElement(record.toElement());
+        // The row keeps the element, so Result.toJSON() seeds the record's attributes off it - and has to be told
+        // which of them this statement excluded, since `!alias` is implemented by never writing the value rather
+        // than by a tombstone (issue #7895 review): `SELECT *, !@rid` had its @rid put straight back. Written only
+        // here, and only when there is something to say: this is the one branch that leaves an element behind.
+        if (!excludedAliases.isEmpty())
+          result.setProjectionExcludes(excludedAliases);
 
         // `hidden` is a schema annotation only, and has been since #2378 removed database-level support for it:
         // ALTER PROPERTY still records the flag and SHOW/schema introspection still report it, but no read path
