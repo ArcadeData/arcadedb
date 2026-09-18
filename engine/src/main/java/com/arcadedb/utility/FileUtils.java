@@ -68,11 +68,17 @@ public class FileUtils {
   /** One warning per JVM when the platform cannot fsync a directory (see {@link #forceDirectory}). */
   private static final AtomicBoolean NO_DIRECTORY_SYNC_REPORTED = new AtomicBoolean();
   /**
-   * Set the first time {@link #forceDirectory} finds the platform cannot open a directory as a channel - Windows,
-   * where the operation is not merely unsupported but throws. Every later publish then skips the attempt instead of
-   * constructing and discarding an exception per file write, which on the schema-save path is a per-DDL cost.
+   * Whether this platform has no way to fsync a directory at all, which is Windows: a directory is not a file
+   * there, so opening one as a channel throws and no equivalent call exists.
+   * <p>
+   * Decided ONCE, from the platform itself, rather than latched the first time an open happens to fail. Inferring
+   * it from a failure would let ONE uncooperative directory - a network mount, a directory with unusual
+   * permissions - turn off the fsync for every other database in the JVM, silently dropping the machine-crash
+   * guarantee everywhere on the evidence of a single call (claude-review on PR #7855). A non-Windows file store
+   * that still refuses simply pays one exception per publish and is logged; that cost is local to it.
    */
-  private static volatile boolean    directorySyncUnsupported;
+  private static final boolean       NO_DIRECTORY_SYNC_ON_THIS_PLATFORM =
+      System.getProperty("os.name", "").toLowerCase(Locale.ENGLISH).contains("win");
 
   public static String getStringContent(final Object iValue) {
     if (iValue == null)
@@ -592,58 +598,38 @@ public class FileUtils {
    * <p>
    * There is no portable API for this. Opening a directory as a read-only {@link FileChannel} and forcing it is the
    * POSIX idiom and works on Linux and macOS; on Windows the open itself throws, since a directory is not a file
-   * there, and the platform has no equivalent call. The attempt is therefore made and its failure TOLERATED: a
-   * durability improvement that cannot be had on a platform must not turn into a write failure on it. The first
-   * refusal is logged, and remembered in {@link #directorySyncUnsupported} so later publishes do not pay for an
-   * exception per file.
+   * there, and the platform has no equivalent call - which {@link #NO_DIRECTORY_SYNC_ON_THIS_PLATFORM} answers once,
+   * from the platform, so Windows does not build and discard an exception per publish.
    * <p>
-   * An I/O error from {@code force} itself is deliberately treated the same way - logged once, not thrown. The bytes
-   * and the rename are already on the file store at this point; failing the caller here would turn a weaker
-   * durability guarantee into a failed schema save, which is the worse of the two outcomes.
+   * Everywhere else the attempt is made and its failure TOLERATED, per call: a durability improvement that cannot be
+   * had on one file store must neither fail the write nor be inferred into a verdict about the others. The first
+   * refusal of the JVM is logged at FINE.
+   * <p>
+   * An I/O error from {@code force} itself is treated the same way. The bytes and the rename are already on the file
+   * store at this point; failing the caller here would turn a weaker durability guarantee into a failed schema save,
+   * which is the worse of the two outcomes.
    *
    * @param dir the directory to force; ignored when {@code null}
    *
-   * @return {@code true} when the directory was fsync'd, {@code false} when the platform would not do it. Returned
-   * for the test that asserts the fsync actually happens on the platforms that support it - no caller acts on it
+   * @return {@code true} when the directory was fsync'd, {@code false} when it could not be. Returned for the test
+   * that asserts the fsync actually happens on the platforms that support it - no caller acts on it
    */
   public static boolean forceDirectory(final Path dir) {
-    if (dir == null || directorySyncUnsupported)
+    if (dir == null || NO_DIRECTORY_SYNC_ON_THIS_PLATFORM)
       return false;
 
-    final FileChannel channel;
-    try {
-      channel = FileChannel.open(dir, StandardOpenOption.READ);
-    } catch (final Exception e) {
-      // IOException on Windows ("access is denied" opening a directory), UnsupportedOperationException on a provider
-      // that refuses the open outright. Latched - every later publish then skips the attempt instead of building an
-      // exception it is going to discard - but ONLY when the path really is a directory this platform would not
-      // open. A path that is missing or is not a directory says nothing about the platform, and latching on it
-      // would let one odd call silently disable the fsync for the whole JVM.
-      if (Files.isDirectory(dir))
-        directorySyncUnsupported = true;
-      reportNoDirectorySync(dir);
-      return false;
-    }
-
-    try (channel) {
-      // metaData=true: the point of the call is precisely the directory's METADATA, its name entries.
+    // metaData=true: the point of the call is precisely the directory's METADATA, its name entries.
+    try (final FileChannel channel = FileChannel.open(dir, StandardOpenOption.READ)) {
       channel.force(true);
       return true;
-    } catch (final IOException e) {
-      // The open worked, so the platform does support this and a later call may well succeed - NOT latched.
+    } catch (final IOException | UnsupportedOperationException e) {
+      // IOException covers both the open ("access is denied" on a file store that will not present a directory as a
+      // channel) and the force itself; UnsupportedOperationException is a provider refusing the open outright.
+      // Narrow on purpose: an unexpected RuntimeException from a custom FileSystemProvider is a fault worth
+      // surfacing, not something to absorb into a FINE log (claude-review on PR #7855).
       reportNoDirectorySync(dir);
       return false;
     }
-  }
-
-  /**
-   * Clears the "this platform will not fsync a directory" latch. The latch is a JVM-wide volatile, so a test that
-   * makes {@link #forceDirectory} fail on purpose - by making the channel open throw - would otherwise leave the
-   * fsync disabled for every later test sharing the fork. Package-private: nothing in production has any reason to
-   * un-learn what the platform answered.
-   */
-  static void resetDirectorySyncSupport() {
-    directorySyncUnsupported = false;
   }
 
   private static void reportNoDirectorySync(final Path dir) {

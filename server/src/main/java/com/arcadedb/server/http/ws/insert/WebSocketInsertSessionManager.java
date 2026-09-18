@@ -198,6 +198,21 @@ public class WebSocketInsertSessionManager {
       throw e;
     }
 
+    // The claim above and the registration below it are two steps, and closeChannelSessions() can run BETWEEN them:
+    // it would find the claim in byChannel, clear it, and find nothing in `sessions` to roll back, because the
+    // session was not registered yet. The close fires once per connection, so the session it missed would then be
+    // orphaned until the idle sweep - the very symptom this guard exists to prevent, on a window of microseconds
+    // rather than of an arbitrarily delayed frame (claude-review on PR #7855).
+    //
+    // Re-reading the claim under the same per-key critical section is what closes it. The session is in `sessions`
+    // and has begun by now, so the two orderings are genuinely exhaustive: a close AFTER this point finds the
+    // session and rolls it back, and a close BEFORE it took the claim away, which is what this reads.
+    if (!claimIsStillOurs(channelId, id)) {
+      sessions.remove(id, session);
+      session.cancel();
+      throw new IllegalStateException("This connection closed while the insert session was being opened");
+    }
+
     return session;
   }
 
@@ -305,6 +320,23 @@ public class WebSocketInsertSessionManager {
    */
   private static boolean channelIsGone(final WebSocketChannel channel) {
     return channel != null && (!channel.isOpen() || channel.getAttribute(CHANNEL_CLOSED_ATTRIBUTE) != null);
+  }
+
+  /**
+   * Whether the channel claim {@link #start} took is still registered to {@code id}, read under the same per-key
+   * critical section {@link #closeChannelSessions} clears it in - so the answer cannot go stale between the read
+   * and the caller acting on it.
+   * <p>
+   * {@code compute} rather than {@code get} for exactly that reason: {@code get} is lock-free and could observe the
+   * claim an instant before the close removes it.
+   */
+  private boolean claimIsStillOurs(final UUID channelId, final String id) {
+    final boolean[] ours = new boolean[1];
+    byChannel.compute(channelId, (key, claimed) -> {
+      ours[0] = id.equals(claimed);
+      return claimed;
+    });
+    return ours[0];
   }
 
   /**
