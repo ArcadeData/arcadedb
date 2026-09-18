@@ -18,16 +18,19 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.utility.IPAddressBlocklist;
 import io.undertow.server.HttpServerExchange;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.util.Collection;
 import java.util.logging.Level;
 
 /**
@@ -44,10 +47,18 @@ import java.util.logging.Level;
  * default would break every Studio served over plain HTTP from a remote host: tightening a route that
  * has always behaved this way is a compatibility decision, and it is the operator's to take. With the
  * setting off, an unprotected mint is logged at WARNING rather than passing unremarked (issue #7372).
+ * <p>
+ * Issue #7804 settled the two questions that left open. The default flips in 27.1.1, stated on the
+ * setting itself so an operator reads the window rather than discovering it; and a TLS-terminating
+ * reverse proxy can vouch for the leg it terminated, but only from a peer address the operator listed
+ * in {@link GlobalConfiguration#SERVER_API_TOKEN_TRUSTED_PROXIES} - see {@link #isTransportSafeForSecrets}.
+ * Studio renders the 412 through {@code apiTokenTransportRefusal()} in {@code studio-security.js}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class PostApiTokenHandler extends AbstractServerHttpHandler {
+  static final String X_FORWARDED_PROTO = "X-Forwarded-Proto";
+
   private final ServerControlPlane controlPlane;
 
   public PostApiTokenHandler(final HttpServer httpServer) {
@@ -60,9 +71,15 @@ public class PostApiTokenHandler extends AbstractServerHttpHandler {
       final JSONObject payload) {
     checkRootUser(user);
 
+    final ContextConfiguration configuration = httpServer.getServer().getConfiguration();
+
+    // Parsed per request rather than cached so SET SERVER SETTING takes effect on the next mint. Minting is
+    // an administrative operation measured in units per day, and the list is a handful of entries, so the
+    // parse is not on any path where it could be measured.
     final ExecutionResponse refusal = checkTransport(exchange.getRequestScheme(), exchange.getSourceAddress(),
-        httpServer.getServer().getConfiguration()
-            .getValueAsBoolean(GlobalConfiguration.SERVER_API_TOKEN_REQUIRE_SECURE_TRANSPORT));
+        joinForwardedProto(exchange.getRequestHeaders().get(X_FORWARDED_PROTO)),
+        parseTrustedProxies(configuration.getValueAsString(GlobalConfiguration.SERVER_API_TOKEN_TRUSTED_PROXIES)),
+        configuration.getValueAsBoolean(GlobalConfiguration.SERVER_API_TOKEN_REQUIRE_SECURE_TRANSPORT));
     if (refusal != null)
       return refusal;
 
@@ -97,7 +114,19 @@ public class PostApiTokenHandler extends AbstractServerHttpHandler {
    */
   static ExecutionResponse checkTransport(final String scheme, final InetSocketAddress peer,
       final boolean requireSecure) {
-    if (isTransportSafeForSecrets(scheme, peer))
+    return checkTransport(scheme, peer, null, null, requireSecure);
+  }
+
+  /**
+   * As above, additionally letting a reverse proxy the operator has listed vouch for the leg it terminated
+   * (issue #7804).
+   *
+   * @param forwardedProto the {@code X-Forwarded-Proto} header as received, or null
+   * @param trustedProxies the peers whose {@code forwardedProto} is worth reading, or null for none
+   */
+  static ExecutionResponse checkTransport(final String scheme, final InetSocketAddress peer,
+      final String forwardedProto, final IPAddressBlocklist trustedProxies, final boolean requireSecure) {
+    if (isTransportSafeForSecrets(scheme, peer, forwardedProto, trustedProxies))
       return null;
 
     if (requireSecure)
@@ -105,7 +134,9 @@ public class PostApiTokenHandler extends AbstractServerHttpHandler {
       // What is wrong is the connection it arrived on, which is the caller's to fix by reconnecting, not an
       // authorization decision to appeal.
       return new ExecutionResponse(412, new JSONObject().put("error",
-          "API tokens can only be minted over HTTPS or from a loopback client. Connect over TLS, or set "
+          "API tokens can only be minted over HTTPS or from a loopback client. Connect over TLS, set "
+              + GlobalConfiguration.SERVER_API_TOKEN_TRUSTED_PROXIES.getKey()
+              + " if a reverse proxy terminates TLS in front of this server, or set "
               + GlobalConfiguration.SERVER_API_TOKEN_REQUIRE_SECURE_TRANSPORT.getKey() + "=false to allow it")
           .toString());
 
@@ -117,20 +148,107 @@ public class PostApiTokenHandler extends AbstractServerHttpHandler {
   }
 
   /**
+   * Parses {@link GlobalConfiguration#SERVER_API_TOKEN_TRUSTED_PROXIES} into the matcher
+   * {@link #isTransportSafeForSecrets} consults. A list that does not parse yields an empty matcher, which
+   * trusts nobody: a typo in an allow-list has to deny, never widen. The operator is told at SEVERE, because
+   * the symptom on its own - mints refused from behind the proxy they did configure - does not point here.
+   * <p>
+   * {@link IPAddressBlocklist} is reused rather than copied: it is the codebase's one CIDR parser, it already
+   * rejects hostnames instead of resolving them, and duplicating a second matcher is how GHSA-67m7-7w7g-mpmh
+   * got its bypass. Read {@code isBlocked} here as "this address is in the set" - the class is a set matcher;
+   * only its callers decide whether membership allows or denies.
+   * <p>
+   * One consequence of that reuse is worth stating, since the class was written for a block-list and this is
+   * the one allow-list using it: it also matches an IPv6 address that merely <em>encodes</em> a listed IPv4
+   * one (IPv4-mapped, 6to4, Teredo, NAT64), so an entry of {@code 10.0.0.5} matches a peer arriving as
+   * {@code ::ffff:10.0.0.5}. That is the intended reading - it is the same host - and it does not widen the
+   * trust boundary, because a peer still has to complete a TCP handshake from the address it claims; an
+   * attacker able to do that from the operator's proxy address is already on the path and can read the
+   * cleartext leg without forging anything.
+   */
+  static IPAddressBlocklist parseTrustedProxies(final String csv) {
+    try {
+      return IPAddressBlocklist.parse(csv);
+    } catch (final IllegalArgumentException e) {
+      LogManager.instance().log(PostApiTokenHandler.class, Level.SEVERE,
+          "Ignoring the whole of %s ('%s'): %s. No reverse proxy is trusted to vouch for the transport of an API "
+              + "token mint until the list parses", null, GlobalConfiguration.SERVER_API_TOKEN_TRUSTED_PROXIES.getKey(),
+          csv, e.getMessage());
+      return IPAddressBlocklist.parse(null);
+    }
+  }
+
+  /**
+   * Flattens every {@code X-Forwarded-Proto} header on the request into the one comma-separated list
+   * {@link #forwardedProtoIsFullyEncrypted} checks, so that all of them are read and not just the first.
+   * <p>
+   * This is the difference between trusting the proxy and trusting whoever reached it. A proxy configured to
+   * <em>append</em> rather than overwrite leaves a client-supplied header in place and adds its own after it,
+   * so the request arrives carrying two values and the client wrote the first one. Reading only that first
+   * value would let a cleartext client send {@code X-Forwarded-Proto: https} and have it believed, which is
+   * the exact forgery the trusted-proxy list exists to prevent. Requiring every value instead makes an
+   * injected one useless: an injected {@code https} still leaves the proxy's own honest {@code http} in the
+   * list, and the mint is refused.
+   *
+   * @param values every value of the header, in order, or null when the header is absent
+   */
+  static String joinForwardedProto(final Collection<String> values) {
+    if (values == null || values.isEmpty())
+      return null;
+
+    return String.join(",", values);
+  }
+
+  /**
+   * Whether every hop that reported a scheme in {@code X-Forwarded-Proto} encrypted its leg. The header carries
+   * one entry per proxy, oldest (the client's own leg) first; one cleartext hop anywhere in the chain put the
+   * response on a wire in the clear, and it does not matter which one. A blank or absent header reports nothing,
+   * and nothing is not https.
+   * <p>
+   * The {@code -1} limit is load-bearing, not tidiness. {@code String.split} discards trailing empty strings by
+   * default, so {@code "https,"} would come back as a single {@code ["https"]} and read as one fully-encrypted
+   * hop - while the interior form {@code "https,,https"} was refused. A client can send that trailing comma and
+   * a pass-through proxy forwards it unchanged, so the default limit turned an empty hop into a way past the
+   * check depending only on where in the string it sat (found reviewing PR #7824).
+   */
+  static boolean forwardedProtoIsFullyEncrypted(final String forwardedProto) {
+    if (forwardedProto == null || forwardedProto.isBlank())
+      return false;
+
+    for (final String hop : forwardedProto.split(",", -1))
+      if (!"https".equalsIgnoreCase(hop.trim()))
+        return false;
+
+    return true;
+  }
+
+  /**
    * Whether a response body written back on this connection stays out of reach of anything on the path.
    * Either the transport is encrypted, or the peer is on the loopback interface, where the bytes never
    * reach a network - the same pair of conditions {@code GrpcTransportSecurityInterceptor} applies.
    * <p>
-   * Read from the live connection, never from {@code X-Forwarded-Proto}: that header is written by the
-   * client and a caller asking for a token is exactly the caller who could set it. A TLS-terminating
-   * proxy that forwards from a non-loopback address therefore reads as unprotected here; an operator
-   * fronting a cleartext listener has moved the trust boundary to the proxy and states that by leaving
-   * {@link GlobalConfiguration#SERVER_API_TOKEN_REQUIRE_SECURE_TRANSPORT} off.
+   * Read from the live connection, and from {@code X-Forwarded-Proto} only when the peer that sent it is one
+   * the operator listed in {@link GlobalConfiguration#SERVER_API_TOKEN_TRUSTED_PROXIES}. The header is written
+   * by whoever connected, and a caller asking for a token is exactly the caller who would forge it, so on its
+   * own it proves nothing; what the list adds is an operator saying which peers are their own infrastructure
+   * (issue #7804). With the list empty - the default - the header is never consulted and this is exactly the
+   * two-condition test #7372 shipped.
    * <p>
    * Fails closed on an address it cannot read as a resolved IP socket: answering "safe" for an address
    * whose shape is unknown is the wrong direction to guess in.
    */
   static boolean isTransportSafeForSecrets(final String scheme, final InetSocketAddress peer) {
+    return isTransportSafeForSecrets(scheme, peer, null, null);
+  }
+
+  /**
+   * @param forwardedProto the {@code X-Forwarded-Proto} header as received, or null
+   * @param trustedProxies the peers whose {@code forwardedProto} is worth reading, or null for none
+   *
+   * @see #isTransportSafeForSecrets(String, InetSocketAddress)
+   */
+  static boolean isTransportSafeForSecrets(final String scheme, final InetSocketAddress peer,
+      final String forwardedProto, final IPAddressBlocklist trustedProxies) {
     if ("https".equalsIgnoreCase(scheme))
       return true;
 
@@ -138,7 +256,16 @@ public class PostApiTokenHandler extends AbstractServerHttpHandler {
       return false;
 
     final InetAddress address = peer.getAddress();
-    return address != null && address.isLoopbackAddress();
+    if (address == null)
+      return false;
+
+    if (address.isLoopbackAddress())
+      return true;
+
+    // An empty list is the shipped default and means "no proxy vouches for anything", so the header stays
+    // unread; isBlocked() here asks whether the peer is in the operator's set, not whether it is blocked.
+    return trustedProxies != null && !trustedProxies.isEmpty() && trustedProxies.isBlocked(address)
+        && forwardedProtoIsFullyEncrypted(forwardedProto);
   }
 
   @Override

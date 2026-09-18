@@ -552,8 +552,47 @@ function createApiToken() {
       loadApiTokens();
     })
     .fail(function (jqXHR) {
-      globalNotifyError(jqXHR.responseText);
+      // The create modal is deliberately left open on every failure: the form still holds what was typed,
+      // and for the 412 below the fix is to reopen Studio elsewhere, not to retype the permissions.
+      var refusal = apiTokenTransportRefusal(jqXHR);
+      if (refusal) globalNotify(refusal.title, refusal.message, "danger");
+      else globalNotifyError(jqXHR.responseText);
     });
+}
+
+/**
+ * Maps the server's refusal to mint a token over an unprotected transport onto something worth showing
+ * (issue #7804). Returns null for every other failure, which leaves 400/403/409/500 rendering through
+ * globalNotifyError() exactly as before.
+ *
+ * The 412 gets its own handling because globalNotifyError() puts json.error in the TITLE and a fixed
+ * "Error on execution of the command" in the body, so the one sentence explaining what to do about it
+ * was being rendered as a heading. It also never mentioned that the connection at fault is the one this
+ * Studio page is loaded over - which is the part the operator has to act on.
+ *
+ * PostApiTokenHandler.checkTransport() is the only thing that answers 412 on this route; a 412 with a
+ * body that is not the server's JSON (an intermediate proxy's HTML error page) still means the mint was
+ * refused, so the status alone drives the message and the body is only ever an optional detail.
+ */
+function apiTokenTransportRefusal(jqXHR) {
+  if (!jqXHR || jqXHR.status !== 412) return null;
+
+  var serverDetail = "";
+  try {
+    var json = JSON.parse(jqXHR.responseText);
+    if (json && typeof json.error === "string") serverDetail = json.error;
+  } catch (e) {
+    // Not the server's JSON body. The status already told us everything we need to say.
+  }
+
+  var message =
+    "The server refused to mint this token because the connection it arrived on is not encrypted, and the " +
+    "token would be readable on the wire. Studio sends this request over the very connection this page is " +
+    "loaded on, so open Studio over HTTPS, or from the server host itself, and try again.";
+
+  if (serverDetail) message += " Server: " + serverDetail;
+
+  return { title: "API token not minted: connection is not secure", message: message };
 }
 
 function copyCreatedToken() {

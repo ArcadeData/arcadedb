@@ -354,7 +354,15 @@ public class SecurityAdminApiSpec implements OpenApiContributor {
     postOp.addTagsItem("Security");
     postOp.setRequestBody(SpecBuilders.jsonBody(
         "Token creation with name, database, expiresAt, and permissions", "CreateApiTokenRequest", true));
-    postOp.setResponses(createAdminResponses("API token created", "201", "CreateApiTokenResponse"));
+    final ApiResponses postResponses = createAdminResponses("API token created", "201", "CreateApiTokenResponse");
+    // Only the mint declares it: the list and the delete return no token material, so neither applies the
+    // transport check that produces this status (issues #7372, #7804).
+    postResponses.addApiResponse("412", SpecBuilders.errorResponse(
+        "Precondition failed - the transport is not confidential. The token is returned in plaintext exactly "
+            + "once, so it is not written back over a cleartext connection to a non-loopback client when "
+            + "arcadedb.server.apiTokenRequireSecureTransport is enabled. Reconnect over HTTPS, or have a reverse "
+            + "proxy listed in arcadedb.server.apiTokenTrustedProxies terminate TLS in front of the server"));
+    postOp.setResponses(postResponses);
     pathItem.setPost(postOp);
 
     final Operation deleteOp = new Operation();
