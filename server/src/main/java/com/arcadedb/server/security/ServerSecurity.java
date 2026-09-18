@@ -1653,6 +1653,44 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   }
 
   /**
+   * The cluster-replicated security documents this node has never installed a replicated copy of, in the order
+   * {@link #seedSecurityStateClusterWide} reports its failures (issue #7532).
+   * <p>
+   * <b>What it answers.</b> Not "is this node's document stale" - nothing local can answer that - but the one
+   * question that is locally decidable and is the one the readiness gate needs: <b>is what this node enforces
+   * something the cluster installed, or is it this node's own config directory?</b> The distinction is the same
+   * one {@link ReplicatedSecurityFingerprintRepository} was built for, read here for a second purpose: a recorded
+   * fingerprint exists if and only if an {@code applyReplicated*} has installed that document from the replicated
+   * log, so its absence means every credential, group and API token this node enforces for that document came off
+   * its own disk.
+   * <p>
+   * That is exactly the state a freshly admitted peer is in between the commit of its membership change and the
+   * landing of the admission seed - the window issue #7521's bounded retry shortens but, because the seed is
+   * submitted only after {@code addPeer} returns, cannot close - and the state it stays in when the seed never
+   * lands at all, which is the residual failure both admission verbs now report.
+   * <p>
+   * <b>It also reports a cluster that has simply never replicated a security document</b>, because such a cluster
+   * has no node with a recorded fingerprint and there is no local way to tell the two apart. That is why the
+   * readiness gate consuming this is bounded by a window that is zero by default: see
+   * {@code arcadedb.ha.securityConvergenceReadinessTimeout}.
+   * <p>
+   * Free of this object's monitor and of any filesystem access - the repository answers from the map it read at
+   * construction - so a readiness probe may call it on any thread as often as it likes.
+   *
+   * @return the document names, empty when all three have been installed from the replicated log
+   */
+  public List<String> unconvergedClusterSecurityDocuments() {
+    final List<String> unconverged = new ArrayList<>(3);
+    if (replicatedFingerprints.get(ReplicatedSecurityFingerprintRepository.USERS) == null)
+      unconverged.add("users");
+    if (replicatedFingerprints.get(ReplicatedSecurityFingerprintRepository.GROUPS) == null)
+      unconverged.add("groups");
+    if (replicatedFingerprints.get(ReplicatedSecurityFingerprintRepository.API_TOKENS) == null)
+      unconverged.add("API tokens");
+    return unconverged;
+  }
+
+  /**
    * {@link #seedSecurityStateClusterWide()} with a time budget for retrying the documents that failed (issue
    * #7521).
    * <p>

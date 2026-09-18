@@ -1994,6 +1994,22 @@ public enum GlobalConfiguration {
       the single best-effort attempt.""",
       Long.class, 3000L),
 
+  HA_SECURITY_CONVERGENCE_READINESS_TIMEOUT("arcadedb.ha.securityConvergenceReadinessTimeout", SCOPE.SERVER,
+      """
+      How long in milliseconds /api/v1/ready keeps answering NOT READY on a node that is a member of a \
+      multi-node cluster and has never installed any of the cluster's replicated security documents - \
+      server-users.jsonl, server-groups.json, server-api-tokens.json (issue #7532). Such a node enforces \
+      credentials from its own config directory rather than the cluster's, which is what a peer looks like \
+      between the moment its membership change commits and the moment the admission seed of issue #7521 lands, \
+      and what it stays like when that seed never lands at all. Requires \
+      arcadedb.server.readinessRequiresHA, and is bounded on purpose: when the window expires the node reports \
+      READY and logs, once, at SEVERE, exactly which documents never converged, so a rolling restart cannot \
+      stall behind a seed nobody is going to send. 0, the default, disables the wait entirely and leaves \
+      readiness exactly as it was - a cluster that has never replicated a security document has no node with \
+      one, so a non-zero default would hold every statically configured deployment's readiness for this window \
+      on every start.""",
+      Long.class, 0L),
+
   HA_RESYNC_PROGRESS_LOGGING("arcadedb.ha.resyncProgressLogging", SCOPE.SERVER,
       """
       When true (default), the leader emits a concise per-follower unreachable/reconnected narrative and a \
