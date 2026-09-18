@@ -3821,6 +3821,12 @@ public enum GlobalConfiguration {
    * {@code ':'} between fields - so what is treated as a password here is what the server treats as one. That
    * parity is the point: a value the server reads as {@code user}/{@code password} and this method read
    * differently would be a value whose secret is published in full.
+   * <p>
+   * It holds for any number of fields, because the rule is positional on both sides: the server authenticates
+   * with field 1 and nothing else, so field 1 is the only one masked here. A password written with a {@code ':'}
+   * in it is therefore published from the colon onwards - not a leak of the password the server uses, which is
+   * only the part before it, but a reason not to write one that way. The setting's format cannot express it, the
+   * same way it cannot express a password containing a {@code ','}.
    */
   private static String redactDefaultDatabaseCredentials(final String databases) {
     final String[] entries = databases.split(";");

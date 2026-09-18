@@ -72,6 +72,19 @@ class GlobalConfigurationPublishableValueTest {
   }
 
   @Test
+  void onlyTheFieldTheServerAuthenticatesWithIsMasked() {
+    // A ':' inside a password is not expressible in this format: ArcadeDBServer.parseCredentials authenticates
+    // with field 1 and reads field 2 as the group, so "word" below is a GROUP NAME to the server, not a secret.
+    // Masking it too would hide a role an operator reads this report for; what the server calls the password is
+    // masked, whatever the field count.
+    assertThat(GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue("mydb[jay:pass:word]"))
+        .isEqualTo("mydb[jay:*****:word]");
+    assertThat(GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue("mydb[jay:pass:word:extra]"))
+        .as("a field the server ignores entirely is not a secret it could ever have used")
+        .isEqualTo("mydb[jay:*****:word:extra]");
+  }
+
+  @Test
   void aCredentialWithNoPasswordIsLeftAsWritten() {
     assertThat(GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue("mydb[jay]")).isEqualTo("mydb[jay]");
   }
