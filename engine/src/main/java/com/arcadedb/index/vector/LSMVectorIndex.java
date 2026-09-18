@@ -7678,11 +7678,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (tx == null)
       return null;
 
+    final VectorLocationIndex locations = vectorIndex();
+
     VectorIndexReplayUndo undo = (VectorIndexReplayUndo) tx.getIndexReplayUndo(this);
     if (undo == null) {
-      undo = new VectorIndexReplayUndo(this, vectorIndex());
+      undo = new VectorIndexReplayUndo(this, locations);
       tx.addIndexReplayUndo(this, undo);
-    }
+    } else if (undo.locationsAtReplay != locations)
+      // A rebuild or a compaction republished the locations since an EARLIER operation of this same replay: put
+      // and remove hold the write lock per call, not for the whole replay, so the window is between two of this
+      // transaction's own operations. Re-anchor now, per record, rather than let one boolean at undo time speak
+      // for operations written against two different instances. See VectorIndexReplayUndo.rebaseTo.
+      undo.rebaseTo(locations);
+
     return undo;
   }
 
