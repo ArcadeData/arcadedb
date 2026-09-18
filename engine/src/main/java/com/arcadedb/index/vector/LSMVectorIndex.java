@@ -7736,9 +7736,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
     lock.writeLock().lock();
     try {
       // A compaction or a rebuild that republished the location index wholesale did so from the COMMITTED pages,
-      // so the replacement never held this transaction's entries: there is nothing of ours left in it to undo, and
-      // the offsets recorded in the journal address a data file the compaction may already have replaced. Compare
-      // by identity - see VectorIndexReplayUndo.locationsAtReplay - and compensate only the counters below.
+      // so the offsets recorded in this journal address a data file the replacement may no longer be reading.
+      // Compare by identity - see VectorIndexReplayUndo.locationsAtReplay - and skip ONLY the two steps that
+      // replay those offsets. Everything else below still runs: see the note on the allocated-id sweep.
       final boolean locationsStillOurs = locations == undo.locationsAtReplay;
 
       // Built once and used twice - by the assertion below and by the delta-buffer sweep further down - so the
@@ -7746,17 +7746,24 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // path where assertions are live (see the note on disjointness above). Sized in TABLE slots, which is what
       // the constructor takes: at the element count itself the set would rehash on the last few adds.
       final IntHashSet allocated;
-      if (locationsStillOurs && undo.allocatedCount > 0) {
+      if (undo.allocatedCount > 0) {
         allocated = new IntHashSet(undo.allocatedCount * 2);
         for (int i = 0; i < undo.allocatedCount; i++)
           allocated.add(undo.allocatedIds[i]);
       } else
         allocated = null;
 
-      assert allocated == null || disjoint(allocated, undo) :
+      assert !locationsStillOurs || allocated == null || disjoint(allocated, undo) :
           "an id was both allocated and tombstoned by one replay: TransactionIndexContext.commit() no longer "
               + "replays every REMOVE before any ADD, which this compensation depends on";
 
+      // UNCONDITIONAL, unlike the two blocks below: nothing here reads a captured offset, and every id in this set
+      // was minted by the aborted replay and can never be legitimate. It must not be skipped when the locations
+      // were republished, either - a rebuild trims the delta buffer to `vectorId >= deltaSnapshotId`, and when it
+      // captured that snapshot BEFORE the replay allocated (its own publish then runs after, under this same write
+      // lock) the aborted id clears the trim and survives. The delta scan filters on the TOMBSTONE set, not on
+      // liveness, so a forgotten id reads as perfectly live there: leaving that entry is exactly the "search
+      // matches a record on an embedding no transaction committed" window this whole fix exists to close.
       if (allocated != null) {
         final VectorCache cache = searchVectorCache;
         for (int i = 0; i < undo.allocatedCount; i++) {
@@ -7783,6 +7790,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
         }
       }
 
+      // From here down, only what depends on the offsets captured at replay time, which is what a republished
+      // location index invalidates: the offsets address a data file a compaction may already have replaced.
       for (int i = locationsStillOurs ? undo.tombstonedCount - 1 : -1; i >= 0; i--) {
         final long offsetAndFlag = undo.tombstonedOffsetAndFlag[i];
         if (offsetAndFlag == VectorLocationIndex.ABSENT)
@@ -7796,6 +7805,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
       }
 
       if (locationsStillOurs && undo.droppedDeltaEntries != null) {
+        // Skipped on a republish for the mirror reason: these entries belong to ids the rebuild read back as live
+        // off the committed pages (this transaction's tombstone writes went down with its pages), so it has
+        // already decided what the buffer holds for them, and re-adding would duplicate its decision.
+        //
         // Re-added directly rather than through queueDeltaEntry(): these entries were in the buffer a moment ago,
         // so re-applying the heap budget to them could only strip payloads the buffer had already accounted for.
         int restoredPayloads = 0;
