@@ -3837,7 +3837,10 @@ public enum GlobalConfiguration {
 
       final String entry = entries[e];
       final int credentialsBegin = entry.indexOf('[');
-      final int credentialsEnd = entry.lastIndexOf(']');
+      // The FIRST ']' after the '[', which is the one ArcadeDBServer.loadDefaultDatabases closes the credential
+      // block on. lastIndexOf() would pick a ']' inside the optional trailing {commands} segment instead - a
+      // restore: path may contain one - and report a mangled entry for a value the server reads perfectly well.
+      final int credentialsEnd = credentialsBegin < 0 ? -1 : entry.indexOf(']', credentialsBegin);
       if (credentialsBegin < 0 || credentialsEnd < credentialsBegin) {
         // No credential block: nothing in it to hide.
         redacted.append(entry);
