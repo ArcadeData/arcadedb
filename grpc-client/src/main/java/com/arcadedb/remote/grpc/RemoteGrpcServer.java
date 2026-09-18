@@ -791,6 +791,14 @@ public class RemoteGrpcServer implements AutoCloseable {
    * {@code host:raftPort}, the longer positional forms or the {@code host:&#123;raft:..,http:..&#125;}
    * object form, optionally prefixed {@code name@}. It is sent as given; the server validates it for
    * every transport, and surfaces a refusal through {@code GrpcClientErrorMapper}.
+   * <p>
+   * <b>A join that succeeded but left a security document unseeded raises
+   * {@link com.arcadedb.exception.NeedRetryException}</b> (issue #7532, from the server's
+   * {@code UNAVAILABLE}, mapped here the way HTTP's 503 is on the other transport). It does <em>not</em> mean
+   * the server failed to join - it is a committed cluster member by then - but that it is enforcing its own
+   * copy of the named documents until the seed is reissued. Re-running this call does exactly that, and is
+   * idempotent on the membership change. Before this the RPC answered OK and the failure existed only in the
+   * server's log, so an operator driving the join over gRPC had nothing to branch on.
    */
   public void connectCluster(final String serverAddress) {
     call("connect cluster", stub -> stub.connectCluster(
