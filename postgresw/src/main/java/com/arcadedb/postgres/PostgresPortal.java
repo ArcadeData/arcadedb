@@ -139,8 +139,9 @@ public class PostgresPortal {
    * statement, since both names pointed at the same object.
    * <p>
    * This copies only what PARSE already fixed for the statement for good (query text/language/parameter
-   * types, the parsed {@code sqlStatement}, and - for BEGIN/COMMIT/ROLLBACK and a resolved catalog answer -
-   * the response PARSE precomputed into {@code executed}/{@code cachedResultSet}/{@code columns}) and leaves
+   * types, the parsed {@code sqlStatement}, the {@code ignoreExecution}/{@code transactionControl} markers,
+   * and - for a resolved catalog answer, SHOW and the system queries - the response PARSE precomputed into
+   * {@code executed}/{@code cachedResultSet}/{@code columns}) and leaves
    * every per-Bind field (parameter values, {@code fullResultSet}, {@code resultCursor}, {@code suspended},
    * {@code rowDescriptionSent}, ...) at its fresh default, so each returned portal starts its own independent
    * lifecycle.

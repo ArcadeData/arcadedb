@@ -97,4 +97,31 @@ class QuotedIdentifierEscapingTest {
     assertThat(reemit("SELECT FROM schema:bucket:" + SchemaIdentifier.quoteName("Trailing\\") + " WHERE `v` = 1"))
         .isEqualTo("SELECT FROM schema:bucket:" + SchemaIdentifier.quoteName("Trailing\\") + " WHERE `v` = 1");
   }
+
+  /**
+   * {@link Identifier#endOfQuoted} is the READING half of {@link Identifier#quote}, extracted so the hand-written
+   * scans that have to find the end of a quoted identifier - the Postgres wire's tokenizer and its COPY
+   * parenthesis matcher - share one contract instead of each keeping a copy that can drift from the grammar
+   * (issue #7858, and the review of it).
+   */
+  @ParameterizedTest
+  @ValueSource(strings = { "plain", "Back`Tick", "Trailing\\", "Inner\\Slash", "Mixed\\`Name",
+      "Evil` ; DROP TYPE Victim; --", "close)paren", "" })
+  void endOfQuotedFindsExactlyTheBackTickThatQuoteWrote(final String name) {
+    final String quoted = Identifier.quote(name);
+    final String text = "SELECT FROM " + quoted + " WHERE x = 1";
+    final int open = text.indexOf('`');
+
+    final int end = Identifier.endOfQuoted(text, open);
+    assertThat(end).as("the identifier is closed").isEqualTo(open + quoted.length() - 1);
+    assertThat(Identifier.unescape(text.substring(open + 1, end))).as("and it holds the name it was given")
+        .isEqualTo(name);
+  }
+
+  @Test
+  void endOfQuotedReportsAnIdentifierThatIsNeverClosed() {
+    assertThat(Identifier.endOfQuoted("SELECT FROM `unterminated", 12)).isEqualTo(-1);
+    // A trailing backslash escapes the closing back-tick, so this one does not close either.
+    assertThat(Identifier.endOfQuoted("SELECT FROM `x\\`", 12)).isEqualTo(-1);
+  }
 }

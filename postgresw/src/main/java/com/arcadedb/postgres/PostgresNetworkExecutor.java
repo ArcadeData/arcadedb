@@ -511,11 +511,11 @@ public class PostgresNetworkExecutor extends Thread {
         // underneath (issue #6725).
         answerWithColumns(portal);
       } else
-        // In practice, SAVEPOINT/RELEASE/SET and nothing else (issue #6930): they are the only portals that
-        // carry no statement, never produce a result, and never get columns - ROLLBACK TO used to be one of
-        // them too, but fails at Parse instead since issue #7846, so it never reaches here. An INSERT/UPDATE/
-        // DELETE does NOT land here - it is run by the first arm and announced under whatever columns its
-        // rows carried, empty ones included, exactly like the {cypher} write with no RETURN. The arm is kept
+        // In practice SAVEPOINT/RELEASE/SET and BEGIN/COMMIT/ROLLBACK (issues #6930, #7905): they are the
+        // portals that carry no statement, never produce a result, and never get columns - ROLLBACK TO used to
+        // be one of them too, but fails at Parse instead since issue #7846, so it never reaches here. An
+        // INSERT/UPDATE/DELETE does NOT land here - it is run by the first arm and announced under whatever
+        // columns its rows carried, empty ones included, exactly like the {cypher} write with no RETURN. The arm is kept
         // general rather than written as `ignoreExecution` because it is also the backstop that keeps the
         // reply count right: whatever state a portal reaches Describe in, it leaves with exactly one answer.
         writeNoData();
@@ -659,8 +659,10 @@ public class PostgresNetworkExecutor extends Thread {
         beginImplicitTransactionBlock(portal);
 
       if (portal.ignoreExecution)
-        // SAVEPOINT/RELEASE/SET never produce rows: Execute must answer CommandComplete, not NoData - NoData
-        // ('n') is a Describe-only reply and is never a legal answer to Execute (issue #6930). ROLLBACK TO
+        // SAVEPOINT/RELEASE/SET and BEGIN/COMMIT/ROLLBACK never produce rows: Execute must answer
+        // CommandComplete, not NoData - NoData ('n') is a Describe-only reply and is never a legal answer to
+        // Execute (issue #6930). The tag comes from portal.query, so getTag() spells it BEGIN/COMMIT/ROLLBACK
+        // exactly as it did when these three carried an empty result set instead (issue #7905). ROLLBACK TO
         // used to be one of these too, but fails at Parse instead since issue #7846, so it never reaches here.
         writeCommandComplete(portal.query, 0);
       else if (portal.copyStatement != null) {
@@ -2572,7 +2574,10 @@ public class PostgresNetworkExecutor extends Thread {
           // nothing left to commit - so the command tag executeCommand() later writes must read ROLLBACK
           // regardless of which of the three keywords the client actually sent (see queryCommand()).
           portal.query = "ROLLBACK";
-          setEmptyResultSet(portal);
+          // Same reasoning as the BEGIN/COMMIT/ROLLBACK branches below (issue #7905): this portal is a
+          // transaction-control statement too, so its Describe('P') owes NoData rather than a zero-field
+          // RowDescription. The rollback itself already happened, just above.
+          portal.ignoreExecution = true;
           preparedStatements.put(portalName, portal);
           writeMessage("parse complete", null, '1', 4);
         }
@@ -2585,6 +2590,26 @@ public class PostgresNetworkExecutor extends Thread {
         // answered. The aborted-block branch above runs first on purpose - a transaction-end statement is the
         // one thing that is still accepted, per the note there.
         return;
+
+      // THE DESTINATION NAME IS INVALIDATED BEFORE ANYTHING THAT CAN FAIL, which is PostgreSQL's own rule for
+      // the unnamed statement (`drop_unnamed_stmt()` runs at the top of `exec_parse_message`) and the only safe
+      // reading of a named one: a Parse that is refused must not leave the name usable. The registration at the
+      // end of this method used to be the only writer, so every failure path - the three catch arms and the
+      // ROLLBACK TO refusal below - left whatever had been parsed under this name BEFORE still registered, and a
+      // Bind that followed resurrected it: the client received, for the statement this server had just refused,
+      // a complete successful answer built from a DIFFERENT statement - BindComplete, RowDescription, the old
+      // statement's rows and a success tag (issue #7906). Two round trips apart, so skip-until-Sync (#7775) does
+      // not reach it. Only the prepared statement is dropped, not the portals already bound from it: PostgreSQL
+      // keeps those alive too, each holding the plan it was bound with.
+      //
+      // "ANYTHING THAT CAN FAIL" MEANS ANYTHING THAT CAN FAIL AND LEAVE THE CONNECTION USABLE, which is where
+      // this sits rather than immediately after readString() reads the name. The reads above it - the query
+      // text, the parameter count, the parameter type OIDs - are wire-level: a failure in one of them has left
+      // the channel misaligned, so no later message can be framed and what is registered under a statement name
+      // cannot matter to anybody. The two early returns above it are the deliberate half of the boundary: an
+      // aborted block and a skip-until-Sync discard are PostgreSQL DISCARDING this message, not refusing it, and
+      // a discarded Parse must leave the name exactly as it found it.
+      preparedStatements.remove(portalName);
 
       if (portal.query.isEmpty()) {
         emptyQueryResponse();
@@ -2670,15 +2695,26 @@ public class PostgresNetworkExecutor extends Thread {
             // pgjdbc and psycopg3 both prepare ahead of use. Moving the state at Parse meant a Parse("COMMIT")
             // alone made the next Sync commit the open transaction, and a Parse("ROLLBACK") discarded it on the
             // spot, in both cases without the client having executed anything.
+            // MARKED ignoreExecution, where these three used to be given an EMPTY materialized result set
+            // instead, and that difference is the whole of issue #7905. An empty result set leaves a non-null
+            // (but empty) column map behind, which describeCommand()'s second arm matches, and
+            // writeRowDescription() returns early only on a NULL map - so a zero-field RowDescription went out
+            // in front of the tag, which is the exact byte the simple-query fix removed: libpq reports
+            // PGRES_TUPLES_OK instead of PGRES_COMMAND_OK for it, and a client that checks the status when it
+            // opens a transaction gives up. PQexecParams/PQexecPrepared - psycopg3, asyncpg and the Arrow ADBC
+            // driver with them - always Describe('P') before Execute, so the extended protocol is where those
+            // clients actually send BEGIN. SAVEPOINT/RELEASE/SET were already on the right side of this line;
+            // these three now join them, and Execute answers them identically either way (the ignoreExecution
+            // arm writes the same CommandComplete an empty cachedResultSet produced).
             if (isBeginStatement(upperCaseText)) {
               portal.transactionControl = PostgresPortal.TransactionControl.BEGIN;
-              setEmptyResultSet(portal);
+              portal.ignoreExecution = true;
             } else if (isCommitStatement(upperCaseText)) {
               portal.transactionControl = PostgresPortal.TransactionControl.COMMIT;
-              setEmptyResultSet(portal);
+              portal.ignoreExecution = true;
             } else if (isRollbackStatement(upperCaseText)) {
               portal.transactionControl = PostgresPortal.TransactionControl.ROLLBACK;
-              setEmptyResultSet(portal);
+              portal.ignoreExecution = true;
             } else {
               final SQLQueryEngine sqlEngine = (SQLQueryEngine) database.getQueryEngine("sql");
               portal.sqlStatement = sqlEngine.parse(query.query, (DatabaseInternal) database);
@@ -2816,13 +2852,6 @@ public class PostgresNetworkExecutor extends Thread {
       case "timezone" -> "UTC";
       default -> "";
     };
-  }
-
-  private void setEmptyResultSet(final PostgresPortal portal) {
-    portal.executed = true;
-    portal.isExpectingResult = true;
-    portal.cachedResultSet = Collections.emptyList();
-    portal.columns = getColumns(portal.cachedResultSet);
   }
 
   private void sendServerParameter(final String name, final String value) {
