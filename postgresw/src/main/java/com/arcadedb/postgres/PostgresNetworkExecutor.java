@@ -914,7 +914,12 @@ public class PostgresNetworkExecutor extends Thread {
         resultSet = new IteratorResultSet(createResultSet(varName, getShowConfigValue(varName)).iterator());
       } else if (isBeginStatement(upperCaseText)) {
         explicitTransactionStarted = true;
-        database.begin();
+        // Guarded, exactly like applyTransactionControl()'s BEGIN on the extended protocol: a BEGIN that finds a
+        // transaction already open - a second BEGIN, or an implicit block an earlier extended-protocol statement
+        // left running - joins it instead of stacking a nested one under it. PostgreSQL answers such a BEGIN with
+        // a warning and keeps the block it already has.
+        if (!database.isTransactionActive())
+          database.begin();
         transactionControl = true;
         resultSet = new IteratorResultSet(Collections.emptyIterator());
       } else if (isCommitStatement(upperCaseText)) {
