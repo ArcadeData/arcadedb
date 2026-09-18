@@ -35,7 +35,6 @@ import static com.arcadedb.postgres.PostgresWireMessages.WireMessage;
 import static com.arcadedb.postgres.PostgresWireMessages.errorFields;
 import static com.arcadedb.postgres.PostgresWireMessages.messageTypesOf;
 import static com.arcadedb.postgres.PostgresWireMessages.readUntilReadyForQuery;
-import static com.arcadedb.postgres.PostgresWireMessages.readWireMessage;
 import static com.arcadedb.postgres.PostgresWireMessages.readyForQueryStatusOf;
 import static com.arcadedb.postgres.PostgresWireMessages.sendBind;
 import static com.arcadedb.postgres.PostgresWireMessages.sendDescribe;

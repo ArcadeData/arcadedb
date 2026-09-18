@@ -60,6 +60,10 @@ class Issue7470CopyToStdoutSparseTypeIT extends PostgresWireProtocolTestBase {
 
   private static final String SPARSE   = "copysparse7470";
   private static final String DECLARED = "copydeclared7470";
+  private static final String BULK     = "copybulk7470";
+  /** Comfortably past the 64KB the COPY writer buffers before it flushes a batch of rows to the socket. */
+  private static final int    BULK_ROWS    = 200;
+  private static final int    BULK_PAYLOAD = 1024;
 
   @BeforeEach
   void populate() {
@@ -84,6 +88,39 @@ class Issue7470CopyToStdoutSparseTypeIT extends PostgresWireProtocolTestBase {
       database.newDocument(DECLARED).set("id", 1).save();
       database.newDocument(DECLARED).set("id", 2, "name", "second", "email", "second@example.com").save();
     });
+
+    // One bucket, so the scan order is the insertion order and the one-row sampler is guaranteed to read the
+    // first row rather than the odd one out at the end. Every row but the last carries only the declared
+    // columns; the last adds a schemaless one, long after the writer has flushed its first batch to the socket.
+    final DocumentType bulk = database.getSchema().createDocumentType(BULK, 1);
+    bulk.createProperty("id", Type.INTEGER);
+    bulk.createProperty("payload", Type.STRING);
+    final String payload = "x".repeat(BULK_PAYLOAD);
+    database.transaction(() -> {
+      for (int i = 0; i < BULK_ROWS; i++)
+        database.newDocument(BULK).set("id", i, "payload", payload).save();
+      database.newDocument(BULK).set("id", BULK_ROWS, "payload", payload, "extra", "the column nobody announced").save();
+    });
+  }
+
+  @Test
+  @DisplayName("[#7470] a refusal after the stream has already flushed rows ends the copy with an ErrorResponse")
+  void aRefusalPartwayThroughAFlushedStreamIsReportedToTheClient() throws Exception {
+    try (final Connection connection = openJdbcConnection()) {
+      final ByteArrayOutputStream received = new ByteArrayOutputStream();
+      assertThatThrownBy(() -> connection.unwrap(PGConnection.class).getCopyAPI()
+          .copyOut("COPY (SELECT FROM " + BULK + " ORDER BY id) TO STDOUT", received))
+          .isInstanceOf(PSQLException.class)
+          .hasMessageContaining("\"extra\"")
+          .hasMessageContaining("which is not among the columns the stream announced");
+
+      // The point of this case: the failure lands after real CopyData has gone out, so the client sees an
+      // ErrorResponse where CopyDone would have been - which is how PostgreSQL reports a COPY whose source fails
+      // mid-stream, and what pgjdbc's CopyManager turns into the exception above.
+      assertThat(received.size())
+          .as("the writer had already flushed a batch of rows before the offending one was reached")
+          .isGreaterThan(64 * 1024);
+    }
   }
 
   @Test
