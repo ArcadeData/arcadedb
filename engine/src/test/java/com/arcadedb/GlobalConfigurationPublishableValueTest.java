@@ -85,6 +85,15 @@ class GlobalConfigurationPublishableValueTest {
   }
 
   @Test
+  void aTrailingStartupCommandIsLeftAloneEvenWhenItContainsABracket() {
+    // The credential block closes on the FIRST ']', the way loadDefaultDatabases closes it. Closing on the last
+    // one would swallow the {commands} segment into the credentials whenever a restore: path contains a ']'.
+    assertThat(GlobalConfiguration.SERVER_DEFAULT_DATABASES
+        .publishableValue("mydb[jay:hunter2]{restore:/backups/a]b.tar}"))
+        .isEqualTo("mydb[jay:*****]{restore:/backups/a]b.tar}");
+  }
+
+  @Test
   void aCredentialWithNoPasswordIsLeftAsWritten() {
     assertThat(GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue("mydb[jay]")).isEqualTo("mydb[jay]");
   }
