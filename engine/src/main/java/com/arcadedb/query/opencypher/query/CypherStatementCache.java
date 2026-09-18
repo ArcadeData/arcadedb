@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.query;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.parser.Cypher25AntlrParser;
@@ -43,10 +44,13 @@ public class CypherStatementCache {
   /**
    * Creates a new statement cache.
    *
+   * @param database the database the cached statements belong to, handed to the parser so the {@code SCOPE.DATABASE}
+   *                 parse limits are read from its own configuration and {@code ALTER DATABASE} reaches them
+   *                 (issue #7922)
    * @param size     maximum number of statements to cache (LRU eviction when exceeded)
    */
-  public CypherStatementCache(final int size) {
-    this.parser = new Cypher25AntlrParser();
+  public CypherStatementCache(final Database database, final int size) {
+    this.parser = new Cypher25AntlrParser(database);
     // Use LRUCache wrapped in synchronizedMap for thread-safety
     this.cache = Collections.synchronizedMap(new LRUCache<>(size));
   }

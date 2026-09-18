@@ -6314,13 +6314,19 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // Type name
     stmt.name = (Identifier) visit(bodyCtx.identifier());
 
-    // Process all alter type items
+    // Process all alter type items. One AlterTypeStatement.Item per grammar item, which is what the grammar's
+    // `alterTypeItem (COMMA alterTypeItem)*` promises: these fields used to live on the statement itself and be
+    // overwritten per item, so a multi-item ALTER kept only the last one and answered OK, and because the
+    // identifier list was shared, `ALIASES x, y, SUPERTYPE +A` ended up as three super types (issue #7920).
     for (final SQLParser.AlterTypeItemContext itemCtx : bodyCtx.alterTypeItem()) {
+      final AlterTypeStatement.Item item = new AlterTypeStatement.Item();
+      stmt.items.add(item);
+
       if (itemCtx.NAME() != null) {
-        stmt.property = "name";
-        stmt.identifierValue = (Identifier) visit(itemCtx.identifier(0));
+        item.property = "name";
+        item.identifierValue = (Identifier) visit(itemCtx.identifier(0));
       } else if (itemCtx.SUPERTYPE() != null) {
-        stmt.property = "supertype";
+        item.property = "supertype";
         // Process SUPERTYPE with optional +/- prefixes for each identifier
         // Grammar: SUPERTYPE ((PLUS | MINUS)? identifier (COMMA (PLUS | MINUS)? identifier)*)
         boolean nextIsAdd = true; // Default is add if no +/- specified
@@ -6334,16 +6340,16 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
               nextIsAdd = false;
             }
           } else if (child instanceof SQLParser.IdentifierContext) {
-            stmt.identifierListValue.add((Identifier) visit(itemCtx.identifier(identifierIndex++)));
-            stmt.identifierListAddRemove.add(nextIsAdd);
+            item.identifierListValue.add((Identifier) visit(itemCtx.identifier(identifierIndex++)));
+            item.identifierListAddRemove.add(nextIsAdd);
             nextIsAdd = true; // Reset to default for next identifier
           }
         }
       } else if (itemCtx.BUCKETSELECTIONSTRATEGY() != null) {
-        stmt.property = "bucketselectionstrategy";
-        stmt.identifierValue = (Identifier) visit(itemCtx.identifier(0));
+        item.property = "bucketselectionstrategy";
+        item.identifierValue = (Identifier) visit(itemCtx.identifier(0));
       } else if (itemCtx.BUCKET() != null) {
-        stmt.property = "bucket";
+        item.property = "bucket";
         // Process BUCKET with +/- identifiers
         // Grammar: BUCKET ((PLUS | MINUS) identifier)+
         int identifierIndex = 0;
@@ -6351,27 +6357,28 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           final var child = itemCtx.getChild(i);
           if (child instanceof final TerminalNode terminal) {
             if (terminal.getSymbol().getType() == SQLParser.PLUS) {
-              stmt.identifierListAddRemove.add(true);
+              item.identifierListAddRemove.add(true);
             } else if (terminal.getSymbol().getType() == SQLParser.MINUS) {
-              stmt.identifierListAddRemove.add(false);
+              item.identifierListAddRemove.add(false);
             }
           } else if (child instanceof SQLParser.IdentifierContext) {
-            stmt.identifierListValue.add((Identifier) visit(itemCtx.identifier(identifierIndex++)));
+            item.identifierListValue.add((Identifier) visit(itemCtx.identifier(identifierIndex++)));
           }
         }
       } else if (itemCtx.CUSTOM() != null) {
-        stmt.customKey = (Identifier) visit(itemCtx.identifier(0));
-        stmt.customValue = (Expression) visit(itemCtx.expression());
+        // The one arm with no named property: it carries a key/value pair instead.
+        item.customKey = (Identifier) visit(itemCtx.identifier(0));
+        item.customValue = (Expression) visit(itemCtx.expression());
       } else if (itemCtx.ALIASES() != null) {
-        stmt.property = "aliases";
+        item.property = "aliases";
         // Check if NULL (to clear aliases) or identifiers (to set aliases)
         if (itemCtx.NULL() != null) {
           // NULL means clear all aliases - leave identifierListValue empty
         } else {
           // Add all alias identifiers
           for (final SQLParser.IdentifierContext aliasCtx : itemCtx.identifier()) {
-            stmt.identifierListValue.add((Identifier) visit(aliasCtx));
-            stmt.identifierListAddRemove.add(true); // Always add for ALIASES
+            item.identifierListValue.add((Identifier) visit(aliasCtx));
+            item.identifierListAddRemove.add(true); // Always add for ALIASES
           }
         }
       }

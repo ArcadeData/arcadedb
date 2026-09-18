@@ -39,20 +39,123 @@ import java.util.stream.Collectors;
 
 public class AlterTypeStatement extends DDLStatement {
   /**
+   * One {@code alterTypeItem} from the grammar: a single property to alter, with whatever operand its arm carries.
+   * <p>
+   * The grammar has always accepted a comma-separated list of these, but the statement used to hold ONE
+   * {@code property}, ONE {@code identifierValue} and ONE shared identifier list, which the AST builder overwrote
+   * per item. So {@code ALTER TYPE Foo NAME Bar, SUPERTYPE +Base} added the super type, never renamed the type and
+   * answered {@code "result": "OK"}, and because every item appended into the same list,
+   * {@code ALTER TYPE Foo ALIASES x, y, SUPERTYPE +A} re-rendered as {@code ALTER TYPE Foo supertype +x, +y, +A} -
+   * three super types out of two aliases and one super type (issue #7920). One instance per item is what the
+   * grammar promises, and what {@link #executeDDL} now applies in the order written.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  public static class Item {
+    /**
+     * the class property to be altered, lowercase. Null for the {@code CUSTOM} arm, which carries
+     * {@link #customKey}/{@link #customValue} instead of a named property.
+     */
+    public String           property;
+    public Identifier       identifierValue;
+    public List<Boolean>    identifierListAddRemove = new ArrayList<>();
+    public List<Identifier> identifierListValue     = new ArrayList<>();
+    public PNumber          numberValue;
+    public Boolean          booleanValue;
+    public Identifier       customKey;
+    public Expression       customValue;
+
+    public Item copy() {
+      final Item result = new Item();
+      result.property = property;
+      result.identifierValue = identifierValue == null ? null : identifierValue.copy();
+      result.identifierListValue = identifierListValue.stream().map(Identifier::copy).collect(Collectors.toList());
+      result.identifierListAddRemove = new ArrayList<>(identifierListAddRemove);
+      result.numberValue = numberValue == null ? null : numberValue.copy();
+      result.booleanValue = booleanValue;
+      result.customKey = customKey == null ? null : customKey.copy();
+      result.customValue = customValue == null ? null : customValue.copy();
+      return result;
+    }
+
+    void toString(final Map<String, Object> params, final StringBuilder builder) {
+      if (property != null) {
+        builder.append(property).append(" ");
+
+        if (numberValue != null) {
+          numberValue.toString(params, builder); // clusters only
+        } else if (identifierValue != null) {
+          identifierValue.toString(params, builder);
+        } else if (!identifierListValue.isEmpty()) {
+          // Grammar shapes differ per property (SQLParser.g4 alterTypeItem):
+          //  - BUCKET   ((PLUS | MINUS) identifier)+        - signed, space-separated, no commas
+          //  - SUPERTYPE (PLUS|MINUS)? identifier (COMMA (PLUS|MINUS)? identifier)* - signed, comma-separated
+          //  - ALIASES  identifier (COMMA identifier)* | NULL - unsigned, comma-separated
+          final boolean bucket = "bucket".equalsIgnoreCase(property);
+          final boolean signed = bucket || "supertype".equalsIgnoreCase(property);
+          for (int i = 0; i < identifierListValue.size(); i++) {
+            if (i > 0)
+              builder.append(bucket ? " " : ", ");
+            if (signed) {
+              final Boolean add = i < identifierListAddRemove.size() ? identifierListAddRemove.get(i) : Boolean.TRUE;
+              builder.append(Boolean.FALSE.equals(add) ? "-" : "+");
+            }
+            identifierListValue.get(i).toString(params, builder);
+          }
+        } else if ("aliases".equalsIgnoreCase(property)) {
+          // ALIASES <identifier list> | NULL - an empty list is how "ALIASES NULL" (clear all aliases) is stored.
+          builder.append("NULL");
+        } else {
+          builder.append("null");
+        }
+        return;
+      }
+
+      if (customKey == null)
+        // Unreachable from a parsed statement - every alterTypeItem arm sets either a property or a custom key -
+        // but a hand-built Item should render as nothing rather than throw out of a toString().
+        return;
+
+      builder.append("CUSTOM ");
+      customKey.toString(params, builder);
+      builder.append("=");
+      if (customValue == null)
+        builder.append("null");
+      else
+        customValue.toString(params, builder);
+    }
+
+    @Override
+    public boolean equals(final Object obj) {
+      if (this == obj)
+        return true;
+      if (!(obj instanceof Item other))
+        return false;
+      return Objects.equals(property, other.property) && Objects.equals(identifierValue, other.identifierValue)
+          && identifierListAddRemove.equals(other.identifierListAddRemove)
+          && identifierListValue.equals(other.identifierListValue) && Objects.equals(numberValue, other.numberValue)
+          && Objects.equals(booleanValue, other.booleanValue) && Objects.equals(customKey, other.customKey)
+          && Objects.equals(customValue, other.customValue);
+    }
+
+    @Override
+    public int hashCode() {
+      return Objects.hash(property, identifierValue, identifierListAddRemove, identifierListValue, numberValue,
+          booleanValue, customKey, customValue);
+    }
+  }
+
+  /**
    * the name of the class
    */
-  public Identifier       name;
+  public Identifier name;
+
   /**
-   * the class property to be altered
+   * The items to apply, in the order they were written. Always at least one for a statement that parsed, except for
+   * the bare {@code ALTER TYPE <name> WITH <settings>} form the grammar also allows.
    */
-  public String           property;
-  public Identifier       identifierValue;
-  public List<Boolean>    identifierListAddRemove = new ArrayList<>();
-  public List<Identifier> identifierListValue     = new ArrayList<>();
-  public PNumber          numberValue;
-  public Boolean          booleanValue;
-  public Identifier       customKey;
-  public Expression       customValue;
+  public final List<Item> items = new ArrayList<>();
+
   // Trailing settings clause `WITH key = value (, key = value)*` populated by the AST builder.
   // Used today for `WITH repartition = true` to chain a rebuild atomically with a partition-
   // invalidating ALTER (issue #4087); generic so future settings drop in cleanly.
@@ -65,46 +168,13 @@ public class AlterTypeStatement extends DDLStatement {
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("ALTER TYPE ");
     name.toString(params, builder);
-    if (property != null) {
-      builder.append(" ").append(property).append(" ");
 
-      if (numberValue != null) {
-        numberValue.toString(params, builder); // clusters only
-      } else if (identifierValue != null) {
-        identifierValue.toString(params, builder);
-      } else if (!identifierListValue.isEmpty()) {
-        // Grammar shapes differ per property (SQLParser.g4 alterTypeItem):
-        //  - BUCKET   ((PLUS | MINUS) identifier)+        - signed, space-separated, no commas
-        //  - SUPERTYPE (PLUS|MINUS)? identifier (COMMA (PLUS|MINUS)? identifier)* - signed, comma-separated
-        //  - ALIASES  identifier (COMMA identifier)* | NULL - unsigned, comma-separated
-        final boolean bucket = "bucket".equalsIgnoreCase(property);
-        final boolean signed = bucket || "supertype".equalsIgnoreCase(property);
-        for (int i = 0; i < identifierListValue.size(); i++) {
-          if (i > 0)
-            builder.append(bucket ? " " : ", ");
-          if (signed) {
-            final Boolean add = i < identifierListAddRemove.size() ? identifierListAddRemove.get(i) : Boolean.TRUE;
-            builder.append(Boolean.FALSE.equals(add) ? "-" : "+");
-          }
-          identifierListValue.get(i).toString(params, builder);
-        }
-      } else if ("aliases".equalsIgnoreCase(property)) {
-        // ALIASES <identifier list> | NULL - an empty list is how "ALIASES NULL" (clear all aliases) is stored.
-        builder.append("NULL");
-      } else {
-        builder.append("null");
-      }
-    }
-
-    if (customKey != null) {
-      builder.append(" CUSTOM ");
-      customKey.toString(params, builder);
-      builder.append("=");
-      if (customValue == null) {
-        builder.append("null");
-      } else {
-        customValue.toString(params, builder);
-      }
+    // Comma-separated, which the CUSTOM arm used not to be: `ALTER TYPE Foo NAME Bar, CUSTOM description = 'x'` is
+    // one of the few multi-item forms that executed both items even before #7920, and it re-rendered as
+    // `ALTER TYPE Foo name Bar CUSTOM description='x'`, which does not parse.
+    for (int i = 0; i < items.size(); i++) {
+      builder.append(i > 0 ? ", " : " ");
+      items.get(i).toString(params, builder);
     }
 
     if (!settings.isEmpty()) {
@@ -124,14 +194,8 @@ public class AlterTypeStatement extends DDLStatement {
   public Statement copy() {
     final AlterTypeStatement result = new AlterTypeStatement();
     result.name = name == null ? null : name.copy();
-    result.property = property;
-    result.identifierValue = identifierValue == null ? null : identifierValue.copy();
-    result.identifierListValue = identifierListValue.stream().map(x -> x.copy()).collect(Collectors.toList());
-    result.identifierListAddRemove = new ArrayList<>(identifierListAddRemove);
-    result.numberValue = numberValue == null ? null : numberValue.copy();
-    result.booleanValue = booleanValue;
-    result.customKey = customKey == null ? null : customKey.copy();
-    result.customValue = customValue == null ? null : customValue.copy();
+    for (final Item item : items)
+      result.items.add(item.copy());
     for (final Map.Entry<Identifier, Expression> e : settings.entrySet())
       result.settings.put(e.getKey().copy(), e.getValue().copy());
     return result;
@@ -139,8 +203,7 @@ public class AlterTypeStatement extends DDLStatement {
 
   @Override
   protected Object[] getIdentityElements() {
-    return new Object[] { name, property, identifierValue, identifierListValue, identifierListAddRemove, numberValue,
-        booleanValue, customKey, customValue, settings };
+    return new Object[] { name, items, settings };
   }
 
   /**
@@ -173,105 +236,10 @@ public class AlterTypeStatement extends DDLStatement {
 
     final ResultInternal result = new ResultInternal(context.getDatabase());
 
-    if (property != null) {
-      switch (property.toLowerCase(Locale.ENGLISH)) {
-      case "name":
-        final String newTypeName = identifierValue.getStringValue();
-        context.getDatabase().getSchema().getType(name.getStringValue()).rename(newTypeName);
-        result.setProperty("name", newTypeName);
-        break;
-      case "bucket":
-        for (int i = 0; i < identifierListValue.size(); i++) {
-          final Identifier identifierValue = identifierListValue.get(i);
-          final Boolean add = identifierListAddRemove.get(i);
-
-          if (Boolean.TRUE.equals(add)) {
-
-            if (identifierValue != null) {
-              if (!context.getDatabase().getSchema().existsBucket(identifierValue.getStringValue()))
-                context.getDatabase().getSchema().createBucket(identifierValue.getStringValue());
-
-              type.addBucket(context.getDatabase().getSchema().getBucketByName(identifierValue.getStringValue()));
-              result.setProperty("addBucket", identifierValue.getStringValue());
-
-            } else if (numberValue != null) {
-              type.addBucket(context.getDatabase().getSchema().getBucketById(numberValue.getValue().intValue()));
-              result.setProperty("addBucket", numberValue.getValue().intValue());
-            } else
-              throw new CommandExecutionException("Invalid bucket value: " + this);
-
-          } else if (Boolean.FALSE.equals(add)) {
-
-            if (identifierValue != null) {
-              type.removeBucket(context.getDatabase().getSchema().getBucketByName(identifierValue.getStringValue()));
-              result.setProperty("removeBucket", identifierValue.getStringValue());
-            } else if (numberValue != null) {
-              type.removeBucket(context.getDatabase().getSchema().getBucketById(numberValue.getValue().intValue()));
-              result.setProperty("removeBucket", numberValue.getValue().intValue());
-            } else
-              throw new CommandExecutionException("Invalid bucket value: " + this);
-          }
-        }
-        break;
-
-      case "supertype":
-        doSetSuperType(context, type);
-        result.setProperty("supertype", type.getSuperTypes().stream().map(DocumentType::getName).collect(Collectors.toList()));
-        break;
-
-      case "aliases":
-        doSetAliases(context, type);
-        result.setProperty("aliases", type.getAliases());
-        break;
-
-      case "bucketselectionstrategy": {
-        final String implName = identifierValue.getStringValue();
-        try {
-          type.setBucketSelectionStrategy(implName);
-          result.setProperty("bucketSelectionStrategy", implName);
-        } catch (final SecurityException e) {
-          // Permission failures (UPDATE_SCHEMA) must surface as-is so the HTTP layer maps them to 403,
-          // not get masked as a parsing error.
-          throw e;
-        } catch (final IllegalArgumentException | SchemaException e) {
-          // Report why the strategy was refused rather than claiming it does not exist. Every failure used to be
-          // rewritten as "was not found", so `partitioned('x')` with no unique index on x - or, since issue #5603,
-          // with a partition key whose stored form cannot be hashed consistently - sent the user hunting for a typo
-          // in a name that was perfectly valid. The genuinely unknown implementation still says so: that case
-          // arrives with its own "Cannot find bucket selection strategy class" message, which this keeps.
-          // <p>
-          // The exception TYPE stays a CommandParsingException subtype, and only the message changes. Refusing a
-          // strategy is a client-side DDL mistake, and CommandParsingException is what the HTTP layer maps to 400
-          // (AbstractServerHttpHandler, both the plain and the transaction-wrapped arm); a CommandExecutionException
-          // would be answered 500, telling clients and load balancers to retry a request that can only ever fail the
-          // same way. Statement-level validation refusals elsewhere in this package (see RebuildTypeStatement's
-          // repartition gate) classify the same way.
-          // <p>
-          // Only the two types a REFUSAL can arrive as are caught: IllegalArgumentException from the strategy's own
-          // unique-index check, and SchemaException from the suitability check and from an unresolvable
-          // implementation name. Catching Exception would hand the same "your DDL is wrong" 400 to a failure that is
-          // nothing of the sort - an NPE, a persistence error - and the sharper message this now carries would make
-          // that misclassification read as authoritative. Anything else propagates and is classified on its merits.
-          throw new CommandSQLParsingException(
-              "Cannot set bucket selection strategy '" + implName + "' on type '" + type.getName() + "': "
-                  + e.getMessage(), e);
-        }
-        break;
-      }
-
-      default:
-        throw new CommandExecutionException("Error on alter type: property '" + property + "' not valid");
-      }
-    }
-
-    if (customKey != null) {
-      Object value = null;
-      if (customValue != null)
-        value = customValue.execute((Identifiable) null, context);
-
-      type.setCustomValue(customKey.getStringValue(), value);
-      result.setProperty("custom", customKey.getStringValue() + "=" + value);
-    }
+    // Every item, in the order written. This used to apply the LAST one only and answer "OK" regardless, because
+    // the statement held one property rather than a list (issue #7920).
+    for (final Item item : items)
+      applyItem(context, type, item, result);
 
     // Trailing settings clause. `WITH repartition = true` (issue #4087) means the partition mapping is now
     // stale (bucket add/drop or strategy change), so chain a rebuild before returning; the DDL surfaces the
@@ -342,7 +310,9 @@ public class AlterTypeStatement extends DDLStatement {
       // the {@code implicitTx == true} branch and commits in {@code DEFAULT_BATCH_SIZE} chunks),
       // and then issue the bare {@code ALTER TYPE ...} without {@code WITH repartition = true}.
       final RebuildTypeStatement rebuild = new RebuildTypeStatement();
-      rebuild.typeName = name.copy();
+      // The live name, not the one the statement was written with: a NAME item in the same statement has already
+      // renamed the type by now, and rebuilding the name it used to have would fail with "type not found".
+      rebuild.typeName = new Identifier(type.getName());
       rebuild.polymorphic = false;
       // try-with-resources: any throw between the open and the explicit close would leak the
       // ResultSet otherwise (e.g. deserialisation of the rebuild row, or any future addition
@@ -372,13 +342,123 @@ public class AlterTypeStatement extends DDLStatement {
     return resultSet;
   }
 
-  private void doSetSuperType(final CommandContext context, final DocumentType type) {
-    if (identifierListValue == null)
+  /**
+   * Applies one {@code alterTypeItem} to {@code type}, recording what it did on {@code result}.
+   * <p>
+   * {@code type} is the live schema object, so an item that follows a {@code NAME} rename in the same statement
+   * operates on the renamed type rather than on a stale lookup of the name the statement was written with.
+   */
+  private void applyItem(final CommandContext context, final DocumentType type, final Item item,
+      final ResultInternal result) {
+    if (item.property == null) {
+      // The CUSTOM arm: no named property, a key/value pair instead.
+      Object value = null;
+      if (item.customValue != null)
+        value = item.customValue.execute((Identifiable) null, context);
+
+      type.setCustomValue(item.customKey.getStringValue(), value);
+      result.setProperty("custom", item.customKey.getStringValue() + "=" + value);
+      return;
+    }
+
+    switch (item.property.toLowerCase(Locale.ENGLISH)) {
+    case "name":
+      final String newTypeName = item.identifierValue.getStringValue();
+      type.rename(newTypeName);
+      result.setProperty("name", newTypeName);
+      break;
+
+    case "bucket":
+      for (int i = 0; i < item.identifierListValue.size(); i++) {
+        final Identifier identifierValue = item.identifierListValue.get(i);
+        final Boolean add = item.identifierListAddRemove.get(i);
+
+        if (Boolean.TRUE.equals(add)) {
+
+          if (identifierValue != null) {
+            if (!context.getDatabase().getSchema().existsBucket(identifierValue.getStringValue()))
+              context.getDatabase().getSchema().createBucket(identifierValue.getStringValue());
+
+            type.addBucket(context.getDatabase().getSchema().getBucketByName(identifierValue.getStringValue()));
+            result.setProperty("addBucket", identifierValue.getStringValue());
+
+          } else if (item.numberValue != null) {
+            type.addBucket(context.getDatabase().getSchema().getBucketById(item.numberValue.getValue().intValue()));
+            result.setProperty("addBucket", item.numberValue.getValue().intValue());
+          } else
+            throw new CommandExecutionException("Invalid bucket value: " + this);
+
+        } else if (Boolean.FALSE.equals(add)) {
+
+          if (identifierValue != null) {
+            type.removeBucket(context.getDatabase().getSchema().getBucketByName(identifierValue.getStringValue()));
+            result.setProperty("removeBucket", identifierValue.getStringValue());
+          } else if (item.numberValue != null) {
+            type.removeBucket(context.getDatabase().getSchema().getBucketById(item.numberValue.getValue().intValue()));
+            result.setProperty("removeBucket", item.numberValue.getValue().intValue());
+          } else
+            throw new CommandExecutionException("Invalid bucket value: " + this);
+        }
+      }
+      break;
+
+    case "supertype":
+      doSetSuperType(context, type, item);
+      result.setProperty("supertype", type.getSuperTypes().stream().map(DocumentType::getName).collect(Collectors.toList()));
+      break;
+
+    case "aliases":
+      doSetAliases(type, item);
+      result.setProperty("aliases", type.getAliases());
+      break;
+
+    case "bucketselectionstrategy": {
+      final String implName = item.identifierValue.getStringValue();
+      try {
+        type.setBucketSelectionStrategy(implName);
+        result.setProperty("bucketSelectionStrategy", implName);
+      } catch (final SecurityException e) {
+        // Permission failures (UPDATE_SCHEMA) must surface as-is so the HTTP layer maps them to 403,
+        // not get masked as a parsing error.
+        throw e;
+      } catch (final IllegalArgumentException | SchemaException e) {
+        // Report why the strategy was refused rather than claiming it does not exist. Every failure used to be
+        // rewritten as "was not found", so `partitioned('x')` with no unique index on x - or, since issue #5603,
+        // with a partition key whose stored form cannot be hashed consistently - sent the user hunting for a typo
+        // in a name that was perfectly valid. The genuinely unknown implementation still says so: that case
+        // arrives with its own "Cannot find bucket selection strategy class" message, which this keeps.
+        // <p>
+        // The exception TYPE stays a CommandParsingException subtype, and only the message changes. Refusing a
+        // strategy is a client-side DDL mistake, and CommandParsingException is what the HTTP layer maps to 400
+        // (AbstractServerHttpHandler, both the plain and the transaction-wrapped arm); a CommandExecutionException
+        // would be answered 500, telling clients and load balancers to retry a request that can only ever fail the
+        // same way. Statement-level validation refusals elsewhere in this package (see RebuildTypeStatement's
+        // repartition gate) classify the same way.
+        // <p>
+        // Only the two types a REFUSAL can arrive as are caught: IllegalArgumentException from the strategy's own
+        // unique-index check, and SchemaException from the suitability check and from an unresolvable
+        // implementation name. Catching Exception would hand the same "your DDL is wrong" 400 to a failure that is
+        // nothing of the sort - an NPE, a persistence error - and the sharper message this now carries would make
+        // that misclassification read as authoritative. Anything else propagates and is classified on its merits.
+        throw new CommandSQLParsingException(
+            "Cannot set bucket selection strategy '" + implName + "' on type '" + type.getName() + "': "
+                + e.getMessage(), e);
+      }
+      break;
+    }
+
+    default:
+      throw new CommandExecutionException("Error on alter type: property '" + item.property + "' not valid");
+    }
+  }
+
+  private void doSetSuperType(final CommandContext context, final DocumentType type, final Item item) {
+    if (item.identifierListValue == null)
       throw new CommandExecutionException("Invalid super type names");
 
-    for (int i = 0; i < identifierListValue.size(); i++) {
-      final Identifier superTypeName = identifierListValue.get(i);
-      final Boolean add = identifierListAddRemove.get(i);
+    for (int i = 0; i < item.identifierListValue.size(); i++) {
+      final Identifier superTypeName = item.identifierListValue.get(i);
+      final Boolean add = item.identifierListAddRemove.get(i);
 
       final DocumentType superclass = context.getDatabase().getSchema().getType(superTypeName.getStringValue());
       if (superclass == null)
@@ -391,12 +471,12 @@ public class AlterTypeStatement extends DDLStatement {
     }
   }
 
-  private void doSetAliases(final CommandContext context, final DocumentType type) {
+  private void doSetAliases(final DocumentType type, final Item item) {
     final Set<String> aliases = new HashSet<>();
 
-    if (identifierListValue != null)
-      for (int i = 0; i < identifierListValue.size(); i++)
-        aliases.add(identifierListValue.get(i).getStringValue());
+    if (item.identifierListValue != null)
+      for (int i = 0; i < item.identifierListValue.size(); i++)
+        aliases.add(item.identifierListValue.get(i).getStringValue());
 
     type.setAliases(aliases);
   }
