@@ -27,6 +27,8 @@ import java.io.IOException;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -147,6 +149,27 @@ class Issue7465AtomicWriteDirectoryFsyncTest {
         .isEqualTo("new");
   }
 
+  /**
+   * A directory created on the way to the target is durable only once its own entry - which lives in ITS parent -
+   * has been fsync'd. Without that, a power failure right after a publish into a freshly created nested path can
+   * lose the whole directory, taking the carefully fsync'd and atomically renamed file inside it along (CodeRabbit
+   * on PR #7855). Every level has to be forced, not only the one the file lands in.
+   */
+  @Test
+  void everyDirectoryCreatedOnTheWayToTheTargetIsForcedAsItIsCreated() throws Exception {
+    final Path a = tempDir.resolve("a");
+    final Path b = a.resolve("b");
+    final Path c = b.resolve("c");
+
+    final List<Path> forced = recordDirectoryOpens(() -> FileUtils.atomicWriteFile(c.resolve("config.json").toFile(), "new"));
+
+    if (!isWindows())
+      assertThat(forced)
+          .as("each new level's entry lives in its parent, so each parent has to be forced as the level appears")
+          .containsExactlyInAnyOrder(tempDir, a, b, c);
+    assertThat(Files.readString(c.resolve("config.json"))).isEqualTo("new");
+  }
+
   /** Runs {@code publish} with {@code FileChannel.open} observed, counting the opens of {@link #tempDir} itself. */
   private int countDirectoryOpens(final ThrowingRunnable publish) throws Exception {
     final AtomicInteger opens = new AtomicInteger();
@@ -158,6 +181,22 @@ class Issue7465AtomicWriteDirectoryFsyncTest {
       publish.run();
     }
     return opens.get();
+  }
+
+  /** As {@link #countDirectoryOpens}, but records WHICH directories were opened rather than how many times. */
+  private List<Path> recordDirectoryOpens(final ThrowingRunnable publish) throws Exception {
+    final List<Path> opened = new ArrayList<>();
+    try (final MockedStatic<FileChannel> ignored = mockStatic(FileChannel.class, invocation -> {
+      if ("open".equals(invocation.getMethod().getName()) && invocation.getMethod().getParameterCount() == 2) {
+        final Path path = invocation.getArgument(0);
+        if (Files.isDirectory(path))
+          opened.add(path);
+      }
+      return invocation.callRealMethod();
+    })) {
+      publish.run();
+    }
+    return opened;
   }
 
   /**
