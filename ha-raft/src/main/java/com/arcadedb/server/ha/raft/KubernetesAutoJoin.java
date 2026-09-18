@@ -53,6 +53,14 @@ import java.util.logging.Level;
  * {@code Mode.ADD} is atomic, so concurrent joins from different pods are safe even without
  * additional coordination.
  * <p>
+ * <b>Security documents are seeded by the leader, not from here</b> (issue #7531). A self-join has no
+ * admitting node to run the seed the other two admission paths run, and this pod's own copies of
+ * {@code server-users.jsonl}, {@code server-groups.json} and {@code server-api-tokens.json} are precisely
+ * the stale ones - a snapshot install carries none of them. The {@code Mode.ADD} below therefore only has to
+ * commit: the leader applies the resulting configuration entry, notices the new peer in
+ * {@code ArcadeStateMachine.notifyConfigurationChanged} and seeds all three documents over Raft. See
+ * {@link MembershipSecuritySeeder}.
+ * <p>
  * <b>Security note:</b> Peer discovery uses DNS resolution of the headless service hostname, and the
  * Raft gRPC transport does not enforce cluster-token authentication. Secure the port with mTLS
  * ({@code arcadedb.ha.tls.*}, issue #3890) and restrict access to the StatefulSet pods with a
