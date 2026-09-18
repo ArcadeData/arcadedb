@@ -128,7 +128,7 @@ public final class ClusterSecuritySeedQuery {
    */
   public static List<String> seedForAdmission(final ArcadeDBServer server, final RaftHAPlugin plugin,
       final String admittedPeer) throws IOException {
-    return seed(server, plugin, "the admission of peer '" + admittedPeer + "'", null);
+    return seed(server, plugin, "the admission of peer '" + admittedPeer + "'", null, false);
   }
 
   /**
@@ -141,7 +141,7 @@ public final class ClusterSecuritySeedQuery {
    */
   public static List<String> seedForCatchUp(final ArcadeDBServer server, final RaftHAPlugin plugin,
       final String reason) throws IOException {
-    return seed(server, plugin, reason, localFingerprints(server.getSecurity()));
+    return seed(server, plugin, reason, localFingerprints(server.getSecurity()), true);
   }
 
   /** The three digests the leader compares against its own; {@code null} when there is no security store. */
@@ -155,10 +155,10 @@ public final class ClusterSecuritySeedQuery {
   }
 
   private static List<String> seed(final ArcadeDBServer server, final RaftHAPlugin plugin, final String reason,
-      final JSONObject fingerprints) throws IOException {
+      final JSONObject fingerprints, final boolean catchUp) throws IOException {
     for (int attempt = 1; ; attempt++) {
       try {
-        return seedOnce(server, plugin, reason, fingerprints);
+        return seedOnce(server, plugin, reason, fingerprints, catchUp);
       } catch (final NotLeaderException e) {
         if (attempt >= NOT_LEADER_ATTEMPTS)
           throw new IOException("the security seed could not be requested: " + e.getMessage());
@@ -175,19 +175,27 @@ public final class ClusterSecuritySeedQuery {
     }
   }
 
-  /** One attempt: resolve the leader, and either seed here or ask it. */
+  /**
+   * One attempt: resolve the leader, and either seed here or ask it.
+   *
+   * @param catchUp whether this is a node repairing ITSELF (issue #7833) rather than an admission reporting for
+   *                a peer. Carried explicitly rather than inferred from {@code fingerprints == null}, because a
+   *                catch-up on a node with no security store has no fingerprints to send and would otherwise be
+   *                read as an admission - and answered by a recently completed seed it did not cause, which is
+   *                the reuse hole this distinction exists to keep shut (CodeRabbit on PR #7854)
+   */
   private static List<String> seedOnce(final ArcadeDBServer server, final RaftHAPlugin plugin, final String reason,
-      final JSONObject fingerprints) throws IOException {
+      final JSONObject fingerprints, final boolean catchUp) throws IOException {
     final RaftHAServer raft = plugin.getRaftHAServer();
     if (raft == null)
       throw new IOException("Raft HA is not started on this node, so no security seed can be requested");
 
     if (plugin.isLeader())
       // No dial: the seeder is in this JVM. See the class note - this is the invariant, not a shortcut.
-      // An admission (no fingerprints) may be answered by the membership change's own seed; a catch-up has
-      // already established that this node is out of step, so it must actually seed.
+      // An admission may be answered by the membership change's own seed; a catch-up is repairing this node and
+      // must actually seed.
       return raft.getStateMachine().seedSecurityNowAndReport(reason, reportTimeoutMs(server.getConfiguration()),
-          fingerprints == null);
+          !catchUp);
 
     final LeaderDial dial = LeaderDial.resolve(plugin, LeaderDial.newConnectTimeoutBoundedClient(
         server.getConfiguration()));
@@ -199,6 +207,10 @@ public final class ClusterSecuritySeedQuery {
       PlainHttpFallbackNotice.sayOnce(ClusterSecuritySeedQuery.class, "requesting the cluster security seed");
 
     final JSONObject body = new JSONObject().put("reason", reason);
+    // The request TYPE, not a consequence of what else the body happens to carry. A catch-up on a node with no
+    // security store sends no fingerprints, and inferring the type from their absence read it as an admission.
+    if (catchUp)
+      body.put("catchUp", true);
     if (fingerprints != null)
       body.put("fingerprints", fingerprints);
 
