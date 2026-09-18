@@ -740,13 +740,6 @@ public class LocalDocumentType implements DocumentType {
   }
 
   /**
-   * Drops a property from the type. If there is any index on the property a @{@link SchemaException} is thrown.
-   *
-   * @param propertyName Property name to remove
-   *
-   * @return the property dropped if found
-   */
-  /**
    * The index, if any, anywhere in the type hierarchy that names {@code propertyName} - this type's own indexes,
    * a super type's (both via {@link #getAllIndexes(boolean)}, which only ever walks up), and a SUBTYPE's own index
    * on the inherited property, which {@code getAllIndexes} alone misses. {@link #dropProperty} and {@link
@@ -780,26 +773,44 @@ public class LocalDocumentType implements DocumentType {
     return null;
   }
 
+  /**
+   * Drops a property from the type. If there is any index on the property, anywhere in the hierarchy, a
+   * {@link SchemaException} is thrown and nothing changes.
+   * <p>
+   * Every check below, and the mutation itself, runs inside the single {@link #recordFileChanges} callback, for the
+   * two reasons {@link #renameProperty} spells out and this method used to violate (issue #7672). First,
+   * {@link #findIndexOnProperty} walks the {@link #subTypes} list of this type and of every type below it, and those
+   * lists are plain {@link ArrayList}s structurally modified by {@code linkSuperType}/{@code unlinkSuperType} - which
+   * run inside {@code recordFileChanges} themselves, so only a walk that runs there too is serialised against them
+   * rather than racing into a {@link java.util.ConcurrentModificationException}. Second, validating outside and
+   * mutating inside would let a concurrent {@code CREATE INDEX}/{@code CREATE TYPE ... EXTENDS} land between the two,
+   * so the drop would commit against a pre-create picture and leave an index naming a property the type no longer
+   * declares - exactly what the descendant walk exists to prevent.
+   *
+   * @param propertyName Property name to remove
+   *
+   * @return the property dropped if found, {@code null} if the type does not declare it
+   */
   @Override
   public Property dropProperty(final String propertyName) {
     checkForSchemaMutation();
 
-    if (this instanceof LocalTimeSeriesType tsType && tsType.isDeclaredColumn(propertyName))
-      // The column stays in the type's tsColumns list whatever happens to the schema property - nothing removes an
-      // entry from it - so the engine would keep storing and returning the column while the type stopped declaring
-      // it. Refusing here keeps the two descriptions of a TIMESERIES type from drifting apart (issue #7567). A
-      // property that is NOT a declared column is still droppable, which is how a database written before that
-      // issue gets rid of the stray one it may already carry.
-      throw new SchemaException("Cannot drop the property '" + propertyName + "' from type '" + name
-          + "' because it is a declared TIMESERIES column: the storage engine keeps reading and writing it. Drop the "
-          + "whole type to remove the column");
-
-    final TypeIndex indexOnProperty = findIndexOnProperty(propertyName);
-    if (indexOnProperty != null)
-      throw new SchemaException(
-          "Error on dropping property '" + propertyName + "' because used by index '" + indexOnProperty.getName() + "'");
-
     return recordFileChanges(() -> {
+      if (this instanceof LocalTimeSeriesType tsType && tsType.isDeclaredColumn(propertyName))
+        // The column stays in the type's tsColumns list whatever happens to the schema property - nothing removes an
+        // entry from it - so the engine would keep storing and returning the column while the type stopped declaring
+        // it. Refusing here keeps the two descriptions of a TIMESERIES type from drifting apart (issue #7567). A
+        // property that is NOT a declared column is still droppable, which is how a database written before that
+        // issue gets rid of the stray one it may already carry.
+        throw new SchemaException("Cannot drop the property '" + propertyName + "' from type '" + name
+            + "' because it is a declared TIMESERIES column: the storage engine keeps reading and writing it. Drop the "
+            + "whole type to remove the column");
+
+      final TypeIndex indexOnProperty = findIndexOnProperty(propertyName);
+      if (indexOnProperty != null)
+        throw new SchemaException(
+            "Error on dropping property '" + propertyName + "' because used by index '" + indexOnProperty.getName() + "'");
+
       final Property removed = properties.remove(propertyName);
       if (removed != null) {
         // Keep the EXTERNAL counter consistent so hasExternalProperties() stays O(1).
