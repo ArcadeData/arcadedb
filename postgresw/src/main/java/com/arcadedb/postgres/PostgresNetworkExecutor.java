@@ -127,6 +127,9 @@ public class PostgresNetworkExecutor extends Thread {
   /** Shared between the simple and extended query protocol's identical ROLLBACK TO refusal (issue #7846). */
   private static final String                                         ROLLBACK_TO_NOT_SUPPORTED_MESSAGE =
       "ROLLBACK TO SAVEPOINT is not supported by this server: it cannot discard the writes made since the savepoint";
+  /** Shared between every path that refuses a statement inside an aborted transaction block (SQLSTATE 25P02). */
+  private static final String                                         ABORTED_TRANSACTION_MESSAGE       =
+      "current transaction is aborted, commands ignored until end of transaction block";
   /** Case-insensitive {@code TO} separator for the {@code SET <param> TO <value>} syntax. */
   private static final Pattern                                        SET_TO_SEPARATOR  = Pattern.compile("(?i)\\s+TO\\s+");
   /** Case-insensitive {@code SESSION}/{@code LOCAL} scope modifier leading a {@code SET} command (issue #6701). */
@@ -391,8 +394,11 @@ public class PostgresNetworkExecutor extends Thread {
     final byte closeType = channel.readByte();
     final String prepStatementOrPortal = readString();
 
-    if (skipExtendedProtocolMessage())
+    if (skipUntilSync)
       return;
+    // No errorInTransaction check: PostgreSQL runs Close inside an aborted transaction block like any other -
+    // it ends no transaction command and touches no data - and a client cleaning up its portals while it
+    // recovers is owed the CloseComplete it is waiting for.
 
     if (closeType == 'P')
       getPortal(prepStatementOrPortal, true);
@@ -415,8 +421,17 @@ public class PostgresNetworkExecutor extends Thread {
           .log(this, Level.INFO, "PSQL: describe '%s' type=%s (errorInTransaction=%s thread=%s)", portalName, (char) type,
               errorInTransaction, Thread.currentThread().threadId());
 
-    if (skipExtendedProtocolMessage())
+    if (skipUntilSync)
       return;
+
+    if (errorInTransaction) {
+      // The block is aborted and only the client's COMMIT/ROLLBACK/END ends it, so this Describe never runs -
+      // but it is owed a reply, and PostgreSQL's own exec_describe_*_message answers 25P02 rather than nothing.
+      // Returning silently here left a client that had recovered past a Sync waiting for a RowDescription that
+      // was never coming (issue #7851 review).
+      refuseInAbortedTransaction();
+      return;
+    }
 
     // Describe('S') names a PREPARED STATEMENT (registered by PARSE); Describe('P') names a bound PORTAL
     // (registered by BIND) - two different registries since #6660 / CodeRabbit split them apart so portals
@@ -455,7 +470,7 @@ public class PostgresNetworkExecutor extends Thread {
         // already ran it) reuses the materialized result instead of running it again: issue #6458's follow-up
         // Execute(s) depend on this same fullResultSet being run exactly once.
         try {
-          beginImplicitTransactionBlock();
+          beginImplicitTransactionBlock(portal);
           final ResultSet resultSet = runPortalQuery(portal);
           // Materializes the whole result now (issue #6458): Describe needs every row's columns, not just the
           // first, to catch a property that only shows up on a later row (documents can be sparse) - and the
@@ -608,8 +623,15 @@ public class PostgresNetworkExecutor extends Thread {
       final int limit = (int) channel.readUnsignedInt();
       profile.addDeserializationNanos(System.nanoTime() - deserStart);
 
-      if (skipExtendedProtocolMessage())
+      if (skipUntilSync)
         return;
+
+      if (errorInTransaction) {
+        // Same as describeCommand above: refused, not swallowed. The portal may well still be registered from
+        // before the failure, and running it would execute a statement the client was told the block refuses.
+        refuseInAbortedTransaction();
+        return;
+      }
 
       // Do NOT remove the portal here (issue #6458): a limit-hit Execute suspends rather than finishes, and
       // the follow-up Execute the client sends to continue fetching looks this same portal name up again.
@@ -626,7 +648,7 @@ public class PostgresNetworkExecutor extends Thread {
             .log(this, Level.INFO, "PSQL: execute (portal=%s) (limit=%d)-> %s (thread=%s)", portalName, limit, portal,
                 Thread.currentThread().threadId());
 
-      beginImplicitTransactionBlock();
+      beginImplicitTransactionBlock(portal);
 
       if (portal.ignoreExecution)
         // SAVEPOINT/RELEASE/SET never produce rows: Execute must answer CommandComplete, not NoData - NoData
@@ -811,8 +833,7 @@ public class PostgresNetworkExecutor extends Thread {
           // Every other statement is refused, not silently swallowed (issue #6457): the client needs an
           // ErrorResponse to know its statement never ran, and errorInTransaction must stay set so the
           // session remains aborted until COMMIT/ROLLBACK/END ends the block.
-          writeError(ERROR_SEVERITY.ERROR,
-              "current transaction is aborted, commands ignored until end of transaction block", "25P02");
+          writeError(ERROR_SEVERITY.ERROR, ABORTED_TRANSACTION_MESSAGE, "25P02");
         }
         return;
       }
@@ -1540,15 +1561,16 @@ public class PostgresNetworkExecutor extends Thread {
         return cols;
       }
 
-      // If no rows exist, fall back to schema-defined properties
+      // If no rows exist, fall back to schema-defined properties, in the same order the sampled branch above
+      // announces them: the declared columns first, then the system ones. The two branches describe the same type
+      // and a client must not see the column order change with whether the type happens to hold a row.
       final Map<String, PostgresType> columns = new LinkedHashMap<>();
+      collectDeclaredColumns(docType, columns);
 
-      // Add system properties first (these are returned for document/vertex types)
+      // These are returned for document/vertex types
       columns.put(RID_PROPERTY, PostgresType.VARCHAR);
       columns.put(TYPE_PROPERTY, PostgresType.VARCHAR);
       columns.put(CAT_PROPERTY, PostgresType.CHAR);
-
-      collectDeclaredColumns(docType, columns);
 
       return columns;
 
@@ -2187,7 +2209,10 @@ public class PostgresNetworkExecutor extends Thread {
    * construction and is then exact.
    * <p>
    * A query whose projection already names its columns cannot trip this - its rows carry exactly those - so the
-   * check costs a map lookup per property on the paths where it can never fire.
+   * check costs a map lookup per property on the paths where it can never fire. Both the element's properties and
+   * the result's own are walked, deliberately: that is exactly what {@link #columnNamesOf(Result)} feeds the map
+   * this checks against, so the two can never disagree about what a row carries. They are walked rather than
+   * unioned through that method because this runs per row on the bulk path and the union allocates a set.
    */
   private static void checkRowFitsAnnouncedColumns(final Result row, final Map<String, PostgresType> columns) {
     if (row.isElement())
@@ -2396,9 +2421,7 @@ public class PostgresNetworkExecutor extends Thread {
         // refusal is an ErrorResponse like any other, so it also puts the session into skip-until-Sync -
         // the Execute that the client already pipelined behind this Bind must not run against whatever
         // portal happens to still be registered under that name.
-        setExtendedProtocolError();
-        writeError(ERROR_SEVERITY.ERROR,
-            "current transaction is aborted, commands ignored until end of transaction block", "25P02");
+        refuseInAbortedTransaction();
         return;
       }
 
@@ -3335,8 +3358,20 @@ public class PostgresNetworkExecutor extends Thread {
    * failed pipeline - a JDBC {@code executeBatch()}, a psycopg3 pipeline - leave the statements that ran before the
    * failure behind (issue #7775). An already-active transaction is joined rather than nested, which is what makes the
    * statement-level one stand down; {@link #syncCommand()} then commits or discards the block as a whole.
+   * <p>
+   * Only a portal that can WRITE opens one. A read has nothing to roll back, and the extended protocol is where the
+   * overwhelming majority of SELECT traffic arrives: opening a transaction around each one would charge every JDBC
+   * read the allocation of a transaction's page maps and the database read lock for no gain. A read that follows a
+   * write in the same pipeline still sees it - the block is already open by then, and this joins it rather than
+   * deciding again. The proof that a portal cannot write comes from the parsed statement ({@code isIdempotent()},
+   * which is how the engine itself classifies a statement) or from the portal being one of the kinds that execute
+   * nothing at all; anything unproven - another language, a statement this server did not parse - opens one.
    */
-  private void beginImplicitTransactionBlock() {
+  private void beginImplicitTransactionBlock(final PostgresPortal portal) {
+    if (portal.ignoreExecution || portal.catalogQuery)
+      return;
+    if (portal.sqlStatement != null && portal.sqlStatement.isIdempotent())
+      return;
     if (!explicitTransactionStarted && !database.isTransactionActive())
       database.begin();
   }
@@ -3358,11 +3393,13 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   /**
-   * True while an extended-protocol message must not be run: either the backend is discarding messages until the
-   * next Sync, or an explicit transaction block is aborted and stays so until the client ends it.
+   * Refuses an extended-protocol message that arrived while the transaction block is aborted, the way PostgreSQL
+   * refuses every command in that state: SQLSTATE {@code 25P02}, and the session enters skip-until-Sync so the rest
+   * of the pipeline behind this message is discarded rather than refused one ErrorResponse at a time.
    */
-  private boolean skipExtendedProtocolMessage() {
-    return skipUntilSync || errorInTransaction;
+  private void refuseInAbortedTransaction() {
+    setExtendedProtocolError();
+    writeError(ERROR_SEVERITY.ERROR, ABORTED_TRANSACTION_MESSAGE, "25P02");
   }
 
   /**

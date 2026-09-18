@@ -96,6 +96,16 @@ final class PostgresWireMessages {
     sendMessage(out, 'D', body);
   }
 
+  /**
+   * Close ('C') of a bound portal ({@code 'P'}) or of a prepared statement ({@code 'S'}).
+   */
+  static void sendClose(final DataOutputStream out, final char closeType, final String name) throws Exception {
+    final ByteArrayOutputStream body = new ByteArrayOutputStream();
+    body.write(closeType);
+    writeCString(body, name);
+    sendMessage(out, 'C', body);
+  }
+
   static void sendExecute(final DataOutputStream out, final String portalName) throws Exception {
     final ByteArrayOutputStream body = new ByteArrayOutputStream();
     writeCString(body, portalName);

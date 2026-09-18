@@ -71,7 +71,8 @@ class Issue7775PipelineSkipUntilSyncIT extends PostgresWireProtocolTestBase {
     readMessageOfType(in, 'Z'); // drain AuthenticationOk/BackendKeyData/ParameterStatus.../ReadyForQuery
   }
 
-  private static final String TYPE_NAME = "Issue7775Pipe";
+  private static final String TYPE_NAME   = "Issue7775Pipe";
+  private static final String SINGLE_TYPE = "Issue7775Single";
 
   @Test
   @DisplayName("[#7775] a failed autocommit pipeline discards the messages after the error and persists nothing")
@@ -127,6 +128,43 @@ class Issue7775PipelineSkipUntilSyncIT extends PostgresWireProtocolTestBase {
     assertThat(database.query("sql", "SELECT id FROM " + TYPE_NAME).next().<Integer>getProperty("id"))
         .as("the row that survived is the one inserted by the pipeline that did not fail")
         .isEqualTo(4);
+  }
+
+  @Test
+  @DisplayName("[#7775] one statement per Sync - the ordinary JDBC shape - is unaffected by the implicit block")
+  void aSingleStatementPerSyncStillCommitsAndReads() throws Exception {
+    try (final Socket socket = new Socket()) {
+      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+      authenticate(out, in);
+
+      assertTimeoutPreemptively(Duration.ofSeconds(30), () -> {
+        sendSimpleQuery(out, "CREATE DOCUMENT TYPE " + SINGLE_TYPE + " IF NOT EXISTS");
+        assertThat(messageTypesOf(readUntilReadyForQuery(in))).doesNotContain('E');
+
+        // A write with its own Sync: the block opens and closes around this one statement, and it commits -
+        // pgjdbc's non-batch path, which is the overwhelming majority of extended-protocol write traffic.
+        parseBindDescribeExecute(out, "w", "INSERT INTO " + SINGLE_TYPE + " SET id = 7");
+        sendSync(out);
+        final List<WireMessage> afterWrite = readUntilReadyForQuery(in);
+        assertThat(messageTypesOf(afterWrite)).doesNotContain('E');
+        assertThat(readyForQueryStatusOf(afterWrite)).isEqualTo('I');
+
+        // A read with its own Sync: it opens no block at all - a read has nothing to roll back - and still sees
+        // what the write above committed.
+        parseBindDescribeExecute(out, "r", "SELECT id FROM " + SINGLE_TYPE);
+        sendSync(out);
+        final List<WireMessage> afterRead = readUntilReadyForQuery(in);
+        assertThat(messageTypesOf(afterRead)).as("a plain autocommit SELECT answers rows, not an error")
+            .doesNotContain('E').contains('D');
+        assertThat(readyForQueryStatusOf(afterRead)).isEqualTo('I');
+      });
+    }
+
+    assertThat(getServerDatabase(0, getDatabaseName()).countType(SINGLE_TYPE, true))
+        .as("a statement that has its own Sync commits, exactly as it did before the implicit block existed")
+        .isEqualTo(1);
   }
 
   /**
