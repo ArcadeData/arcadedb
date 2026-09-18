@@ -76,6 +76,23 @@ public class MultiValue {
     return iObject != null && isMultiValue(iObject.getClass());
   }
 
+  /**
+   * Checks if the object is an array that is a SEQUENCE of values, i.e. any array but a {@code byte[]}: that is how a
+   * {@code BINARY} property is represented - an opaque blob rather than a sequence - and iterating it one byte at a
+   * time would turn a megabyte into a million elements. Shared by {@code ExpandStep} and {@code UnwindStep} so that
+   * the two steps cannot drift apart on what an array is.
+   *
+   * @param iObject Object to check
+   *
+   * @return true if it's an array whose component type is not {@code byte}, otherwise false
+   */
+  public static boolean isSequenceArray(final Object iObject) {
+    if (iObject == null)
+      return false;
+    final Class<?> type = iObject.getClass();
+    return type.isArray() && type.getComponentType() != byte.class;
+  }
+
   public static boolean isIterable(final Object iObject) {
     return iObject instanceof Iterable<?> || iObject instanceof Iterator<?>;
   }

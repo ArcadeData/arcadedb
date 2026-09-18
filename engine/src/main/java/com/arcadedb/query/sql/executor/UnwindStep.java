@@ -117,8 +117,8 @@ public class UnwindStep extends AbstractExecutionStep {
 
       final Object fieldValue = doc.getProperty(firstField);
       if (fieldValue == null || fieldValue instanceof Record
-          || (!(fieldValue instanceof Iterable) && !fieldValue.getClass().isArray())) {
-        // Null, Record or scalar value: there is nothing to flatten, so a single row is forwarded.
+          || (!(fieldValue instanceof Iterable) && !MultiValue.isSequenceArray(fieldValue))) {
+        // Null, Record, scalar or BINARY blob value: there is nothing to flatten, so a single row is forwarded.
         // Always forward a defensive copy (never the upstream instance) so that downstream mutations
         // - e.g. a later UNWIND field or a projection step calling setElement(null) - cannot corrupt
         // the shared input record. The unwound property keeps its original value: a scalar behaves
@@ -132,7 +132,7 @@ public class UnwindStep extends AbstractExecutionStep {
       }
 
       final Iterator iterator;
-      if (fieldValue.getClass().isArray()) {
+      if (MultiValue.isSequenceArray(fieldValue)) {
         iterator = MultiValue.getMultiValueIterator(fieldValue);
       } else {
         iterator = ((Iterable) fieldValue).iterator();
