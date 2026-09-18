@@ -37,6 +37,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -58,7 +59,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue7904RetriedAttemptRowsTest extends BaseGraphServerTest {
-  private static final String TYPE_NAME = "Issue7904Counter";
+  private static final String TYPE_NAME      = "Issue7904Counter";
+  private static final String EDGE_TYPE_NAME = "Issue7904LinkedTo";
 
   private MCPConfiguration          config;
   private ServerSecurityUser        user;
@@ -84,14 +86,19 @@ class Issue7904RetriedAttemptRowsTest extends BaseGraphServerTest {
     final VertexType type = embedded.getSchema().getOrCreateVertexType(TYPE_NAME);
     type.getOrCreateProperty("k", Type.INTEGER);
     type.getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "k");
+    embedded.getSchema().getOrCreateEdgeType(EDGE_TYPE_NAME);
   }
 
   @AfterEach
   void cleanup() {
     if (conflictOnFirstAttempt != null)
       embedded.getEvents().unregisterListener(conflictOnFirstAttempt);
-    if (embedded != null && embedded.getSchema().existsType(TYPE_NAME))
-      embedded.getSchema().dropType(TYPE_NAME);
+    if (embedded != null) {
+      if (embedded.getSchema().existsType(EDGE_TYPE_NAME))
+        embedded.getSchema().dropType(EDGE_TYPE_NAME);
+      if (embedded.getSchema().existsType(TYPE_NAME))
+        embedded.getSchema().dropType(TYPE_NAME);
+    }
   }
 
   @Test
@@ -156,6 +163,36 @@ class Issue7904RetriedAttemptRowsTest extends BaseGraphServerTest {
         .isEqualTo(99);
   }
 
+  @Test
+  void upsertRelationshipReportsTheOneEdgeItTouched() {
+    embedded.transaction(() -> {
+      embedded.command("sql", "INSERT INTO " + TYPE_NAME + " SET k = 1, n = 0");
+      embedded.command("sql", "INSERT INTO " + TYPE_NAME + " SET k = 2, n = 0");
+    });
+
+    // The conflicting writer moves the SOURCE vertex, which the MERGE has already matched when the listener
+    // fires, so the attempt that created the edge is the one refused.
+    final AtomicInteger attempts = conflictOnTheFirstAttempt("UPDATE " + TYPE_NAME + " SET n = 99 WHERE k = 1");
+
+    final JSONObject result = UpsertRelationshipTool.execute(getServer(0), user, new JSONObject()
+        .put("database", getDatabaseName())
+        .put("fromType", TYPE_NAME)
+        .put("fromMatchKeys", new JSONObject().put("k", 1))
+        .put("toType", TYPE_NAME)
+        .put("toMatchKeys", new JSONObject().put("k", 2))
+        .put("relType", EDGE_TYPE_NAME)
+        .put("relProperties", new JSONObject().put("tag", "upserted")), config);
+
+    assertThat(attempts.get()).isEqualTo(1);
+    assertThat(result.getJSONArray("records").length())
+        .as("a MERGE between two resolved endpoints touches one edge, whatever the engine had to replay")
+        .isEqualTo(1);
+    assertThat(result.getInt("count")).isEqualTo(1);
+    assertThat(embedded.query("sql", "SELECT count(*) AS total FROM " + EDGE_TYPE_NAME).next()
+        .<Number>getProperty("total").intValue())
+        .as("the replay must not have left the rolled-back attempt's edge behind").isEqualTo(1);
+  }
+
   /**
    * Registers a listener that, the first time an update runs on the calling thread, commits {@code command} from
    * another thread and waits for it: the attempt in flight then holds a page the committed writer has already
@@ -173,16 +210,26 @@ class Issue7904RetriedAttemptRowsTest extends BaseGraphServerTest {
           return;
         forced.incrementAndGet();
 
+        // A writer that dies silently would leave the attempt unconflicted, and the limit assertion would then
+        // pass against the very bug it exists to catch. Its failure has to reach the test thread.
+        final AtomicReference<Throwable> writerFailure = new AtomicReference<>();
         final Thread conflicting = new Thread(() -> {
-          final Database db = embedded;
-          db.transaction(() -> db.command("sql", command));
+          try {
+            final Database db = embedded;
+            db.transaction(() -> db.command("sql", command));
+          } catch (final Throwable t) {
+            writerFailure.set(t);
+          }
         }, "issue7904-conflicting-writer");
         conflicting.start();
         try {
           conflicting.join();
         } catch (final InterruptedException e) {
           Thread.currentThread().interrupt();
+          throw new AssertionError("interrupted while waiting for the conflicting writer", e);
         }
+        if (writerFailure.get() != null)
+          throw new AssertionError("the conflicting writer failed, so no retry was forced", writerFailure.get());
       }
     };
     embedded.getEvents().registerListener(conflictOnFirstAttempt);

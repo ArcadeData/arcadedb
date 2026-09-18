@@ -85,6 +85,30 @@ class Issue7784McpServerSettingsEffectiveValueTest extends BaseGraphServerTest {
         .isEqualTo(LIVE_OVERRIDE);
   }
 
+  /**
+   * Found reviewing the fix above: {@code arcadedb.server.defaultDatabases} is not a hidden setting - its value
+   * EMBEDS credentials rather than being one - and this tool's own redaction did nothing but render a
+   * {@link Class} by name, so reporting the overlay's value (which is where a real deployment's default
+   * databases live) would have handed the passwords in it straight to the model.
+   */
+  @Test
+  void theCredentialsEmbeddedInDefaultDatabasesNeverReachTheModel() {
+    // Set live rather than in onServerConfiguration: the databases are created at startup, and this test is
+    // about what the REPORT says, not about creating them.
+    getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_DEFAULT_DATABASES,
+        "reportedb[reporter:hunter2]");
+    try {
+      final JSONObject setting = settingFromTool(GlobalConfiguration.SERVER_DEFAULT_DATABASES.getKey());
+      final String value = setting.getString("value");
+
+      assertThat(value).as("the password must not appear anywhere in the reply").doesNotContain("hunter2");
+      assertThat(value).as("the database and user names are what the operator needs from this report")
+          .isEqualTo("reportedb[reporter:*****]");
+    } finally {
+      getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_DEFAULT_DATABASES, (Object) null);
+    }
+  }
+
   private JSONObject settingFromTool(final String key) {
     final JSONArray settings = GetServerSettingsTool.execute(getServer(0), user, new JSONObject(), config)
         .getJSONArray("settings");
