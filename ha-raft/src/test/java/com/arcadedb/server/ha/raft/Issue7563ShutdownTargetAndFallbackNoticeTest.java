@@ -67,19 +67,72 @@ class Issue7563ShutdownTargetAndFallbackNoticeTest {
   }
 
   /**
-   * The reason the matching may not stop at the first hit: a peer is named {@code host_raftPort} and nobody
-   * types that, so the match is a substring - and {@code arcadedb-1} is a substring of {@code arcadedb-10}
-   * too. Taking the first would stop whichever node the group happened to list first.
+   * A peer is named {@code host_raftPort} and nobody types that, so the name an operator gives is matched
+   * against the START of the peer id and of the declared address rather than against the whole of either. The
+   * peer that IS {@code arcadedb-1} is selected, and {@code arcadedb-10} - which the old {@code contains} rule
+   * matched just as happily - is not (claude-review on PR #7854).
+   */
+  @Test
+  void aNameIsMatchedAsAWholeNameRatherThanAsAnySubstring() {
+    final RaftHAServer raft = newDetachedServer("arcadedb-1:2435:2481,arcadedb-10:2436:2482,arcadedb-2:2437:2483");
+
+    assertThat(RaftHAPlugin.resolveShutdownTarget(raft, "arcadedb-1"))
+        .isEqualTo(RaftPeerId.valueOf("arcadedb-1_2435"));
+  }
+
+  /**
+   * The regression the rule above exists for, and the one the ambiguity guard could never catch: with no peer
+   * literally named {@code arcadedb-1}, {@code contains} found exactly ONE match - {@code arcadedb-10} - so
+   * there was nothing to declare ambiguous and the wrong node was stopped. It is now not a match at all.
+   */
+  @Test
+  void aNameThatIsOnlyAPrefixOfAnotherPeerStopsNothing() {
+    final RaftHAServer raft = newDetachedServer("arcadedb-0:2434:2480,arcadedb-10:2436:2482,arcadedb-2:2437:2483");
+
+    assertThatThrownBy(() -> RaftHAPlugin.resolveShutdownTarget(raft, "arcadedb-1"))
+        .as("arcadedb-10 is not the server the operator named")
+        .isInstanceOf(ServerException.class)
+        .hasMessageContaining("Cannot find server 'arcadedb-1'");
+  }
+
+  /**
+   * A name that genuinely answers for two peers is still refused rather than resolved to the first. The
+   * realistic shape of that is two nodes on one host: the name is the whole host of both, so it names both.
    */
   @Test
   void aNameThatMatchesTwoPeersIsRefusedRatherThanResolvedToTheFirst() {
-    final RaftHAServer raft = newDetachedServer("arcadedb-1:2435:2481,arcadedb-10:2436:2482,arcadedb-2:2437:2483");
+    final RaftHAServer raft = newDetachedServer("localhost:2434:2480,localhost:2435:2481,localhost:2436:2482");
 
-    assertThatThrownBy(() -> RaftHAPlugin.resolveShutdownTarget(raft, "arcadedb-1"))
+    assertThatThrownBy(() -> RaftHAPlugin.resolveShutdownTarget(raft, "localhost"))
         .isInstanceOf(ServerException.class)
-        .hasMessageContaining("matches 2 peers")
-        .hasMessageContaining("arcadedb-1_2435")
-        .hasMessageContaining("arcadedb-10_2436");
+        .hasMessageContaining("matches 3 peers");
+  }
+
+  /**
+   * The Kubernetes shorthand the whole-name rule has to keep working: a pod is reached at its full service
+   * FQDN, and an operator types the pod name. The boundary is the {@code .} that starts the next DNS label.
+   */
+  @Test
+  void aPodNameStillNamesItsFullyQualifiedPeer() {
+    final RaftHAServer raft = newDetachedServer(
+        "arcadedb-0.arcadedb.ns.svc.cluster.local:2434:2480,arcadedb-1.arcadedb.ns.svc.cluster.local:2435:2481");
+
+    assertThat(RaftHAPlugin.resolveShutdownTarget(raft, "arcadedb-1"))
+        .isEqualTo(RaftPeerId.valueOf("arcadedb-1.arcadedb.ns.svc.cluster.local_2435"));
+  }
+
+  /** The rule itself, at the three boundaries it accepts and the one it must not. */
+  @Test
+  void aNameEndsAtASeparatorAndNotInTheMiddleOfALabel() {
+    assertThat(RaftHAPlugin.namesPeer("arcadedb-1", "arcadedb-1")).as("the whole name").isTrue();
+    assertThat(RaftHAPlugin.namesPeer("arcadedb-1_2435", "arcadedb-1")).as("peer id: _ before the Raft port").isTrue();
+    assertThat(RaftHAPlugin.namesPeer("arcadedb-1:2481", "arcadedb-1")).as("address: : before the port").isTrue();
+    assertThat(RaftHAPlugin.namesPeer("arcadedb-1.ns.svc", "arcadedb-1")).as("FQDN: . before the next label").isTrue();
+
+    assertThat(RaftHAPlugin.namesPeer("arcadedb-10", "arcadedb-1")).as("a longer label is another server").isFalse();
+    assertThat(RaftHAPlugin.namesPeer("arcadedb-10_2436", "arcadedb-1")).as("and so is its peer id").isFalse();
+    assertThat(RaftHAPlugin.namesPeer("xarcadedb-1", "arcadedb-1")).as("the match is anchored at the start").isFalse();
+    assertThat(RaftHAPlugin.namesPeer(null, "arcadedb-1")).as("a peer with no declared address").isFalse();
   }
 
   /** A name nobody answers to is still the error it always was. */

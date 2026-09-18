@@ -155,6 +155,12 @@ public class MembershipSecuritySeeder implements AutoCloseable {
   }
 
   private static ThreadPoolExecutor createSeedExecutor() {
+    // corePoolSize 0 with a bounded queue relies on ThreadPoolExecutor.execute's second stage: after a
+    // successful enqueue it re-checks the worker count and starts a non-core worker when it finds zero, which
+    // is what stops a task sitting in the queue with nobody to run it. That is the documented behaviour, not
+    // an accident of the implementation - but it is subtle enough to be worth naming here rather than leaving
+    // the reader to find it in the JDK source (claude-review on PR #7854).
+    //
     // AbortPolicy, not a discarding handler (issue #7834). Coalescing now happens one level up, in schedule(),
     // where the folded-in caller gets the outstanding seed's FUTURE and therefore its outcome; a handler that
     // silently dropped the task here would leave that future uncompleted and every reporting caller waiting out
@@ -336,6 +342,19 @@ public class MembershipSecuritySeeder implements AutoCloseable {
           "The security seed run for %s could not be run at all: %s. The peer(s) it was for are cluster "
               + "members serving requests against their own security documents", t, reason, t.getMessage());
     }
+  }
+
+  /**
+   * Schedules a seed and hands back its future WITHOUT waiting, so a test can observe the fold itself rather
+   * than infer it from a race. Package-private and test-only, the seam {@link #knownPeersForTest} is.
+   * <p>
+   * The fold is the whole of issue #7834's "one seed per admission", and a test that drives it from a second
+   * thread has to guess when that thread has arrived. This returns the same object {@link #seedNowAndReport}
+   * would have waited on, so the assertion is an identity check on the calling thread instead.
+   */
+  // @VisibleForTesting
+  CompletableFuture<List<String>> scheduleForTest(final String reason) {
+    return schedule(reason);
   }
 
   /** The peers of the last configuration observed, or {@code null} before the first one. Test seam. */

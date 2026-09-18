@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
@@ -150,26 +151,25 @@ class Issue7834SingleSecuritySeederTest {
     try (final MembershipSecuritySeeder seeder = seeder(seed, worker)) {
       // The membership change: the leader schedules the admission's seed, which parks inside the seed itself.
       seeder.onConfigurationChanged(1, 10, peers("arcadedb-0", "arcadedb-1"));
-      seeder.onConfigurationChanged(1, 11, peers("arcadedb-0", "arcadedb-1", "arcadedb-2"));
+      final CompletableFuture<List<String>> membershipSeed =
+          seeder.scheduleForTest("the membership change that admitted arcadedb-2");
       assertThat(seed.started.await(TIMEOUT_MS, TimeUnit.MILLISECONDS)).isTrue();
 
-      // The admitting node now asks for the outcome, on another thread because it would otherwise block here.
-      final ExecutorService caller = Executors.newSingleThreadExecutor();
-      try {
-        final var report = caller.submit(() -> seeder.seedNowAndReport(TIMEOUT_MS));
-        // Give the request time to reach the fold; then let the one outstanding seed finish.
-        Thread.sleep(100);
-        seed.release.countDown();
+      // The admitting node's request, made on THIS thread through the same scheduling path seedNowAndReport
+      // takes, so the fold is observed rather than raced against: what comes back is the seed already running.
+      final CompletableFuture<List<String>> admissionRequest =
+          seeder.scheduleForTest("a request from the node that admitted a peer");
+      assertThat(admissionRequest)
+          .as("the request must fold into the outstanding seed instead of scheduling a second one")
+          .isSameAs(membershipSeed);
 
-        assertThat(report.get(TIMEOUT_MS, TimeUnit.MILLISECONDS))
-            .as("the request must report the outstanding seed's outcome")
-            .containsExactly("users");
-      } finally {
-        caller.shutdownNow();
-      }
+      seed.release.countDown();
 
+      assertThat(admissionRequest.get(TIMEOUT_MS, TimeUnit.MILLISECONDS))
+          .as("and it reports that seed's outcome")
+          .containsExactly("users");
       assertThat(seed.calls.get())
-          .as("one admission, one seed: the request folded into the membership change's seed")
+          .as("one admission, one seed")
           .isEqualTo(1);
     } finally {
       worker.shutdownNow();
