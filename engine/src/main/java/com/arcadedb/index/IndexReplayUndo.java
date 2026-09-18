@@ -29,6 +29,12 @@ package com.arcadedb.index;
  * buffer and rebuild counters - has no such guarantee, and must hand the transaction one of these so the abort can
  * put that state back.
  * <p>
+ * <b>Who implements it today, and who should.</b> {@code LSMVectorIndex} only. {@code LSMSparseVectorIndex} has
+ * the same defect and does NOT yet register one - its replay writes straight into the engine's shared
+ * {@code Memtable} - which is issue #7933, deliberately separate because its memtable can be flushed to a sealed
+ * segment inside the very window a compensation would have to cover. This interface is the hook that fix will
+ * plug into.
+ * <p>
  * Registered with {@code TransactionContext.addIndexReplayUndo} at the first mutation of the replay and run by
  * {@code TransactionContext.rollback()} while the transaction still holds its file locks, so no other transaction
  * can have touched the same index in between. It is run ONLY from {@code rollback()}: the other non-committed
