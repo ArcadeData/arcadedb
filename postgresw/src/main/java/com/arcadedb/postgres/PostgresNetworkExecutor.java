@@ -3415,10 +3415,16 @@ public class PostgresNetworkExecutor extends Thread {
    * {@code parseCommand()} only recognizes the keyword and records it, so that a statement merely prepared and never
    * run cannot move the session's transaction state. A no-op for every other portal.
    * <p>
-   * COMMIT deliberately does not call {@code database.commit()}: clearing the flag is what makes the Sync that ends
-   * this pipeline take its implicit-commit branch (see {@link #syncCommand()}), which is what actually persists the
-   * transaction. ROLLBACK cannot lean on that - clearing the flag without rolling back here would make the next Sync
-   * COMMIT the transaction instead (issue #6543), the opposite of what the client asked for.
+   * COMMIT commits here rather than leaving the transaction for the next Sync to persist: the CommandComplete this
+   * Execute is about to write tells the client the commit succeeded, and until the data is actually committed that
+   * acknowledgement can still be taken back - by {@link #rollbackPendingTransaction()} if the client disconnects
+   * before its Sync, or by {@link #syncCommand()} if a later message in the same pipeline fails, which is a plain
+   * loss of acknowledged data. It is the same two lines queryCommand() runs for a COMMIT on the simple query
+   * protocol, so both protocols now persist an explicit block at exactly the same point.
+   * <p>
+   * The marker is cleared once applied. Portals outlive their Execute on purpose (a limit-hit Execute suspends and
+   * the client fetches the rest through the same portal, issue #6458), so without this a second Execute of a
+   * retained ROLLBACK portal would roll back whatever transaction had been opened since.
    */
   private void applyTransactionControl(final PostgresPortal portal) {
     if (portal.transactionControl == null)
@@ -3430,13 +3436,18 @@ public class PostgresNetworkExecutor extends Thread {
       if (!database.isTransactionActive())
         database.begin();
     }
-    case COMMIT -> explicitTransactionStarted = false;
+    case COMMIT -> {
+      if (explicitTransactionStarted && database.isTransactionActive())
+        database.commit();
+      explicitTransactionStarted = false;
+    }
     case ROLLBACK -> {
       if (explicitTransactionStarted && database.isTransactionActive())
         database.rollback();
       explicitTransactionStarted = false;
     }
     }
+    portal.transactionControl = null;
   }
 
   /**

@@ -73,6 +73,8 @@ class Issue7851SyncKeepsTransactionAbortedIT extends PostgresWireProtocolTestBas
   private static final String TYPE_NAME  = "Issue7851Aborted";
   private static final String BLOCK_TYPE  = "Issue7851Block";
   private static final String PARSED_TYPE = "Issue7851Parsed";
+  private static final String ACKED_TYPE  = "Issue7851Acked";
+  private static final String REPLAY_TYPE = "Issue7851Replay";
 
   @Test
   @DisplayName("[#7851] Sync after an error inside an explicit transaction reports 'E' and refuses further statements")
@@ -252,6 +254,96 @@ class Issue7851SyncKeepsTransactionAbortedIT extends PostgresWireProtocolTestBas
     assertThat(getServerDatabase(0, getDatabaseName()).countType(PARSED_TYPE, true))
         .as("the row was written inside a block the client rolled back, so nothing may remain")
         .isZero();
+  }
+
+  @Test
+  @DisplayName("[#7851] a COMMIT acknowledged at Execute survives a later failure in the same pipeline")
+  void anAcknowledgedCommitCannotBeTakenBackByALaterFailure() throws Exception {
+    try (final Socket socket = new Socket()) {
+      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+      authenticate(out, in);
+
+      assertTimeoutPreemptively(Duration.ofSeconds(30), () -> {
+        sendSimpleQuery(out, "CREATE DOCUMENT TYPE " + ACKED_TYPE + " IF NOT EXISTS");
+        assertThat(messageTypesOf(readUntilReadyForQuery(in))).doesNotContain('E');
+
+        // One pipeline: a whole explicit block, and then a statement that fails - all before the Sync. Execute
+        // answers CommandComplete("COMMIT"), so the client is told the block is durable; leaving the actual
+        // commit to the Sync meant the failure below made that Sync roll it back instead, losing data the
+        // client had already been told was safe.
+        sendParse(out, "b", "BEGIN");
+        sendBind(out, "b", "b");
+        sendExecute(out, "b");
+        sendParse(out, "i", "INSERT INTO " + ACKED_TYPE + " SET id = 1");
+        sendBind(out, "i", "i");
+        sendExecute(out, "i");
+        sendParse(out, "c", "COMMIT");
+        sendBind(out, "c", "c");
+        sendExecute(out, "c");
+        sendParse(out, "bad", "SELEC 1");
+        sendSync(out);
+
+        final List<WireMessage> answers = readUntilReadyForQuery(in);
+        assertThat(messageTypesOf(answers)).as("the failing statement is still reported").contains('E');
+        assertThat(readyForQueryStatusOf(answers))
+            .as("the block was ended by the client's own COMMIT, so the failure leaves the session idle")
+            .isEqualTo('I');
+      });
+    }
+
+    assertThat(getServerDatabase(0, getDatabaseName()).countType(ACKED_TYPE, true))
+        .as("a COMMIT the client was told succeeded cannot be taken back by what came after it")
+        .isEqualTo(1);
+  }
+
+  @Test
+  @DisplayName("[#7851] re-executing a retained ROLLBACK portal does not roll back a later transaction")
+  void aRetainedTransactionControlPortalAppliesOnlyOnce() throws Exception {
+    try (final Socket socket = new Socket()) {
+      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+      authenticate(out, in);
+
+      assertTimeoutPreemptively(Duration.ofSeconds(30), () -> {
+        sendSimpleQuery(out, "CREATE DOCUMENT TYPE " + REPLAY_TYPE + " IF NOT EXISTS");
+        assertThat(messageTypesOf(readUntilReadyForQuery(in))).doesNotContain('E');
+
+        // First block: opened, written to, and rolled back through a NAMED portal, which outlives its Execute -
+        // a portal is kept so a limit-hit Execute can be resumed through it (issue #6458).
+        runExtendedStatement(out, "b1", "BEGIN");
+        readUntilReadyForQuery(in);
+        runExtendedStatement(out, "w1", "INSERT INTO " + REPLAY_TYPE + " SET id = 1");
+        readUntilReadyForQuery(in);
+        sendParse(out, "rb", "ROLLBACK");
+        sendBind(out, "rb", "rb");
+        sendExecute(out, "rb");
+        sendSync(out);
+        assertThat(readyForQueryStatusOf(readUntilReadyForQuery(in))).isEqualTo('I');
+
+        // Second block, then an Execute of that SAME retained portal with no new Bind. It must do nothing: the
+        // ROLLBACK it carried was already applied, and re-applying it discarded a block the client never asked
+        // to discard.
+        runExtendedStatement(out, "b2", "BEGIN");
+        readUntilReadyForQuery(in);
+        runExtendedStatement(out, "w2", "INSERT INTO " + REPLAY_TYPE + " SET id = 2");
+        readUntilReadyForQuery(in);
+        sendExecute(out, "rb");
+        sendSync(out);
+        assertThat(readyForQueryStatusOf(readUntilReadyForQuery(in)))
+            .as("the second block is untouched by the replayed portal").isEqualTo('T');
+
+        runExtendedStatement(out, "c2", "COMMIT");
+        assertThat(readyForQueryStatusOf(readUntilReadyForQuery(in))).isEqualTo('I');
+      });
+    }
+
+    final Database database = getServerDatabase(0, getDatabaseName());
+    assertThat(database.countType(REPLAY_TYPE, true))
+        .as("the first block was rolled back, the second committed").isEqualTo(1);
+    assertThat(database.query("sql", "SELECT id FROM " + REPLAY_TYPE).next().<Integer>getProperty("id")).isEqualTo(2);
   }
 
   private static void runExtendedStatement(final DataOutputStream out, final String name, final String query) throws Exception {
