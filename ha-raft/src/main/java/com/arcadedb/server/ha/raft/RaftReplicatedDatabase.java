@@ -129,6 +129,7 @@ import java.util.function.Consumer;
 import java.util.function.IntPredicate;
 import java.util.function.Function;
 import java.util.function.Supplier;
+import java.util.function.UnaryOperator;
 import java.util.logging.Level;
 import java.util.zip.CRC32;
 
@@ -1223,6 +1224,16 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   @Override
   public Object setGlobalVariableIfPresent(final String name, final Object value) {
     return proxied.setGlobalVariableIfPresent(name, value);
+  }
+
+  /**
+   * Atomic on this node only - see the caveat on
+   * {@link DatabaseInternal#setGlobalVariableIfAbsent(String, Object)}. Two Redis clients incrementing one counter
+   * through DIFFERENT nodes of the cluster still each increment their node's own copy.
+   */
+  @Override
+  public Object computeGlobalVariable(final String name, final UnaryOperator<Object> remapping) {
+    return proxied.computeGlobalVariable(name, remapping);
   }
 
   /**

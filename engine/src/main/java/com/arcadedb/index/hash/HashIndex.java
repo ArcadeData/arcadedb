@@ -704,6 +704,22 @@ public class HashIndex implements IndexInternal {
 
   // ─── INTERNAL HELPERS ────────────────────────────────────
 
+  /**
+   * The single funnel every put/get/remove passes its key through, and therefore the one place where a key can be
+   * made to mean the same thing on the write side and on the lookup side.
+   * <p>
+   * The hash index settles key identity on BYTES - {@code HashIndexBucket} serializes the key, hashes those bytes to
+   * route it, and compares them raw to decide whether an entry matches - so every value type whose serialized form
+   * draws a distinction {@link BinaryComparator} does not has to be canonicalized here, or the two spellings of one
+   * key land in different slots: a lookup for one cannot find the other, and a UNIQUE index does not see the
+   * collision. That is the whole of {@link BinaryComparator#canonicalizeForByteEquality}, shared with the LSM index,
+   * which needs the same rule for its bloom filter (issue #7767; DECIMAL is the type it exists for, since
+   * {@link Type#convert} coerces the CLASS but preserves the SCALE).
+   * <p>
+   * Applied to the STORED key and not only to the hash, unlike the LSM index: here the bytes on the page ARE the
+   * equality test. An index created before this was applied therefore has to be rebuilt to answer for both
+   * spellings - and the rebuild surfaces whatever duplicates the constraint had been letting through.
+   */
   private Object[] convertKeys(final Object[] keys) {
     if (keys != null) {
       final byte[] keyTypes = bucket.declaredKeyTypes;
@@ -711,7 +727,8 @@ public class HashIndex implements IndexInternal {
       for (int i = 0; i < keys.length; ++i) {
         if (keys[i] == null)
           continue;
-        convertedKeys[i] = Type.convert(getDatabase(), keys[i], BinaryTypes.getClassFromType(keyTypes[i]));
+        convertedKeys[i] = BinaryComparator.canonicalizeForByteEquality(
+            Type.convert(getDatabase(), keys[i], BinaryTypes.getClassFromType(keyTypes[i])));
 
         // Fold CI-collated String components the same way LSMTreeIndexAbstract#convertKeysToDeclaredTypes does, so
         // writes and lookups agree on the same key: HashIndexBucket has no collation concept of its own (#7766).

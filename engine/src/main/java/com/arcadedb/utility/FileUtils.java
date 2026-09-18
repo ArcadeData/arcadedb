@@ -48,6 +48,7 @@ import java.nio.file.FileSystemException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.util.Arrays;
 import java.util.Locale;
 import java.util.UUID;
@@ -63,7 +64,15 @@ public class FileUtils {
   public static final String UTF8_BOM = "\uFEFF";
 
   /** One warning per JVM when the file store cannot replace files atomically (see {@link #publishAtomically}). */
-  private static final AtomicBoolean NON_ATOMIC_MOVE_REPORTED = new AtomicBoolean();
+  private static final AtomicBoolean NON_ATOMIC_MOVE_REPORTED   = new AtomicBoolean();
+  /** One warning per JVM when the platform cannot fsync a directory (see {@link #forceDirectory}). */
+  private static final AtomicBoolean NO_DIRECTORY_SYNC_REPORTED = new AtomicBoolean();
+  /**
+   * Set the first time {@link #forceDirectory} finds the platform cannot open a directory as a channel - Windows,
+   * where the operation is not merely unsupported but throws. Every later publish then skips the attempt instead of
+   * constructing and discarding an exception per file write, which on the schema-save path is a per-DDL cost.
+   */
+  private static volatile boolean    directorySyncUnsupported;
 
   public static String getStringContent(final Object iValue) {
     if (iValue == null)
@@ -473,6 +482,10 @@ public class FileUtils {
    * partial/spliced one. If a crash happens mid-write, the previous valid file is left untouched.
    * When the underlying filesystem cannot perform an atomic move, it falls back to a
    * {@code REPLACE_EXISTING} move (still a single rename, just without the cross-crash guarantee).
+   * <p>
+   * The parent directory is fsync'd after the rename, so the guarantee holds across a MACHINE crash and not only a
+   * process one - the rename is directory metadata, and forcing the file does not make it durable (issue #7465). On
+   * a platform that will not fsync a directory (Windows) the attempt is skipped; see {@link #forceDirectory}.
    */
   public static void atomicWriteFile(final File file, final String content) throws IOException {
     atomicWriteFile(file, content.getBytes(StandardCharsets.UTF_8));
@@ -507,7 +520,8 @@ public class FileUtils {
   /**
    * Publishes a byte-identical copy of {@code source} at {@code target} atomically, so a reader of
    * {@code target} sees either its previous complete content or the full copy, never a partial one, and
-   * {@code source} is never unlinked in the process.
+   * {@code source} is never unlinked in the process. As in {@link #atomicWriteFile(File, byte[])}, the parent
+   * directory is fsync'd after the rename so the published name survives a power failure (issue #7465).
    * <p>
    * A hard link is attempted first: it makes {@code target} a second name for the bytes already on disk,
    * which costs one inode operation instead of a full read + write + fsync of the source, and is
@@ -564,6 +578,79 @@ public class FileUtils {
                 + "missing or partial. Consider hosting the database on a file store that supports atomic renames.", null, target);
       Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
     }
+
+    // The rename is a DIRECTORY-metadata update, and the fsync the caller already did on the temporary file does not
+    // make it durable: after a machine crash the new content can be on disk while the directory still names the old
+    // file, or nothing at all (issue #7465). Forcing the parent directory is what turns "the previous complete file
+    // or the new complete file" from a statement about a process crash into one about a power failure, which is what
+    // both helpers' javadocs claim.
+    forceDirectory(target.getParent());
+  }
+
+  /**
+   * fsyncs a DIRECTORY, so a rename published into it survives a power failure rather than only a process crash.
+   * <p>
+   * There is no portable API for this. Opening a directory as a read-only {@link FileChannel} and forcing it is the
+   * POSIX idiom and works on Linux and macOS; on Windows the open itself throws, since a directory is not a file
+   * there, and the platform has no equivalent call. The attempt is therefore made and its failure TOLERATED: a
+   * durability improvement that cannot be had on a platform must not turn into a write failure on it. The first
+   * refusal is logged, and remembered in {@link #directorySyncUnsupported} so later publishes do not pay for an
+   * exception per file.
+   * <p>
+   * An I/O error from {@code force} itself is deliberately treated the same way - logged once, not thrown. The bytes
+   * and the rename are already on the file store at this point; failing the caller here would turn a weaker
+   * durability guarantee into a failed schema save, which is the worse of the two outcomes.
+   *
+   * @param dir the directory to force; ignored when {@code null}
+   *
+   * @return {@code true} when the directory was fsync'd, {@code false} when the platform would not do it. Returned
+   * for the test that asserts the fsync actually happens on the platforms that support it - no caller acts on it
+   */
+  public static boolean forceDirectory(final Path dir) {
+    if (dir == null || directorySyncUnsupported)
+      return false;
+
+    final FileChannel channel;
+    try {
+      channel = FileChannel.open(dir, StandardOpenOption.READ);
+    } catch (final Exception e) {
+      // IOException on Windows ("access is denied" opening a directory), UnsupportedOperationException on a provider
+      // that refuses the open outright. Latched - every later publish then skips the attempt instead of building an
+      // exception it is going to discard - but ONLY when the path really is a directory this platform would not
+      // open. A path that is missing or is not a directory says nothing about the platform, and latching on it
+      // would let one odd call silently disable the fsync for the whole JVM.
+      if (Files.isDirectory(dir))
+        directorySyncUnsupported = true;
+      reportNoDirectorySync(dir);
+      return false;
+    }
+
+    try (channel) {
+      // metaData=true: the point of the call is precisely the directory's METADATA, its name entries.
+      channel.force(true);
+      return true;
+    } catch (final IOException e) {
+      // The open worked, so the platform does support this and a later call may well succeed - NOT latched.
+      reportNoDirectorySync(dir);
+      return false;
+    }
+  }
+
+  /**
+   * Clears the "this platform will not fsync a directory" latch. The latch is a JVM-wide volatile, so a test that
+   * makes {@link #forceDirectory} fail on purpose - by making the channel open throw - would otherwise leave the
+   * fsync disabled for every later test sharing the fork. Package-private: nothing in production has any reason to
+   * un-learn what the platform answered.
+   */
+  static void resetDirectorySyncSupport() {
+    directorySyncUnsupported = false;
+  }
+
+  private static void reportNoDirectorySync(final Path dir) {
+    if (NO_DIRECTORY_SYNC_REPORTED.compareAndSet(false, true))
+      LogManager.instance().log(FileUtils.class, Level.FINE,
+          "Cannot fsync directory '%s': an atomically published file is durable against a process crash but, after a "
+              + "power failure, the rename that published it may be lost.", null, dir);
   }
 
   /**
