@@ -208,6 +208,9 @@ public class MembershipSecuritySeeder implements AutoCloseable {
         return;
       }
 
+      // Sized for one, not capped at one: a setConfiguration may add several peers at once and the list grows
+      // if it does. Every production issuer adds exactly one, and this runs on a Ratis callback thread, so the
+      // common case allocates the smallest backing array rather than the default sixteen.
       added = new ArrayList<>(1);
       for (final RaftPeerId peer : current)
         if (!previous.contains(peer))
@@ -232,6 +235,9 @@ public class MembershipSecuritySeeder implements AutoCloseable {
     try {
       executor.execute(() -> runSeed(added));
     } catch (final RejectedExecutionException e) {
+      // Not reached by the production pool, whose rejection handler logs and returns rather than throwing, so
+      // this covers the test-seam executor and any future handler that does throw. Kept rather than removed:
+      // the alternative to catching here is an exception escaping into a Ratis callback thread.
       LogManager.instance().log(this, Level.FINE,
           "A cluster security seed is already queued or the node is stopping; the one for %s is coalesced into it",
           added);
