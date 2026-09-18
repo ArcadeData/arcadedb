@@ -277,6 +277,11 @@ public final class ClusterSecuritySeedQuery {
       final List<String> names = new ArrayList<>(failed.length());
       for (int i = 0; i < failed.length(); i++)
         names.add(String.valueOf(failed.get(i)));
+      // An EMPTY list on a 503 deliberately falls through to the throw below rather than being returned
+      // (claude-review on PR #7854). The route answers 503 with names when it knows which documents failed and
+      // with an `error` when it does not; a 503 naming nothing is neither, and returning it as "no failures"
+      // would tell an admitting node that everything committed. Absent and empty are the same answer here -
+      // "this response does not say what failed" - and both have to be raised.
       if (!names.isEmpty())
         return names;
     }
