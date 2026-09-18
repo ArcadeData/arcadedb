@@ -67,6 +67,10 @@ class Issue7654RemoteUnsupportedMessageTest {
     checked += assertAllRefusalsCarryAMessage(RemoteBucket.class, () -> new RemoteBucket("testBucket"));
     checked += assertAllRefusalsCarryAMessage(RemoteDocumentType.class, Issue7654RemoteUnsupportedMessageTest::newDocumentType);
     checked += assertAllRefusalsCarryAMessage(RemoteProperty.class, Issue7654RemoteUnsupportedMessageTest::newProperty);
+    // Not one of the four #7654 counted, but this PR changed its wording too, and nothing else covers it: the other
+    // materialized-view tests exercise the local MaterializedViewImpl (CodeRabbit review on PR #7850).
+    checked += assertAllRefusalsCarryAMessage(RemoteMaterializedView.class,
+        Issue7654RemoteUnsupportedMessageTest::newMaterializedView);
 
     // The four classes carried 98 bare throws when #7654 was filed, plus the ones #7335 had already given a message
     // to. A floor rather than an equality: adding a remote capability legitimately removes refusals.
@@ -174,6 +178,10 @@ class Issue7654RemoteUnsupportedMessageTest {
     return new RemoteProperty(mock(DocumentType.class), record);
   }
 
+  private static RemoteMaterializedView newMaterializedView() {
+    return new RemoteMaterializedView(materializedViewRecord());
+  }
+
   private static Result documentTypeRecord() {
     final Map<String, Object> values = new HashMap<>();
     values.put("name", "TestType");
@@ -183,6 +191,20 @@ class Issue7654RemoteUnsupportedMessageTest {
     values.put("properties", new ArrayList<>());
     values.put("custom", Collections.emptyMap());
 
+    return resultOf(values);
+  }
+
+  private static Result materializedViewRecord() {
+    final Map<String, Object> values = new HashMap<>();
+    values.put("name", "TestView");
+    values.put("query", "SELECT FROM TestType");
+    values.put("backingType", "TestViewBacking");
+    values.put("refreshMode", "MANUAL");
+    values.put("sourceTypes", List.of("TestType"));
+    return resultOf(values);
+  }
+
+  private static Result resultOf(final Map<String, Object> values) {
     final Result record = mock(Result.class);
     when(record.getPropertyNames()).thenReturn(values.keySet());
     for (final Map.Entry<String, Object> entry : values.entrySet())
