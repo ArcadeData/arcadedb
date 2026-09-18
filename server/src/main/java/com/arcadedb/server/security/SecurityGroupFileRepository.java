@@ -43,6 +43,8 @@ import java.util.logging.Level;
 
 public class SecurityGroupFileRepository {
   public static final String                     FILE_NAME       = "server-groups.json";
+  /** Prefix of the watcher thread's name; the watched document's path is appended to it. See {@link #startWatching()}. */
+  public static final String                     WATCHER_THREAD_NAME_PREFIX = "arcadedb-security-groups-watcher";
   private final       String                     securityConfPath;
   private final       File                       file;
   private final       int                        checkConfigReloadEveryMs;
@@ -74,6 +76,14 @@ public class SecurityGroupFileRepository {
     // latestGroupConfiguration still holds what was just saved: later ticks need a STRICTLY newer stamp, so
     // that edit would never be read, which is this very issue in miniature (CWE-863). Taken first, the baseline
     // is at most the pre-persist stamp, persist() moves the file past it, and nothing can be swallowed.
+    //
+    // The price, which is the point rather than an oversight: this method never advances fileLastUpdated, so
+    // persist()'s own modification-time bump looks like an external edit to the next watcher tick and costs one
+    // redundant load() plus permission refresh after an admin group save. Long-standing behaviour, not new here
+    // - it held whenever the watcher existed at all. Do NOT "fix" it by stamping fileLastUpdated from the file
+    // after persist(): an operator edit landing in that window would become the baseline and be swallowed, which
+    // is the CWE-863 hole above. Reloading a document identical to the one just saved is the cheap side of that
+    // trade.
     startWatching();
     persist(configuration);
     latestGroupConfiguration = configuration;
@@ -228,7 +238,12 @@ public class SecurityGroupFileRepository {
     if (fileLastUpdated == 0L && file.exists())
       fileLastUpdated = file.lastModified();
 
-    final Timer timer = new Timer("arcadedb-security-groups-watcher", true);
+    // The document path discriminates the thread: a single JVM can run several embedded nodes (every HA test
+    // fixture does), each with its own config directory and its own watcher, and a fixed name leaves a thread
+    // dump unable to say which node a given watcher belongs to. That ambiguity is new in practice rather than
+    // in principle, because the watcher now exists on EVERY started node instead of only the ones that had
+    // touched the group document.
+    final Timer timer = new Timer(WATCHER_THREAD_NAME_PREFIX + "[" + file.getPath() + "]", true);
     checkFileUpdatedTimer = timer;
     timer.schedule(new TimerTask() {
       @Override

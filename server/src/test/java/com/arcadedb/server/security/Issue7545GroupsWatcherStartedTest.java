@@ -295,7 +295,9 @@ class Issue7545GroupsWatcherStartedTest {
 
   private static long securityWatcherThreadCount() {
     return Thread.getAllStackTraces().keySet().stream()
-        .filter(t -> "arcadedb-security-groups-watcher".equals(t.getName()))
+        // Prefix, not equality: the watcher thread carries the watched document's path so that a JVM running
+        // several embedded nodes can tell their watchers apart in a thread dump.
+        .filter(t -> t.getName().startsWith(SecurityGroupFileRepository.WATCHER_THREAD_NAME_PREFIX))
         .count();
   }
 
