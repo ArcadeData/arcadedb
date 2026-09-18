@@ -279,8 +279,9 @@ public class ReplicatedSecurityFingerprintRepository {
     // attempts the write instead of short-circuiting on a value only memory ever had.
     persisted.clear();
 
+    final boolean removed;
     try {
-      Files.deleteIfExists(file.toPath());
+      removed = Files.deleteIfExists(file.toPath());
     } catch (final IOException | RuntimeException e) {
       writeFailure.addSuppressed(e);
       LogManager.instance().log(this, Level.SEVERE,
@@ -294,14 +295,22 @@ public class ReplicatedSecurityFingerprintRepository {
       return;
     }
 
+    // Distinguished because the two states read the same to an operator otherwise: a write that failed with a
+    // record already on disk leaves a file that had to be unlinked, while the first failed write on a fresh node
+    // never had one, and reporting the second as a removal describes a file that never existed (claude-review on
+    // PR #7817).
+    final String markerState = removed ?
+        String.format("'%s' has been REMOVED rather than left naming a document this node has moved past", FILE_NAME) :
+        String.format("'%s' held no record to remove, so nothing on disk names a document this node has moved past",
+            FILE_NAME);
+
     LogManager.instance().log(this, Level.SEVERE,
         "Could not write '%s'. The replicated security document IS installed on this node and IS in force; what "
-            + "failed is recording that it came from the cluster, so '%s' has been REMOVED rather than left "
-            + "naming a document this node has moved past. Until the next security change persists, a RESTART of "
-            + "this node leaves it unable to judge an entry's compare-and-set precondition: it installs the next "
-            + "replicated document of each kind unconditionally, which rejoins its peers' baseline but costs that "
-            + "one entry's lost-update protection (issue #7752). Fix the configuration volume and reissue the "
-            + "security change, which records every document again: %s",
-        writeFailure, FILE_NAME, FILE_NAME, writeFailure.getMessage());
+            + "failed is recording that it came from the cluster, so %s. Until the next security change persists, "
+            + "a RESTART of this node leaves it unable to judge an entry's compare-and-set precondition: it "
+            + "installs the next replicated document of each kind unconditionally, which rejoins its peers' "
+            + "baseline but costs that one entry's lost-update protection (issue #7752). Fix the configuration "
+            + "volume and reissue the security change, which records every document again: %s",
+        writeFailure, FILE_NAME, markerState, writeFailure.getMessage());
   }
 }
