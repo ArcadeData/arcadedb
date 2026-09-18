@@ -74,6 +74,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.concurrent.Callable;
+import java.util.function.UnaryOperator;
 
 /**
  * Wrapper of database returned from the server when runs embedded that prevents the close(), drop() and kill() by the user.
@@ -750,6 +751,11 @@ public class ServerDatabase implements DatabaseInternal {
   @Override
   public Object setGlobalVariableIfPresent(final String name, final Object value) {
     return wrapped.setGlobalVariableIfPresent(name, value);
+  }
+
+  @Override
+  public Object computeGlobalVariable(final String name, final UnaryOperator<Object> remapping) {
+    return wrapped.computeGlobalVariable(name, remapping);
   }
 
   @Override

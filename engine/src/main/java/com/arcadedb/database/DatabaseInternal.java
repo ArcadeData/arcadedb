@@ -43,6 +43,7 @@ import java.io.IOException;
 import java.util.Collection;
 import java.util.Map;
 import java.util.concurrent.Callable;
+import java.util.function.UnaryOperator;
 
 /**
  * Internal API, do not use as an end user.
@@ -438,6 +439,39 @@ public interface DatabaseInternal extends Database {
       return null;
     setGlobalVariable(name, value);
     return existing;
+  }
+
+  /**
+   * Atomically replaces a global variable with a value computed from its current one, the read-modify-write
+   * counterpart of {@link #setGlobalVariableIfAbsent(String, Object)}'s check-and-set.
+   * <p>
+   * The read, the computation and the write happen as ONE operation, so two callers incrementing the same counter
+   * on the same node cannot both read the same value and both write their own successor - which is exactly how a
+   * Redis {@code INCR} built out of a get followed by a set loses updates under concurrency (issue #7776). A CAS
+   * plus a retry loop would reach the same result; a single {@code compute} is preferred because it has no retry to
+   * get wrong and no ABA window, at the cost of running {@code remapping} while the map's bin is held - which is
+   * why {@code remapping} must be short, side-effect free, and must not touch this database's variables again.
+   * <p>
+   * {@code remapping} is called with the current value, or {@code null} when the variable is absent; returning
+   * {@code null} removes it, exactly as {@link #setGlobalVariable(String, Object)} does. An exception thrown out of
+   * it propagates to the caller and leaves the variable unchanged - which is what lets a caller reject a value it
+   * cannot operate on (a Redis {@code INCR} of a non-numeric string) from inside the computation.
+   * <p>
+   * <b>Not replicated in an HA cluster</b> - see {@link #setGlobalVariableIfAbsent(String, Object)}: the atomicity
+   * is per-node only.
+   * <p>
+   * The default falls back to a non-atomic get-compute-set for implementations (e.g. test doubles) that do not need
+   * the atomicity guarantee; {@link LocalDatabase} overrides it with a genuinely atomic (per-node) implementation.
+   *
+   * @param name      Variable name (with or without $ prefix)
+   * @param remapping computes the new value from the current one (which may be {@code null})
+   *
+   * @return the value {@code remapping} returned, i.e. the variable's new value
+   */
+  default Object computeGlobalVariable(final String name, final UnaryOperator<Object> remapping) {
+    final Object updated = remapping.apply(getGlobalVariable(name));
+    setGlobalVariable(name, updated);
+    return updated;
   }
 
   /**

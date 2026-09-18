@@ -118,6 +118,21 @@ public class WebSocketInsertSession {
   private       long                          failed;
   /** Highest chunk sequence already applied. A chunk at or below it is acknowledged without being applied again. */
   private       long                          watermark;
+  /**
+   * The rows of the one chunk that failed as a whole and has not been replayed yet, held OUT of the totals above
+   * (issue #7471).
+   * <p>
+   * A whole-chunk failure leaves the watermark where it is and the protocol tells the client to resend that
+   * sequence, so folding its rows into the session totals counted them twice: once as {@code failed} here and once
+   * again as written when the replay landed. A client reconciling "rows sent" against "rows written" off the final
+   * summary got a mismatch on exactly the path it had been instructed to take.
+   * <p>
+   * Held aside instead, and added back only when the summary is built, which keeps BOTH readings honest: a chunk
+   * the client never replayed still shows up as failed, and one it did replay is superseded rather than added to.
+   * At most one chunk can ever be in this state - a failure does not advance the watermark, so the next chunk the
+   * session will accept is the failed one, and nothing beyond it can be applied until it is.
+   */
+  private       long                          failedChunkRows;
   private volatile boolean                    closed;
   /** Set once the "out/in in updateColumnsOnConflict are ignored" warning has been logged for this session. */
   private          boolean                    warnedEdgeEndpointUpdateColumns;
@@ -147,20 +162,39 @@ public class WebSocketInsertSession {
    * Begins the session's own transaction. Only {@code PER_STREAM} has one: the other modes open and commit a
    * transaction inside {@link #applyChunk}, which is what makes their acknowledged chunks durable before the
    * client has said anything.
+   * <p>
+   * Under {@link #lock} and behind {@link #requireOpen()} like every other mutating entry point, because this one
+   * races the connection-close hook as well (CodeRabbit on PR #7855). {@link WebSocketInsertSessionManager#start}
+   * registers the session BEFORE beginning it - it has to, or the close hook and the idle sweep could not see it -
+   * so a close landing in that gap runs {@link #cancel()} on a session whose transaction does not exist yet. That
+   * sets {@code closed} and rolls back nothing, and {@code begin()} would then open a transaction anyway; every
+   * later {@code cancel()} returns immediately on the {@code closed} flag, so nothing would ever roll it back, and
+   * the session is no longer registered for the sweep to find. Taking the lock and re-checking {@code closed}
+   * makes the two orderings exhaustive: close first and this THROWS - {@code start} unregisters and reports it -
+   * or begin first and the close that follows finds the transaction and rolls it back.
+   *
+   * @throws IllegalStateException when the session was closed underneath the caller
    */
   void begin() {
-    if (options.transactionMode != InsertSessionOptions.TransactionMode.PER_STREAM)
-      return;
-
-    DatabaseContext.INSTANCE.init(database);
+    lock.lock();
     try {
-      database.begin();
-      transaction = database.getTransaction();
-      // The requester is what lets a lock taken on this thread be released from another one, which is exactly
-      // what a session whose frames land on different worker threads needs. Same reason PostBeginHandler sets it.
-      transaction.setRequester(id);
+      requireOpen();
+
+      if (options.transactionMode != InsertSessionOptions.TransactionMode.PER_STREAM)
+        return;
+
+      DatabaseContext.INSTANCE.init(database);
+      try {
+        database.begin();
+        transaction = database.getTransaction();
+        // The requester is what lets a lock taken on this thread be released from another one, which is exactly
+        // what a session whose frames land on different worker threads needs. Same reason PostBeginHandler sets it.
+        transaction.setRequester(id);
+      } finally {
+        DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
+      }
     } finally {
-      DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
+      lock.unlock();
     }
   }
 
@@ -251,17 +285,25 @@ public class WebSocketInsertSession {
       else
         applyUnderTransaction(records, rows, counts);
 
-      received += rows;
-      inserted += counts.inserted;
-      updated += counts.updated;
-      ignored += counts.ignored;
-      failed += counts.failed;
-      // The watermark advances only on a chunk that was applied without a whole-chunk failure, so a client that
-      // replays a chunk whose transaction never committed gets it applied rather than acknowledged as a duplicate.
-      // Only PER_STREAM and PER_BATCH can report a whole-chunk failure: PER_ROW commits row by row, so it advances
-      // even when every row failed, and the client resends those rows under a new sequence. See the javadoc.
-      if (!counts.wholeChunkFailed)
+      // Either way round, this attempt SUPERSEDES any earlier attempt at the same sequence: a whole-chunk failure
+      // does not advance the watermark, so the chunk being applied here is the one that failed (issue #7471).
+      if (counts.wholeChunkFailed)
+        // Deliberately NOT folded into the totals: the client is being told to replay this chunk, and the replay
+        // would count its rows a second time. Held aside so the summary can still report it if no replay comes.
+        failedChunkRows = rows;
+      else {
+        failedChunkRows = 0;
+        received += rows;
+        inserted += counts.inserted;
+        updated += counts.updated;
+        ignored += counts.ignored;
+        failed += counts.failed;
+        // The watermark advances only on a chunk that was applied without a whole-chunk failure, so a client that
+        // replays a chunk whose transaction never committed gets it applied rather than acknowledged as a duplicate.
+        // Only PER_STREAM and PER_BATCH can report a whole-chunk failure: PER_ROW commits row by row, so it advances
+        // even when every row failed, and the client resends those rows under a new sequence. See the javadoc.
         watermark = chunkSeq;
+      }
 
       ack.put("received", (long) rows);
       ack.put("inserted", counts.inserted);
@@ -388,12 +430,17 @@ public class WebSocketInsertSession {
         }
       }
 
+      // The totals count every chunk EXACTLY ONCE, and count each one as its LATEST attempt left it: a chunk that
+      // failed as a whole is not in them, because the protocol tells the client to replay it and the replay would
+      // count the same rows again (issue #7471). A chunk still outstanding when the session ends - failed, never
+      // replayed - is added back here, so 'received' remains "rows this session was given" and 'failed' remains
+      // "rows it did not write", rather than either quietly losing them.
       final JSONObject summary = new JSONObject();
-      summary.put("received", received);
+      summary.put("received", received + failedChunkRows);
       summary.put("inserted", inserted);
       summary.put("updated", updated);
       summary.put("ignored", ignored);
-      summary.put("failed", failed);
+      summary.put("failed", failed + failedChunkRows);
       summary.put("executionTimeMs", System.currentTimeMillis() - startedAt);
       // PER_BATCH and PER_ROW commit as they go, so a rollback frame cannot take back a chunk the client has
       // already been acknowledged for. Say so in the answer rather than letting the outcome imply otherwise.

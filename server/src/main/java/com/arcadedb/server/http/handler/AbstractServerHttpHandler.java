@@ -291,6 +291,17 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return;
     }
 
+    // Basic authentication runs PBKDF2 at 'arcadedb.server.saltIterations' (65536 by default) - tens of
+    // milliseconds of deliberately expensive, CPU-bound work - and would otherwise run right here, on the Undertow
+    // IO thread, for every route that does not dispatch of its own accord. An IO thread is a shared selector, so
+    // while it is inside the KDF it serves no other connection multiplexed onto it: health probes, WebSocket
+    // change-event frames and established clients all wait behind one password check (issue #7785). Dispatched
+    // BEFORE authenticating, in the same shape as the X-Request-Id dispatch above.
+    if (exchange.isInIoThread() && authenticationNeedsWorkerThread(exchange)) {
+      exchange.dispatch(this);
+      return;
+    }
+
     // Return 503 during snapshot installation to prevent cryptic errors
     if (httpServer.getServer().isSnapshotInstallInProgress()) {
       exchange.setStatusCode(503);
@@ -1600,6 +1611,31 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    */
   protected boolean mustExecuteOnWorkerThread(final HttpServerExchange exchange) {
     return mustExecuteOnWorkerThread();
+  }
+
+  /**
+   * Whether authenticating THIS request is expensive enough that it must not happen on an Undertow IO thread
+   * (issue #7785).
+   * <p>
+   * Only Basic credentials are. They reach {@code ServerSecurity.passwordMatch} -> {@code encodePassword}, which on
+   * a salt-cache miss runs {@code PBKDF2WithHmacSHA256} at {@code arcadedb.server.saltIterations} (65536 by
+   * default): a KDF whose whole purpose is to be slow, measured in tens of milliseconds per call. The cache does
+   * not make a miss rare - it holds {@code arcadedb.server.securitySaltCacheSize} (64) credentials server-wide, and
+   * {@code POST /api/v1/login} exists precisely to turn a password nobody has presented yet into a token, so it
+   * misses by definition.
+   * <p>
+   * Everything else stays on the IO thread, where it belongs: Bearer authentication (API token or session token) is
+   * a hash-map lookup plus one SHA-256, and a request with no {@code Authorization} header at all - the readiness
+   * and liveness probes among them - does no authentication work whatsoever. Dispatching those too would trade a
+   * cheap inline check for a thread hand-off on the server's most frequent requests.
+   *
+   * @return {@code true} when the request carries a Basic {@code Authorization} header
+   */
+  static boolean authenticationNeedsWorkerThread(final HttpServerExchange exchange) {
+    final String authorization = exchange.getRequestHeaders().getFirst(Headers.AUTHORIZATION);
+    // Matched the same way the authentication below does - startsWith, not equalsIgnoreCase on a split scheme - so
+    // the dispatch decision and the branch it is taken for cannot drift apart.
+    return authorization != null && authorization.startsWith(AUTHORIZATION_BASIC);
   }
 
   /**

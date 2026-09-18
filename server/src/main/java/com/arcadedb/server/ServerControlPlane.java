@@ -680,14 +680,34 @@ public class ServerControlPlane {
     server.getDatabase(databaseName);
   }
 
+  /**
+   * Closes the open instance of {@code databaseName} and deregisters it from this server. The files stay where they
+   * are; a later request reopens them.
+   * <p>
+   * Takes the per-database maintenance slot as {@link Operation#CLOSE} first (issue #7469). Closing the instance is
+   * not a delete, but a backup, an export and an import all read or write THROUGH that instance, and closing it out
+   * from under one is the same silent failure a {@code drop database} used to be before #7641: the archive is half
+   * written and the operation that was writing it loses its database. {@link Operation#CLOSE} therefore conflicts
+   * with everything, the same as {@link Operation#DROP}.
+   * <p>
+   * As in {@link #dropDatabase}, the resolution runs AFTER the slot is taken rather than before, so a second close
+   * cannot pass a stale check while the first one is still deregistering.
+   *
+   * @throws OperationInProgressException when a backup, restore, import, export, drop or close of the same database
+   *                                      is running
+   */
   public void closeDatabase(final String databaseName) {
     requireDatabaseName(databaseName);
 
-    final ServerDatabase database = server.getDatabase(databaseName);
-    database.getEmbedded().close();
+    beginExclusive(databaseName, Operation.CLOSE);
+    try {
+      final ServerDatabase database = server.getDatabase(databaseName);
+      database.getEmbedded().close();
 
-
-    server.removeDatabase(database.getName());
+      server.removeDatabase(database.getName());
+    } finally {
+      server.getBackupCoordinator().end(databaseName, Operation.CLOSE);
+    }
   }
 
   public void alignDatabase(final String databaseName) {

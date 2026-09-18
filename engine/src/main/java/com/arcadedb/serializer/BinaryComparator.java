@@ -650,4 +650,75 @@ public class BinaryComparator {
   public static int compareBytes(final byte[] buffer1, final byte[] buffer2) {
     return UnsignedBytesComparator.BEST_COMPARATOR.compare(buffer1, buffer2);
   }
+
+  /**
+   * Rewrites a value whose SERIALIZED FORM distinguishes values this comparator treats as EQUAL, so that equal
+   * values serialize to equal bytes.
+   * <p>
+   * Every index family eventually compares serialized key bytes rather than values: the LSM index hashes them for
+   * its bloom filter, and the HASH index hashes them to route a key and then compares them raw to settle equality.
+   * Wherever that happens, a type whose serialized form is STRICTER than the comparator breaks the index's notion
+   * of key identity - two spellings of one key land in different places, so a lookup for one cannot find the other
+   * and a unique constraint does not see the collision.
+   * <p>
+   * {@link BigDecimal} is that type, and the only one today. Serialization writes the SCALE followed by the
+   * unscaled bytes, while the comparator goes through {@code BigDecimal.compareTo}, which ignores scale: {@code 5}
+   * and {@code 5.00} are one key to the comparator and two byte strings to the serializer (issues #7613, #7767).
+   * {@code stripTrailingZeros} maps every {@code compareTo}-equal BigDecimal onto one representation, which is the
+   * same rule {@link Type#castComparableNumber} applies to a BigDecimal couple and
+   * {@link Type#normalizeNumberForKey} applies to a GROUP BY key.
+   * <p>
+   * Lives here, next to the comparator whose notion of equality it reconciles the bytes with, so a future value
+   * type in the same position has ONE place to be handled rather than one per index family.
+   *
+   * @param value the key component to canonicalize; {@code null} and every other type are returned unchanged
+   *
+   * @return the canonical representation, or {@code value} itself when it needs no rewriting
+   */
+  public static Object canonicalizeForByteEquality(final Object value) {
+    final BigDecimal rewritten = rewriteForByteEquality(value);
+    return rewritten != null ? rewritten : value;
+  }
+
+  /**
+   * The array form of {@link #canonicalizeForByteEquality(Object)}, for a composite key.
+   *
+   * @return {@code keys} ITSELF when no component needed rewriting - which is every index that has no DECIMAL
+   * component, i.e. this costs one instanceof per component and no allocation on the common path - and a rewritten
+   * copy otherwise, leaving the caller's array untouched
+   */
+  public static Object[] canonicalizeForByteEquality(final Object[] keys) {
+    Object[] canonical = keys;
+    boolean copied = false;
+
+    for (int i = 0; i < keys.length; i++) {
+      final BigDecimal rewritten = rewriteForByteEquality(keys[i]);
+      if (rewritten == null)
+        continue;
+
+      if (!copied) {
+        canonical = keys.clone();
+        copied = true;
+      }
+      canonical[i] = rewritten;
+    }
+
+    return canonical;
+  }
+
+  /**
+   * The rule both public forms share, answering {@code null} for "this value already serializes the way the
+   * comparator compares it". Saying it with {@code null} rather than by handing the value back unchanged is what
+   * lets the array form tell "nothing to do" from "rewritten" without comparing object references.
+   */
+  private static BigDecimal rewriteForByteEquality(final Object value) {
+    if (value instanceof BigDecimal decimal) {
+      final BigDecimal stripped = decimal.stripTrailingZeros();
+      // Equal scales mean equal unscaled values too (same number, same scale), so the bytes already match and the
+      // original instance is kept rather than a copy of it.
+      if (stripped.scale() != decimal.scale())
+        return stripped;
+    }
+    return null;
+  }
 }
