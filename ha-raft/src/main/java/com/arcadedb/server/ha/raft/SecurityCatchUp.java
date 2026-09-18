@@ -33,6 +33,10 @@ import java.util.logging.Level;
  * Puts a node that came back <b>still a Raft member</b> back in step with the cluster's security documents
  * (issue #7833).
  * <p>
+ * <b>Only a follower asks.</b> Both triggers below end in {@link #run}, which returns without asking anything
+ * when this node leads - see the note there for why that is accepted rather than closed, and why it is now
+ * logged.
+ * <p>
  * Issue #7531 closed the case where a pod is ABSENT from the committed configuration and adds itself: the
  * leader notices the configuration change and seeds. A pod that restarts while it is still a member issues no
  * configuration change at all - {@code KubernetesAutoJoin} answers {@code Outcome.ALREADY_MEMBER} and no
@@ -103,6 +107,10 @@ final class SecurityCatchUp implements AutoCloseable {
    * having been away, not about who leads now. A re-election on a running node changes nothing about the
    * documents this node holds, and firing on every one of them would put an HTTP round trip on a path that
    * already has an election to get through.
+   * <p>
+   * Called from the REPLICA branch of the leader-change callback, so a node that restarts and immediately wins
+   * the election never asks. That is the same case {@link #run} describes when it finds this node leading, and
+   * it has the same answer: there is nobody to ask.
    */
   void onFirstLeaderObserved(final ArcadeDBServer server, final RaftHAServer raft) {
     if (requestedSinceStart.compareAndSet(false, true))
@@ -136,9 +144,27 @@ final class SecurityCatchUp implements AutoCloseable {
       final HAServerPlugin ha = server.getHA();
       if (!(ha instanceof final RaftHAPlugin plugin))
         return;
-      if (plugin.isLeader())
-        // The leader IS the reference this request compares against; there is nothing for it to ask.
+      if (plugin.isLeader()) {
+        // The leader IS the reference this request compares against, so there is nobody to ask - including in
+        // the window this catches: a node that finished a snapshot install, or restarted, and then won the
+        // election before this task ran. Its documents become the cluster's by fiat.
+        //
+        // That is a residual risk rather than an oversight, and it is not closable from here: asking a FOLLOWER
+        // would invert the trust model, and the documents this node holds are the ones a Raft election
+        // guarantees nothing about, since they live outside the log and outside the snapshot. What the design
+        // relies on is that its state came from the same replicated entries everyone else applied - which holds
+        // unless it was restored out of band (a hand-edited or backup-restored config directory).
+        //
+        // So it is said out loud rather than skipped silently (claude-review on PR #7854): an operator who DID
+        // restore that directory by hand has one line in the log naming the node whose copy the cluster is now
+        // about to converge on.
+        LogManager.instance().log(this, Level.INFO,
+            "This node leads the cluster by the time its security catch-up ran (after %s), so there is no peer to "
+                + "validate its %s, %s and %s against - they are the cluster's reference from here. Re-issue the "
+                + "security changes if this node's config directory was restored out of band", reason,
+            "server-users.jsonl", "server-groups.json", "server-api-tokens.json");
         return;
+      }
 
       final List<String> failed = ClusterSecuritySeedQuery.seedForCatchUp(server, plugin, reason);
       if (failed.isEmpty())

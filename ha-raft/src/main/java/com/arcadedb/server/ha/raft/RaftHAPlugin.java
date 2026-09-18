@@ -819,6 +819,8 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     LogManager.instance().log(this, Level.INFO,
         "Shutdown of server '%s' names this node; stopping locally instead of dialling our own listener", serverName);
     try {
+      // The empty name selects the local branch, which schedules the stop and returns; the catch is here
+      // because shutdownServer declares IOException for the REMOTE branch, not because this call can take it.
       new ServerControlPlane(server).shutdownServer("");
     } catch (final IOException e) {
       throw new ServerException("Failed to shut down this server, named '" + serverName + "'", e);
