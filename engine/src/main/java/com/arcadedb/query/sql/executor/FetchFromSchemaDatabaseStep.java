@@ -72,9 +72,12 @@ public class FetchFromSchemaDatabaseStep extends AbstractExecutionStep {
               if (cfg.getScope() == GlobalConfiguration.SCOPE.DATABASE) {
                 final Map<String, Object> map = new LinkedHashMap<>();
                 map.put("key", cfg.getKey());
-                // Same redaction as the two SCOPE.SERVER readers: GlobalConfiguration.publishableValue is the
-                // single source of truth for what may be shown, in place of the "contains password" copy this
-                // step carried.
+                // Reuse, not a fix: this loop only ever walks SCOPE.DATABASE settings, so the credential
+                // embedding that publishableValue redacts (arcadedb.server.defaultDatabases, SCOPE.SERVER)
+                // cannot reach here, and no DATABASE-scope setting is hidden today either. What it replaces is
+                // the third copy of the rule - an ad-hoc "key contains password" check - so that the next
+                // setting that does need redacting is covered here by construction rather than by someone
+                // remembering this third site exists.
                 map.put("value", cfg.publishableValue(dbCfg.getValue(cfg)));
                 map.put("description", cfg.getDescription());
                 map.put("overridden", contextKeys.contains(cfg.getKey()));
