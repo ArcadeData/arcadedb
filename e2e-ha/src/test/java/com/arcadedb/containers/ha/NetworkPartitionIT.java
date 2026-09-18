@@ -47,7 +47,8 @@ import java.util.concurrent.TimeUnit;
 @Testcontainers
 class NetworkPartitionIT extends ContainersTestTemplate {
 
-  private static final String SERVER_LIST = "arcadedb-0:2434:2480,arcadedb-1:2434:2480,arcadedb-2:2434:2480";
+  private static final String SERVER_LIST            = "arcadedb-0:2434:2480,arcadedb-1:2434:2480,arcadedb-2:2434:2480";
+  private static final int    SCHEMA_TIMEOUT_SECONDS = 60;
 
 
   @Test
@@ -68,14 +69,15 @@ class NetworkPartitionIT extends ContainersTestTemplate {
     DatabaseWrapper[] dbs = { db0, db1, db2 };
     final GenericContainer<?>[] nodeContainers = { arcade0, arcade1, arcade2 };
 
-    logger.info("Creating database and schema");
-    db0.createDatabase();
-    db0.createSchema();
+    logger.info("Creating database and schema on the leader");
+    createDatabaseAndSchemaOnLeader(servers);
 
-    logger.info("Checking schema replication");
-    db0.checkSchema();
-    db1.checkSchema();
-    db2.checkSchema();
+    logger.info("Waiting for the schema to replicate to all nodes");
+    final long schemaStart = System.currentTimeMillis();
+    db0.awaitSchema(SCHEMA_TIMEOUT_SECONDS);
+    db1.awaitSchema(SCHEMA_TIMEOUT_SECONDS);
+    db2.awaitSchema(SCHEMA_TIMEOUT_SECONDS);
+    logger.info("Schema readable on all three nodes after {} ms", System.currentTimeMillis() - schemaStart);
 
     logger.info("Adding initial data");
     db0.addUserAndPhotos(10, 10);
@@ -187,8 +189,8 @@ class NetworkPartitionIT extends ContainersTestTemplate {
     final GenericContainer<?>[] nodeContainers = { arcade0, arcade1, arcade2 };
 
     logger.info("Creating database and initial data");
-    db0.createDatabase();
-    db0.createSchema();
+    createDatabaseAndSchemaOnLeader(servers);
+    db0.awaitSchema(SCHEMA_TIMEOUT_SECONDS);
     db0.addUserAndPhotos(10, 10);
 
     logger.info("Verifying initial replication");
@@ -288,8 +290,8 @@ class NetworkPartitionIT extends ContainersTestTemplate {
     final GenericContainer<?>[] nodeContainers = { arcade0, arcade1, arcade2 };
 
     logger.info("Creating database and initial data");
-    db0.createDatabase();
-    db0.createSchema();
+    createDatabaseAndSchemaOnLeader(servers);
+    db0.awaitSchema(SCHEMA_TIMEOUT_SECONDS);
     db0.addUserAndPhotos(10, 10);
 
     logger.info("Verifying initial replication");
@@ -382,5 +384,24 @@ class NetworkPartitionIT extends ContainersTestTemplate {
     db0r.close();
     db1r.close();
     db2r.close();
+  }
+
+  /**
+   * Creates the database and the schema on the node that currently holds Raft leadership.
+   * <p>
+   * Node 0 is not necessarily the leader: {@code DatabaseWrapper.createDatabase()} retries
+   * {@code ServerIsNotTheLeaderException} only while the leader address is still unknown, and rethrows as soon as a
+   * follower can name the leader. Addressing the leader directly removes that coin flip. This runs before any
+   * partition is introduced, so it does not interfere with the leadership the test later isolates.
+   */
+  private void createDatabaseAndSchemaOnLeader(final List<ServerWrapper> servers) {
+    final int leaderIndex = findLeaderIndex(servers);
+    final DatabaseWrapper leaderDb = new DatabaseWrapper(servers.get(leaderIndex < 0 ? 0 : leaderIndex), idSupplier, wordSupplier);
+    try {
+      leaderDb.createDatabase();
+      leaderDb.createSchema();
+    } finally {
+      leaderDb.close();
+    }
   }
 }

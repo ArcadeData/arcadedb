@@ -32,7 +32,8 @@ import java.util.concurrent.TimeUnit;
 @Testcontainers
 class SimpleHaScenarioIT extends ContainersTestTemplate {
 
-  private static final String SERVER_LIST = "arcadedb-0:2434:2480,arcadedb-1:2434:2480";
+  private static final String SERVER_LIST            = "arcadedb-0:2434:2480,arcadedb-1:2434:2480";
+  private static final int    SCHEMA_TIMEOUT_SECONDS = 60;
 
   @Test
   @DisplayName("Two-node Raft HA: schema and data replication")
@@ -46,13 +47,14 @@ class SimpleHaScenarioIT extends ContainersTestTemplate {
     final DatabaseWrapper db1 = new DatabaseWrapper(servers.getFirst(), idSupplier, wordSupplier);
     final DatabaseWrapper db2 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
 
-    logger.info("Creating database and schema on server 1");
-    db1.createDatabase();
-    db1.createSchema();
+    logger.info("Creating database and schema on the leader");
+    createDatabaseAndSchemaOnLeader(servers);
 
-    logger.info("Checking schema is replicated to server 2");
-    db1.checkSchema();
-    db2.checkSchema();
+    logger.info("Waiting for the schema to replicate to both nodes");
+    final long schemaStart = System.currentTimeMillis();
+    db1.awaitSchema(SCHEMA_TIMEOUT_SECONDS);
+    db2.awaitSchema(SCHEMA_TIMEOUT_SECONDS);
+    logger.info("Schema readable on both nodes after {} ms", System.currentTimeMillis() - schemaStart);
 
     logger.info("Adding data to server 1");
     db1.addUserAndPhotos(10, 10);
@@ -77,5 +79,23 @@ class SimpleHaScenarioIT extends ContainersTestTemplate {
 
     db1.close();
     db2.close();
+  }
+
+  /**
+   * Creates the database and the schema on the node that currently holds Raft leadership.
+   * <p>
+   * Node 0 is not necessarily the leader: {@code DatabaseWrapper.createDatabase()} retries
+   * {@code ServerIsNotTheLeaderException} only while the leader address is still unknown, and rethrows as soon as a
+   * follower can name the leader. Addressing the leader directly removes that coin flip.
+   */
+  private void createDatabaseAndSchemaOnLeader(final List<ServerWrapper> servers) {
+    final int leaderIndex = findLeaderIndex(servers);
+    final DatabaseWrapper leaderDb = new DatabaseWrapper(servers.get(leaderIndex < 0 ? 0 : leaderIndex), idSupplier, wordSupplier);
+    try {
+      leaderDb.createDatabase();
+      leaderDb.createSchema();
+    } finally {
+      leaderDb.close();
+    }
   }
 }
