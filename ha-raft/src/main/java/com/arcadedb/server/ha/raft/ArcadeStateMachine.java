@@ -297,12 +297,6 @@ public class ArcadeStateMachine extends BaseStateMachine {
       this::isLocalNodeRaftLeader, this::securitySeedRetryBudgetMs, this::seedSecurityStateClusterWide);
 
   /**
-   * Brings THIS node's security documents back in step when it rejoined without a membership change, or caught
-   * up by a snapshot install that carried none of them (issue #7833). See {@link SecurityCatchUp}.
-   */
-  private final SecurityCatchUp securityCatchUp = new SecurityCatchUp();
-
-  /**
    * Removes dropped database directories away from the apply loop. Deliberately not the lifecycleExecutor: a
    * deletion is unbounded in the size of the database and would delay the snapshot-download triggers that
    * executor carries.
@@ -1605,13 +1599,6 @@ public class ArcadeStateMachine extends BaseStateMachine {
     } else {
       LogManager.instance().log(this, Level.INFO, "This node is now REPLICA (leader: %s)", leaderName);
       raftHA.stopLagMonitor();
-
-      // Issue #7833: this node may have come back while still a Raft member, in which case no configuration
-      // entry was written and nothing seeded it the cluster's security documents. Once per start, and only as a
-      // replica - the leader is the reference this asks against. Off this thread and off lifecycleExecutor: it
-      // waits for catch-up and then dials the leader, neither of which belongs on a Ratis callback or on the
-      // single-threaded executor the snapshot-download triggers queue on.
-      securityCatchUp.onFirstLeaderObserved(this.server, raftHA);
     }
 
     // If a snapshot gap was detected during reinitialize(), trigger the download now
@@ -1722,25 +1709,6 @@ public class ArcadeStateMachine extends BaseStateMachine {
       throw new IllegalStateException(
           "this node has no HA plugin, so the security documents cannot be replicated to the joining peer");
     return srv.getSecurity().seedSecurityStateClusterWide(retryBudgetMs);
-  }
-
-  /**
-   * Runs the cluster security seed on this node and reports what it could not commit (issues #7833, #7834).
-   * <p>
-   * The entry point {@link PostSecuritySeedHandler} and the local short circuit in
-   * {@link ClusterSecuritySeedQuery} both end here, which is the point: there is one seeder per cluster and it
-   * lives on the leader. See {@link MembershipSecuritySeeder#seedNowAndReport} for what an outstanding seed does
-   * with a second request.
-   *
-   * @param reason what the seed is for, carried through to the log lines the run writes
-   * @param mayReuseRecentSeed whether a seed that just finished may answer this request; see
-   *               {@link MembershipSecuritySeeder#seedNowAndReport} for why only an admission may say true
-   *
-   * @throws IllegalStateException when no seed could be run or its outcome could not be read
-   */
-  public List<String> seedSecurityNowAndReport(final String reason, final long timeoutMs,
-      final boolean mayReuseRecentSeed) {
-    return membershipSecuritySeeder.seedNowAndReport(reason, timeoutMs, mayReuseRecentSeed);
   }
 
   /** Package-private test seam (issue #7531): substitutes the seeder the configuration callback drives. */
@@ -1897,13 +1865,6 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // outcome issue #6760 exists to prevent, so the notify has to come after the re-arm, not before it.
       if (raftHA != null)
         raftHA.notifyApplied();
-
-      // Issue #7833: a snapshot install is the one catch-up path that provably skips the security entries - the
-      // three documents live under <server-root>/config/, outside the database directory, and no snapshot
-      // carries them. Ask the leader whether this node is still in step, AFTER the install is fully recorded so
-      // the request cannot be answered against a half-installed node.
-      if (raftHA != null)
-        securityCatchUp.afterSnapshotInstall(this.server, raftHA);
 
       return installedTermIndex;
 
@@ -3813,26 +3774,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
     if (bootstrapUnreconciledDatabases.isEmpty())
       return;
 
-    // Both endpoints, from ONE look at the cluster, each having answered the two questions issue #6202
-    // requires of an address that is acted on unattended: it must identify a single peer, and it must not be
-    // our own.
-    //
-    // Through PeerDialAddress rather than by hand, and the encrypted half is why. getLeaderHttpsAddress()
-    // answers only the second of the two, and its javadoc says so: it resolves through the raw resolver on
-    // the argument that an address naming the wrong node is caught by the receiver's one-hop refusal of
-    // LeaderForwardContext.FORWARDED_TO_LEADER_HEADER. That argument is the leader FORWARD's, and it does not
-    // transfer here - POST /api/v1/cluster/bootstrap-state answers with the receiving node's own state and
-    // refuses nothing. On a cluster declaring distinct 'http' ports and one shared 'https' port the HTTP guard
-    // passes, and the probe would then dial an address identifying neither of the peers behind it and hand
-    // whatever answered to reconcileBootstrapDivergence as the leader's state (issue #7563 review). The
-    // resolver withholds such an endpoint, leaving the guarded plain one to fall back to.
-    final PeerDialAddress leaderDial = PeerDialAddress.resolve(raftHA, raftHA.getLeaderId(), "leader");
-    if (leaderDial.refused())
+    // Same two questions the other HealthMonitor-driven backstop asks before burning a throttle slot
+    // (issue #6202): the address must identify a single peer and must not be our own.
+    final String leaderHttpAddr = raftHA.getUnambiguousPeerHttpAddress(raftHA.getLeaderId());
+    if (leaderHttpAddr == null || raftHA.isOwnHttpAddress(leaderHttpAddr))
       return; // no leader to compare against yet
-    final String leaderHttpAddr = leaderDial.httpAddress();
-    final String leaderHttpsAddr = leaderDial.httpsAddress();
-    // Read once, off the volatile, so the task cannot see a different server than the one this tick checked.
-    final ArcadeDBServer probeServer = this.server;
 
     // Floored at the snapshot cadence so a WAN cluster that has widened its watchdog does not get probed
     // more often than it resyncs.
@@ -3854,7 +3800,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // the worst case, not for the length of a download.
       lifecycleExecutor.submit(() -> {
         final Map<String, BootstrapBaseline> leaderStates = BootstrapElection.fetchBootstrapState(
-            probeServer, leaderHttpAddr, leaderHttpsAddr, clusterToken, pending, BOOTSTRAP_DIVERGENCE_PROBE_TIMEOUT_MS);
+            leaderHttpAddr, clusterToken, pending, BOOTSTRAP_DIVERGENCE_PROBE_TIMEOUT_MS);
         if (leaderStates == null) {
           // The throttle slot is spent whether or not the probe answered, exactly as the stale-snapshot
           // backstop spends its own on a failed attempt: the next try is the next check window, not the
@@ -5314,7 +5260,6 @@ public class ArcadeStateMachine extends BaseStateMachine {
     lifecycleExecutor.shutdownNow();
     snapshotInstallExecutor.shutdownNow();
     membershipSecuritySeeder.close();
-    securityCatchUp.close();
     deferredDatabaseDeleter.close();
     super.close();
   }
