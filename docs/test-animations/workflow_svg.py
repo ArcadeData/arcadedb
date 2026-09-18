@@ -38,19 +38,22 @@ TRACK_X0, TRACK_X1 = 150, 850
 # ---------------------------------------------------------------------------- stage geometry
 CLIENT = (372, 246, 118, 76)          # x, y, w, h of the JUnit box
 PROXY_X = 573                         # midpoint of the client -> node run, where the proxy pills sit
-NODE_X, NODE_W = 660, 214
-_LAYOUT = {2: (112, [116, 336]), 3: (100, [100, 238, 376])}
+NODE_X = 660
+POOL = (368, 206, 142, 262)           # worker-pool panel, drawn only when workers > 0
+# node count -> (height, y positions, width). One node gets a wider box: a load test spends the
+# whole run watching counters inside it, and they need the room.
+_LAYOUT = {1: (176, [196], 262), 2: (112, [116, 336], 214), 3: (100, [100, 238, 376], 214)}
 
-_nodes = _LAYOUT[2][1]
-_node_h = _LAYOUT[2][0]
+_node_h, _nodes, _node_w = _LAYOUT[2][0], _LAYOUT[2][1], _LAYOUT[2][2]
 _proxy = False
+_workers = 0
 
 
-def layout(n, proxy=False):
-    """Selects the 2-node or 3-node stage, and whether a toxiproxy column sits in front of the nodes."""
-    global _nodes, _node_h, _proxy
-    _node_h, _nodes = _LAYOUT[n][0], _LAYOUT[n][1]
-    _proxy = proxy
+def layout(n, proxy=False, workers=0):
+    """Selects the stage: how many nodes, a toxiproxy column, and how many pool workers to draw."""
+    global _nodes, _node_h, _node_w, _proxy, _workers
+    _node_h, _nodes, _node_w = _LAYOUT[n]
+    _proxy, _workers = proxy, workers
 
 
 def node_count():
@@ -58,15 +61,18 @@ def node_count():
 
 
 def node_box(i):
-    return NODE_X, _nodes[i], NODE_W, _node_h
+    return NODE_X, _nodes[i], _node_w, _node_h
 
 
 def node_center(i):
-    return NODE_X + NODE_W / 2, _nodes[i] + _node_h / 2
+    return NODE_X + _node_w / 2, _nodes[i] + _node_h / 2
 
 
 def client_anchor(i):
-    """Where an arrow to node i leaves the JUnit box."""
+    """Where an arrow to node i leaves the JUnit box, or the worker pool when there is one."""
+    if _workers:
+        px, py, pw, ph = POOL
+        return px + pw, py + ph / 2
     cx, cy, cw, ch = CLIENT
     n = len(_nodes)
     span = 56 if n == 3 else 40
@@ -150,7 +156,7 @@ def raft_link(i, j, label="", color=PURPLE, packet=True, dash=None, width=2.2):
     Adjacent nodes are joined straight down the backbone; a link that spans a node bows out to the
     left instead, so neither the line nor its label is drawn on top of the node it skips.
     """
-    x = NODE_X + NODE_W / 2
+    x = NODE_X + _node_w / 2
     yi, yj = _nodes[i], _nodes[j]
     y1 = yi + _node_h + 4 if yj > yi else yi - 4
     y2 = yj - 6 if yj > yi else yj + _node_h + 6
@@ -163,7 +169,7 @@ def raft_link(i, j, label="", color=PURPLE, packet=True, dash=None, width=2.2):
 
 def cut(i, j, label="cut"):
     """A red X across the Raft backbone between two adjacent nodes."""
-    x = NODE_X + NODE_W / 2
+    x = NODE_X + _node_w / 2
     lo, hi = (i, j) if _nodes[i] < _nodes[j] else (j, i)
     y = (_nodes[lo] + _node_h + _nodes[hi]) / 2
     return (f'<path d="M {x - 11} {y - 11} l 22 22 M {x + 11} {y - 11} l -22 22" stroke="{RED}" '
@@ -224,6 +230,40 @@ def cross_stamp(i, text, color=RED):
             f'<path d="M {cx - 5} {cy - 17} l 10 10 M {cx + 5} {cy - 17} l -10 10" stroke="{color}" '
             f'stroke-width="2.4" stroke-linecap="round"/>' +
             txt(cx, cy + 16, text, size=10.5, fill=color, anchor="middle", font=MONO))
+
+
+def worker(k, label, color=GREEN, frac=None, sub=""):
+    """One row of the ExecutorService panel: a submitted task, optionally with its own progress."""
+    px, py, pw, ph = POOL
+    rows = max(_workers, 1)
+    rh = (ph - 38) / rows
+    y = py + 30 + k * rh
+    out = [rect(px + 8, y, pw - 16, rh - 6, fill=color + "14", stroke=color + "99", r=8, sw=1.3),
+           txt(px + 18, y + 16, label, size=10.5, fill=color, font=MONO)]
+    if sub and rh >= 48:
+        out.append(txt(px + 18, y + rh - 14, sub, size=9.5, fill=MUTED, font=MONO))
+    if frac is not None:
+        bw = pw - 36
+        out.append(rect(px + 18, y + 21, bw, 6, fill="#ffffff12", stroke="none", r=3, sw=0))
+        out.append(f'<rect x="{px + 18}" y="{y + 21}" width="{bw * frac}" height="6" rx="3" '
+                   f'fill="{color}"/>')
+    return "".join(out)
+
+
+def counters(i, rows):
+    """Stacked live counters inside node i: (label, fraction, value) per row."""
+    x, y, w, h = node_box(i)
+    out = []
+    for k, (label, frac, value) in enumerate(rows):
+        ry = y + 58 + k * 25
+        out.append(txt(x + 16, ry, label, size=10.5, fill=MUTED, font=MONO))
+        out.append(txt(x + w - 16, ry, value, size=10.5, fill=TEXT, anchor="end", font=MONO))
+        bw = w - 32
+        col = GREEN if frac >= 1 else BLUE
+        out.append(rect(x + 16, ry + 6, bw, 7, fill="#ffffff12", stroke="none", r=3.5, sw=0))
+        out.append(f'<rect x="{x + 16}" y="{ry + 6}" width="{bw * min(frac, 1)}" height="7" rx="3.5" '
+                   f'fill="{col}"/>')
+    return "".join(out)
 
 
 def log_strip(i, cells, committed=0, color=BLUE, uncommitted_color=AMBER):
@@ -472,11 +512,18 @@ def build(out_path, title, subtitle, scenes, footer="", proxy=None):
     st_x, st_y, st_w, st_h = 348, 76, W - 348 - 24, STAGE_H
     s.append(rect(st_x, st_y, st_w, st_h, fill=PANEL, r=14))
 
-    cx_, cy_, cw, ch = CLIENT
-    s.append(rect(cx_, cy_, cw, ch, fill="#ffffff08", stroke=PANEL_EDGE, r=12))
-    s.append(txt(cx_ + cw / 2, cy_ + 30, "JUnit", size=13, fill=TEXT, anchor="middle", weight="600"))
-    s.append(txt(cx_ + cw / 2, cy_ + 48, "test host", size=11, fill=MUTED, anchor="middle"))
-    s.append(txt(cx_ + cw / 2, cy_ + 64, "Testcontainers", size=10, fill=MUTED, anchor="middle", font=MONO))
+    if _workers:
+        px, py, pw, ph = POOL
+        s.append(rect(px, py, pw, ph, fill="#ffffff08", stroke=PANEL_EDGE, r=12))
+        s.append(txt(px + pw / 2, py + 20, "ExecutorService", size=11.5, fill=TEXT, anchor="middle",
+                     weight="600", font=MONO))
+    else:
+        cx_, cy_, cw, ch = CLIENT
+        s.append(rect(cx_, cy_, cw, ch, fill="#ffffff08", stroke=PANEL_EDGE, r=12))
+        s.append(txt(cx_ + cw / 2, cy_ + 30, "JUnit", size=13, fill=TEXT, anchor="middle", weight="600"))
+        s.append(txt(cx_ + cw / 2, cy_ + 48, "test host", size=11, fill=MUTED, anchor="middle"))
+        s.append(txt(cx_ + cw / 2, cy_ + 64, "Testcontainers", size=10, fill=MUTED, anchor="middle",
+                     font=MONO))
 
     if use_proxy:
         for i in range(len(_nodes)):
@@ -487,17 +534,21 @@ def build(out_path, title, subtitle, scenes, footer="", proxy=None):
                           dash="4 3"))
             s.append(txt(mx, my + 4, label, size=10.5, fill=MUTED, anchor="middle", font=MONO))
 
-    x = NODE_X + NODE_W / 2
-    s.append(f'<path d="M {x} {_nodes[0] + _node_h} L {x} {_nodes[-1]}" stroke="{PANEL_EDGE}" '
-             f'stroke-width="1.5" stroke-dasharray="4 4"/>')
-    s.append(txt(x, _nodes[-1] + _node_h + 22, "raft backbone 2434", size=10.5, fill=MUTED,
-                 anchor="middle", font=MONO))
+    x = NODE_X + _node_w / 2
+    if len(_nodes) > 1:
+        s.append(f'<path d="M {x} {_nodes[0] + _node_h} L {x} {_nodes[-1]}" stroke="{PANEL_EDGE}" '
+                 f'stroke-width="1.5" stroke-dasharray="4 4"/>')
+        s.append(txt(x, _nodes[-1] + _node_h + 22, "raft backbone 2434", size=10.5, fill=MUTED,
+                     anchor="middle", font=MONO))
 
+    single = len(_nodes) == 1
     for i in range(len(_nodes)):
         bx, by, bw_, bh = node_box(i)
         s.append(rect(bx, by, bw_, bh, fill="#ffffff06", stroke=PANEL_EDGE, r=14))
-        s.append(txt(bx + 16, by + 25, f"arcadedb-{i}", size=13, weight="600"))
-        s.append(txt(bx + 16, by + 42, "http 2480 - raft 2434", size=10.5, fill=MUTED, font=MONO))
+        s.append(txt(bx + 16, by + 25, "arcade" if single else f"arcadedb-{i}", size=13, weight="600"))
+        s.append(txt(bx + 16, by + 42,
+                     "http 2480 - grpc 50051 - pgsql 5432" if single else "http 2480 - raft 2434",
+                     size=10.5, fill=MUTED, font=MONO))
 
     start = 0.0
     for sc in scenes:

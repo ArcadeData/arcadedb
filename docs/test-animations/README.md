@@ -1,9 +1,14 @@
-# ArcadeDB HA, animated
+# ArcadeDB test animations
 
-Looping SVGs in two groups: the **Raft protocol** as this codebase implements it, and one **test
-workflow** per integration test in `e2e-ha`. In every diagram the left rail is the sequence, the
-stage is the cluster, and the bottom bar carries the contract. No scripts and no external fonts, so
-each one renders in GitHub markdown, an IDE preview and a browser.
+Looping SVGs in three groups: the **Raft protocol** as this codebase implements it, one **test
+workflow** per integration test in `e2e-ha`, and one per **load test** in `load-tests`. In every
+diagram the left rail is the sequence, the stage is the cluster, and the bottom bar carries the
+contract. No scripts and no external fonts, so each one renders in GitHub markdown, an IDE preview
+and a browser.
+
+The two suites share one generator, and `e2e-ha` takes its fixtures (`ContainersTestTemplate`,
+`DatabaseWrapper`) from `load-tests`, so the diagrams live here rather than being duplicated under
+each module.
 
 **Start here: [`index.html`](index.html)** - a local page that lists every diagram and switches
 between them. Open it with `open index.html` (any browser; a plain `file://` URL is enough).
@@ -43,7 +48,22 @@ comes from `ha-raft/` and `GlobalConfiguration`, not from the Raft paper.
 | [raft-quorum-and-partitions](raft-quorum-and-partitions.svg) | majority overlap, step-down, minority refusal, truncate-and-replay | `Quorum`, `RaftHAServer`; exercised by `SplitBrainIT` |
 | [raft-in-arcadedb](raft-in-arcadedb.svg) | ports, the 8 entry types, leader forwarding, snapshots, tuning knobs | `ha-raft/`, `GlobalConfiguration`, `LeaderCommandForwarder` |
 
-## Test workflows
+## Load tests
+
+`load-tests/src/test/java/com/arcadedb/test/load/`. These runs are parameterized over a protocol
+enum and driven from a thread pool, so the stage is a worker pool on the left and live counters
+inside the server.
+
+| Diagram | Test class | Shape |
+|---|---|---|
+| [single-server-load](single-server-load.svg) | `SingleServerLoadTestIT` | 5 writers + friendships + likes, per protocol, exact counts |
+| [single-server-simple-load](single-server-simple-load.svg) | `SingleServerSimpleLoadTestIT` | 1 writer, vertices only, the quickest arm |
+| [single-localhost-load](single-localhost-load.svg) | `SingleLocalhostServerSimpleLoadTestIT` | `@Disabled` benchmark against a hand-tuned local server |
+| [single-server-timeseries-load](single-server-timeseries-load.svg) | `SingleServerTimeSeriesLoadTestIT` | 50000 points, 3 ingestion protocols, sealed vs mutable reads |
+| [three-nodes-load](three-nodes-load.svg) | `ThreeNodesLoadTestIT` | load on a Raft cluster, plus the #5492 materialized-view A/B |
+| [three-nodes-timeseries-load](three-nodes-timeseries-load.svg) | `ThreeNodesTimeSeriesLoadTestIT` | TS ingestion replicated, every assertion on every node |
+
+## Test workflows (e2e-ha)
 
 | Diagram | Test class | @Test methods |
 |---|---|---|
@@ -80,8 +100,8 @@ generated image, so treat those warnings as failures.
 ## Adding or editing a diagram
 
 `workflow_svg.py` holds the stage geometry and the primitives, `catalog.py` the diagram registry and
-the index page, `raft_protocol.py` the four protocol explainers, and `build_all.py` the test-workflow
-scenes - one function per test class:
+the index page, `raft_protocol.py` the four protocol explainers, `load_tests.py` the load-test
+scenes, and `build_all.py` the e2e-ha scenes plus the entry point - one function per test class:
 
 ```python
 layout(3)                                  # 2- or 3-node stage; layout(2, proxy=True) for toxiproxy
@@ -96,5 +116,7 @@ emit("my-slug", "MyIT - myTest()", "subtitle", scenes, "one-line blurb",
 Primitives: `node_state(i, badge, color, sub)`, `node_off(i)`, `isolated(i)`, `node_progress(i, frac)`,
 `stamp(i, verdict)` / `cross_stamp(i, verdict)`, `client_to(i, label)`, `raft_link(i, j, label)`,
 `cut(i, j)`, `toxic(i, label)`, `log_strip(i, cells, committed=)`, `node_to_client(i, label)`,
-`code_card(y, lines, title=)`, `variants_card(lines)`, `chip(x, y, label)`.
+`worker(k, label, frac=)`, `counters(i, rows)`, `code_card(y, lines, title=)`, `variants_card(lines)`,
+`chip(x, y, label)`. `layout(n, proxy=, workers=)` picks a 1-, 2- or 3-node stage; `workers=k`
+replaces the JUnit box with a `k`-row ExecutorService panel.
 Scene bodies are plain SVG strings drawn in order, so put cards first and arrows last.

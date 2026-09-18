@@ -111,7 +111,7 @@ const DIAGRAMS = [
     "slug": "simple-ha-scenario",
     "title": "SimpleHaScenarioIT - twoNodeRaftReplication()",
     "group": "Test workflows",
-    "java": "SimpleHaScenarioIT.java",
+    "java": "e2e-ha/src/test/java/com/arcadedb/containers/ha/SimpleHaScenarioIT.java",
     "methods": [
       "twoNodeRaftReplication"
     ],
@@ -124,7 +124,7 @@ const DIAGRAMS = [
     "slug": "three-instances-scenario",
     "title": "ThreeInstancesScenarioIT - threeNodeReplication()",
     "group": "Test workflows",
-    "java": "ThreeInstancesScenarioIT.java",
+    "java": "e2e-ha/src/test/java/com/arcadedb/containers/ha/ThreeInstancesScenarioIT.java",
     "methods": [
       "threeNodeReplication"
     ],
@@ -137,7 +137,7 @@ const DIAGRAMS = [
     "slug": "load-three-instances-scenario",
     "title": "LoadThreeInstancesScenarioIT - threeNodeReplication()",
     "group": "Test workflows",
-    "java": "LoadThreeInstancesScenarioIT.java",
+    "java": "e2e-ha/src/test/java/com/arcadedb/containers/ha/LoadThreeInstancesScenarioIT.java",
     "methods": [
       "threeNodeReplication",
       "threeNodeReplicationMulti"
@@ -151,7 +151,7 @@ const DIAGRAMS = [
     "slug": "drop-database-scenario",
     "title": "DropDatabaseScenarioIT - dropDatabaseReplicatedAcrossCluster()",
     "group": "Test workflows",
-    "java": "DropDatabaseScenarioIT.java",
+    "java": "e2e-ha/src/test/java/com/arcadedb/containers/ha/DropDatabaseScenarioIT.java",
     "methods": [
       "dropDatabaseReplicatedAcrossCluster"
     ],
@@ -164,7 +164,7 @@ const DIAGRAMS = [
     "slug": "import-database-scenario",
     "title": "ImportDatabaseScenarioIT - importDatabaseReplicatedAcrossCluster()",
     "group": "Test workflows",
-    "java": "ImportDatabaseScenarioIT.java",
+    "java": "e2e-ha/src/test/java/com/arcadedb/containers/ha/ImportDatabaseScenarioIT.java",
     "methods": [
       "importDatabaseReplicatedAcrossCluster"
     ],
@@ -177,7 +177,7 @@ const DIAGRAMS = [
     "slug": "restore-database-scenario",
     "title": "RestoreDatabaseScenarioIT - restoreDatabaseReplicatedAcrossCluster()",
     "group": "Test workflows",
-    "java": "RestoreDatabaseScenarioIT.java",
+    "java": "e2e-ha/src/test/java/com/arcadedb/containers/ha/RestoreDatabaseScenarioIT.java",
     "methods": [
       "restoreDatabaseReplicatedAcrossCluster"
     ],
@@ -190,7 +190,7 @@ const DIAGRAMS = [
     "slug": "user-management-scenario",
     "title": "UserManagementScenarioIT - userCreateAndDropReplicatedAcrossCluster()",
     "group": "Test workflows",
-    "java": "UserManagementScenarioIT.java",
+    "java": "e2e-ha/src/test/java/com/arcadedb/containers/ha/UserManagementScenarioIT.java",
     "methods": [
       "userCreateAndDropReplicatedAcrossCluster"
     ],
@@ -203,7 +203,7 @@ const DIAGRAMS = [
     "slug": "user-seed-on-peer-add-scenario",
     "title": "UserSeedOnPeerAddScenarioIT - peerAddEndpointPreservesExistingUsers()",
     "group": "Test workflows",
-    "java": "UserSeedOnPeerAddScenarioIT.java",
+    "java": "e2e-ha/src/test/java/com/arcadedb/containers/ha/UserSeedOnPeerAddScenarioIT.java",
     "methods": [
       "peerAddEndpointPreservesExistingUsers"
     ],
@@ -216,7 +216,7 @@ const DIAGRAMS = [
     "slug": "leader-failover",
     "title": "LeaderFailoverIT - leaderFailover()",
     "group": "Test workflows",
-    "java": "LeaderFailoverIT.java",
+    "java": "e2e-ha/src/test/java/com/arcadedb/containers/ha/LeaderFailoverIT.java",
     "methods": [
       "leaderFailover",
       "repeatedLeaderFailures",
@@ -231,7 +231,7 @@ const DIAGRAMS = [
     "slug": "rolling-restart",
     "title": "RollingRestartIT - rollingRestart()",
     "group": "Test workflows",
-    "java": "RollingRestartIT.java",
+    "java": "e2e-ha/src/test/java/com/arcadedb/containers/ha/RollingRestartIT.java",
     "methods": [
       "rollingRestart",
       "rapidRollingRestart",
@@ -246,7 +246,7 @@ const DIAGRAMS = [
     "slug": "network-partition",
     "title": "NetworkPartitionIT - leaderPartitionWithQuorum()",
     "group": "Test workflows",
-    "java": "NetworkPartitionIT.java",
+    "java": "e2e-ha/src/test/java/com/arcadedb/containers/ha/NetworkPartitionIT.java",
     "methods": [
       "leaderPartitionWithQuorum",
       "singleFollowerPartition",
@@ -261,7 +261,7 @@ const DIAGRAMS = [
     "slug": "network-partition-recovery",
     "title": "NetworkPartitionRecoveryIT - partitionRecovery()",
     "group": "Test workflows",
-    "java": "NetworkPartitionRecoveryIT.java",
+    "java": "e2e-ha/src/test/java/com/arcadedb/containers/ha/NetworkPartitionRecoveryIT.java",
     "methods": [
       "partitionRecovery",
       "multiplePartitionCycles",
@@ -276,7 +276,7 @@ const DIAGRAMS = [
     "slug": "split-brain",
     "title": "SplitBrainIT - splitBrainPrevention()",
     "group": "Test workflows",
-    "java": "SplitBrainIT.java",
+    "java": "e2e-ha/src/test/java/com/arcadedb/containers/ha/SplitBrainIT.java",
     "methods": [
       "splitBrainPrevention",
       "completePartitionNoQuorum",
@@ -292,7 +292,7 @@ const DIAGRAMS = [
     "slug": "network-delay",
     "title": "NetworkDelayIT - symmetricDelay()",
     "group": "Test workflows",
-    "java": "NetworkDelayIT.java",
+    "java": "e2e-ha/src/test/java/com/arcadedb/containers/ha/NetworkDelayIT.java",
     "methods": [
       "symmetricDelay",
       "asymmetricLeaderDelay",
@@ -308,7 +308,7 @@ const DIAGRAMS = [
     "slug": "packet-loss",
     "title": "PacketLossIT - lowPacketLoss()",
     "group": "Test workflows",
-    "java": "PacketLossIT.java",
+    "java": "e2e-ha/src/test/java/com/arcadedb/containers/ha/PacketLossIT.java",
     "methods": [
       "lowPacketLoss",
       "moderatePacketLoss",
@@ -320,9 +320,88 @@ const DIAGRAMS = [
     "blurb": "Dropped consensus traffic at 5% to 50%, one-way and intermittent.",
     "scenes": 9,
     "loop": 32
+  },
+  {
+    "slug": "single-server-load",
+    "title": "SingleServerLoadTestIT - singleServerLoadTest(Protocol)",
+    "group": "Load tests",
+    "java": "load-tests/src/test/java/com/arcadedb/test/load/SingleServerLoadTestIT.java",
+    "methods": [
+      "singleServerLoadTest"
+    ],
+    "source": null,
+    "blurb": "The full single-node load run: users, photos, friendships and likes, asserted exactly.",
+    "scenes": 7,
+    "loop": 27
+  },
+  {
+    "slug": "single-server-simple-load",
+    "title": "SingleServerSimpleLoadTestIT - singleServerLoadTest(Protocol)",
+    "group": "Load tests",
+    "java": "load-tests/src/test/java/com/arcadedb/test/load/SingleServerSimpleLoadTestIT.java",
+    "methods": [
+      "singleServerLoadTest"
+    ],
+    "source": null,
+    "blurb": "The short arm: a single client stream writing users and photos, asserted exactly.",
+    "scenes": 4,
+    "loop": 14
+  },
+  {
+    "slug": "single-localhost-load",
+    "title": "SingleLocalhostServerSimpleLoadTestIT - singleServerLoadTest()",
+    "group": "Load tests",
+    "java": "load-tests/src/test/java/com/arcadedb/test/load/SingleLocalhostServerSimpleLoadTestIT.java",
+    "methods": [
+      "singleServerLoadTest"
+    ],
+    "source": null,
+    "blurb": "The manual benchmark: a 16G server on localhost, 250K photos, edges after a head start.",
+    "scenes": 5,
+    "loop": 19
+  },
+  {
+    "slug": "single-server-timeseries-load",
+    "title": "SingleServerTimeSeriesLoadTestIT - singleServerTimeSeriesLoadTest(Protocol)",
+    "group": "Load tests",
+    "java": "load-tests/src/test/java/com/arcadedb/test/load/SingleServerTimeSeriesLoadTestIT.java",
+    "methods": [
+      "singleServerTimeSeriesLoadTest"
+    ],
+    "source": null,
+    "blurb": "Time series ingestion under load, and which of its query results are deterministic.",
+    "scenes": 5,
+    "loop": 20
+  },
+  {
+    "slug": "three-nodes-load",
+    "title": "ThreeNodesLoadTestIT - threeNodeReplication(Protocol)",
+    "group": "Load tests",
+    "java": "load-tests/src/test/java/com/arcadedb/test/load/ThreeNodesLoadTestIT.java",
+    "methods": [
+      "threeNodeReplication",
+      "threeNodeReplicationWithMaterializedView"
+    ],
+    "source": null,
+    "blurb": "HA under load: writers on the leader, convergence, per-node exact counts and log signatures.",
+    "scenes": 8,
+    "loop": 31
+  },
+  {
+    "slug": "three-nodes-timeseries-load",
+    "title": "ThreeNodesTimeSeriesLoadTestIT - threeNodeTimeSeriesReplication(Protocol)",
+    "group": "Load tests",
+    "java": "load-tests/src/test/java/com/arcadedb/test/load/ThreeNodesTimeSeriesLoadTestIT.java",
+    "methods": [
+      "threeNodeTimeSeriesReplication"
+    ],
+    "source": null,
+    "blurb": "TS load plus replication: ingest on one protocol, read back on HTTP from all three nodes.",
+    "scenes": 5,
+    "loop": 20
   }
 ];
-const SRC = "../../src/test/java/com/arcadedb/containers/ha";
+const REPO = "../..";
 const nav = document.getElementById('nav');
 const buttons = [];
 function show(i) {
@@ -335,7 +414,8 @@ function show(i) {
   const meta = ['<li>' + d.scenes + ' scenes</li>', '<li>' + d.loop + 's loop</li>'];
   if (d.methods.length)
     meta.push('<li>' + d.methods.length + ' @Test method' + (d.methods.length > 1 ? 's' : '') + '</li>');
-  if (d.java) meta.push('<li><a href="' + SRC + '/' + d.java + '">' + d.java + '</a></li>');
+  if (d.java) meta.push('<li><a href="' + REPO + '/' + d.java + '">'
+    + d.java.split('/').pop() + '</a></li>');
   if (d.source) meta.push('<li>' + d.source + '</li>');
   document.getElementById('meta').innerHTML = meta.join('');
   buttons.forEach((b, j) => b.classList.toggle('on', i === j));

@@ -11,15 +11,15 @@ import os
 from workflow_svg import build, layout
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SRC = "../../src/test/java/com/arcadedb/containers/ha"
+REPO = "../.."          # this folder is docs/test-animations/, so a module path starts here
 
 DIAGRAMS = []
 
 
 def emit(slug, title, subtitle, scenes, blurb, group="Test workflows", java=None, methods=None,
-         source=None, n=3, proxy=False):
+         source=None, n=3, proxy=False, workers=0):
     """Renders one diagram and records it for the index page."""
-    layout(n, proxy)
+    layout(n, proxy, workers)
     total = build(os.path.join(HERE, slug + ".svg"), title, subtitle, scenes,
                   footer="loop: %.0fs" % sum(s.dur for s in scenes))
     DIAGRAMS.append({"slug": slug, "title": title, "group": group, "java": java,
@@ -97,7 +97,7 @@ def write_index():
 </main>
 <script>
 const DIAGRAMS = {json.dumps(DIAGRAMS, indent=2)};
-const SRC = {json.dumps(SRC)};
+const REPO = {json.dumps(REPO)};
 const nav = document.getElementById('nav');
 const buttons = [];
 function show(i) {{
@@ -110,7 +110,8 @@ function show(i) {{
   const meta = ['<li>' + d.scenes + ' scenes</li>', '<li>' + d.loop + 's loop</li>'];
   if (d.methods.length)
     meta.push('<li>' + d.methods.length + ' @Test method' + (d.methods.length > 1 ? 's' : '') + '</li>');
-  if (d.java) meta.push('<li><a href="' + SRC + '/' + d.java + '">' + d.java + '</a></li>');
+  if (d.java) meta.push('<li><a href="' + REPO + '/' + d.java + '">'
+    + d.java.split('/').pop() + '</a></li>');
   if (d.source) meta.push('<li>' + d.source + '</li>');
   document.getElementById('meta').innerHTML = meta.join('');
   buttons.forEach((b, j) => b.classList.toggle('on', i === j));

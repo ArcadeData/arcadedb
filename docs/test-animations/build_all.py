@@ -8,6 +8,7 @@ e2e-ha integration test class from this file. A test class with several @Test me
 its primary method, with the siblings listed on a "variants" card so nothing is silently dropped.
 """
 
+import load_tests
 import raft_protocol
 from catalog import emit, write_index
 from workflow_svg import (AMBER, BLUE, GREEN, GREY, PURPLE, RED, Scene, build, chip, client_to,
@@ -129,7 +130,7 @@ def simple_ha():
     emit("simple-ha-scenario", "SimpleHaScenarioIT - twoNodeRaftReplication()",
          "Two-node Raft HA: schema and data replication", s,
          "The baseline: two nodes, one leader, schema and data must reach the follower.",
-         java="SimpleHaScenarioIT.java", methods=["twoNodeRaftReplication"], n=2)
+         java="e2e-ha/src/test/java/com/arcadedb/containers/ha/SimpleHaScenarioIT.java", methods=["twoNodeRaftReplication"], n=2)
 
 
 # ============================================================================ ThreeInstancesScenarioIT
@@ -188,7 +189,7 @@ def three_instances():
     ]
     emit("three-instances-scenario", "ThreeInstancesScenarioIT - threeNodeReplication()",
          "Three-node Raft HA: replication across all nodes with consistency check", s, "Three nodes, writes issued from all of them, absolute counts then equality.",
-         java="ThreeInstancesScenarioIT.java", methods=["threeNodeReplication"])
+         java="e2e-ha/src/test/java/com/arcadedb/containers/ha/ThreeInstancesScenarioIT.java", methods=["threeNodeReplication"])
 
 
 # ============================================================================ LoadThreeInstancesScenarioIT
@@ -252,7 +253,7 @@ def load_three_instances():
     ]
     emit("load-three-instances-scenario", "LoadThreeInstancesScenarioIT - threeNodeReplication()",
          "Three-node Raft HA under load: 500-user batches per node, then convergence", s, "The volume variant: 500-user batches per node, plus a threaded run with friendships and likes.",
-         java="LoadThreeInstancesScenarioIT.java", methods=["threeNodeReplication", "threeNodeReplicationMulti"])
+         java="e2e-ha/src/test/java/com/arcadedb/containers/ha/LoadThreeInstancesScenarioIT.java", methods=["threeNodeReplication", "threeNodeReplicationMulti"])
 
 
 # ============================================================================ DropDatabaseScenarioIT
@@ -308,7 +309,7 @@ def drop_database():
     ]
     emit("drop-database-scenario", "DropDatabaseScenarioIT - dropDatabaseReplicatedAcrossCluster()",
          "Three-node Raft HA: drop database via a replica propagates removal to every peer", s, "Drop issued on a replica, so the forward-to-leader path is what is really under test.",
-         java="DropDatabaseScenarioIT.java", methods=["dropDatabaseReplicatedAcrossCluster"])
+         java="e2e-ha/src/test/java/com/arcadedb/containers/ha/DropDatabaseScenarioIT.java", methods=["dropDatabaseReplicatedAcrossCluster"])
 
 
 # ============================================================================ ImportDatabaseScenarioIT
@@ -370,7 +371,7 @@ def import_database():
     ]
     emit("import-database-scenario", "ImportDatabaseScenarioIT - importDatabaseReplicatedAcrossCluster()",
          "Three-node Raft HA: import database replicates data to every peer via TX_ENTRY", s, "An import runs on the leader and reaches the peers as ordinary replicated transactions.",
-         java="ImportDatabaseScenarioIT.java", methods=["importDatabaseReplicatedAcrossCluster"])
+         java="e2e-ha/src/test/java/com/arcadedb/containers/ha/ImportDatabaseScenarioIT.java", methods=["importDatabaseReplicatedAcrossCluster"])
 
 
 # ============================================================================ RestoreDatabaseScenarioIT
@@ -431,7 +432,7 @@ def restore_database():
     ]
     emit("restore-database-scenario", "RestoreDatabaseScenarioIT - restoreDatabaseReplicatedAcrossCluster()",
          "Three-node Raft HA: restore database replicates to every peer via forceSnapshot", s, "Backup on node 0, drop everywhere, force leadership back, restore, verify all three.",
-         java="RestoreDatabaseScenarioIT.java", methods=["restoreDatabaseReplicatedAcrossCluster"])
+         java="e2e-ha/src/test/java/com/arcadedb/containers/ha/RestoreDatabaseScenarioIT.java", methods=["restoreDatabaseReplicatedAcrossCluster"])
 
 
 # ============================================================================ UserManagementScenarioIT
@@ -491,7 +492,7 @@ def user_management():
     ]
     emit("user-management-scenario", "UserManagementScenarioIT - userCreateAndDropReplicatedAcrossCluster()",
          "Three-node Raft HA: create/drop user replicates login authorization to every peer", s, "Security replication measured the only way that counts: by logging in on each peer.",
-         java="UserManagementScenarioIT.java", methods=["userCreateAndDropReplicatedAcrossCluster"])
+         java="e2e-ha/src/test/java/com/arcadedb/containers/ha/UserManagementScenarioIT.java", methods=["userCreateAndDropReplicatedAcrossCluster"])
 
 
 # ============================================================================ UserSeedOnPeerAddScenarioIT
@@ -542,7 +543,7 @@ def user_seed_on_peer_add():
     ]
     emit("user-seed-on-peer-add-scenario", "UserSeedOnPeerAddScenarioIT - peerAddEndpointPreservesExistingUsers()",
          "Three-node Raft HA: peer-add endpoint fires the seed without breaking existing users", s, "A wiring smoke test for /api/v1/cluster/peer that must leave user state intact.",
-         java="UserSeedOnPeerAddScenarioIT.java", methods=["peerAddEndpointPreservesExistingUsers"])
+         java="e2e-ha/src/test/java/com/arcadedb/containers/ha/UserSeedOnPeerAddScenarioIT.java", methods=["peerAddEndpointPreservesExistingUsers"])
 
 
 # ============================================================================ LeaderFailoverIT
@@ -621,7 +622,7 @@ def leader_failover():
     ]
     emit("leader-failover", "LeaderFailoverIT - leaderFailover()",
          "Kill the leader, verify the new election, the writes that follow and the rejoin", s, "The leader is stopped outright; the majority must elect, keep writing, and re-absorb it.",
-         java="LeaderFailoverIT.java", methods=["leaderFailover", "repeatedLeaderFailures", "leaderFailoverDuringWrites"])
+         java="e2e-ha/src/test/java/com/arcadedb/containers/ha/LeaderFailoverIT.java", methods=["leaderFailover", "repeatedLeaderFailures", "leaderFailoverDuringWrites"])
 
 
 # ============================================================================ RollingRestartIT
@@ -685,7 +686,7 @@ def rolling_restart():
     ]
     emit("rolling-restart", "RollingRestartIT - rollingRestart()",
          "Restart each node in turn and verify the cluster never stops accepting writes", s, "Zero-downtime maintenance: one node down at a time, writes continuing throughout.",
-         java="RollingRestartIT.java", methods=["rollingRestart", "rapidRollingRestart", "rollingRestartWithContinuousWrites"])
+         java="e2e-ha/src/test/java/com/arcadedb/containers/ha/RollingRestartIT.java", methods=["rollingRestart", "rapidRollingRestart", "rollingRestartWithContinuousWrites"])
 
 
 # ============================================================================ NetworkPartitionIT
@@ -755,7 +756,7 @@ def network_partition():
     ]
     emit("network-partition", "NetworkPartitionIT - leaderPartitionWithQuorum()",
          "Isolate the leader, verify the new election in the majority and the convergence after healing", s, "Docker network disconnect as a real partition: who may still write, and who catches up.",
-         java="NetworkPartitionIT.java", methods=["leaderPartitionWithQuorum", "singleFollowerPartition", "noQuorumScenario"])
+         java="e2e-ha/src/test/java/com/arcadedb/containers/ha/NetworkPartitionIT.java", methods=["leaderPartitionWithQuorum", "singleFollowerPartition", "noQuorumScenario"])
 
 
 # ============================================================================ NetworkPartitionRecoveryIT
@@ -823,7 +824,7 @@ def network_partition_recovery():
     emit("network-partition-recovery", "NetworkPartitionRecoveryIT - partitionRecovery()",
          "2+1 split, heal the partition, verify the Raft log catch-up", s,
          "The minority never wrote, so healing is a replay - no conflict resolution exists or is needed.",
-         java="NetworkPartitionRecoveryIT.java",
+         java="e2e-ha/src/test/java/com/arcadedb/containers/ha/NetworkPartitionRecoveryIT.java",
          methods=["partitionRecovery", "multiplePartitionCycles", "asymmetricPartitionRecovery"])
 
 
@@ -897,7 +898,7 @@ def split_brain():
     emit("split-brain", "SplitBrainIT - splitBrainPrevention()",
          "The minority cannot accept writes: the isolated leader steps down and later truncates its log", s,
          "Quorum enforcement: divergent writes are impossible, so healing is truncate-and-replay.",
-         java="SplitBrainIT.java",
+         java="e2e-ha/src/test/java/com/arcadedb/containers/ha/SplitBrainIT.java",
          methods=["splitBrainPrevention", "completePartitionNoQuorum", "clusterReformation", "quorumLossRecovery"])
 
 
@@ -970,7 +971,7 @@ def network_delay():
     emit("network-delay", "NetworkDelayIT - symmetricDelay()",
          "Toxiproxy latency on the Raft consensus port: replication must still converge", s,
          "Latency injected on port 2434 only, so consensus slows down while HTTP stays fast.",
-         java="NetworkDelayIT.java",
+         java="e2e-ha/src/test/java/com/arcadedb/containers/ha/NetworkDelayIT.java",
          methods=["symmetricDelay", "asymmetricLeaderDelay", "highLatencyWithJitter", "extremeLatency"],
          proxy=True)
 
@@ -1042,7 +1043,7 @@ def packet_loss():
     emit("packet-loss", "PacketLossIT - lowPacketLoss()",
          "Toxiproxy packet loss on the Raft consensus port: retransmission must still converge", s,
          "Dropped consensus traffic at 5% to 50%, one-way and intermittent.",
-         java="PacketLossIT.java",
+         java="e2e-ha/src/test/java/com/arcadedb/containers/ha/PacketLossIT.java",
          methods=["lowPacketLoss", "moderatePacketLoss", "highPacketLoss", "directionalPacketLoss",
                   "intermittentPacketLoss"],
          n=2, proxy=True)
@@ -1057,5 +1058,7 @@ if __name__ == "__main__":
                restore_database, user_management, user_seed_on_peer_add, leader_failover,
                rolling_restart, network_partition, network_partition_recovery, split_brain,
                network_delay, packet_loss):
+        fn()
+    for fn in load_tests.ALL:
         fn()
     write_index()
