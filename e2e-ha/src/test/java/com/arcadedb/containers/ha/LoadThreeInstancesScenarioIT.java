@@ -38,7 +38,8 @@ import java.util.concurrent.TimeUnit;
 
 class LoadThreeInstancesScenarioIT extends ContainersTestTemplate {
 
-  private static final String SERVER_LIST = "arcadedb-0:2434:2480,arcadedb-1:2434:2480,arcadedb-2:2434:2480";
+  private static final String SERVER_LIST            = "arcadedb-0:2434:2480,arcadedb-1:2434:2480,arcadedb-2:2434:2480";
+  private static final int    SCHEMA_TIMEOUT_SECONDS = 60;
 
   @AfterEach
   @Override
@@ -63,14 +64,15 @@ class LoadThreeInstancesScenarioIT extends ContainersTestTemplate {
     final DatabaseWrapper db2 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
     final DatabaseWrapper db3 = new DatabaseWrapper(servers.get(2), idSupplier, wordSupplier);
 
-    logger.info("Creating database and schema");
-    db1.createDatabase();
-    db1.createSchema();
+    logger.info("Creating database and schema on the leader");
+    createDatabaseAndSchemaOnLeader(servers);
 
-    logger.info("Checking schema replicated to all nodes");
-    db1.checkSchema();
-    db2.checkSchema();
-    db3.checkSchema();
+    logger.info("Waiting for the schema to replicate to all nodes");
+    final long schemaStart = System.currentTimeMillis();
+    db1.awaitSchema(SCHEMA_TIMEOUT_SECONDS);
+    db2.awaitSchema(SCHEMA_TIMEOUT_SECONDS);
+    db3.awaitSchema(SCHEMA_TIMEOUT_SECONDS);
+    logger.info("Schema readable on all three nodes after {} ms", System.currentTimeMillis() - schemaStart);
 
     logger.info("Adding data to node 1");
     db1.addUserAndPhotos(500, 10);
@@ -140,14 +142,15 @@ class LoadThreeInstancesScenarioIT extends ContainersTestTemplate {
     final DatabaseWrapper db2 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
     final DatabaseWrapper db3 = new DatabaseWrapper(servers.get(2), idSupplier, wordSupplier);
 
-    logger.info("Creating database and schema");
-    db1.createDatabase();
-    db1.createSchema();
+    logger.info("Creating database and schema on the leader");
+    createDatabaseAndSchemaOnLeader(servers);
 
-    logger.info("Checking schema replicated to all nodes");
-    db1.checkSchema();
-    db2.checkSchema();
-    db3.checkSchema();
+    logger.info("Waiting for the schema to replicate to all nodes");
+    final long schemaStart = System.currentTimeMillis();
+    db1.awaitSchema(SCHEMA_TIMEOUT_SECONDS);
+    db2.awaitSchema(SCHEMA_TIMEOUT_SECONDS);
+    db3.awaitSchema(SCHEMA_TIMEOUT_SECONDS);
+    logger.info("Schema readable on all three nodes after {} ms", System.currentTimeMillis() - schemaStart);
 
     // Parameters for the test
     final int numOfThreads = 1; //number of threads to use to insert users and photos
@@ -246,5 +249,23 @@ class LoadThreeInstancesScenarioIT extends ContainersTestTemplate {
     db1.close();
     db2.close();
     db3.close();
+  }
+
+  /**
+   * Creates the database and the schema on the node that currently holds Raft leadership.
+   * <p>
+   * Node 0 is not necessarily the leader: {@code DatabaseWrapper.createDatabase()} retries
+   * {@code ServerIsNotTheLeaderException} only while the leader address is still unknown, and rethrows as soon as a
+   * follower can name the leader. Addressing the leader directly removes that coin flip.
+   */
+  private void createDatabaseAndSchemaOnLeader(final List<ServerWrapper> servers) {
+    final int leaderIndex = findLeaderIndex(servers);
+    final DatabaseWrapper leaderDb = new DatabaseWrapper(servers.get(leaderIndex < 0 ? 0 : leaderIndex), idSupplier, wordSupplier);
+    try {
+      leaderDb.createDatabase();
+      leaderDb.createSchema();
+    } finally {
+      leaderDb.close();
+    }
   }
 }
