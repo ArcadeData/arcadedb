@@ -69,6 +69,7 @@ public class PluginApiSpec implements OpenApiContributor {
       "/api/v1/cluster/leader", "/api/v1/cluster/stepdown", "/api/v1/cluster/leave",
       "/api/v1/cluster/verify/{database}", "/api/v1/cluster/resync/{database}",
       "/api/v1/cluster/bootstrap-state", "/api/v1/cluster/capabilities",
+      "/api/v1/cluster/security-seed",
       "/api/v1/ha/snapshot/{database}", "/api/v1/ha/snapshot/{database}/checksums");
 
   /**
@@ -96,6 +97,7 @@ public class PluginApiSpec implements OpenApiContributor {
     openAPI.getPaths().addPathItem("/api/v1/cluster/resync/{database}", createResyncPath());
     openAPI.getPaths().addPathItem("/api/v1/cluster/bootstrap-state", createBootstrapStatePath());
     openAPI.getPaths().addPathItem("/api/v1/cluster/capabilities", createCapabilitiesPath());
+    openAPI.getPaths().addPathItem("/api/v1/cluster/security-seed", createSecuritySeedPath());
     openAPI.getPaths().addPathItem("/api/v1/ha/snapshot/{database}", createSnapshotPath());
     openAPI.getPaths().addPathItem("/api/v1/ha/snapshot/{database}/checksums", createChecksumsPath());
 
@@ -109,6 +111,8 @@ public class PluginApiSpec implements OpenApiContributor {
     openAPI.getComponents().addSchemas("VerifyDatabaseClusterResult", createVerifyClusterResultSchema());
     openAPI.getComponents().addSchemas("BootstrapStateResponse", createBootstrapStateResponseSchema());
     openAPI.getComponents().addSchemas("PeerCapabilitiesResponse", createPeerCapabilitiesResponseSchema());
+    openAPI.getComponents().addSchemas("SecuritySeedRequest", createSecuritySeedRequestSchema());
+    openAPI.getComponents().addSchemas("SecuritySeedResponse", createSecuritySeedResponseSchema());
   }
 
   private PathItem createScrapePath() {
@@ -347,6 +351,44 @@ public class PluginApiSpec implements OpenApiContributor {
     post.setResponses(SpecBuilders.standardResponses("200",
         SpecBuilders.jsonResponse("Peer capabilities", "PeerCapabilitiesResponse"),
         "400", "401", "403", "500"));
+
+    final PathItem pathItem = new PathItem();
+    pathItem.setPost(post);
+    return pathItem;
+  }
+
+  private PathItem createSecuritySeedPath() {
+    final Operation post = SpecBuilders.operation("seedClusterSecurityDocuments", "Cluster",
+        "Have the leader replicate the cluster security documents",
+        """
+            Asks the Raft LEADER to submit server-users.jsonl, server-groups.json and \
+            server-api-tokens.json to the cluster, and answers with the ones that did not commit.
+
+            Two callers need it, and both are cluster-internal. A node that has just admitted a peer \
+            reads the outcome here instead of running a seed of its own, so an admission is seeded once \
+            rather than from two nodes under two different monitors (issue #7834). A node that came back \
+            while it was still a Raft member - a rolling restart, a drain and reschedule, a pod whose \
+            ordinal is in the static server list - sends the fingerprints of the documents it holds, and \
+            is re-seeded only if they differ from the leader's (issue #7833); the three documents live \
+            outside the database directory, so no snapshot install carries them.
+
+            Answered 409 by a node that is not the leader, naming the one it believes leads. Answered \
+            503 with the failedSeeds array when the seed ran but a document did not commit, which is the \
+            same contract POST /api/v1/cluster/peer answers with.
+
+            Restricted to the root user; peers satisfy this by forwarding as root with the cluster \
+            token. """ + RAFT_REQUIRED);
+    post.setRequestBody(SpecBuilders.jsonBody("What to seed, and what the caller already holds",
+        "SecuritySeedRequest", false));
+
+    final ApiResponses responses = SpecBuilders.standardResponses("200",
+        SpecBuilders.jsonResponse("The seed outcome", "SecuritySeedResponse"),
+        "400", "401", "403", "500");
+    responses.addApiResponse("409", SpecBuilders.errorResponse(
+        "This node is not the Raft leader; the answer names the one it believes leads"));
+    responses.addApiResponse("503", SpecBuilders.errorResponse(
+        "The seed ran but one or more documents did not commit, or it could not be run at all"));
+    post.setResponses(responses);
 
     final PathItem pathItem = new PathItem();
     pathItem.setPost(post);
@@ -795,6 +837,36 @@ public class PluginApiSpec implements OpenApiContributor {
         "Databases on this peer. Empty when it holds none"));
     schema.addProperty("peerId", SpecBuilders.string("Peer that reported the state"));
     schema.setRequired(List.of("databases", "peerId"));
+    return schema;
+  }
+
+  private Schema<?> createSecuritySeedRequestSchema() {
+    final Schema<Object> schema = SpecBuilders.object("What the caller wants seeded, and what it already holds");
+    schema.addProperty("reason", SpecBuilders.string(
+        "Why the seed was asked for, for the leader's log line. Optional."));
+    schema.addProperty("fingerprints", createSecuritySeedFingerprintsSchema());
+    return schema;
+  }
+
+  private Schema<?> createSecuritySeedFingerprintsSchema() {
+    final Schema<Object> schema = SpecBuilders.object(
+        "The caller's own document digests. When all three match the leader's, nothing is submitted and the "
+            + "answer is upToDate. Omit them to have every document seeded, which is what an admission does - "
+            + "the admitting node does not hold the joining peer's copies.");
+    schema.addProperty("users", SpecBuilders.string("Digest of server-users.jsonl as the caller holds it"));
+    schema.addProperty("groups", SpecBuilders.string("Digest of server-groups.json as the caller holds it"));
+    schema.addProperty("apiTokens", SpecBuilders.string("Digest of server-api-tokens.json as the caller holds it"));
+    return schema;
+  }
+
+  private Schema<?> createSecuritySeedResponseSchema() {
+    final Schema<Object> schema = SpecBuilders.object("What the leader did about the request");
+    schema.addProperty("upToDate", SpecBuilders.bool(
+        "True when the caller's fingerprints already matched the leader's and nothing was submitted"));
+    schema.addProperty("seeded", SpecBuilders.bool("True when the documents were submitted to the cluster"));
+    schema.addProperty("failedSeeds", SpecBuilders.arrayOf(SpecBuilders.string("Document name"),
+        "The documents that did not commit, empty when all of them did"));
+    schema.setRequired(List.of("upToDate", "seeded", "failedSeeds"));
     return schema;
   }
 

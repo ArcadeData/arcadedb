@@ -165,9 +165,10 @@ class Issue7563HaTlsPeerDialIT extends BaseRaftHASslTest {
    * and so inherited neither the ambiguity guard nor the self-dial guard - and the endpoint it names is then
    * handshaked with the very client the shutdown is sent on.
    * <p>
-   * The {@code POST} itself is deliberately not issued: it would stop a node mid-suite, and its
-   * {@code Authorization: Bearer <clusterToken>} header is a separate question from this issue's (tracked as a
-   * follow-up). What is proved here is that the transport the command would travel on is TLS and that it works.
+   * The {@code POST} itself is deliberately not issued: it would stop a node mid-suite, because
+   * {@code ServerControlPlane.shutdownServer("")} ends in {@code System.exit}. What is proved here is that the
+   * transport the command would travel on is TLS and that it works. The CREDENTIAL it carries was the separate
+   * question, fixed in issue #7837 and covered by {@code Issue7837RemoteShutdownCredentialIT}.
    */
   @Test
   void theRemoteShutdownDialResolvesAndHandshakesThePeersEncryptedEndpoint() throws Exception {

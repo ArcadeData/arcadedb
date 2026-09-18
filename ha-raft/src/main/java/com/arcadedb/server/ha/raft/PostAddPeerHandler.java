@@ -30,6 +30,7 @@ import io.undertow.server.HttpServerExchange;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 
+import java.io.IOException;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.logging.Level;
@@ -79,18 +80,40 @@ public class PostAddPeerHandler extends AbstractServerHttpHandler {
     // document, a stale token store - until the next mutation of that kind happens cluster-wide. The
     // groups and tokens half is issue #7373; the users half predates it.
     //
-    // Delegated to ServerSecurity so each document is READ and SUBMITTED under the security monitor. Reading
-    // here and submitting afterwards would leave a window in which a revocation commits in between, and the
-    // seed - which carries a whole document - would then put the revoked token, or the deleted group, back on
-    // every node. addPeer is exactly when an operator is also likely to be rotating credentials.
+    // ASKED FOR rather than run here (issue #7834). This node is not required to be the leader - the check
+    // above is checkRootUser and nothing else, and RaftHAServer.addPeer routes only the membership change to
+    // the leader - while the leader seeds every membership change of its own accord since issue #7531. Running
+    // a second seed here made an admission put up to six entries in the Raft log from two different JVMs, each
+    // holding only its own ServerSecurity monitor; that monitor is what keeps a revocation committing mid-seed
+    // from being undone by the whole document a seed carries (issue #7373), so a revocation landing between the
+    // two could be resurrected by whichever submit was second. One seeder, on the leader, is the fix.
     //
-    // Retried within a bounded budget rather than attempted once (issue #7521): the submit waits for a Raft
-    // commit, so its usual failure is an absent quorum at this instant - transient, and the same condition
-    // that makes an addPeer interesting in the first place.
-    final long retryBudgetMs = httpServer.getServer().getConfiguration()
-        .getValueAsLong(GlobalConfiguration.HA_SECURITY_SEED_RETRY_TIMEOUT);
-    final List<String> failedSeeds = httpServer.getServer().getSecurity()
-        .seedSecurityStateClusterWide(retryBudgetMs);
+    // The report is unchanged and is the reason this is not simply deleted: issue #7521 made a residual seed
+    // failure operator-facing, and addPeerResponse answers 503 with a failedSeeds array. It now describes the
+    // leader's seed rather than this node's.
+    //
+    // The seed is still retried within a bounded budget (issue #7521): the submit waits for a Raft commit, so
+    // its usual failure is an absent quorum at this instant - transient, and the same condition that makes an
+    // addPeer interesting in the first place.
+    final List<String> failedSeeds;
+    try {
+      // Through the plugin rather than through ServerSecurity: the seed runs on the leader. The orElseGet is
+      // the interface's contract for an HA implementation with no leader-side seeder and is unreachable here -
+      // this handler IS the Raft plugin's - but stating it keeps the two admission call sites identical.
+      failedSeeds = plugin.seedSecurityStateForAdmission(peerId)
+          .orElseGet(() -> httpServer.getServer().getSecurity().seedSecurityStateClusterWide(
+              httpServer.getServer().getConfiguration()
+                  .getValueAsLong(GlobalConfiguration.HA_SECURITY_SEED_RETRY_TIMEOUT)));
+    } catch (final IOException e) {
+      // The peer IS a committed member by now, so this must not be answered as a failed add. What is unknown is
+      // the seed, and "unknown" is reported as a failure of all three rather than as none: a 503 naming them
+      // tells the operator to reissue, which is the action that repairs it either way.
+      LogManager.instance().log(this, Level.SEVERE,
+          "Peer '%s' was added but the leader could not be asked to seed the security documents: %s. It is a "
+              + "cluster member serving requests against its own copy of them; re-POST the peer to retry the seed",
+          e, peerId, e.getMessage());
+      return addPeerResponse(peerId, List.of("users", "groups", "API tokens"));
+    }
 
     if (!failedSeeds.isEmpty())
       LogManager.instance().log(this, Level.SEVERE,
