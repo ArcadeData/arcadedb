@@ -46,6 +46,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
@@ -451,7 +452,22 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     // an optional wire-format section is safe to write. A node predating this route answers 404, and that 404 is
     // the answer - see PostCapabilitiesHandler.
     routes.addExactPath("/api/v1/cluster/capabilities", new PostCapabilitiesHandler(httpServer, this));
+    // Issues #7833/#7834: the one place a cluster security seed is asked for - by the node that admitted a peer
+    // and wants the outcome to report, and by a node that came back still a member and has to be put back in
+    // step. Both reach the leader's single seeder through it.
+    routes.addExactPath(PostSecuritySeedHandler.ROUTE, new PostSecuritySeedHandler(httpServer, this));
     LogManager.instance().log(this, Level.INFO, "Raft cluster management endpoints registered");
+  }
+
+  /**
+   * {@inheritDoc}
+   * <p>
+   * Delegated to {@link ClusterSecuritySeedQuery}, which runs the seed here when this node is the leader and
+   * dials the leader otherwise. See {@link PostSecuritySeedHandler} for why there is exactly one seeder.
+   */
+  @Override
+  public Optional<List<String>> seedSecurityStateForAdmission(final String admittedPeer) throws IOException {
+    return Optional.of(ClusterSecuritySeedQuery.seedForAdmission(server, this, admittedPeer));
   }
 
   @Override
@@ -675,30 +691,62 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
       // Same fallback as every sibling dial, and said out loud for the same reason: the command below carries
       // the cluster token, so an operator who set arcadedb.ssl.enabled should not have to guess (issue #7546).
       PlainHttpFallbackNotice.sayOnce(RaftHAPlugin.class, "sending it the shutdown command");
-    final String token = raft.getClusterToken();
-
-    final HttpRequest.Builder request = HttpRequest.newBuilder()
-        .uri(URI.create(url))
-        .header("Content-Type", "application/json")
-        .POST(HttpRequest.BodyPublishers.ofString(SHUTDOWN_COMMAND_BODY, StandardCharsets.UTF_8));
-    if (token != null && !token.isEmpty())
-      request.header("Authorization", "Bearer " + token);
+    final HttpRequest request = shutdownRequest(url, raft.getClusterToken());
 
     // One client per call, closed with the request: a remote shutdown is an operator action, not a hot path,
     // and a cached client would outlive the peer it was built to reach. The connect timeout is the same one
     // every other forward is bounded by; the response deadline is deliberately left off, matching the
     // HttpURLConnection this replaced, because a node answering slowly while it shuts down is not a failure.
     try (final HttpClient client = newShutdownClient(url.startsWith("https://"))) {
-      final int status = client.send(request.build(), HttpResponse.BodyHandlers.discarding()).statusCode();
-      if (status >= 400)
-        LogManager.instance().log(this, Level.WARNING, "Shutdown of remote server '%s' at %s answered HTTP %d",
-            serverName, url, status);
+      final int status = client.send(request, HttpResponse.BodyHandlers.discarding()).statusCode();
+      if (status < 200 || status >= 300)
+        // Raised, not logged (issue #7837). The operator asked for a node to stop; an answer that is not a
+        // success means it did not, and the previous WARNING left `shutdown <server>` reporting success on a
+        // node that is still serving traffic - the exact shape of the credential bug this method had.
+        throw new ServerException("Shutdown of remote server '" + serverName + "' at " + url + " answered HTTP "
+            + status + "; the server was NOT stopped");
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       throw new ServerException("Interrupted while shutting down remote server '" + serverName + "'", e);
     } catch (final IOException e) {
       throw new RuntimeException("Failed to shutdown remote server '" + serverName + "'", e);
     }
+  }
+
+  /**
+   * The shutdown POST, with the credential a peer actually authenticates (issue #7837).
+   * <p>
+   * This used to present the cluster token as {@code Authorization: Bearer}, which
+   * {@code AbstractServerHttpHandler} authenticates in exactly two forms - an API token ({@code at-} prefix) and
+   * a session token ({@code AU-} prefix, resolved through the session manager). A cluster token is neither, so on
+   * a cluster that requires authentication the POST was answered 401, the peer stayed up, and the only trace was
+   * a WARNING: an operator's {@code shutdown &lt;server&gt;} reported success and did nothing.
+   * <p>
+   * The credential the peer does authenticate is the {@code X-ArcadeDB-Cluster-Token} +
+   * {@code X-ArcadeDB-Forwarded-User} pair every other peer-to-peer dial in this module sends
+   * ({@link PeerCapabilityQuery}, {@link LeaderDatabaseQuery}, {@link PeerAuthSessionQuery}, the snapshot
+   * download, the resync). The forwarded user is {@code root} because
+   * {@code PostServerCommandHandler.execute} answers {@code shutdown} only to a root principal, and a peer
+   * relaying a cluster-internal command forwards as root everywhere else for the same reason.
+   * <p>
+   * The token is omitted when the cluster does not have one, which leaves the request with no credentials at all
+   * - correct on a cluster that does not require authentication, and answered 401 (and now raised) on one that
+   * does, rather than silently ignored.
+   * <p>
+   * Package-private and pure so the headers can be asserted without a live peer to stop: the method that sends
+   * this request ends in the target node's exit.
+   */
+  // @VisibleForTesting
+  static HttpRequest shutdownRequest(final String url, final String clusterToken) {
+    final HttpRequest.Builder request = HttpRequest.newBuilder()
+        .uri(URI.create(url))
+        .header("Content-Type", "application/json")
+        .POST(HttpRequest.BodyPublishers.ofString(SHUTDOWN_COMMAND_BODY, StandardCharsets.UTF_8));
+    if (clusterToken != null && !clusterToken.isEmpty()) {
+      request.header("X-ArcadeDB-Cluster-Token", clusterToken);
+      request.header("X-ArcadeDB-Forwarded-User", RaftHAServer.FORWARDED_ROOT_USER);
+    }
+    return request.build();
   }
 
   /**

@@ -84,6 +84,19 @@ public abstract class BaseRaftHASslTest extends BaseRaftHATest {
    */
   protected abstract String pkiDirectoryName();
 
+  /**
+   * The subject alternative names the node certificate is issued for, in keytool's {@code -ext} syntax.
+   * <p>
+   * Overridable because a certificate that always matches the name dialled proves nothing about the hostname
+   * check (issue #7836): a suite that issues for the WRONG name is what shows the check is performed, and one
+   * that issues for SEVERAL is what shows a peer can serve more than one of them. The default covers
+   * {@code localhost} and {@code 127.0.0.1}, which is how every in-process node is dialled, so a subclass that
+   * overrides this is declaring that its cluster's peer-to-peer HTTP dials are expected to fail.
+   */
+  protected String subjectAltNames() {
+    return RaftTestPki.SUBJECT_ALT_NAMES;
+  }
+
   /** The cluster PKI, available to a test that wants to build a client of its own against the same CA. */
   protected RaftTestPki clusterPki() {
     return pki;
@@ -101,7 +114,7 @@ public abstract class BaseRaftHASslTest extends BaseRaftHATest {
     if (pki == null)
       pki = PKI_BY_DIRECTORY.computeIfAbsent(pkiDirectoryName(), directory -> {
         try {
-          return RaftTestPki.create(Path.of("target", directory), "cluster");
+          return RaftTestPki.create(Path.of("target", directory), "cluster", subjectAltNames());
         } catch (final Exception e) {
           throw new IllegalStateException("Cannot generate the test PKI for the SSL cluster fixture", e);
         }

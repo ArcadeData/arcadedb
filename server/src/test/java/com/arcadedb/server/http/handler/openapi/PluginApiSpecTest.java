@@ -45,7 +45,7 @@ class PluginApiSpecTest {
   }
 
   @Test
-  void allThirteenPluginOperationsAreDeclared() {
+  void allFourteenPluginOperationsAreDeclared() {
     assertThat(openAPI.getPaths().keySet()).containsExactlyInAnyOrder(
         "/prometheus",
         "/api/v1/cluster",
@@ -58,12 +58,13 @@ class PluginApiSpecTest {
         "/api/v1/cluster/resync/{database}",
         "/api/v1/cluster/bootstrap-state",
         "/api/v1/cluster/capabilities",
+        "/api/v1/cluster/security-seed",
         "/api/v1/ha/snapshot/{database}",
         "/api/v1/ha/snapshot/{database}/checksums");
 
     final long operations = openAPI.getPaths().values().stream()
         .mapToLong(item -> item.readOperations().size()).sum();
-    assertThat(operations).isEqualTo(13);
+    assertThat(operations).isEqualTo(14);
   }
 
   @Test

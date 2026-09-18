@@ -1631,6 +1631,21 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * change is not blocked for three consecutive Raft round trips. Each is best-effort and independent: the
    * failures are collected and returned rather than thrown, so one failing seed does not skip the other two.
    * <p>
+   * <b>A seed is submitted UNCONDITIONALLY, and that is not an oversight</b> (issue #7834). The obvious
+   * hardening - give the seed the compare-and-set precondition of issue #7509, so a change committed on another
+   * node between this read and the apply cannot be undone by the whole document a seed carries - does not work,
+   * and fails in the one case a seed exists for. {@link #isSuperseded} compares the precondition against the
+   * fingerprint of the last replicated document THE APPLYING NODE installed, which is the only value that is
+   * the same everywhere (issue #7693). On a peer whose baseline has drifted - which is precisely a peer that
+   * missed entries, joined late, or caught up by a snapshot install - that value does NOT match, so the peer
+   * would refuse the very seed sent to repair it. Weakening the comparison so the stale peer accepts while a
+   * caught-up peer refuses would not fix that either: it manufactures a divergence, with the revoked credential
+   * living on exactly the node that was already behind.
+   * <p>
+   * What closes the window instead is having a single seeder: one node, one monitor, one read-and-submit
+   * sequence per admission (issue #7834). The residual window - a security change committed on ANOTHER node
+   * between this read and this entry's apply - is pre-existing and is not made worse by any of that.
+   * <p>
    * This form makes one attempt per document. An admission path wants
    * {@link #seedSecurityStateClusterWide(long)} instead, which retries the ones that failed (issue #7521).
    *

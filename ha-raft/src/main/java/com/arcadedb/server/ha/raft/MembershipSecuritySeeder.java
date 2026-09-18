@@ -27,11 +27,15 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.BooleanSupplier;
 import java.util.function.LongSupplier;
 import java.util.logging.Level;
@@ -83,6 +87,31 @@ public class MembershipSecuritySeeder implements AutoCloseable {
   private final ExecutorService  ownedExecutor;
   /** Peers of the last configuration observed, {@code null} until the first one. Guarded by {@code this}. */
   private       Set<RaftPeerId>  knownPeers;
+  /**
+   * The seed that is queued or running, or {@code null}/done when none is (issue #7834). Guarded by
+   * {@code this}.
+   * <p>
+   * It is what makes this class the cluster's <b>single</b> seeder rather than one of several. An admission
+   * used to be seeded twice - once by the node that admitted the peer, once here - from two different JVMs,
+   * each holding only its own {@code ServerSecurity} monitor, so a revocation committing between the two could
+   * be undone by whichever submit landed second. The admitting node now asks the leader for a seed through
+   * {@link #seedNowAndReport} instead of running one, and this field is where that request meets the one the
+   * membership change already scheduled: a request that arrives while a seed is outstanding takes that seed's
+   * result instead of adding a second.
+   * <p>
+   * Folding into an outstanding seed is sound because the payload does not depend on the admission. A seed
+   * carries the security documents as they are when it RUNS - membership is not one of them - so any run that
+   * commits after the peer became a member delivers exactly what a run started later would have. For the
+   * admission that scheduled it, that is always true: this class's configuration callback runs on the apply
+   * thread, so a seed it schedules reads AFTER the membership entry was applied.
+   * <p>
+   * The one case that does not hold is a SECOND admission folding into a seed the first one started, whose
+   * entry can then be ordered before the second peer's configuration entry. That peer still receives it by
+   * ordinary log replay, and if the log has been purged and it catches up by snapshot install instead, by the
+   * catch-up request of issue #7833 - which is the general repair for every node that missed entries, and is
+   * why this fold does not need a second seed to be correct.
+   */
+  private       CompletableFuture<List<String>> outstandingSeed;
 
   /**
    * Production form: seeds on a dedicated single daemon worker.
@@ -97,10 +126,10 @@ public class MembershipSecuritySeeder implements AutoCloseable {
    * apply loop, or the one serving a leader-initiated snapshot install - and the seed submits Raft entries and
    * waits for them to commit, which is the applying the first of those two threads does.
    * <p>
-   * <b>A refused seed is dropped on purpose, and that is coalescing rather than loss.</b> A task reads the
-   * documents when it RUNS rather than being handed a snapshot, so a task already queued and not yet started
-   * covers every change dropped behind it. The handler's other caller is shutdown, where dropping is what
-   * stopping means.
+   * <b>A second seed folds into the outstanding one rather than being queued behind it, and that is coalescing
+   * rather than loss.</b> A task reads the documents when it RUNS rather than being handed a snapshot, so the
+   * outstanding task covers every change folded into it - and the caller that folded in gets that task's result,
+   * which is what lets an admission report a seed it did not itself run (issue #7834).
    */
   public MembershipSecuritySeeder(final BooleanSupplier isLeader, final LongSupplier retryBudgetMs,
       final SecuritySeed seed) {
@@ -126,12 +155,16 @@ public class MembershipSecuritySeeder implements AutoCloseable {
   }
 
   private static ThreadPoolExecutor createSeedExecutor() {
+    // AbortPolicy, not a discarding handler (issue #7834). Coalescing now happens one level up, in schedule(),
+    // where the folded-in caller gets the outstanding seed's FUTURE and therefore its outcome; a handler that
+    // silently dropped the task here would leave that future uncompleted and every reporting caller waiting out
+    // its timeout for a seed that was never going to run. What reaches this policy now is only a submit to an
+    // executor that has been shut down, which schedule() reports as "the node is stopping".
     return new ThreadPoolExecutor(0, 1, 30L, TimeUnit.SECONDS, new ArrayBlockingQueue<>(1), r -> {
       final Thread thread = new Thread(r, "arcadedb-raft-security-seed");
       thread.setDaemon(true);
       return thread;
-    }, (rejected, executor) -> LogManager.instance().log(MembershipSecuritySeeder.class, Level.FINE,
-        "A cluster security seed is already queued or the node is stopping; this one is coalesced into it"));
+    }, new ThreadPoolExecutor.AbortPolicy());
   }
 
   /**
@@ -183,13 +216,79 @@ public class MembershipSecuritySeeder implements AutoCloseable {
         "Peer(s) %s joined the Raft configuration at term=%d index=%d: seeding the cluster security documents",
         added, term, index);
 
+    schedule("the peer(s) " + added + " joining the Raft configuration");
+  }
+
+  /**
+   * Runs a seed and reports what it could not commit, for a caller that has to answer an operator (issue
+   * #7834).
+   * <p>
+   * This is the half of {@code POST /api/v1/cluster/peer}'s and {@code connect cluster}'s contract that issue
+   * #7521 made operator-facing: the route answers 503 with a {@code failedSeeds} array, and the verb logs
+   * SEVERE naming the documents. That contract is why those two paths could not simply stop seeding when the
+   * leader-side seeder arrived - the leader-side seed is asynchronous and has no caller to report to. So the
+   * report comes back through here instead: the admitting node asks the LEADER for the seed and reads the
+   * outcome, and there is one seeder again.
+   * <p>
+   * An outstanding seed is joined rather than queued behind, which is what removes the duplicate rather than
+   * merely serialising it: by the time an admitting node can call this, the membership change has committed and
+   * the configuration callback above has already scheduled the seed for it. See {@link #outstandingSeed}.
+   *
+   * @param timeoutMs how long to wait for the seed to finish before giving up on REPORTING it; the seed itself
+   *                  is not cancelled, since it is the work the joining peer needs either way
+   *
+   * @return the names of the documents that could not be seeded, empty when all of them committed
+   *
+   * @throws IllegalStateException when no seed could be run or awaited at all, so a caller never reads
+   *                               "nothing failed" from a seed that never happened
+   */
+  public List<String> seedNowAndReport(final long timeoutMs) {
+    final CompletableFuture<List<String>> seed = schedule("a request from the node that admitted a peer");
+    if (seed == null)
+      throw new IllegalStateException("the security seed could not be scheduled; this node may be stopping");
+
     try {
-      executor.execute(() -> runSeed(added));
+      return seed.get(Math.max(1L, timeoutMs), TimeUnit.MILLISECONDS);
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new IllegalStateException("interrupted while waiting for the cluster security seed", e);
+    } catch (final TimeoutException e) {
+      throw new IllegalStateException("the cluster security seed did not finish within " + timeoutMs
+          + "ms; it is still running on this node and its outcome will be logged there", e);
+    } catch (final CompletionException | ExecutionException e) {
+      throw new IllegalStateException("the cluster security seed failed: "
+          + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()), e.getCause() != null ? e.getCause() : e);
+    }
+  }
+
+  /**
+   * Schedules a seed, or hands back the one that is already queued or running. {@code null} when the executor
+   * refused the task, which on the owned executor means the node is stopping.
+   */
+  private CompletableFuture<List<String>> schedule(final String reason) {
+    final CompletableFuture<List<String>> seed;
+    synchronized (this) {
+      if (outstandingSeed != null && !outstandingSeed.isDone()) {
+        LogManager.instance().log(this, Level.FINE,
+            "A cluster security seed is already outstanding; the one for %s folds into it", reason);
+        return outstandingSeed;
+      }
+      seed = new CompletableFuture<>();
+      outstandingSeed = seed;
+    }
+
+    try {
+      executor.execute(() -> runSeed(reason, seed));
     } catch (final RejectedExecutionException e) {
       LogManager.instance().log(this, Level.FINE,
-          "A cluster security seed is already queued or the node is stopping; the one for %s is coalesced into it",
-          added);
+          "The cluster security seed for %s was refused by the executor; the node is stopping", reason);
+      synchronized (this) {
+        if (outstandingSeed == seed)
+          outstandingSeed = null;
+      }
+      return null;
     }
+    return seed;
   }
 
   /**
@@ -199,19 +298,22 @@ public class MembershipSecuritySeeder implements AutoCloseable {
    * so a leadership change between the configuration entry and this call still delivers the documents, whereas
    * a re-check would silently drop the seed - the new leader's own startup configuration entry adds no peer and
    * so would not issue one of its own.
+   *
+   * @param result completed with the outcome, for {@link #seedNowAndReport}'s caller
    */
-  private void runSeed(final List<RaftPeerId> added) {
+  private void runSeed(final String reason, final CompletableFuture<List<String>> result) {
     try {
       final List<String> failed = seed.seed(retryBudgetMs.getAsLong());
+      result.complete(List.copyOf(failed));
       if (failed.isEmpty())
         // "Committed", not "the peer now holds them": what the submit waits for is a Raft commit, which a
         // quorum satisfies. The joining peer applies the entries when it catches up, and nothing here observes
         // that - claiming otherwise in a log line an operator reads would be claiming more than was checked.
         LogManager.instance().log(this, Level.INFO,
-            "Cluster security documents committed for the newly-joined peer(s) %s", added);
+            "Cluster security documents committed; the seed was run for %s", reason);
       else
         LogManager.instance().log(this, Level.SEVERE,
-            "Peer(s) %s joined the cluster but these security documents could not be seeded to them: %s. They are "
+            "The security seed run for %s could not commit these documents: %s. The peer(s) it was for are "
                 + "cluster members serving requests against their own copy of them - which for a node re-added "
                 + "after time out of the cluster can still hold a user dropped since, a group narrowed since or a "
                 + "token revoked since. Reissue the change to retry it. Two causes look alike from here: no quorum "
@@ -219,13 +321,16 @@ public class MembershipSecuritySeeder implements AutoCloseable {
                 + "capability gate on the group and API-token entries refusing because the peer that just joined "
                 + "has not answered a capability probe yet (issue #7511), for which it is not - that one clears "
                 + "itself once the peer answers, and arcadedb.ha.securityEntryCapabilityGate is the override",
-            added, String.join(", ", failed));
+            reason, String.join(", ", failed));
     } catch (final Throwable t) {
       // Nothing here may escape: on the owned executor an escaping throwable kills the worker, and the next
-      // membership change would then be seeded by a pool that has to build a new thread for it.
+      // membership change would then be seeded by a pool that has to build a new thread for it. The future is
+      // completed with it rather than only logged, because seedNowAndReport has a caller that must not read
+      // "nothing failed" from a seed that threw.
+      result.completeExceptionally(t);
       LogManager.instance().log(this, Level.SEVERE,
-          "Peer(s) %s joined the cluster but the security seed could not be run at all: %s. They are cluster "
-              + "members serving requests against their own security documents", t, added, t.getMessage());
+          "The security seed run for %s could not be run at all: %s. The peer(s) it was for are cluster "
+              + "members serving requests against their own security documents", t, reason, t.getMessage());
     }
   }
 
@@ -242,6 +347,16 @@ public class MembershipSecuritySeeder implements AutoCloseable {
   public void close() {
     if (ownedExecutor != null)
       ownedExecutor.shutdownNow();
+
+    // Any reporting caller parked on the outstanding seed is told it is not coming, rather than being left to
+    // wait out its own timeout on a worker that has just been interrupted.
+    final CompletableFuture<List<String>> pending;
+    synchronized (this) {
+      pending = outstandingSeed;
+      outstandingSeed = null;
+    }
+    if (pending != null)
+      pending.completeExceptionally(new IllegalStateException("this node is stopping; the security seed was abandoned"));
   }
 
   /**
