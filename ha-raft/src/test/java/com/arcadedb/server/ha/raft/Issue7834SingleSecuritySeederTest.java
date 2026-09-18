@@ -106,7 +106,7 @@ class Issue7834SingleSecuritySeederTest {
     final RecordingSeed seed = new RecordingSeed();
     seed.failures = List.of("groups", "API tokens");
 
-    assertThat(seeder(seed, SAME_THREAD).seedNowAndReport("a test request", TIMEOUT_MS))
+    assertThat(seeder(seed, SAME_THREAD).seedNowAndReport("a test request", TIMEOUT_MS, false))
         .as("a caller that has an operator waiting must learn which documents did not commit")
         .containsExactly("groups", "API tokens");
   }
@@ -114,7 +114,7 @@ class Issue7834SingleSecuritySeederTest {
   /** And the success answer: nothing failed, which is what turns into a 200 on the admission route. */
   @Test
   void aSeedThatCommittedEverythingReportsNoFailures() {
-    assertThat(seeder(new RecordingSeed(), SAME_THREAD).seedNowAndReport("a test request", TIMEOUT_MS)).isEmpty();
+    assertThat(seeder(new RecordingSeed(), SAME_THREAD).seedNowAndReport("a test request", TIMEOUT_MS, false)).isEmpty();
   }
 
   /**
@@ -126,7 +126,7 @@ class Issue7834SingleSecuritySeederTest {
     final RecordingSeed seed = new RecordingSeed();
     seed.blowUp = new IllegalStateException("no security store on this node");
 
-    assertThatThrownBy(() -> seeder(seed, SAME_THREAD).seedNowAndReport("a test request", TIMEOUT_MS))
+    assertThatThrownBy(() -> seeder(seed, SAME_THREAD).seedNowAndReport("a test request", TIMEOUT_MS, false))
         .isInstanceOf(IllegalStateException.class)
         .hasMessageContaining("no security store on this node");
   }
@@ -192,7 +192,7 @@ class Issue7834SingleSecuritySeederTest {
     seeder.onConfigurationChanged(1, 11, peers("arcadedb-0", "arcadedb-1", "arcadedb-2"));
     assertThat(seed.calls.get()).as("the membership change seeded, and finished").isEqualTo(1);
 
-    assertThat(seeder.seedNowAndReport("a test request", TIMEOUT_MS))
+    assertThat(seeder.seedNowAndReport("an admission a round trip behind it", TIMEOUT_MS, true))
         .as("the admission reports that seed's outcome")
         .containsExactly("groups");
     assertThat(seed.calls.get()).as("one admission, one seed").isEqualTo(1);
@@ -219,6 +219,40 @@ class Issue7834SingleSecuritySeederTest {
   }
 
   /**
+   * The reuse is for an admission and for nothing else. A catch-up whose fingerprints did NOT match has just
+   * been told this node is out of step, so answering it from an unrelated seed that happened to finish a
+   * moment ago would leave it stale - which is the failure issue #7833 exists to repair (CodeRabbit on PR
+   * #7854).
+   */
+  @Test
+  void aCallerThatHasEstablishedItNeedsASeedIsNeverAnsweredByARecentOne() {
+    final RecordingSeed seed = new RecordingSeed();
+    final MembershipSecuritySeeder seeder = seeder(seed, SAME_THREAD);
+
+    // A seed finishes; a catch-up request arrives immediately after it, well inside the reuse window.
+    seeder.seedNowAndReport("an unrelated seed", TIMEOUT_MS, true);
+    assertThat(seed.calls.get()).isEqualTo(1);
+
+    seeder.seedNowAndReport("a node whose fingerprints did not match", TIMEOUT_MS, false);
+
+    assertThat(seed.calls.get())
+        .as("a node that has been told it is out of step must actually be seeded")
+        .isEqualTo(2);
+  }
+
+  /** And the admission, in the same window, still is - that is what the window is for. */
+  @Test
+  void anAdmissionInTheSameWindowIsStillAnsweredByTheRecentSeed() {
+    final RecordingSeed seed = new RecordingSeed();
+    final MembershipSecuritySeeder seeder = seeder(seed, SAME_THREAD);
+
+    seeder.seedNowAndReport("the membership change", TIMEOUT_MS, true);
+    seeder.seedNowAndReport("the admission a round trip behind it", TIMEOUT_MS, true);
+
+    assertThat(seed.calls.get()).isEqualTo(1);
+  }
+
+  /**
    * And the converse, so the reuse is not mistaken for "only ever seeds once": once the window has passed, a
    * request runs a seed of its own. That is the path a node re-seeding itself takes (issue #7833), and the
    * path an operator re-POSTing a peer minutes later has to get.
@@ -228,9 +262,9 @@ class Issue7834SingleSecuritySeederTest {
     final RecordingSeed seed = new RecordingSeed();
     final MembershipSecuritySeeder seeder = seeder(seed, SAME_THREAD);
 
-    seeder.seedNowAndReport("a test request", TIMEOUT_MS);
+    seeder.seedNowAndReport("a first admission", TIMEOUT_MS, true);
     seeder.forgetCompletedSeedForTest();
-    seeder.seedNowAndReport("a test request", TIMEOUT_MS);
+    seeder.seedNowAndReport("an admission past the window", TIMEOUT_MS, true);
 
     assertThat(seed.calls.get())
         .as("a request that cannot reuse anything is a seed of its own")
@@ -263,7 +297,7 @@ class Issue7834SingleSecuritySeederTest {
     final MembershipSecuritySeeder seeder = seeder(seed, worker);
     final ExecutorService caller = Executors.newSingleThreadExecutor();
     try {
-      final var report = caller.submit(() -> seeder.seedNowAndReport("a test request", TIMEOUT_MS));
+      final var report = caller.submit(() -> seeder.seedNowAndReport("a test request", TIMEOUT_MS, false));
       assertThat(seed.started.await(TIMEOUT_MS, TimeUnit.MILLISECONDS)).isTrue();
 
       seeder.close();

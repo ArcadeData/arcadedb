@@ -111,8 +111,12 @@ public class PostSecuritySeedHandler extends AbstractServerHttpHandler {
 
     final ServerSecurity security = httpServer.getServer().getSecurity();
     if (security == null)
-      return new ExecutionResponse(503,
-          new JSONObject().put("error", "This node has no security store to seed from").toString());
+      // `seeded` is required by the schema this route's 503 declares, so it travels even on the answer that
+      // carries nothing else (CodeRabbit on PR #7854): a client enforcing the contract would otherwise reject
+      // a perfectly valid response.
+      return new ExecutionResponse(503, new JSONObject()
+          .put("seeded", false)
+          .put("error", "This node has no security store to seed from").toString());
 
     final String reason = payload.getString("reason", "a peer request");
 
@@ -139,7 +143,11 @@ public class PostSecuritySeedHandler extends AbstractServerHttpHandler {
 
     final List<String> failedSeeds;
     try {
-      failedSeeds = raftHAServer.getStateMachine().seedSecurityNowAndReport(reason, seedReportTimeoutMs());
+      // Only an admission - a request that named no fingerprints - may be answered by a seed that just
+      // finished. A caller that sent fingerprints has been told by the comparison above that it is out of
+      // step, so answering it from an unrelated recent result would leave it that way (CodeRabbit on PR #7854).
+      failedSeeds = raftHAServer.getStateMachine().seedSecurityNowAndReport(reason, seedReportTimeoutMs(),
+          fingerprints == null);
     } catch (final IllegalStateException e) {
       // The seed could not be run or its outcome could not be read. Reported as a failure of the REPORT, with
       // the documents unnamed, because that is exactly what is known: answering with an empty failedSeeds array
@@ -186,12 +194,29 @@ public class PostSecuritySeedHandler extends AbstractServerHttpHandler {
    */
   // @VisibleForTesting
   static JSONObject readFingerprints(final JSONObject payload) {
+    final JSONObject fingerprints;
     try {
-      return payload.getJSONObject("fingerprints", null);
+      fingerprints = payload.getJSONObject("fingerprints", null);
     } catch (final RuntimeException e) {
       throw new IllegalArgumentException(
           "'fingerprints' must be an object of document digests: " + e.getMessage(), e);
     }
+    if (fingerprints == null)
+      return null;
+
+    // The digests are read here rather than left to isUpToDate, which runs outside the caller's catch: a
+    // non-string value there threw out of the handler as a 500 for a request that is merely wrong
+    // (CodeRabbit on PR #7854). Only the three recognised members are checked - an unknown property is
+    // permitted by the schema and ignored by the comparison, so it is not this route's business.
+    for (final String document : new String[] { ReplicatedSecurityFingerprintRepository.USERS,
+        ReplicatedSecurityFingerprintRepository.GROUPS, ReplicatedSecurityFingerprintRepository.API_TOKENS })
+      try {
+        fingerprints.getString(document, "");
+      } catch (final RuntimeException e) {
+        throw new IllegalArgumentException(
+            "'fingerprints." + document + "' must be a document digest: " + e.getMessage(), e);
+      }
+    return fingerprints;
   }
 
   /**
