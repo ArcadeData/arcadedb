@@ -112,6 +112,16 @@ public class MembershipSecuritySeeder implements AutoCloseable {
    * why this fold does not need a second seed to be correct.
    */
   private       CompletableFuture<List<String>> outstandingSeed;
+  /**
+   * Which scheduling call installed {@link #outstandingSeed}, and the counter it is taken from. Guarded by
+   * {@code this}.
+   * <p>
+   * It exists so the one place that has to UNDO an installation - the executor refusing the task - can tell
+   * "the slot still holds what I put there" from "somebody else has replaced it since", without holding the
+   * monitor across {@code executor.execute}.
+   */
+  private       long                             outstandingSeedGeneration;
+  private       long                             scheduledSeeds;
 
   /**
    * Production form: seeds on a dedicated single daemon worker.
@@ -267,6 +277,7 @@ public class MembershipSecuritySeeder implements AutoCloseable {
    */
   private CompletableFuture<List<String>> schedule(final String reason) {
     final CompletableFuture<List<String>> seed;
+    final long generation;
     synchronized (this) {
       if (outstandingSeed != null && !outstandingSeed.isDone()) {
         LogManager.instance().log(this, Level.FINE,
@@ -274,19 +285,20 @@ public class MembershipSecuritySeeder implements AutoCloseable {
         return outstandingSeed;
       }
       seed = new CompletableFuture<>();
+      generation = ++scheduledSeeds;
       outstandingSeed = seed;
+      outstandingSeedGeneration = generation;
     }
 
     try {
+      // Outside the monitor: execute() may run the task inline on a caller-runs policy, and runSeed takes this
+      // monitor. Which is why the undo below cannot simply clear the slot - see outstandingSeedGeneration.
       executor.execute(() -> runSeed(reason, seed));
     } catch (final RejectedExecutionException e) {
       LogManager.instance().log(this, Level.FINE,
           "The cluster security seed for %s was refused by the executor; the node is stopping", reason);
       synchronized (this) {
-        // Reference identity on purpose, not equality: the question is whether the outstanding seed is still
-        // THE future this call created, or whether another caller has already replaced it. CompletableFuture
-        // inherits Object.equals, so the two are the same comparison - `==` is the one that says why.
-        if (outstandingSeed == seed)
+        if (outstandingSeedGeneration == generation)
           outstandingSeed = null;
       }
       return null;
