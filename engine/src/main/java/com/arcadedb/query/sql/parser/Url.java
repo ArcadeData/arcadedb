@@ -25,6 +25,16 @@ import java.util.Objects;
 
 public class Url extends SimpleNode {
   protected String urlString;
+  /**
+   * The STRING_LITERAL token exactly as it appeared in the source, quotes and escapes included. Set only when the
+   * URL was parsed from a quoted literal rather than one of the scheme-prefixed tokens. {@code urlString} itself is
+   * stored UN-DECODED - {@code SQLASTBuilder.removeQuotes} only strips the outer quote characters, it never resolves
+   * the lexer's {@code STRING_ESCAPE_SEQ} escapes - so re-escaping it in {@code toString()} would double-encode any
+   * {@code \} or {@code '} it already contains, growing on every render/reparse cycle instead of round-tripping.
+   * Rendering this verbatim instead - the same approach as {@code CreateTriggerStatement.actionCodeQuoted} - sides
+   * steps decoding entirely and guarantees an exact, idempotent round-trip (issue #7800 review).
+   */
+  public String quotedLiteral;
 
   public Url() {
   }
@@ -35,7 +45,54 @@ public class Url extends SimpleNode {
 
   @Override
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
-    builder.append(urlString);
+    if (quotedLiteral != null) {
+      builder.append(quotedLiteral);
+      return;
+    }
+
+    if (isRecognizedScheme(urlString)) {
+      builder.append(urlString);
+      return;
+    }
+
+    // quotedLiteral IS ONLY SET BY THE PARSER (SQLASTBuilder.visitUrl). A Url BUILT ANY OTHER WAY - the two-arg
+    // constructor is public - WITH A urlString THAT ISN'T ONE OF THE SCHEME-PREFIXED FORMS WOULD OTHERWISE RENDER
+    // RAW AND UNPARSEABLE HERE, THE SAME TRAP CreateTriggerStatement.actionCodeQuoted HAS (CODERABBIT, ISSUE #7800).
+    // THIS FALLBACK QUOTES A PLAIN, ALREADY-DECODED VALUE, SO NO DOUBLE-ESCAPING RISK APPLIES TO IT.
+    appendQuotedStringLiteral(builder, urlString);
+  }
+
+  /**
+   * True only when {@code url} would actually re-lex as one of the grammar's FILE_URL/HTTP_URL/HTTPS_URL/
+   * CLASSPATH_URL tokens ({@code 'scheme://' URL_CHAR+}), not merely when it starts with one of those schemes.
+   * {@code URL_CHAR} excludes {@code " \t\r\n;} (SQLLexer.g4), so a scheme-prefixed value containing any of those -
+   * a space in a {@code file://} path, say - would otherwise render unquoted here and fail to reparse. Checking
+   * only the prefix was claude-review's second-round finding on this method.
+   */
+  private static boolean isRecognizedScheme(final String url) {
+    final String remainder;
+    if (url == null)
+      return false;
+    else if (url.startsWith("file://"))
+      remainder = url.substring("file://".length());
+    else if (url.startsWith("http://"))
+      remainder = url.substring("http://".length());
+    else if (url.startsWith("https://"))
+      remainder = url.substring("https://".length());
+    else if (url.startsWith("classpath://"))
+      remainder = url.substring("classpath://".length());
+    else
+      return false;
+
+    if (remainder.isEmpty()) // URL_CHAR+ requires at least one character after the scheme
+      return false;
+
+    for (int i = 0; i < remainder.length(); i++) {
+      final char c = remainder.charAt(i);
+      if (c == '"' || c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == ';')
+        return false;
+    }
+    return true;
   }
 
   @Override
@@ -57,6 +114,7 @@ public class Url extends SimpleNode {
   public SimpleNode copy() {
     final Url result = new Url();
     result.urlString = urlString;
+    result.quotedLiteral = quotedLiteral;
     return result;
   }
 

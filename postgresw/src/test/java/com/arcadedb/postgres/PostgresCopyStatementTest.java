@@ -128,6 +128,43 @@ class PostgresCopyStatementTest {
     assertCopyException("COPY t (\"a`, b\") TO STDOUT", PostgresCopyStatement.SQLSTATE_SYNTAX_ERROR, "back-tick");
   }
 
+  /**
+   * Issue #7472 item 3: the NULL specification is emitted RAW and UNQUOTED for every null value, so one that
+   * carries the delimiter splits the record and one that carries the CSV quote breaks the field - the consumer
+   * sees a shifted or truncated row rather than an error. PostgreSQL refuses both combinations up front
+   * ({@code ProcessCopyOptions} in {@code copy.c}), and refuses the delimiter one in BOTH formats rather than
+   * only in text, which is where this server stopped.
+   */
+  @Test
+  void aNullSpecificationCannotCarryTheDelimiterOrTheQuote() {
+    // Text format: already refused before #7472, kept here so the widening below cannot narrow it back.
+    assertCopyException("COPY t TO STDOUT (DELIMITER '|', NULL 'a|b')", PostgresCopyStatement.SQLSTATE_SYNTAX_ERROR,
+        "COPY delimiter character must not appear in the NULL specification");
+    // CSV format: the same combination, which used to be accepted and emitted a record with an extra field.
+    assertCopyException("COPY t TO STDOUT (FORMAT csv, DELIMITER '|', NULL 'a|b')",
+        PostgresCopyStatement.SQLSTATE_SYNTAX_ERROR, "COPY delimiter character must not appear in the NULL specification");
+    // The default CSV delimiter counts too - the option does not have to be stated for the clash to exist.
+    assertCopyException("COPY t TO STDOUT (FORMAT csv, NULL 'a,b')", PostgresCopyStatement.SQLSTATE_SYNTAX_ERROR,
+        "COPY delimiter character must not appear in the NULL specification");
+    // CSV quote, default and explicit: the null string is written unquoted, so a quote inside it opens a field
+    // the reader never sees closed.
+    assertCopyException("COPY t TO STDOUT (FORMAT csv, NULL '\"nil\"')", PostgresCopyStatement.SQLSTATE_SYNTAX_ERROR,
+        "CSV quote character must not appear in the NULL specification");
+    assertCopyException("COPY t TO STDOUT (FORMAT csv, QUOTE '#', NULL 'a#b')", PostgresCopyStatement.SQLSTATE_SYNTAX_ERROR,
+        "CSV quote character must not appear in the NULL specification");
+
+    // The message names BOTH characters, so the operator does not have to guess which one to change.
+    assertThatThrownBy(() -> PostgresCopyStatement.parse("COPY t TO STDOUT (FORMAT csv, DELIMITER '|', NULL 'a|b')"))
+        .hasMessageContaining("'|'");
+
+    // A quote inside the null string is a TEXT-format non-issue: text has no quoting, and '"' is an ordinary
+    // character there. PostgreSQL accepts it and so does this.
+    assertThat(PostgresCopyStatement.parse("COPY t TO STDOUT (NULL '\"nil\"')").getNullString()).isEqualTo("\"nil\"");
+    // And the defaults of both formats stay legal.
+    assertThat(PostgresCopyStatement.parse("COPY t TO STDOUT").getNullString()).isEqualTo("\\N");
+    assertThat(PostgresCopyStatement.parse("COPY t TO STDOUT (FORMAT csv)").getNullString()).isEmpty();
+  }
+
   private static void assertCopyException(final String statement, final String sqlState, final String messagePart) {
     assertThatThrownBy(() -> PostgresCopyStatement.parse(statement))
         .as(statement)

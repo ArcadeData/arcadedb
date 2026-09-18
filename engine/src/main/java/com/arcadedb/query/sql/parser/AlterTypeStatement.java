@@ -72,6 +72,25 @@ public class AlterTypeStatement extends DDLStatement {
         numberValue.toString(params, builder); // clusters only
       } else if (identifierValue != null) {
         identifierValue.toString(params, builder);
+      } else if (!identifierListValue.isEmpty()) {
+        // Grammar shapes differ per property (SQLParser.g4 alterTypeItem):
+        //  - BUCKET   ((PLUS | MINUS) identifier)+        - signed, space-separated, no commas
+        //  - SUPERTYPE (PLUS|MINUS)? identifier (COMMA (PLUS|MINUS)? identifier)* - signed, comma-separated
+        //  - ALIASES  identifier (COMMA identifier)* | NULL - unsigned, comma-separated
+        final boolean bucket = "bucket".equalsIgnoreCase(property);
+        final boolean signed = bucket || "supertype".equalsIgnoreCase(property);
+        for (int i = 0; i < identifierListValue.size(); i++) {
+          if (i > 0)
+            builder.append(bucket ? " " : ", ");
+          if (signed) {
+            final Boolean add = i < identifierListAddRemove.size() ? identifierListAddRemove.get(i) : Boolean.TRUE;
+            builder.append(Boolean.FALSE.equals(add) ? "-" : "+");
+          }
+          identifierListValue.get(i).toString(params, builder);
+        }
+      } else if ("aliases".equalsIgnoreCase(property)) {
+        // ALIASES <identifier list> | NULL - an empty list is how "ALIASES NULL" (clear all aliases) is stored.
+        builder.append("NULL");
       } else {
         builder.append("null");
       }
@@ -87,12 +106,26 @@ public class AlterTypeStatement extends DDLStatement {
         customValue.toString(params, builder);
       }
     }
+
+    if (!settings.isEmpty()) {
+      builder.append(" WITH ");
+      boolean first = true;
+      for (final Map.Entry<Identifier, Expression> entry : settings.entrySet()) {
+        if (!first)
+          builder.append(", ");
+        first = false;
+        entry.getKey().toString(params, builder);
+        builder.append(" = ");
+        entry.getValue().toString(params, builder);
+      }
+    }
   }
 
   public Statement copy() {
     final AlterTypeStatement result = new AlterTypeStatement();
     result.name = name == null ? null : name.copy();
     result.property = property;
+    result.identifierValue = identifierValue == null ? null : identifierValue.copy();
     result.identifierListValue = identifierListValue.stream().map(x -> x.copy()).collect(Collectors.toList());
     result.identifierListAddRemove = new ArrayList<>(identifierListAddRemove);
     result.numberValue = numberValue == null ? null : numberValue.copy();
@@ -106,8 +139,8 @@ public class AlterTypeStatement extends DDLStatement {
 
   @Override
   protected Object[] getIdentityElements() {
-    return new Object[] { name, property, identifierListValue, identifierListAddRemove, numberValue, booleanValue, customKey,
-        customValue };
+    return new Object[] { name, property, identifierValue, identifierListValue, identifierListAddRemove, numberValue,
+        booleanValue, customKey, customValue, settings };
   }
 
   /**

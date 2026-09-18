@@ -146,11 +146,17 @@ class RemoteSchemaTest {
         .isInstanceOf(UnsupportedOperationException.class);
   }
 
+  /**
+   * Issue #7659: this used to call {@code buildVertexType()}, which throws on the FIRST call in the chain, so every
+   * builder call after it was dead code and the 3-argument {@code getOrCreateVertexType} this test is named for was
+   * never reached at all - it had no coverage anywhere. Pointed at the method it names, mirroring the
+   * document-type counterpart above.
+   */
   @Test
   void getOrCreateVertexTypeWithPageSizeThrowsUnsupported() {
-    assertThatThrownBy(() ->
-        schema.buildVertexType().withName("Type").withTotalBuckets(1).withIgnoreIfExists(true).withPageSize(100).create())
-        .isInstanceOf(UnsupportedOperationException.class);
+    assertThatThrownBy(() -> schema.getOrCreateVertexType("Type", 1, 100))
+        .isInstanceOf(UnsupportedOperationException.class)
+        .hasMessageContaining("getOrCreateVertexType()");
   }
 
   @Test

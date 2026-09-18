@@ -36,8 +36,8 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.utility.FileUtils;
 
-import java.io.File;
 import java.lang.reflect.InvocationTargetException;
 import java.util.HashMap;
 import java.util.Map;
@@ -114,8 +114,8 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
         String backupDirectory = context.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_BACKUP_DIRECTORY);
         LogManager.instance().log(this, Level.INFO,
             String.format("Backing up database '%s' to directory '%s'", context.getDatabase().getName(), backupDirectory));
-        if (!backupDirectory.endsWith(File.separator))
-          backupDirectory += File.separator;
+        // EITHER SEPARATOR CONVENTION (ISSUE #7588)
+        backupDirectory = FileUtils.appendSeparatorIfMissing(backupDirectory);
 
         clazz.getMethod("setDirectory", String.class).invoke(backup, backupDirectory + context.getDatabase().getName());
         clazz.getMethod("setVerboseLevel", Integer.TYPE).invoke(backup, 0);

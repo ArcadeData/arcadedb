@@ -297,6 +297,15 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     // way completedTaskCount above does for tasks). Thread-confined, same as pendingBatchCommands - only
     // this worker ever calls commitBatch() on itself.
     private          int                        batchCommitAttempt       = 0;
+    /**
+     * #7667: the shared batch transaction the CURRENTLY RUNNING task was handed. Non-null only for the duration of
+     * one {@code message.execute()} call (set by {@code executeTask} right before it, cleared in its {@code finally}),
+     * so no later caller - {@code commitBatch()}'s own commit, above all - can read a stale snapshot and mistake its
+     * own transaction for a mid-statement one. Thread-confined, same as {@link #pendingBatchCommands}.
+     */
+    private          TransactionContext         taskBatchTx              = null;
+    /** #7667: {@link #taskBatchTx}'s commit count at the moment it was handed to the running task. */
+    private          long                       taskBatchTxCommitCount   = 0;
 
     // #7615: single choke point for "the shared batch's non-durable bookkeeping is now moot" - every site
     // that commits, rolls back, or otherwise closes the shared batch transaction goes through here instead
@@ -309,6 +318,38 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
     boolean isReplayingBatch() {
       return replayingBatch;
+    }
+
+    /**
+     * Whether the shared batch transaction the running task was handed has since been COMMITTED out from under it
+     * (issue #7667).
+     * <p>
+     * {@code isTransactionActive()} cannot answer this. A statement that commits MID-EXECUTION and immediately
+     * begins another - {@code UPDATE/DELETE/MOVE VERTEX ... BATCH n} through {@code BatchStep}, {@code TRUNCATE
+     * TYPE}/{@code BUCKET}, {@code REBUILD INDEX}, all enumerated in {@code SQLQueryEngine}'s own javadoc - leaves a
+     * transaction active on return, just not THE one everything buffered in {@link #pendingBatchCommands} wrote to.
+     * Those writes went out with the mid-statement commit and are durable on disk; replaying them onto the new
+     * transaction (which is what {@link #commitBatch} does after a conflict) would apply them a second time, and
+     * telling their submitters {@code onError} (which is what {@link #notifyPendingBatchCommandsAndAbandon} does
+     * when the batch is abandoned) would deny a write that actually landed. Both are answered by treating this
+     * exactly as the out-of-band commit sites ({@code DatabaseAsyncIndexCompaction}, {@code DatabaseAsyncParkWorker},
+     * {@code DatabaseAsyncTransaction}) already treat their own commits: drop the buffered state without notifying.
+     * <p>
+     * Deliberately asked of the ORIGINAL context object rather than of {@code database.getTransaction()}: a nested
+     * transaction pushed and committed under the running task is a different context entirely, does not publish the
+     * shared batch, and so must not read as a replacement.
+     * <p>
+     * And deliberately keyed on {@code TransactionContext.getCommitCount()} rather than on a begin counter
+     * (claude-review on PR #7850). A statement that ROLLED the shared batch back and began another would move a
+     * begin counter identically, and the two outcomes are opposites here: after a commit the buffered writes are
+     * durable and must be dropped in silence, after a rollback they are gone and their submitters must be told.
+     * Counting commits means the rollback case simply does not match and keeps the pre-existing reporting path,
+     * so this does not rest on the invariant that no statement rolls the top-level transaction back mid-execution.
+     *
+     * @return true if the snapshotted shared batch transaction has been committed since the running task was handed it
+     */
+    private boolean sharedBatchCommittedDuringTask() {
+      return taskBatchTx != null && taskBatchTx.getCommitCount() != taskBatchTxCommitCount;
     }
 
     private AsyncThread(final DatabaseInternal database, final int id) {
@@ -497,6 +538,17 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
           database.setWALFlush(currentSync);
         }
 
+        // #7667: snapshot the shared batch transaction and its commit count BEFORE handing it to the task, so the
+        // classification below (and, while execute() is still on the stack, notifyPendingBatchCommandsAndAbandon)
+        // can tell "the transaction everything buffered wrote to is still the one in front of me" from "a
+        // statement committed it mid-execution". Taken after the begin() above, so it is the transaction `message`
+        // actually runs in; null when none is active, in which case nothing is buffered against one either (every
+        // commit site clears the buffers).
+        if (!nested) {
+          taskBatchTx = database.isTransactionActive() ? database.getTransaction() : null;
+          taskBatchTxCommitCount = taskBatchTx != null ? taskBatchTx.getCommitCount() : 0;
+        }
+
         message.execute(this, database);
 
         if (!nested) {
@@ -508,9 +560,34 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
           if (!database.isTransactionActive())
             // That local rollback (unchanged, pre-existing behaviour: see Issue6470AsyncSuccessCallbackDurabilityTest)
             // discarded every write buffered before it too - drop the stale references so a LATER boundary
-            // commit that fails cannot replay writes this rollback already undid.
+            // commit that fails cannot replay writes this rollback already undid. #7667: and the same call covers
+            // the case where nothing is open because the task COMMITTED the batch part-way through and then failed
+            // before re-opening one - those writes are durable rather than undone, but either way there is nothing
+            // left here to replay onto a later transaction.
             clearBatchState();
-          else if (message instanceof final DatabaseAsyncCommand command) {
+          else if (sharedBatchCommittedDuringTask()) {
+            // #7667: the task committed the shared batch part-way through and left a DIFFERENT transaction open
+            // (UPDATE/DELETE/MOVE VERTEX ... BATCH n, TRUNCATE TYPE, REBUILD INDEX). Everything buffered before it
+            // is durable on disk already, so it must neither be replayed by a later commitBatch() - ten records
+            // where five were submitted - nor be told onError by a later abandon, which would deny a write that
+            // landed. This message itself straddles the mid-statement commit (part durable, part in the new
+            // transaction), so it cannot be replayed either: routed to pendingUnreplayableTasks, which turns
+            // retry-by-replay off for this batch instead of fabricating a duplicate, and still reports through
+            // notifyBatchAbandoned if that batch is ultimately given up on.
+            clearBatchState();
+            // Unconditional, and deliberately so (claude-review on PR #7850). A statement whose writes ALL went out
+            // in mid-statement commits - `DELETE ... BATCH n` where n divides the row count exactly, so the
+            // transaction it leaves open is empty - is fully durable, yet it is still buffered here and so still
+            // receives onError if a LATER task's boundary commit abandons the batch. That is the conservative half
+            // of the same trade notifyPendingBatchCommandsAndAbandon already documents: `cause` is attributed to the
+            // batch, not diagnosed per command. Telling a durable statement the batch failed costs a submitter a
+            // spurious retry; the alternative - deciding from here how much of the statement landed before the last
+            // commit - is not knowable without the statement reporting it, and guessing wrong in the other
+            // direction silently loses a write. Read onError as "this batch could not be made durable", per
+            // AsyncResultsetCallback's javadoc, not as a verdict on this command's own writes.
+            if (message instanceof final DatabaseAsyncCommand command ? !command.idempotent : message.writesToSharedBatch())
+              pendingUnreplayableTasks.add(message);
+          } else if (message instanceof final DatabaseAsyncCommand command) {
             if (!command.idempotent)
               pendingBatchCommands.add(command);
             // idempotent (a query): wrote nothing, batch replayability unaffected either way.
@@ -525,6 +602,10 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
             // nothing here a rolled-back commit could actually lose - counting it anyway would needlessly
             // disable the retry-by-replay for every command buffered ahead of it on the same worker.
             pendingUnreplayableTasks.add(message);
+
+          // #7667: the snapshot has been consumed - dropped BEFORE commitBatch() below, whose own commit bumps the
+          // very counter it compares against.
+          taskBatchTx = null;
 
           count++;
 
@@ -552,6 +633,9 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
             database.rollback();
         }
       } finally {
+        // #7667: never leave a snapshot behind for the NEXT task - or for closeTransactionBoundaryIfDurabilityPolicyChanged(),
+        // which runs before the next one takes its own.
+        taskBatchTx = null;
         try {
           message.completed();
         } finally {
@@ -696,6 +780,17 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     void notifyPendingBatchCommandsAndAbandon(final Throwable cause) {
       if (pendingBatchCommands.isEmpty() && pendingUnreplayableTasks.isEmpty())
         return;
+
+      if (sharedBatchCommittedDuringTask()) {
+        // #7667, the mirror of the duplicate-replay case: the running task committed the shared batch part-way
+        // through and only then failed, so everything buffered ahead of it went out with that commit and is
+        // durable. `cause` belongs to whatever happened AFTER it, in the replacement transaction - reporting it
+        // to these commands would tell their submitters a write that landed did not. Dropped silently instead,
+        // exactly as the three out-of-band commit sites drop what they just made durable.
+        clearBatchState();
+        return;
+      }
+
       final List<DatabaseAsyncCommand> abandonedCommands = new ArrayList<>(pendingBatchCommands);
       final List<DatabaseAsyncTask>    abandonedTasks    = new ArrayList<>(pendingUnreplayableTasks);
       clearBatchState();
@@ -824,14 +919,75 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     private void drainQueueNotifyingWaiters() {
       DatabaseAsyncTask leftover;
       // TASKS PARKED BY THE HELPING PATH ARE DROPPED TASKS TOO: NOTIFY THEM FIRST, THEN THE QUEUE
-      while ((leftover = helpDeferredTasks.isEmpty() ? queue.poll() : helpDeferredTasks.pollFirst()) != null)
-        if (leftover != FORCE_EXIT)
+      while ((leftover = helpDeferredTasks.isEmpty() ? queue.poll() : helpDeferredTasks.pollFirst()) != null) {
+        if (leftover == FORCE_EXIT)
+          continue;
+
+        // #7841: a task landing here raced a shrink, not necessarily a terminal close - the same ambiguity
+        // scheduleTask()'s post-offer check now accounts for on its side of this same race (search for issue
+        // #7841 there). Reschedule it onto whatever pool is live right now instead of just notifying it
+        // dropped: getBestSlot() throws the same "shut down" exception a genuine close would, so that case
+        // still falls through to completed() below exactly as before.
+        //
+        // waitIfQueueIsFull=true, not false (CodeRabbit review): a one-shot non-blocking offer would drop the
+        // task the instant every live queue is momentarily full, which is not a terminal close and is exactly
+        // the loss this method exists to avoid. The wait this thread takes on is the same bounded one every
+        // other cross-slot hand-off in this class already uses - offerWaiting()'s stalled-queue detection still
+        // throws rather than hanging forever if the target genuinely wedges, and offerHelping() keeps this
+        // worker's OWN queue (and this same drain loop, via helpDeferredTasks) moving while it waits.
+        //
+        // Retried up to 3 times, not trusted on the first exception (CodeRabbit review): scheduleTask() throws
+        // for two different reasons here - a genuine terminal close (executorThreads nulled, checked before
+        // each attempt) or a live peer that merely stalled long enough to trip that same stall detector. Only
+        // the first means there is truly nowhere to hand this task; the second means getBestSlot()'s pick over
+        // the (possibly changed) queue sizes on the next attempt might land on a different, unstalled worker,
+        // so it is worth retrying rather than completing a task the executor could still run. Bounded rather
+        // than unconditional so a pool that is genuinely, permanently wedged does not turn this drain into an
+        // unbounded wait of its own.
+        //
+        // Cannot bounce between two CONCURRENTLY draining pools (claude-review question): resizeThreads() runs
+        // its three publish steps under lifecycleLock, so a second setParallelLevel() call blocks until the first
+        // has already unpublished its own retiring workers from executorThreads - there is only ever one
+        // "current" live array to reschedule against, never two racing shrinks each offering a different one.
+        // Nothing here rules out a task hopping through several SEQUENTIAL shrinks (this worker's reschedule
+        // landing on a worker a later, non-overlapping resize then also retires before the task runs) - each hop
+        // is bounded the same way this one is, and the stress test's 20 back-to-back resizes per repeat exercise
+        // exactly that chaining without a single drop across 120+ runs.
+        //
+        // Cross-covers scheduleTask()'s OWN post-offer check (claude-review, tying the two together): that check's
+        // removeQuietly() can fail to find the task - not because it is safe, but because THIS drain loop's own
+        // poll() already won the race and took it first. When that happens the caller-side check does nothing
+        // (removeQuietly() false, no throw, no retry there) and it is this reschedule loop, further down the same
+        // task's journey, that is the only thing left standing between it and being lost. Neither side is
+        // sufficient alone; whichever one actually dequeues the task is the one responsible for its fate.
+        boolean rescheduled = false;
+        for (int attempt = 0; !rescheduled && attempt < 3 && executorThreads != null; attempt++) {
           try {
-            leftover.completed();
+            rescheduled = getOwner().scheduleTask(-1, leftover, true, 0);
           } catch (final Throwable e) {
-            LogManager.instance()
-                .log(this, Level.SEVERE, "Error on notifying completion of dropped asynchronous task %s", e, leftover);
+            // Stalled, not necessarily closed - loop around for another attempt, or fall through below.
           }
+        }
+        if (rescheduled)
+          continue;
+
+        // A judged trade-off, not an oversight (CodeRabbit review): the 3 attempts above can be exhausted by a
+        // live pool whose picks keep stalling rather than by a genuine close (executorThreads still non-null),
+        // and completing the task here without running it is technically a loss in that narrow case. The
+        // alternative - retry unconditionally until executorThreads actually goes null - would let a single
+        // permanently wedged peer turn THIS worker's shutdown/shrink into an unbounded wait too, which is
+        // exactly the failure mode {@code offerWaiting}'s own stall detector and every other bound in this class
+        // exists to avoid (see the file-level rule on avoiding the common ForkJoinPool and the #5062/#4953
+        // review history throughout this class). Three attempts against a pool whose worst-case single-attempt
+        // duration is itself bounded by that same stall detector is judged the right place to stop: bounded and
+        // loud beats unbounded and silent, consistent with how the rest of this class already trades.
+        try {
+          leftover.completed();
+        } catch (final Throwable e) {
+          LogManager.instance()
+              .log(this, Level.SEVERE, "Error on notifying completion of dropped asynchronous task %s", e, leftover);
+        }
+      }
     }
 
     DatabaseAsyncExecutorImpl getOwner() {
@@ -2319,8 +2475,21 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
    * @param waitIfQueueIsFull true to wait in case the queue is full, otherwise false
    * @return true if the task has been scheduled, otherwise false
    */
-  public boolean scheduleTask(int slot, final DatabaseAsyncTask task, final boolean waitIfQueueIsFull,
+  public boolean scheduleTask(final int slot, final DatabaseAsyncTask task, final boolean waitIfQueueIsFull,
                               final int applyBackPressureOnPercentage) {
+    return scheduleTask(slot, task, waitIfQueueIsFull, applyBackPressureOnPercentage, 0);
+  }
+
+  /**
+   * @param attempt how many times the dead-worker retry a few lines down has already recursed. Capped at 3 for the
+   * same reason {@link AsyncThread#drainQueueNotifyingWaiters()}'s sibling retry is (claude-review, symmetry pass):
+   * the doc comment there argues only one "current" live {@link #executorThreads} array can ever be racing at a
+   * time, which bounds this in practice, but nothing STRUCTURALLY stopped it before this cap - a future change to
+   * the resize/lifecycle locking that weakened that invariant would have turned this into silent unbounded stack
+   * growth instead of the fast, loud failure a cap gives it.
+   */
+  private boolean scheduleTask(int slot, final DatabaseAsyncTask task, final boolean waitIfQueueIsFull,
+                                final int applyBackPressureOnPercentage, final int attempt) {
     try {
       if (slot == -1)
         slot = getBestSlot();
@@ -2367,17 +2536,35 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         // NOTE (#5081 review): remove(Object) on the Disruptor queue is an O(n) whole-queue-locking scan.
         // Acceptable ONLY because this undo runs on the rare dead-worker post-shutdown race - it must never
         // migrate onto the steady-state scheduling path.
-        if (!target.isAlive() && removeQuietly(queue, task))
-          // The worker exited (shutdown) after its final queue drain but before this offer landed:
-          // the task would sit unexecuted forever. Undo the offer and fail like any post-shutdown
-          // scheduling attempt. #5062 review r3 (point 2): this recheck is best-effort, not total -
-          // an offer landing after the final drain poll but before isAlive() flips to false passes
-          // the guard and is orphaned; closing it would need a lock on this hot path.
-          // #5062 review r4 (point 4): completed() is deliberately NOT invoked on the removed task -
-          // unlike the shutdown drain, the scheduling caller is still on the stack and this
-          // exception informs it directly, so no waiter can be parked on the task yet.
-          throw new DatabaseOperationException(
-              "Async executor has been shut down; cannot schedule asynchronous task " + task);
+        //
+        // `target.shutdown`, not only `!target.isAlive()` (issue #7841). `shutdown` is set BEFORE
+        // resizeThreads()/shutdownThreadsLocked() offer FORCE_EXIT to this worker's queue (both under
+        // lifecycleLock), while the worker stays alive for as long as it takes to drain whatever was ahead of
+        // FORCE_EXIT and then run drainQueueNotifyingWaiters() on whatever landed behind it - which is exactly
+        // where an offer racing behind FORCE_EXIT is silently dropped (completed() with no execute()) while
+        // isAlive() answers true the whole time. #5062 review r3 (point 2) called the isAlive()-only check
+        // "best-effort, not total" for precisely this reason; checking shutdown too closes the window a
+        // shrink (rather than a terminal close) can open, which is the one a producer pinned to a single
+        // bucket can hit on every resize (aProducerPinnedToOneBucketKeepsWorkingAcrossAShrink).
+        if ((target.shutdown || !target.isAlive()) && removeQuietly(queue, task)) {
+          // The task never got a chance to run on this worker. As documented on scheduleTask()'s only other
+          // caller of getBestSlot() (#6526 review round 7), a "shut down" exception here must mean a genuine
+          // terminal close, never an ordinary resize - so retry against whatever pool is live right now
+          // instead of failing the caller or losing the task. getBestSlot() throws the same exception this
+          // call used to throw directly when the retry finds no pool left, so a genuine close is still
+          // reported exactly as before. #5062 review r4 (point 4): completed() is deliberately NOT invoked on
+          // the removed task here - the scheduling caller is still on the stack, so no waiter can be parked on
+          // it yet, and the retry either runs it or reports the same terminal failure directly.
+          // attempt >= 2, not 3 (claude-review): this check runs AFTER an attempt already failed, so it gates
+          // the NEXT one - attempt 0 failing recurses to 1, 1 failing recurses to 2, 2 failing throws here,
+          // for 3 total tries (the initial call plus two retries). >= 3 would have allowed a fourth, one more
+          // than drainQueueNotifyingWaiters()'s sibling loop actually runs, despite both being written to the
+          // same "3 attempts" intent.
+          if (attempt >= 2)
+            throw new DatabaseOperationException(
+                "Async executor has been shut down; cannot schedule asynchronous task " + task);
+          return scheduleTask(-1, task, waitIfQueueIsFull, applyBackPressureOnPercentage, attempt + 1);
+        }
         counterScheduledTasks.incrementAndGet();
       }
       return scheduled;

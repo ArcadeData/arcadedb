@@ -67,7 +67,6 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.IdentityHashMap;
-import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
@@ -244,6 +243,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         "Field '" + field + "' must be an integer between " + Integer.MIN_VALUE + " and " + Integer.MAX_VALUE, cause);
   }
 
+  /**
+   * Reads the request body as text. An override that returns {@code null} because the route streams its body
+   * instead of buffering it must also override {@link #bodyReachesIdempotencyKey()} to say so: the body is a
+   * field of the idempotency key, and a key built without it cannot tell two payloads of the same route apart
+   * (issue #7381). An override that returns the body as BYTES says so through {@link #idempotencyBodyBytes}
+   * instead (issue #7704).
+   */
   protected String parseRequestPayload(final HttpServerExchange e) {
     if (!e.isInIoThread() && !e.isBlocking())
       e.startBlocking();
@@ -553,7 +559,10 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
           // Gated on the handler, not on the header alone: a route that cannot stream answers the same body
           // whatever Accept says, so dropping ITS replay protection because a client sent a header it ignores
           // would take away a guarantee and give nothing back.
-          && !(supportsNdJsonEncoding() && isNdJsonRequested(exchange));
+          && !(supportsNdJsonEncoding() && isNdJsonRequested(exchange))
+          // ...and a route whose body never reaches the key is out of the cache in EVERY encoding, because for
+          // it the key no longer identifies the request (issue #7381).
+          && bodyReachesIdempotencyKey();
 
       if (idempotentPost) {
         // Bind the key to method/path/database/body so a reused correlation id cannot replay a different
@@ -1144,6 +1153,33 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   }
 
   /**
+   * Whether this route's request body reaches {@link #buildIdempotencyKey}, as text through
+   * {@link #parseRequestPayload} or as bytes through {@link #idempotencyBodyBytes}. A route that answers
+   * {@code false} is never reserved in, and never replayed from, the idempotency cache.
+   * <p>
+   * The key exists to bind a cached response to the request that produced it, and the body is the field that
+   * does the binding: without it the key degenerates to {@code (X-Request-Id, method, path, database)}, which
+   * two different payloads of the same bulk load share. Reusing one correlation id across two loads - common
+   * proxy and tracing practice, and exactly the collision the body was put in the key to prevent - then
+   * replayed the FIRST load's response to the second and never executed it: the records were silently missing
+   * and the client was told they had been created. That is the mirror image of the defect the cache exists to
+   * fix, running a write zero times instead of twice, and it is worse because it reports success (issue #7381).
+   * <p>
+   * Answering {@code false} is the only honest option for a route that streams its body: the reservation is
+   * taken before {@code execute} runs, and a body that is never buffered cannot be digested before then. Such a
+   * route is simply not idempotent over HTTP, and says so here rather than pretending with a key that cannot
+   * tell two requests apart.
+   * <p>
+   * Overridden by {@link PostBatchHandler} and by it alone, verified with
+   * {@code grep -rn 'bodyReachesIdempotencyKey' server/src/main}: it is the only handler that overrides
+   * {@link #parseRequestPayload} to return {@code null} without overriding {@link #idempotencyBodyBytes}
+   * ({@code AbstractBinaryHttpHandler} does both, {@code PostTimeSeriesWriteHandler} returns the text).
+   */
+  protected boolean bodyReachesIdempotencyKey() {
+    return true;
+  }
+
+  /**
    * Builds the idempotency cache key for a POST request. The key is a SHA-256 over the client
    * {@code X-Request-Id} joined with the HTTP method, path, database and request body, so two unrelated
    * requests that reuse the same correlation id (a common proxy / client practice) never collide and
@@ -1644,13 +1680,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * these must stay visible with default logging in production - demoting them to FINE is how a
    * BufferUnderflowException on a read-only command went undiagnosable (issue #5374).
    */
-  private Level getInternalErrorLogLevel() {
+  protected Level getInternalErrorLogLevel() {
     return "development".equals(httpServer.getServer().getConfiguration().getValueAsString(GlobalConfiguration.SERVER_MODE)) ?
             Level.SEVERE :
             Level.WARNING;
   }
 
-  private Level getUserSevereErrorLogLevel() {
+  protected Level getUserSevereErrorLogLevel() {
     return "development".equals(httpServer.getServer().getConfiguration().getValueAsString(GlobalConfiguration.SERVER_MODE)) ?
             Level.INFO :
             Level.FINE;
@@ -1661,9 +1697,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * free-form cause chain ({@code detail}), which can leak file paths and engine internals; the bounded
    * {@code exception} class name and structured {@code exceptionArgs} are still emitted because the remote driver
    * and HA rely on them. {@code development} and {@code test} keep the full verbose body to aid debugging.
+   * <p>
+   * The decision itself lives on {@link com.arcadedb.server.ArcadeDBServer#isProductionMode()} so every surface
+   * that conceals reads ONE answer - this used to be the only place that asked, and the surfaces added since
+   * (the control plane's SSE progress stream, the gRPC error paths) silently opted out (issue #7472).
    */
-  private boolean isProductionMode() {
-    return "production".equals(httpServer.getServer().getConfiguration().getValueAsString(GlobalConfiguration.SERVER_MODE));
+  protected boolean isProductionMode() {
+    return ArcadeDBServer.isProductionMode(httpServer.getServer().getConfiguration());
   }
 
   /**

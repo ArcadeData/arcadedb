@@ -1078,7 +1078,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
     // gRPC has no equivalent of the HTTP handler's forwardToLeaderIfReplica, which proxies the request body to
     // the leader, so naming the leader is how this transport reproduces that gate.
     if (e instanceof ServerIsNotTheLeaderException) {
-      final StatusRuntimeException mapped = GrpcErrorMapper.toStatusRuntimeException(e, operation, ha());
+      final StatusRuntimeException mapped = GrpcErrorMapper.toStatusRuntimeException(e, operation, ha(), concealErrors());
       return new StatusException(mapped.getStatus(), mapped.getTrailers());
     }
     if (e instanceof AdminAuthorizationException)
@@ -1127,7 +1127,36 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
     // could not be deleted), which is INTERNAL, not a precondition the caller can satisfy.
     if (e instanceof ServerControlPlane.OperationNotAvailableException)
       return Status.FAILED_PRECONDITION.withDescription(e.getMessage()).asException();
-    return Status.INTERNAL.withDescription(operation + ": " + e.getMessage()).asException();
+    // THE CATCH-ALL: AN UNEXPECTED FAULT, WHOSE MESSAGE IS FREE-FORM ENGINE TEXT AND CAN CARRY FILE PATHS, SCHEMA
+    // NAMES AND INTERNALS. THAT IS PRECISELY WHAT PRODUCTION MODE CONCEALS IN THE HTTP BODY'S 'detail' FIELD, AND
+    // THIS SURFACE USED TO EMIT IT WHATEVER THE MODE SAID (ISSUE #7472). THE ARMS ABOVE ARE NOT CONCEALED: EACH IS
+    // AN ARCADEDB-AUTHORED, BOUNDED SENTENCE FOR ONE CLASSIFIED OUTCOME - THE GRPC ANALOGUE OF THE HTTP BODY'S
+    // 'error' FIELD, WHICH PRODUCTION MODE KEEPS BECAUSE IT IS WHAT MAKES THE REFUSAL ACTIONABLE.
+    // DatabaseOperationInProgressException IS NAMED ON BOTH SIDES AND IS NOT A CONTRADICTION: HERE THE CALLER GAVE
+    // THE DATABASE NAME IT IS BEING TOLD ABOUT, SO THE MESSAGE RETURNS ITS OWN INPUT; REACHING GrpcErrorMapper IT
+    // ARRIVES FROM AN ARBITRARY DEPTH - A SQL 'BACKUP DATABASE' INSIDE ExecuteCommand - WHERE IT DOES NOT.
+    // GrpcErrorMapper CONCEALS ITS CLASSIFIED BRANCHES TOO, AND THAT DIFFERENCE IS DELIBERATE: THE EXCEPTIONS IT
+    // MAPS CARRY ENGINE TEXT (A DuplicatedKeyException EMBEDS THE OFFENDING KEY VALUE), WHILE THESE ARMS CARRY
+    // SENTENCES THIS SERVER WROTE ABOUT THE REQUEST. SEE ITS JAVADOC BEFORE MAKING THE TWO MATCH
+    // THROUGH THE SHARED HELPER, WHICH LOGS WHAT IT CONCEALS. BUILDING THE DESCRIPTION HERE MEANT THIS ARM - THE
+    // TERMINAL PATH FOR EVERY ADMIN RPC - CONCEALED THE FAILURE FROM THE CLIENT AND WROTE NOTHING ANYWHERE, WHICH
+    // IS WORSE THAN NOT CONCEALING: NOBODY HAD THE DETAIL AT ALL. NOTHING ELSE ON THIS PATH LOGS IT EITHER -
+    // GrpcUnaryCall.respond ONLY LOGS THE CLIENT-CANCEL RACE, AND THE LOGGING INTERCEPTOR SEES THE MAPPED STATUS
+    // RATHER THAN THE CAUSE (PR #7755 REVIEW)
+    return Status.INTERNAL
+        .withDescription(GrpcErrorMapper.concealableDescription(this, operation, e, concealErrors()))
+        .asException();
+  }
+
+  /**
+   * Whether this server conceals the free-form part of an error from the client - see
+   * {@code ArcadeDBServer.isProductionMode()}, the ONE place the decision is made so the setting means the same
+   * thing on every surface (issue #7472).
+   */
+  private boolean concealErrors() {
+    // NO NULL CHECK: THE CONSTRUCTOR REQUIRES A SERVER. ArcadeDbGrpcService's OWN concealErrors() DOES CHECK,
+    // BECAUSE THAT CLASS DELIBERATELY TOLERATES A NULL SERVER FOR EMBEDDED AND TEST CONSTRUCTION
+    return server.isProductionMode();
   }
 
   // Defense-in-depth: GrpcAuthInterceptor already authenticates these body credentials centrally

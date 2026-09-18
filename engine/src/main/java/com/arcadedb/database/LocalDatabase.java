@@ -268,18 +268,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       this.cypherPlanCache = new CypherPlanCache(this,
           configuration.getValueAsInteger(GlobalConfiguration.OPENCYPHER_PLAN_CACHE));
 
-      if (path.endsWith(File.separator))
-        databasePath = path.substring(0, path.length() - 1);
-      else
-        databasePath = path;
+      // BOTH SEPARATOR CONVENTIONS, NOT ONLY THIS JVM'S OWN File.separator. THE path IS CALLER-SUPPLIED - EMBEDDED
+      // API, CONFIGURATION FILE, ENVIRONMENT VARIABLE - AND IS ROUTINELY WRITTEN WITH '/' EVEN ON WINDOWS. WITH THE
+      // File.separator-ONLY LOOKUP, A WINDOWS USER PASSING "C:/data/mydb" GOT THE WHOLE PATH AS THE DATABASE NAME
+      // INSTEAD OF "mydb" - AND A TRAILING '/' WAS NOT STRIPPED EITHER, WHICH THEN MADE THE NAME EMPTY (ISSUE #7588)
+      databasePath = FileUtils.stripTrailingSeparator(path);
 
       configurationFile = new File(databasePath + File.separator + CONFIGURATION_FILE_NAME);
 
-      final int lastSeparatorPos = path.lastIndexOf(File.separator);
-      if (lastSeparatorPos > -1)
-        name = path.substring(lastSeparatorPos + 1);
-      else
-        name = path;
+      name = FileUtils.getFileNameFromPath(databasePath);
 
       checkDatabaseName();
 

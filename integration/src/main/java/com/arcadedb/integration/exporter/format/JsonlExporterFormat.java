@@ -48,6 +48,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
+import java.io.UncheckedIOException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -285,6 +286,18 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
    * data behind it, which is not a round trip. The samples do not go through {@link JsonGraphSerializer}: a
    * TimeSeries row is a fixed column tuple with no RID and no type of its own, so it is written as the raw value
    * array the engine reads and writes, in schema-column order, timestamp first.
+   * <p>
+   * Walked through {@link TimeSeriesEngine#forEachRow} rather than {@code iterateQuery} (issue #7697):
+   * {@code iterateQuery}'s own javadoc says the sealed layer materialises every matching row before it returns an
+   * iterator over them, so an export - which asks for {@code Long.MIN_VALUE} to {@code Long.MAX_VALUE}, the widest
+   * range there is - held the whole series in heap before the chunk size ever bounded anything. {@code forEachRow}
+   * folds each row into the chunk as it is produced, bounded by one block, so residency is independent of how many
+   * samples the type holds. The chunk flush is unchanged; it just runs from inside the visitor now. The one thing
+   * this trades away is the global timestamp order {@code iterateQuery}'s shard merge gave: {@code forEachRow}
+   * visits shard by shard, so samples across shards are no longer interleaved by timestamp in the export. Nothing
+   * downstream needs that order - {@code JsonlImporterFormat} hands each chunk straight to
+   * {@code TimeSeriesEngine#appendBatch}, which carries its own per-row timestamps and does not require them
+   * sorted - so the round trip is unaffected.
    *
    * @param timeSeriesTypes names of the TIMESERIES types selected for export
    */
@@ -309,28 +322,38 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
       if (ownTransaction)
         database.begin();
       try {
-        JSONArray chunk = new JSONArray();
-        for (final Iterator<Object[]> rows = engine.iterateQuery(Long.MIN_VALUE, Long.MAX_VALUE, null, null);
-            rows.hasNext(); ) {
-          final Object[] row = rows.next();
-          final JSONArray sample = new JSONArray();
-          for (int i = 0; i < columns.size() && i < row.length; i++)
+        // A single-element holder, not a local variable reassigned in the loop: the visitor lambda can only close
+        // over an effectively-final reference, and the chunk itself is replaced (not mutated) on every flush.
+        final JSONArray[] chunkHolder = { new JSONArray() };
+        try {
+          engine.forEachRow(Long.MIN_VALUE, Long.MAX_VALUE, null, null, null, row -> {
+            final JSONArray sample = new JSONArray();
+            for (int i = 0; i < columns.size() && i < row.length; i++)
               // Only the non-finite doubles need work, and they need it badly: JSONArray.put(Number) rewrites NaN
-            // and +/-Infinity to 0, so writing them straight would turn "no measurement" into a measurement of
-            // zero. NonFiniteNumbers is the same encoding record properties already travel by, and
-            // JsonlImporterFormat decodes them back against the column's declared type.
-            sample.put(NonFiniteNumbers.encode(row[i]));
-          chunk.put(sample);
-          context.timeSeriesSamples.incrementAndGet();
+              // and +/-Infinity to 0, so writing them straight would turn "no measurement" into a measurement of
+              // zero. NonFiniteNumbers is the same encoding record properties already travel by, and
+              // JsonlImporterFormat decodes them back against the column's declared type.
+              sample.put(NonFiniteNumbers.encode(row[i]));
+            chunkHolder[0].put(sample);
+            context.timeSeriesSamples.incrementAndGet();
 
-          if (chunk.length() >= TIMESERIES_CHUNK_SIZE) {
-            writeJsonLine("ts", new JSONObject().put("t", typeName).put("s", chunk));
-            chunk = new JSONArray();
-          }
+            if (chunkHolder[0].length() >= TIMESERIES_CHUNK_SIZE) {
+              try {
+                writeJsonLine("ts", new JSONObject().put("t", typeName).put("s", chunkHolder[0]));
+              } catch (final IOException e) {
+                // TimeSeriesRowVisitor#visit declares no checked exception; unwrapped just below the scan.
+                throw new UncheckedIOException(e);
+              }
+              chunkHolder[0] = new JSONArray();
+            }
+            return true;
+          });
+        } catch (final UncheckedIOException e) {
+          throw e.getCause();
         }
 
-        if (chunk.length() > 0)
-          writeJsonLine("ts", new JSONObject().put("t", typeName).put("s", chunk));
+        if (chunkHolder[0].length() > 0)
+          writeJsonLine("ts", new JSONObject().put("t", typeName).put("s", chunkHolder[0]));
       } finally {
         // Rolled back, never committed, on the success path too: the scan above only reads, so there is nothing
         // to publish, and a rollback releases the read view without asking the page manager to flush anything.

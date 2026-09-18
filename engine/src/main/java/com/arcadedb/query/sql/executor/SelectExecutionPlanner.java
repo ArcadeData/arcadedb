@@ -1637,6 +1637,7 @@ public class SelectExecutionPlanner {
     case "materializedviews" -> plan.chain(new FetchFromSchemaMaterializedViewsStep(context));
     case "graphanalyticalviews" -> plan.chain(new FetchFromSchemaGraphAnalyticalViewsStep(context));
     case "continuousaggregates" -> plan.chain(new FetchFromSchemaContinuousAggregatesStep(context));
+    case "triggers" -> plan.chain(new FetchFromSchemaTriggersStep(context));
     case "stats" -> plan.chain(new FetchFromSchemaStatsStep(context));
     case "dictionary" -> plan.chain(new FetchFromSchemaDictionaryStep(context));
     default -> {

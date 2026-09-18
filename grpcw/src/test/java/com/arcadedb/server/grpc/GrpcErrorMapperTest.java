@@ -239,7 +239,7 @@ class GrpcErrorMapperTest {
     callerTrailers.put(Metadata.Key.of("caller-own-trailer", Metadata.ASCII_STRING_MARSHALLER), "kept");
 
     final StatusException se = GrpcErrorMapper.toStatusException(
-        new IllegalStateException("boom"), "graphBatchLoad", null, callerTrailers);
+        new IllegalStateException("boom"), "graphBatchLoad", null, callerTrailers, false);
 
     assertThat(se.getStatus().getCode()).isEqualTo(Status.Code.INTERNAL);
     assertThat(se.getStatus().getDescription()).isEqualTo("graphBatchLoad: boom");
@@ -256,7 +256,7 @@ class GrpcErrorMapperTest {
     callerTrailers.put(Metadata.Key.of("caller-own-trailer", Metadata.ASCII_STRING_MARSHALLER), "kept");
 
     final StatusException se = GrpcErrorMapper.toStatusException(
-        new DuplicatedKeyException("idx", "[k]", null), "graphBatchLoad", null, callerTrailers);
+        new DuplicatedKeyException("idx", "[k]", null), "graphBatchLoad", null, callerTrailers, false);
 
     assertThat(se.getStatus().getCode()).isEqualTo(Status.Code.ALREADY_EXISTS);
     assertThat(callerTrailers.get(Metadata.Key.of("caller-own-trailer", Metadata.ASCII_STRING_MARSHALLER)))
@@ -283,7 +283,7 @@ class GrpcErrorMapperTest {
     final Metadata callerTrailers = new Metadata();
     callerTrailers.put(Metadata.Key.of("caller-own-trailer", Metadata.ASCII_STRING_MARSHALLER), "kept");
 
-    final StatusException se = GrpcErrorMapper.toStatusException(upstream, "graphBatchLoad", null, callerTrailers);
+    final StatusException se = GrpcErrorMapper.toStatusException(upstream, "graphBatchLoad", null, callerTrailers, false);
 
     assertThat(se.getStatus().getCode()).isEqualTo(Status.Code.PERMISSION_DENIED);
     assertThat(se.getStatus().getDescription()).isEqualTo("no access");
@@ -301,10 +301,82 @@ class GrpcErrorMapperTest {
     final Metadata callerTrailers = new Metadata();
 
     final StatusException se = GrpcErrorMapper.toStatusException(
-        new ExecutionException(new DuplicatedKeyException("idx", "[k]", null)), "graphBatchLoad", null, callerTrailers);
+        new ExecutionException(new DuplicatedKeyException("idx", "[k]", null)), "graphBatchLoad", null, callerTrailers, false);
 
     assertThat(se.getStatus().getCode()).isEqualTo(Status.Code.ALREADY_EXISTS);
     assertThat(decode(callerTrailers.get(GrpcErrorMapper.DUP_INDEX_KEY))).isEqualTo("idx");
+  }
+
+  /**
+   * Issue #7472, item 1: the gRPC error paths reported the exception's own message whatever
+   * {@code arcadedb.server.mode} said, so this surface silently opted out of the production concealment the HTTP
+   * error body applies. What the HTTP body conceals is the FREE-FORM cause text, which can carry file paths, engine
+   * internals and schema names; what it keeps is the bounded, structured part a driver acts on. This asserts the
+   * same split on this transport.
+   */
+  @Test
+  @DisplayName("production mode conceals the free-form description and keeps the code and trailers")
+  void productionMode_concealsTheMessageButNotTheClassification() {
+    final DuplicatedKeyException dup = new DuplicatedKeyException("Person[ssn]", "[123-45-6789]", null);
+
+    final StatusRuntimeException verbose = GrpcErrorMapper.toStatusRuntimeException(dup, "Commit failed", null, false);
+    assertThat(verbose.getStatus().getDescription())
+        .as("development and test keep the full text, as they always did")
+        .contains(dup.getMessage());
+
+    final StatusRuntimeException concealed = GrpcErrorMapper.toStatusRuntimeException(dup, "Commit failed", null, true);
+
+    assertThat(concealed.getStatus().getDescription())
+        .as("the free-form message is gone")
+        .doesNotContain("123-45-6789")
+        .doesNotContain("Person[ssn]")
+        .contains(GrpcErrorMapper.CONCEALED_DESCRIPTION)
+        .as("and the RPC's own label survives - it is the analogue of the HTTP body's bounded 'error' field")
+        .startsWith("Commit failed: ");
+
+    assertThat(concealed.getStatus().getCode())
+        .as("the classification is what a driver's retry policy reads, and is not free-form")
+        .isEqualTo(Status.Code.ALREADY_EXISTS);
+    assertThat(concealed.getTrailers().get(GrpcErrorMapper.EXCEPTION_CLASS_KEY))
+        .as("the class name is the wire contract the remote driver rebuilds the typed exception from")
+        .isEqualTo(DuplicatedKeyException.class.getName());
+    assertThat(decode(concealed.getTrailers().get(GrpcErrorMapper.DUP_INDEX_KEY)))
+        .as("and the structured duplicated-key details, exactly as the HTTP body keeps its exceptionArgs")
+        .isEqualTo("Person[ssn]");
+  }
+
+  /**
+   * Concealment is the same sentence for every failure. A message that varied - even by exception type - would put
+   * back precisely the signal the concealment removes.
+   */
+  @Test
+  @DisplayName("every concealed failure carries the same description")
+  void productionMode_concealmentIsIndistinguishableAcrossFailures() {
+    final String syntax = GrpcErrorMapper
+        .toStatusRuntimeException(new CommandParsingException("Unexpected token at line 3 of /srv/queries/a.sql"),
+            "ExecuteCommand", null, true)
+        .getStatus().getDescription();
+    final String notFound = GrpcErrorMapper
+        .toStatusRuntimeException(new SchemaException("Type 'PatientRecord' not found"), "ExecuteCommand", null, true)
+        .getStatus().getDescription();
+
+    assertThat(syntax).isEqualTo(notFound);
+    assertThat(syntax).doesNotContain("a.sql").doesNotContain("PatientRecord");
+  }
+
+  /**
+   * A status a caller-facing layer already chose - a {@code getDatabase()} auth refusal - is passed through
+   * untouched in every mode, exactly as it is without concealment: it is not an engine exception's free-form text
+   * but a refusal this server worded for the client, and rewriting it would tell an authorized caller nothing.
+   */
+  @Test
+  @DisplayName("an already-mapped status is passed through even in production mode")
+  void productionMode_leavesAnAlreadyMappedStatusAlone() {
+    final StatusRuntimeException upstream = Status.PERMISSION_DENIED
+        .withDescription("User 'alice' is not authorized to access database 'db'").asRuntimeException();
+
+    assertThat(GrpcErrorMapper.toStatusRuntimeException(upstream, "ExecuteCommand", null, true).getStatus()
+        .getDescription()).isEqualTo(upstream.getStatus().getDescription());
   }
 
   /**
@@ -322,7 +394,8 @@ class GrpcErrorMapperTest {
     callerTrailers.put(Metadata.Key.of("caller-own-trailer", Metadata.ASCII_STRING_MARSHALLER), "kept");
 
     final StatusException se = GrpcErrorMapper.toStatusException(
-        new ServerIsNotTheLeaderException("not the leader", "10.0.0.7:2480"), "graphBatchLoad", null, callerTrailers);
+        new ServerIsNotTheLeaderException("not the leader", "10.0.0.7:2480"), "graphBatchLoad", null, callerTrailers,
+        false);
 
     assertThat(se.getStatus().getCode())
         .as("retrying the same follower is not the fix; the address is")

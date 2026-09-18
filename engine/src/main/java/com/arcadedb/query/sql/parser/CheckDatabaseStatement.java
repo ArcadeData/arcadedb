@@ -166,10 +166,9 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
       builder.append(" TYPE ");
       final Iterator<Identifier> iterator = types.iterator();
       for (int i = 0; iterator.hasNext(); i++) {
-        builder.append(iterator.next().getStringValue());
-
         if (i > 0)
           builder.append(",");
+        builder.append(iterator.next().getStringValue());
       }
     }
 
@@ -177,11 +176,9 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
       builder.append(" BUCKET ");
       final Iterator<BucketIdentifier> iterator = buckets.iterator();
       for (int i = 0; iterator.hasNext(); i++) {
-        final Object bucket = iterator.next().getValue();
-        builder.append(bucket);
-
         if (i > 0)
           builder.append(",");
+        builder.append(iterator.next().getValue());
       }
     }
 
@@ -209,6 +206,28 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
 
     if (compress)
       builder.append(" COMPRESS");
+  }
+
+  @Override
+  public CheckDatabaseStatement copy() {
+    final CheckDatabaseStatement result = new CheckDatabaseStatement();
+    for (final BucketIdentifier bucket : buckets)
+      result.buckets.add(bucket.copy());
+    for (final Identifier type : types)
+      result.types.add(type.copy());
+    for (final Rid record : records)
+      result.records.add(record.copy());
+    result.fix = fix;
+    result.compress = compress;
+    result.deleteOrphans = deleteOrphans;
+    result.reclaimUnreferencedFiles = reclaimUnreferencedFiles;
+    result.deep = deep;
+    return result;
+  }
+
+  @Override
+  protected Object[] getIdentityElements() {
+    return new Object[] { buckets, types, records, fix, compress, deleteOrphans, reclaimUnreferencedFiles, deep };
   }
 }
 /* ParserGeneratorCC - OriginalChecksum=8b4b56a95655bca6baea744bc4c6aedd (do not edit this line) */

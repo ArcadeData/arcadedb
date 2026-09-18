@@ -18,6 +18,7 @@
  */
 package com.arcadedb.integration.importer;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.integration.importer.format.CSVImporterFormat;
 import com.arcadedb.integration.importer.format.FormatImporter;
@@ -31,6 +32,7 @@ import com.arcadedb.integration.importer.format.Word2VecImporterFormat;
 import com.arcadedb.integration.importer.format.XMLImporterFormat;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.SafeHttpFetcher;
 
 import java.io.BufferedInputStream;
 import java.io.File;
@@ -54,10 +56,18 @@ import java.util.zip.ZipInputStream;
 
 public class SourceDiscovery {
   private static final String RESOURCE_SEPARATOR = ":::";
+  /** The label {@code ImportSecurityValidator} opens every remote connection with, so a read timeout says the same. */
+  private static final String IMPORT_CONTEXT      = "IMPORT DATABASE";
   private static final String FILE_PREFIX        = "file://";
   private static final String CLASSPATH_PREFIX   = "classpath://";
   private              String  url;
   private final        Boolean allowLocalUrls;
+  /**
+   * The importing database's settings overlay, or null for a CLI caller. Only the fetch TIMEOUTS are read from it,
+   * and only because they are {@code SCOPE.SERVER} settings a {@code ContextConfiguration} never writes through to
+   * the enum for (PR #7755 review).
+   */
+  private              ContextConfiguration configuration;
   private              long    limitBytes         = 10000000;
   private              long    limitEntries       = 0;
 
@@ -124,6 +134,15 @@ public class SourceDiscovery {
     return source;
   }
 
+  /**
+   * Hands this discovery the importing database's configuration, so a remote fetch is bounded by the timeout the
+   * OPERATOR configured rather than by the enum default. Null-tolerant: a CLI import has no overlay.
+   */
+  public SourceDiscovery setConfiguration(final ContextConfiguration configuration) {
+    this.configuration = configuration;
+    return this;
+  }
+
   private Source getSourceFromURL(final String url) throws IOException {
     final int sep = url.lastIndexOf(RESOURCE_SEPARATOR);
     final String urlPath = sep > -1 ? url.substring(0, sep) : url;
@@ -140,24 +159,33 @@ public class SourceDiscovery {
     final boolean blockLocalNetworks = allowLocalUrls != null ?
         !allowLocalUrls : GlobalConfiguration.SERVER_SECURITY_IMPORT_BLOCK_LOCAL_NETWORKS.getValueAsBoolean();
 
-    final HttpURLConnection connection = ImportSecurityValidator.openRemoteConnection(urlPath, blockLocalNetworks);
+    final HttpURLConnection connection = ImportSecurityValidator.openRemoteConnection(urlPath, blockLocalNetworks,
+        configuration);
 
-    return getSourceFromContent(new BufferedInputStream(connection.getInputStream()), connection.getContentLengthLong(), resource,
+    // EVERY READ OF A REMOTE SOURCE IS BOUNDED BY NETWORK_REMOTE_FETCH_READ_TIMEOUT, WHICH openRemoteConnection
+    // APPLIES. SafeHttpFetcher.body() IS WHAT MAKES THAT BOUND LEGIBLE WHEN IT FIRES: SINCE #7494 THE SNIFFER BLOCKS
+    // IN reader.read() RATHER THAN GUESSING THAT A QUIET SOCKET MEANS END-OF-INPUT, SO A SOURCE THAT STOPS SENDING
+    // AND NEVER CLOSES IS EXACTLY THE CASE THAT REACHES A CLIENT - AND IT USED TO REACH IT AS "Error on parsing
+    // source ...", NAMING NEITHER THE TIMEOUT NOR THE SETTING (ISSUE #7500)
+    return getSourceFromContent(new BufferedInputStream(SafeHttpFetcher.body(connection, IMPORT_CONTEXT)),
+        connection.getContentLengthLong(), resource,
         source -> {
           try {
             source.inputStream.close();
             connection.disconnect();
 
-            final HttpURLConnection connection1 = ImportSecurityValidator.openRemoteConnection(urlPath, blockLocalNetworks);
+            final HttpURLConnection connection1 = ImportSecurityValidator.openRemoteConnection(urlPath,
+                blockLocalNetworks, configuration);
+            final InputStream body1 = SafeHttpFetcher.body(connection1, IMPORT_CONTEXT);
 
             if (source.inputStream instanceof GZIPInputStream)
-              source.inputStream = new GZIPInputStream(connection1.getInputStream(), 2048);
+              source.inputStream = new GZIPInputStream(body1, 2048);
             else if (source.inputStream instanceof ZipInputStream) {
-              final ZipInputStream zip = new ZipInputStream(connection1.getInputStream());
+              final ZipInputStream zip = new ZipInputStream(body1);
               positionZipStream(zip, resource);
               source.inputStream = zip;
             } else
-              source.inputStream = new BufferedInputStream(connection1.getInputStream());
+              source.inputStream = new BufferedInputStream(body1);
           } catch (final Exception e) {
             throw new ImportException("Error on reset remote resource", e);
           }
@@ -658,12 +686,18 @@ public class SourceDiscovery {
    * and only when it can matter, so a data line that merely begins with a single {@code /} keeps its first
    * character and is sniffed whole (issue #7347).
    */
-  private boolean isCommentLineStart(final Parser parser) throws IOException {
+  private static boolean isCommentLineStart(final Parser parser) throws IOException {
+    if (parser.isBeforeFirstChar())
+      // NOTHING HAS BEEN READ, SO THERE IS NO CURRENT CHARACTER TO JUDGE. THE PLACEHOLDER getCurrentChar() ANSWERS
+      // IS 0, WHICH OPENS NEITHER COMMENT FORM, SO THIS IS THE SAME ANSWER SPELLED HONESTLY RATHER THAN A CHANGE -
+      // AND IT KEEPS THE "0 MEANS NOTHING YET" READING OUT OF A SECOND PLACE (ISSUE #7501)
+      return false;
+
     final char first = parser.getCurrentChar();
     return isCommentLineStart(first, first == '/' ? parser.peekChar() : 0);
   }
 
-  private void skipLine(final Parser parser) throws IOException {
+  private static void skipLine(final Parser parser) throws IOException {
     readLine(parser);
   }
 
@@ -676,10 +710,15 @@ public class SourceDiscovery {
    * {@link #analyzeText} and the {@link #analyzeChar} dispatch they call - was looking at a newline rather than at
    * the first character of the line they had just uncovered.
    * <p>
-   * A parser that has read nothing yet ({@link Parser#getCurrentChar()} is {@code 0}, which is the state
-   * {@link Parser#reset()} leaves) starts from the first character of the source.
+   * A parser that has read nothing yet ({@link Parser#isBeforeFirstChar()}) starts from the first character of the
+   * source. That question is asked of the PARSER and not of {@code getCurrentChar()}, which answers {@code 0} both
+   * for "nothing read yet" and for a NUL the source really carries: testing the character value dropped a genuine
+   * leading NUL and worked on a line one character shorter than the source (issue #7501).
+   * <p>
+   * Package-private and static for direct unit testing: this is where the sentinel collision lived, and the line it
+   * returns reaches the separator scan and {@link #analyzeChar} rather than any caller outside this class.
    */
-  private String readLine(final Parser parser) throws IOException {
+  static String readLine(final Parser parser) throws IOException {
     final char first = parser.getCurrentChar();
     if (first == '\n') {
       // AN EMPTY LINE: THE PARSER IS ALREADY ON ITS TERMINATOR
@@ -690,9 +729,10 @@ public class SourceDiscovery {
 
     final StringBuilder line = new StringBuilder(128);
     // THE isEndOfStream() HALF IS DEFENCE, NOT A LIVE CASE: EVERY nextChar() IN THIS CLASS IS GUARDED BY AN
-    // isAvailable(), SO first IS A REAL CHARACTER WHENEVER IT IS NOT 0. IT IS KEPT BECAUSE THE COST OF A FUTURE
-    // CALLER LOSING THAT GUARD IS Parser.END_OF_STREAM SILENTLY BECOMING THE FIRST CHARACTER OF A SNIFFED LINE
-    if (first != 0 && !parser.isEndOfStream())
+    // isAvailable(), SO first IS A REAL CHARACTER WHENEVER THE PARSER HAS READ ANYTHING. IT IS KEPT BECAUSE THE
+    // COST OF A FUTURE CALLER LOSING THAT GUARD IS Parser.END_OF_STREAM SILENTLY BECOMING THE FIRST CHARACTER OF A
+    // SNIFFED LINE
+    if (!parser.isBeforeFirstChar() && !parser.isEndOfStream())
       line.append(first);
 
     boolean terminated = false;
@@ -878,8 +918,9 @@ public class SourceDiscovery {
   }
 
   private String getFormatFromExtension(String fileName) {
-    if (fileName.lastIndexOf(File.separator) > -1)
-      fileName = fileName.substring(fileName.lastIndexOf(File.separator) + 1);
+    // EITHER SEPARATOR CONVENTION: THE NAME COMES FROM A CALLER-SUPPLIED -url / -documents / -vertices / -edges
+    // VALUE, WHICH ON WINDOWS IS AS LIKELY TO USE '/' AS '\' (ISSUE #7588)
+    fileName = FileUtils.getFileNameFromPath(fileName);
 
     if (fileName.endsWith(".tgz"))
       fileName = fileName.substring(0, fileName.length() - ".tgz".length());

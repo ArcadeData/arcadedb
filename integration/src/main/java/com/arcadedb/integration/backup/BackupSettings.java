@@ -123,7 +123,8 @@ public class BackupSettings {
     }
     case "dir" -> {
       if (value != null)
-        directory = value.endsWith(File.separator) ? value : value + File.separator;
+        // EITHER SEPARATOR CONVENTION, SO A DIRECTORY ALREADY ENDING IN '/' IS NOT GIVEN A SECOND ONE (ISSUE #7588)
+        directory = FileUtils.appendSeparatorIfMissing(value);
     }
     case "f" -> {
       if (value != null)

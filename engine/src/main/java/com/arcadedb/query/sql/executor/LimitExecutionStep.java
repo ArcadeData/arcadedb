@@ -21,6 +21,8 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.Limit;
 
+import java.util.Optional;
+
 /**
  * Created by luigidellaquila on 08/07/16.
  */
@@ -45,9 +47,38 @@ public class LimitExecutionStep extends AbstractExecutionStep {
     checkForPrevious();
 
     final int nextBlockSize = Math.min(nRecords, limitVal - loaded);
-    final ResultSet result = prev.syncPull(context, nextBlockSize);
-    loaded += nextBlockSize;
-    return result;
+    final ResultSet upstream = prev.syncPull(context, nextBlockSize);
+    // COUNT WHAT IS ACTUALLY DELIVERED, NOT WHAT WAS ASKED FOR: a batch shorter than nextBlockSize is allowed
+    // upstream (LocalResultSet simply pulls again), and counting the request instead of the delivery makes loaded
+    // run ahead of the rows a caller ever sees, so the LIMIT stops early (issue #7799)
+    return new ResultSet() {
+      @Override
+      public boolean hasNext() {
+        return upstream.hasNext();
+      }
+
+      @Override
+      public Result next() {
+        final Result result = upstream.next();
+        loaded++;
+        return result;
+      }
+
+      @Override
+      public void close() {
+        upstream.close();
+      }
+
+      @Override
+      public Optional<ExecutionPlan> getExecutionPlan() {
+        return upstream.getExecutionPlan();
+      }
+
+      @Override
+      public Optional<QueryStatistics> getStatistics() {
+        return upstream.getStatistics();
+      }
+    };
   }
 
   @Override

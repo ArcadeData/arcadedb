@@ -52,10 +52,9 @@ public class SecurityGroupFileRepository {
   private volatile    JSONObject                 latestGroupConfiguration;
 
   public SecurityGroupFileRepository(String securityConfPath, final int checkConfigReloadEveryMs) {
-    if (!securityConfPath.endsWith(File.separator))
-      securityConfPath += File.separator;
-    this.securityConfPath = securityConfPath;
-    file = new File(securityConfPath, FILE_NAME);
+    // EITHER SEPARATOR CONVENTION (ISSUE #7588)
+    this.securityConfPath = FileUtils.appendSeparatorIfMissing(securityConfPath);
+    file = new File(this.securityConfPath, FILE_NAME);
     this.checkConfigReloadEveryMs = checkConfigReloadEveryMs;
   }
 
@@ -111,7 +110,11 @@ public class SecurityGroupFileRepository {
     final Path tmp = Files.createTempFile(target.getParent(), FILE_NAME, ".tmp");
     try {
       try (final FileChannel channel = FileChannel.open(tmp, StandardOpenOption.WRITE)) {
-        channel.write(ByteBuffer.wrap(bytes));
+        // Looped, because FileChannel.write() is only obliged to consume SOME of what remains: a short write here
+        // would fsync and publish a truncated server-groups.json, which load() cannot parse as a document with a
+        // 'version' and falls back to createDefault() - silently widening every group to the default permissions
+        // (issue #7825).
+        FileUtils.writeFully(channel, ByteBuffer.wrap(bytes));
         channel.force(true);
       }
       try {

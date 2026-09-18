@@ -119,4 +119,39 @@ class RestoreSettingsTest {
       GlobalConfiguration.RESTORE_THREADS.setValue(oldThreads);
     }
   }
+
+  /**
+   * Issue #7588: the guard on the input file URL refused a path starting with a separator - and said so, naming
+   * {@code '/'} in its message - while ASKING only about this JVM's own {@link java.io.File#separator}. On Windows
+   * that is {@code '\'}, so a {@code '/'}-rooted path, exactly the one the message names, walked past the guard
+   * the message describes. Both conventions are refused now, on every platform.
+   */
+  @Test
+  void anAbsoluteInputFileIsRefusedInEitherSeparatorConvention() {
+    // Drive-qualified paths are absolute on Windows and start with a LETTER, so a leading-separator test alone
+    // never saw them, while FullRestoreFormat hands them to new File(...) as local inputs (PR #7755 review).
+    for (final String rooted : new String[] { "/etc/passwd", "\\windows\\system32\\config\\sam",
+        "C:\\backup.zip", "C:/backup.zip" })
+      assertThatThrownBy(() -> validatedSettings(rooted))
+          .as(rooted)
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("Invalid backup file");
+
+    assertThatThrownBy(() -> validatedSettings("backups/../../etc/passwd"))
+        .as("and the traversal half of the same guard is unchanged")
+        .isInstanceOf(IllegalArgumentException.class);
+
+    // A plain relative name is what the guard exists to let through, and still does.
+    validatedSettings("backups/mydb.zip");
+    validatedSettings("mydb.zip");
+  }
+
+  private static RestoreSettings validatedSettings(final String inputFileURL) {
+    final RestoreSettings settings = new RestoreSettings();
+    settings.format = "full";
+    settings.inputFileURL = inputFileURL;
+    settings.databaseDirectory = "target/databases/issue7588-restore";
+    settings.validate();
+    return settings;
+  }
 }

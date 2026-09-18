@@ -23,9 +23,12 @@ import org.junit.jupiter.api.io.TempDir;
 import org.mockito.MockedStatic;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
@@ -530,5 +533,164 @@ class FileUtilsTest {
     assertThat(FileUtils.getFileNameFromPath("db\\dir/dictionary.0.65536.v1.dict"))
         .isEqualTo("dictionary.0.65536.v1.dict");
     assertThat(FileUtils.getFileNameFromPath("dictionary.0.65536.v1.dict")).isEqualTo("dictionary.0.65536.v1.dict");
+  }
+
+  /**
+   * Issue #7588, the audit pass that followed #7586: the same "only this JVM's own separator" gap on the OTHER three
+   * questions asked of a path - does it end with one, does it start with one, and strip the trailing one.
+   */
+  @Test
+  void endsWithSeparatorAnswersForEitherConvention() {
+    assertThat(FileUtils.endsWithSeparator("C:/data/")).isTrue();
+    assertThat(FileUtils.endsWithSeparator("C:\\data\\")).isTrue();
+    assertThat(FileUtils.endsWithSeparator("C:/data")).isFalse();
+    assertThat(FileUtils.endsWithSeparator("")).as("an empty path has no last character to look at").isFalse();
+  }
+
+  @Test
+  void startsWithSeparatorAnswersForEitherConvention() {
+    assertThat(FileUtils.startsWithSeparator("/etc/passwd")).isTrue();
+    assertThat(FileUtils.startsWithSeparator("\\windows\\system32")).isTrue();
+    assertThat(FileUtils.startsWithSeparator("backups/db.zip")).isFalse();
+    assertThat(FileUtils.startsWithSeparator("")).isFalse();
+  }
+
+  /**
+   * A directory already ending in the OTHER convention's separator must not be given a second one: with a
+   * {@code File.separator}-only check, {@code "C:/data/"} on Windows became {@code "C:/data/\\"}.
+   */
+  @Test
+  void appendSeparatorIfMissingDoesNotDoubleUpOnTheOtherConvention() {
+    assertThat(FileUtils.appendSeparatorIfMissing("C:/data/")).isEqualTo("C:/data/");
+    assertThat(FileUtils.appendSeparatorIfMissing("C:\\data\\")).isEqualTo("C:\\data\\");
+    assertThat(FileUtils.appendSeparatorIfMissing("data")).isEqualTo("data" + File.separator);
+  }
+
+  /**
+   * And the reverse: a trailing separator of either convention is stripped, so the path the database name is then
+   * read off does not end in one - which is what used to leave the name EMPTY. A path that IS a single separator is
+   * left alone: stripping it would turn the file-system root into the current directory.
+   */
+  @Test
+  void stripTrailingSeparatorRemovesEitherConventionAndNeverTheRoot() {
+    assertThat(FileUtils.stripTrailingSeparator("/data/mydb/")).isEqualTo("/data/mydb");
+    assertThat(FileUtils.stripTrailingSeparator("C:\\data\\mydb\\")).isEqualTo("C:\\data\\mydb");
+    assertThat(FileUtils.stripTrailingSeparator("/data/mydb")).isEqualTo("/data/mydb");
+    assertThat(FileUtils.stripTrailingSeparator("/")).as("the root is not the current directory").isEqualTo("/");
+    assertThat(FileUtils.stripTrailingSeparator("\\")).isEqualTo("\\");
+    assertThat(FileUtils.stripTrailingSeparator("")).isEmpty();
+  }
+
+  /**
+   * A Windows DRIVE root keeps its separator for the same reason the POSIX root does, and it is the sharper case:
+   * {@code "C:"} is not an invalid path that would fail loudly, it is a VALID and drive-RELATIVE one naming the
+   * current directory on drive C:. {@code DatabaseFactory} stores this value and {@code LocalDatabase} hands it to
+   * {@code new File(...)}, so stripping it silently opens the database somewhere else (PR #7755 review).
+   */
+  @Test
+  void stripTrailingSeparatorKeepsAWindowsDriveRoot() {
+    assertThat(FileUtils.stripTrailingSeparator("C:/")).isEqualTo("C:/");
+    assertThat(FileUtils.stripTrailingSeparator("C:\\")).isEqualTo("C:\\");
+    assertThat(FileUtils.stripTrailingSeparator("z:/")).as("the drive letter's case is not the question").isEqualTo("z:/");
+
+    // A directory UNDER a drive root is an ordinary path, and its trailing separator is ordinary punctuation.
+    assertThat(FileUtils.stripTrailingSeparator("C:/data/")).isEqualTo("C:/data");
+    assertThat(FileUtils.stripTrailingSeparator("C:\\data\\")).isEqualTo("C:\\data");
+    // And a three-character path that is NOT a drive root is stripped as usual.
+    assertThat(FileUtils.stripTrailingSeparator("ab/")).isEqualTo("ab");
+    assertThat(FileUtils.stripTrailingSeparator("1:/")).as("a digit is not a drive letter").isEqualTo("1:");
+  }
+
+  /**
+   * "Absolute" has to mean absolute on EITHER platform for a guard that refuses one: a Windows drive-qualified path
+   * starts with a letter, so a leading-separator test never sees it, and {@code RestoreSettings} was handing exactly
+   * such a path to {@code new File(...)} as a local input (PR #7755 review).
+   */
+  @Test
+  void isAbsolutePathCoversDriveQualifiedPathsToo() {
+    assertThat(FileUtils.isAbsolutePath("/etc/passwd")).isTrue();
+    assertThat(FileUtils.isAbsolutePath("\\windows\\system32")).isTrue();
+    assertThat(FileUtils.isAbsolutePath("C:\\backup.zip")).isTrue();
+    assertThat(FileUtils.isAbsolutePath("C:/backup.zip")).isTrue();
+    assertThat(FileUtils.isAbsolutePath("C:")).as("a bare drive is still another drive").isTrue();
+
+    assertThat(FileUtils.isAbsolutePath("backups/db.zip")).isFalse();
+    assertThat(FileUtils.isAbsolutePath("db.zip")).isFalse();
+    assertThat(FileUtils.isAbsolutePath("")).isFalse();
+    assertThat(FileUtils.isAbsolutePath("ab:cd")).as("a colon after more than one character is not a drive").isFalse();
+  }
+
+  /**
+   * Regression test for issue #7825: {@link java.nio.channels.WritableByteChannel#write(ByteBuffer)} is only
+   * obliged to consume SOME of what remains in the buffer, so a caller that calls it once and trusts the return
+   * value can publish a short write as if it had succeeded. {@link FileUtils#writeFully} has to loop until the
+   * buffer is drained instead of trusting one call - this pins the loop against a channel that always writes
+   * fewer bytes than it is given, which a real {@link java.nio.channels.FileChannel} on local disk essentially
+   * never does, so the bug would not show up against one in a test.
+   */
+  @Test
+  void writeFullyLoopsThroughAShortWritingChannel() throws IOException {
+    final byte[] content = "the quick brown fox jumps over the lazy dog".getBytes(StandardCharsets.UTF_8);
+    final ByteArrayOutputStream received = new ByteArrayOutputStream();
+    final AtomicInteger callCount = new AtomicInteger();
+
+    final WritableByteChannel shortWritingChannel = new WritableByteChannel() {
+      @Override
+      public int write(final ByteBuffer buffer) {
+        callCount.incrementAndGet();
+        // Never consumes more than 3 bytes per call, however much the buffer is offering.
+        final int n = Math.min(3, buffer.remaining());
+        for (int i = 0; i < n; i++)
+          received.write(buffer.get());
+        return n;
+      }
+
+      @Override
+      public boolean isOpen() {
+        return true;
+      }
+
+      @Override
+      public void close() {
+      }
+    };
+
+    FileUtils.writeFully(shortWritingChannel, ByteBuffer.wrap(content));
+
+    assertThat(received.toByteArray()).as("every byte must reach the channel, not just the first short write's worth")
+        .isEqualTo(content);
+    assertThat(callCount.get()).as("a channel capped at 3 bytes/call needs more than one call to drain the buffer")
+        .isGreaterThan(1);
+  }
+
+  /**
+   * CodeRabbit review: {@link WritableByteChannel#write(ByteBuffer)} may legitimately return 0 with bytes still
+   * remaining - a non-blocking channel with no room to write into right now - and {@link FileUtils#writeFully}
+   * does not support that case. Retrying such a 0 forever would trade a short write for an unbounded busy-loop
+   * burning CPU, so it must fail fast with an {@link IOException} instead.
+   */
+  @Test
+  void writeFullyThrowsRatherThanSpinOnAZeroProgressWrite() {
+    final AtomicInteger callCount = new AtomicInteger();
+    final WritableByteChannel zeroProgressChannel = new WritableByteChannel() {
+      @Override
+      public int write(final ByteBuffer buffer) {
+        callCount.incrementAndGet();
+        return 0;
+      }
+
+      @Override
+      public boolean isOpen() {
+        return true;
+      }
+
+      @Override
+      public void close() {
+      }
+    };
+
+    assertThatThrownBy(() -> FileUtils.writeFully(zeroProgressChannel, ByteBuffer.wrap(new byte[] { 1, 2, 3 })))
+        .isInstanceOf(IOException.class);
+    assertThat(callCount.get()).as("must fail on the first zero-progress call, not retry it").isEqualTo(1);
   }
 }

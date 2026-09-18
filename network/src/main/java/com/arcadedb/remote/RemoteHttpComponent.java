@@ -519,9 +519,39 @@ public class RemoteHttpComponent extends RWLockContext {
     return replicaServerList.stream().map(e -> e.getFirst() + ":" + e.getSecond()).collect(Collectors.toList());
   }
 
-  HttpRequest.Builder createRequestBuilder(final String httpMethod, final String url) {
+  /**
+   * The {@code Authorization} header value every request on this connection carries. Package-private so the
+   * {@code /ws} insert session (issue #7403) authenticates its handshake with exactly the same credentials as
+   * the HTTP requests beside it, rather than re-encoding them from its own copy.
+   */
+  String getBasicAuthorizationHeader() {
     final String authorization = userName + ":" + userPassword;
-    String authHeader = "Basic " + Base64.getEncoder().encodeToString(authorization.getBytes(DatabaseFactory.getDefaultCharset()));
+    return "Basic " + Base64.getEncoder().encodeToString(authorization.getBytes(DatabaseFactory.getDefaultCharset()));
+  }
+
+  /**
+   * The shared JDK client, reused for the {@code /ws} handshake (issue #7403). Its HTTP/2 preference does not
+   * reach the upgrade: the JDK's own opening handshake pins the request to HTTP/1.1, which is the only version
+   * a WebSocket upgrade is defined over.
+   */
+  HttpClient getHttpClient() {
+    return httpClient;
+  }
+
+  /**
+   * The {@code ws://} / {@code wss://} address of this connection's {@code /ws} endpoint, honouring the sticky
+   * pin the way {@link #getUrl} does - a session that joins a transaction opened with {@code /begin} has to
+   * reach the server that holds it.
+   */
+  String getWebSocketUrl() {
+    final Pair<String, Integer> pin = getStickyPin();
+    final String host = pin != null ? pin.getFirst() : currentServer;
+    final int port = pin != null ? pin.getSecond() : currentPort;
+    return ("https".equals(protocol) ? "wss" : "ws") + "://" + host + ":" + port + "/ws";
+  }
+
+  HttpRequest.Builder createRequestBuilder(final String httpMethod, final String url) {
+    final String authHeader = getBasicAuthorizationHeader();
 
     return HttpRequest.newBuilder()
         .uri(URI.create(url))

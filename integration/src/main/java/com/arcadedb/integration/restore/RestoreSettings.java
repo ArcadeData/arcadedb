@@ -18,7 +18,9 @@
  */
 package com.arcadedb.integration.restore;
 
-import java.io.File;
+import com.arcadedb.ContextConfiguration;
+import com.arcadedb.utility.FileUtils;
+
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -56,6 +58,16 @@ public class RestoreSettings {
    * it explicitly so the fetch-time check agrees with whatever pre-check already accepted the command (issue #6381).
    */
   public       Boolean             allowLocalUrls;
+  /**
+   * The settings overlay the fetch TIMEOUTS are read from, or null for a CLI caller with none.
+   * <p>
+   * Threaded the same way {@link #allowLocalUrls} is, and for the same reason: the caller resolves it against its
+   * own configuration and hands it down. {@code FullRestoreFormat} cannot get it from the target database, because
+   * a fresh restore has no target database yet at fetch time - so reading it there gave null every time and the
+   * fetch silently fell back to the {@code GlobalConfiguration} enum, which an {@code ALTER SERVER SETTING} never
+   * writes to (PR #7755 review).
+   */
+  public       ContextConfiguration configuration;
   public final Map<String, String> options              = new HashMap<>();
 
   protected void parseParameters(final String[] args) {
@@ -117,8 +129,14 @@ public class RestoreSettings {
     if (databaseDirectory == null)
       throw new IllegalArgumentException("Missing database url. Use -d <database-directory>");
 
-    if (inputFileURL.contains("..") || inputFileURL.startsWith(File.separator))
-      throw new IllegalArgumentException("Invalid backup file: cannot contain '..' or start with '/'");
+    // ABSOLUTE IN EITHER PLATFORM'S TERMS. THE MESSAGE HAS ALWAYS SAID "start with '/'" WHILE THE CHECK ASKED ONLY
+    // ABOUT THIS JVM'S File.separator, SO ON WINDOWS A '/'-ROOTED PATH - EXACTLY THE ONE THE MESSAGE NAMES - WALKED
+    // PAST THE GUARD THE MESSAGE DESCRIBES (ISSUE #7588). AND A DRIVE-QUALIFIED PATH LIKE "C:\backup.zip" STARTS
+    // WITH A LETTER, SO A LEADING-SEPARATOR TEST ALONE NEVER SAW IT AT ALL, THOUGH FullRestoreFormat HANDS IT
+    // STRAIGHT TO new File(...) AS A LOCAL INPUT (PR #7755 REVIEW)
+    if (inputFileURL.contains("..") || FileUtils.isAbsolutePath(inputFileURL))
+      throw new IllegalArgumentException(
+          "Invalid backup file: cannot contain '..', start with '/' or '\\', or name a drive such as 'C:'");
   }
 
   /**

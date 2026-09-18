@@ -26,6 +26,8 @@ import com.arcadedb.server.monitor.HAReplicationStatsProvider.HAReplicationStats
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.PendingPhase2Stats;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.SchemaInstalmentSample;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.UnreferencedFilesSample;
+import com.arcadedb.server.security.PermissionRefreshMetrics;
+import com.arcadedb.server.security.ServerSecurity;
 
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -102,10 +104,92 @@ public final class HAReplicationMetrics implements MeterBinder, Closeable {
         .register(registry);
 
     bindPendingPhase2Gauges(registry);
+    bindSecurityRefreshGauges(registry);
 
     // One scheduler for every re-registering MultiGauge on this binder, rather than one each: they all refresh at
     // the same cadence and none of them blocks, so a second thread would buy nothing.
     startMultiGaugeRefresh(bindPerFollowerGauges(registry), bindPerDatabaseGauges(registry));
+  }
+
+  /**
+   * Registers the gauges that say whether a replicated group change has been ENFORCED on this node, not merely
+   * received by it (issue #7529).
+   * <p>
+   * The failure they exist to make visible is silent by construction. A peer that applies a
+   * {@code SECURITY_GROUPS_ENTRY} but whose refresh sweep never runs - a worker that stopped, a database that
+   * keeps throwing - serves the OLD permissions and reports the NEW document from {@code GET /server/groups},
+   * which is indistinguishable from a healthy node from every surface an operator could check. The alert that
+   * catches it is {@code entries_applied} rising while {@code sweeps_completed} does not, and
+   * {@code last_sweep_at} is what turns that into a duration.
+   * <p>
+   * Registered on this binder rather than on {@code PoolMetrics} even though one of them describes an executor:
+   * {@code PoolMetrics} binds JVM-wide singleton pools with no server to reach, while these come from
+   * <em>this</em> server's {@code ServerSecurity}. They are {@code arcadedb.ha.*} because what makes them worth
+   * scraping is replication - on a standalone server every one of them stays at 0 except the sweeps the
+   * {@code server-groups.json} watcher runs, which is the correct reading of a node that receives no replicated
+   * group changes.
+   */
+  private void bindSecurityRefreshGauges(final MeterRegistry registry) {
+    Gauge.builder("arcadedb.ha.security.entries_applied", () -> securityRefresh().entriesApplied())
+        .description("Replicated group documents this node has installed since startup. From the moment each is "
+            + "counted the node authorizes against it, so this is 'the change reached this peer'.")
+        .register(registry);
+
+    Gauge.builder("arcadedb.ha.security.refreshes_requested", () -> securityRefresh().refreshesRequested())
+        .description("Permission-refresh hand-offs made to the refresh worker, counted whether or not it took "
+            + "them. The accepted ones are this minus refreshes_coalesced, which is the only way to derive them: "
+            + "ThreadPoolExecutor.execute runs its rejection handler on the calling thread and returns normally, "
+            + "so the submit itself cannot tell the two apart.")
+        .register(registry);
+
+    Gauge.builder("arcadedb.ha.security.refreshes_coalesced", () -> securityRefresh().refreshesCoalesced())
+        .description("Permission-refresh hand-offs the worker did not take, because one was already queued or the "
+            + "security service had stopped. The first case is coalescing and is harmless - the queued sweep "
+            + "re-reads the document - but a count climbing on a quiet cluster is a worker that is not draining.")
+        .register(registry);
+
+    Gauge.builder("arcadedb.ha.security.sweeps_completed", () -> securityRefresh().sweepsCompleted())
+        .description("Permission-refresh sweeps that finished, from any source. Compare with entries_applied: a "
+            + "sustained gap is a node enforcing permissions it has already been told to replace.")
+        .register(registry);
+
+    Gauge.builder("arcadedb.ha.security.sweeps_failed", () -> securityRefresh().sweepsFailed())
+        .description("Sweeps that ended in the refresh worker's catch-all, meaning this node fell back to "
+            + "converging only on the arcadedb.server.security.reloadEvery tick. Any non-zero value is actionable.")
+        .register(registry);
+
+    Gauge.builder("arcadedb.ha.security.databases_refreshed", () -> securityRefresh().databasesRefreshed())
+        .description("Databases whose cached permissions were re-derived, summed over every sweep. Read against "
+            + "sweeps_completed it gives the average breadth of a sweep, which is what makes a sudden drop - a "
+            + "node sweeping but finding nothing open to sweep - distinguishable from a node not sweeping.")
+        .register(registry);
+
+    Gauge.builder("arcadedb.ha.security.database_refresh_failures",
+            () -> securityRefresh().databaseRefreshFailures())
+        .description("Databases a sweep could not re-derive, summed over every sweep. The sweep continues past "
+            + "each, so this rises while sweeps_failed stays at 0 - e.g. a database dropped mid-iteration, or one "
+            + "still carrying an interrupted-snapshot marker.")
+        .register(registry);
+
+    Gauge.builder("arcadedb.ha.security.last_entry_applied_at", () -> securityRefresh().lastEntryAppliedAt())
+        .description("Epoch ms of the most recent applied replicated group document; 0 when none. Read with "
+            + "last_sweep_at: the difference is how long this node has been enforcing a superseded document.")
+        .baseUnit("milliseconds")
+        .register(registry);
+
+    Gauge.builder("arcadedb.ha.security.last_sweep_at", () -> securityRefresh().lastSweepAt())
+        .description("Epoch ms at which the most recent permission-refresh sweep finished; 0 when none.")
+        .baseUnit("milliseconds")
+        .register(registry);
+  }
+
+  /**
+   * This server's replicated-permission refresh counters, or an all-zero reading when the security service is
+   * not installed - which is what a scrape taken during startup or shutdown must see rather than an exception.
+   */
+  private PermissionRefreshMetrics.Snapshot securityRefresh() {
+    final ServerSecurity security = server.getSecurity();
+    return security != null ? security.getPermissionRefreshStats() : PermissionRefreshMetrics.Snapshot.ZERO;
   }
 
   /**

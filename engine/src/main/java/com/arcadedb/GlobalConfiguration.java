@@ -1283,6 +1283,23 @@ public enum GlobalConfiguration {
 
   NETWORK_SOCKET_TIMEOUT("arcadedb.network.socketTimeout", SCOPE.SERVER, "TCP/IP Socket timeout (in ms)", Integer.class, 30000),
 
+  NETWORK_REMOTE_FETCH_CONNECT_TIMEOUT("arcadedb.network.remoteFetchConnectTimeout", SCOPE.SERVER, """
+      Connect timeout, in milliseconds, for an OUTBOUND fetch of a caller-supplied URL - `IMPORT DATABASE`,
+      `RESTORE DATABASE` and the openCypher `LOAD CSV` - applied to every hop of the redirect chain. 0 means the
+      JDK default, which is no timeout at all: a host that accepts nothing and refuses nothing would block the
+      calling thread indefinitely. A negative value is not one the JDK accepts, so it falls back to the 30s
+      default rather than failing the fetch it was read for.""", Integer.class, 30_000),
+
+  NETWORK_REMOTE_FETCH_READ_TIMEOUT("arcadedb.network.remoteFetchReadTimeout", SCOPE.SERVER, """
+      Read timeout, in milliseconds, for an OUTBOUND fetch of a caller-supplied URL - `IMPORT DATABASE`,
+      `RESTORE DATABASE` and the openCypher `LOAD CSV`. It bounds EACH read, not the transfer: a large remote
+      source may legitimately take much longer than this to arrive, as long as it keeps sending. 0 means the JDK
+      default, which is no timeout at all - a source that stops sending and never closes the socket (a hung HTTP
+      connection, a proxy that holds the socket open after the origin dies) then blocks the calling thread for as
+      long as the socket stays open, which is what issue #7500 is about. Raise it for a slow origin rather than
+      disabling it. A negative value is not one the JDK accepts, so it falls back to the 30s default rather than
+      failing the fetch it was read for.""", Integer.class, 30_000),
+
   NETWORK_SOCKET_KEEP_ALIVE("arcadedb.network.socketKeepAlive", SCOPE.SERVER, """
       Enable TCP keepalive (SO_KEEPALIVE) on every wire-protocol socket. The Postgres and Redis executors drop the
       socket read timeout to infinite once a connection is authenticated, because an authenticated client legitimately
@@ -1572,6 +1589,23 @@ public enum GlobalConfiguration {
       because each blocking read keeps its own timeout. Set to 0 to disable the relaxation. Default is 10 minutes""",
       Integer.class, 600_000), // 10 MINUTES DEFAULT
 
+  SERVER_HTTP_STREAMING_WRITE_TIMEOUT("arcadedb.server.httpStreamingWriteTimeout", SCOPE.SERVER,
+      """
+      Budget in milliseconds a single blocking write of a STREAMED HTTP response may make no progress for \
+      (today only the newline-delimited answer of the bulk-load /api/v1/batch endpoint). That response is \
+      written while the request body is still being read, and its size grows with the size of the load, so a \
+      client that uploads everything before reading anything can fill the socket buffers between the two: the \
+      server then blocks inside a response write, and a server blocked there is not reading the upload either \
+      (issue #7381). This bounds that block instead of leaving it indefinite - the connection is closed, the \
+      load fails with a logged diagnosis and the worker thread is released. It is the write-side counterpart \
+      of 'arcadedb.server.httpStreamingReadTimeout' and is shorter than it on purpose: that budget covers a \
+      pause nobody is at fault for (the server committing), while a write that has made no progress at all \
+      for this long means the peer stopped consuming. The timer is armed around one write and disarmed as \
+      soon as it returns, so a long server-side pause BETWEEN two writes never trips it. Set to 0, or to any \
+      negative value, to leave streamed writes unbounded (WARNING: restores the indefinite block). Default is \
+      1 minute""",
+      Integer.class, 60_000), // 1 MINUTE DEFAULT
+
   // SERVER gRPC
   SERVER_GRPC_QUERY_MAX_RESULT_ROWS("arcadedb.server.grpcQueryMaxResultRows", SCOPE.SERVER,
       """
@@ -1617,6 +1651,33 @@ public enum GlobalConfiguration {
   // SERVER WS
   SERVER_WS_EVENT_BUS_QUEUE_SIZE("arcadedb.server.eventBusQueueSize", SCOPE.SERVER,
       "Size of the queue used as a buffer for unserviced database change events.", Integer.class, 1000),
+
+  SERVER_WS_MAX_CONTROL_FRAME_SIZE("arcadedb.server.wsMaxControlFrameSize", SCOPE.SERVER, """
+      Maximum size in bytes of a single text frame accepted on /ws before an insert session has been started on \
+      that connection (issue #7403). Undertow's AbstractReceiveListener defaults to -1, unbounded, so every text \
+      frame used to be accumulated whole on the heap with no way for the server to say 'not that big'. A \
+      subscribe/unsubscribe/start/commit/rollback frame is a few hundred bytes, so this bound is deliberately \
+      tight; the accumulation is aborted with a 1009 TOO_BIG close as soon as it crosses the cap, not after the \
+      frame has been buffered. 0 or a negative value restores the unbounded behaviour.""", Long.class, 64 * 1024L),
+
+  SERVER_WS_MAX_INSERT_FRAME_SIZE("arcadedb.server.wsMaxInsertFrameSize", SCOPE.SERVER, """
+      Maximum size in bytes of a single text frame accepted on a /ws connection that has started a duplex insert \
+      session (issue #7403). A 'chunk' frame legitimately carries a whole batch of records, so it needs a larger \
+      budget than 'wsMaxControlFrameSize'; an operator running a bulk loader raises this one deliberately. The \
+      larger budget is granted when the connection's 'start' frame is dispatched and dropped again when its \
+      'commit'/'rollback' is, so a connection that never opens an insert session is never charged more than \
+      'wsMaxControlFrameSize'. Raising it scales the worst case by more than itself: a connection may have up \
+      to 64 frames waiting to be applied (WebSocketInsertProtocol.MAX_PENDING_FRAMES, which is not itself \
+      configurable), so the per-connection buffering to budget for is this value times that queue depth. 0 or a \
+      negative value restores the unbounded behaviour.""",
+      Long.class, 16 * 1024 * 1024L),
+
+  SERVER_WS_MAX_INSERT_CHUNK_ROWS("arcadedb.server.wsMaxInsertChunkRows", SCOPE.SERVER, """
+      Maximum number of records a single /ws 'chunk' frame may carry (issue #7403). This is the number a client \
+      actually reasons about, and it bounds the records array AFTER parsing, where 'wsMaxInsertFrameSize' bounds \
+      the bytes before it. A chunk over the cap is refused with an error frame naming the limit and leaves the \
+      session open, so a client that splits its batch can carry on. 0 or a negative value disables the cap.""",
+      Integer.class, 100_000),
 
   SERVER_WS_EVENT_BUS_MAX_PENDING_BYTES("arcadedb.server.eventBusMaxPendingBytes", SCOPE.SERVER, """
       Maximum number of bytes of change-stream frames that may be outstanding towards a single WebSocket subscriber
@@ -2108,9 +2169,8 @@ public enum GlobalConfiguration {
   HA_PROXY_READ_TIMEOUT("arcadedb.ha.proxyReadTimeout", SCOPE.SERVER,
       """
       Milliseconds a follower waits for the leader to answer a request it forwarded before giving up and \
-      answering the client HTTP 504. The live reader is LeaderCommandForwarder: the commands of \
-      POST /api/v1/server and the POST/PUT/DELETE /api/v1/server/users routes. LeaderProxy reads it too, but \
-      nothing constructs LeaderProxy, so that path is dormant. \
+      answering the client HTTP 504. The reader is LeaderCommandForwarder: the commands of \
+      POST /api/v1/server and the POST/PUT/DELETE /api/v1/server/users routes. \
       The forward runs on an HTTP worker thread, so this is the bound that stops a wedged leader from parking \
       one indefinitely; 0 or a negative value does not disable it. The forwarded commands that legitimately run \
       for minutes - 'restore backup', 'restore database' and 'import database' - use \
@@ -2128,8 +2188,8 @@ public enum GlobalConfiguration {
 
   HA_PROXY_CONNECT_TIMEOUT("arcadedb.ha.proxyConnectTimeout", SCOPE.SERVER,
       """
-      Connect timeout in milliseconds for a follower dialling the leader, used by LeaderCommandForwarder (and \
-      by LeaderProxy, which nothing currently constructs), by the SQL write forward in RaftReplicatedDatabase \
+      Connect timeout in milliseconds for a follower dialling the leader, used by LeaderCommandForwarder, by \
+      the SQL write forward in RaftReplicatedDatabase \
       and by the /api/v1/batch relay in PostBatchHandler (issues #7526/#7527/#7542/#7543). Bounds the half of \
       the failure the response deadline cannot see: a leader whose host accepts no connection. Read once when \
       the HTTP client is built, because a java.net.http.HttpClient's connect timeout is fixed at build time - a \
@@ -2174,9 +2234,13 @@ public enum GlobalConfiguration {
       Re-read on every forward.""",
       Long.class, 600_000L),
 
-  HA_PROXY_MAX_BODY_SIZE("arcadedb.ha.proxyMaxBodySize", SCOPE.SERVER,
-      "Maximum request body size in bytes that the leader proxy will buffer and forward. Larger requests fall back to HTTP 400.",
-      Integer.class, 16 * 1024 * 1024),
+  // `arcadedb.ha.proxyMaxBodySize` used to be declared here. Its only reader was LeaderProxy, a transparent
+  // follower-to-leader HTTP proxy that nothing ever constructed, so the setting bounded nothing on any running
+  // server (issue #7528). Removed together with that class rather than wired into the forward paths that DO run:
+  // LeaderCommandForwarder relays an administrative body the handler has already parsed, PostBatchHandler streams
+  // a bulk load it must not buffer at all, and both are bounded on the INCOMING side by
+  // arcadedb.server.httpBodyContentMaxSize - a second cap on the outgoing hop would only be a way to lose a request
+  // the node had already accepted.
 
   HA_CLIENT_ELECTION_RETRY_COUNT("arcadedb.ha.clientElectionRetryCount", SCOPE.SERVER,
       "Number of retries performed by RemoteDatabase after receiving HTTP 503 NeedRetryException during an election.",

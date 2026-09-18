@@ -34,6 +34,8 @@ import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.monitor.DefaultServerMetrics;
 import com.arcadedb.server.monitor.ServerMetrics;
+import com.arcadedb.server.security.PermissionRefreshMetrics;
+import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Metrics;
@@ -123,10 +125,45 @@ public class GetServerHandler extends AbstractServerHttpHandler {
 
       haJSON.put("leaderAddress", leaderServer);
       haJSON.put("replicaAddresses", replicaServers);
+      haJSON.put("securityRefresh", buildSecurityRefreshJSON());
 
       LogManager.instance()
           .log(this, Level.FINE, "Returning configuration leaderServer=%s replicaServers=[%s]", leaderServer, replicaServers);
     }
+  }
+
+  /**
+   * Whether the replicated group changes this node received have been ENFORCED here, not merely received
+   * (issue #7529).
+   * <p>
+   * On the {@code ha} section because that is the section an operator already polls per node when checking a
+   * cluster-wide change, and because the gap it reports - {@code entriesApplied} ahead of {@code sweepsCompleted}
+   * - only exists on a node that receives replicated entries. It is the same reading the
+   * {@code arcadedb.ha.security.*} Micrometer gauges expose, for operators who poll this route rather than scrape
+   * Prometheus.
+   * <p>
+   * Readable by every authenticated user, like the topology fields beside it: these are counters and epoch
+   * timestamps, naming no user, no group, no database and no permission.
+   * <p>
+   * Falls back to {@link PermissionRefreshMetrics.Snapshot#ZERO} when there is no security service to ask, the
+   * same answer the gauges give, so that a request served while one is being installed or torn down reports the
+   * section as zeros rather than failing the whole {@code mode=cluster} response over one of its members.
+   */
+  private JSONObject buildSecurityRefreshJSON() {
+    final ServerSecurity security = httpServer.getServer().getSecurity();
+    final PermissionRefreshMetrics.Snapshot stats = security != null
+        ? security.getPermissionRefreshStats()
+        : PermissionRefreshMetrics.Snapshot.ZERO;
+    return new JSONObject()
+        .put("entriesApplied", stats.entriesApplied())
+        .put("refreshesRequested", stats.refreshesRequested())
+        .put("refreshesCoalesced", stats.refreshesCoalesced())
+        .put("sweepsCompleted", stats.sweepsCompleted())
+        .put("sweepsFailed", stats.sweepsFailed())
+        .put("databasesRefreshed", stats.databasesRefreshed())
+        .put("databaseRefreshFailures", stats.databaseRefreshFailures())
+        .put("lastEntryAppliedAt", stats.lastEntryAppliedAt())
+        .put("lastSweepAt", stats.lastSweepAt());
   }
 
   private void exportMetrics(final JSONObject response, final ServerSecurityUser user) {
