@@ -20,9 +20,13 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.*;
 import com.arcadedb.database.Record;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
@@ -367,8 +371,20 @@ public class ResultInternal implements Result {
    * answered the stored value instead of the computed one, and an excluded column ({@code !col}) leaked back in
    * (issue #7773). {@link #hasProjectedProperties()} is exactly the "has this projection reshaped the row?"
    * question - it is what DISTINCT already asks to decide whether RID-based deduplication is still valid - so the
-   * short-circuit is skipped whenever it answers true, falling through to the {@link Result#toJSON()} property loop
-   * instead, which already agrees with {@link JsonSerializer#serializeResult}.
+   * short-circuit is skipped whenever it answers true, falling through to the property loop instead.
+   * <p>
+   * THE PROPERTY LOOP ALONE IS NOT THE WHOLE ANSWER FOR A ROW THAT STILL CARRIES A RECORD. {@code @cat},
+   * {@code @in} and {@code @out} are structural attributes of the record, not properties of it: they are not in
+   * {@link #getPropertyNames()} and {@link #getProperty} cannot reach them, so a loop over the row's properties
+   * drops them. A plain {@code SELECT *} populates {@code content} as well, so it takes this path too and an edge
+   * row came back without the vertices it connects - it could no longer be reconstructed from its own JSON - while
+   * {@code SELECT FROM E1}, still on the short-circuit, answered the full form (issue #7895).
+   * <p>
+   * So the object is SEEDED from the record's structural attributes and the row's properties are written over the
+   * seed, which is the shape {@link com.arcadedb.serializer.JsonSerializer#serializeResult} has always produced for
+   * an element row - the agreement between the two serializers that #7773 asked for. The seed is attributes only,
+   * never the record's properties: a column the projection excluded must stay excluded, which is the other half of
+   * #7773.
    */
   @Override
   public JSONObject toJSON() {
@@ -376,10 +392,49 @@ public class ResultInternal implements Result {
       return getElement().get().toJSON();
 
     final JSONObject result = new JSONObject();
+
+    if (element != null)
+      putStructuralAttributes(result);
+
     for (final String prop : getPropertyNames())
       result.put(prop, valueToJSON(getProperty(prop)));
 
     return result;
+  }
+
+  /**
+   * Writes the backing record's structural attributes - {@code @cat}, {@code @type}, {@code @rid} and, for an edge,
+   * {@code @in} / {@code @out} - into {@code json}, in the same shape the record's own {@code toJSON(true)} emits
+   * them, so a row that reshapes nothing serializes exactly as the record does (issue #7895).
+   * <p>
+   * The category is read from the instance first and from the schema type second: a {@link DetachedDocument} of a
+   * vertex or an edge is neither a {@link Vertex} nor an {@link Edge}, and answering {@code "d"} for it would say
+   * the row is a document. An explicitly removed attribute stays removed - {@code SELECT *, !@rid} means what it
+   * says.
+   */
+  private void putStructuralAttributes(final JSONObject json) {
+    final DocumentType type = element.getType();
+    final boolean isEdge = element instanceof Edge || type instanceof EdgeType;
+    final boolean isVertex = !isEdge && (element instanceof Vertex || type instanceof VertexType);
+
+    putStructuralAttribute(json, Property.CAT_PROPERTY, isEdge ? "e" : isVertex ? "v" : "d");
+    putStructuralAttribute(json, Property.TYPE_PROPERTY, element.getTypeName());
+
+    final RID rid = element.getIdentity();
+    if (rid != null)
+      putStructuralAttribute(json, RID_PROPERTY, rid.toString());
+
+    // Only a real Edge can name its endpoints: a DetachedDocument of an edge type carries none, which is also
+    // why JsonSerializer.setMetadata() gives it the category alone.
+    if (element instanceof Edge edge) {
+      putStructuralAttribute(json, Property.IN_PROPERTY, edge.getIn());
+      putStructuralAttribute(json, Property.OUT_PROPERTY, edge.getOut());
+    }
+  }
+
+  private void putStructuralAttribute(final JSONObject json, final String name, final Object value) {
+    if (tombstones == null || !tombstones.contains(name))
+      json.put(name, value);
   }
 
   public Optional<Document> getElement() {

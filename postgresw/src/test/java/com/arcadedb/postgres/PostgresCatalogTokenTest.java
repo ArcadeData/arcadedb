@@ -137,6 +137,28 @@ class PostgresCatalogTokenTest {
     assertThat(PostgresCatalogToken.literal(new byte[] { 1 })).isNull();
   }
 
+  /**
+   * Issue #7858: the back-tick branch used to take the raw substring up to the next back-tick, so the token
+   * carried the ESCAPED spelling while a double-quoted identifier - the same name, as the client actually
+   * writes it before {@code PostgresQuotedIdentifierRewriter} translates it - carried the plain one. Any
+   * caller that re-emitted a token into generated SQL was then correct for one spelling and wrong for the
+   * other. It also stopped at the first back-tick, escaped or not, so an escaped back-tick ended the
+   * identifier early.
+   */
+  @Test
+  void aBackTickIdentifierIsReadWithTheGrammarsEscapingAndCarriesThePlainName() {
+    // A backslash escapes what follows it, so this is the name a\b, not a\\b.
+    assertThat(texts(PostgresCatalogToken.tokenize("SELECT FROM `a\\\\b`")))
+        .containsExactly("SELECT", "FROM", "a\\b");
+    // Both spellings of the same name must tokenize to the same text.
+    assertThat(texts(PostgresCatalogToken.tokenize("SELECT FROM \"a\\b\"")))
+        .isEqualTo(texts(PostgresCatalogToken.tokenize("SELECT FROM `a\\\\b`")));
+    // An escaped back-tick does not end the identifier.
+    assertThat(texts(PostgresCatalogToken.tokenize("SELECT FROM `a\\`b`"))).containsExactly("SELECT", "FROM", "a`b");
+    // And a trailing backslash escapes the closing back-tick, so this one really is unterminated.
+    assertThat(PostgresCatalogToken.tokenize("SELECT FROM `a\\`")).isNull();
+  }
+
   @Test
   void tokensDescribeThemselves() {
     // toString() is only ever read by a human debugging a declined query, but a broken one is worse than none.

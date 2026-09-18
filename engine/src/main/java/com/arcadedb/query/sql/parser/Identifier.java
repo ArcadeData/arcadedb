@@ -140,9 +140,12 @@ public class Identifier extends SimpleNode {
   }
 
   /**
-   * reverses {@link #escape(String)}: a backslash consumes the character that follows it.
+   * reverses {@link #escape(String)}: a backslash consumes the character that follows it. Public because
+   * {@link #quote(String)} is: a caller that builds SQL text by hand and READS back-tick quoted text by hand -
+   * the Postgres wire's own tokenizer does both - needs the same escaping contract in both directions, and a
+   * private copy of it is how the two halves drift apart (issue #7858).
    */
-  static String unescape(final String s) {
+  public static String unescape(final String s) {
     if (s == null)
       return null;
 

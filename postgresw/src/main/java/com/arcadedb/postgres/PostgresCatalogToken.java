@@ -18,6 +18,8 @@
  */
 package com.arcadedb.postgres;
 
+import com.arcadedb.query.sql.parser.Identifier;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -172,10 +174,21 @@ class PostgresCatalogToken {
       // rewrites a client's "double quoted" identifiers into them before dispatching (see
       // PostgresQuotedIdentifierRewriter), so this is the form a catalog query actually arrives in.
       if (c == '`') {
-        final int end = query.indexOf('`', i + 1);
-        if (end < 0)
+        // Read the way the grammar reads it - QUOTED_IDENTIFIER : BACKTICK ( ~[`\\] | '\\' . )+ BACKTICK - so a
+        // backslash consumes the character after it: `a\`b` is ONE identifier named a`b, not an unterminated one,
+        // and the token carries the PLAIN name rather than the escaped spelling. Both matter (issue #7858): a
+        // double-quoted identifier is tokenized to its plain name a few lines below, so the two spellings of the
+        // same name used to produce two different token texts, and whichever splice site re-emitted one of them
+        // was wrong for the other.
+        int end = i + 1;
+        while (end < length && query.charAt(end) != '`') {
+          if (query.charAt(end) == '\\')
+            ++end;
+          ++end;
+        }
+        if (end >= length)
           return null;
-        tokens.add(new PostgresCatalogToken(Type.QUOTED_IDENTIFIER, query.substring(i + 1, end)));
+        tokens.add(new PostgresCatalogToken(Type.QUOTED_IDENTIFIER, Identifier.unescape(query.substring(i + 1, end))));
         i = end + 1;
         continue;
       }
