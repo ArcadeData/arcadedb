@@ -276,6 +276,91 @@ class Issue7814SearchRebuildAdmissionTest {
   }
 
   /**
+   * The same one-build guarantee for the OTHER synchronous build site, which concurrent searches reach without
+   * ever going through {@code ensureGraphAvailable()}.
+   * <p>
+   * An index whose graph has already been resolved once - an empty one that was searched before anything was
+   * written to it - leaves no resident graph and nothing left to resolve, so every later query walks straight
+   * past that method into {@code rebuildGraphBeforeSearch()}'s synchronous arm. Each one would decide there,
+   * independently, to build the whole corpus written since; at {@code maxConcurrentRebuilds} above 1 they would
+   * do it at the same time, which is the failure this issue is about, reached from a different call site than the
+   * one it was reported from.
+   */
+  @Test
+  void concurrentSearchesAfterAnIngestShareOneBuildAtTheOtherSynchronousSite() throws Exception {
+    try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
+      final Database db = factory.create();
+      try {
+        createSchema(db);
+
+        final LSMVectorIndex index = vectorIndex(db);
+        // Resolves the (empty) index and clears the latch that would otherwise send the searches below through
+        // ensureGraphAvailable() instead, which the earlier tests already cover.
+        index.findNeighborsFromVector(embedding(0), 5, 64);
+
+        insert(db, NUM_VECTORS);
+
+        final CountDownLatch bothReturned = new CountDownLatch(2);
+        final AtomicReference<Throwable> failure = new AtomicReference<>();
+
+        LSMVectorIndex.acquireAllRebuildPermitsForTest();
+        final Thread[] searchers = new Thread[2];
+        for (int i = 0; i < searchers.length; i++) {
+          final int id = i;
+          searchers[i] = new Thread(() -> {
+            try {
+              index.findNeighborsFromVector(embedding(id), 5, 64);
+            } catch (final Throwable t) {
+              failure.compareAndSet(null, t);
+            } finally {
+              bothReturned.countDown();
+            }
+          }, "Issue7814-ingest-search-" + id);
+          searchers[i].setDaemon(true);
+        }
+
+        boolean permitsHeld = true;
+        try {
+          for (final Thread searcher : searchers)
+            searcher.start();
+
+          Awaitility.await("one of the two searches queues for the permit")
+              .atMost(REACHES_THE_PERMIT)
+              .pollInterval(Duration.ofMillis(50))
+              .untilAsserted(() -> assertThat(index.getStats().get("searchRebuildsQueuedForPermit"))
+                  .as("this arm must reach the permit too: the corpus written since the index was resolved is a "
+                      + "full build, whatever the resident graph's size says")
+                  .isEqualTo(1L));
+
+          assertThat(index.getStats().get("searchRebuildsQueuedForPermit"))
+              .as("and only one of them may own it; the other waits for its result")
+              .isEqualTo(1L);
+
+          LSMVectorIndex.releaseAllRebuildPermitsForTest();
+          permitsHeld = false;
+
+          assertThat(bothReturned.await(COMPLETES_THE_BUILD.toMillis(), TimeUnit.MILLISECONDS))
+              .as("both searches must be answered").isTrue();
+        } finally {
+          if (permitsHeld)
+            LSMVectorIndex.releaseAllRebuildPermitsForTest();
+          for (final Thread searcher : searchers) {
+            searcher.interrupt();
+            searcher.join(COMPLETES_THE_BUILD.toMillis());
+          }
+        }
+
+        assertThat(failure.get()).as("neither search may fail").isNull();
+        assertThat(index.getStats().get("graphRebuildCount"))
+            .as("one build of the ingested corpus between the two searches, not one each")
+            .isEqualTo(1L);
+      } finally {
+        db.drop();
+      }
+    }
+  }
+
+  /**
    * A search interrupted while waiting for another thread's build must fail loudly rather than take the build over.
    * <p>
    * Falling through would let it decide to build the same corpus a second time, and at
@@ -415,23 +500,8 @@ class Issue7814SearchRebuildAdmissionTest {
     try (final DatabaseFactory factory = new DatabaseFactory(dbPath)) {
       final Database db = factory.create();
       try {
-        db.transaction(() -> {
-          final var type = db.getSchema().createDocumentType("Doc");
-          type.createProperty("id", Type.INTEGER);
-          type.createProperty("vector", Type.ARRAY_OF_FLOATS);
-          db.command("sql", "CREATE INDEX ON Doc (vector) LSM_VECTOR METADATA { \"dimensions\": " + DIMENSIONS
-              + ", \"similarity\": \"COSINE\" }");
-        });
-
-        db.begin();
-        for (int i = 0; i < count; i++) {
-          db.newDocument("Doc").set("id", i).set("vector", embedding(i)).save();
-          if (i % 500 == 499) {
-            db.commit();
-            db.begin();
-          }
-        }
-        db.commit();
+        createSchema(db);
+        insert(db, count);
 
         // kill() leaves the graph unpersisted, which is the point; close() after it is what takes the instance
         // out of the factory's active registry so the next session can open the same path.
@@ -442,6 +512,28 @@ class Issue7814SearchRebuildAdmissionTest {
           db.close();
       }
     }
+  }
+
+  private static void createSchema(final Database db) {
+    db.transaction(() -> {
+      final var type = db.getSchema().createDocumentType("Doc");
+      type.createProperty("id", Type.INTEGER);
+      type.createProperty("vector", Type.ARRAY_OF_FLOATS);
+      db.command("sql", "CREATE INDEX ON Doc (vector) LSM_VECTOR METADATA { \"dimensions\": " + DIMENSIONS
+          + ", \"similarity\": \"COSINE\" }");
+    });
+  }
+
+  private static void insert(final Database db, final int count) {
+    db.begin();
+    for (int i = 0; i < count; i++) {
+      db.newDocument("Doc").set("id", i).set("vector", embedding(i)).save();
+      if (i % 500 == 499) {
+        db.commit();
+        db.begin();
+      }
+    }
+    db.commit();
   }
 
   private static float[] embedding(final int id) {

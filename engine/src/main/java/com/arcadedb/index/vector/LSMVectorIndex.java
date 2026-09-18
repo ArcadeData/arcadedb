@@ -126,6 +126,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.logging.Level;
@@ -1681,21 +1682,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // so waiting it out here is what keeps this thread from repeating the O(live vector count) validation walk
       // below only to queue for a second build of the same corpus. Rechecked rather than assumed on wake-up: a
       // build that failed signals without having published anything, and this thread then decides for itself.
-      while (searchRebuildPending && graphNotYetMaterialised()) {
-        try {
-          searchRebuildPublished.await();
-        } catch (final InterruptedException e) {
-          // The caller is being cancelled. It must NOT fall through and decide to build: the build it would be
-          // deciding on is already in flight on another thread, and at maxConcurrentRebuilds above 1 there is a
-          // second permit for it to take, so both would build the same corpus at once - the doubled cost this
-          // flag exists to prevent. Failing loudly is what the permit wait one level down already does for the
-          // same interrupt, and it is the only answer here that is neither a duplicate build nor the empty
-          // result set a search with no graph returns.
-          Thread.currentThread().interrupt();
-          throw new IndexException(
-              "Interrupted while waiting for the graph of vector index '" + indexName + "' to be built", e);
-        }
-      }
+      awaitPendingSearchRebuild(this::graphNotYetMaterialised);
 
       // Double-check after acquiring the lock
       if (!graphNotYetMaterialised())
@@ -1745,21 +1732,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     if (buildFromScratch) {
       try {
-        buildGraphFromScratchUnderRebuildPermit(true);
+        buildGraphFromScratchUnderRebuildPermit(this::graphNotYetMaterialised);
       } finally {
-        graphBuildLock.lock();
-        try {
-          // The only site that clears it: the thread that set it is the thread that owes the build, whether the
-          // build ran, was abandoned as already done, or threw.
-          searchRebuildPending = false;
-          // Normally already false - buildGraphFromScratchWithRetry() clears this one as its first act under
-          // this same lock - but a build that never got that far, because queueing for the permit was
-          // interrupted, must not leave the latch set against a decision made and abandoned.
-          persistedGraphUnresolved = false;
-          searchRebuildPublished.signalAll();
-        } finally {
-          graphBuildLock.unlock();
-        }
+        // Normally persistedGraphUnresolved is already false - buildGraphFromScratchWithRetry() clears it as its
+        // first act - but a build that never got that far, because queueing for the permit was interrupted, must
+        // not leave the latch set against a decision made and abandoned.
+        endSearchRebuildOwnership(true);
       }
     }
 
@@ -4382,11 +4360,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
       //
       // "Small" here is the RESIDENT graph, and a null one reaches this arm too - which on a session that
       // ingested before it searched is not a small build at all but a first build over everything written so far
-      // (issue #7814). Routed through the permit for that case; the method itself skips the permit below the same
+      // (issue #7814). Routed through the permit for that case; the permit is skipped below the same
       // ASYNC_REBUILD_MIN_GRAPH_SIZE threshold, so a genuinely small index still rebuilds inline and unqueued.
-      if (graphState == GraphState.MUTABLE && mutationsSinceSerialize.get() > 0
-          && (graphIndex == null || graphIndex.size() < ASYNC_REBUILD_MIN_GRAPH_SIZE))
-        buildGraphFromScratchUnderRebuildPermit(false);
+      //
+      // And through the same one-owner protocol ensureGraphAvailable() uses, because this arm is reachable
+      // without it: an index whose graph was already resolved once - an empty one searched before anything was
+      // written to it - leaves graphIndex null with the latch cleared, so every later query walks straight past
+      // ensureGraphAvailable() into this branch and would decide, independently and concurrently, to build the
+      // same corpus. The javadoc on the parameter below reads "already resolved", and graphIndex == null is
+      // precisely not that.
+      if (smallGraphRebuildIsDue())
+        buildGraphFromScratchAsSoleOwner();
     } else if (!asyncRebuildInProgress && (mutations >= threshold || deltaScanOverBudget()))
       // Large graph (>= 1000 vectors): async rebuild once either trigger fires - enough mutations have piled up,
       // or the linear delta scan those mutations left behind has outgrown the graph walk it supplements
@@ -4606,6 +4590,87 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
+   * Whether {@link #rebuildGraphBeforeSearch()}'s synchronous arm still has a reason to build, re-asked after a
+   * wait. The build this thread queued behind publishes a graph and subtracts the mutations it absorbed, so the
+   * reason to build is routinely gone by the time this thread is let through.
+   */
+  private boolean smallGraphRebuildIsDue() {
+    return graphState == GraphState.MUTABLE && mutationsSinceSerialize.get() > 0
+        && (graphIndex == null || graphIndex.size() < ASYNC_REBUILD_MIN_GRAPH_SIZE);
+  }
+
+  /**
+   * Takes ownership of a from-scratch build so that concurrent searches produce one build between them rather
+   * than one each, then runs it under the rebuild permit (issue #7814).
+   * <p>
+   * The ownership has to be explicit because the build cannot be performed under {@link #graphBuildLock}: it
+   * queues for a permit, and the permit is always taken before that lock, never after. So the lock is released
+   * while the owner queues, and a second search arriving in that window is held here instead of deciding the same
+   * build over again. When it is finally let through, the reason to build is re-asked rather than assumed - the
+   * build it waited out has usually removed it - which is the same recheck the owner performs once its permit is
+   * in hand.
+   */
+  private void buildGraphFromScratchAsSoleOwner() {
+    graphBuildLock.lock();
+    try {
+      awaitPendingSearchRebuild(this::smallGraphRebuildIsDue);
+      if (!smallGraphRebuildIsDue())
+        return; // the build this thread waited out did the work
+      searchRebuildPending = true;
+    } finally {
+      graphBuildLock.unlock();
+    }
+
+    try {
+      buildGraphFromScratchUnderRebuildPermit(this::smallGraphRebuildIsDue);
+    } finally {
+      endSearchRebuildOwnership(false);
+    }
+  }
+
+  /**
+   * Waits out a from-scratch build another search thread has taken ownership of, for as long as this thread would
+   * still have a reason to start one of its own. Caller holds {@link #graphBuildLock}, which
+   * {@link Condition#await()} releases for the duration.
+   * <p>
+   * An interrupted waiter must NOT fall through and decide to build: the build it would be deciding on is already
+   * in flight on another thread, and at {@code maxConcurrentRebuilds} above 1 there is a second permit for it to
+   * take, so both would build the same corpus at once - the doubled cost this protocol exists to prevent. Failing
+   * loudly is what the permit wait itself already does for the same interrupt, and it is the only answer here
+   * that is neither a duplicate build nor the empty result set a search with no graph returns.
+   */
+  private void awaitPendingSearchRebuild(final BooleanSupplier stillNeeded) {
+    while (searchRebuildPending && stillNeeded.getAsBoolean()) {
+      try {
+        searchRebuildPublished.await();
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new IndexException(
+            "Interrupted while waiting for the graph of vector index '" + indexName + "' to be built", e);
+      }
+    }
+  }
+
+  /**
+   * Hands the ownership taken above back, whether the build ran, was abandoned as already done, or threw. The
+   * only site that clears {@link #searchRebuildPending}: the thread that set it is the thread that owes the build.
+   *
+   * @param alsoClearPersistedGraphLatch for {@link #ensureGraphAvailable()}, which owns
+   *                                     {@link #persistedGraphUnresolved} across the same span
+   */
+  private void endSearchRebuildOwnership(final boolean alsoClearPersistedGraphLatch) {
+    graphBuildLock.lock();
+    try {
+      searchRebuildPending = false;
+      if (alsoClearPersistedGraphLatch)
+        persistedGraphUnresolved = false;
+      searchRebuildPublished.signalAll();
+    } finally {
+      graphBuildLock.unlock();
+    }
+  }
+
+  /**
    * Runs a from-scratch graph build reached from a SEARCH thread under the same JVM-wide concurrency bound an
    * async rebuild takes, instead of straight past it (issue #7814).
    * <p>
@@ -4638,16 +4703,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * counted ({@code searchRebuildsWithoutPermit}) and logged at WARNING so it can be told apart from the
    * ordinary case, which is the whole point of bounding it.
    *
-   * @param abandonIfResolvedWhileWaiting re-ask, once the permit is in hand, whether the graph is still missing -
-   *                                      for the caller whose whole reason to build is that it was. What the
-   *                                      permit was being held BY may well have been this index's own async
-   *                                      rebuild (the inactivity timer dispatches one for an index this session
-   *                                      has never loaded, issue #6798), and rebuilding what it just published
-   *                                      would pay for the same corpus twice. False for
-   *                                      {@link #rebuildGraphBeforeSearch()}, whose graph is already resolved and
-   *                                      which is building for a different reason.
+   * @param stillNeeded the caller's own reason to build, re-asked once the permit is in hand. What the permit was
+   *                    being held BY may well have been this index's own async rebuild - the inactivity timer
+   *                    dispatches one for an index this session has never loaded (issue #6798) - and rebuilding
+   *                    what it just published would pay for the same corpus twice.
    */
-  private void buildGraphFromScratchUnderRebuildPermit(final boolean abandonIfResolvedWhileWaiting) {
+  private void buildGraphFromScratchUnderRebuildPermit(final BooleanSupplier stillNeeded) {
     final int scope = rebuildScopeSize();
     if (scope < ASYNC_REBUILD_MIN_GRAPH_SIZE) {
       buildGraphFromScratch();
@@ -4685,8 +4746,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
         }
       }
 
-      if (abandonIfResolvedWhileWaiting && !graphNotYetMaterialised())
-        return; // Someone published a graph while this thread queued - most likely whoever held the permit.
+      if (!stillNeeded.getAsBoolean())
+        return; // Someone built it while this thread queued - most likely whoever was holding the permit.
 
       reclaimHeapForRebuild(scope);
       buildGraphFromScratch();
