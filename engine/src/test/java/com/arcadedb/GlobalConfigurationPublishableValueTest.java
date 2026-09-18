@@ -115,6 +115,29 @@ class GlobalConfigurationPublishableValueTest {
   }
 
   @Test
+  void aTrailingSeparatorIsNotQuietlyNormalisedAway() {
+    // The server tolerates these because its own splits discard them, so they are values an operator really
+    // has configured - and a report that drops them is reporting a value that was not set. Replacing one span
+    // and copying the rest is what makes that impossible rather than merely unlikely.
+    assertThat(GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue("mydb[jay:hunter2];"))
+        .isEqualTo("mydb[jay:*****];");
+    assertThat(GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue("mydb[jay:hunter2,]"))
+        .isEqualTo("mydb[jay:*****,]");
+    assertThat(GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue("mydb[jay:hunter2:]"))
+        .isEqualTo("mydb[jay:*****:]");
+    assertThat(GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue(";mydb[jay:hunter2]"))
+        .isEqualTo(";mydb[jay:*****]");
+  }
+
+  @Test
+  void anEmptyPasswordBeforeAGroupIsNotReportedAsAConfiguredOne() {
+    // The sibling of anEmptyPasswordIsNotASecretToHide, with a group after it: 'jay::admins' has no password
+    // either, and "*****" there would tell an operator one is configured where none is.
+    assertThat(GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue("mydb[jay::admins]"))
+        .isEqualTo("mydb[jay::admins]");
+  }
+
+  @Test
   void aCredentialWithNoPasswordIsLeftAsWritten() {
     assertThat(GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue("mydb[jay]")).isEqualTo("mydb[jay]");
   }
