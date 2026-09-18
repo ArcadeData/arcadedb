@@ -101,6 +101,13 @@ public class MembershipSecuritySeeder implements AutoCloseable {
    * documents when it RUNS rather than being handed a snapshot, so a task already queued and not yet started
    * covers every change dropped behind it. The handler's other caller is shutdown, where dropping is what
    * stopping means.
+   * <p>
+   * <b>Not registered with {@code PoolMetrics}.</b> That binder is a {@code MeterBinder} over the engine's
+   * process-wide singletons, bound once through their {@code getInstance()} accessors; it has no surface for
+   * a per-server pool such as this one, which belongs to a state-machine instance. The same reasoning is
+   * already written down for the other HA housekeeping executor in {@code RaftLogCompactionScheduler}.
+   * Surfacing this pool and {@code ServerSecurity.permissionsRefreshExecutor} - the pool this one is shaped
+   * after, and which is not surfaced either - is tracked as issue #7856.
    */
   public MembershipSecuritySeeder(final BooleanSupplier isLeader, final LongSupplier retryBudgetMs,
       final SecuritySeed seed) {
@@ -143,6 +150,25 @@ public class MembershipSecuritySeeder implements AutoCloseable {
    * snapshot install - and therefore never blocks and never throws: the seed itself goes to {@link #executor},
    * and a failure to schedule it is logged rather than propagated back into Ratis. The membership update below
    * is done under this instance's monitor because those two callers can arrive concurrently.
+   * <p>
+   * <b>The baseline advances before the seed is dispatched, and is not rolled back if the dispatch does not
+   * happen.</b> That is deliberate - the baseline tracks what Ratis committed, not what this seeder managed to
+   * act on, and rolling it back would make the NEXT unrelated configuration change re-seed for a peer that has
+   * nothing to do with it. The consequence is that a peer whose seed is lost here is not retried by a later
+   * configuration change that adds some other peer; only removing and re-adding it seeds it again. Three ways
+   * the dispatch can be skipped, and what each costs:
+   * <ul>
+   *   <li>{@code isLeader} answers {@code false} on a follower - by design, nothing is lost: the leader is
+   *       running this same callback and dispatches there.</li>
+   *   <li>The submit is refused by the one-slot queue - nothing is lost either: the queued task re-reads the
+   *       documents when it runs, so it covers this change too (see the constructor).</li>
+   *   <li>{@code isLeader} answers {@code false} on the actual leader because the role read degraded, or the
+   *       dispatch path throws an {@code Error} that {@code ArcadeStateMachine.notifyConfigurationChanged}
+   *       logs and swallows. This is the one case where a seed is genuinely dropped. Both are logged, and the
+   *       admitting-side seed of issue #7521 still covers the two paths that have an admitting node; only a
+   *       {@code KubernetesAutoJoin} self-join would be left unseeded, with the same symptom and the same
+   *       remedy as issue #7833.</li>
+   * </ul>
    *
    * @param term  term of the configuration entry, for the log line only
    * @param index index of the configuration entry, for the log line only
