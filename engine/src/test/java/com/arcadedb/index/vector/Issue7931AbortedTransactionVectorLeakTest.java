@@ -372,6 +372,63 @@ class Issue7931AbortedTransactionVectorLeakTest {
     }
   }
 
+  /**
+   * The branch no end-to-end case can reach: a compaction or a rebuild republishes {@code residentLocations}
+   * wholesale between the replay and the abort, and the offsets the journal captured then address a generation
+   * the index is no longer reading. Every other test in this class parks the rebuild permit precisely so nothing
+   * repairs the leak before it can be asserted on, which also means none of them ever swaps the instance.
+   * <p>
+   * Driven directly rather than through a transaction because the swap has to land INSIDE {@code commit()},
+   * between {@code indexChanges.commit()} and the rollback - a window no test thread can step into. The journal
+   * is built with the same package-private API the replay uses, so what runs here is the production
+   * {@code undoReplay} on a genuinely republished index.
+   * <p>
+   * The id is DELETED for real before the swap, which is what makes the assertion bite: the replacement is built
+   * from the committed pages and so does not carry the id at all, and lifting a tombstone is
+   * {@code addOrUpdate(..., deleted=false)} - it would make the id LIVE again in a generation that never had it,
+   * pointing at an offset for a record that no longer exists. Without the identity check this test fails.
+   */
+  @Test
+  void aRepublishedLocationIndexIsNeverHandedAnOffsetFromTheGenerationBeforeIt() throws Exception {
+    withDatabase(db -> {
+      final LSMVectorIndex index = vectorIndex(db);
+      index.buildVectorGraphNow();
+
+      final RID doomed = ridOf(db, 1);
+      final VectorLocationIndex before = index.residentLocationsForTest();
+      final int tombstoned = before.getVectorIdsForRid(doomed)[0];
+
+      // Exactly what a replay's remove() records, in the same order: read the location, then let the delete
+      // below tombstone it.
+      final VectorIndexReplayUndo undo = new VectorIndexReplayUndo(index, before);
+      undo.recordTombstoned(tombstoned, before.getOffsetAndFlag(tombstoned), doomed);
+
+      db.transaction(() -> db.command("sql", "DELETE FROM Doc WHERE id = ?", 1));
+
+      // The swap. A rebuild republishes the locations from the COMMITTED pages, which no longer hold this id.
+      index.buildVectorGraphNow();
+      final VectorLocationIndex after = index.residentLocationsForTest();
+      assertThat(after).as("precondition: the rebuild must have republished the location index")
+          .isNotSameAs(before);
+      assertThat(after.isLive(tombstoned))
+          .as("precondition: the replacement is built from the committed pages, which no longer carry the id")
+          .isFalse();
+
+      undo.undoIndexReplay();
+
+      assertThat(index.residentLocationsForTest())
+          .as("the compensation must not swap the location index itself").isSameAs(after);
+      assertThat(after.isLive(tombstoned))
+          .as("lifting the tombstone against a REPLACEMENT would make an id live in a generation that never had "
+              + "it, pointing at an offset for a record that no longer exists")
+          .isFalse();
+
+      // The index is still usable afterwards, which is the point of declining rather than throwing.
+      assertThat(index.findNeighborsFromVector(embedding(2), 5, 64).stream().map(Pair::getFirst))
+          .as("the deleted record must not come back through the compensation").doesNotContain(doomed);
+    });
+  }
+
   private interface DatabaseTest {
     void run(Database db) throws Exception;
   }
