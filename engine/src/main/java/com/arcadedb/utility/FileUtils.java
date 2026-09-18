@@ -575,13 +575,25 @@ public class FileUtils {
    * A caller writing through a plain {@link java.io.FileOutputStream} or {@link OutputStreamWriter} instead does
    * not need this: {@code OutputStream.write(byte[])} is specified to loop internally. It is {@link FileChannel}
    * specifically - used for its {@code force(true)} fsync - whose {@code write} contract allows the short return.
+   * <p>
+   * Requires {@code channel} to make progress on every call that does not throw (true of every blocking channel,
+   * {@link FileChannel} among them, which is what every caller today passes). A channel that legitimately returns
+   * zero - a non-blocking one with no room to write into right now - is not a channel this method supports: retrying
+   * such a zero into an unbounded busy-loop would trade a short write for CPU spent spinning, so it fails fast with
+   * an {@link IOException} instead (CodeRabbit review).
    *
    * @param channel the channel to write to
    * @param buffer  the bytes to write; consumed as a side effect, empty on return
    */
   public static void writeFully(final WritableByteChannel channel, final ByteBuffer buffer) throws IOException {
-    while (buffer.hasRemaining())
-      channel.write(buffer);
+    while (buffer.hasRemaining()) {
+      final int written = channel.write(buffer);
+      if (written == 0)
+        throw new IOException(
+            "WritableByteChannel.write() returned 0 with bytes still remaining: the channel made no progress, which "
+                + "writeFully() requires to avoid retrying forever (a non-blocking channel with no room to write "
+                + "into right now is not supported here)");
+    }
   }
 
   public static void appendContentToFile(final File file, final String content) throws IOException {
