@@ -676,14 +676,8 @@ public class BinaryComparator {
    * @return the canonical representation, or {@code value} itself when it needs no rewriting
    */
   public static Object canonicalizeForByteEquality(final Object value) {
-    if (value instanceof BigDecimal decimal) {
-      final BigDecimal stripped = decimal.stripTrailingZeros();
-      // Equal scales mean equal unscaled values too (same number, same scale), so the bytes already match and the
-      // original instance is kept rather than a copy of it.
-      if (stripped.scale() != decimal.scale())
-        return stripped;
-    }
-    return value;
+    final BigDecimal rewritten = rewriteForByteEquality(value);
+    return rewritten != null ? rewritten : value;
   }
 
   /**
@@ -695,16 +689,36 @@ public class BinaryComparator {
    */
   public static Object[] canonicalizeForByteEquality(final Object[] keys) {
     Object[] canonical = keys;
+    boolean copied = false;
 
     for (int i = 0; i < keys.length; i++) {
-      final Object value = canonicalizeForByteEquality(keys[i]);
-      if (value != keys[i]) {
-        if (canonical == keys)
-          canonical = keys.clone();
-        canonical[i] = value;
+      final BigDecimal rewritten = rewriteForByteEquality(keys[i]);
+      if (rewritten == null)
+        continue;
+
+      if (!copied) {
+        canonical = keys.clone();
+        copied = true;
       }
+      canonical[i] = rewritten;
     }
 
     return canonical;
+  }
+
+  /**
+   * The rule both public forms share, answering {@code null} for "this value already serializes the way the
+   * comparator compares it". Saying it with {@code null} rather than by handing the value back unchanged is what
+   * lets the array form tell "nothing to do" from "rewritten" without comparing object references.
+   */
+  private static BigDecimal rewriteForByteEquality(final Object value) {
+    if (value instanceof BigDecimal decimal) {
+      final BigDecimal stripped = decimal.stripTrailingZeros();
+      // Equal scales mean equal unscaled values too (same number, same scale), so the bytes already match and the
+      // original instance is kept rather than a copy of it.
+      if (stripped.scale() != decimal.scale())
+        return stripped;
+    }
+    return null;
   }
 }
