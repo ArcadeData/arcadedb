@@ -551,24 +551,6 @@ class ExpandStepTest extends TestHelper {
    * {@code expand()} flattens one level only: a list nested in a list yields one row whose value IS the nested list.
    * A nested array must behave the same way, so the array arm must not flatten deeper than the list arm does.
    */
-  /**
-   * The {@code BINARY} guard belongs to {@code MultiValue.isSequenceArray()}, which {@code UnwindStep} shares, so
-   * {@code UNWIND} of a blob must not explode it one byte per row either: the two steps have to agree.
-   */
-  @Test
-  void unwindOfABinaryPropertyProducesOneRowHoldingTheWholeBlob() {
-    final DocumentType type = database.getSchema().createDocumentType("BinaryUnwind");
-    type.createProperty("blob", Type.BINARY);
-
-    database.transaction(() -> database.newDocument("BinaryUnwind").set("blob", new byte[] { 1, 2, 3 }).save());
-
-    try (final ResultSet result = database.query("sql", "SELECT blob FROM BinaryUnwind UNWIND blob")) {
-      assertThat(result.hasNext()).isTrue();
-      assertThat(result.next().<byte[]>getProperty("blob")).containsExactly(1, 2, 3);
-      assertThat(result.hasNext()).isFalse();
-    }
-  }
-
   @Test
   void expandFlattensOneLevelOnlyForArraysJustLikeForLists() {
     final List<Object> fromNestedLists = new ArrayList<>();

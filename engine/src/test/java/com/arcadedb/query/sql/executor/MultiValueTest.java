@@ -68,4 +68,28 @@ class MultiValueTest {
     assertThat(MultiValue.getSize(new MultiIterator())).isEqualTo(0);
     assertThat(MultiValue.getSize(new InternalResultSet())).isEqualTo(0);
   }
+
+  /**
+   * Regression test for #7910: {@code isSequenceArray()} is the single source of truth telling {@code ExpandStep} and
+   * {@code UnwindStep} which arrays are a sequence of values. Only the primitive {@code byte[]} is excluded, because
+   * that is how a {@code BINARY} property - an opaque blob - is represented; the BOXED {@code Byte[]} is an ordinary
+   * array and must keep expanding element by element.
+   */
+  @Test
+  void sequenceArraysExcludeOnlyTheBinaryBlob() {
+    assertThat(MultiValue.isSequenceArray(new float[] { 1, 2 })).isTrue();
+    assertThat(MultiValue.isSequenceArray(new double[] { 1, 2 })).isTrue();
+    assertThat(MultiValue.isSequenceArray(new long[] { 1, 2 })).isTrue();
+    assertThat(MultiValue.isSequenceArray(new int[] { 1, 2 })).isTrue();
+    assertThat(MultiValue.isSequenceArray(new short[] { 1, 2 })).isTrue();
+    assertThat(MultiValue.isSequenceArray(new Object[] { 1, 2 })).isTrue();
+    assertThat(MultiValue.isSequenceArray(new Byte[] { 1, 2 })).isTrue();
+    assertThat(MultiValue.isSequenceArray(new byte[][] { { 1 } })).isTrue();
+
+    assertThat(MultiValue.isSequenceArray(new byte[] { 1, 2 })).isFalse();
+    assertThat(MultiValue.isSequenceArray(null)).isFalse();
+    assertThat(MultiValue.isSequenceArray("a string")).isFalse();
+    assertThat(MultiValue.isSequenceArray(List.of(1, 2))).isFalse();
+    assertThat(MultiValue.isSequenceArray(Map.of("k", 1))).isFalse();
+  }
 }
