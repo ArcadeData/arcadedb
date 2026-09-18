@@ -20,10 +20,15 @@ package com.arcadedb.server;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.log.DefaultLogger;
+import com.arcadedb.log.LogManager;
+import com.arcadedb.log.Logger;
 import com.arcadedb.server.security.ServerSecurity;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -187,6 +192,43 @@ class Issue7532SecurityConvergenceReadinessTest {
   }
 
   /**
+   * The give-up line is once per window, not once per process. The window is cleared when the node converges,
+   * so a node that converges and then opens a FRESH window (a later membership change against a cluster whose
+   * documents have not reached it) has a second decision to report, and an operator who never sees it is told
+   * nothing about the second one. Unreachable today - a fingerprint is only ever recorded, never cleared - but
+   * the flag has to mean what the window means, or the next change to either makes this silent.
+   */
+  @Test
+  void aFreshWindowReportsItsOwnGiveUpDecision() {
+    final ServerSecurity security = mock(ServerSecurity.class);
+    when(security.unconvergedClusterSecurityDocuments())
+        .thenReturn(List.of("users"), List.of("users"), List.of(), List.of("users"), List.of("users"));
+
+    final ServerControlPlane controlPlane = new ServerControlPlane(
+        onlineServerWith(caughtUpHaWith(3), security, configurationWith(true, 1L)));
+
+    final AtomicInteger giveUpLines = new AtomicInteger();
+    final Logger original = installGiveUpCountingLogger(giveUpLines);
+    try {
+      controlPlane.notReadyReason();  // opens the first window
+      await(2L);
+      controlPlane.notReadyReason();  // it expires: first decision logged
+      assertThat(giveUpLines.get()).as("the expired window reports its decision").isEqualTo(1);
+
+      controlPlane.notReadyReason();  // converged: the window, and the decision with it, are forgotten
+      controlPlane.notReadyReason();  // unconverged again: a fresh window opens
+      await(2L);
+      controlPlane.notReadyReason();  // it expires too
+
+      assertThat(giveUpLines.get())
+          .as("a fresh window that expires is a fresh decision the operator has to be told about")
+          .isEqualTo(2);
+    } finally {
+      LogManager.instance().setLogger(original);
+    }
+  }
+
+  /**
    * Order matters: a node that has not caught up reports THAT, not the security documents it also does not
    * hold. The consensus answer is the one an operator acts on first, and it is the one that clears itself.
    */
@@ -215,6 +257,41 @@ class Issue7532SecurityConvergenceReadinessTest {
   }
 
   // -----------------------------------------------------------------------------------------------------------
+
+  /**
+   * Installs a {@link Logger} counting the SEVERE give-up lines, returning the previous logger for restore
+   * (the sanctioned test pattern, see {@code DefaultLogger}).
+   */
+  private static Logger installGiveUpCountingLogger(final AtomicInteger counter) {
+    final Logger counting = new Logger() {
+      private void record(final Level level, final String message) {
+        if (level == Level.SEVERE && message != null && message.startsWith("Reporting READY after waiting"))
+          counter.incrementAndGet();
+      }
+
+      @Override
+      public void log(final Object requester, final Level level, final String message, final Throwable throwable,
+          final String context, final Object arg1, final Object arg2, final Object arg3, final Object arg4,
+          final Object arg5, final Object arg6, final Object arg7, final Object arg8, final Object arg9,
+          final Object arg10, final Object arg11, final Object arg12, final Object arg13, final Object arg14,
+          final Object arg15, final Object arg16, final Object arg17) {
+        record(level, message);
+      }
+
+      @Override
+      public void log(final Object requester, final Level level, final String message, final Throwable throwable,
+          final String context, final Object... args) {
+        record(level, message);
+      }
+
+      @Override
+      public void flush() {
+      }
+    };
+    final Logger previous = new DefaultLogger();
+    LogManager.instance().setLogger(counting);
+    return previous;
+  }
 
   private static void await(final long ms) {
     final long until = System.currentTimeMillis() + ms;

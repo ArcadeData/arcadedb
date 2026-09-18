@@ -120,7 +120,11 @@ public class ServerControlPlane {
    * window differ by the time between them, which is not a difference this gate can act on.
    */
   private volatile long    securityConvergenceWindowOpenedAt = 0L;
-  /** Whether the SEVERE give-up line has already been emitted, so the window expiring does not log per probe. */
+  /**
+   * Whether the SEVERE give-up line has already been emitted for the window currently open, so the window
+   * expiring does not log once per probe. Cleared together with the window, because "once" means once per
+   * window: a node that converges and later opens a fresh window has a fresh decision to report.
+   */
   private volatile boolean securityConvergenceGiveUpLogged   = false;
 
   public ServerControlPlane(final ArcadeDBServer server) {
@@ -447,6 +451,7 @@ public class ServerControlPlane {
       // readable this tick, so resetting on it would restart the bound on every such blip and a node whose HA
       // layer is flapping would never reach the give-up branch at all. The bound has to be a bound.
       securityConvergenceWindowOpenedAt = 0L;
+      securityConvergenceGiveUpLogged = false;
       return null;
     }
 

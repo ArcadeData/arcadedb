@@ -940,7 +940,9 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       // line, so an operator joining a peer over gRPC had nothing to branch on while one joining it over
       // POST /api/v1/cluster/peer got a hard failure. Re-issuing the RPC is idempotent on the membership
       // change and reissues the seed, which is what makes UNAVAILABLE the honest status rather than a
-      // decorative one.
+      // decorative one. Raised as a StatusException here rather than out of the control plane, which must keep
+      // returning normally so the join stands: respond() catches it and toStatus() passes a StatusException
+      // through unchanged, so this is the transport choosing the status for a result it was handed.
       if (result.hasFailedSeeds())
         throw Status.UNAVAILABLE.withDescription(result.errorMessage() + " " + result.detailMessage()).asException();
       return ConnectClusterResponse.newBuilder().build();
