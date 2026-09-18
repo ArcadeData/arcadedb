@@ -127,6 +127,24 @@ class PostgresCopyStatementTest {
   }
 
   /**
+   * Found in the review of issue #7858: the query form reads to the closing {@code )} with
+   * {@code matchingParenthesis}, which scanned a back-tick identifier with {@code indexOf} - so an ESCAPED
+   * back-tick ended it, and a {@code )} inside that identifier became the outer query's terminator. The same
+   * escaping rule the tokenizer and {@link Identifier#quote} use applies there too.
+   */
+  @Test
+  void anEscapedBackTickInsideTheQueryFormDoesNotEndTheIdentifierOrTheQuery() {
+    // `a`b)` is one identifier holding a back-tick and a ')'. The query must be read whole, up to the REAL ')'.
+    final String name = Identifier.quote("a`b)");
+    assertThat(PostgresCopyStatement.parse("COPY (SELECT FROM " + name + ") TO STDOUT").getQuery())
+        .isEqualTo("SELECT FROM " + name);
+
+    // A double-quoted identifier escapes by doubling the quote, which the same scan still reads correctly.
+    assertThat(PostgresCopyStatement.parse("COPY (SELECT FROM \"a\"\"b)\") TO STDOUT").getQuery())
+        .isEqualTo("SELECT FROM \"a\"\"b)\"");
+  }
+
+  /**
    * Issue #7858: the table form splices its names between back-ticks in a generated SELECT, and used to guard that
    * splice by refusing the back-tick on the stated ground that ArcadeDB's SQL cannot escape inside an identifier.
    * It can - that is what #7740 established and what {@link Identifier#quote} does - so the guard refused a name

@@ -157,6 +157,36 @@ class Issue7868OwnerJoinTest {
         .containsExactlyElementsOf(resolve("SELECT r.rolname, n.nspname FROM pg_roles r, pg_namespace n").rows);
   }
 
+  /**
+   * Found in review: the five families the ranking now ties with each other were still FROM-order dependent
+   * PAIRWISE, because each built a row of its own. A ROLES row carried no {@code pg_database} columns, so
+   * {@code SELECT r.rolname, d.datname FROM pg_roles r, pg_database d} read {@code datname} out of the null
+   * fill, while the same query with the FROM order swapped answered it - the #7224 defect one level up, inside
+   * the tied bucket. All six now answer the same row, so the tie cannot decide anything.
+   */
+  @Test
+  void twoSingleRowFamiliesJoinedToEachOtherAnswerBothSidesWhicheverComesFirst() {
+    final String[] relations = { "pg_namespace", "pg_roles", "pg_database", "information_schema.usage_privileges",
+        "information_schema.character_sets", "information_schema.collations" };
+    final String projection = "n.nspname, r.rolname, d.datname, p.privilege_type, c.character_set_name, l.collation_name";
+    final String[] aliases = { "n", "r", "d", "p", "c", "l" };
+
+    // Every ordering of the six that starts with a different one of them: whichever the ranking picks, the
+    // projection has to be answerable in full.
+    for (int first = 0; first < relations.length; first++) {
+      final StringBuilder from = new StringBuilder();
+      from.append(relations[first]).append(' ').append(aliases[first]);
+      for (int i = 0; i < relations.length; i++)
+        if (i != first)
+          from.append(", ").append(relations[i]).append(' ').append(aliases[i]);
+
+      final PostgresCatalog.Answer answer = resolve("SELECT " + projection + " FROM " + from);
+      assertThat(answer.rows).as("one row per singleton, whichever relation is named first").hasSize(1);
+      assertThat(answer.rows.get(0)).as("no column may fall through to Row.complete()'s null fill (first=%s)",
+          relations[first]).doesNotContainValue(null);
+    }
+  }
+
   /** What must not move: the families that CONSTRAIN a row set still outrank the ones that only qualify it. */
   @Test
   void tablesColumnsAndTypesStillOutrankTheSingleRowFamilies() {

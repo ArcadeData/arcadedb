@@ -272,6 +272,7 @@ class TransactionControlNoRowDescriptionIT extends PostgresWireProtocolTestBase 
 
         final List<WireMessage> response = readUntilReadyForQuery(in);
         assertThat(messageTypesOf(response)).as("the recovery statement is accepted").contains('1');
+        assertThat(messageTypesOf(response)).as("Describe('P') answers NoData, and exactly once").containsOnlyOnce('n');
         assertThat(messageTypesOf(response)).doesNotContain('T');
         assertThat(commandTagOf(response)).as("a COMMIT of an aborted block is tagged ROLLBACK").isEqualTo("ROLLBACK");
         assertThat(readyForQueryStatusOf(response)).as("the block is over").isEqualTo('I');

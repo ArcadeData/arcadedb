@@ -454,9 +454,10 @@ public class PostgresCatalog {
    * {@code SELECT r.rolname FROM pg_roles r JOIN pg_namespace n ON n.nspowner = r.oid} was answered as a schema
    * query, one nameless role, which is the #7224 outcome with pg_roles where pg_type was.
    * <p>
-   * The families above SCHEMAS tie with each other on purpose: none of them constrains another's row set, and
-   * every one of their rows now carries the schema row anyway (see {@link #schemaRow}), so which one a query
-   * naming two of them lands on changes only the row count, not whether the joined columns have values.
+   * The families above SCHEMAS tie with each other, and the tie is immaterial rather than merely tolerated:
+   * {@link #buildRows} answers all six with the SAME row, {@link #singletonRow}'s, which carries every one of
+   * their relations. A tie broken by FROM order used to change the answer - a ROLES row had no pg_database
+   * columns - and now cannot.
    * <p>
    * TYPES still loses to TABLES, VIEWS and COLUMNS, which is the half of the old ranking that was right, and
    * beats the single-row families: pg_type joined to pg_roles reads an owner for each type, so it qualifies.
@@ -880,14 +881,14 @@ public class PostgresCatalog {
 
   private static List<Row> buildRows(final Family family, final Context context) {
     return switch (family) {
-      case SCHEMAS -> List.of(schemaRow(context).complete());
+      // Six families, one row, the SAME row: this catalog models exactly one of each of these things, and
+      // singletonRow() carries all six on it (issue #7868), so which of them a query naming two is decided to be
+      // about cannot change the answer. Splitting them into six builders is what left them FROM-order dependent:
+      // a ROLES row carried no pg_database, so `SELECT r.rolname, d.datname FROM pg_roles r, pg_database d` read
+      // datname out of the null fill while the same query with the FROM order swapped answered it.
+      case SCHEMAS, DATABASES, ROLES, PRIVILEGES, CHARACTER_SETS, COLLATIONS -> List.of(singletonRow(context).complete());
       case TABLES -> tableRows(context);
       case COLUMNS -> columnRows(context);
-      case DATABASES -> List.of(databaseRow(context).complete());
-      case ROLES -> List.of(roleRow(context).complete());
-      case PRIVILEGES -> List.of(privilegeRow(context).complete());
-      case CHARACTER_SETS -> List.of(characterSetRow(context).complete());
-      case COLLATIONS -> List.of(collationRow(context).complete());
       case TYPES -> typeRows(context);
       // ArcadeDB has no relation that a PostgreSQL client would render as a view.
       case VIEWS -> List.of();
@@ -917,14 +918,12 @@ public class PostgresCatalog {
     final List<Row> rows = new ArrayList<>(types.size());
 
     for (final PostgresType type : types) {
-      final Row row = describeType(new Row(), type);
-      // The namespace here is pg_catalog, not the database's own schema, which is what typnamespace already says
-      // these types are in - so this row deliberately does NOT start from schemaRow(). The owner is the same one
-      // every other row carries (issue #7868): typowner is OWNER_OID, so a type query joining pg_roles on it has
-      // to find the role row rather than a null fill.
-      rows.add(ownedBy(row, context)
-          .with("pg_namespace", "oid", row.of("pg_type").get("typnamespace"), "nspname", PG_CATALOG_SCHEMA,
-              "nspowner", OWNER_OID).complete());
+      // Built on singletonRow() like every other row, so the owner a type query joins on typowner is on the row
+      // (issue #7868), with pg_namespace OVERWRITTEN to pg_catalog afterwards: that is what typnamespace says
+      // these types are in, so the join column and the joined row agree.
+      final Row row = describeType(singletonRow(context), type);
+      rows.add(row.with("pg_namespace", "oid", row.of("pg_type").get("typnamespace"), "nspname", PG_CATALOG_SCHEMA,
+          "nspowner", OWNER_OID).complete());
     }
 
     return rows;
@@ -944,40 +943,52 @@ public class PostgresCatalog {
   }
 
   /**
-   * The row every other row in this catalog is built on: the one schema, and the one role that owns it.
+   * The row every other row in this catalog is built on: everything this catalog models exactly ONE of - the
+   * schema, the role that owns it, the database, the one USAGE privilege on that schema, the one character set
+   * and the one collation. They are carried TOGETHER, on every row, rather than one per family.
    * <p>
-   * Issue #7868: the owner is carried HERE rather than only on a role query's own row, because {@code nspowner},
-   * {@code relowner}, {@code typowner} and {@code datdba} are all stamped with {@link #OWNER_OID} on rows that
-   * did not carry the row that OID points at, so {@code JOIN pg_roles r ON r.oid = c.relowner} - the shape a GUI
-   * browser uses to list tables with their owner - read {@code rolname} out of {@link Row#complete()}'s null fill
-   * and answered NULL for every table. The catalog knew the answer all along: {@code pg_get_userbyid(c.relowner)}
-   * returns it, so the two spellings of the same question disagreed.
+   * Issue #7868. A relation a query names purely to QUALIFY its rows has to be carried on each emitted row, or
+   * the join reads {@link Row#complete()}'s null fill: {@code JOIN pg_roles r ON r.oid = c.relowner} - the shape
+   * a GUI browser uses to list tables with their owner - answered NULL for every table, even though the catalog
+   * returns the name from {@code pg_get_userbyid(c.relowner)} and stamps {@link #OWNER_OID} on the very column
+   * being joined. The same held for {@code nspowner}, {@code typowner} and {@code datdba}.
+   * <p>
+   * Carrying ALL of them here rather than each family building its own row is what makes {@link #rank()}'s tie
+   * among these six immaterial instead of merely undocumented. A row per family left them FROM-order dependent
+   * pairwise - a ROLES row had no {@code pg_database} columns, so {@code SELECT r.rolname, d.datname FROM
+   * pg_roles r, pg_database d} answered a NULL {@code datname} while the same query with the FROM order swapped
+   * answered it - which is the #7224 defect one level up, inside the tied bucket (found in review).
+   * <p>
+   * It costs nothing: {@link Row#complete()} already materialises EVERY column of EVERY modelled relation on
+   * every row it emits. The only thing this decides is whether those columns hold the catalog's answer or a NULL.
+   * <p>
+   * Only the connected user is described as a role: enumerating the server's accounts is not something an
+   * emulated catalog should hand out, and no client needs it to browse the database it is connected to.
    */
-  private static Row schemaRow(final Context context) {
+  private static Row singletonRow(final Context context) {
     final String schema = context.schema();
-    return ownedBy(new Row(), context)//
+    return new Row()//
         .with("pg_namespace", "oid", SCHEMA_OID, "nspname", schema, "nspowner", OWNER_OID)//
         .with("information_schema.schemata", "catalog_name", schema, "schema_name", schema, "schema_owner",
-            context.userName());
-  }
-
-  /**
-   * Writes the {@code pg_roles} / {@code pg_user} columns of the connected user onto a row, keyed on
-   * {@link #OWNER_OID} so the row agrees with the {@code relowner} / {@code nspowner} / {@code typowner} /
-   * {@code datdba} the same row already carries. One place decides what this catalog says a role is, for the
-   * same reason {@link #describeType} is the one place that decides what it says a type is: a client that
-   * enumerates pg_roles and one that reads an owner off a join must not be told two different things.
-   * <p>
-   * Only the connected user: enumerating the server's accounts is not something an emulated catalog should hand
-   * out, and no client needs it to browse the database it is connected to.
-   */
-  private static Row ownedBy(final Row row, final Context context) {
-    return row//
+            context.userName())//
         .with("pg_roles", "oid", OWNER_OID, "rolname", context.userName(), "rolsuper", Boolean.FALSE, "rolinherit",
             Boolean.TRUE, "rolcreaterole", Boolean.FALSE, "rolcreatedb", Boolean.FALSE, "rolcanlogin", Boolean.TRUE,//
             "rolreplication", Boolean.FALSE, "rolconnlimit", -1, "rolbypassrls", Boolean.FALSE)//
         .with("pg_user", "usename", context.userName(), "usesysid", OWNER_OID, "usecreatedb", Boolean.FALSE,//
-            "usesuper", Boolean.FALSE, "userepl", Boolean.FALSE, "usebypassrls", Boolean.FALSE);
+            "usesuper", Boolean.FALSE, "userepl", Boolean.FALSE, "usebypassrls", Boolean.FALSE)//
+        .with("pg_database", "oid", FIRST_USER_OID, "datname", schema, "datdba", OWNER_OID,//
+            // 6 is UTF8 in PostgreSQL's pg_encoding table, which is the only encoding this protocol speaks.
+            "encoding", 6, "datcollate", "C", "datctype", "C", "datistemplate", Boolean.FALSE, "datallowconn",
+            Boolean.TRUE, "datconnlimit", -1, "dattablespace", 0)//
+        .with("information_schema.usage_privileges", "grantor", context.userName(), "grantee", context.userName(),//
+            "object_catalog", schema, "object_schema", schema, "object_name", schema, "object_type", "SCHEMA",//
+            "privilege_type", "USAGE", "is_grantable", "NO")//
+        .with("information_schema.character_sets", "character_set_catalog", null, "character_set_schema", null,//
+            "character_set_name", "UTF8", "character_repertoire", "UCS", "form_of_use", "UTF8",//
+            "default_collate_catalog", schema, "default_collate_schema", PG_CATALOG_SCHEMA, "default_collate_name",
+            "default")//
+        .with("information_schema.collations", "collation_catalog", schema, "collation_schema", PG_CATALOG_SCHEMA,//
+            "collation_name", "default", "pad_attribute", "NO PAD");
   }
 
   private static List<Row> tableRows(final Context context) {
@@ -994,7 +1005,7 @@ public class PostgresCatalog {
     final String schema = context.schema();
     final int oid = oidOf(type.getName());
 
-    return schemaRow(context)//
+    return singletonRow(context)//
         .with("pg_class", "oid", oid, "relname", type.getName(), "relnamespace", SCHEMA_OID, "relowner", OWNER_OID,//
             "relkind", "r", "relpersistence", "p", "relnatts", type.getPropertyNames().size(),//
             "relhasindex", !type.getAllIndexes(false).isEmpty(), "relhasrules", Boolean.FALSE,//
@@ -1057,43 +1068,6 @@ public class PostgresCatalog {
     if (pgType == PostgresType.NUMERIC)
       return 10;
     return pgType.isNativeScalarType() ? 2 : null;
-  }
-
-  private static Row databaseRow(final Context context) {
-    return schemaRow(context).with("pg_database", "oid", FIRST_USER_OID, "datname", context.schema(), "datdba", OWNER_OID,//
-        // 6 is UTF8 in PostgreSQL's pg_encoding table, which is the only encoding this protocol speaks.
-        "encoding", 6, "datcollate", "C", "datctype", "C", "datistemplate", Boolean.FALSE, "datallowconn", Boolean.TRUE,//
-        "datconnlimit", -1, "dattablespace", 0);
-  }
-
-  /**
-   * The role query's own row, which is {@link #schemaRow} unchanged: this catalog models exactly one role, that
-   * role owns the one schema, and {@link #schemaRow} carries both. Now that ROLES outranks SCHEMAS (issue #7868)
-   * a role query naming pg_namespace lands here, so the schema half has to be on the row for the same reason the
-   * role half has to be on a schema query's row - whichever of the two the ranking picks, the other one's
-   * columns must have values rather than {@link Row#complete()}'s null fill.
-   */
-  private static Row roleRow(final Context context) {
-    return schemaRow(context);
-  }
-
-  private static Row privilegeRow(final Context context) {
-    final String schema = context.schema();
-    return schemaRow(context).with("information_schema.usage_privileges", "grantor", context.userName(), "grantee",
-        context.userName(), "object_catalog", schema, "object_schema", schema, "object_name", schema, "object_type",
-        "SCHEMA", "privilege_type", "USAGE", "is_grantable", "NO");
-  }
-
-  private static Row characterSetRow(final Context context) {
-    return schemaRow(context).with("information_schema.character_sets", "character_set_catalog", null, "character_set_schema",
-        null, "character_set_name", "UTF8", "character_repertoire", "UCS", "form_of_use", "UTF8",
-        "default_collate_catalog", context.schema(), "default_collate_schema", PG_CATALOG_SCHEMA, "default_collate_name",
-        "default");
-  }
-
-  private static Row collationRow(final Context context) {
-    return schemaRow(context).with("information_schema.collations", "collation_catalog", context.schema(), "collation_schema",
-        PG_CATALOG_SCHEMA, "collation_name", "default", "pad_attribute", "NO PAD");
   }
 
   private static List<DocumentType> sortedTypes(final Context context) {

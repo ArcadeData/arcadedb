@@ -109,6 +109,34 @@ class Issue7895SelectStarKeepsRecordAttributesTest {
   }
 
   /**
+   * Found in review: {@code DetachedDocument.toJSON(true)} / {@code toMap(true)} hardcoded {@code @cat = "d"},
+   * so a DETACHED vertex or edge said it was a document - while {@code JsonSerializer.serializeResult} read its
+   * schema type and said "v"/"e" for the same object, and so does the new seed. Two paths serializing the same
+   * row differently is the whole of #7895, so the three are aligned rather than left to disagree.
+   */
+  @Test
+  void aDetachedVertexOrEdgeKeepsItsOwnCategory() throws Exception {
+    TestHelper.executeInNewDatabase("issue7895Detached", (db) -> {
+      db.command("sql", "CREATE VERTEX TYPE V1");
+      db.command("sql", "CREATE EDGE TYPE E1");
+      db.command("sql", "CREATE DOCUMENT TYPE T");
+      db.command("sql", "INSERT INTO T SET name = 'n1'");
+      db.command("sql", "CREATE VERTEX V1 SET name = 'a'");
+      db.command("sql", "CREATE VERTEX V1 SET name = 'b'");
+      db.command("sql", "CREATE EDGE E1 FROM (SELECT FROM V1 WHERE name = 'a') TO (SELECT FROM V1 WHERE name = 'b') SET w = 5");
+
+      for (final String[] step : new String[][] { { "V1", "v" }, { "E1", "e" }, { "T", "d" } }) {
+        try (final ResultSet rs = db.query("sql", "SELECT FROM " + step[0])) {
+          final Document detached = rs.next().getElement().orElseThrow().detach();
+          assertThat(detached.toJSON(true).getString("@cat"))
+              .as("a detached %s must not claim to be a document", step[0]).isEqualTo(step[1]);
+          assertThat(detached.toMap(true).get("@cat")).isEqualTo(step[1]);
+        }
+      }
+    });
+  }
+
+  /**
    * The seed is structural attributes only, never the record's properties: what #7773 established must not be
    * undone from the other side.
    */

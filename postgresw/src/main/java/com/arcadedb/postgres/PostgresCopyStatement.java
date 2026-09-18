@@ -395,8 +395,9 @@ public final class PostgresCopyStatement {
 
   /**
    * The index of the {@code )} closing the {@code (} at {@code open}, read past nested parentheses, string
-   * literals (with {@code ''} and, in {@code E'...'}, backslash escapes), quoted identifiers of either kind and
-   * comments - anything the query inside may legitimately hold a stray parenthesis in.
+   * literals (with {@code ''} and, in {@code E'...'}, backslash escapes), quoted identifiers of either kind -
+   * each with its OWN escaping, the back-tick's backslash and the double quote's doubled quote - and comments:
+   * anything the query inside may legitimately hold a stray parenthesis in.
    */
   static int matchingParenthesis(final String text, final int open) {
     int depth = 0;
@@ -425,8 +426,21 @@ public final class PostgresCopyStatement {
           }
           i++;
         }
-      } else if (c == '"' || c == '`') {
-        final int end = text.indexOf(c, i + 1);
+      } else if (c == '`') {
+        // A back-tick identifier escapes with a backslash, which indexOf() cannot see: `a\`b)` used to end at the
+        // ESCAPED back-tick, leaving the ')' inside the identifier to close the query (found in review). Same rule
+        // the tokenizer reads them with, and the same rule Identifier.quote() writes them with.
+        int end = i + 1;
+        while (end < length && text.charAt(end) != '`') {
+          if (text.charAt(end) == '\\')
+            ++end;
+          ++end;
+        }
+        i = Math.min(end, length);
+      } else if (c == '"') {
+        // A double-quoted identifier escapes by DOUBLING the quote, so stopping at the first one is right: the
+        // next character is then the second quote of the pair, which re-enters this branch and scans on.
+        final int end = text.indexOf('"', i + 1);
         i = end < 0 ? length : end;
       } else if (c == '-' && i + 1 < length && text.charAt(i + 1) == '-') {
         final int end = text.indexOf('\n', i);

@@ -18,7 +18,9 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.serializer.json.JSONObject;
 
@@ -89,13 +91,32 @@ public class DetachedDocument extends BaseDocument {
         "Detached document cannot be modified. Get a new regular object from the database by its id to modify it");
   }
 
+  /**
+   * The category this record belongs to, read from its SCHEMA TYPE rather than hardcoded to {@code "d"}.
+   * {@link BaseDocument#detach()} is what produces this class, and it produces one for a vertex and an edge as
+   * much as for a document - so answering {@code "d"} for all three said a detached vertex was a document, which
+   * is the one thing {@code @cat} exists to say. {@link com.arcadedb.serializer.JsonSerializer} has always read
+   * the schema type for a detached record, so the two serializations of the same object disagreed (found in the
+   * review of issue #7895).
+   * <p>
+   * {@code @in} / {@code @out} are deliberately NOT added for a detached edge: a detached record holds the
+   * property map it was built from and no endpoints, so there is nothing truthful to put there.
+   */
+  private String category() {
+    if (type instanceof VertexType)
+      return "v";
+    if (type instanceof EdgeType)
+      return "e";
+    return "d";
+  }
+
   @Override
   public synchronized Map<String, Object> toMap(final boolean includeMetadata) {
     // LinkedHashMap (not HashMap) so iteration order matches getPropertyNames() (this same
     // LinkedHashMap-backed map's keySet()) — see MutableDocument.toMap() for the same fix (#6472).
     final Map<String, Object> result = new LinkedHashMap<>(map);
     if (includeMetadata) {
-      result.put(Property.CAT_PROPERTY, "d");
+      result.put(Property.CAT_PROPERTY, category());
       result.put(Property.TYPE_PROPERTY, type.getName());
       if (getIdentity() != null)
         result.put(RID_PROPERTY, getIdentity().toString());
@@ -115,7 +136,7 @@ public class DetachedDocument extends BaseDocument {
   public synchronized JSONObject toJSON(final boolean includeMetadata) {
     final JSONObject result = new JsonSerializer(database).map2json(map, type, includeMetadata);
     if (includeMetadata) {
-      result.put(Property.CAT_PROPERTY, "d");
+      result.put(Property.CAT_PROPERTY, category());
       result.put(Property.TYPE_PROPERTY, type.getName());
       if (getIdentity() != null)
         result.put(RID_PROPERTY, getIdentity().toString());
