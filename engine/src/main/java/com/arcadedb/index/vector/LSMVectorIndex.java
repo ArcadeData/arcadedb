@@ -1676,6 +1676,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // acted on after it is released, for the reason spelled out where it is set (issue #7814).
     boolean buildFromScratch = false;
 
+    // Whether this thread got as far as settling what happens to the on-disk graph. The latch cleared in the
+    // finally below means "still to be decided", so only a thread that decided may clear it - and the wait at the
+    // top of this locked section throws on an interrupt, which would otherwise reach that finally with both
+    // decision variables still at their initial values and clear a latch this thread never owned, while the
+    // thread that does own it is still building.
+    boolean decisionTaken = false;
+
     graphBuildLock.lock();
     try {
       // A from-scratch build another search thread has already decided on runs outside this lock (issue #7814),
@@ -1683,6 +1690,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // below only to queue for a second build of the same corpus. Rechecked rather than assumed on wake-up: a
       // build that failed signals without having published anything, and this thread then decides for itself.
       awaitPendingSearchRebuild(this::graphNotYetMaterialised);
+      decisionTaken = true;
 
       // Double-check after acquiring the lock
       if (!graphNotYetMaterialised())
@@ -1725,7 +1733,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // latch passes to reuseStalePrefixGraph(), which clears it under the same mutex once the graph is published.
       // The from-scratch branch is the second exception, for the same reason as the prefix one: it has decided
       // but not yet built, and buildGraphFromScratchWithRetry() clears the latch itself the moment it starts.
-      if (prefixReuseCandidate == null && !buildFromScratch)
+      if (decisionTaken && prefixReuseCandidate == null && !buildFromScratch)
         persistedGraphUnresolved = false;
       graphBuildLock.unlock();
     }
