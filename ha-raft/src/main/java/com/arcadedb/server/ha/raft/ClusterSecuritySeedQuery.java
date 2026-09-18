@@ -70,6 +70,19 @@ public final class ClusterSecuritySeedQuery {
    */
   private static final long SEED_REPORT_MARGIN_MS = 30_000L;
 
+  /**
+   * Attempts a request whose only failure is "you are not the leader any more" (issue #7834).
+   * <p>
+   * The address this dials was resolved a moment earlier, so a 409 is an election that landed in between - a
+   * transient condition, and one that resolves into a different address rather than the same one succeeding.
+   * Small, because every attempt is a fresh resolve and a round trip, and because the caller (an admission, or
+   * a node's own catch-up) has its own retry: an operator re-POSTs the peer, and a node asks again at its next
+   * restart or snapshot install.
+   */
+  private static final int NOT_LEADER_ATTEMPTS = 3;
+  /** Long enough for an election to name a new leader, short enough not to hold an admission open. */
+  private static final long NOT_LEADER_BACKOFF_MS = 500L;
+
   private ClusterSecuritySeedQuery() {
   }
 
@@ -122,19 +135,6 @@ public final class ClusterSecuritySeedQuery {
         .put(ReplicatedSecurityFingerprintRepository.GROUPS, security.groupsFingerprint())
         .put(ReplicatedSecurityFingerprintRepository.API_TOKENS, security.apiTokensFingerprint());
   }
-
-  /**
-   * Attempts a request whose only failure is "you are not the leader any more" (issue #7834).
-   * <p>
-   * The address this dials was resolved a moment earlier, so a 409 is an election that landed in between - a
-   * transient condition, and one that resolves into a different address rather than the same one succeeding.
-   * Small, because every attempt is a fresh resolve and a round trip, and because the caller (an admission, or
-   * a node's own catch-up) has its own retry: an operator re-POSTs the peer, and a node asks again at its next
-   * restart or snapshot install.
-   */
-  private static final int NOT_LEADER_ATTEMPTS = 3;
-  /** Long enough for an election to name a new leader, short enough not to hold an admission open. */
-  private static final long NOT_LEADER_BACKOFF_MS = 500L;
 
   private static List<String> seed(final ArcadeDBServer server, final RaftHAPlugin plugin, final String reason,
       final JSONObject fingerprints) throws IOException {
