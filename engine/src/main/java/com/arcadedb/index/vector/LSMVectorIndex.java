@@ -7646,6 +7646,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * rather than inlined to {@code true}: it names the invariant this method actually depends on (index replay
    * happens later) instead of hard-coding today's one way of guaranteeing it.
    */
+  private boolean isTransactionalCall() {
+    final TransactionContext tx = getDatabase().getTransaction();
+    final TransactionContext.STATUS txStatus = tx.getStatus();
+    return txStatus == TransactionContext.STATUS.BEGUN ||
+        (txStatus == TransactionContext.STATUS.COMMIT_1ST_PHASE && tx.isIndexChangesReplayed());
+  }
+
   /** Whether no id appears in both of a journal's id sets. Assertion support for {@link #undoReplay}. */
   private static boolean disjoint(final VectorIndexReplayUndo undo) {
     for (int i = 0; i < undo.allocatedCount; i++)
@@ -7653,13 +7660,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
         if (undo.allocatedIds[i] == undo.tombstonedIds[j])
           return false;
     return true;
-  }
-
-  private boolean isTransactionalCall() {
-    final TransactionContext tx = getDatabase().getTransaction();
-    final TransactionContext.STATUS txStatus = tx.getStatus();
-    return txStatus == TransactionContext.STATUS.BEGUN ||
-        (txStatus == TransactionContext.STATUS.COMMIT_1ST_PHASE && tx.isIndexChangesReplayed());
   }
 
   /**
