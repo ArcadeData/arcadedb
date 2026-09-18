@@ -118,6 +118,7 @@ public class FetchFromSchemaTriggersStep extends AbstractExecutionStep {
 
       @Override
       public void close() {
+        // Nothing to release: the whole listing is already in memory by the time this result set exists.
       }
 
       @Override

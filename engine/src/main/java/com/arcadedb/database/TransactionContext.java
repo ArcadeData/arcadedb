@@ -215,19 +215,21 @@ public class TransactionContext implements Transaction {
   private       List<Integer>                        lockedFiles;
   private       List<Integer>                        explicitLockedFiles   = null;
   private       long                                 txId                  = -1;
-  // #7667: bumped once per SUCCESSFUL commit of THIS context object. A TransactionContext is reused across
-  // begin/commit cycles (LocalDatabase.begin() only pushes a new one for a NESTED transaction), and txId is -1
-  // outside the WAL window, so neither object identity nor txId can answer "has the transaction I am holding been
-  // committed out from under me". This can: a caller snapshots it, runs arbitrary code, and a changed value means
-  // that code published this transaction - which is exactly what a statement that commits mid-execution
-  // (BatchStep's `BATCH n`, TRUNCATE TYPE, REBUILD INDEX) does.
-  //
-  // Counts COMMITS, deliberately not begins (claude-review on PR #7850). A begin counter would also move for a
-  // rollback followed by a fresh begin inside one statement, and the two mean opposite things to the async batch:
-  // after a commit the buffered writes are durable and must be dropped silently, after a rollback they are gone and
-  // their submitters must be told. Keyed on the commit, the rollback case simply does not match and keeps the
-  // pre-existing reporting path - so the fix does not rest on the invariant that no statement rolls the top-level
-  // transaction back and re-begins it.
+  /**
+   * #7667: bumped once per SUCCESSFUL commit of THIS context object. A {@code TransactionContext} is reused across
+   * begin/commit cycles ({@code LocalDatabase.begin()} only pushes a new one for a NESTED transaction), and
+   * {@code txId} is -1 outside the WAL window, so neither object identity nor {@code txId} can answer "has the
+   * transaction I am holding been committed out from under me". This can: a caller snapshots it, runs arbitrary
+   * code, and a changed value means that code published this transaction - which is exactly what a statement that
+   * commits mid-execution ({@code BatchStep}'s {@code BATCH n}, {@code TRUNCATE TYPE}, {@code REBUILD INDEX}) does.
+   * <p>
+   * Counts COMMITS, deliberately not begins (claude-review on PR #7850). A begin counter would also move for a
+   * rollback followed by a fresh begin inside one statement, and the two mean opposite things to the async batch:
+   * after a commit the buffered writes are durable and must be dropped silently, after a rollback they are gone and
+   * their submitters must be told. Keyed on the commit, the rollback case simply does not match and keeps the
+   * pre-existing reporting path - so the fix does not rest on the invariant that no statement rolls the top-level
+   * transaction back and re-begins it.
+   */
   private       long                                 commitCount           = 0;
   private       STATUS                               status                = STATUS.INACTIVE;
   // Whether the 1st phase in progress ends by replaying the queued index operations - always true for an
