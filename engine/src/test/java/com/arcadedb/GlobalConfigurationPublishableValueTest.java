@@ -65,6 +65,13 @@ class GlobalConfigurationPublishableValueTest {
   }
 
   @Test
+  void theGroupGrantedToAUserSurvivesTheRedaction() {
+    assertThat(GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue("mydb[jay:hunter2:admins]"))
+        .as("who may reach a database with which role is what this report is read for; only the password cannot be shown")
+        .isEqualTo("mydb[jay:*****:admins]");
+  }
+
+  @Test
   void aCredentialWithNoPasswordIsLeftAsWritten() {
     assertThat(GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue("mydb[jay]")).isEqualTo("mydb[jay]");
   }
