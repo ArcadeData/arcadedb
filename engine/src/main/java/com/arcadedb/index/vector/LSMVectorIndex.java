@@ -4699,10 +4699,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * its RECLAIM half only - {@link #reclaimHeapForRebuild} - which is a pure improvement over the nothing that
    * came before it.
    * <p>
-   * <b>A build too small to matter takes no permit.</b> Below {@link #ASYNC_REBUILD_MIN_GRAPH_SIZE} - the same
-   * threshold this class already uses to separate a build cheap enough to run inline from one worth a background
-   * thread - queueing would trade milliseconds of work for however long the permit holder's rebuild takes, which
-   * is the wrong trade for an index that cannot threaten the heap in the first place.
+   * <b>A build too small to matter takes no permit</b>, and does not pay {@link #reclaimHeapForRebuild} either.
+   * Below {@link #ASYNC_REBUILD_MIN_GRAPH_SIZE} - the same threshold this class already uses to separate a build
+   * cheap enough to run inline from one worth a background thread - queueing would trade milliseconds of work for
+   * however long the permit holder's rebuild takes, which is the wrong trade for an index that cannot threaten
+   * the heap in the first place. It does leave a second, much narrower unbounded case for a future reader to
+   * know about: a database of MANY such indexes, all rebuilding at once, is bounded by nothing here. That is
+   * pre-existing and not what issue #7814 reports - a thousand vectors is a rounding error against the half a
+   * million one large index carries - but it is the reason this exemption is a threshold rather than a promise.
    * <p>
    * <b>On timeout it proceeds rather than fails.</b> The bound is
    * {@code VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS}, ten minutes by default, and it exists for a permit holder
@@ -4777,9 +4781,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * {@code size()} rather than {@code getActiveCount()}, for the reason {@link #inactivityRebuildScopeSize()}
    * gives: on this backend a resident location IS a live vector, and {@code size()} is O(1) where the popcount
    * walks every allocated chunk.
+   * <p>
+   * Summed as a {@code long} and saturated rather than added as two {@code int}s. Only an index of more than two
+   * billion vectors could overflow, which is not reachable today, but the direction the overflow takes is what
+   * makes the guard worth its two lines: a wrapped sum reads as negative, a negative scope reads as "too small to
+   * bother queueing", and the build that skipped the permit would be the largest one this class can produce -
+   * exactly the case the permit exists for.
    */
   private int rebuildScopeSize() {
-    return Math.max(vectorIndex().size(), 0) + deltaVectors.size();
+    final long scope = (long) Math.max(vectorIndex().size(), 0) + Math.max(deltaVectors.size(), 0);
+    return (int) Math.min(scope, Integer.MAX_VALUE);
   }
 
   /**
@@ -10182,6 +10193,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * permit timeout expired ten minutes later. Nothing in the type system says so, and the failure is a stall
    * rather than an exception, so a test asserts it directly: while a search is parked on the permit, this must
    * answer {@code false}.
+   * <p>
+   * {@link ReentrantLock#isLocked()}, so this answers for ANY holder rather than for the calling thread. That is
+   * what the assertion above wants - nobody at all may hold it while a search waits - and is worth knowing before
+   * reusing this for a question about ownership, which it cannot answer.
    */
   boolean graphBuildLockHeldForTest() {
     return graphBuildLock.isLocked();
