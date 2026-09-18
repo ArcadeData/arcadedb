@@ -124,6 +124,9 @@ public class PostgresNetworkExecutor extends Thread {
   /** Bind-message parameter length denoting a NULL value (wire value -1, read unsigned). */
   private static final long                                           NULL_PARAM_LENGTH = 0xFFFFFFFFL;
   private static final Object[]                                       NO_PARAMETERS     = new Object[0];
+  /** Shared between the simple and extended query protocol's identical ROLLBACK TO refusal (issue #7846). */
+  private static final String                                         ROLLBACK_TO_NOT_SUPPORTED_MESSAGE =
+      "ROLLBACK TO SAVEPOINT is not supported by this server: it cannot discard the writes made since the savepoint";
   /** Case-insensitive {@code TO} separator for the {@code SET <param> TO <value>} syntax. */
   private static final Pattern                                        SET_TO_SEPARATOR  = Pattern.compile("(?i)\\s+TO\\s+");
   /** Case-insensitive {@code SESSION}/{@code LOCAL} scope modifier leading a {@code SET} command (issue #6701). */
@@ -464,8 +467,9 @@ public class PostgresNetworkExecutor extends Thread {
         // underneath (issue #6725).
         answerWithColumns(portal);
       } else
-        // In practice, SAVEPOINT/RELEASE/ROLLBACK TO/SET and nothing else (issue #6930): they are the only
-        // portals that carry no statement, never produce a result, and never get columns. An INSERT/UPDATE/
+        // In practice, SAVEPOINT/RELEASE/SET and nothing else (issue #6930): they are the only portals that
+        // carry no statement, never produce a result, and never get columns - ROLLBACK TO used to be one of
+        // them too, but fails at Parse instead since issue #7846, so it never reaches here. An INSERT/UPDATE/
         // DELETE does NOT land here - it is run by the first arm and announced under whatever columns its
         // rows carried, empty ones included, exactly like the {cypher} write with no RETURN. The arm is kept
         // general rather than written as `ignoreExecution` because it is also the backstop that keeps the
@@ -599,8 +603,9 @@ public class PostgresNetworkExecutor extends Thread {
                 Thread.currentThread().threadId());
 
       if (portal.ignoreExecution)
-        // SAVEPOINT/RELEASE/ROLLBACK TO/SET never produce rows: Execute must answer CommandComplete, not
-        // NoData - NoData ('n') is a Describe-only reply and is never a legal answer to Execute (issue #6930).
+        // SAVEPOINT/RELEASE/SET never produce rows: Execute must answer CommandComplete, not NoData - NoData
+        // ('n') is a Describe-only reply and is never a legal answer to Execute (issue #6930). ROLLBACK TO
+        // used to be one of these too, but fails at Parse instead since issue #7846, so it never reaches here.
         writeCommandComplete(portal.query, 0);
       else if (portal.copyStatement != null) {
         // COPY ... TO STDOUT (issue #7188): the rows go out as CopyData, and there is nothing to slice by the
@@ -809,23 +814,39 @@ public class PostgresNetworkExecutor extends Thread {
         return;
       }
 
+      // ROLLBACK TO <savepoint> promises to discard every write made since that savepoint, but this server has
+      // no savepoint checkpoint to roll back to (issue #7846): SAVEPOINT and RELEASE below are harmless no-ops
+      // (nothing is lost by accepting or discarding a marker nothing else reads), but a CommandComplete here
+      // would tell the client its rollback succeeded while every write since the savepoint is still pending and
+      // will be persisted by the next COMMIT. Refusing it - and aborting the transaction the same way any other
+      // statement is refused once the session is aborted - is the only reply that cannot silently lose data.
+      if (query.query.toUpperCase(Locale.ENGLISH).startsWith("ROLLBACK TO ")) {
+        setErrorInTx();
+        writeError(ERROR_SEVERITY.ERROR, ROLLBACK_TO_NOT_SUPPORTED_MESSAGE, PostgresCopyStatement.SQLSTATE_FEATURE_NOT_SUPPORTED);
+        return;
+      }
+
       // Reused below for both the schema-fallback and the target-type resolution, but only set in the one
-      // branch that reaches database.command(...) below: none of SET/SAVEPOINT/RELEASE/ROLLBACK TO/SHOW/a
-      // system query/BEGIN are valid SQL productions (no bare "SET"/"SHOW" statement exists in SQLParser.g4),
-      // so parsing any of them here would be a guaranteed parse-and-fail on every one of those statements -
-      // exactly the ones connection setup (JDBC drivers, psql, poolers) sends most.
+      // branch that reaches database.command(...) below: none of SET/SAVEPOINT/RELEASE/SHOW/a system query/
+      // BEGIN are valid SQL productions (no bare "SET"/"SHOW" statement exists in SQLParser.g4), so parsing
+      // any of them here would be a guaranteed parse-and-fail on every one of those statements - exactly the
+      // ones connection setup (JDBC drivers, psql, poolers) sends most.
       Statement parsedStatement = null;
 
       final long engineStart = System.nanoTime();
       final ResultSet resultSet;
+      // Transaction control returns no rows: PostgreSQL answers it with the bare CommandComplete tag. A RowDescription
+      // in front of the tag, even with zero fields, makes libpq report PGRES_TUPLES_OK instead of PGRES_COMMAND_OK,
+      // and a client that checks the status when it opens a transaction gives up ("Failed to begin transaction").
+      boolean transactionControl = false;
       final String upperCaseText = query.query.toUpperCase(Locale.ENGLISH);
       final PostgresSystemQuery systemQuery = PostgresSystemQuery.parse(query.query);
       if (upperCaseText.startsWith("SET ")) {
         setConfiguration(query.query);
         resultSet = new IteratorResultSet(createResultSet("STATUS", "Setting ignored").iterator());
       } else if (upperCaseText.startsWith("SAVEPOINT ") ||
-          upperCaseText.startsWith("RELEASE ") ||
-          upperCaseText.startsWith("ROLLBACK TO ")) {
+          upperCaseText.startsWith("RELEASE ")) {
+        transactionControl = true;
         resultSet = new IteratorResultSet(Collections.emptyIterator());
       } else if (systemQuery != null)
         resultSet = new IteratorResultSet(
@@ -840,16 +861,19 @@ public class PostgresNetworkExecutor extends Thread {
       } else if (isBeginStatement(upperCaseText)) {
         explicitTransactionStarted = true;
         database.begin();
+        transactionControl = true;
         resultSet = new IteratorResultSet(Collections.emptyIterator());
       } else if (isCommitStatement(upperCaseText)) {
         if (explicitTransactionStarted && database.isTransactionActive())
           database.commit();
         explicitTransactionStarted = false;
+        transactionControl = true;
         resultSet = new IteratorResultSet(Collections.emptyIterator());
       } else if (isRollbackStatement(upperCaseText)) {
         if (explicitTransactionStarted && database.isTransactionActive())
           database.rollback();
         explicitTransactionStarted = false;
+        transactionControl = true;
         resultSet = new IteratorResultSet(Collections.emptyIterator());
       } else {
         // A query about the emulated system catalog, which every client sends and which ArcadeDB's own SQL
@@ -866,17 +890,22 @@ public class PostgresNetworkExecutor extends Thread {
       profile.addEngineNanos(System.nanoTime() - engineStart);
 
       final long serStart = System.nanoTime();
-      Map<String, PostgresType> columns = catalogAnswer != null ? catalogAnswer.columns()
-          : getColumns(cachedResultSet, resolveQueryTargetType(parsedStatement), resolveAliasToSourceProperty(parsedStatement));
-      if (columns.isEmpty() && cachedResultSet.isEmpty()) {
-        final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(query.query, query.language, NO_PARAMETERS,
-            parsedStatement);
-        if (schemaColumns != null)
-          columns = schemaColumns;
+      if (!transactionControl) {
+        Map<String, PostgresType> columns = catalogAnswer != null ? catalogAnswer.columns()
+            : getColumns(cachedResultSet, resolveQueryTargetType(parsedStatement), resolveAliasToSourceProperty(parsedStatement));
+        if (columns.isEmpty() && cachedResultSet.isEmpty()) {
+          final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(query.query, query.language, NO_PARAMETERS,
+              parsedStatement);
+          if (schemaColumns != null)
+            columns = schemaColumns;
+        }
+        writeRowDescription(columns);
+        writeDataRows(cachedResultSet, columns);
       }
-      writeRowDescription(columns);
-      writeDataRows(cachedResultSet, columns);
-      writeCommandComplete(queryText, cachedResultSet.size());
+      // query.query is the language-prefix-stripped text (getTag matches bare "BEGIN"/"COMMIT"/... against it); the raw
+      // queryText still carries a "{sql}" prefix when the client sends one, which getTag doesn't recognise and answers
+      // with an empty command tag instead of e.g. "BEGIN".
+      writeCommandComplete(query.query, cachedResultSet.size());
       profile.addSerializationNanos(System.nanoTime() - serStart);
 
     } catch (final PostgresCopyStatement.CopyException e) {
@@ -2414,9 +2443,17 @@ public class PostgresNetworkExecutor extends Thread {
       final PostgresSystemQuery systemQuery = PostgresSystemQuery.parse(portal.query);
 
       if (upperCaseText.startsWith("SAVEPOINT ") ||
-          upperCaseText.startsWith("RELEASE ") ||
-          upperCaseText.startsWith("ROLLBACK TO ")) {
+          upperCaseText.startsWith("RELEASE ")) {
         portal.ignoreExecution = true;
+      } else if (upperCaseText.startsWith("ROLLBACK TO ")) {
+        // Mirror queryCommand()'s ROLLBACK TO refusal (issue #7846): failed here, at Parse, the same way a
+        // statement this server can't parse is - no portal is registered and no ParseComplete is sent, only
+        // the ErrorResponse. bindCommand() already drains a Bind that names a missing prepared statement
+        // without resurrecting it (issue #6660), so the rest of this pipelined request is handled the same
+        // way it is for any other rejected Parse.
+        setErrorInTx();
+        writeError(ERROR_SEVERITY.ERROR, ROLLBACK_TO_NOT_SUPPORTED_MESSAGE, PostgresCopyStatement.SQLSTATE_FEATURE_NOT_SUPPORTED);
+        return;
       } else if (upperCaseText.startsWith("SET ")) {
         // Strip a trailing ';' before dispatch, mirroring what queryCommand() already does for its own
         // queryText on the simple-query protocol - a Parse message keeps the terminator glued onto the
@@ -3001,8 +3038,6 @@ public class PostgresNetworkExecutor extends Thread {
     } else if (isCommitStatement(upperCaseText)) {
       return "COMMIT";
     } else if (isRollbackStatement(upperCaseText)) {
-      return "ROLLBACK";
-    } else if (upperCaseText.startsWith("ROLLBACK TO ")) {
       return "ROLLBACK";
     } else if (upperCaseText.startsWith("SAVEPOINT ")) {
       return "SAVEPOINT";

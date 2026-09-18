@@ -22,6 +22,8 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.http.HttpSession;
+import com.arcadedb.server.http.HttpSessionManager;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.websockets.core.WebSocketChannel;
 
@@ -51,6 +53,13 @@ import java.util.logging.Level;
  */
 public class WebSocketInsertSessionManager {
   private final ArcadeDBServer                          server;
+  /**
+   * Where a {@code start} frame's {@code transactionId} is resolved (issue #7403). The same registry
+   * {@code POST /api/v1/begin} mints into and {@code DatabaseAbstractHandler} resolves against, reached through
+   * {@link HttpSessionManager#getSessionById} rather than around it so a {@code /ws} client can only adopt a
+   * transaction its own principal opened.
+   */
+  private final HttpSessionManager                      httpSessionManager;
   private final Map<String, WebSocketInsertSession>     sessions = new ConcurrentHashMap<>();
   /** One session per channel, so a channel that opens a second one is refused rather than tracked. */
   private final Map<UUID, String>                       byChannel = new ConcurrentHashMap<>();
@@ -71,8 +80,10 @@ public class WebSocketInsertSessionManager {
     void onSessionCancelled(WebSocketInsertSession session, String reason);
   }
 
-  public WebSocketInsertSessionManager(final ArcadeDBServer server, final long idleTimeoutMs) {
+  public WebSocketInsertSessionManager(final ArcadeDBServer server, final HttpSessionManager httpSessionManager,
+      final long idleTimeoutMs) {
     this.server = server;
+    this.httpSessionManager = httpSessionManager;
     this.idleTimeoutMs = idleTimeoutMs;
 
     this.timer = new Timer("arcadedb-ws-insert-session-sweep", true);
@@ -97,14 +108,21 @@ public class WebSocketInsertSessionManager {
    *
    * @param channel     the connection the session belongs to, attached before the session is registered so the
    *                    idle sweep always has a worker to dispatch an expiry to
-   * @param requestedId the id the client asked for, or {@code null}/blank to have the server generate one
+   * @param requestedId           the id the client asked for, or {@code null}/blank to have the server generate one
+   * @param externalTransactionId the {@code arcadedb-session-id} of a transaction already begun over HTTP that
+   *                              this session is to write into instead of opening one of its own (issue #7403),
+   *                              or {@code null}/blank for a server-managed session
    *
-   * @throws IllegalStateException    when the channel already has a session, or the requested id is taken
+   * @throws IllegalStateException    when the channel already has a session, the requested id is taken, or the
+   *                                  named external transaction is unknown or expired - which is the
+   *                                  {@code FAILED_PRECONDITION} the gRPC path answers, never a silent
+   *                                  fall-through to a server-managed transaction
    * @throws SecurityException        when the principal cannot access the database
    * @throws IllegalArgumentException when the options are not ones this server implements
    */
   public WebSocketInsertSession start(final ServerSecurityUser user, final WebSocketChannel channel,
-      final UUID channelId, final String databaseName, final String requestedId, final JSONObject rawOptions) {
+      final UUID channelId, final String databaseName, final String requestedId, final JSONObject rawOptions,
+      final String externalTransactionId) {
     if (closed)
       throw new IllegalStateException("The server is shutting down and is not opening new insert sessions");
 
@@ -114,7 +132,15 @@ public class WebSocketInsertSessionManager {
     if (user == null || !user.canAccessToDatabase(databaseName))
       throw new SecurityException("User does not have access to database '" + databaseName + "'.");
 
-    final InsertSessionOptions options = InsertSessionOptions.parse(rawOptions);
+    final String externalId =
+        externalTransactionId == null || externalTransactionId.isBlank() ? null : externalTransactionId;
+
+    final InsertSessionOptions options = InsertSessionOptions.parse(rawOptions, externalId != null);
+
+    // Resolved BEFORE the channel is claimed, so a start refused over its transaction leaves nothing registered.
+    // getSessionById() is the ownership gate: it answers null for a session owned by another principal exactly as
+    // it does for one that never existed, which is why an unknown id and someone else's id are refused alike.
+    final HttpSession externalSession = externalId == null ? null : resolveExternalTransaction(user, externalId, databaseName);
 
     final String id = requestedId == null || requestedId.isBlank() ? UUID.randomUUID().toString() : requestedId;
 
@@ -129,7 +155,7 @@ public class WebSocketInsertSessionManager {
     final WebSocketInsertSession session;
     try {
       database = server.getDatabase(databaseName, false, false);
-      session = new WebSocketInsertSession(id, database, user, channelId, options);
+      session = new WebSocketInsertSession(id, database, user, channelId, options, externalId, externalSession);
       // Before it is registered, not after: a session the sweep can see must already know where to send its
       // expiry, or the sweep would have nothing to dispatch to and would roll it back on its own thread.
       session.setChannel(channel);
@@ -150,6 +176,32 @@ public class WebSocketInsertSessionManager {
     }
 
     return session;
+  }
+
+  /**
+   * Resolves the HTTP transaction a {@code start} frame named, refusing every way it can fail to be one this
+   * client may write into (issue #7403).
+   * <p>
+   * The database check is not redundant with the access check above it: a principal with access to two databases
+   * could otherwise open a transaction on one with {@code /begin} and have the session write into the other,
+   * since the frame names the database and the session id independently.
+   */
+  private HttpSession resolveExternalTransaction(final ServerSecurityUser user, final String transactionId,
+      final String databaseName) {
+    final HttpSession externalSession = httpSessionManager.getSessionById(user, transactionId);
+    if (externalSession == null)
+      throw new IllegalStateException("Transaction '" + transactionId
+          + "' not found or expired. Begin one with 'POST /api/v1/begin' and name the id it returns");
+
+    if (externalSession.transaction == null || !externalSession.transaction.isActive())
+      throw new IllegalStateException("Transaction '" + transactionId + "' is no longer active");
+
+    final String transactionDatabase = externalSession.transaction.getDatabase().getName();
+    if (!transactionDatabase.equals(databaseName))
+      throw new IllegalArgumentException("Transaction '" + transactionId + "' belongs to database '"
+          + transactionDatabase + "', not to '" + databaseName + "'");
+
+    return externalSession;
   }
 
   /**

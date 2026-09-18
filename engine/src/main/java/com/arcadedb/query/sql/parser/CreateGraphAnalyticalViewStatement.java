@@ -30,6 +30,10 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+
 public class CreateGraphAnalyticalViewStatement extends DDLStatement {
   public Identifier   name;
   public Identifier[] vertexTypes;
@@ -102,38 +106,38 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
     return result;
   }
 
+  /** Overrides the two-arg form, not just the no-arg one - see {@link CreateMaterializedViewStatement} (issue #7800/#7794). */
   @Override
-  public String toString() {
-    final StringBuilder sb = new StringBuilder("CREATE GRAPH ANALYTICAL VIEW ");
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
+    builder.append("CREATE GRAPH ANALYTICAL VIEW ");
     if (ifNotExists)
-      sb.append("IF NOT EXISTS ");
-    sb.append(name);
+      builder.append("IF NOT EXISTS ");
+    name.toString(params, builder);
     if (vertexTypes != null && vertexTypes.length > 0) {
-      sb.append(" VERTEX TYPES (");
-      appendIdentifiers(sb, vertexTypes);
-      sb.append(')');
+      builder.append(" VERTEX TYPES (");
+      appendIdentifiers(params, builder, vertexTypes);
+      builder.append(')');
     }
     if (edgeTypes != null && edgeTypes.length > 0) {
-      sb.append(" EDGE TYPES (");
-      appendIdentifiers(sb, edgeTypes);
-      sb.append(')');
+      builder.append(" EDGE TYPES (");
+      appendIdentifiers(params, builder, edgeTypes);
+      builder.append(')');
     }
     if (properties != null && properties.length > 0) {
-      sb.append(" PROPERTIES (");
-      appendIdentifiers(sb, properties);
-      sb.append(')');
+      builder.append(" PROPERTIES (");
+      appendIdentifiers(params, builder, properties);
+      builder.append(')');
     }
     if (edgeProperties != null && edgeProperties.length > 0) {
-      sb.append(" EDGE PROPERTIES (");
-      appendIdentifiers(sb, edgeProperties);
-      sb.append(')');
+      builder.append(" EDGE PROPERTIES (");
+      appendIdentifiers(params, builder, edgeProperties);
+      builder.append(')');
     }
     final GraphAnalyticalView.UpdateMode mode = resolveUpdateMode();
     if (mode != GraphAnalyticalView.UpdateMode.OFF)
-      sb.append(" UPDATE MODE ").append(mode.name());
+      builder.append(" UPDATE MODE ").append(mode.name());
     if (compactionThreshold >= 0)
-      sb.append(" COMPACTION THRESHOLD ").append(compactionThreshold);
-    return sb.toString();
+      builder.append(" COMPACTION THRESHOLD ").append(compactionThreshold);
   }
 
   private GraphAnalyticalView.UpdateMode resolveUpdateMode() {
@@ -148,11 +152,51 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
     return GraphAnalyticalView.UpdateMode.OFF;
   }
 
-  private static void appendIdentifiers(final StringBuilder sb, final Identifier[] ids) {
+  private static void appendIdentifiers(final Map<String, Object> params, final StringBuilder builder, final Identifier[] ids) {
     for (int i = 0; i < ids.length; i++) {
       if (i > 0)
-        sb.append(", ");
-      sb.append(ids[i]);
+        builder.append(", ");
+      ids[i].toString(params, builder);
     }
+  }
+
+  private static Identifier[] copyIdentifiers(final Identifier[] ids) {
+    if (ids == null)
+      return null;
+    final Identifier[] result = new Identifier[ids.length];
+    for (int i = 0; i < ids.length; i++)
+      result[i] = ids[i].copy();
+    return result;
+  }
+
+  @Override
+  public CreateGraphAnalyticalViewStatement copy() {
+    final CreateGraphAnalyticalViewStatement result = new CreateGraphAnalyticalViewStatement();
+    result.name = name == null ? null : name.copy();
+    result.vertexTypes = copyIdentifiers(vertexTypes);
+    result.edgeTypes = copyIdentifiers(edgeTypes);
+    result.properties = copyIdentifiers(properties);
+    result.edgeProperties = copyIdentifiers(edgeProperties);
+    result.updateModeStr = updateModeStr;
+    result.compactionThreshold = compactionThreshold;
+    result.ifNotExists = ifNotExists;
+    return result;
+  }
+
+  /**
+   * The array fields are wrapped in {@code Arrays.asList()} rather than compared as-is: {@code Object[].equals()}
+   * is reference identity, so two structurally-equal arrays from an original and its {@code copy()} would never
+   * compare equal otherwise. {@code null} is normalized to an empty list so a never-set clause does not need special
+   * casing.
+   */
+  @Override
+  protected Object[] getIdentityElements() {
+    return new Object[] {
+        name,
+        vertexTypes == null ? List.of() : Arrays.asList(vertexTypes),
+        edgeTypes == null ? List.of() : Arrays.asList(edgeTypes),
+        properties == null ? List.of() : Arrays.asList(properties),
+        edgeProperties == null ? List.of() : Arrays.asList(edgeProperties),
+        updateModeStr, compactionThreshold, ifNotExists };
   }
 }

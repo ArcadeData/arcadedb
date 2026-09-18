@@ -155,6 +155,13 @@ class UnwindExpandStepTest extends TestHelper {
     result.close();
   }
 
+  /**
+   * Updated for issue #7787: {@code expand()} on a scalar used to silently produce zero rows, but the very same
+   * value inside a collection expanded to a one-element row (proven by {@code expand([1,2,3,4])} elsewhere in this
+   * suite). {@code ExpandStep} now treats a single non-collection value as a one-element sequence, so it renders
+   * the same {@code {value: <scalar>}} row a one-element list of it would have. See
+   * {@code ExpandStepTest#expandOfAScalarProducesOneRow} for the full regression coverage.
+   */
   @Test
   void shouldExpandSingleValue() {
     database.getSchema().createDocumentType("TestExpandSingle");
@@ -164,8 +171,9 @@ class UnwindExpandStepTest extends TestHelper {
 
     final ResultSet result = database.query("sql", "SELECT expand(value) FROM TestExpandSingle");
 
-    // expand() on a primitive value (non-collection) returns no results
-    // expand() is designed to work with collections/arrays
+    assertThat(result.hasNext()).isTrue();
+    final Result item = result.next();
+    assertThat(item.<String>getProperty("value")).isEqualTo("test");
     assertThat(result.hasNext()).isFalse();
     result.close();
   }

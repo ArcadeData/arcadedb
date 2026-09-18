@@ -214,14 +214,30 @@ public class ServerControlPlane {
    * another group whose log it does not share is the split-brain the leader-side membership change
    * exists to prevent. The Kubernetes auto-join does self-insert, and does it from {@code start()} and
    * only while this node knows no leader of its own - see {@code KubernetesAutoJoin}'s retry
-   * continuation condition. Joining a foreign cluster at runtime is a separate feature, tracked as
-   * issue #7515.
+   * continuation condition.
+   * <p>
+   * Issue #7515 asked whether the other direction should be offered too, as an explicitly destructive "reset
+   * this node and bootstrap it against {@code <address>}". <b>It is not, and the reason is not the local log
+   * but the credentials.</b> A Raft membership change may only be issued by the leader of the cluster being
+   * joined, so a self-join has to authenticate as an administrator of a cluster this node is not a member of
+   * and holds no credentials for. Neither this verb nor the gRPC RPC has a field for them, and giving them one
+   * would put another cluster's root credentials in a server command. The operation the operator wants already
+   * exists and is already authenticated: run this same verb on a server that is ALREADY a member of the target
+   * cluster, naming the node that is joining. {@code RaftHAServer} therefore refuses an add that names its own
+   * node with {@code SelfJoinNotSupportedException}, which says exactly that, instead of accepting it as the
+   * no-op it used to be.
+   * <p>
+   * That also explains the asymmetry with {@code disconnect cluster}, which does act on the local node: leaving
+   * is a statement this node's own cluster already trusts it to make, and joining is not.
    * <p>
    * Every refusal names the address, so an operator with several join attempts in flight can tell
    * which one failed:
    * <ul>
    *   <li>a blank address is an {@link IllegalArgumentException} - HTTP 400, gRPC
    *       {@code INVALID_ARGUMENT} - because the command cannot act without one;</li>
+   *   <li>an address that resolves to this node's own Raft peer id is the same, as
+   *       {@code SelfJoinNotSupportedException} (issue #7515): it is the shape the "make THIS node join"
+   *       mistake takes, and it used to be answered 200 while doing nothing;</li>
    *   <li>HA not enabled at all, and an HA implementation that cannot change membership at runtime,
    *       are both {@link OperationNotAvailableException} - HTTP 500, gRPC
    *       {@code FAILED_PRECONDITION} - a precondition of this server, not a fault of the request.</li>
@@ -978,10 +994,11 @@ public class ServerControlPlane {
    * <b>This method performs no transport check.</b> It cannot: it does not know how the caller
    * arrived. Deciding whether the answer may be written back is the transport's job. gRPC does it,
    * through {@code GrpcTransportSecurityInterceptor}: the mint is refused unless the call arrived
-   * over TLS or from a loopback peer. <b>HTTP does not</b> - {@code POST /server/api-tokens} mints a
-   * token over a cleartext listener to any host, as it always has - which is filed as issue #7372
-   * rather than changed here, because tightening a route that already behaves this way is a
-   * compatibility decision and not part of adding a second transport.
+   * over TLS or from a loopback peer. HTTP applies the same rule in {@code PostApiTokenHandler}, but
+   * only when {@code arcadedb.server.apiTokenRequireSecureTransport} is on: the route has always
+   * minted over a cleartext listener to any host and Studio's own token UI still does, so refusing by
+   * default is a compatibility decision left to the operator (issue #7372). With the setting off, an
+   * unprotected mint is logged at WARNING.
    *
    * A blank {@code database} means {@code "*"}, every database. That is what an omitted key has always
    * meant over HTTP; it now also covers an explicitly empty one, which previously stored a token scoped

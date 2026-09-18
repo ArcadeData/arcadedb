@@ -138,17 +138,17 @@ public class RemoteSchema implements Schema {
 
   @Override
   public Trigger getTrigger(final String triggerName) {
-    throw new UnsupportedOperationException("getTrigger() is not supported in remote database");
+    throw new UnsupportedOperationException("getTrigger() is not supported in remote database. Use SQL SELECT FROM schema:triggers instead.");
   }
 
   @Override
   public Trigger[] getTriggers() {
-    throw new UnsupportedOperationException("getTriggers() is not supported in remote database");
+    throw new UnsupportedOperationException("getTriggers() is not supported in remote database. Use SQL SELECT FROM schema:triggers instead.");
   }
 
   @Override
   public Trigger[] getTriggersForType(final String typeName) {
-    throw new UnsupportedOperationException("getTriggersForType() is not supported in remote database");
+    throw new UnsupportedOperationException("getTriggersForType() is not supported in remote database. Use SQL SELECT FROM schema:triggers instead.");
   }
 
   @Override
@@ -195,13 +195,13 @@ public class RemoteSchema implements Schema {
   public void alterMaterializedView(final String viewName, final MaterializedViewRefreshMode newMode,
       final long newIntervalMs) {
     throw new UnsupportedOperationException(
-        "alterMaterializedView() is not supported remotely. Use SQL ALTER MATERIALIZED VIEW instead.");
+        "alterMaterializedView() is not supported in remote database. Use SQL ALTER MATERIALIZED VIEW instead.");
   }
 
   @Override
   public MaterializedViewBuilder buildMaterializedView() {
     throw new UnsupportedOperationException(
-        "buildMaterializedView() is not supported remotely. Use SQL CREATE MATERIALIZED VIEW instead.");
+        "buildMaterializedView() is not supported in remote database. Use SQL CREATE MATERIALIZED VIEW instead.");
   }
 
   @Override
@@ -214,13 +214,13 @@ public class RemoteSchema implements Schema {
   @Override
   public ContinuousAggregate getContinuousAggregate(final String name) {
     throw new UnsupportedOperationException(
-        "getContinuousAggregate() is not supported remotely. Use SQL SELECT FROM schema:continuousaggregates instead.");
+        "getContinuousAggregate() is not supported in remote database. Use SQL SELECT FROM schema:continuousaggregates instead.");
   }
 
   @Override
   public ContinuousAggregate[] getContinuousAggregates() {
     throw new UnsupportedOperationException(
-        "getContinuousAggregates() is not supported remotely. Use SQL SELECT FROM schema:continuousaggregates instead.");
+        "getContinuousAggregates() is not supported in remote database. Use SQL SELECT FROM schema:continuousaggregates instead.");
   }
 
   @Override
@@ -231,7 +231,7 @@ public class RemoteSchema implements Schema {
   @Override
   public ContinuousAggregateBuilder buildContinuousAggregate() {
     throw new UnsupportedOperationException(
-        "buildContinuousAggregate() is not supported remotely. Use SQL CREATE CONTINUOUS AGGREGATE instead.");
+        "buildContinuousAggregate() is not supported in remote database. Use SQL CREATE CONTINUOUS AGGREGATE instead.");
   }
 
   @Override
@@ -405,19 +405,19 @@ public class RemoteSchema implements Schema {
   @Deprecated
   @Override
   public TypeIndexBuilder buildTypeIndex(final String typeName, final String[] propertyNames) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("buildTypeIndex() is not supported in remote database. Use SQL CREATE INDEX instead.");
   }
 
   @Override
   @Deprecated
   public BucketIndexBuilder buildBucketIndex(final String typeName, final String bucketName, final String[] propertyNames) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("buildBucketIndex() is not supported in remote database. Use SQL CREATE INDEX instead.");
   }
 
   @Deprecated
   @Override
   public ManualIndexBuilder buildManualIndex(final String indexName, final Type[] keyTypes) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("buildManualIndex() is not supported in remote database. A manual index is an engine-level structure with no remote equivalent.");
   }
 
   @Deprecated
@@ -451,169 +451,169 @@ public class RemoteSchema implements Schema {
   @Deprecated
   @Override
   public DocumentType createDocumentType(String typeName, List<Bucket> buckets) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("createDocumentType() is not supported in remote database. Use SQL CREATE DOCUMENT TYPE instead.");
   }
 
   @Deprecated
   @Override
   public DocumentType createDocumentType(String typeName, int buckets, int pageSize) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("createDocumentType() is not supported in remote database. Use SQL CREATE DOCUMENT TYPE instead.");
   }
 
   @Deprecated
   @Override
   public DocumentType createDocumentType(String typeName, List<Bucket> buckets, int pageSize) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("createDocumentType() is not supported in remote database. Use SQL CREATE DOCUMENT TYPE instead.");
   }
 
   @Deprecated
   @Override
   public DocumentType getOrCreateDocumentType(String typeName, int buckets, int pageSize) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getOrCreateDocumentType() is not supported in remote database. Use SQL CREATE DOCUMENT TYPE IF NOT EXISTS instead.");
   }
 
   @Deprecated
   @Override
   public EdgeType createEdgeType(String typeName, List<Bucket> buckets) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("createEdgeType() is not supported in remote database. Use SQL CREATE EDGE TYPE instead.");
   }
 
   @Deprecated
   @Override
   public VertexType createVertexType(String typeName, List<Bucket> buckets) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("createVertexType() is not supported in remote database. Use SQL CREATE VERTEX TYPE instead.");
   }
 
   @Deprecated
   @Override
   public VertexType createVertexType(String typeName, int buckets, int pageSize) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("createVertexType() is not supported in remote database. Use SQL CREATE VERTEX TYPE instead.");
   }
 
   @Deprecated
   @Override
   public VertexType createVertexType(String typeName, List<Bucket> buckets, int pageSize) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("createVertexType() is not supported in remote database. Use SQL CREATE VERTEX TYPE instead.");
   }
 
   @Deprecated
   @Override
   public VertexType getOrCreateVertexType(String typeName, int buckets, int pageSize) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getOrCreateVertexType() is not supported in remote database. Use SQL CREATE VERTEX TYPE IF NOT EXISTS instead.");
   }
 
   @Deprecated
   @Override
   public EdgeType createEdgeType(String typeName, int buckets, int pageSize) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("createEdgeType() is not supported in remote database. Use SQL CREATE EDGE TYPE instead.");
   }
 
   @Deprecated
   @Override
   public EdgeType createEdgeType(String typeName, List<Bucket> buckets, int pageSize) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("createEdgeType() is not supported in remote database. Use SQL CREATE EDGE TYPE instead.");
   }
 
   @Deprecated
   @Override
   public EdgeType getOrCreateEdgeType(String typeName, int buckets, int pageSize) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getOrCreateEdgeType() is not supported in remote database. Use SQL CREATE EDGE TYPE IF NOT EXISTS instead.");
   }
 
   @Deprecated
   @Override
   public TimeZone getTimeZone() {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getTimeZone() is not supported in remote database. The time zone is a server-side setting with no remote accessor.");
   }
 
   @Deprecated
   @Override
   public void setTimeZone(TimeZone timeZone) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("setTimeZone() is not supported in remote database. The time zone is a server-side setting with no remote accessor.");
   }
 
   @Deprecated
   @Override
   public ZoneId getZoneId() {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getZoneId() is not supported in remote database. The zone id is a server-side setting with no remote accessor.");
   }
 
   @Deprecated
   @Override
   public void setZoneId(ZoneId zoneId) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("setZoneId() is not supported in remote database. The zone id is a server-side setting with no remote accessor.");
   }
 
   @Deprecated
   @Override
   public String getDateFormat() {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getDateFormat() is not supported in remote database. Use SQL SELECT FROM schema:database instead.");
   }
 
   @Deprecated
   @Override
   public void setDateFormat(final String dateFormat) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("setDateFormat() is not supported in remote database. Use SQL ALTER DATABASE `arcadedb.dateFormat` instead.");
   }
 
   @Deprecated
   @Override
   public String getDateTimeFormat() {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getDateTimeFormat() is not supported in remote database. Use SQL SELECT FROM schema:database instead.");
   }
 
   @Deprecated
   @Override
   public void setDateTimeFormat(final String dateTimeFormat) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("setDateTimeFormat() is not supported in remote database. Use SQL ALTER DATABASE `arcadedb.dateTimeFormat` instead.");
   }
 
   @Deprecated
   @Override
   public String getEncoding() {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getEncoding() is not supported in remote database. The encoding is a server-side setting with no remote accessor.");
   }
 
   @Deprecated
   @Override
   public void setEncoding(final String encoding) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("setEncoding() is not supported in remote database. The encoding is a server-side setting with no remote accessor.");
   }
 
   @Deprecated
   @Override
   public Schema registerFunctionLibrary(final FunctionLibraryDefinition library) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("registerFunctionLibrary() is not supported in remote database. A function library is registered in the server JVM, not over the wire.");
   }
 
   @Deprecated
   @Override
   public Schema unregisterFunctionLibrary(final String name) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("unregisterFunctionLibrary() is not supported in remote database. A function library is registered in the server JVM, not over the wire.");
   }
 
   @Deprecated
   @Override
   public Iterable<FunctionLibraryDefinition> getFunctionLibraries() {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getFunctionLibraries() is not supported in remote database. A function library is registered in the server JVM, not over the wire.");
   }
 
   @Deprecated
   @Override
   public boolean hasFunctionLibrary(final String name) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("hasFunctionLibrary() is not supported in remote database. A function library is registered in the server JVM, not over the wire.");
   }
 
   @Deprecated
   @Override
   public FunctionLibraryDefinition getFunctionLibrary(final String name) throws IllegalArgumentException {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getFunctionLibrary() is not supported in remote database. A function library is registered in the server JVM, not over the wire.");
   }
 
   @Deprecated
   @Override
   public FunctionDefinition getFunction(final String libraryName, final String functionName) throws IllegalArgumentException {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getFunction() is not supported in remote database. A function library is registered in the server JVM, not over the wire.");
   }
 
   @Override
@@ -629,7 +629,7 @@ public class RemoteSchema implements Schema {
   @Deprecated
   @Override
   public Component getFileById(final int id) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getFileById() is not supported in remote database. Files are an engine-level structure with no remote equivalent.");
   }
 
   @Deprecated
@@ -661,7 +661,7 @@ public class RemoteSchema implements Schema {
   @Deprecated
   @Override
   public Component getFileByIdIfExists(final int id) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getFileByIdIfExists() is not supported in remote database. Files are an engine-level structure with no remote equivalent.");
   }
 
   @Deprecated
@@ -674,7 +674,7 @@ public class RemoteSchema implements Schema {
   @Deprecated
   @Override
   public LocalBucket getBucketById(final int id) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getBucketById() is not supported in remote database. Bucket ids are an engine-level structure with no remote equivalent. Use SQL SELECT FROM schema:types to list the buckets of a type.");
   }
 
   /**
@@ -686,40 +686,40 @@ public class RemoteSchema implements Schema {
   @Deprecated
   @Override
   public LocalBucket getBucketByIdIfExists(final int id) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getBucketByIdIfExists() is not supported in remote database. Bucket ids are an engine-level structure with no remote equivalent. Use SQL SELECT FROM schema:types to list the buckets of a type.");
   }
 
   @Deprecated
   @Override
   public DocumentType copyType(final String typeName, final String newTypeName, final Class<? extends DocumentType> newType,
       final int buckets, final int pageSize, final int transactionBatchSize) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("copyType() is not supported in remote database. There is no SQL equivalent: create the target type and copy the records with SQL INSERT INTO ... FROM SELECT.");
   }
 
   @Deprecated
   @Override
   public Index[] getIndexes() {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getIndexes() is not supported in remote database. Use SQL SELECT FROM schema:indexes instead.");
   }
 
   @Deprecated
   @Override
   public Index getIndexByName(final String indexName) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getIndexByName() is not supported in remote database. Use SQL SELECT FROM schema:indexes instead.");
   }
 
   @Deprecated
   @Override
   public TypeIndex createTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName,
       final String[] propertyNames, final int pageSize) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("createTypeIndex() is not supported in remote database. Use SQL CREATE INDEX instead.");
   }
 
   @Deprecated
   @Override
   public TypeIndex createTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName,
       final String[] propertyNames, final int pageSize, Index.BuildIndexCallback callback) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("createTypeIndex() is not supported in remote database. Use SQL CREATE INDEX instead.");
   }
 
   @Deprecated
@@ -727,14 +727,14 @@ public class RemoteSchema implements Schema {
   public TypeIndex createTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName,
       final String[] propertyNames, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy,
       final Index.BuildIndexCallback callback) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("createTypeIndex() is not supported in remote database. Use SQL CREATE INDEX instead.");
   }
 
   @Deprecated
   @Override
   public TypeIndex getOrCreateTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName,
       final String[] propertyNames, final int pageSize, final Index.BuildIndexCallback callback) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getOrCreateTypeIndex() is not supported in remote database. Use SQL CREATE INDEX IF NOT EXISTS instead.");
   }
 
   @Deprecated
@@ -742,7 +742,7 @@ public class RemoteSchema implements Schema {
   public TypeIndex getOrCreateTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName,
       final String[] propertyNames, final int pageSize, LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy,
       Index.BuildIndexCallback callback) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getOrCreateTypeIndex() is not supported in remote database. Use SQL CREATE INDEX IF NOT EXISTS instead.");
   }
 
   @Deprecated
@@ -750,32 +750,32 @@ public class RemoteSchema implements Schema {
   public Index createBucketIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName, final String bucketName,
       final String[] propertyNames, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy,
       final Index.BuildIndexCallback callback) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("createBucketIndex() is not supported in remote database. Use SQL CREATE INDEX instead.");
   }
 
   @Deprecated
   @Override
   public Index createManualIndex(final INDEX_TYPE indexType, final boolean unique, final String indexName, final Type[] keyTypes,
       final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("createManualIndex() is not supported in remote database. A manual index is an engine-level structure with no remote equivalent.");
   }
 
   @Deprecated
   @Override
   public String getTypeNameByBucketId(final int bucketId) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getTypeNameByBucketId() is not supported in remote database. Bucket ids are an engine-level structure with no remote equivalent. Use SQL SELECT FROM schema:types to map types to their buckets.");
   }
 
   @Deprecated
   @Override
   public DocumentType getTypeByBucketId(final int bucketId) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getTypeByBucketId() is not supported in remote database. Bucket ids are an engine-level structure with no remote equivalent. Use SQL SELECT FROM schema:types to map types to their buckets.");
   }
 
   @Deprecated
   @Override
   public DocumentType getInvolvedTypeByBucketId(final int bucketId) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getInvolvedTypeByBucketId() is not supported in remote database. Bucket ids are an engine-level structure with no remote equivalent. Use SQL SELECT FROM schema:types to map types to their buckets.");
   }
 
   @Deprecated
@@ -790,14 +790,14 @@ public class RemoteSchema implements Schema {
   @Deprecated
   @Override
   public Dictionary getDictionary() {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getDictionary() is not supported in remote database. The schema dictionary is an engine-level structure with no remote equivalent.");
   }
 
   @Deprecated
   @Override
   public TypeIndex getOrCreateTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName,
       final String[] propertyNames, int pageSize) {
-    throw new UnsupportedOperationException();
+    throw new UnsupportedOperationException("getOrCreateTypeIndex() is not supported in remote database. Use SQL CREATE INDEX IF NOT EXISTS instead.");
   }
 
   void invalidateSchema() {

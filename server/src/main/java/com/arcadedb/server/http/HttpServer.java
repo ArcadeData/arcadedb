@@ -155,9 +155,9 @@ public class HttpServer implements ServerPlugin {
     // A /ws insert session holds a transaction between frames, so an abandoned one has to expire the way an
     // 'arcadedb-session-id' transaction does - on its own budget, because a bulk loader pauses between chunks
     // for reasons an HTTP command never does (issue #7382).
-    this.insertSessionManager = new WebSocketInsertSessionManager(this.server,
+    this.insertSessionManager = new WebSocketInsertSessionManager(this.server, this.sessionManager,
         server.getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_WS_INSERT_SESSION_EXPIRE_TIMEOUT) * 1_000L);
-    this.insertProtocol = new WebSocketInsertProtocol(this.insertSessionManager);
+    this.insertProtocol = new WebSocketInsertProtocol(this.insertSessionManager, server.getConfiguration());
     final long ttlMs = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_IDEMPOTENCY_CACHE_TTL_MS);
     final int maxEntries = server.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_IDEMPOTENCY_CACHE_MAX_ENTRIES);
     final long maxBytes = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_IDEMPOTENCY_CACHE_MAX_BYTES);

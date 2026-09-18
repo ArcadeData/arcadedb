@@ -215,6 +215,22 @@ public class TransactionContext implements Transaction {
   private       List<Integer>                        lockedFiles;
   private       List<Integer>                        explicitLockedFiles   = null;
   private       long                                 txId                  = -1;
+  /**
+   * #7667: bumped once per SUCCESSFUL commit of THIS context object. A {@code TransactionContext} is reused across
+   * begin/commit cycles ({@code LocalDatabase.begin()} only pushes a new one for a NESTED transaction), and
+   * {@code txId} is -1 outside the WAL window, so neither object identity nor {@code txId} can answer "has the
+   * transaction I am holding been committed out from under me". This can: a caller snapshots it, runs arbitrary
+   * code, and a changed value means that code published this transaction - which is exactly what a statement that
+   * commits mid-execution ({@code BatchStep}'s {@code BATCH n}, {@code TRUNCATE TYPE}, {@code REBUILD INDEX}) does.
+   * <p>
+   * Counts COMMITS, deliberately not begins (claude-review on PR #7850). A begin counter would also move for a
+   * rollback followed by a fresh begin inside one statement, and the two mean opposite things to the async batch:
+   * after a commit the buffered writes are durable and must be dropped silently, after a rollback they are gone and
+   * their submitters must be told. Keyed on the commit, the rollback case simply does not match and keeps the
+   * pre-existing reporting path - so the fix does not rest on the invariant that no statement rolls the top-level
+   * transaction back and re-begins it.
+   */
+  private       long                                 commitCount           = 0;
   private       STATUS                               status                = STATUS.INACTIVE;
   // Whether the 1st phase in progress ends by replaying the queued index operations - always true for an
   // originating commit. See isIndexChangesReplayed().
@@ -319,6 +335,20 @@ public class TransactionContext implements Transaction {
       database.getSchema().getEmbedded().saveConfiguration();
 
     return phase1 != null ? phase1.result : null;
+  }
+
+  /**
+   * How many transactions have been successfully COMMITTED on THIS context object, monotonically increasing for its
+   * whole life (issue #7667). Snapshot it, run code that may commit, and compare: a different value means the
+   * transaction the snapshot referred to was published, so anything buffered against it is already durable and must
+   * neither be replayed onto whatever transaction is open now nor reported as lost. A rollback deliberately does
+   * NOT move it - see the field's own comment. Never reset by {@link #reset()}, which would make a later commit
+   * hand back a value a stale snapshot could match.
+   *
+   * @return the number of transactions committed on this context so far
+   */
+  public long getCommitCount() {
+    return commitCount;
   }
 
   public LocalTransactionExplicitLock lock() {
@@ -541,6 +571,13 @@ public class TransactionContext implements Transaction {
   }
 
   private void resetAndFireCallbacks() {
+    // #7667: the single point both commit paths converge on once the commit has actually concluded - commit() for a
+    // transaction with nothing to write (phase1 == null), and concludePhase2(committed) for every other one,
+    // including the HA path that drives commit1stPhase/commit2ndPhase itself without going through commit().
+    // rollback() does not come here, which is the whole point. Bumped before reset() and before the callbacks run,
+    // so anything reacting to the commit already observes it.
+    ++commitCount;
+
     final List<Runnable> callbacks = afterCommitCallbacks;
     reset();
     if (callbacks != null) {

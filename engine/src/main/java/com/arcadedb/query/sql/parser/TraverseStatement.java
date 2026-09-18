@@ -164,6 +164,7 @@ public class TraverseStatement extends Statement {
     result.target = target == null ? null : target.copy();
     result.whileClause = whileClause == null ? null : whileClause.copy();
     result.limit = limit == null ? null : limit.copy();
+    result.skip = skip == null ? null : skip.copy();
     result.strategy = strategy;
     result.maxDepth = maxDepth == null ? null : maxDepth.copy();
     result.postFilter = postFilter == null ? null : postFilter.copy();
@@ -188,6 +189,8 @@ public class TraverseStatement extends Statement {
       return false;
     if (!Objects.equals(limit, that.limit))
       return false;
+    if (!Objects.equals(skip, that.skip))
+      return false;
     if (strategy != that.strategy)
       return false;
     if (!Objects.equals(maxDepth, that.maxDepth))
@@ -203,6 +206,7 @@ public class TraverseStatement extends Statement {
     result = 31 * result + (target != null ? target.hashCode() : 0);
     result = 31 * result + (whileClause != null ? whileClause.hashCode() : 0);
     result = 31 * result + (limit != null ? limit.hashCode() : 0);
+    result = 31 * result + (skip != null ? skip.hashCode() : 0);
     result = 31 * result + (strategy != null ? strategy.hashCode() : 0);
     result = 31 * result + (maxDepth != null ? maxDepth.hashCode() : 0);
     result = 31 * result + (postFilter != null ? postFilter.hashCode() : 0);

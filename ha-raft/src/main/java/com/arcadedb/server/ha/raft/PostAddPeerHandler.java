@@ -27,7 +27,10 @@ import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
+import org.apache.ratis.protocol.RaftPeer;
+import org.apache.ratis.protocol.RaftPeerId;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.logging.Level;
 
@@ -61,7 +64,14 @@ public class PostAddPeerHandler extends AbstractServerHttpHandler {
       return new ExecutionResponse(400,
           new JSONObject().put("error", "Missing required fields: peerId, address").toString());
 
-    raftHAServer.addPeer(peerId, address, name.isEmpty() ? null : name);
+    final RaftPeer peer;
+    try {
+      peer = peerFromPayload(peerId, address, payload);
+    } catch (final IllegalArgumentException e) {
+      return new ExecutionResponse(400, new JSONObject().put("error", e.getMessage()).toString());
+    }
+
+    raftHAServer.addPeer(peer, name.isEmpty() ? null : name);
 
     // Seed the newly-joined peer with the current security documents. Snapshot install covers none of them
     // (they live under <server-root>/config/, outside the database directory), so without this explicit
@@ -88,6 +98,85 @@ public class PostAddPeerHandler extends AbstractServerHttpHandler {
               + "serving requests against its own copy of them", peerId, String.join(", ", failedSeeds));
 
     return addPeerResponse(peerId, failedSeeds);
+  }
+
+  /**
+   * The peer this payload names, carrying every field it declares (issue #7523).
+   * <p>
+   * Handed on as a whole {@link RaftPeer} rather than as {@code (id, address, priority)}, because that is the
+   * shape {@code RaftClusterManager.addPeer(RaftPeer, String)} was given for exactly this reason (issue #7401):
+   * a field a peer carries is then impossible to drop on the way down, instead of merely tested for. That is
+   * also why this is not the fourth argument of a four-argument overload - the next field would need a fifth.
+   * <p>
+   * Package-private and static so a test can drive the construction the handler actually performs. Asserting on
+   * {@link #readPriority} alone would leave the one step that matters - the priority reaching the peer object -
+   * untested, which is the shape of the bug this fixes.
+   *
+   * @throws IllegalArgumentException from {@link #readPriority}, answered 400 by the caller
+   */
+  static RaftPeer peerFromPayload(final String peerId, final String address, final JSONObject payload) {
+    return RaftPeer.newBuilder()
+        .setId(RaftPeerId.valueOf(peerId))
+        .setAddress(address)
+        .setPriority(readPriority(payload))
+        .build();
+  }
+
+  /**
+   * The leader-election priority the payload asks for, {@code 0} when it names none (issue #7523).
+   * <p>
+   * Before this, a peer admitted through this route always got Ratis's default priority, while the same peer
+   * declared in {@code arcadedb.ha.serverList} - or joined with {@code connect cluster}, which parses one such
+   * entry - could name any. That is not a cosmetic difference: {@link RaftHAServer#selectStepDownTargets} and
+   * Ratis's own election both read the live {@code RaftPeer.getPriority()}, and once ANY peer carries a positive
+   * priority the priority-0 ones stop being electable. A witness added at runtime could therefore be elected
+   * leader, which is the one thing declaring it a witness was meant to prevent.
+   * <p>
+   * {@code 0} is the default because it is Ratis's, so an omitted field keeps the behaviour every existing caller
+   * already gets. On a cluster where nobody names a priority that leaves every peer equally electable - the
+   * witness semantics appear only once some peer is given a positive one, which is the same rule
+   * {@code selectStepDownTargets} applies.
+   *
+   * <b>Read through {@link BigDecimal#intValueExact()}, not {@code JSONObject.getInt}.</b> That method is
+   * {@code Number.intValue()} underneath, which SILENTLY narrows: {@code {"priority":0.5}} would arrive as
+   * {@code 0} and {@code {"priority":4294967296}} as {@code 0} again - and {@code 0} is not a harmless default
+   * here, it is the value that declares a witness as soon as any other peer carries a positive one. An operator
+   * who mistypes a priority would have been told the peer was added at the priority they asked for, and got the
+   * one value with the opposite meaning. {@code intValueExact} refuses a fractional part and an out-of-range
+   * magnitude in the same call, so both become a 400 naming the field.
+   *
+   * @throws IllegalArgumentException when the field is present but is not a number, is not a whole number, does
+   *                                  not fit in an {@code int}, or is negative - Ratis rejects a negative
+   *                                  priority, and answering 400 here names the field instead of surfacing it as
+   *                                  a failed membership change
+   */
+  static int readPriority(final JSONObject payload) {
+    if (!payload.has("priority") || payload.isNull("priority"))
+      return 0;
+
+    if (!(payload.get("priority") instanceof Number number))
+      // Naming the value, like the three refusals below: an operator reading a log line needs to see what was
+      // sent, not only which field was wrong.
+      throw new IllegalArgumentException("Field 'priority' must be a non-negative integer, the peer's Raft "
+          + "leader-election priority, but was " + payload.get("priority"));
+
+    final int priority;
+    try {
+      // toString() rather than a doubleValue(): it is the one conversion that is lossless for every Number the
+      // JSON parser produces - Integer, Long, Double and BigDecimal alike - so nothing is rounded on the way
+      // into the check that exists to catch rounding.
+      priority = new BigDecimal(number.toString()).intValueExact();
+    } catch (final ArithmeticException | NumberFormatException e) {
+      throw new IllegalArgumentException("Field 'priority' must be a whole number that fits in a 32-bit integer, "
+          + "but was " + number + ". It is the peer's Raft leader-election priority, so a value rounded to fit "
+          + "would silently change which nodes can take leadership");
+    }
+
+    if (priority < 0)
+      throw new IllegalArgumentException("Field 'priority' must be a non-negative integer, but was " + priority
+          + ". Use 0 for a witness that must never become leader, and a higher value for a preferred one");
+
+    return priority;
   }
 
   /**

@@ -1352,6 +1352,24 @@ public enum Type {
   }
 
   /**
+   * Converts a {@link BigInteger} to the closest {@code double}, clamped to a finite value. {@code
+   * BigInteger.doubleValue()} returns {@link Double#POSITIVE_INFINITY}/{@link Double#NEGATIVE_INFINITY} once the
+   * magnitude exceeds a double's range, and this method exists for exactly the caller that would otherwise compare
+   * that infinity against a genuinely infinite {@code Float}/{@code Double} operand as equal - {@code
+   * BigInteger.TEN.pow(400)} is finite and enormous, not infinite, and must keep comparing less than
+   * {@link Double#POSITIVE_INFINITY} (issue #7669 review, CodeRabbit).
+   *
+   * @param value the operand to convert
+   *
+   * @return the closest finite {@code double}, or {@code +-Double.MAX_VALUE} for a magnitude {@code double} cannot
+   * represent at all
+   */
+  public static double finiteDoubleValue(final BigInteger value) {
+    final double converted = value.doubleValue();
+    return Double.isFinite(converted) ? converted : value.signum() < 0 ? -Double.MAX_VALUE : Double.MAX_VALUE;
+  }
+
+  /**
    * Builds the {@link BigDecimal} that reads the same in decimal as the given floating point operand, so an
    * integral operand too large for {@code double} can be compared against it exactly. A {@code Float} goes through
    * {@link #floatToBigDecimal} and everything else through {@code BigDecimal.valueOf(double)}, both of which read
@@ -1409,6 +1427,12 @@ public enum Type {
         left = new BigDecimal(left.intValue());
       else if (right instanceof Byte)
         left = left.byteValue();
+      else if (right instanceof BigInteger bigInteger1) {
+        // Mirrors the BigDecimal arm above: a BigInteger on the right has no narrower common type, so both
+        // operands promote to BigDecimal (issue #7669).
+        left = new BigDecimal(left.intValue());
+        right = new BigDecimal(bigInteger1);
+      }
 
     } else if (left instanceof Integer) {
       // INTEGER
@@ -1427,6 +1451,10 @@ public enum Type {
         right = right.intValue();
       else if (right instanceof Byte)
         right = right.intValue();
+      else if (right instanceof BigInteger bigInteger1) {
+        left = new BigDecimal(left.intValue());
+        right = new BigDecimal(bigInteger1);
+      }
 
     } else if (left instanceof Long) {
       // LONG
@@ -1455,6 +1483,10 @@ public enum Type {
         left = new BigDecimal(left.longValue());
       else if (right instanceof Integer || right instanceof Byte || right instanceof Short)
         right = right.longValue();
+      else if (right instanceof BigInteger bigInteger1) {
+        left = new BigDecimal(left.longValue());
+        right = new BigDecimal(bigInteger1);
+      }
 
     } else if (left instanceof Float) {
       // FLOAT
@@ -1479,6 +1511,18 @@ public enum Type {
           left = floatToBigDecimal(float1);
           right = BigDecimal.valueOf(right.longValue());
         }
+      } else if (right instanceof BigInteger bigInteger1) {
+        // Same non-finite guard as the Long branch above: floatToBigDecimal() throws NumberFormatException on
+        // NaN/Infinity, which BigDecimal cannot represent at all, so a non-finite float meets the BigInteger in
+        // double instead - Double.compare() already orders NaN/Infinity totally (issue #7669 review, CodeRabbit).
+        final float float1 = left.floatValue();
+        if (Float.isFinite(float1)) {
+          left = floatToBigDecimal(float1);
+          right = new BigDecimal(bigInteger1);
+        } else {
+          left = widenFloat(float1);
+          right = finiteDoubleValue(bigInteger1);
+        }
       }
 
     } else if (left instanceof Double) {
@@ -1498,6 +1542,52 @@ public enum Type {
         }
       } else if (right instanceof Byte || right instanceof Short || right instanceof Integer)
         right = right.doubleValue();
+      else if (right instanceof BigInteger bigInteger1) {
+        // Same guard as the Long branch above: BigDecimal.valueOf(double) throws NumberFormatException on
+        // NaN/Infinity (issue #7669 review, CodeRabbit).
+        final double double1 = left.doubleValue();
+        if (Double.isFinite(double1)) {
+          left = BigDecimal.valueOf(double1);
+          right = new BigDecimal(bigInteger1);
+        } else
+          right = finiteDoubleValue(bigInteger1);
+      }
+
+    } else if (left instanceof BigInteger bigInteger) {
+      // Mirrors the BigDecimal branch below: a BigInteger operand has no narrower common type with any other
+      // Number, so both sides promote to BigDecimal (issue #7669 - the missing left-hand counterpart of #7623).
+      if (right instanceof Integer integer) {
+        left = new BigDecimal(bigInteger);
+        right = new BigDecimal(integer);
+      } else if (right instanceof Long long1) {
+        left = new BigDecimal(bigInteger);
+        right = new BigDecimal(long1);
+      } else if (right instanceof Float float1) {
+        // Non-finite guard, symmetric with the Float branch's own BigInteger arm above (issue #7669 review,
+        // CodeRabbit): floatToBigDecimal() throws NumberFormatException on NaN/Infinity.
+        if (Float.isFinite(float1)) {
+          left = new BigDecimal(bigInteger);
+          right = floatToBigDecimal(float1);
+        } else {
+          left = finiteDoubleValue(bigInteger);
+          right = widenFloat(float1);
+        }
+      } else if (right instanceof Double double1) {
+        // Non-finite guard, symmetric with the Double branch's own BigInteger arm above (issue #7669 review,
+        // CodeRabbit): BigDecimal.valueOf(double) throws NumberFormatException on NaN/Infinity.
+        if (Double.isFinite(double1)) {
+          left = new BigDecimal(bigInteger);
+          right = BigDecimal.valueOf(double1);
+        } else
+          left = finiteDoubleValue(bigInteger);
+      } else if (right instanceof Short short1) {
+        left = new BigDecimal(bigInteger);
+        right = new BigDecimal(short1);
+      } else if (right instanceof Byte byte1) {
+        left = new BigDecimal(bigInteger);
+        right = new BigDecimal(byte1);
+      } else if (right instanceof BigDecimal)
+        left = new BigDecimal(bigInteger);
 
     } else if (left instanceof BigDecimal) {
       // DOUBLE
@@ -1532,6 +1622,10 @@ public enum Type {
         left = left.doubleValue();
       else if (right instanceof BigDecimal)
         left = new BigDecimal(left.intValue());
+      else if (right instanceof BigInteger bigInteger1) {
+        left = new BigDecimal(left.intValue());
+        right = new BigDecimal(bigInteger1);
+      }
     }
 
     if (left instanceof BigDecimal bigDecimal && right instanceof BigDecimal bigDecimal1) {

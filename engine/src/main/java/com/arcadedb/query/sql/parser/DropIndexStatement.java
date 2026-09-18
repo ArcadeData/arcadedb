@@ -98,6 +98,7 @@ public class DropIndexStatement extends DDLStatement {
     final DropIndexStatement result = new DropIndexStatement();
     result.all = all;
     result.name = name == null ? null : name.copy();
+    result.ifExists = ifExists;
     return result;
   }
 
@@ -112,12 +113,15 @@ public class DropIndexStatement extends DDLStatement {
 
     if (all != that.all)
       return false;
+    if (ifExists != that.ifExists)
+      return false;
     return Objects.equals(name, that.name);
   }
 
   @Override
   public int hashCode() {
     int result = all ? 1 : 0;
+    result = 31 * result + (ifExists ? 1 : 0);
     result = 31 * result + (name != null ? name.hashCode() : 0);
     return result;
   }

@@ -61,7 +61,7 @@ class JVectorIncrementalBuildTest {
       vectors.add(randomNormalizedVector(rng));
 
     // Create a growable RandomAccessVectorValues backed by a ConcurrentHashMap
-    final GrowableVectorValues growableVectors = new GrowableVectorValues(DIMENSIONS);
+    final InMemoryVectorValues growableVectors = new InMemoryVectorValues(DIMENSIONS);
 
     // Create BuildScoreProvider from the growable vector values
     final BuildScoreProvider scoreProvider = BuildScoreProvider.randomAccessScoreProvider(growableVectors, SIMILARITY);
@@ -168,7 +168,7 @@ class JVectorIncrementalBuildTest {
     for (int i = 0; i < numVectors; i++)
       vectors.add(randomNormalizedVector(rng));
 
-    final GrowableVectorValues growableVectors = new GrowableVectorValues(DIMENSIONS);
+    final InMemoryVectorValues growableVectors = new InMemoryVectorValues(DIMENSIONS);
     final BuildScoreProvider scoreProvider = BuildScoreProvider.randomAccessScoreProvider(growableVectors, SIMILARITY);
 
     try (final GraphIndexBuilder builder = new GraphIndexBuilder(
@@ -226,11 +226,11 @@ class JVectorIncrementalBuildTest {
    * Growable RandomAccessVectorValues backed by ConcurrentHashMap.
    * Vectors can be added after construction — essential for incremental build.
    */
-  static class GrowableVectorValues implements RandomAccessVectorValues {
+  static class InMemoryVectorValues implements RandomAccessVectorValues {
     private final int dimensions;
     private final ConcurrentHashMap<Integer, VectorFloat<?>> vectors = new ConcurrentHashMap<>();
 
-    GrowableVectorValues(final int dimensions) {
+    InMemoryVectorValues(final int dimensions) {
       this.dimensions = dimensions;
     }
 

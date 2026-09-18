@@ -105,6 +105,7 @@ public class UpdateStatement extends Statement {
     result.applyDefaults = applyDefaults;
     result.returnBefore = returnBefore;
     result.returnAfter = returnAfter;
+    result.returnCount = returnCount;
     result.returnProjection = returnProjection == null ? null : returnProjection.copy();
     result.whereClause = whereClause == null ? null : whereClause.copy();
     result.limit = limit == null ? null : limit.copy();
@@ -175,6 +176,8 @@ public class UpdateStatement extends Statement {
       return false;
     if (returnAfter != that.returnAfter)
       return false;
+    if (returnCount != that.returnCount)
+      return false;
     if (!Objects.equals(target, that.target))
       return false;
     if (!Objects.equals(operations, that.operations))
@@ -196,6 +199,7 @@ public class UpdateStatement extends Statement {
     result = 31 * result + (applyDefaults ? 1 : 0);
     result = 31 * result + (returnBefore ? 1 : 0);
     result = 31 * result + (returnAfter ? 1 : 0);
+    result = 31 * result + (returnCount ? 1 : 0);
     result = 31 * result + (returnProjection != null ? returnProjection.hashCode() : 0);
     result = 31 * result + (whereClause != null ? whereClause.hashCode() : 0);
     result = 31 * result + (limit != null ? limit.hashCode() : 0);

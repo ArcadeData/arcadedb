@@ -3360,6 +3360,9 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   public BaseExpression visitNullBaseExpr(final SQLParser.NullBaseExprContext ctx) {
     final BaseExpression baseExpr = new BaseExpression();
     baseExpr.isNull = true;
+    // The grammar accepts `NULL modifier*` (`null.ifNull('default')`, `null.asString()`) and this visitor used to
+    // drop the modifiers on the floor, so the whole method/selector chain was silently discarded (issue #7774).
+    baseExpr.modifier = buildModifierChain(ctx.modifier());
     return baseExpr;
   }
 
@@ -6630,6 +6633,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // Extract string literal and remove quotes
     final String rawText = actionCtx.STRING_LITERAL().getText();
     stmt.actionCode = rawText.substring(1, rawText.length() - 1);
+    // KEPT WITH ITS QUOTES SO toString() CAN RE-RENDER THE EXACT ORIGINAL LITERAL (ISSUE #7794)
+    stmt.actionCodeQuoted = rawText;
 
     return stmt;
   }
@@ -7800,10 +7805,18 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     } else if (ctx.CLASSPATH_URL() != null) {
       urlString = ctx.CLASSPATH_URL().getText();
     } else if (ctx.STRING_LITERAL() != null) {
-      urlString = removeQuotes(ctx.STRING_LITERAL().getText());
+      // DECODED (not just unquoted) SO urlString HOLDS THE ACTUAL TARGET - BackupDatabaseStatement.getUrlString()
+      // USES IT AS THE BACKUP FILE PATH, SO AN UN-DECODED \n WOULD TARGET THE WRONG PATH ON RE-PARSE (ISSUE #7800
+      // REVIEW). SAME CONVENTION AS DefineFunctionStatement.code, WHICH ALSO DECODES ALONGSIDE A codeQuoted CACHE.
+      urlString = BaseExpression.decode(removeQuotes(ctx.STRING_LITERAL().getText()));
     }
 
-    return new Url(urlString);
+    final Url url = new Url(urlString);
+    if (ctx.STRING_LITERAL() != null)
+      // KEPT WITH ITS ORIGINAL QUOTES SO toString() CAN RE-RENDER THE EXACT LITERAL WITHOUT RE-ESCAPING
+      // ALREADY-ESCAPED TEXT (ISSUE #7800 REVIEW)
+      url.quotedLiteral = ctx.STRING_LITERAL().getText();
+    return url;
   }
 
   /**
