@@ -105,6 +105,10 @@ public class ReplicatedSecurityFingerprintRepository {
 
   public static final  String              FILE_NAME = "server-security-cluster.json";
   private final        String              securityConfPath;
+  // Holds the write and the update of {@link #persisted} together, so those two never disagree about what is on
+  // disk no matter how many threads reach save(). It does NOT make record()'s check-then-write atomic: that rests
+  // on the single-writer invariant documented on record(), and the cost of breaking it is named there
+  // (claude-review on PR #7817).
   private final        Object              saveLock  = new Object();
   // Read once at construction and written through on every update, so the common path - one lookup per applied
   // security entry - touches no filesystem.
