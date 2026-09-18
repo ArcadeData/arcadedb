@@ -48,7 +48,10 @@ public class SecurityGroupFileRepository {
   private final       String                     securityConfPath;
   private final       File                       file;
   private final       int                        checkConfigReloadEveryMs;
-  private             long                       fileLastUpdated = 0L;
+  // VOLATILE for the same reader as the timer reference below: the TimerTask compares against this without
+  // taking the monitor its two writers (load() and startWatching()) hold. A non-volatile long may be read in
+  // halves, and a stale read costs one delayed detection tick; one volatile read per tick costs nothing.
+  private volatile    long                       fileLastUpdated = 0L;
   // VOLATILE for the one reader that deliberately does not take the monitor: the TimerTask's stale-instance
   // check, which runs on the timer thread. Written once per instance, read once per tick, so the barrier costs
   // nothing measurable. It is NOT what makes stop() safe - see stop().
