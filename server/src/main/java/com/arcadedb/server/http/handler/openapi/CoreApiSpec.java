@@ -196,12 +196,15 @@ public class CoreApiSpec implements OpenApiContributor {
         connect cluster <address> adds the server at <address> to this server's cluster - the operator \
         alias of POST /api/v1/cluster/peer - where <address> is one entry of arcadedb.ha.serverList \
         ([name@]host[:raftPort[:httpPort]] or the host:{raft:..,http:..} object form). It answers 400 \
-        for a blank or malformed address and 500 when this server is not running an HA implementation \
-        that supports runtime membership. Note the direction: it never makes THIS server join another \
-        cluster, and an address that resolves to this server is answered 400 rather than accepted as a \
-        no-op. To make a running server join a cluster it is not configured for, issue this same command \
-        on a server that is already a member of that cluster, or declare arcadedb.ha.serverList and \
-        restart""");
+        for a blank or malformed address, 500 when this server is not running an HA implementation \
+        that supports runtime membership, and 503 when the server joined but one of the three security \
+        documents could not be seeded to it - the same answer POST /api/v1/cluster/peer gives that \
+        condition, with the failing documents in 'failedSeeds'. The join itself stands in that case; \
+        re-running the command is idempotent on the membership change and reissues the seed. Note the \
+        direction: it never makes THIS server join another cluster, and an address that resolves to this \
+        server is answered 400 rather than accepted as a no-op. To make a running server join a cluster \
+        it is not configured for, issue this same command on a server that is already a member of that \
+        cluster, or declare arcadedb.ha.serverList and restart""");
     postOp.setOperationId("executeServerCommand");
     postOp.addTagsItem("Server");
     postOp.setRequestBody(SpecBuilders.jsonBody("Command request with command and optional parameters", "CommandRequest", true));
@@ -209,6 +212,13 @@ public class CoreApiSpec implements OpenApiContributor {
     // Only this operation forwards to the HA leader, so the 504 is added here rather than in the shared
     // createCommandResponses() that POST /api/v1/command/{database} also uses (issue #7507).
     postOp.getResponses().addApiResponse("504", SpecBuilders.errorResponse(SpecBuilders.LEADER_FORWARD_TIMEOUT_DESCRIPTION));
+    // 'connect cluster' answers 503 when the join succeeded but a security document could not be seeded to
+    // the new peer (issue #7532). Documented here rather than in the shared createCommandResponses(), for the
+    // same reason as the 504 above: only this operation can produce it.
+    postOp.getResponses().addApiResponse("503", SpecBuilders.errorResponse(
+        "'connect cluster' joined the server, but one or more of the cluster's security documents could not be "
+            + "seeded to it. The new peer is a committed cluster member enforcing its own copy of them. The "
+            + "'failedSeeds' array names the documents; re-run the command to reissue the seed."));
     pathItem.setPost(postOp);
 
     return pathItem;

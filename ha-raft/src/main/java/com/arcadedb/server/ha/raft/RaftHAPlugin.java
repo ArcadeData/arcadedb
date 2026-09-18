@@ -341,12 +341,38 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
    * Read per submission rather than cached, exactly as {@code RaftReplicatedDatabase.schemaDeltaEnabled} reads it:
    * a peer that stops answering stops receiving preconditions from the next mutation on, and one that finishes
    * upgrading starts receiving them without a leader restart.
+   * <p>
+   * <b>Asked through {@link RaftHAServer#peersMissingCapabilityNow} and not the cached
+   * {@link RaftHAServer#peersMissingCapability}</b> (issue #7559). The background capability monitor runs on the
+   * LEADER only - {@code startCapabilityMonitor} is called from {@code startLagMonitor} on gaining leadership and
+   * stopped on losing it - because #7219's only consumer was the leader-side schema-delta decision, where the
+   * leader is the only writer. A security entry is not a schema delta: any node can submit one, and the entry
+   * points that reach here on a FOLLOWER are precisely the ones that do NOT forward to the leader - the REST
+   * group and API-token routes, and openCypher {@code CREATE USER} / {@code ALTER USER} / {@code DROP USER} over
+   * Bolt or {@code /api/v1/command}, which arrive through {@code SecurityManager} and have no exchange to
+   * forward. They are the ones not already serialised onto a single node, and therefore the ones a
+   * compare-and-set was worth most to. Reading the cache there named every peer as missing and dropped the
+   * precondition silently, leaving the pre-#7509 behaviour behind nothing louder than the throttled line below.
+   * Making those paths reach the leader as {@code /server/users} does is issue #7826, and would make the
+   * question moot for them rather than replace this.
+   * <p>
+   * The ask-now variant also answers the harder half (issue #7540, absorbed into #7559): the verdict has to be the
+   * SAME on every node that might submit the same mutation. Two nodes disagreeing is not a lost update, it is a
+   * losing entry refused where a precondition is read and applied where it is not - divergent security state.
+   * <p>
+   * It costs a bounded, sequential probe round, paid only when the local cache is not already a full "yes" - so
+   * never on a warm leader - and only for a submission that actually carries a fingerprint, so no seed path
+   * ({@code PostAddPeerHandler}, {@code ServerControlPlane.connectCluster}, {@code ServerSecurity}'s bootstrap
+   * republish) pays for it at cluster formation, when peers are least likely to answer. For the two gated
+   * documents the round has just been run by {@link SecurityEntryCapabilityGate}, so this call finds a warm cache
+   * and dials nothing.
    */
-  private String preconditionEveryPeerCanRead(final String expectedFingerprint) {
+  // @VisibleForTesting - Issue7559SecurityPreconditionOnFollowerIT drives this decision on a real follower
+  String preconditionEveryPeerCanRead(final String expectedFingerprint) {
     return expectedFingerprint == null ?
         null :
         preconditionForPeers(expectedFingerprint,
-            raftHAServer.peersMissingCapability(PeerCapabilities.SECURITY_PRECONDITION));
+            raftHAServer.peersMissingCapabilityNow(PeerCapabilities.SECURITY_PRECONDITION));
   }
 
   /**
@@ -724,15 +750,10 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
    * a WARNING: an operator's {@code shutdown &lt;server&gt;} reported success and did nothing.
    * <p>
    * The credential the peer does authenticate is the {@code X-ArcadeDB-Cluster-Token} +
-   * {@code X-ArcadeDB-Forwarded-User} pair every other peer-to-peer dial in this module sends
-   * ({@link PeerCapabilityQuery}, {@link LeaderDatabaseQuery}, {@link PeerAuthSessionQuery}, the snapshot
-   * download, the resync). The forwarded user is {@code root} because
-   * {@code PostServerCommandHandler.execute} answers {@code shutdown} only to a root principal, and a peer
-   * relaying a cluster-internal command forwards as root everywhere else for the same reason.
-   * <p>
-   * The token is omitted when the cluster does not have one, which leaves the request with no credentials at all
-   * - correct on a cluster that does not require authentication, and answered 401 (and now raised) on one that
-   * does, rather than silently ignored.
+   * {@code X-ArcadeDB-Forwarded-User} pair every other peer-to-peer dial in this module sends, attached by
+   * {@link PeerCredentials} so this site cannot spell it differently from the others. The forwarded user is
+   * {@code root} because {@code PostServerCommandHandler.execute} answers {@code shutdown} only to a root
+   * principal.
    * <p>
    * Package-private and pure so the headers can be asserted without a live peer to stop: the method that sends
    * this request ends in the target node's exit.
@@ -758,7 +779,7 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
    * (claude-review on PR #7854). Those accessors answer "who counts as a replica" - who to replicate to, who to
    * wait for a quorum from - and filter accordingly. This question is different: an operator typed a name, and
    * the only useful answer is the peer that name DECLARES, including one that a configuration change has not
-   * finished committing. Filtering it out would answer "no such server" for a node that is plainly there.
+   * finished committing.
    *
    * @throws ServerException when no peer matches, or when more than one does
    */

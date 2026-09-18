@@ -84,8 +84,7 @@ public class MembershipSecuritySeeder implements AutoCloseable {
    * <p>
    * Sized as the round trip the duplicate comes from: the admitting node issues its request as soon as
    * {@code addPeer} returns, so the gap it has to cover is one HTTP call on a cluster network. Generous enough
-   * to absorb a slow one, short enough that an unrelated request - a node's own catch-up, an operator
-   * re-POSTing a peer minutes later - gets a fresh seed rather than a stale answer.
+   * to absorb a slow one, short enough that an unrelated request gets a fresh seed rather than a stale answer.
    */
   static final long REUSE_WINDOW_MS = 5_000L;
 
@@ -112,14 +111,13 @@ public class MembershipSecuritySeeder implements AutoCloseable {
    * Folding into an outstanding seed is sound because the payload does not depend on the admission. A seed
    * carries the security documents as they are when it RUNS - membership is not one of them - so any run that
    * commits after the peer became a member delivers exactly what a run started later would have. For the
-   * admission that scheduled it, that is always true: this class's configuration callback runs on the apply
-   * thread, so a seed it schedules reads AFTER the membership entry was applied.
+   * admission that scheduled it that is always true: the configuration callback runs on the apply thread, so a
+   * seed it schedules reads AFTER the membership entry was applied.
    * <p>
    * The one case that does not hold is a SECOND admission folding into a seed the first one started, whose
    * entry can then be ordered before the second peer's configuration entry. That peer still receives it by
    * ordinary log replay, and if the log has been purged and it catches up by snapshot install instead, by the
-   * catch-up request of issue #7833 - which is the general repair for every node that missed entries, and is
-   * why this fold does not need a second seed to be correct.
+   * catch-up request of issue #7833.
    */
   private       CompletableFuture<List<String>> outstandingSeed;
   /**
@@ -128,19 +126,17 @@ public class MembershipSecuritySeeder implements AutoCloseable {
    * <p>
    * The fold above only catches a request that arrives while a seed is still outstanding. An admitting node's
    * request can also arrive just AFTER the membership change's seed finished - it is a round trip behind the
-   * configuration entry - and that would schedule a second seed for the same admission, which is the duplicate
-   * issue #7834 is about (CodeRabbit on PR #7854). A seed that finished moments ago is reported instead.
+   * configuration entry - and that would schedule a second seed for the same admission. A seed that finished
+   * moments ago is reported instead.
    * <p>
-   * <b>Reusing it is sound for the same reason the fold is.</b> A seed carries the security documents as they
-   * are when it runs, and membership is not one of them, so a run that finished just before the request is the
-   * same document set a run started just after it would have submitted. {@link #REUSE_WINDOW_MS} bounds how
-   * far back that argument is allowed to reach.
+   * Reusing it is sound for the same reason the fold is, and {@link #REUSE_WINDOW_MS} bounds how far back that
+   * argument may reach. Only a caller that asks may reuse it: see {@link #seedNowAndReport}.
    */
   private       CompletableFuture<List<String>> lastCompletedSeed;
   private       long                            lastCompletedSeedAt;
   /**
    * Set by {@link #close()}, and never cleared: a seed still running then may finish afterwards, and its
-   * result must not repopulate the slot this node has just abandoned (claude-review on PR #7854).
+   * result must not repopulate the slot this node has just abandoned.
    */
   private       boolean                          closed;
   /** What {@link #runSeed} was last entered for; read back by a test that the reason is not hardcoded. */
@@ -161,8 +157,18 @@ public class MembershipSecuritySeeder implements AutoCloseable {
    * <p>
    * <b>A second seed folds into the outstanding one rather than being queued behind it, and that is coalescing
    * rather than loss.</b> A task reads the documents when it RUNS rather than being handed a snapshot, so the
-   * outstanding task covers every change folded into it - and the caller that folded in gets that task's result,
-   * which is what lets an admission report a seed it did not itself run (issue #7834).
+   * outstanding task covers every change folded into it - and the caller that folded in gets that task's
+   * result, which is what lets an admission report a seed it did not itself run (issue #7834).
+   * <p>
+   * <b>Not registered with {@code PoolMetrics}.</b> That binder is a {@code MeterBinder} over the engine's
+   * process-wide singletons, bound once through their {@code getInstance()} accessors; it has no surface for
+   * a per-server pool such as this one, which belongs to a state-machine instance. The module's other
+   * housekeeping executor is excluded from that binder too ({@code RaftLogCompactionScheduler}), but on a
+   * different ground and not a precedent for this one: that pool is excluded because it is uninteresting - one
+   * bounded task every few minutes, no queue to back up - whereas this one has a one-slot queue and drops on
+   * saturation, so its drop count is exactly what an operator would want and the obstacle is structural rather
+   * than editorial. Surfacing this pool and {@code ServerSecurity.permissionsRefreshExecutor} - the pool this
+   * one is shaped after, and which is not surfaced either - is tracked as issue #7856.
    */
   public MembershipSecuritySeeder(final BooleanSupplier isLeader, final LongSupplier retryBudgetMs,
       final SecuritySeed seed) {
@@ -188,17 +194,11 @@ public class MembershipSecuritySeeder implements AutoCloseable {
   }
 
   private static ThreadPoolExecutor createSeedExecutor() {
-    // corePoolSize 0 with a bounded queue relies on ThreadPoolExecutor.execute's second stage: after a
-    // successful enqueue it re-checks the worker count and starts a non-core worker when it finds zero, which
-    // is what stops a task sitting in the queue with nobody to run it. That is the documented behaviour, not
-    // an accident of the implementation - but it is subtle enough to be worth naming here rather than leaving
-    // the reader to find it in the JDK source (claude-review on PR #7854).
-    //
     // AbortPolicy, not a discarding handler (issue #7834). Coalescing now happens one level up, in schedule(),
     // where the folded-in caller gets the outstanding seed's FUTURE and therefore its outcome; a handler that
-    // silently dropped the task here would leave that future uncompleted and every reporting caller waiting out
-    // its timeout for a seed that was never going to run. What reaches this policy now is only a submit to an
-    // executor that has been shut down, which schedule() reports as "the node is stopping".
+    // silently dropped the task here would leave that future uncompleted and every reporting caller waiting
+    // out its timeout for a seed that was never going to run. What reaches this policy now is only a submit to
+    // an executor that has been shut down, which schedule() reports as "the node is stopping".
     return new ThreadPoolExecutor(0, 1, 30L, TimeUnit.SECONDS, new ArrayBlockingQueue<>(1), r -> {
       final Thread thread = new Thread(r, "arcadedb-raft-security-seed");
       thread.setDaemon(true);
@@ -215,6 +215,42 @@ public class MembershipSecuritySeeder implements AutoCloseable {
    * snapshot install - and therefore never blocks and never throws: the seed itself goes to {@link #executor},
    * and a failure to schedule it is logged rather than propagated back into Ratis. The membership update below
    * is done under this instance's monitor because those two callers can arrive concurrently.
+   * <p>
+   * <b>{@code term} and {@code index} are for the log lines only, and a stale one is deliberately not
+   * rejected.</b> The two callers really are different threads, so the monitor is not merely cheap insurance,
+   * but an index guard on top of it would be wrong in one direction and unnecessary in the other:
+   * <ul>
+   *   <li><b>Unnecessary for the seed decision.</b> Only the leader seeds, and a leader never reaches the
+   *       snapshot-install call site: {@code SnapshotInstallationHandler} answers {@code NOT_LEADER} unless
+   *       {@code state.recognizeLeader} accepts the sender, and then calls
+   *       {@code changeToFollowerAndPersistMetadata} before installing. So on the node that decides to seed,
+   *       this method is driven only by {@code applyLogToStateMachine}, i.e. the single apply loop delivering
+   *       committed entries in index order, and no stale update can regress the baseline that decision reads.</li>
+   *   <li><b>Wrong for the baseline.</b> The snapshot path fires only when the installed configuration differs
+   *       from the one this node holds, immediately after {@code state.truncate(proto.getIndex())} - it is the
+   *       authoritative membership replacing one this node took from entries now being truncated away, and its
+   *       index is legitimately lower. Rejecting it would leave the baseline holding a membership the log no
+   *       longer contains.</li>
+   * </ul>
+   * <p>
+   * <b>The baseline advances before the seed is dispatched, and is not rolled back if the dispatch does not
+   * happen.</b> That is deliberate - the baseline tracks what Ratis committed, not what this seeder managed to
+   * act on, and rolling it back would make the NEXT unrelated configuration change re-seed for a peer that has
+   * nothing to do with it. The consequence is that a peer whose seed is lost here is not retried by a later
+   * configuration change that adds some other peer; only removing and re-adding it seeds it again. Three ways
+   * the dispatch can be skipped, and what each costs:
+   * <ul>
+   *   <li>{@code isLeader} answers {@code false} on a follower - by design, nothing is lost: the leader is
+   *       running this same callback and dispatches there.</li>
+   *   <li>The submit is refused by the one-slot queue - nothing is lost either: the queued task re-reads the
+   *       documents when it runs, so it covers this change too (see the constructor).</li>
+   *   <li>{@code isLeader} answers {@code false} on the actual leader because the role read degraded, or the
+   *       dispatch path throws an {@code Error} that {@code ArcadeStateMachine.notifyConfigurationChanged}
+   *       logs and swallows. This is the one case where a seed is genuinely dropped. Both are logged, and the
+   *       admitting-side seed of issue #7521 still covers the two paths that have an admitting node; only a
+   *       {@code KubernetesAutoJoin} self-join would be left unseeded, with the same symptom and the same
+   *       remedy as issue #7833.</li>
+   * </ul>
    *
    * @param term  term of the configuration entry, for the log line only
    * @param index index of the configuration entry, for the log line only
@@ -234,6 +270,9 @@ public class MembershipSecuritySeeder implements AutoCloseable {
         return;
       }
 
+      // Sized for one, not capped at one: a setConfiguration may add several peers at once and the list grows
+      // if it does. Every production issuer adds exactly one, and this runs on a Ratis callback thread, so the
+      // common case allocates the smallest backing array rather than the default sixteen.
       added = new ArrayList<>(1);
       for (final RaftPeerId peer : current)
         if (!previous.contains(peer))
@@ -268,24 +307,19 @@ public class MembershipSecuritySeeder implements AutoCloseable {
    * leader-side seeder arrived - the leader-side seed is asynchronous and has no caller to report to. So the
    * report comes back through here instead: the admitting node asks the LEADER for the seed and reads the
    * outcome, and there is one seeder again.
-   * <p>
-   * An outstanding seed is joined rather than queued behind, which is what removes the duplicate rather than
-   * merely serialising it: by the time an admitting node can call this, the membership change has committed and
-   * the configuration callback above has already scheduled the seed for it. See {@link #outstandingSeed}.
    *
+   * @param reason    what the seed is FOR, in the caller's own words, because it is what the log lines this
+   *                  run writes will name. Hardcoding an admission's phrasing here made the issue #7833
+   *                  catch-up - the one caller with no concurrent membership seed to fold into, so the one
+   *                  whose string actually reaches the log - report itself as a peer admission
+   * @param timeoutMs how long to wait for the seed to finish before giving up on REPORTING it; the seed itself
+   *                  is not cancelled, since it is the work the joining peer needs either way
    * @param mayReuseRecentSeed whether a seed that finished moments ago may ANSWER this request instead of a new
    *                  one being run. True for an admission, whose request is a round trip behind the membership
    *                  change that already seeded for it. <b>False for anything that has established it needs a
    *                  seed</b> - a catch-up whose fingerprints did not match has just been told this node is out
    *                  of step, and answering it from an unrelated recent result would leave it that way, which
-   *                  is the failure issue #7833 exists to repair (CodeRabbit on PR #7854)
-   * @param reason    what the seed is FOR, in the caller's own words, because it is what the log lines this
-   *                  run writes will name. Hardcoding an admission's phrasing here made the issue #7833
-   *                  catch-up - the one caller with no concurrent membership seed to fold into, so the one
-   *                  whose string actually reaches the log - report itself as a peer admission
-   *                  (claude-review on PR #7854)
-   * @param timeoutMs how long to wait for the seed to finish before giving up on REPORTING it; the seed itself
-   *                  is not cancelled, since it is the work the joining peer needs either way
+   *                  is the failure issue #7833 exists to repair
    *
    * @return the names of the documents that could not be seeded, empty when all of them committed
    *
@@ -313,19 +347,21 @@ public class MembershipSecuritySeeder implements AutoCloseable {
           + "ms; it is still running on this node and its outcome will be logged there", e);
     } catch (final CompletionException | ExecutionException e) {
       throw new IllegalStateException("the cluster security seed failed: "
-          + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()), e.getCause() != null ? e.getCause() : e);
+          + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()),
+          e.getCause() != null ? e.getCause() : e);
     }
   }
 
   /**
-   * Schedules a seed, or hands back the one that is already queued or running. {@code null} when the executor
-   * refused the task, which on the owned executor means the node is stopping.
+   * Schedules a seed, hands back the one already outstanding, or - only when the caller allows it - the one
+   * that finished moments ago. {@code null} when the executor refused the task, which means the node is
+   * stopping.
    */
   private CompletableFuture<List<String>> schedule(final String reason, final boolean mayReuseRecentSeed) {
     final CompletableFuture<List<String>> seed;
-    // Fold, reuse and install are ONE decision under ONE acquisition (CodeRabbit on PR #7854). Splitting the
-    // reuse check out let a caller pass it while the outstanding seed was still running, pause, and install a
-    // second seed after that one finished - the duplicate the reuse exists to prevent.
+    // Fold, reuse and install are ONE decision under ONE acquisition. Split across two, a caller could pass
+    // the reuse check while the outstanding seed was still running, pause, and install a second seed after
+    // that one finished - the duplicate the reuse exists to prevent.
     synchronized (this) {
       // A DONE future does not block the next schedule, so the slot never has to be cleared: whoever comes
       // next simply installs their own. That is what lets the refusal below answer rather than undo.
@@ -402,22 +438,26 @@ public class MembershipSecuritySeeder implements AutoCloseable {
       // Nothing here may escape: on the owned executor an escaping throwable kills the worker, and the next
       // membership change would then be seeded by a pool that has to build a new thread for it. The future is
       // completed with it rather than only logged, because seedNowAndReport has a caller that must not read
-      // "nothing failed" from a seed that threw.
+      // "nothing failed" from a seed that threw. Deliberately NOT recorded for reuse: an admission must not be
+      // answered by a seed that threw.
       result.completeExceptionally(t);
-      // Deliberately NOT recorded for reuse: an admission must not be answered by a seed that threw.
       LogManager.instance().log(this, Level.SEVERE,
           "The security seed run for %s could not be run at all: %s. The peer(s) it was for are cluster "
               + "members serving requests against their own security documents", t, reason, t.getMessage());
     }
   }
 
+  /** Publishes a finished seed for {@link #REUSE_WINDOW_MS}, so a request a round trip behind it is answered. */
+  private synchronized void recordCompletion(final CompletableFuture<List<String>> result) {
+    if (closed)
+      return;
+    lastCompletedSeed = result;
+    lastCompletedSeedAt = System.currentTimeMillis();
+  }
+
   /**
    * Schedules a seed and hands back its future WITHOUT waiting, so a test can observe the fold itself rather
    * than infer it from a race. Package-private and test-only, the seam {@link #knownPeersForTest} is.
-   * <p>
-   * The fold is the whole of issue #7834's "one seed per admission", and a test that drives it from a second
-   * thread has to guess when that thread has arrived. This returns the same object {@link #seedNowAndReport}
-   * would have waited on, so the assertion is an identity check on the calling thread instead.
    */
   // @VisibleForTesting
   CompletableFuture<List<String>> scheduleForTest(final String reason) {
@@ -428,14 +468,6 @@ public class MembershipSecuritySeeder implements AutoCloseable {
   // @VisibleForTesting
   CompletableFuture<List<String>> scheduleReusingForTest(final String reason) {
     return schedule(reason, true);
-  }
-
-  /** Publishes a finished seed for {@link #REUSE_WINDOW_MS}, so a request a round trip behind it is answered. */
-  private synchronized void recordCompletion(final CompletableFuture<List<String>> result) {
-    if (closed)
-      return;
-    lastCompletedSeed = result;
-    lastCompletedSeedAt = System.currentTimeMillis();
   }
 
   /**
@@ -477,7 +509,8 @@ public class MembershipSecuritySeeder implements AutoCloseable {
       lastCompletedSeed = null;
     }
     if (pending != null)
-      pending.completeExceptionally(new IllegalStateException("this node is stopping; the security seed was abandoned"));
+      pending.completeExceptionally(
+          new IllegalStateException("this node is stopping; the security seed was abandoned"));
   }
 
   /**
