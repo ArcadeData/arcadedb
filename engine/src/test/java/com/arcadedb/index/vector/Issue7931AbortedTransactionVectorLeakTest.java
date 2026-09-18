@@ -263,6 +263,61 @@ class Issue7931AbortedTransactionVectorLeakTest {
   }
 
   /**
+   * The mixed transaction: one record inserted, another's vector rewritten TWICE, and a third deleted, all before
+   * the conflict aborts the lot. This is the shape closest to violating the invariant {@code undoReplay()} asserts -
+   * that no id is both allocated and tombstoned by one replay - and it is the one a real ingest actually performs.
+   */
+  @Test
+  void aConflictedMixedTransactionLeavesNothingBehind() throws Exception {
+    withDatabase(db -> {
+      final LSMVectorIndex index = vectorIndex(db);
+      index.buildVectorGraphNow();
+
+      final RID rewritten = ridOf(db, 5);
+      final RID deleted = ridOf(db, 6);
+      final RID loser = ridOf(db, 7);
+      final Map<String, Long> before = index.getStats();
+
+      LSMVectorIndex.acquireAllRebuildPermitsForTest();
+      try {
+        db.begin();
+        db.newDocument("Doc").set("id", NUM_VECTORS + 21).set("name", "inserted")
+            .set("vector", embedding(NUM_VECTORS + 21)).save();
+        // Twice, so the second update supersedes an id this very transaction allocated.
+        rewritten.asDocument(true).modify().set("vector", embedding(NUM_VECTORS + 22)).save();
+        rewritten.asDocument(true).modify().set("vector", embedding(NUM_VECTORS + 23)).save();
+        deleted.asDocument(true).modify().delete();
+        loser.asDocument(true).modify().set("name", "loser").save();
+
+        commitInAnotherThread(db, loser);
+
+        assertConflictOnCommit(db);
+
+        final Map<String, Long> after = index.getStats();
+        assertThat(after.get("deletedVectors")).as("no tombstone may survive the abort")
+            .isEqualTo(before.get("deletedVectors"));
+        assertThat(after.get("totalVectors")).as("no allocated id may stay resident")
+            .isEqualTo(before.get("totalVectors"));
+        assertThat(after.get("activeVectors")).as("every record's own vector must still be live")
+            .isEqualTo(before.get("activeVectors"));
+        assertThat(after.get("deltaVectorsCount")).isEqualTo(before.get("deltaVectorsCount"));
+        assertThat(after.get("mutationsSinceRebuild")).isEqualTo(before.get("mutationsSinceRebuild"));
+      } finally {
+        LSMVectorIndex.releaseAllRebuildPermitsForTest();
+      }
+
+      // Every record is untouched on disk, and all three are still searchable by their ORIGINAL embeddings.
+      for (final int id : new int[] { 5, 6, 7 }) {
+        final RID rid = ridOf(db, id);
+        assertThat(readVector(db, rid)).as("record %d must be unchanged", id)
+            .containsExactly(embedding(id), Offset.offset(1e-6f));
+        assertThat(index.findNeighborsFromVector(embedding(id), 5, 64).stream().map(Pair::getFirst))
+            .as("record %d must still be found by its own embedding", id).contains(rid);
+      }
+    });
+  }
+
+  /**
    * The page-level half of the same leak: an aborted insert big enough to spill onto new index data pages also moves
    * the insert cursor and the mutable-page gauge, neither of which is transactional. The pages themselves go away
    * with the rollback, so a cursor left pointing past the end addresses a page that does not exist.
