@@ -85,11 +85,11 @@ class Issue6545AbortedTransactionExtendedQueryIT extends PostgresWireProtocolTes
         assertThat(fields.get('C')).as("SQLSTATE 25P02 in_failed_sql_transaction").isEqualTo("25P02");
         assertThat(fields.get('M')).contains("current transaction is aborted");
 
-        // 5. The session must still be aborted: a Sync now must still show status 'E' at the point Sync is
-        // processed, i.e. the refusal above did not clear errorInTransaction by itself.
+        // 5. The session must still be aborted: Sync rolls the doomed transaction back but does not end the
+        // block, so the status it reports is 'E' until the client's own COMMIT/ROLLBACK/END (issue #7851).
         sendSync(out);
         assertThat(readyForQueryStatusOf(readUntilReadyForQuery(in)))
-            .as("the connection was still aborted when Sync ran").isIn('E', 'T');
+            .as("the connection is still aborted after Sync").isEqualTo('E');
 
         // 6. The session is fully usable again after an explicit ROLLBACK.
         sendSimpleQuery(out, "ROLLBACK");
