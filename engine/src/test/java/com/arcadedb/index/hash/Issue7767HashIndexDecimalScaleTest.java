@@ -62,6 +62,27 @@ class Issue7767HashIndexDecimalScaleTest extends TestHelper {
     assertScaleIsOneKey(Schema.INDEX_TYPE.LSM_TREE, "LsmPrices");
   }
 
+  /**
+   * The upgrade consequence this fix carries, pinned rather than only described in the release note: an index
+   * built on a type that already holds two scale-different spellings of one number is refused, because they ARE
+   * one key. That is what "an existing UNIQUE_HASH index on a DECIMAL needs a rebuild, and the rebuild surfaces
+   * whatever duplicates the constraint had been letting through" means in practice (claude-review on PR #7855).
+   * <p>
+   * NOT a regression test for the canonicalisation, and deliberately labelled so nobody later reads it as one: it
+   * was checked against the unfixed {@code convertKeys} and passes there too, because the build-time duplicate
+   * check catches the pair on its own. What it guards is the documented upgrade behaviour - that the rebuild an
+   * operator is being told to perform REPORTS the duplicates rather than quietly admitting them.
+   */
+  @Test
+  void buildingAUniqueHashIndexOverRowsThatDifferOnlyInScaleIsRefused() {
+    assertDuplicatesAreSurfacedOnBuild(Schema.INDEX_TYPE.HASH, "HashRebuild");
+  }
+
+  @Test
+  void theLsmTwinRefusesItToo() {
+    assertDuplicatesAreSurfacedOnBuild(Schema.INDEX_TYPE.LSM_TREE, "LsmRebuild");
+  }
+
   @Test
   void canonicalizationIsSharedAndLeavesEverythingElseUntouched() {
     final Object five = new BigDecimal("5");
@@ -79,6 +100,26 @@ class Issue7767HashIndexDecimalScaleTest extends TestHelper {
     assertThat(canonical).isNotSameAs(composite);
     assertThat(canonical[1]).isEqualTo(new BigDecimal("1.1"));
     assertThat(composite[1]).as("the caller's array must not be rewritten").isEqualTo(new BigDecimal("1.10"));
+  }
+
+  private void assertDuplicatesAreSurfacedOnBuild(final Schema.INDEX_TYPE indexType, final String typeName) {
+    database.transaction(() -> {
+      final DocumentType type = database.getSchema().createDocumentType(typeName);
+      type.createProperty("amount", Type.DECIMAL);
+
+      // Written BEFORE the index exists, which is the state an index created before this fix left behind: two
+      // rows the comparator has always called equal, sitting under a constraint that could not see them.
+      database.newDocument(typeName).set("amount", new BigDecimal("5")).save();
+      database.newDocument(typeName).set("amount", new BigDecimal("5.00")).save();
+    });
+
+    assertThatThrownBy(() -> database.getSchema().buildTypeIndex(typeName, new String[] { "amount" })
+        .withType(indexType).withUnique(true).create())
+        .as("%s: 5 and 5.00 are one key, so a UNIQUE index over both must refuse to build", indexType)
+        .hasRootCauseInstanceOf(DuplicatedKeyException.class);
+
+    assertThat(database.getSchema().existsIndex(typeName + "[amount]"))
+        .as("a refused build must leave no index behind").isFalse();
   }
 
   private void assertScaleIsOneKey(final Schema.INDEX_TYPE indexType, final String typeName) {
