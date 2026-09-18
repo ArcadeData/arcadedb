@@ -24,6 +24,7 @@ import com.arcadedb.server.HAServerPlugin;
 
 import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -130,6 +131,17 @@ final class SecurityCatchUp implements AutoCloseable {
   }
 
   /**
+   * How long the once-per-start request spreads itself over, chosen per node.
+   * <p>
+   * A full-cluster restart elects one leader and every follower observes it at once, so without this they all
+   * dial within milliseconds of each other (claude-review on PR #7854). Each request is cheap - a bounded poll
+   * and three string comparisons - so the burst is unlikely to matter at the cluster sizes this targets, but
+   * the leader is also the node everything else is waiting on at exactly that moment, and spreading the
+   * arrivals costs nothing. Same reflex as {@code KubernetesAutoJoin}'s own join jitter.
+   */
+  private static final long START_JITTER_MS = 3_000L;
+
+  /**
    * Re-arms the once-per-start request, so the NEXT leader this node observes asks again.
    * <p>
    * Called when the request could not be completed for a transient reason after its own retries are spent. The
@@ -194,8 +206,13 @@ final class SecurityCatchUp implements AutoCloseable {
   private boolean attemptOnce(final ArcadeDBServer server, final RaftHAServer raft, final String reason,
       final boolean waitForCatchUp) {
     try {
-      if (waitForCatchUp)
+      if (waitForCatchUp) {
+        // Before the catch-up wait, not after: the point is to spread the arrivals at the leader, and the wait
+        // below ends when this node is caught up - which on a simultaneous restart is the same instant for all
+        // of them.
+        Thread.sleep(ThreadLocalRandom.current().nextLong(START_JITTER_MS));
         awaitCatchUp(raft);
+      }
 
       final HAServerPlugin ha = server.getHA();
       if (!(ha instanceof final RaftHAPlugin plugin))

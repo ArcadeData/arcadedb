@@ -118,16 +118,13 @@ public class PostSecuritySeedHandler extends AbstractServerHttpHandler {
 
     final JSONObject fingerprints;
     try {
-      // The two-argument form substitutes the default only for an ABSENT or null field; a field that is
-      // present and is not an object throws (claude-review on PR #7854). Caught so a garbled internal RPC is
-      // answered 400 - "your request is wrong" - rather than 500, which says this node is.
-      fingerprints = payload.getJSONObject("fingerprints", null);
-    } catch (final RuntimeException e) {
-      return new ExecutionResponse(400, new JSONObject()
-          .put("error", "'fingerprints' must be an object of document digests: " + e.getMessage()).toString());
+      fingerprints = readFingerprints(payload);
+    } catch (final IllegalArgumentException e) {
+      return new ExecutionResponse(400, new JSONObject().put("error", e.getMessage()).toString());
     }
 
-    if (fingerprints != null && isUpToDate(security, fingerprints)) {
+    if (fingerprints != null && isUpToDate(security.usersFingerprint(), security.groupsFingerprint(),
+        security.apiTokensFingerprint(), fingerprints)) {
       LogManager.instance().log(this, Level.FINE,
           "Security seed requested for %s: the caller already holds every document this node does; nothing submitted",
           reason);
@@ -165,14 +162,36 @@ public class PostSecuritySeedHandler extends AbstractServerHttpHandler {
    * needs a seed, and seeding all three is what {@code ServerSecurity.seedSecurityStateClusterWide} does - one
    * document out of step is an admin-rate event, not something to build a selective path for.
    */
-  private static boolean isUpToDate(final ServerSecurity security, final JSONObject fingerprints) {
+  // @VisibleForTesting
+  static boolean isUpToDate(final String users, final String groups, final String apiTokens,
+      final JSONObject fingerprints) {
     // Read with defaults rather than required: a digest that is absent cannot match, which is the answer a
     // caller that sent an incomplete set should get - seed it - and needs no error of its own.
-    return security.usersFingerprint().equals(fingerprints.getString(ReplicatedSecurityFingerprintRepository.USERS, ""))
-        && security.groupsFingerprint()
-        .equals(fingerprints.getString(ReplicatedSecurityFingerprintRepository.GROUPS, ""))
-        && security.apiTokensFingerprint()
-        .equals(fingerprints.getString(ReplicatedSecurityFingerprintRepository.API_TOKENS, ""));
+    return users.equals(fingerprints.getString(ReplicatedSecurityFingerprintRepository.USERS, ""))
+        && groups.equals(fingerprints.getString(ReplicatedSecurityFingerprintRepository.GROUPS, ""))
+        && apiTokens.equals(fingerprints.getString(ReplicatedSecurityFingerprintRepository.API_TOKENS, ""));
+  }
+
+  /**
+   * The {@code fingerprints} object of a request, or {@code null} when it names none.
+   * <p>
+   * {@code JSONObject.getJSONObject(name, default)} substitutes the default only for an ABSENT or null field; a
+   * field that is present and is not an object throws (claude-review on PR #7854). Turned into an
+   * {@link IllegalArgumentException} here so the caller answers 400 - "your request is wrong" - rather than
+   * letting it reach the exchange as a 500, which says this node is.
+   * <p>
+   * Package-private so both answers can be pinned without an exchange to drive.
+   *
+   * @throws IllegalArgumentException when the field is present and is not an object
+   */
+  // @VisibleForTesting
+  static JSONObject readFingerprints(final JSONObject payload) {
+    try {
+      return payload.getJSONObject("fingerprints", null);
+    } catch (final RuntimeException e) {
+      throw new IllegalArgumentException(
+          "'fingerprints' must be an object of document digests: " + e.getMessage(), e);
+    }
   }
 
   /**
