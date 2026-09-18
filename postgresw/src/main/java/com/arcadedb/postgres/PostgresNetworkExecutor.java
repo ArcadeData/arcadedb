@@ -514,8 +514,8 @@ public class PostgresNetworkExecutor extends Thread {
         // In practice SAVEPOINT/RELEASE/SET and BEGIN/COMMIT/ROLLBACK (issues #6930, #7905): they are the
         // portals that carry no statement, never produce a result, and never get columns - ROLLBACK TO used to
         // be one of them too, but fails at Parse instead since issue #7846, so it never reaches here. An
-        // INSERT/UPDATE/DELETE does NOT land here - it is run by the first arm and announced under whatever columns its
-        // rows carried, empty ones included, exactly like the {cypher} write with no RETURN. The arm is kept
+        // INSERT/UPDATE/DELETE does NOT land here - it is run by the first arm and announced under whatever
+        // columns its rows carried, empty ones included, exactly like the {cypher} write with no RETURN. The arm is kept
         // general rather than written as `ignoreExecution` because it is also the backstop that keeps the
         // reply count right: whatever state a portal reaches Describe in, it leaves with exactly one answer.
         writeNoData();
@@ -2601,6 +2601,14 @@ public class PostgresNetworkExecutor extends Thread {
       // statement's rows and a success tag (issue #7906). Two round trips apart, so skip-until-Sync (#7775) does
       // not reach it. Only the prepared statement is dropped, not the portals already bound from it: PostgreSQL
       // keeps those alive too, each holding the plan it was bound with.
+      //
+      // "ANYTHING THAT CAN FAIL" MEANS ANYTHING THAT CAN FAIL AND LEAVE THE CONNECTION USABLE, which is where
+      // this sits rather than immediately after readString() reads the name. The reads above it - the query
+      // text, the parameter count, the parameter type OIDs - are wire-level: a failure in one of them has left
+      // the channel misaligned, so no later message can be framed and what is registered under a statement name
+      // cannot matter to anybody. The two early returns above it are the deliberate half of the boundary: an
+      // aborted block and a skip-until-Sync discard are PostgreSQL DISCARDING this message, not refusing it, and
+      // a discarded Parse must leave the name exactly as it found it.
       preparedStatements.remove(portalName);
 
       if (portal.query.isEmpty()) {
