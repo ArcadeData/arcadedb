@@ -190,8 +190,8 @@ public class TruncateTypeStatement extends DDLStatement {
    * re-deriving the same removal-safe walk.
    * <p>
    * Each entry in {@code typeNames} must already be safe to embed in SQL text (back-tick quoted where the name
-   * needs it - see {@link Identifier#quote}, or {@link Identifier#toString()} for the root type parsed from the
-   * statement itself), and must name a type on which {@code DELETE FROM} is not asked to be polymorphic beyond what
+   * needs it - {@link #collectTruncationScope} builds every entry, root included, via {@link Identifier#quote}),
+   * and must name a type on which {@code DELETE FROM} is not asked to be polymorphic beyond what
    * the caller already accounted for: a lightweight type nested under another lightweight type is passed as its own
    * entry rather than relying on {@code DELETE FROM} to reach it through the parent, so each entry here is deleted
    * exactly once regardless of how many other entries are also its ancestor.
