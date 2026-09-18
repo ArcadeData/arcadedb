@@ -1,8 +1,9 @@
-# e2e-ha test workflows, animated
+# ArcadeDB HA, animated
 
-One looping SVG per integration test in this module. The left rail is the call sequence, the stage
-shows what the Raft cluster is doing, the bottom bar carries the contract being exercised. No
-scripts and no external fonts, so each one renders in GitHub markdown, an IDE preview and a browser.
+Looping SVGs in two groups: the **Raft protocol** as this codebase implements it, and one **test
+workflow** per integration test in `e2e-ha`. In every diagram the left rail is the sequence, the
+stage is the cluster, and the bottom bar carries the contract. No scripts and no external fonts, so
+each one renders in GitHub markdown, an IDE preview and a browser.
 
 **Start here: [`index.html`](index.html)** - a local page that lists every diagram and switches
 between them. Open it with `open index.html` (any browser; a plain `file://` URL is enough).
@@ -10,7 +11,19 @@ between them. Open it with `open index.html` (any browser; a plain `file://` URL
 A browser is the only reliable viewer: the animation is SMIL, which macOS Preview, Quick Look and
 the IntelliJ SVG preview render as a blank stage because they only ever draw frame 0.
 
-## The diagrams
+## Raft protocol
+
+These explain the algorithm, not the tests. Every number, entry type, setting and endpoint on them
+comes from `ha-raft/` and `GlobalConfiguration`, not from the Raft paper.
+
+| Diagram | Covers | Grounded in |
+|---|---|---|
+| [raft-leader-election](raft-leader-election.svg) | randomised timeouts, RequestVote, one vote per term, heartbeats, split votes | `RaftPropertiesBuilder`, `GetClusterHandler` |
+| [raft-log-replication](raft-log-replication.svg) | append, AppendEntries, commit on a majority, apply, backfill, batching | `RaftLogEntryType`, `RaftTransactionBroker`, `ArcadeStateMachine` |
+| [raft-quorum-and-partitions](raft-quorum-and-partitions.svg) | majority overlap, step-down, minority refusal, truncate-and-replay | `Quorum`, `RaftHAServer`; exercised by `SplitBrainIT` |
+| [raft-in-arcadedb](raft-in-arcadedb.svg) | ports, the 8 entry types, leader forwarding, snapshots, tuning knobs | `ha-raft/`, `GlobalConfiguration`, `LeaderCommandForwarder` |
+
+## Test workflows
 
 | Diagram | Test class | @Test methods |
 |---|---|---|
@@ -46,8 +59,9 @@ generated image, so treat those warnings as failures.
 
 ## Adding or editing a diagram
 
-`workflow_svg.py` holds the stage geometry and the primitives; `build_all.py` declares the scenes,
-one function per test class:
+`workflow_svg.py` holds the stage geometry and the primitives, `catalog.py` the diagram registry and
+the index page, `raft_protocol.py` the four protocol explainers, and `build_all.py` the test-workflow
+scenes - one function per test class:
 
 ```python
 layout(3)                                  # 2- or 3-node stage; layout(2, proxy=True) for toxiproxy
@@ -55,10 +69,12 @@ scenes = boot(3) + [                       # boot() = containers, start, electio
     Scene(step="...", caption="...", detail="...", dur=3.4,
           body=[node_state(0, "LEADER", GREEN, "writing"), raft_link(0, 1, "replicate")]),
 ]
-emit("my-slug", "MyIT - myTest()", "subtitle", scenes, "MyIT.java", ["myTest"], "one-line blurb")
+emit("my-slug", "MyIT - myTest()", "subtitle", scenes, "one-line blurb",
+     java="MyIT.java", methods=["myTest"])
 ```
 
 Primitives: `node_state(i, badge, color, sub)`, `node_off(i)`, `isolated(i)`, `node_progress(i, frac)`,
 `stamp(i, verdict)` / `cross_stamp(i, verdict)`, `client_to(i, label)`, `raft_link(i, j, label)`,
-`cut(i, j)`, `toxic(i, label)`, `code_card(y, lines, title=)`, `variants_card(lines)`, `chip(x, y, label)`.
+`cut(i, j)`, `toxic(i, label)`, `log_strip(i, cells, committed=)`, `node_to_client(i, label)`,
+`code_card(y, lines, title=)`, `variants_card(lines)`, `chip(x, y, label)`.
 Scene bodies are plain SVG strings drawn in order, so put cards first and arrows last.

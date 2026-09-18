@@ -34,7 +34,7 @@ FADE = 0.28  # seconds of cross-fade at each scene boundary
 CLIENT = (372, 246, 118, 76)          # x, y, w, h of the JUnit box
 PROXY_X = 573                         # midpoint of the client -> node run, where the proxy pills sit
 NODE_X, NODE_W = 660, 214
-_LAYOUT = {2: (112, [116, 336]), 3: (88, [112, 244, 376])}
+_LAYOUT = {2: (112, [116, 336]), 3: (100, [100, 238, 376])}
 
 _nodes = _LAYOUT[2][1]
 _node_h = _LAYOUT[2][0]
@@ -219,6 +219,35 @@ def cross_stamp(i, text, color=RED):
             f'<path d="M {cx - 5} {cy - 17} l 10 10 M {cx + 5} {cy - 17} l -10 10" stroke="{color}" '
             f'stroke-width="2.4" stroke-linecap="round"/>' +
             txt(cx, cy + 16, text, size=10.5, fill=color, anchor="middle", font=MONO))
+
+
+def log_strip(i, cells, committed=0, color=BLUE, uncommitted_color=AMBER):
+    """The Raft log held by node i: one cell per entry, filled while committed, outlined while not.
+
+    `cells` are the term numbers (or any short label) in index order; `committed` is how many
+    leading cells the node considers committed.
+    """
+    x, y, w, h = node_box(i)
+    cw, gap = 23, 3
+    x0, y0, ch = x + 16, y + h - 44, 18
+    out = []
+    for k, cell in enumerate(cells):
+        cx = x0 + k * (cw + gap)
+        done = k < committed
+        c = color if done else uncommitted_color
+        out.append(rect(cx, y0, cw, ch, fill=c + ("44" if done else "12"), stroke=c, r=4, sw=1.2,
+                        dash=None if done else "3 2"))
+        out.append(txt(cx + cw / 2, y0 + 13, str(cell), size=10, fill=c, anchor="middle", font=MONO))
+    return "".join(out)
+
+
+def node_to_client(i, label="", color=GREEN, packet=False, dash=None):
+    """Reply arrow from node i back to the JUnit / client box."""
+    x2, y2 = client_anchor(i)
+    x1, y1 = NODE_X - 4, node_center(i)[1]
+    curve = 22 if y1 < y2 else (-22 if y1 > y2 else 0)
+    return arrow(x1, y1, x2, y2, color=color, label="" if _proxy else label, packet=packet,
+                 curve=curve, dash=dash)
 
 
 def toxic(i, label, color=RED):

@@ -1,24 +1,18 @@
 #!/usr/bin/env python3
-"""Builds one animated SVG per e2e-ha integration test class.
+"""Builds the animated diagrams for this folder.
 
-Run:  python3 build_all.py          (rewrites every *.svg in this folder, then index.html)
+Run:  python3 build_all.py          (rewrites every *.svg, then index.html)
 
-Each entry below mirrors one test class in
-e2e-ha/src/test/java/com/arcadedb/containers/ha/. A class with several @Test methods is drawn from
+Two groups are produced: the Raft protocol explainers from raft_protocol.py, and one diagram per
+e2e-ha integration test class from this file. A test class with several @Test methods is drawn from
 its primary method, with the siblings listed on a "variants" card so nothing is silently dropped.
 """
 
-import json
-import os
-
+import raft_protocol
+from catalog import emit, write_index
 from workflow_svg import (AMBER, BLUE, GREEN, GREY, PURPLE, RED, Scene, build, chip, client_to,
                           code_card, cross_stamp, cut, isolated, layout, node_off, node_progress,
                           node_state, raft_link, stamp, toxic, variants_card)
-
-HERE = os.path.dirname(os.path.abspath(__file__))
-SRC = "../../src/test/java/com/arcadedb/containers/ha"
-
-DIAGRAMS = []            # (slug, title, subtitle, java_file, methods, blurb, loop_seconds)
 
 
 # ---------------------------------------------------------------------------- shared scenes
@@ -83,13 +77,6 @@ def boot(n, persistent=False, quorum="majority", seed="", leader=0):
     ]
 
 
-def emit(slug, title, subtitle, scenes, java, methods, blurb, n=3, proxy=False):
-    layout(n, proxy)
-    total = build(os.path.join(HERE, slug + ".svg"), title, subtitle, scenes,
-                  footer="loop: %.0fs" % sum(s.dur for s in scenes))
-    DIAGRAMS.append({"slug": slug, "title": title, "java": java, "methods": methods,
-                     "blurb": blurb, "scenes": len(scenes), "loop": round(total)})
-    print(f"  {slug}.svg  ({total:.0f}s, {len(scenes)} scenes)")
 
 
 # ============================================================================ SimpleHaScenarioIT
@@ -141,8 +128,8 @@ def simple_ha():
     ]
     emit("simple-ha-scenario", "SimpleHaScenarioIT - twoNodeRaftReplication()",
          "Two-node Raft HA: schema and data replication", s,
-         "SimpleHaScenarioIT.java", ["twoNodeRaftReplication"],
-         "The baseline: two nodes, one leader, schema and data must reach the follower.", n=2)
+         "The baseline: two nodes, one leader, schema and data must reach the follower.",
+         java="SimpleHaScenarioIT.java", methods=["twoNodeRaftReplication"], n=2)
 
 
 # ============================================================================ ThreeInstancesScenarioIT
@@ -200,9 +187,8 @@ def three_instances():
         ),
     ]
     emit("three-instances-scenario", "ThreeInstancesScenarioIT - threeNodeReplication()",
-         "Three-node Raft HA: replication across all nodes with consistency check", s,
-         "ThreeInstancesScenarioIT.java", ["threeNodeReplication"],
-         "Three nodes, writes issued from all of them, absolute counts then equality.")
+         "Three-node Raft HA: replication across all nodes with consistency check", s, "Three nodes, writes issued from all of them, absolute counts then equality.",
+         java="ThreeInstancesScenarioIT.java", methods=["threeNodeReplication"])
 
 
 # ============================================================================ LoadThreeInstancesScenarioIT
@@ -265,9 +251,8 @@ def load_three_instances():
         ),
     ]
     emit("load-three-instances-scenario", "LoadThreeInstancesScenarioIT - threeNodeReplication()",
-         "Three-node Raft HA under load: 500-user batches per node, then convergence", s,
-         "LoadThreeInstancesScenarioIT.java", ["threeNodeReplication", "threeNodeReplicationMulti"],
-         "The volume variant: 500-user batches per node, plus a threaded run with friendships and likes.")
+         "Three-node Raft HA under load: 500-user batches per node, then convergence", s, "The volume variant: 500-user batches per node, plus a threaded run with friendships and likes.",
+         java="LoadThreeInstancesScenarioIT.java", methods=["threeNodeReplication", "threeNodeReplicationMulti"])
 
 
 # ============================================================================ DropDatabaseScenarioIT
@@ -322,9 +307,8 @@ def drop_database():
         ),
     ]
     emit("drop-database-scenario", "DropDatabaseScenarioIT - dropDatabaseReplicatedAcrossCluster()",
-         "Three-node Raft HA: drop database via a replica propagates removal to every peer", s,
-         "DropDatabaseScenarioIT.java", ["dropDatabaseReplicatedAcrossCluster"],
-         "Drop issued on a replica, so the forward-to-leader path is what is really under test.")
+         "Three-node Raft HA: drop database via a replica propagates removal to every peer", s, "Drop issued on a replica, so the forward-to-leader path is what is really under test.",
+         java="DropDatabaseScenarioIT.java", methods=["dropDatabaseReplicatedAcrossCluster"])
 
 
 # ============================================================================ ImportDatabaseScenarioIT
@@ -385,9 +369,8 @@ def import_database():
         ),
     ]
     emit("import-database-scenario", "ImportDatabaseScenarioIT - importDatabaseReplicatedAcrossCluster()",
-         "Three-node Raft HA: import database replicates data to every peer via TX_ENTRY", s,
-         "ImportDatabaseScenarioIT.java", ["importDatabaseReplicatedAcrossCluster"],
-         "An import runs on the leader and reaches the peers as ordinary replicated transactions.")
+         "Three-node Raft HA: import database replicates data to every peer via TX_ENTRY", s, "An import runs on the leader and reaches the peers as ordinary replicated transactions.",
+         java="ImportDatabaseScenarioIT.java", methods=["importDatabaseReplicatedAcrossCluster"])
 
 
 # ============================================================================ RestoreDatabaseScenarioIT
@@ -447,9 +430,8 @@ def restore_database():
         ),
     ]
     emit("restore-database-scenario", "RestoreDatabaseScenarioIT - restoreDatabaseReplicatedAcrossCluster()",
-         "Three-node Raft HA: restore database replicates to every peer via forceSnapshot", s,
-         "RestoreDatabaseScenarioIT.java", ["restoreDatabaseReplicatedAcrossCluster"],
-         "Backup on node 0, drop everywhere, force leadership back, restore, verify all three.")
+         "Three-node Raft HA: restore database replicates to every peer via forceSnapshot", s, "Backup on node 0, drop everywhere, force leadership back, restore, verify all three.",
+         java="RestoreDatabaseScenarioIT.java", methods=["restoreDatabaseReplicatedAcrossCluster"])
 
 
 # ============================================================================ UserManagementScenarioIT
@@ -508,9 +490,8 @@ def user_management():
         ),
     ]
     emit("user-management-scenario", "UserManagementScenarioIT - userCreateAndDropReplicatedAcrossCluster()",
-         "Three-node Raft HA: create/drop user replicates login authorization to every peer", s,
-         "UserManagementScenarioIT.java", ["userCreateAndDropReplicatedAcrossCluster"],
-         "Security replication measured the only way that counts: by logging in on each peer.")
+         "Three-node Raft HA: create/drop user replicates login authorization to every peer", s, "Security replication measured the only way that counts: by logging in on each peer.",
+         java="UserManagementScenarioIT.java", methods=["userCreateAndDropReplicatedAcrossCluster"])
 
 
 # ============================================================================ UserSeedOnPeerAddScenarioIT
@@ -560,9 +541,8 @@ def user_seed_on_peer_add():
         ),
     ]
     emit("user-seed-on-peer-add-scenario", "UserSeedOnPeerAddScenarioIT - peerAddEndpointPreservesExistingUsers()",
-         "Three-node Raft HA: peer-add endpoint fires the seed without breaking existing users", s,
-         "UserSeedOnPeerAddScenarioIT.java", ["peerAddEndpointPreservesExistingUsers"],
-         "A wiring smoke test for /api/v1/cluster/peer that must leave user state intact.")
+         "Three-node Raft HA: peer-add endpoint fires the seed without breaking existing users", s, "A wiring smoke test for /api/v1/cluster/peer that must leave user state intact.",
+         java="UserSeedOnPeerAddScenarioIT.java", methods=["peerAddEndpointPreservesExistingUsers"])
 
 
 # ============================================================================ LeaderFailoverIT
@@ -640,9 +620,8 @@ def leader_failover():
         ),
     ]
     emit("leader-failover", "LeaderFailoverIT - leaderFailover()",
-         "Kill the leader, verify the new election, the writes that follow and the rejoin", s,
-         "LeaderFailoverIT.java", ["leaderFailover", "repeatedLeaderFailures", "leaderFailoverDuringWrites"],
-         "The leader is stopped outright; the majority must elect, keep writing, and re-absorb it.")
+         "Kill the leader, verify the new election, the writes that follow and the rejoin", s, "The leader is stopped outright; the majority must elect, keep writing, and re-absorb it.",
+         java="LeaderFailoverIT.java", methods=["leaderFailover", "repeatedLeaderFailures", "leaderFailoverDuringWrites"])
 
 
 # ============================================================================ RollingRestartIT
@@ -705,9 +684,8 @@ def rolling_restart():
         ),
     ]
     emit("rolling-restart", "RollingRestartIT - rollingRestart()",
-         "Restart each node in turn and verify the cluster never stops accepting writes", s,
-         "RollingRestartIT.java", ["rollingRestart", "rapidRollingRestart", "rollingRestartWithContinuousWrites"],
-         "Zero-downtime maintenance: one node down at a time, writes continuing throughout.")
+         "Restart each node in turn and verify the cluster never stops accepting writes", s, "Zero-downtime maintenance: one node down at a time, writes continuing throughout.",
+         java="RollingRestartIT.java", methods=["rollingRestart", "rapidRollingRestart", "rollingRestartWithContinuousWrites"])
 
 
 # ============================================================================ NetworkPartitionIT
@@ -776,9 +754,8 @@ def network_partition():
         ),
     ]
     emit("network-partition", "NetworkPartitionIT - leaderPartitionWithQuorum()",
-         "Isolate the leader, verify the new election in the majority and the convergence after healing", s,
-         "NetworkPartitionIT.java", ["leaderPartitionWithQuorum", "singleFollowerPartition", "noQuorumScenario"],
-         "Docker network disconnect as a real partition: who may still write, and who catches up.")
+         "Isolate the leader, verify the new election in the majority and the convergence after healing", s, "Docker network disconnect as a real partition: who may still write, and who catches up.",
+         java="NetworkPartitionIT.java", methods=["leaderPartitionWithQuorum", "singleFollowerPartition", "noQuorumScenario"])
 
 
 # ============================================================================ NetworkPartitionRecoveryIT
@@ -845,9 +822,9 @@ def network_partition_recovery():
     ]
     emit("network-partition-recovery", "NetworkPartitionRecoveryIT - partitionRecovery()",
          "2+1 split, heal the partition, verify the Raft log catch-up", s,
-         "NetworkPartitionRecoveryIT.java",
-         ["partitionRecovery", "multiplePartitionCycles", "asymmetricPartitionRecovery"],
-         "The minority never wrote, so healing is a replay - no conflict resolution exists or is needed.")
+         "The minority never wrote, so healing is a replay - no conflict resolution exists or is needed.",
+         java="NetworkPartitionRecoveryIT.java",
+         methods=["partitionRecovery", "multiplePartitionCycles", "asymmetricPartitionRecovery"])
 
 
 # ============================================================================ SplitBrainIT
@@ -919,9 +896,9 @@ def split_brain():
     ]
     emit("split-brain", "SplitBrainIT - splitBrainPrevention()",
          "The minority cannot accept writes: the isolated leader steps down and later truncates its log", s,
-         "SplitBrainIT.java",
-         ["splitBrainPrevention", "completePartitionNoQuorum", "clusterReformation", "quorumLossRecovery"],
-         "Quorum enforcement: divergent writes are impossible, so healing is truncate-and-replay.")
+         "Quorum enforcement: divergent writes are impossible, so healing is truncate-and-replay.",
+         java="SplitBrainIT.java",
+         methods=["splitBrainPrevention", "completePartitionNoQuorum", "clusterReformation", "quorumLossRecovery"])
 
 
 # ============================================================================ NetworkDelayIT
@@ -992,9 +969,9 @@ def network_delay():
     ]
     emit("network-delay", "NetworkDelayIT - symmetricDelay()",
          "Toxiproxy latency on the Raft consensus port: replication must still converge", s,
-         "NetworkDelayIT.java",
-         ["symmetricDelay", "asymmetricLeaderDelay", "highLatencyWithJitter", "extremeLatency"],
          "Latency injected on port 2434 only, so consensus slows down while HTTP stays fast.",
+         java="NetworkDelayIT.java",
+         methods=["symmetricDelay", "asymmetricLeaderDelay", "highLatencyWithJitter", "extremeLatency"],
          proxy=True)
 
 
@@ -1064,105 +1041,18 @@ def packet_loss():
     ]
     emit("packet-loss", "PacketLossIT - lowPacketLoss()",
          "Toxiproxy packet loss on the Raft consensus port: retransmission must still converge", s,
-         "PacketLossIT.java",
-         ["lowPacketLoss", "moderatePacketLoss", "highPacketLoss", "directionalPacketLoss", "intermittentPacketLoss"],
          "Dropped consensus traffic at 5% to 50%, one-way and intermittent.",
+         java="PacketLossIT.java",
+         methods=["lowPacketLoss", "moderatePacketLoss", "highPacketLoss", "directionalPacketLoss",
+                  "intermittentPacketLoss"],
          n=2, proxy=True)
 
 
-# ---------------------------------------------------------------------------- index.html
-INDEX_CSS = """
-:root{--bg:#0b1220;--panel:#141f36;--edge:#25344f;--text:#e7eefc;--muted:#8ea3c4;--blue:#41b6f7}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--text);
- font-family:ui-sans-serif,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
-header{padding:28px 32px 14px}
-h1{margin:0 0 6px;font-size:22px}
-header p{margin:0;color:var(--muted);font-size:13.5px;max-width:860px;line-height:1.5}
-main{display:grid;grid-template-columns:320px 1fr;gap:18px;padding:14px 32px 32px;align-items:start}
-nav{background:var(--panel);border:1px solid var(--edge);border-radius:14px;padding:8px;position:sticky;top:14px}
-nav button{display:block;width:100%;text-align:left;background:none;border:0;color:var(--muted);
- font:inherit;font-size:13px;padding:9px 12px;border-radius:9px;cursor:pointer;line-height:1.35}
-nav button:hover{background:#ffffff0d;color:var(--text)}
-nav button.on{background:#41b6f71f;border:1px solid #41b6f766;color:var(--text);font-weight:600}
-nav button small{display:block;color:var(--muted);font-weight:400;font-size:11px;margin-top:2px;
- font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-section{background:var(--panel);border:1px solid var(--edge);border-radius:14px;padding:18px}
-section h2{margin:0 0 4px;font-size:17px}
-section p.blurb{margin:0 0 12px;color:var(--muted);font-size:13px;line-height:1.5}
-img{width:100%;height:auto;border-radius:12px;display:block;background:var(--bg)}
-ul.meta{list-style:none;display:flex;flex-wrap:wrap;gap:8px;padding:0;margin:12px 0 0}
-ul.meta li{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;
- color:var(--muted);border:1px solid var(--edge);border-radius:9px;padding:4px 9px}
-a{color:var(--blue)}
-@media (max-width:900px){main{grid-template-columns:1fr}nav{position:static}}
-"""
-
-
-def write_index():
-    items = json.dumps(DIAGRAMS, indent=2)
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ArcadeDB e2e-ha test workflows</title>
-<style>{INDEX_CSS}</style>
-</head>
-<body>
-<header>
-  <h1>ArcadeDB e2e-ha test workflows</h1>
-  <p>One looping animation per integration test in <code>e2e-ha</code>: the left rail is the call
-     sequence, the stage shows what the Raft cluster is doing, the bottom bar carries the contract being
-     exercised. Classes with several <code>@Test</code> methods are drawn from their primary method, with
-     the siblings listed on a variants card. Regenerate everything with
-     <code>python3 build_all.py</code>.</p>
-</header>
-<main>
-  <nav id="nav"></nav>
-  <section>
-    <h2 id="title"></h2>
-    <p class="blurb" id="blurb"></p>
-    <img id="svg" alt="">
-    <ul class="meta" id="meta"></ul>
-  </section>
-</main>
-<script>
-const DIAGRAMS = {items};
-const SRC = {json.dumps(SRC)};
-const nav = document.getElementById('nav');
-function show(i) {{
-  const d = DIAGRAMS[i];
-  document.getElementById('title').textContent = d.title;
-  document.getElementById('blurb').textContent = d.blurb;
-  const img = document.getElementById('svg');
-  img.src = d.slug + '.svg?' + Date.now();   // force the animation to restart from scene 1
-  img.alt = d.title;
-  document.getElementById('meta').innerHTML =
-    ['<li>' + d.scenes + ' scenes</li>', '<li>' + d.loop + 's loop</li>',
-     '<li>' + d.methods.length + ' @Test method' + (d.methods.length > 1 ? 's' : '') + '</li>',
-     '<li><a href="' + SRC + '/' + d.java + '">' + d.java + '</a></li>'].join('');
-  [...nav.children].forEach((b, j) => b.classList.toggle('on', i === j));
-  location.hash = d.slug;
-}}
-DIAGRAMS.forEach((d, i) => {{
-  const b = document.createElement('button');
-  b.innerHTML = d.title.split(' - ')[0] + '<small>' + d.title.split(' - ').slice(1).join(' - ') + '</small>';
-  b.onclick = () => show(i);
-  nav.appendChild(b);
-}});
-const from = DIAGRAMS.findIndex(d => d.slug === location.hash.slice(1));
-show(from >= 0 ? from : 0);
-</script>
-</body>
-</html>
-"""
-    with open(os.path.join(HERE, "index.html"), "w") as f:
-        f.write(html)
-    print(f"  index.html  ({len(DIAGRAMS)} diagrams)")
 
 
 if __name__ == "__main__":
+    for fn in raft_protocol.ALL:
+        fn()
     for fn in (simple_ha, three_instances, load_three_instances, drop_database, import_database,
                restore_database, user_management, user_seed_on_peer_add, leader_failover,
                rolling_restart, network_partition, network_partition_recovery, split_brain,

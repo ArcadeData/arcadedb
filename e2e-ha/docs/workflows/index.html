@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ArcadeDB e2e-ha test workflows</title>
+<title>ArcadeDB HA: Raft protocol and e2e-ha test workflows</title>
 <style>
 :root{--bg:#0b1220;--panel:#141f36;--edge:#25344f;--text:#e7eefc;--muted:#8ea3c4;--blue:#41b6f7}
 *{box-sizing:border-box}
@@ -11,9 +11,13 @@ body{margin:0;background:var(--bg);color:var(--text);
  font-family:ui-sans-serif,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
 header{padding:28px 32px 14px}
 h1{margin:0 0 6px;font-size:22px}
-header p{margin:0;color:var(--muted);font-size:13.5px;max-width:860px;line-height:1.5}
+header p{margin:0;color:var(--muted);font-size:13.5px;max-width:880px;line-height:1.55}
 main{display:grid;grid-template-columns:320px 1fr;gap:18px;padding:14px 32px 32px;align-items:start}
-nav{background:var(--panel);border:1px solid var(--edge);border-radius:14px;padding:8px;position:sticky;top:14px}
+nav{background:var(--panel);border:1px solid var(--edge);border-radius:14px;padding:8px;
+ position:sticky;top:14px}
+nav h3{margin:12px 12px 6px;font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;
+ color:var(--muted);font-weight:600}
+nav h3:first-child{margin-top:6px}
 nav button{display:block;width:100%;text-align:left;background:none;border:0;color:var(--muted);
  font:inherit;font-size:13px;padding:9px 12px;border-radius:9px;cursor:pointer;line-height:1.35}
 nav button:hover{background:#ffffff0d;color:var(--text)}
@@ -33,12 +37,12 @@ a{color:var(--blue)}
 </head>
 <body>
 <header>
-  <h1>ArcadeDB e2e-ha test workflows</h1>
-  <p>One looping animation per integration test in <code>e2e-ha</code>: the left rail is the call
-     sequence, the stage shows what the Raft cluster is doing, the bottom bar carries the contract being
-     exercised. Classes with several <code>@Test</code> methods are drawn from their primary method, with
-     the siblings listed on a variants card. Regenerate everything with
-     <code>python3 build_all.py</code>.</p>
+  <h1>ArcadeDB HA - Raft protocol and e2e-ha test workflows</h1>
+  <p>Looping animations, two groups. <strong>Raft protocol</strong> explains the consensus algorithm as
+     this codebase implements it, with the real entry types, settings and endpoints.
+     <strong>Test workflows</strong> gives one animation per integration test in <code>e2e-ha</code>.
+     In every diagram the left rail is the sequence, the stage is the cluster, and the bottom bar
+     carries the contract. Regenerate with <code>python3 build_all.py</code>.</p>
 </header>
 <main>
   <nav id="nav"></nav>
@@ -52,12 +56,58 @@ a{color:var(--blue)}
 <script>
 const DIAGRAMS = [
   {
+    "slug": "raft-leader-election",
+    "title": "Raft - leader election",
+    "group": "Raft protocol",
+    "java": null,
+    "methods": [],
+    "source": "ha-raft/ - RaftPropertiesBuilder, GetClusterHandler",
+    "blurb": "How a term gets a leader, why exactly one, and what a split vote costs.",
+    "scenes": 8,
+    "loop": 30
+  },
+  {
+    "slug": "raft-log-replication",
+    "title": "Raft - log replication",
+    "group": "Raft protocol",
+    "java": null,
+    "methods": [],
+    "source": "ha-raft/ - RaftLogEntryType, RaftTransactionBroker, ArcadeStateMachine",
+    "blurb": "The write path: what is appended, when it commits, and when the client is answered.",
+    "scenes": 8,
+    "loop": 31
+  },
+  {
+    "slug": "raft-quorum-and-partitions",
+    "title": "Raft - quorum, partitions and split-brain",
+    "group": "Raft protocol",
+    "java": null,
+    "methods": [],
+    "source": "ha-raft/ - Quorum, RaftHAServer; exercised by SplitBrainIT",
+    "blurb": "What a majority buys, what happens on each side of a partition, and how a rejoin resolves.",
+    "scenes": 8,
+    "loop": 31
+  },
+  {
+    "slug": "raft-in-arcadedb",
+    "title": "Raft - how ArcadeDB wires it up",
+    "group": "Raft protocol",
+    "java": null,
+    "methods": [],
+    "source": "ha-raft/, GlobalConfiguration, server/.../LeaderCommandForwarder",
+    "blurb": "The mapping from the algorithm to this codebase: what runs where, and on which setting.",
+    "scenes": 7,
+    "loop": 28
+  },
+  {
     "slug": "simple-ha-scenario",
     "title": "SimpleHaScenarioIT - twoNodeRaftReplication()",
+    "group": "Test workflows",
     "java": "SimpleHaScenarioIT.java",
     "methods": [
       "twoNodeRaftReplication"
     ],
+    "source": null,
     "blurb": "The baseline: two nodes, one leader, schema and data must reach the follower.",
     "scenes": 8,
     "loop": 28
@@ -65,10 +115,12 @@ const DIAGRAMS = [
   {
     "slug": "three-instances-scenario",
     "title": "ThreeInstancesScenarioIT - threeNodeReplication()",
+    "group": "Test workflows",
     "java": "ThreeInstancesScenarioIT.java",
     "methods": [
       "threeNodeReplication"
     ],
+    "source": null,
     "blurb": "Three nodes, writes issued from all of them, absolute counts then equality.",
     "scenes": 9,
     "loop": 31
@@ -76,11 +128,13 @@ const DIAGRAMS = [
   {
     "slug": "load-three-instances-scenario",
     "title": "LoadThreeInstancesScenarioIT - threeNodeReplication()",
+    "group": "Test workflows",
     "java": "LoadThreeInstancesScenarioIT.java",
     "methods": [
       "threeNodeReplication",
       "threeNodeReplicationMulti"
     ],
+    "source": null,
     "blurb": "The volume variant: 500-user batches per node, plus a threaded run with friendships and likes.",
     "scenes": 9,
     "loop": 31
@@ -88,10 +142,12 @@ const DIAGRAMS = [
   {
     "slug": "drop-database-scenario",
     "title": "DropDatabaseScenarioIT - dropDatabaseReplicatedAcrossCluster()",
+    "group": "Test workflows",
     "java": "DropDatabaseScenarioIT.java",
     "methods": [
       "dropDatabaseReplicatedAcrossCluster"
     ],
+    "source": null,
     "blurb": "Drop issued on a replica, so the forward-to-leader path is what is really under test.",
     "scenes": 9,
     "loop": 31
@@ -99,10 +155,12 @@ const DIAGRAMS = [
   {
     "slug": "import-database-scenario",
     "title": "ImportDatabaseScenarioIT - importDatabaseReplicatedAcrossCluster()",
+    "group": "Test workflows",
     "java": "ImportDatabaseScenarioIT.java",
     "methods": [
       "importDatabaseReplicatedAcrossCluster"
     ],
+    "source": null,
     "blurb": "An import runs on the leader and reaches the peers as ordinary replicated transactions.",
     "scenes": 7,
     "loop": 25
@@ -110,10 +168,12 @@ const DIAGRAMS = [
   {
     "slug": "restore-database-scenario",
     "title": "RestoreDatabaseScenarioIT - restoreDatabaseReplicatedAcrossCluster()",
+    "group": "Test workflows",
     "java": "RestoreDatabaseScenarioIT.java",
     "methods": [
       "restoreDatabaseReplicatedAcrossCluster"
     ],
+    "source": null,
     "blurb": "Backup on node 0, drop everywhere, force leadership back, restore, verify all three.",
     "scenes": 9,
     "loop": 32
@@ -121,10 +181,12 @@ const DIAGRAMS = [
   {
     "slug": "user-management-scenario",
     "title": "UserManagementScenarioIT - userCreateAndDropReplicatedAcrossCluster()",
+    "group": "Test workflows",
     "java": "UserManagementScenarioIT.java",
     "methods": [
       "userCreateAndDropReplicatedAcrossCluster"
     ],
+    "source": null,
     "blurb": "Security replication measured the only way that counts: by logging in on each peer.",
     "scenes": 8,
     "loop": 28
@@ -132,10 +194,12 @@ const DIAGRAMS = [
   {
     "slug": "user-seed-on-peer-add-scenario",
     "title": "UserSeedOnPeerAddScenarioIT - peerAddEndpointPreservesExistingUsers()",
+    "group": "Test workflows",
     "java": "UserSeedOnPeerAddScenarioIT.java",
     "methods": [
       "peerAddEndpointPreservesExistingUsers"
     ],
+    "source": null,
     "blurb": "A wiring smoke test for /api/v1/cluster/peer that must leave user state intact.",
     "scenes": 7,
     "loop": 25
@@ -143,12 +207,14 @@ const DIAGRAMS = [
   {
     "slug": "leader-failover",
     "title": "LeaderFailoverIT - leaderFailover()",
+    "group": "Test workflows",
     "java": "LeaderFailoverIT.java",
     "methods": [
       "leaderFailover",
       "repeatedLeaderFailures",
       "leaderFailoverDuringWrites"
     ],
+    "source": null,
     "blurb": "The leader is stopped outright; the majority must elect, keep writing, and re-absorb it.",
     "scenes": 11,
     "loop": 39
@@ -156,12 +222,14 @@ const DIAGRAMS = [
   {
     "slug": "rolling-restart",
     "title": "RollingRestartIT - rollingRestart()",
+    "group": "Test workflows",
     "java": "RollingRestartIT.java",
     "methods": [
       "rollingRestart",
       "rapidRollingRestart",
       "rollingRestartWithContinuousWrites"
     ],
+    "source": null,
     "blurb": "Zero-downtime maintenance: one node down at a time, writes continuing throughout.",
     "scenes": 9,
     "loop": 32
@@ -169,12 +237,14 @@ const DIAGRAMS = [
   {
     "slug": "network-partition",
     "title": "NetworkPartitionIT - leaderPartitionWithQuorum()",
+    "group": "Test workflows",
     "java": "NetworkPartitionIT.java",
     "methods": [
       "leaderPartitionWithQuorum",
       "singleFollowerPartition",
       "noQuorumScenario"
     ],
+    "source": null,
     "blurb": "Docker network disconnect as a real partition: who may still write, and who catches up.",
     "scenes": 10,
     "loop": 36
@@ -182,12 +252,14 @@ const DIAGRAMS = [
   {
     "slug": "network-partition-recovery",
     "title": "NetworkPartitionRecoveryIT - partitionRecovery()",
+    "group": "Test workflows",
     "java": "NetworkPartitionRecoveryIT.java",
     "methods": [
       "partitionRecovery",
       "multiplePartitionCycles",
       "asymmetricPartitionRecovery"
     ],
+    "source": null,
     "blurb": "The minority never wrote, so healing is a replay - no conflict resolution exists or is needed.",
     "scenes": 10,
     "loop": 35
@@ -195,6 +267,7 @@ const DIAGRAMS = [
   {
     "slug": "split-brain",
     "title": "SplitBrainIT - splitBrainPrevention()",
+    "group": "Test workflows",
     "java": "SplitBrainIT.java",
     "methods": [
       "splitBrainPrevention",
@@ -202,6 +275,7 @@ const DIAGRAMS = [
       "clusterReformation",
       "quorumLossRecovery"
     ],
+    "source": null,
     "blurb": "Quorum enforcement: divergent writes are impossible, so healing is truncate-and-replay.",
     "scenes": 10,
     "loop": 36
@@ -209,6 +283,7 @@ const DIAGRAMS = [
   {
     "slug": "network-delay",
     "title": "NetworkDelayIT - symmetricDelay()",
+    "group": "Test workflows",
     "java": "NetworkDelayIT.java",
     "methods": [
       "symmetricDelay",
@@ -216,6 +291,7 @@ const DIAGRAMS = [
       "highLatencyWithJitter",
       "extremeLatency"
     ],
+    "source": null,
     "blurb": "Latency injected on port 2434 only, so consensus slows down while HTTP stays fast.",
     "scenes": 9,
     "loop": 32
@@ -223,6 +299,7 @@ const DIAGRAMS = [
   {
     "slug": "packet-loss",
     "title": "PacketLossIT - lowPacketLoss()",
+    "group": "Test workflows",
     "java": "PacketLossIT.java",
     "methods": [
       "lowPacketLoss",
@@ -231,6 +308,7 @@ const DIAGRAMS = [
       "directionalPacketLoss",
       "intermittentPacketLoss"
     ],
+    "source": null,
     "blurb": "Dropped consensus traffic at 5% to 50%, one-way and intermittent.",
     "scenes": 9,
     "loop": 32
@@ -238,6 +316,7 @@ const DIAGRAMS = [
 ];
 const SRC = "../../src/test/java/com/arcadedb/containers/ha";
 const nav = document.getElementById('nav');
+const buttons = [];
 function show(i) {
   const d = DIAGRAMS[i];
   document.getElementById('title').textContent = d.title;
@@ -245,18 +324,29 @@ function show(i) {
   const img = document.getElementById('svg');
   img.src = d.slug + '.svg?' + Date.now();   // force the animation to restart from scene 1
   img.alt = d.title;
-  document.getElementById('meta').innerHTML =
-    ['<li>' + d.scenes + ' scenes</li>', '<li>' + d.loop + 's loop</li>',
-     '<li>' + d.methods.length + ' @Test method' + (d.methods.length > 1 ? 's' : '') + '</li>',
-     '<li><a href="' + SRC + '/' + d.java + '">' + d.java + '</a></li>'].join('');
-  [...nav.children].forEach((b, j) => b.classList.toggle('on', i === j));
+  const meta = ['<li>' + d.scenes + ' scenes</li>', '<li>' + d.loop + 's loop</li>'];
+  if (d.methods.length)
+    meta.push('<li>' + d.methods.length + ' @Test method' + (d.methods.length > 1 ? 's' : '') + '</li>');
+  if (d.java) meta.push('<li><a href="' + SRC + '/' + d.java + '">' + d.java + '</a></li>');
+  if (d.source) meta.push('<li>' + d.source + '</li>');
+  document.getElementById('meta').innerHTML = meta.join('');
+  buttons.forEach((b, j) => b.classList.toggle('on', i === j));
   location.hash = d.slug;
 }
+let group = null;
 DIAGRAMS.forEach((d, i) => {
+  if (d.group !== group) {
+    group = d.group;
+    const h = document.createElement('h3');
+    h.textContent = group;
+    nav.appendChild(h);
+  }
   const b = document.createElement('button');
-  b.innerHTML = d.title.split(' - ')[0] + '<small>' + d.title.split(' - ').slice(1).join(' - ') + '</small>';
+  const parts = d.title.split(' - ');
+  b.innerHTML = parts[0] + '<small>' + parts.slice(1).join(' - ') + '</small>';
   b.onclick = () => show(i);
   nav.appendChild(b);
+  buttons.push(b);
 });
 const from = DIAGRAMS.findIndex(d => d.slug === location.hash.slice(1));
 show(from >= 0 ? from : 0);
