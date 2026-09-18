@@ -287,6 +287,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
+   * Seeds the cluster security documents from the leader whenever a configuration change brings in a peer,
+   * whichever admission path issued it (issue #7531). See {@link MembershipSecuritySeeder} for why the leader
+   * and not the admitting node, and {@link #notifyConfigurationChanged} for the callback that drives it.
+   * <p>
+   * Not final so a test can substitute a recording seeder; production never replaces it.
+   */
+  private volatile MembershipSecuritySeeder membershipSecuritySeeder = new MembershipSecuritySeeder(
+      this::isLocalNodeRaftLeader, this::securitySeedRetryBudgetMs, this::seedSecurityStateClusterWide);
+
+  /**
    * Removes dropped database directories away from the apply loop. Deliberately not the lifecycleExecutor: a
    * deletion is unbounded in the size of the database and would delay the snapshot-download triggers that
    * executor carries.
@@ -1604,6 +1614,109 @@ public class ArcadeStateMachine extends BaseStateMachine {
     synchronized (notifier) {
       notifier.notifyAll();
     }
+  }
+
+  /**
+   * Called by Ratis on every node that takes on a Raft configuration. Used to seed the cluster security
+   * documents to a peer that just entered the committed configuration (issue #7531).
+   * <p>
+   * This is the one place all three admission paths meet. {@code POST /api/v1/cluster/peer} and
+   * {@code connect cluster} also seed from the admitting node (issue #7521), but {@code KubernetesAutoJoin}
+   * has no admitting node - on a StatefulSet scale-up the new pod issues {@code Mode.ADD} for itself - so
+   * nothing seeded a self-joining pod at all. The documents involved ({@code server-users.jsonl},
+   * {@code server-groups.json}, {@code server-api-tokens.json}) live under {@code <server-root>/config/} and
+   * are carried by no snapshot install, so an unseeded member serves requests against its own copy of them.
+   * <p>
+   * {@link MembershipSecuritySeeder} carries the decision: leader only, and only for a configuration that
+   * brought in a peer the previous one did not have.
+   * <p>
+   * <b>Nothing here may throw or block.</b> Ratis calls this from two places in ratis-server 3.3.0 -
+   * {@code RaftServerImpl.applyLogToStateMachine}, i.e. the state-machine apply loop, and
+   * {@code SnapshotInstallationHandler.installSnapshotImpl}, i.e. the thread serving a leader-initiated
+   * snapshot install - and neither is a thread that may carry a Raft round trip or an exception from
+   * housekeeping. The seeder does its membership update under its own monitor for the same reason: the two
+   * can arrive concurrently.
+   */
+  @Override
+  public void notifyConfigurationChanged(final long term, final long index,
+      final RaftProtos.RaftConfigurationProto newRaftConfiguration) {
+    super.notifyConfigurationChanged(term, index, newRaftConfiguration);
+
+    try {
+      final List<RaftPeerId> peers = new ArrayList<>(newRaftConfiguration.getPeersCount());
+      for (final RaftProtos.RaftPeerProto peer : newRaftConfiguration.getPeersList())
+        peers.add(RaftPeerId.valueOf(peer.getId()));
+
+      membershipSecuritySeeder.onConfigurationChanged(term, index, peers);
+    } catch (final Throwable t) {
+      // The apply loop is not the place to find out that housekeeping has a bug in it.
+      LogManager.instance().log(this, Level.WARNING,
+          "Could not evaluate the security seed for the Raft configuration at term=%d index=%d: %s", t, term, index,
+          t.getMessage());
+    }
+  }
+
+  /**
+   * Whether this node currently holds the Raft LEADER role, read from the Ratis division rather than from
+   * {@link RaftHAServer}.
+   * <p>
+   * The division is the same source {@code RaftHAServer.isLeader()} reads, and asking Ratis directly keeps the
+   * membership seed working on a state machine that has no {@code RaftHAServer} wired to it - which is every
+   * peer of the {@code MiniRaftCluster} harness the HA tests run against, whose {@code BaseMiniRaftTest} wires
+   * {@code setServer} and never {@code setRaftHAServer}. Degrades to {@code false} on an unreadable division,
+   * matching {@code RaftHAServer.isLeader()}.
+   * <p>
+   * Package-private so the membership-seed tests can drive a substituted seeder off the REAL role read rather
+   * than off a second implementation of it.
+   */
+  boolean isLocalNodeRaftLeader() {
+    try {
+      final CompletableFuture<RaftServer> raftServer = getServer();
+      final RaftGroupId groupId = getGroupId();
+      if (raftServer == null || !raftServer.isDone() || groupId == null)
+        return false;
+      return raftServer.join().getDivision(groupId).getInfo().isLeader();
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.FINE, "Could not read the Raft role for the security seed: %s",
+          e.getMessage());
+      return false;
+    }
+  }
+
+  /** The time budget {@code arcadedb.ha.securitySeedRetryTimeout} gives the membership seed. */
+  long securitySeedRetryBudgetMs() {
+    final ArcadeDBServer srv = this.server;
+    return srv == null ? 0L
+        : srv.getConfiguration().getValueAsLong(GlobalConfiguration.HA_SECURITY_SEED_RETRY_TIMEOUT);
+  }
+
+  /**
+   * Submits the three security documents through {@code ServerSecurity}, which reads each one under the
+   * security monitor - reading here and submitting afterwards is the window a concurrent revocation slips
+   * through, and a seed carries whole documents (issue #7373).
+   *
+   * @return the documents that could not be seeded, empty when all of them committed
+   */
+  private List<String> seedSecurityStateClusterWide(final long retryBudgetMs) {
+    final ArcadeDBServer srv = this.server;
+    // Both of these THROW rather than returning no failures. An empty list is how the seeder is told every
+    // document committed, and "there was nothing here to seed with" must not be reported to an operator as a
+    // successful seed - ServerSecurity.seedSecurityStateClusterWide answers an absent HA plugin with an empty
+    // list of its own, so the check has to happen on this side of the call.
+    if (srv == null || srv.getSecurity() == null)
+      throw new IllegalStateException("this node has no security store to seed the joining peer from");
+    if (srv.getHA() == null)
+      throw new IllegalStateException(
+          "this node has no HA plugin, so the security documents cannot be replicated to the joining peer");
+    return srv.getSecurity().seedSecurityStateClusterWide(retryBudgetMs);
+  }
+
+  /** Package-private test seam (issue #7531): substitutes the seeder the configuration callback drives. */
+  void setMembershipSecuritySeederForTesting(final MembershipSecuritySeeder seeder) {
+    final MembershipSecuritySeeder previous = this.membershipSecuritySeeder;
+    this.membershipSecuritySeeder = seeder;
+    if (previous != null)
+      previous.close();
   }
 
   /**
@@ -5161,6 +5274,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
   public void close() throws IOException {
     lifecycleExecutor.shutdownNow();
     snapshotInstallExecutor.shutdownNow();
+    membershipSecuritySeeder.close();
     deferredDatabaseDeleter.close();
     super.close();
   }
