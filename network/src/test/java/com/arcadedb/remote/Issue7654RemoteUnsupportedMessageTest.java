@@ -78,6 +78,9 @@ class Issue7654RemoteUnsupportedMessageTest {
    * {@link UnsupportedOperationException}, asserts the message names the method and uses the package's single
    * wording. A fresh instance per method so a method that mutates state cannot change what the next one answers.
    *
+   * @param type    the class whose public methods are exercised
+   * @param factory supplies a fresh instance of it for each method
+   *
    * @return how many refusals were actually observed
    */
   private <T> int assertAllRefusalsCarryAMessage(final Class<T> type, final Supplier<T> factory) {
@@ -130,6 +133,10 @@ class Issue7654RemoteUnsupportedMessageTest {
    * A value of {@code parameterType} that is safe to pass anywhere: {@code null} for a reference, the zero/false
    * default for a primitive, and a zero-length array for an array (a {@code null} array would turn a legitimate
    * refusal into a {@link NullPointerException} raised before it).
+   *
+   * @param parameterType the declared type of the parameter to supply a value for
+   *
+   * @return a value assignable to it
    */
   private static Object neutralValue(final Class<?> parameterType) {
     if (parameterType.isArray())

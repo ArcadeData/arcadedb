@@ -343,6 +343,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
      * durable and must be dropped in silence, after a rollback they are gone and their submitters must be told.
      * Counting commits means the rollback case simply does not match and keeps the pre-existing reporting path,
      * so this does not rest on the invariant that no statement rolls the top-level transaction back mid-execution.
+     *
+     * @return true if the snapshotted shared batch transaction has been committed since the running task was handed it
      */
     private boolean sharedBatchCommittedDuringTask() {
       return taskBatchTx != null && taskBatchTx.getCommitCount() != taskBatchTxCommitCount;
