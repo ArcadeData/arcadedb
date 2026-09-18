@@ -435,6 +435,90 @@ class Issue6526AsyncExecutorFollowUpsTest extends TestHelper {
   }
 
   /**
+   * Regression test for issue #7841: a task offered to a worker that is retiring (past
+   * {@code resizeThreads()}'s {@code FORCE_EXIT} offer but still {@code isAlive()} for as long as it takes to drain)
+   * used to be silently dropped by {@code drainQueueNotifyingWaiters()} - {@code completed()} without
+   * {@code execute()} - while {@code scheduleTask()}'s post-offer check saw a live thread and reported success.
+   * <p>
+   * The single-pass {@link #aProducerPinnedToOneBucketKeepsWorkingAcrossAShrink} above pins the same contract but
+   * essentially never hits the race in one pass on an idle machine (the reporter needed CI load, not a local run,
+   * to see it at all). This repeats the churn many times under background CPU load in one test - a shape shown to
+   * reproduce the drop reliably on the pre-fix code (2 failures in 30 repeats) and not at all post-fix (0 in 120) -
+   * so a regression here has a real chance of being caught rather than relying solely on a PR description's manual
+   * verification. Tagged slow: the background load threads make this one unsuitable to run alongside the default
+   * lane's other tests on a shared runner, even though it finishes in a few seconds.
+   */
+  @Test
+  @Tag("slow")
+  @Timeout(120)
+  void aProducerPinnedToOneBucketSurvivesRepeatedShrinksUnderLoad() throws Exception {
+    final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) ((DatabaseInternal) database).async();
+
+    final AtomicBoolean loadStop = new AtomicBoolean();
+    final List<Thread> loadThreads = new java.util.ArrayList<>();
+    for (int i = 0; i < 8; i++) {
+      final Thread t = new Thread(() -> {
+        long x = 0;
+        while (!loadStop.get())
+          x += System.nanoTime();
+      }, "issue7841-load-" + i);
+      t.setDaemon(true);
+      t.start();
+      loadThreads.add(t);
+    }
+
+    try {
+      for (int repeat = 0; repeat < 30; repeat++) {
+        async.setParallelLevel(4);
+
+        final AtomicInteger executed = new AtomicInteger();
+        final AtomicInteger completed = new AtomicInteger();
+        final AtomicInteger scheduled = new AtomicInteger();
+        final List<Throwable> producerFailures = new CopyOnWriteArrayList<>();
+        final List<Throwable> taskErrors = new CopyOnWriteArrayList<>();
+        async.onError(taskErrors::add);
+
+        final AtomicBoolean stop = new AtomicBoolean();
+        final Thread producer = new Thread(() -> {
+          while (!stop.get()) {
+            try {
+              if (async.scheduleTask(async.getSlot(3), new CountingTask(executed, completed), true, 0))
+                scheduled.incrementAndGet();
+            } catch (final Throwable e) {
+              producerFailures.add(e);
+            }
+          }
+        }, "issue7841-bucket-producer-" + repeat);
+        producer.start();
+
+        try {
+          for (int churn = 0; churn < 20; churn++) {
+            async.setParallelLevel(2);
+            async.setParallelLevel(4);
+          }
+        } finally {
+          stop.set(true);
+          producer.join(30_000);
+        }
+        assertThat(producer.isAlive()).as("repeat %d", repeat).isFalse();
+
+        assertThat(producerFailures).as("repeat %d: a producer pinned to a migrating bucket must never be refused",
+            repeat).isEmpty();
+        assertThat(async.waitCompletion(60_000)).as("repeat %d", repeat).isTrue();
+        assertThat(executed.get())
+            .as("repeat %d: every task the producer's scheduleTask() accepted must have run, not been silently "
+                + "dropped by a retiring worker's drain (issue #7841)", repeat)
+            .isEqualTo(scheduled.get());
+        assertThat(taskErrors).as("repeat %d", repeat).isEmpty();
+      }
+    } finally {
+      loadStop.set(true);
+      for (final Thread t : loadThreads)
+        t.join(5_000);
+    }
+  }
+
+  /**
    * Item 1 against the barrier (#6526 review round 8). {@code quiesceWorkers()} snapshots the pool once and then
    * schedules one park task per slot, but {@code scheduleTask()} re-reads the published array on every call - and
    * since this PR a slot the pool has outgrown is re-mapped onto a live worker rather than refused. A shrink
