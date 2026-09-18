@@ -44,15 +44,14 @@ import java.util.logging.Level;
 public class SecurityGroupFileRepository {
   public static final String                     FILE_NAME       = "server-groups.json";
   /** Prefix of the watcher thread's name; the watched document's path is appended to it. See {@link #startWatching()}. */
-  public static final String                     WATCHER_THREAD_NAME_PREFIX = "arcadedb-security-groups-watcher";
+  public static final String                     WATCHER_PREFIX  = "arcadedb-security-groups-watcher";
   private final       String                     securityConfPath;
   private final       File                       file;
   private final       int                        checkConfigReloadEveryMs;
   private             long                       fileLastUpdated = 0L;
-  // VOLATILE: every writer holds this object's monitor, but two readers deliberately do not - stop(), which
-  // must not block behind a load() already in flight, and the TimerTask's stale-instance check, which runs on
-  // the timer thread. The write happens once per instance and the reads once per tick, so the barrier costs
-  // nothing measurable and buys both readers a guaranteed-current value.
+  // VOLATILE for the one reader that deliberately does not take the monitor: the TimerTask's stale-instance
+  // check, which runs on the timer thread. Written once per instance, read once per tick, so the barrier costs
+  // nothing measurable. It is NOT what makes stop() safe - see stop().
   private volatile    Timer                      checkFileUpdatedTimer;
   private             Callable<Void, JSONObject> reloadCallback  = null;
   private volatile    JSONObject                 latestGroupConfiguration;
@@ -64,7 +63,19 @@ public class SecurityGroupFileRepository {
     this.checkConfigReloadEveryMs = checkConfigReloadEveryMs;
   }
 
-  public void stop() {
+  /**
+   * Cancels the watcher. SYNCHRONIZED, and it has to be: the check and the cancel are one action against
+   * {@link #startWatching()}, which is check-then-act too. An unsynchronized {@code stop()} that read the field
+   * in the window between that method's null check and its assignment would see {@code null}, return without
+   * cancelling, and leave the timer created a moment later polling a stopped repository for the life of the
+   * JVM - which an embedded multi-node process (every HA fixture) would accumulate one of per stopped node.
+   * {@code volatile} does not close that window; only the monitor does.
+   * <p>
+   * It cannot deadlock or stall a shutdown: {@link Timer#cancel()} discards the queue without waiting for a
+   * running task, and the longest this can wait for the monitor is one in-flight read or write of a small JSON
+   * document.
+   */
+  public synchronized void stop() {
     if (checkFileUpdatedTimer != null)
       checkFileUpdatedTimer.cancel();
   }
@@ -254,7 +265,7 @@ public class SecurityGroupFileRepository {
     // dump unable to say which node a given watcher belongs to. That ambiguity is new in practice rather than
     // in principle, because the watcher now exists on EVERY started node instead of only the ones that had
     // touched the group document.
-    final Timer timer = new Timer(WATCHER_THREAD_NAME_PREFIX + "[" + file.getPath() + "]", true);
+    final Timer timer = new Timer(WATCHER_PREFIX + "[" + file.getPath() + "]", true);
     checkFileUpdatedTimer = timer;
     timer.schedule(new TimerTask() {
       @Override

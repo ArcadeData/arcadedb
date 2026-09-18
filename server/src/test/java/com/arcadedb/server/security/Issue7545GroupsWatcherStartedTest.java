@@ -30,6 +30,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.nio.charset.StandardCharsets;
+import java.lang.reflect.Modifier;
 import java.nio.file.Files;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
@@ -255,6 +256,69 @@ class Issue7545GroupsWatcherStartedTest {
     }
   }
 
+  /**
+   * {@code stop()} and {@code startWatching()} are both check-then-act on the same field, so they have to run
+   * under the same monitor: an unsynchronized {@code stop()} could read the reference in the window after
+   * {@code startWatching()}'s null check and before its assignment, return without cancelling, and leave a
+   * timer polling a repository nobody uses any more. The exposure is what this issue changed - the field used
+   * to be written only on a node that had touched the group document and is now written on every one.
+   * <p>
+   * Structural on purpose, and it says so: a racing pair cannot be made to lose reliably, so a run that hits
+   * the window would be a flaky PASS on a broken build rather than a failure. The modifier IS the contract
+   * here, and asserting it fails deterministically the moment somebody removes it. The stress rows below then
+   * exercise the pair for real.
+   */
+  @Test
+  void stopAndStartWatchingRunUnderTheSameMonitor() throws Exception {
+    assertThat(Modifier.isSynchronized(SecurityGroupFileRepository.class.getDeclaredMethod("stop").getModifiers()))
+        .as("stop() must hold the monitor startWatching() writes the timer reference under").isTrue();
+    assertThat(
+        Modifier.isSynchronized(SecurityGroupFileRepository.class.getDeclaredMethod("startWatching").getModifiers()))
+        .as("startWatching() must hold the monitor").isTrue();
+  }
+
+  /**
+   * The behavioural half of the row above: many repositories, each started and stopped from two different
+   * threads racing each other, must leave no watcher thread behind.
+   */
+  @Test
+  void aStopRacingAStartLeavesNoWatcherBehind() throws Exception {
+    final long before = securityWatcherThreadCount();
+
+    for (int i = 0; i < 200; i++) {
+      final SecurityGroupFileRepository repo = new SecurityGroupFileRepository(CONFIG_PATH, 1_000_000);
+      final CountDownLatch go = new CountDownLatch(1);
+      final Thread starter = new Thread(() -> {
+        awaitLatch(go);
+        repo.startWatching();
+      });
+      final Thread stopper = new Thread(() -> {
+        awaitLatch(go);
+        repo.stop();
+      });
+      starter.start();
+      stopper.start();
+      go.countDown();
+      starter.join();
+      stopper.join();
+      // Whichever order they landed in, the repository must not be left watching: a stop that won the race
+      // cancels nothing and a startWatching() that ran after it is the one-shot the javadoc describes, while a
+      // stop that lost cancels the timer the starter had already published.
+      repo.stop();
+    }
+
+    assertThat(await(() -> securityWatcherThreadCount() <= before))
+        .as("no watcher survives a stop racing a start").isTrue();
+  }
+
+  private static void awaitLatch(final CountDownLatch latch) {
+    try {
+      latch.await();
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+  }
+
   private ServerSecurity newSecurity() {
     final ArcadeDBServer server = mock(ArcadeDBServer.class);
     when(server.getDatabaseNames()).thenReturn(Set.of());
@@ -297,7 +361,7 @@ class Issue7545GroupsWatcherStartedTest {
     return Thread.getAllStackTraces().keySet().stream()
         // Prefix, not equality: the watcher thread carries the watched document's path so that a JVM running
         // several embedded nodes can tell their watchers apart in a thread dump.
-        .filter(t -> t.getName().startsWith(SecurityGroupFileRepository.WATCHER_THREAD_NAME_PREFIX))
+        .filter(t -> t.getName().startsWith(SecurityGroupFileRepository.WATCHER_PREFIX))
         .count();
   }
 
