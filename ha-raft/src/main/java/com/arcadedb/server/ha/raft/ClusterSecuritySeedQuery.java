@@ -188,10 +188,17 @@ public final class ClusterSecuritySeedQuery {
         .header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString(body.toString(), StandardCharsets.UTF_8));
 
+    // The two headers travel together or not at all, matching RaftHAPlugin.shutdownRequest (claude-review on
+    // PR #7854). The forwarded user is a claim about WHO, and the cluster token is the only thing that makes it
+    // worth anything: the handler reads the name only inside the branch the token opens, so sending a principal
+    // with no proof of the hop is noise on the wire at best and a misleading read of this code at worst. The
+    // older peer dials in this module set it unconditionally; they are harmless for the same reason, but this
+    // is the shape to copy.
     final String clusterToken = raft.getClusterToken();
-    if (clusterToken != null && !clusterToken.isBlank())
+    if (clusterToken != null && !clusterToken.isBlank()) {
       builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
-    builder.header("X-ArcadeDB-Forwarded-User", RaftHAServer.FORWARDED_ROOT_USER);
+      builder.header("X-ArcadeDB-Forwarded-User", RaftHAServer.FORWARDED_ROOT_USER);
+    }
 
     try {
       return parse(dial.client().send(builder.build(), HttpResponse.BodyHandlers.ofString()), dial.address());
