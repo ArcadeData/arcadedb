@@ -21,6 +21,7 @@ package com.arcadedb.mcp.tools;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.function.Consumer;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
@@ -247,14 +248,42 @@ public class MCPToolUtils {
         .setUseCollectionSize(false)
         .setUseCollectionSizeForEdges(false);
 
-    final JSONArray records = new JSONArray();
-    database.transaction(() -> {
+    final JSONArray records = collectInTransaction(database, attemptRecords -> {
       try (final ResultSet resultSet = database.command("cypher", cypher, params)) {
         while (resultSet.hasNext())
-          records.put(serializer.serializeResult(database, resultSet.next()));
+          attemptRecords.put(serializer.serializeResult(database, resultSet.next()));
       }
     });
 
     return new JSONObject().put("records", records).put("count", records.length());
+  }
+
+  /**
+   * Runs {@code collector} inside a transaction of its own and returns ONLY the rows the attempt that COMMITTED
+   * produced.
+   * <p>
+   * {@link Database#transaction(Database.TransactionScope)} re-runs its block up to {@code arcadedb.txRetries}
+   * times when an attempt loses an MVCC race or hits a duplicated key, rolling that attempt back first - and the
+   * upsert tools ask the operator for a UNIQUE index on the match keys, which is exactly what turns a concurrent
+   * duplicate into the second of those. An accumulator declared OUTSIDE the block keeps what the rolled-back
+   * attempt put in it and the next attempt appends to it, so the reply names the same record once per attempt,
+   * {@code count} is the inflated length, and the surplus rows carry values that were rolled back and are in no
+   * database - the one error an agent reading the reply has no way to detect (issue #7904). A FRESH array per
+   * attempt, published only once the block has run to its end, makes the reply the committed attempt's and
+   * nothing else's; the abandoned attempts' rows are dropped with the transaction that produced them, the way
+   * {@code WebSocketInsertSession.inOwnTransaction} drops their tallies.
+   * <p>
+   * Any per-attempt bound - {@code execute_command}'s {@code limit} - must be counted on the array handed in
+   * here, not on a local of the block, for the same reason: a local restarts at 0 on every attempt while the
+   * rows it was meant to cap do not.
+   */
+  public static JSONArray collectInTransaction(final Database database, final Consumer<JSONArray> collector) {
+    final JSONArray[] committed = new JSONArray[1];
+    database.transaction(() -> {
+      final JSONArray attemptRecords = new JSONArray();
+      collector.accept(attemptRecords);
+      committed[0] = attemptRecords;
+    });
+    return committed[0];
   }
 }
