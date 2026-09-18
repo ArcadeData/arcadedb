@@ -858,6 +858,13 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         // landing on a worker a later, non-overlapping resize then also retires before the task runs) - each hop
         // is bounded the same way this one is, and the stress test's 20 back-to-back resizes per repeat exercise
         // exactly that chaining without a single drop across 120+ runs.
+        //
+        // Cross-covers scheduleTask()'s OWN post-offer check (claude-review, tying the two together): that check's
+        // removeQuietly() can fail to find the task - not because it is safe, but because THIS drain loop's own
+        // poll() already won the race and took it first. When that happens the caller-side check does nothing
+        // (removeQuietly() false, no throw, no retry there) and it is this reschedule loop, further down the same
+        // task's journey, that is the only thing left standing between it and being lost. Neither side is
+        // sufficient alone; whichever one actually dequeues the task is the one responsible for its fate.
         boolean rescheduled = false;
         for (int attempt = 0; !rescheduled && attempt < 3 && executorThreads != null; attempt++) {
           try {

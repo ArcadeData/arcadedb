@@ -196,6 +196,14 @@ public class TruncateTypeStatement extends DDLStatement {
    * entry rather than relying on {@code DELETE FROM} to reach it through the parent, so each entry here is deleted
    * exactly once regardless of how many other entries are also its ancestor.
    * <p>
+   * A lightweight entry can still have record-backed descendants of its own, and {@code DELETE FROM} being
+   * unconditionally polymorphic means its statement here reaches those too - a SECOND time, since the
+   * record-backed pass in {@link #executeDDL} already deleted them moments earlier through
+   * {@code truncateInOwnTransaction}/{@code truncateInCallerTransaction} (claude-review). That is a harmless
+   * no-op rather than a repeat of the #4352 tombstone hazard: this reach-through is a normal, index-maintained
+   * {@code DELETE}, not the raw batched-delete-with-live-index this whole fix exists to avoid, and it is deleting
+   * from an already-empty type.
+   * <p>
    * Mirrors the caller-transaction-vs-own-transaction split the record-backed paths make, for the same reason
    * (issue #6220): inside a caller transaction the delete joins it, so a {@code ROLLBACK} puts the edges back;
    * with none active, this opens and closes its own so the statement is atomic on its own. The own-transaction
