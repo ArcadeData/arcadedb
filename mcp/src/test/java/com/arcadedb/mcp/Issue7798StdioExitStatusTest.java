@@ -20,12 +20,16 @@ package com.arcadedb.mcp;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.BaseGraphServerTest;
+import com.arcadedb.server.ServerPlugin;
+import com.arcadedb.server.security.ServerSecurity;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Collection;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.IntSupplier;
 
@@ -44,7 +48,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class Issue7798StdioExitStatusTest {
+class Issue7798StdioExitStatusTest extends BaseGraphServerTest {
 
   /** A server that never boots anything: only its lifecycle is under test here. */
   private static class StubServer extends ArcadeDBServer {
@@ -96,6 +100,46 @@ class Issue7798StdioExitStatusTest {
     assertThat(status).isEqualTo(1);
     assertThat(server.stops.get()).as("the started server must be stopped before the JVM exits").isEqualTo(1);
     assertThat(err.toString(StandardCharsets.UTF_8)).contains("the MCP plugin is not installed");
+  }
+
+  /**
+   * The other half of the contract: a run that ended the way it is meant to - stdin closed - reports 0, so a
+   * supervisor reads a clean shutdown for a clean shutdown and does not restart the process in a loop. Without
+   * this, "always return 1" would satisfy the two tests above.
+   * <p>
+   * The server is a stand-in that borrows the fixture's real plugin and security, so {@code startup} takes the
+   * full success path - plugin found, root authenticated, the stdio loop run - while {@code stop()} is recorded
+   * instead of tearing down the server the rest of this class is using.
+   */
+  @Test
+  void aRunEndedByClosedStdinExitsZeroAndStopsTheServer() {
+    final AtomicInteger stops = new AtomicInteger();
+    final ArcadeDBServer borrowed = new ArcadeDBServer(new ContextConfiguration()) {
+      @Override
+      public void start() {
+        // Already started: this instance only lends the fixture's plugin and security to startup().
+      }
+
+      @Override
+      public void stop() {
+        stops.incrementAndGet();
+      }
+
+      @Override
+      public Collection<ServerPlugin> getPlugins() {
+        return getServer(0).getPlugins();
+      }
+
+      @Override
+      public ServerSecurity getSecurity() {
+        return getServer(0).getSecurity();
+      }
+    };
+
+    final int status = MCPStdioServer.startup(borrowed, DEFAULT_PASSWORD_FOR_TESTS, emptyStdin(), discardedStdout());
+
+    assertThat(status).as("stdin closing is how this process ends normally, not a crash").isZero();
+    assertThat(stops.get()).as("the success path runs the same finally as the failure paths").isEqualTo(1);
   }
 
   /**
