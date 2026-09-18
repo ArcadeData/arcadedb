@@ -389,6 +389,14 @@ class Issue7931AbortedTransactionVectorLeakTest {
     }
   }
 
+  /**
+   * The bound is a hang detector, not a latency bound: this commit contends with one open transaction on one
+   * record, so a run that needs anywhere near this long has stopped making progress - most plausibly on an index
+   * or file lock the transaction under test is holding. Generous, because a wide bound cannot turn a passing run
+   * red, and a diagnostic failure is what the suite needs here instead of a thread parked forever on join().
+   */
+  private static final long CONCURRENT_COMMIT_TIMEOUT_MS = 60_000;
+
   private static void commitInAnotherThread(final Database db, final RID rid) throws InterruptedException {
     final Throwable[] failure = new Throwable[1];
     final Thread concurrent = new Thread(() -> {
@@ -399,7 +407,14 @@ class Issue7931AbortedTransactionVectorLeakTest {
       }
     });
     concurrent.start();
-    concurrent.join();
+    concurrent.join(CONCURRENT_COMMIT_TIMEOUT_MS);
+    if (concurrent.isAlive()) {
+      final StackTraceElement[] where = concurrent.getStackTrace();
+      concurrent.interrupt();
+      concurrent.join(5_000);
+      throw new AssertionError("the concurrent commit of " + rid + " did not finish within "
+          + CONCURRENT_COMMIT_TIMEOUT_MS + " ms; it was parked at " + (where.length > 0 ? where[0] : "an unknown frame"));
+    }
     if (failure[0] != null)
       throw new AssertionError("the concurrent transaction must commit", failure[0]);
   }
