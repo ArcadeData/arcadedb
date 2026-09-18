@@ -378,13 +378,14 @@ class Issue7814SearchRebuildAdmissionTest {
         final LSMVectorIndex index = vectorIndex(db);
         final CountDownLatch ownerReturned = new CountDownLatch(1);
         final CountDownLatch waiterReturned = new CountDownLatch(1);
+        final AtomicReference<List<Pair<RID, Float>>> ownerResults = new AtomicReference<>();
         final AtomicReference<Throwable> ownerFailure = new AtomicReference<>();
         final AtomicReference<Throwable> waiterFailure = new AtomicReference<>();
 
         LSMVectorIndex.acquireAllRebuildPermitsForTest();
         final Thread owner = new Thread(() -> {
           try {
-            index.findNeighborsFromVector(embedding(1), 5, 64);
+            ownerResults.set(index.findNeighborsFromVector(embedding(1), 5, 64));
           } catch (final Throwable t) {
             ownerFailure.set(t);
           } finally {
@@ -446,6 +447,12 @@ class Issue7814SearchRebuildAdmissionTest {
         }
 
         assertThat(ownerFailure.get()).as("the owning search must not have failed").isNull();
+        // The interrupted waiter must not have disturbed the owner's own bookkeeping on its way out: the latch
+        // that says the on-disk graph is still undecided belongs to the thread that decided, and a waiter that
+        // cleared it would let a third search past the wait while the graph it needs is still being built - and
+        // a search with no graph answers with an empty result set rather than an error.
+        assertThat(ownerResults.get())
+            .as("the owning search must still be answered off a fully built graph").isNotEmpty();
         assertThat(index.getStats().get("graphRebuildCount"))
             .as("exactly one build of the corpus, not one per search thread").isEqualTo(1L);
       } finally {
