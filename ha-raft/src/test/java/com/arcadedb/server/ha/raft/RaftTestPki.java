@@ -20,6 +20,7 @@ package com.arcadedb.server.ha.raft;
 
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SNIHostName;
+import javax.net.ssl.SNIServerName;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocket;
@@ -264,6 +265,23 @@ final class RaftTestPki {
     parameters.setEndpointIdentificationAlgorithm(endpointIdentification ? "HTTPS" : null);
     socket.setSSLParameters(parameters);
     return socket;
+  }
+
+  /**
+   * The names {@code socket} advertised in its TLS {@code server_name} extension, read back from the socket's
+   * own parameters.
+   * <p>
+   * It is what makes an SNI test fail if {@link #connect(SSLContext, String, int, String, boolean)} ever stops
+   * setting them (CodeRabbit on PR #7854): the certificate a single-keystore listener returns is the same
+   * whatever SNI asks for, so asserting on the certificate alone cannot tell a request that carried the
+   * extension from one that did not.
+   */
+  static List<String> requestedServerNames(final SSLSocket socket) {
+    final List<String> names = new ArrayList<>();
+    for (final SNIServerName name : socket.getSSLParameters().getServerNames())
+      if (name instanceof final SNIHostName host)
+        names.add(host.getAsciiName());
+    return names;
   }
 
   /** The subject alternative names of the certificate {@code socket}'s peer presented, as keytool spells them. */

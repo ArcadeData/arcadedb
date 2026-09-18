@@ -36,6 +36,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Base64;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -101,9 +102,13 @@ class Issue7835HaTlsRemainingPeerDialsIT extends BaseRaftHASslTest {
           () -> follower.getHttpAddresses().get(leaderPeer), () -> httpsAddr, follower.getClusterToken(),
           0, 100L, getServer(followerIndex));
 
-      assertThat(Files.list(target).findAny())
-          .as("the snapshot download must have written the leader's database files over the TLS socket")
-          .isPresent();
+      // try-with-resources: Files.list holds an open directory handle, and the finally below has to be able to
+      // delete the directory (CodeRabbit on PR #7854).
+      try (final Stream<Path> written = Files.list(target)) {
+        assertThat(written.findAny())
+            .as("the snapshot download must have written the leader's database files over the TLS socket")
+            .isPresent();
+      }
     } finally {
       FileUtils.deleteRecursively(target.toFile());
     }

@@ -177,20 +177,43 @@ class Issue7834SingleSecuritySeederTest {
   }
 
   /**
-   * And the converse, so the fold is not mistaken for "only ever seeds once": a request that arrives when
-   * nothing is outstanding runs a seed of its own. That is the path a node re-seeding itself takes (issue
-   * #7833), and the path an admission takes if the membership hook's seed has already finished.
+   * The other half of the duplicate, which the fold alone does not catch: the admitting node's request is a
+   * round trip behind the configuration entry, so the membership seed can FINISH before it arrives. Scheduling
+   * a second seed there would put the same three Raft entries in the log again (CodeRabbit on PR #7854), so a
+   * seed that has just finished is reported instead.
    */
   @Test
-  void aRequestWithNothingOutstandingRunsASeed() {
+  void aRequestArrivingJustAfterASeedFinishedReportsItRatherThanRunningAnother() {
+    final RecordingSeed seed = new RecordingSeed();
+    seed.failures = List.of("groups");
+    final MembershipSecuritySeeder seeder = seeder(seed, SAME_THREAD);
+
+    seeder.onConfigurationChanged(1, 10, peers("arcadedb-0", "arcadedb-1"));
+    seeder.onConfigurationChanged(1, 11, peers("arcadedb-0", "arcadedb-1", "arcadedb-2"));
+    assertThat(seed.calls.get()).as("the membership change seeded, and finished").isEqualTo(1);
+
+    assertThat(seeder.seedNowAndReport(TIMEOUT_MS))
+        .as("the admission reports that seed's outcome")
+        .containsExactly("groups");
+    assertThat(seed.calls.get()).as("one admission, one seed").isEqualTo(1);
+  }
+
+  /**
+   * And the converse, so the reuse is not mistaken for "only ever seeds once": once the window has passed, a
+   * request runs a seed of its own. That is the path a node re-seeding itself takes (issue #7833), and the
+   * path an operator re-POSTing a peer minutes later has to get.
+   */
+  @Test
+  void aRequestPastTheReuseWindowRunsAFreshSeed() {
     final RecordingSeed seed = new RecordingSeed();
     final MembershipSecuritySeeder seeder = seeder(seed, SAME_THREAD);
 
     seeder.seedNowAndReport(TIMEOUT_MS);
+    seeder.forgetCompletedSeedForTest();
     seeder.seedNowAndReport(TIMEOUT_MS);
 
     assertThat(seed.calls.get())
-        .as("two requests with no seed in flight between them are two seeds")
+        .as("a request that cannot reuse anything is a seed of its own")
         .isEqualTo(2);
   }
 
