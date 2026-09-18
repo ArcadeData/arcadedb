@@ -3774,11 +3774,26 @@ public class ArcadeStateMachine extends BaseStateMachine {
     if (bootstrapUnreconciledDatabases.isEmpty())
       return;
 
-    // Same two questions the other HealthMonitor-driven backstop asks before burning a throttle slot
-    // (issue #6202): the address must identify a single peer and must not be our own.
-    final String leaderHttpAddr = raftHA.getUnambiguousPeerHttpAddress(raftHA.getLeaderId());
-    if (leaderHttpAddr == null || raftHA.isOwnHttpAddress(leaderHttpAddr))
+    // Both endpoints, from ONE look at the cluster, each having answered the two questions issue #6202
+    // requires of an address that is acted on unattended: it must identify a single peer, and it must not be
+    // our own.
+    //
+    // Through PeerDialAddress rather than by hand, and the encrypted half is why. getLeaderHttpsAddress()
+    // answers only the second of the two, and its javadoc says so: it resolves through the raw resolver on
+    // the argument that an address naming the wrong node is caught by the receiver's one-hop refusal of
+    // LeaderForwardContext.FORWARDED_TO_LEADER_HEADER. That argument is the leader FORWARD's, and it does not
+    // transfer here - POST /api/v1/cluster/bootstrap-state answers with the receiving node's own state and
+    // refuses nothing. On a cluster declaring distinct 'http' ports and one shared 'https' port the HTTP guard
+    // passes, and the probe would then dial an address identifying neither of the peers behind it and hand
+    // whatever answered to reconcileBootstrapDivergence as the leader's state (issue #7563 review). The
+    // resolver withholds such an endpoint, leaving the guarded plain one to fall back to.
+    final PeerDialAddress leaderDial = PeerDialAddress.resolve(raftHA, raftHA.getLeaderId(), "leader");
+    if (leaderDial.refused())
       return; // no leader to compare against yet
+    final String leaderHttpAddr = leaderDial.httpAddress();
+    final String leaderHttpsAddr = leaderDial.httpsAddress();
+    // Read once, off the volatile, so the task cannot see a different server than the one this tick checked.
+    final ArcadeDBServer probeServer = this.server;
 
     // Floored at the snapshot cadence so a WAN cluster that has widened its watchdog does not get probed
     // more often than it resyncs.
@@ -3800,7 +3815,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // the worst case, not for the length of a download.
       lifecycleExecutor.submit(() -> {
         final Map<String, BootstrapBaseline> leaderStates = BootstrapElection.fetchBootstrapState(
-            leaderHttpAddr, clusterToken, pending, BOOTSTRAP_DIVERGENCE_PROBE_TIMEOUT_MS);
+            probeServer, leaderHttpAddr, leaderHttpsAddr, clusterToken, pending, BOOTSTRAP_DIVERGENCE_PROBE_TIMEOUT_MS);
         if (leaderStates == null) {
           // The throttle slot is spent whether or not the probe answered, exactly as the stale-snapshot
           // backstop spends its own on a failed attempt: the next try is the next check window, not the
