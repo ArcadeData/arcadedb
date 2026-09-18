@@ -38,6 +38,7 @@ import static com.arcadedb.postgres.PostgresWireMessages.readUntilReadyForQuery;
 import static com.arcadedb.postgres.PostgresWireMessages.readWireMessage;
 import static com.arcadedb.postgres.PostgresWireMessages.readyForQueryStatusOf;
 import static com.arcadedb.postgres.PostgresWireMessages.sendBind;
+import static com.arcadedb.postgres.PostgresWireMessages.sendClose;
 import static com.arcadedb.postgres.PostgresWireMessages.sendDescribe;
 import static com.arcadedb.postgres.PostgresWireMessages.sendExecute;
 import static com.arcadedb.postgres.PostgresWireMessages.sendParse;
@@ -129,6 +130,51 @@ class Issue7851SyncKeepsTransactionAbortedIT extends PostgresWireProtocolTestBas
     assertThat(database.countType(TYPE_NAME, true))
         .as("neither the row written before the error nor the one refused after it may reach the database")
         .isZero();
+  }
+
+  @Test
+  @DisplayName("[#7851] after Sync, an Execute in the aborted block is refused with 25P02 and a Close still completes")
+  void executeIsRefusedAndCloseStillCompletesAfterSync() throws Exception {
+    try (final Socket socket = new Socket()) {
+      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+      authenticate(out, in);
+
+      assertTimeoutPreemptively(Duration.ofSeconds(30), () -> {
+        sendSimpleQuery(out, "BEGIN");
+        assertThat(readyForQueryStatusOf(readUntilReadyForQuery(in))).isEqualTo('T');
+
+        // A portal prepared and bound while the block was still healthy, so it is still registered when the
+        // block aborts below - the case where a silent discard would leave the client waiting forever.
+        sendParse(out, "live", "SELECT 1");
+        sendBind(out, "live", "live");
+        assertThat(messageTypesOf(List.of(readWireMessage(in), readWireMessage(in))))
+            .as("ParseComplete then BindComplete while the block is healthy").containsExactly('1', '2');
+
+        sendParse(out, "bad", "SELEC 1");
+        assertThat(readWireMessage(in).type()).isEqualTo('E');
+        sendSync(out);
+        assertThat(readyForQueryStatusOf(readUntilReadyForQuery(in))).isEqualTo('E');
+
+        // Execute of that still-registered portal: refused, not run and not swallowed.
+        sendExecute(out, "live");
+        final WireMessage refusal = readWireMessage(in);
+        assertThat(refusal.type()).as("an ErrorResponse, not silence and not a result").isEqualTo('E');
+        assertThat(errorFields(refusal).get('C')).isEqualTo("25P02");
+
+        sendSync(out);
+        assertThat(readyForQueryStatusOf(readUntilReadyForQuery(in))).isEqualTo('E');
+
+        // Close ends no transaction command and touches no data, so PostgreSQL runs it inside an aborted block
+        // like any other: the client cleaning up its portals gets the CloseComplete it waits for.
+        sendClose(out, 'P', "live");
+        assertThat(readWireMessage(in).type()).as("CloseComplete").isEqualTo('3');
+
+        sendSimpleQuery(out, "ROLLBACK");
+        assertThat(readyForQueryStatusOf(readUntilReadyForQuery(in))).isEqualTo('I');
+      });
+    }
   }
 
   private static void runExtendedStatement(final DataOutputStream out, final String name, final String query) throws Exception {
