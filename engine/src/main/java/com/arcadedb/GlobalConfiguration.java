@@ -3810,79 +3810,109 @@ public enum GlobalConfiguration {
 
   /**
    * Replaces the password of every {@code db[user:password[:group],...]} credential in a
-   * {@code arcadedb.server.defaultDatabases} value, keeping everything else exactly as written - the database
-   * names, the separators, the user names, the GROUP each user is granted, and the entries that carry no
-   * credentials at all. What an operator needs from this report is which databases exist and who may reach them
-   * with which role; the password is the only field that cannot be shown, so it is the only field replaced. The
-   * copy this replaced stopped at the first {@code ':'} and masked the group with the password, hiding the more
-   * interesting half of the answer.
+   * {@code arcadedb.server.defaultDatabases} value, and NOTHING else: the database names, every separator, the
+   * user names, the group each user is granted and any trailing {@code {commands}} segment are copied through
+   * exactly as written. What an operator needs from this report is which databases exist and who may reach them
+   * with which role; the password is the only field that cannot be shown.
    * <p>
-   * The splits mirror {@code ArcadeDBServer.parseCredentials} exactly - {@code ','} between credentials, then
-   * {@code ':'} between fields - so what is treated as a password here is what the server treats as one. That
-   * parity is the point: a value the server reads as {@code user}/{@code password} and this method read
-   * differently would be a value whose secret is published in full.
+   * That is why this copies by default and replaces one span, rather than splitting the value up and
+   * reassembling it: reassembly silently normalises what it did not think to preserve - a trailing {@code ';'},
+   * {@code ','} or {@code ':'} vanished, so the value reported back was not the value configured.
    * <p>
-   * It holds for any number of fields, because the rule is positional on both sides: the server authenticates
-   * with field 1 and nothing else, so field 1 is the only one masked here. A password written with a {@code ':'}
-   * in it is therefore published from the colon onwards - not a leak of the password the server uses, which is
-   * only the part before it, but a reason not to write one that way. The setting's format cannot express it, the
-   * same way it cannot express a password containing a {@code ','}.
+   * The field boundaries mirror {@code ArcadeDBServer.parseCredentials} exactly - {@code ','} between
+   * credentials, then {@code ':'} between fields - so what is treated as a password here is what the server
+   * authenticates with. That parity is the point, and it is positional on both sides: the server uses field 1
+   * and nothing else, so field 1 is the only one replaced. A password written with a {@code ':'} in it is
+   * therefore published from the colon onwards - not a leak of the password the server uses, which is only the
+   * part before it, but a reason not to write one that way. The format cannot express it, the same way it
+   * cannot express a password containing a {@code ','}.
    */
   private static String redactDefaultDatabaseCredentials(final String databases) {
-    final String[] entries = databases.split(";");
     final StringBuilder redacted = new StringBuilder(databases.length());
-    for (int e = 0; e < entries.length; e++) {
-      if (e > 0)
-        redacted.append(';');
+    for (int entryBegin = 0; ; ) {
+      int entryEnd = databases.indexOf(';', entryBegin);
+      final boolean lastEntry = entryEnd < 0;
+      if (lastEntry)
+        entryEnd = databases.length();
 
-      final String entry = entries[e];
-      final int credentialsBegin = entry.indexOf('[');
-      if (credentialsBegin < 0) {
-        // A bare database name. There is no credential block, so there is nothing in it to hide.
-        redacted.append(entry);
-        continue;
-      }
+      redactEntry(redacted, databases, entryBegin, entryEnd);
 
-      // The FIRST ']' after the '[', which is the one ArcadeDBServer.loadDefaultDatabases closes the credential
-      // block on. lastIndexOf() would pick a ']' inside the optional trailing {commands} segment instead - a
-      // restore: path may contain one - and report a mangled entry for a value the server reads perfectly well.
-      final int credentialsEnd = entry.indexOf(']', credentialsBegin);
-      if (credentialsEnd < 0) {
-        // A '[' that is never closed. The block is malformed, so where the credentials end is not known and
-        // splitting it into fields would be guessing at which of them is the password. Fail closed on the
-        // whole remainder, the way isHidden() fails closed on a whole setting.
-        //
-        // Not a theoretical shape: SET SERVER SETTING writes this value straight into the overlay and only
-        // the NEXT startup parses it, so a malformed value sits there live - and since issue #7784 these
-        // reports read the overlay, which is precisely how it would reach an operator's screen, the
-        // schema:database step and the MCP tool. A report is not where anyone should learn what was in it.
-        redacted.append(entry, 0, credentialsBegin + 1).append("*****");
-        continue;
-      }
+      if (lastEntry)
+        return redacted.toString();
 
-      redacted.append(entry, 0, credentialsBegin + 1);
-
-      final String[] credentials = entry.substring(credentialsBegin + 1, credentialsEnd).split(",");
-      for (int c = 0; c < credentials.length; c++) {
-        if (c > 0)
-          redacted.append(',');
-
-        final String credential = credentials[c];
-        final String[] fields = credential.split(":");
-        if (fields.length < 2) {
-          // The server reads this as a reference to an already existing user: there is no password in it.
-          redacted.append(credential);
-          continue;
-        }
-
-        redacted.append(fields[0]).append(":*****");
-        for (int f = 2; f < fields.length; f++)
-          redacted.append(':').append(fields[f]);
-      }
-
-      redacted.append(entry, credentialsEnd, entry.length());
+      redacted.append(';');
+      entryBegin = entryEnd + 1;
     }
-    return redacted.toString();
+  }
+
+  /** One {@code db[credentials]{commands}} entry, of which only the credential block is looked at. */
+  private static void redactEntry(final StringBuilder redacted, final String databases, final int begin,
+      final int end) {
+    final int credentialsBegin = databases.indexOf('[', begin);
+    if (credentialsBegin < 0 || credentialsBegin >= end) {
+      // A bare database name. There is no credential block, so there is nothing in it to hide.
+      redacted.append(databases, begin, end);
+      return;
+    }
+
+    redacted.append(databases, begin, credentialsBegin + 1);
+
+    // The FIRST ']' after the '[', which is the one ArcadeDBServer.loadDefaultDatabases closes the block on.
+    // lastIndexOf() would pick a ']' inside the optional trailing {commands} segment instead - a restore: path
+    // may contain one - and mangle an entry the server reads perfectly well.
+    final int credentialsEnd = databases.indexOf(']', credentialsBegin);
+    if (credentialsEnd < 0 || credentialsEnd >= end) {
+      // A '[' that is never closed. The block is malformed, so where the credentials end is not known and
+      // splitting it into fields would be guessing at which of them is the password. Fail closed on the whole
+      // remainder, the way isHidden() fails closed on a whole setting.
+      //
+      // Not a theoretical shape: SET SERVER SETTING writes this value straight into the overlay and only the
+      // NEXT startup parses it, so a malformed value sits there live - and since issue #7784 these reports read
+      // the overlay, which is precisely how it would reach an operator's screen, the schema:database step and
+      // the MCP tool. A report is not where anyone should learn what was in it.
+      redacted.append("*****");
+      return;
+    }
+
+    for (int credentialBegin = credentialsBegin + 1; ; ) {
+      int credentialEnd = databases.indexOf(',', credentialBegin);
+      final boolean lastCredential = credentialEnd < 0 || credentialEnd > credentialsEnd;
+      if (lastCredential)
+        credentialEnd = credentialsEnd;
+
+      redactPassword(redacted, databases, credentialBegin, credentialEnd);
+
+      if (lastCredential)
+        break;
+
+      redacted.append(',');
+      credentialBegin = credentialEnd + 1;
+    }
+
+    redacted.append(databases, credentialsEnd, end);
+  }
+
+  /** One {@code user:password[:group]} credential, of which only the password is replaced. */
+  private static void redactPassword(final StringBuilder redacted, final String databases, final int begin,
+      final int end) {
+    final int userEnd = databases.indexOf(':', begin);
+    if (userEnd < 0 || userEnd >= end) {
+      // The server reads this as a reference to an already existing user: there is no password in it.
+      redacted.append(databases, begin, end);
+      return;
+    }
+
+    int passwordEnd = databases.indexOf(':', userEnd + 1);
+    if (passwordEnd < 0 || passwordEnd > end)
+      passwordEnd = end;
+
+    redacted.append(databases, begin, userEnd + 1);
+
+    if (passwordEnd == userEnd + 1)
+      // An EMPTY password is not a secret, and "*****" would report one as configured where none is.
+      redacted.append(databases, userEnd + 1, end);
+    else
+      redacted.append("*****").append(databases, passwordEnd, end);
   }
 
   public Object getDefValue() {
