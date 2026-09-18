@@ -575,6 +575,16 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
             // retry-by-replay off for this batch instead of fabricating a duplicate, and still reports through
             // notifyBatchAbandoned if that batch is ultimately given up on.
             clearBatchState();
+            // Unconditional, and deliberately so (claude-review on PR #7850). A statement whose writes ALL went out
+            // in mid-statement commits - `DELETE ... BATCH n` where n divides the row count exactly, so the
+            // transaction it leaves open is empty - is fully durable, yet it is still buffered here and so still
+            // receives onError if a LATER task's boundary commit abandons the batch. That is the conservative half
+            // of the same trade notifyPendingBatchCommandsAndAbandon already documents: `cause` is attributed to the
+            // batch, not diagnosed per command. Telling a durable statement the batch failed costs a submitter a
+            // spurious retry; the alternative - deciding from here how much of the statement landed before the last
+            // commit - is not knowable without the statement reporting it, and guessing wrong in the other
+            // direction silently loses a write. Read onError as "this batch could not be made durable", per
+            // AsyncResultsetCallback's javadoc, not as a verdict on this command's own writes.
             if (message instanceof final DatabaseAsyncCommand command ? !command.idempotent : message.writesToSharedBatch())
               pendingUnreplayableTasks.add(message);
           } else if (message instanceof final DatabaseAsyncCommand command) {
