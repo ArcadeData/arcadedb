@@ -938,8 +938,9 @@ public enum PostgresType {
         // A Postgres array literal quotes an element with the DOUBLE quote and nothing else: a single quote is
         // an ordinary data character there, so wrapping the character in single quotes (issue #7801) shipped
         // {'a','b'}, which every decoder - this enum's own parseArrayFromString included - reads back as the
-        // three-character strings 'a' and 'b'. Quoted like every other textual element, {"a","b"} decodes to
-        // a and b, and a character that would otherwise break the literal (a comma, a brace, a quote, a backslash) is escaped.
+        // three-character strings 'a' and 'b'. Quoted like every other textual element, {"a","b"} decodes to a
+        // and b, and a character that would otherwise break the literal - a comma, a brace, a quote, a
+        // backslash - is escaped.
         appendQuoted(sb, element.toString());
       } else if (element instanceof Date date) {
         // Format Date as PostgreSQL-compatible timestamp in arrays

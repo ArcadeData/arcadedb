@@ -423,8 +423,8 @@ public class PostgresNetworkExecutor extends Thread {
 
     if (DEBUG)
       LogManager.instance()
-          .log(this, Level.INFO, "PSQL: describe '%s' type=%s (errorInTransaction=%s thread=%s)", portalName, (char) type,
-              errorInTransaction, Thread.currentThread().threadId());
+          .log(this, Level.INFO, "PSQL: describe '%s' type=%s (skipUntilSync=%s errorInTransaction=%s thread=%s)",
+              portalName, (char) type, skipUntilSync, errorInTransaction, Thread.currentThread().threadId());
 
     if (skipUntilSync)
       return;
