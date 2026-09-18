@@ -283,6 +283,9 @@ public class MembershipSecuritySeeder implements AutoCloseable {
       LogManager.instance().log(this, Level.FINE,
           "The cluster security seed for %s was refused by the executor; the node is stopping", reason);
       synchronized (this) {
+        // Reference identity on purpose, not equality: the question is whether the outstanding seed is still
+        // THE future this call created, or whether another caller has already replaced it. CompletableFuture
+        // inherits Object.equals, so the two are the same comparison - `==` is the one that says why.
         if (outstandingSeed == seed)
           outstandingSeed = null;
       }
