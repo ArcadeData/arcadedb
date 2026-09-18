@@ -7849,6 +7849,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // the cursor advanced onto are discarded with the transaction, and a rebuild or a compaction that ran
       // meanwhile has already repointed it (to -1 and to the new file's last page respectively), so putting the
       // old number back would aim the next insert at a page of a file that no longer exists.
+      //
+      // The one unconditional write in an otherwise conditioned method, and it discards no other writer's work:
+      // no CONCURRENT TRANSACTION can have advanced this cursor, because advancing it means writing this index's
+      // pages and this transaction holds that file's commit lock until reset(); and the only other writers - a
+      // rebuild and a compaction - set it to a value that -1 merely asks the next insert to re-derive. The cost
+      // of being wrong in that direction is one getTotalPages() call, not a lost write.
       currentInsertPageNum = -1;
     } finally {
       lock.writeLock().unlock();

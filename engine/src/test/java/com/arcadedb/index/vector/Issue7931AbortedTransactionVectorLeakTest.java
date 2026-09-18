@@ -429,6 +429,51 @@ class Issue7931AbortedTransactionVectorLeakTest {
     });
   }
 
+  /**
+   * The mid-replay re-anchor: one transaction's replay is not one locked section, so a rebuild can republish the
+   * locations BETWEEN two of its operations and leave a single journal describing two generations. The journal's
+   * contract under that swap is what this pins, directly - the window itself is unreachable from a test thread,
+   * being inside one {@code commit()} between two internal lock acquisitions.
+   * <p>
+   * What must survive the re-anchor is everything that is generation-independent, and only that: the ids the
+   * replay allocated (forgotten and swept out of the delta buffer whatever generation is current) and the
+   * index-wide counters. What must not is everything addressed by a captured offset.
+   */
+  @Test
+  void reAnchoringDropsOnlyWhatTheSwapMadeUnrestorable() throws Exception {
+    withDatabase(db -> {
+      final LSMVectorIndex index = vectorIndex(db);
+      index.buildVectorGraphNow();
+
+      final VectorLocationIndex before = index.residentLocationsForTest();
+      final int live = before.getActiveVectorIds().findFirst().orElseThrow();
+
+      final VectorIndexReplayUndo undo = new VectorIndexReplayUndo(index, before);
+      undo.recordAllocated(4242);
+      undo.recordTombstoned(live, before.getOffsetAndFlag(live), before.getRid(live));
+      undo.mutationsCharged = 2;
+      undo.mutablePagesCreated = 1;
+
+      index.buildVectorGraphNow();
+      final VectorLocationIndex after = index.residentLocationsForTest();
+      assertThat(after).as("precondition: the rebuild must have republished the location index").isNotSameAs(before);
+
+      undo.rebaseTo(after);
+
+      assertThat(undo.locationsAtReplay).as("the journal must now speak for the generation in force").isSameAs(after);
+      assertThat(undo.tombstonedCount)
+          .as("the captured offsets address a generation the index no longer reads, so they must go").isZero();
+      assertThat(undo.droppedDeltaEntries)
+          .as("and so must the delta entries the deletes dropped, for the mirror reason").isNull();
+      assertThat(undo.allocatedCount)
+          .as("an id minted by this replay is illegitimate in EVERY generation, so it must survive the re-anchor "
+              + "- dropping it is what would leave an uncommitted vector searchable")
+          .isEqualTo(1);
+      assertThat(undo.mutationsCharged).as("the counters are index-wide, not per generation").isEqualTo(2);
+      assertThat(undo.mutablePagesCreated).isEqualTo(1);
+    });
+  }
+
   private interface DatabaseTest {
     void run(Database db) throws Exception;
   }
