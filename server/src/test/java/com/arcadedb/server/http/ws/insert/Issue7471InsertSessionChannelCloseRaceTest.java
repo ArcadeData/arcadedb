@@ -157,6 +157,41 @@ public class Issue7471InsertSessionChannelCloseRaceTest extends BaseGraphServerT
         .as("no session may be left registered, and none may be left holding a transaction").isZero();
   }
 
+  /**
+   * The third ordering, also found in review: the close landing AFTER the session is registered but BEFORE its
+   * transaction is begun. {@code cancel()} would then mark the session closed with no transaction to roll back,
+   * and {@code begin()} - which took no lock and never asked whether the session was still open - went on to open
+   * one regardless. Every later {@code cancel()} returns immediately on the {@code closed} flag, so nothing would
+   * ever roll that transaction back, and the session was already out of {@code sessions}, so neither the idle
+   * sweep nor server shutdown could reach it either.
+   * <p>
+   * {@code begin()} now runs under the session lock behind {@code requireOpen()}, so this ordering refuses the
+   * start instead of leaving a transaction nobody owns.
+   */
+  @Test
+  void aSessionCancelledBeforeItsTransactionWasBegunRefusesToBeginOne() {
+    final WebSocketInsertSessionManager manager = getServer(0).getHttpServer().getInsertSessionManager();
+    final UUID channelId = UUID.randomUUID();
+    final WebSocketChannel channel = openChannel();
+
+    final WebSocketInsertSession session =
+        manager.start(rootUser(), channel, channelId, getDatabaseName(), null, options(), null);
+
+    // What the close hook does to a session in that window: it is registered, so cancel() reaches it, and its
+    // transaction does not exist yet, so there is nothing for cancel() to roll back.
+    assertThat(session.cancel()).isTrue();
+    assertThat(session.isClosed()).isTrue();
+
+    assertThatThrownBy(session::begin)
+        .as("a second begin() would open a transaction no later cancel() could roll back, on a session already "
+            + "out of the registry the idle sweep reads")
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("closed");
+
+    manager.closeChannelSessions(channel, channelId);
+    assertThat(manager.getOpenSessionCount()).isZero();
+  }
+
   /** Waits until {@code thread} is parked on a monitor - the ConcurrentHashMap bin the claim is holding. */
   private static void awaitBlocked(final Thread thread) throws InterruptedException {
     final long deadline = System.currentTimeMillis() + 10_000;

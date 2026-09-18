@@ -162,20 +162,39 @@ public class WebSocketInsertSession {
    * Begins the session's own transaction. Only {@code PER_STREAM} has one: the other modes open and commit a
    * transaction inside {@link #applyChunk}, which is what makes their acknowledged chunks durable before the
    * client has said anything.
+   * <p>
+   * Under {@link #lock} and behind {@link #requireOpen()} like every other mutating entry point, because this one
+   * races the connection-close hook as well (CodeRabbit on PR #7855). {@link WebSocketInsertSessionManager#start}
+   * registers the session BEFORE beginning it - it has to, or the close hook and the idle sweep could not see it -
+   * so a close landing in that gap runs {@link #cancel()} on a session whose transaction does not exist yet. That
+   * sets {@code closed} and rolls back nothing, and {@code begin()} would then open a transaction anyway; every
+   * later {@code cancel()} returns immediately on the {@code closed} flag, so nothing would ever roll it back, and
+   * the session is no longer registered for the sweep to find. Taking the lock and re-checking {@code closed}
+   * makes the two orderings exhaustive: close first and this THROWS - {@code start} unregisters and reports it -
+   * or begin first and the close that follows finds the transaction and rolls it back.
+   *
+   * @throws IllegalStateException when the session was closed underneath the caller
    */
   void begin() {
-    if (options.transactionMode != InsertSessionOptions.TransactionMode.PER_STREAM)
-      return;
-
-    DatabaseContext.INSTANCE.init(database);
+    lock.lock();
     try {
-      database.begin();
-      transaction = database.getTransaction();
-      // The requester is what lets a lock taken on this thread be released from another one, which is exactly
-      // what a session whose frames land on different worker threads needs. Same reason PostBeginHandler sets it.
-      transaction.setRequester(id);
+      requireOpen();
+
+      if (options.transactionMode != InsertSessionOptions.TransactionMode.PER_STREAM)
+        return;
+
+      DatabaseContext.INSTANCE.init(database);
+      try {
+        database.begin();
+        transaction = database.getTransaction();
+        // The requester is what lets a lock taken on this thread be released from another one, which is exactly
+        // what a session whose frames land on different worker threads needs. Same reason PostBeginHandler sets it.
+        transaction.setRequester(id);
+      } finally {
+        DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
+      }
     } finally {
-      DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
+      lock.unlock();
     }
   }
 

@@ -44,12 +44,15 @@ import java.nio.channels.FileChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.FileSystemException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.util.ArrayDeque;
 import java.util.Arrays;
+import java.util.Deque;
 import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -508,7 +511,7 @@ public class FileUtils {
     // required for the ATOMIC_MOVE below to actually be atomic instead of falling back to a copy.
     final Path target = file.toPath().toAbsolutePath();
     final Path dir = target.getParent();
-    Files.createDirectories(dir);
+    createDirectoriesDurably(dir);
 
     final Path tmp = Files.createTempFile(dir, file.getName() + ".", ".tmp");
     try {
@@ -543,7 +546,7 @@ public class FileUtils {
     final Path from = source.toPath().toAbsolutePath();
     final Path to = target.toPath().toAbsolutePath();
     final Path dir = to.getParent();
-    Files.createDirectories(dir);
+    createDirectoriesDurably(dir);
 
     // Unique by construction, so the link below never races another writer for the name.
     final Path tmp = dir.resolve(target.getName() + "." + UUID.randomUUID() + ".tmp");
@@ -591,6 +594,41 @@ public class FileUtils {
     // or the new complete file" from a statement about a process crash into one about a power failure, which is what
     // both helpers' javadocs claim.
     forceDirectory(target.getParent());
+  }
+
+  /**
+   * Creates {@code dir} and any missing ancestor, making each new directory's ENTRY durable as it goes.
+   * <p>
+   * {@link Files#createDirectories} is not enough on its own for the guarantee {@link #atomicWriteFile} states. A
+   * directory's name lives in its PARENT, so a power failure right after a publish into a freshly created nested
+   * path can lose the new directory - and with it the file that was just fsync'd and atomically renamed inside it,
+   * however carefully (CodeRabbit on PR #7855). Creating one level at a time and forcing the parent after each
+   * level is what makes the whole path durable rather than only its last component.
+   * <p>
+   * Costs one {@code isDirectory} stat when the directory already exists, which is every publish after the first.
+   */
+  private static void createDirectoriesDurably(final Path dir) throws IOException {
+    if (Files.isDirectory(dir))
+      return;
+
+    // Deepest missing ancestor LAST out of the deque, so every level is created into a parent that exists by then.
+    final Deque<Path> missing = new ArrayDeque<>();
+    for (Path path = dir; path != null && !Files.isDirectory(path); path = path.getParent())
+      missing.push(path);
+
+    for (final Path path : missing) {
+      try {
+        Files.createDirectory(path);
+      } catch (final FileAlreadyExistsException e) {
+        // Another thread or process created it between the check and the call: a race this loop is allowed to
+        // lose, since the directory it wanted now exists. Anything ELSE under that name - a regular file - is a
+        // genuine error, and is reported exactly as createDirectories() would have reported it.
+        if (!Files.isDirectory(path))
+          throw e;
+        continue;
+      }
+      forceDirectory(path.getParent());
+    }
   }
 
   /**
