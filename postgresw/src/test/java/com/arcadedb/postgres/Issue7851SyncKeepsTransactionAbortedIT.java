@@ -346,6 +346,37 @@ class Issue7851SyncKeepsTransactionAbortedIT extends PostgresWireProtocolTestBas
     assertThat(database.query("sql", "SELECT id FROM " + REPLAY_TYPE).next().<Integer>getProperty("id")).isEqualTo(2);
   }
 
+  @Test
+  @DisplayName("[#7851] a statement that runs nothing opens no transaction for Sync to commit empty")
+  void aPortalThatRunsNothingOpensNoTransaction() throws Exception {
+    final Database database = getServerDatabase(0, getDatabaseName());
+    // A transaction that changed nothing is counted here when it commits, so a stray empty block opened for a
+    // statement that executes nothing shows up as this counter moving - the only way the cost is observable from
+    // outside, since the transaction itself lives on the connection's own thread.
+    final long emptyTransactionsBefore = (Long) database.getStats().get("readTx");
+
+    try (final Socket socket = new Socket()) {
+      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+      authenticate(out, in);
+
+      assertTimeoutPreemptively(Duration.ofSeconds(30), () -> {
+        // A bare COMMIT and a bare ROLLBACK with no block open, and a SHOW whose answer Parse computed in full:
+        // three portals whose Execute runs nothing at all.
+        for (final String query : new String[] { "COMMIT", "ROLLBACK", "SHOW datestyle" }) {
+          final List<WireMessage> answers = runAndRead(out, in, "n" + query.hashCode(), query);
+          assertThat(messageTypesOf(answers)).as(query + " answers normally").doesNotContain('E');
+          assertThat(readyForQueryStatusOf(answers)).isEqualTo('I');
+        }
+      });
+    }
+
+    assertThat((Long) database.getStats().get("readTx") - emptyTransactionsBefore)
+        .as("none of the three opened a transaction: there was nothing for one to hold")
+        .isZero();
+  }
+
   private static void runExtendedStatement(final DataOutputStream out, final String name, final String query) throws Exception {
     sendParse(out, name, query);
     sendBind(out, name, name);

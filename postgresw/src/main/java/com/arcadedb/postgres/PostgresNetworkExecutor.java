@@ -653,8 +653,10 @@ public class PostgresNetworkExecutor extends Thread {
             .log(this, Level.INFO, "PSQL: execute (portal=%s) (limit=%d)-> %s (thread=%s)", portalName, limit, portal,
                 Thread.currentThread().threadId());
 
-      applyTransactionControl(portal);
-      beginImplicitTransactionBlock(portal);
+      // Not "apply, then decide": applyTransactionControl() clears the marker it acted on, so a guard inside
+      // beginImplicitTransactionBlock() reading portal.transactionControl afterwards would never see one.
+      if (!applyTransactionControl(portal))
+        beginImplicitTransactionBlock(portal);
 
       if (portal.ignoreExecution)
         // SAVEPOINT/RELEASE/SET never produce rows: Execute must answer CommandComplete, not NoData - NoData
@@ -3380,10 +3382,10 @@ public class PostgresNetworkExecutor extends Thread {
    * in the "block" committed itself statement by statement and the client's ROLLBACK then found nothing to roll back
    * and silently kept them, while ReadyForQuery reported 'T' throughout. Executing the BEGIN portal opens the
    * transaction here instead, which is the moment PostgreSQL starts the block on too - at Execute, not at Parse.
-   * A transaction-control portal is exempt here because {@link #applyTransactionControl(PostgresPortal)} has just
-   * done whatever it needs, BEGIN's own {@code database.begin()} included. Left to this method, COMMIT and ROLLBACK
-   * would open an empty transaction of their own - nothing is active by the time they run - and hand it to Sync to
-   * commit, the very cost the isIdempotent() gate above removes from reads.
+   * A transaction-control portal never reaches this method at all: {@link #applyTransactionControl(PostgresPortal)}
+   * has already done whatever it needs, BEGIN's own {@code database.begin()} included, and says so by returning true.
+   * Left to this method, COMMIT and ROLLBACK would open an empty transaction of their own - nothing is active by the
+   * time they run - and hand it to Sync to commit, the very cost the isIdempotent() gate above removes from reads.
    * <p>
    * {@code executed} is the same exemption reached from the other side: several Parse branches compute the whole
    * answer there and mark the portal done - a catalog query whose filters are not bound parameters, SHOW and the
@@ -3394,7 +3396,7 @@ public class PostgresNetworkExecutor extends Thread {
    * Describe that ran the query, a resumed cursor) not open a second transaction.
    */
   private void beginImplicitTransactionBlock(final PostgresPortal portal) {
-    if (portal.ignoreExecution || portal.catalogQuery || portal.transactionControl != null || portal.executed)
+    if (portal.ignoreExecution || portal.catalogQuery || portal.executed)
       return;
     if (portal.sqlStatement != null && portal.sqlStatement.isIdempotent())
       return;
@@ -3433,10 +3435,13 @@ public class PostgresNetworkExecutor extends Thread {
    * The marker is cleared once applied. Portals outlive their Execute on purpose (a limit-hit Execute suspends and
    * the client fetches the rest through the same portal, issue #6458), so without this a second Execute of a
    * retained ROLLBACK portal would roll back whatever transaction had been opened since.
+   *
+   * @return true when the portal carried a transaction-control statement, so the caller knows not to open an
+   * implicit block for it - the marker is gone by then and cannot be asked again.
    */
-  private void applyTransactionControl(final PostgresPortal portal) {
+  private boolean applyTransactionControl(final PostgresPortal portal) {
     if (portal.transactionControl == null)
-      return;
+      return false;
 
     switch (portal.transactionControl) {
     case BEGIN -> {
@@ -3456,6 +3461,7 @@ public class PostgresNetworkExecutor extends Thread {
     }
     }
     portal.transactionControl = null;
+    return true;
   }
 
   /**
