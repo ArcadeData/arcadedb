@@ -1352,6 +1352,24 @@ public enum Type {
   }
 
   /**
+   * Converts a {@link BigInteger} to the closest {@code double}, clamped to a finite value. {@code
+   * BigInteger.doubleValue()} returns {@link Double#POSITIVE_INFINITY}/{@link Double#NEGATIVE_INFINITY} once the
+   * magnitude exceeds a double's range, and this method exists for exactly the caller that would otherwise compare
+   * that infinity against a genuinely infinite {@code Float}/{@code Double} operand as equal - {@code
+   * BigInteger.TEN.pow(400)} is finite and enormous, not infinite, and must keep comparing less than
+   * {@link Double#POSITIVE_INFINITY} (issue #7669 review, CodeRabbit).
+   *
+   * @param value the operand to convert
+   *
+   * @return the closest finite {@code double}, or {@code +-Double.MAX_VALUE} for a magnitude {@code double} cannot
+   * represent at all
+   */
+  public static double finiteDoubleValue(final BigInteger value) {
+    final double converted = value.doubleValue();
+    return Double.isFinite(converted) ? converted : value.signum() < 0 ? -Double.MAX_VALUE : Double.MAX_VALUE;
+  }
+
+  /**
    * Builds the {@link BigDecimal} that reads the same in decimal as the given floating point operand, so an
    * integral operand too large for {@code double} can be compared against it exactly. A {@code Float} goes through
    * {@link #floatToBigDecimal} and everything else through {@code BigDecimal.valueOf(double)}, both of which read
@@ -1503,7 +1521,7 @@ public enum Type {
           right = new BigDecimal(bigInteger1);
         } else {
           left = widenFloat(float1);
-          right = bigInteger1.doubleValue();
+          right = finiteDoubleValue(bigInteger1);
         }
       }
 
@@ -1532,7 +1550,7 @@ public enum Type {
           left = BigDecimal.valueOf(double1);
           right = new BigDecimal(bigInteger1);
         } else
-          right = bigInteger1.doubleValue();
+          right = finiteDoubleValue(bigInteger1);
       }
 
     } else if (left instanceof BigInteger bigInteger) {
@@ -1551,7 +1569,7 @@ public enum Type {
           left = new BigDecimal(bigInteger);
           right = floatToBigDecimal(float1);
         } else {
-          left = bigInteger.doubleValue();
+          left = finiteDoubleValue(bigInteger);
           right = widenFloat(float1);
         }
       } else if (right instanceof Double double1) {
@@ -1561,7 +1579,7 @@ public enum Type {
           left = new BigDecimal(bigInteger);
           right = BigDecimal.valueOf(double1);
         } else
-          left = bigInteger.doubleValue();
+          left = finiteDoubleValue(bigInteger);
       } else if (right instanceof Short short1) {
         left = new BigDecimal(bigInteger);
         right = new BigDecimal(short1);

@@ -1376,6 +1376,12 @@ class TypeTest extends TestHelper {
 
     result = Type.castComparableNumber(Float.POSITIVE_INFINITY, new BigInteger("2"));
     assertThat(result[0]).isEqualTo(Double.POSITIVE_INFINITY);
+
+    // An oversized BigInteger must stay LESS than a genuinely infinite Float, not collapse onto it via
+    // BigInteger.doubleValue()'s own overflow-to-infinity (CodeRabbit review).
+    result = Type.castComparableNumber(Float.POSITIVE_INFINITY, BigInteger.TEN.pow(400));
+    assertThat((Double) result[1]).isEqualTo(Double.MAX_VALUE);
+    assertThat((Double) result[1]).isLessThan((Double) result[0]);
   }
 
   @Test
@@ -1406,6 +1412,12 @@ class TypeTest extends TestHelper {
     result = Type.castComparableNumber(Double.NEGATIVE_INFINITY, new BigInteger("2"));
     assertThat(result[0]).isEqualTo(Double.NEGATIVE_INFINITY);
     assertThat(result[1]).isInstanceOf(Double.class);
+
+    // An oversized BigInteger must stay GREATER than a genuinely negative-infinite Double, not collapse onto
+    // it via BigInteger.doubleValue()'s own overflow-to-infinity (CodeRabbit review).
+    result = Type.castComparableNumber(Double.NEGATIVE_INFINITY, BigInteger.TEN.pow(400));
+    assertThat((Double) result[1]).isEqualTo(Double.MAX_VALUE);
+    assertThat((Double) result[1]).isGreaterThan((Double) result[0]);
   }
 
   @Test
@@ -1505,6 +1517,23 @@ class TypeTest extends TestHelper {
 
     result = Type.castComparableNumber(new BigInteger("2"), Double.NEGATIVE_INFINITY);
     assertThat(result[1]).isEqualTo(Double.NEGATIVE_INFINITY);
+
+    // An oversized BigInteger must stay LESS than a genuinely infinite Float/Double, not collapse onto it:
+    // BigInteger.doubleValue() itself returns +-Infinity past a double's range, so the naive conversion would
+    // make BigInteger.TEN.pow(400) - finite and merely enormous - compare EQUAL to Double.POSITIVE_INFINITY
+    // (CodeRabbit review).
+    final BigInteger huge = BigInteger.TEN.pow(400);
+    result = Type.castComparableNumber(huge, Double.POSITIVE_INFINITY);
+    assertThat((Double) result[0]).as("clamped to a finite value, not collapsed to infinity")
+        .isEqualTo(Double.MAX_VALUE);
+    assertThat((Double) result[0]).isLessThan((Double) result[1]);
+
+    result = Type.castComparableNumber(huge.negate(), Double.NEGATIVE_INFINITY);
+    assertThat((Double) result[0]).isEqualTo(-Double.MAX_VALUE);
+    assertThat((Double) result[0]).isGreaterThan((Double) result[1]);
+
+    result = Type.castComparableNumber(huge, Float.POSITIVE_INFINITY);
+    assertThat((Double) result[0]).isEqualTo(Double.MAX_VALUE);
   }
 
   @Test
