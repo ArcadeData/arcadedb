@@ -7805,9 +7805,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
       }
 
       if (locationsStillOurs && undo.droppedDeltaEntries != null) {
-        // Skipped on a republish for the mirror reason: these entries belong to ids the rebuild read back as live
-        // off the committed pages (this transaction's tombstone writes went down with its pages), so it has
-        // already decided what the buffer holds for them, and re-adding would duplicate its decision.
+        // Skipped on a republish, and nothing is lost by that: these entries belong to ids the rebuild read back
+        // as LIVE off the committed pages - this transaction's tombstone writes went down with its pages - so it
+        // folded them into the graph it just built and trimmed their buffer entries on purpose. Their vectors
+        // stay findable through that graph; re-adding would only duplicate what the walk already returns.
         //
         // Re-added directly rather than through queueDeltaEntry(): these entries were in the buffer a moment ago,
         // so re-applying the heap budget to them could only strip payloads the buffer had already accounted for.

@@ -987,6 +987,11 @@ public class VectorLocationIndex {
    * Deliberately NOT a general-purpose eviction: issue #5559 removed eviction from this index precisely because a
    * live id whose location is gone reads as deleted to a page-falling-back reader. This is only correct because
    * the entry on the page goes away at the same time.
+   * <p>
+   * Safe to call for an id this generation of the index never held - a compaction or a rebuild can have
+   * republished it since the caller recorded the id - because {@link #removeLocation} returns on absence without
+   * touching anything. The compensation relies on that: it forgets an aborted allocation unconditionally, since
+   * an id minted by a replay that never committed can never be legitimate in ANY generation.
    *
    * @param vectorId The vector ID to forget
    *
