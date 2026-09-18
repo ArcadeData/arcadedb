@@ -85,6 +85,8 @@ final class SecurityCatchUp implements AutoCloseable {
 
   /** How long the once-per-start request waits for this node to finish catching up before asking anyway. */
   private static final long CATCH_UP_WAIT_MS      = 30_000L;
+  /** Poll period of that wait. Short: it is a local read of two longs. */
+  private static final long CATCH_UP_POLL_MS      = 200L;
   /**
    * How many times a request that failed for a transient reason is retried, and the wait before the first
    * retry (doubled each time).
@@ -97,8 +99,16 @@ final class SecurityCatchUp implements AutoCloseable {
    */
   private static final int  TRANSIENT_ATTEMPTS    = 4;
   private static final long TRANSIENT_BACKOFF_MS  = 2_000L;
-  /** Poll period of that wait. Short: it is a local read of two longs. */
-  private static final long CATCH_UP_POLL_MS      = 200L;
+  /**
+   * How long the once-per-start request spreads itself over, chosen per node.
+   * <p>
+   * A full-cluster restart elects one leader and every follower observes it at once, so without this they all
+   * dial within milliseconds of each other (claude-review on PR #7854). Each request is cheap - a bounded poll
+   * and three string comparisons - so the burst is unlikely to matter at the cluster sizes this targets, but
+   * the leader is also the node everything else is waiting on at exactly that moment, and spreading the
+   * arrivals costs nothing. Same reflex as {@code KubernetesAutoJoin}'s own join jitter.
+   */
+  private static final long START_JITTER_MS      = 3_000L;
 
   private final AtomicBoolean      requestedSinceStart = new AtomicBoolean(false);
   private final ThreadPoolExecutor executor;
@@ -130,16 +140,6 @@ final class SecurityCatchUp implements AutoCloseable {
       submit(server, raft, "this node rejoining the cluster as an existing member", true);
   }
 
-  /**
-   * How long the once-per-start request spreads itself over, chosen per node.
-   * <p>
-   * A full-cluster restart elects one leader and every follower observes it at once, so without this they all
-   * dial within milliseconds of each other (claude-review on PR #7854). Each request is cheap - a bounded poll
-   * and three string comparisons - so the burst is unlikely to matter at the cluster sizes this targets, but
-   * the leader is also the node everything else is waiting on at exactly that moment, and spreading the
-   * arrivals costs nothing. Same reflex as {@code KubernetesAutoJoin}'s own join jitter.
-   */
-  private static final long START_JITTER_MS = 3_000L;
 
   /**
    * Re-arms the once-per-start request, so the NEXT leader this node observes asks again.
