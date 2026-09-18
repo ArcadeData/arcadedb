@@ -24,9 +24,11 @@ import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
+import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.http.handler.LeaderDial;
 
 import io.undertow.server.handlers.PathHandler;
 import org.apache.ratis.protocol.RaftPeerId;
@@ -34,10 +36,13 @@ import org.apache.ratis.protocol.RaftPeerId;
 import com.arcadedb.database.DatabaseInternal;
 
 import java.io.IOException;
-import java.net.HttpURLConnection;
-import java.net.URL;
+import java.net.URI;
 import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -61,6 +66,12 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   // Databases already warned about single-bucket types, so the diagnostic is logged once per
   // database per plugin lifetime instead of on every (re)wrap.
   private final Set<String> warnedSingleBucketDatabases = ConcurrentHashMap.newKeySet();
+
+  /** The route {@link #shutdownRemoteServer} posts its {@code shutdown} command to. */
+  static final String SERVER_COMMAND_ROUTE = "/api/v1/server";
+
+  /** The one command {@link #shutdownRemoteServer} sends. */
+  private static final String SHUTDOWN_COMMAND_BODY = "{\"command\":\"shutdown\"}";
 
   /** How often a cluster that cannot use the #7509 compare-and-set may say so. */
   private static final long SECURITY_PRECONDITION_WITHHELD_LOG_THROTTLE_MS = 5 * 60_000L;
@@ -600,39 +611,145 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     return raftHAServer != null ? raftHAServer.getRoutingTable(protocol) : null;
   }
 
+  /**
+   * Where a remote shutdown is dialled: the peer's HTTPS endpoint when SSL is enabled and
+   * {@link PeerDialAddress} resolved one, its plain-HTTP endpoint otherwise.
+   * <p>
+   * This dial relays the cluster token in an {@code Authorization: Bearer} header, and until issue #7563 it
+   * was hardcoded to {@code http://} - so on a cluster with {@code arcadedb.ssl.enabled} set it was one of
+   * the two peer-to-peer dials still putting that token on the wire in clear text. The rule here is the one
+   * every sibling applies ({@code LeaderDial}, {@code SnapshotInstaller}, {@link PeerCapabilityQuery},
+   * {@link LeaderDatabaseQuery}, {@link PeerAuthSessionQuery}, {@link BootstrapElection}): prefer the HTTPS
+   * endpoint when one resolves, fall back to the plain listener - which is always bound - when none does,
+   * because refusing there would break every SSL cluster that omitted the optional 5th field of
+   * {@code arcadedb.ha.serverList}.
+   * <p>
+   * Package-private and pure for unit testing.
+   */
+  static String shutdownUrl(final PeerDialAddress dial, final boolean useSSL) {
+    return useSSL && dial.httpsAddress() != null
+        ? "https://" + dial.httpsAddress() + SERVER_COMMAND_ROUTE
+        : "http://" + dial.httpAddress() + SERVER_COMMAND_ROUTE;
+  }
+
+  /**
+   * Shuts a peer down over the cluster's own transport.
+   * <p>
+   * The address now comes from {@link PeerDialAddress#resolve}, not from {@code getHttpAddresses()} directly:
+   * this was the last peer-to-peer dial resolving an address by hand, so it was also the last one missing the
+   * two guards every other one inherits - an address that identifies two peers at once, and an address that is
+   * this node's own (issues #6191, #6202, #7563). Shutting down the wrong node, or oneself, on an operator
+   * command naming another, is the failure those guards exist to prevent.
+   * <p>
+   * The name is matched against every peer rather than against the first that answers to it. {@code contains}
+   * is what an operator's shorthand needs - a peer is named {@code host_raftPort}, and nobody types that - but
+   * it makes {@code arcadedb-1} a match for {@code arcadedb-10} as well, and stopping at the first of the two
+   * would shut down whichever the group happened to list first. Two matches is a refusal, not a coin toss
+   * (CodeRabbit on PR #7838).
+   * <p>
+   * A name that resolves to THIS node stops this node. {@link PeerDialAddress} refuses a self-dial, and rightly
+   * - posting the command to our own listener would come straight back here - but the refusal is the wrong
+   * answer to give an operator who asked for a shutdown and would get an error with the node still up. The
+   * request is simply the local one spelled with a name, so it is answered by the local path
+   * {@code ServerControlPlane.shutdownServer("")} takes.
+   */
   @Override
   public void shutdownRemoteServer(final String serverName) {
-    if (raftHAServer == null)
+    final RaftHAServer raft = raftHAServer;
+    if (raft == null)
       throw new RuntimeException("Raft HA server not started");
 
-    String targetAddr = null;
-    for (final var peer : raftHAServer.getRaftGroup().getPeers()) {
-      final String httpAddr = raftHAServer.getHttpAddresses().get(peer.getId());
-      if (httpAddr != null && (peer.getId().toString().contains(serverName) || httpAddr.contains(serverName))) {
-        targetAddr = httpAddr;
-        break;
-      }
+    final RaftPeerId targetPeer = resolveShutdownTarget(raft, serverName);
+    if (targetPeer.equals(raft.getLocalPeerId())) {
+      shutdownThisNode(serverName);
+      return;
     }
-    if (targetAddr == null)
-      throw new ServerException("Cannot find server '" + serverName + "' in the cluster");
 
-    try {
-      final HttpURLConnection conn = (HttpURLConnection)
-          new URL("http://" + targetAddr + "/api/v1/server").openConnection();
-      conn.setRequestMethod("POST");
-      conn.setDoOutput(true);
-      conn.setRequestProperty("Content-Type", "application/json");
+    final PeerDialAddress dial = PeerDialAddress.resolve(raft, targetPeer, "peer");
+    if (dial.refused())
+      throw new ServerException("Refusing to shut down server '" + serverName + "': " + dial.refusal());
 
-      final String token = raftHAServer.getClusterToken();
-      if (token != null && !token.isEmpty())
-        conn.setRequestProperty("Authorization", "Bearer " + token);
+    final boolean useSSL = configuration.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
+    final String url = shutdownUrl(dial, useSSL);
+    if (useSSL && url.startsWith("http://"))
+      // Same fallback as every sibling dial, and said out loud for the same reason: the command below carries
+      // the cluster token, so an operator who set arcadedb.ssl.enabled should not have to guess (issue #7546).
+      PlainHttpFallbackNotice.sayOnce(RaftHAPlugin.class, "sending it the shutdown command");
+    final String token = raft.getClusterToken();
 
-      conn.getOutputStream().write("{\"command\":\"shutdown\"}".getBytes(StandardCharsets.UTF_8));
-      conn.getResponseCode();
-      conn.disconnect();
+    final HttpRequest.Builder request = HttpRequest.newBuilder()
+        .uri(URI.create(url))
+        .header("Content-Type", "application/json")
+        .POST(HttpRequest.BodyPublishers.ofString(SHUTDOWN_COMMAND_BODY, StandardCharsets.UTF_8));
+    if (token != null && !token.isEmpty())
+      request.header("Authorization", "Bearer " + token);
+
+    // One client per call, closed with the request: a remote shutdown is an operator action, not a hot path,
+    // and a cached client would outlive the peer it was built to reach. The connect timeout is the same one
+    // every other forward is bounded by; the response deadline is deliberately left off, matching the
+    // HttpURLConnection this replaced, because a node answering slowly while it shuts down is not a failure.
+    try (final HttpClient client = newShutdownClient(url.startsWith("https://"))) {
+      final int status = client.send(request.build(), HttpResponse.BodyHandlers.discarding()).statusCode();
+      if (status >= 400)
+        LogManager.instance().log(this, Level.WARNING, "Shutdown of remote server '%s' at %s answered HTTP %d",
+            serverName, url, status);
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new ServerException("Interrupted while shutting down remote server '" + serverName + "'", e);
     } catch (final IOException e) {
       throw new RuntimeException("Failed to shutdown remote server '" + serverName + "'", e);
     }
+  }
+
+  /**
+   * The one peer {@code serverName} names, or a {@link ServerException} saying why it names none or several.
+   * <p>
+   * Separated from the dial so the naming rules are testable without a live cluster to shut down, which the
+   * self-naming case in particular cannot be: the branch it selects ends in {@code System.exit}.
+   *
+   * @throws ServerException when no peer matches, or when more than one does
+   */
+  // @VisibleForTesting
+  static RaftPeerId resolveShutdownTarget(final RaftHAServer raft, final String serverName) {
+    final List<RaftPeerId> matches = new ArrayList<>();
+    for (final var peer : raft.getRaftGroup().getPeers()) {
+      final String httpAddr = raft.getHttpAddresses().get(peer.getId());
+      if (httpAddr != null && (peer.getId().toString().contains(serverName) || httpAddr.contains(serverName)))
+        matches.add(peer.getId());
+    }
+    if (matches.isEmpty())
+      throw new ServerException("Cannot find server '" + serverName + "' in the cluster");
+    if (matches.size() > 1)
+      throw new ServerException("Server name '" + serverName + "' matches " + matches.size() + " peers " + matches
+          + "; name one of them exactly");
+    return matches.getFirst();
+  }
+
+  /**
+   * Stops this node, for the case where the peer an operator named IS this node. Delegated to
+   * {@code ServerControlPlane.shutdownServer("")} rather than restated here, so a local stop keeps scheduling
+   * itself a second out the one way it always has - the caller's own response still has to be written before
+   * the JVM exits.
+   */
+  private void shutdownThisNode(final String serverName) {
+    LogManager.instance().log(this, Level.INFO,
+        "Shutdown of server '%s' names this node; stopping locally instead of dialling our own listener", serverName);
+    try {
+      new ServerControlPlane(server).shutdownServer("");
+    } catch (final IOException e) {
+      throw new ServerException("Failed to shut down this server, named '" + serverName + "'", e);
+    }
+  }
+
+  /** The client the shutdown POST is sent on; the HTTPS one validates the peer against this node's truststore. */
+  private HttpClient newShutdownClient(final boolean https) throws IOException {
+    final HttpClient.Builder builder = HttpClient.newBuilder()
+        .connectTimeout(Duration.ofMillis(Math.max(
+            configuration.getValueAsLong(GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT),
+            LeaderDial.MIN_FORWARD_TIMEOUT_MS)));
+    if (https)
+      builder.sslContext(SnapshotInstaller.buildSSLContext(server));
+    return builder.build();
   }
 
   @Override

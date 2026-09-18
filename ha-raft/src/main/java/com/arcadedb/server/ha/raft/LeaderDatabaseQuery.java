@@ -32,7 +32,6 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 
 /**
@@ -69,9 +68,6 @@ public final class LeaderDatabaseQuery {
       .connectTimeout(Duration.ofSeconds(5))
       .build();
 
-  /** One-time warning that SSL is enabled but the query fell back to plain HTTP for lack of an HTTPS address. */
-  private static final AtomicBoolean PLAIN_HTTP_FALLBACK_WARNED = new AtomicBoolean(false);
-
   private LeaderDatabaseQuery() {
   }
 
@@ -95,9 +91,10 @@ public final class LeaderDatabaseQuery {
     final Endpoint endpoint = chooseEndpoint(httpAddr, httpsAddr, useSSL);
     if (endpoint == null)
       throw new IOException("no peer address available for bootstrap-state query");
-    if (useSSL && !endpoint.https() && PLAIN_HTTP_FALLBACK_WARNED.compareAndSet(false, true))
-      LogManager.instance().log(LeaderDatabaseQuery.class, Level.WARNING,
-          "SSL is enabled but no HTTPS address is known for a peer; querying its database list over plain HTTP.");
+    if (useSSL && !endpoint.https())
+      // One latch across every dial that can fall back this way, rather than one per dial: they say the same
+      // thing and are fixed by the same setting, so three copies would only bury the first (issue #7546).
+      PlainHttpFallbackNotice.sayOnce(LeaderDatabaseQuery.class, "querying its database list");
 
     final HttpRequest.Builder builder = HttpRequest.newBuilder()
         .uri(URI.create(endpoint.url()))

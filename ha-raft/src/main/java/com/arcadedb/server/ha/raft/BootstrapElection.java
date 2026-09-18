@@ -31,6 +31,7 @@ import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 
 import java.io.File;
+import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -119,6 +120,9 @@ class BootstrapElection {
   private static final HttpClient HTTP = HttpClient.newBuilder()
       .connectTimeout(Duration.ofSeconds(5))
       .build();
+
+  /** The route both the election fan-out and the divergence probe reach, on whichever scheme was chosen. */
+  static final String BOOTSTRAP_STATE_ROUTE = "/api/v1/cluster/bootstrap-state";
 
   private final RaftHAServer            haServer;
   private final ArcadeDBServer          server;
@@ -316,24 +320,60 @@ class BootstrapElection {
     // Collect every other peer's state, retrying transient probe failures (401/403/5xx/unreachable)
     // within the overall bootstrap-timeout budget instead of treating the first failure as a
     // definitive "no state" (issue #5273).
+    // The scheme is chosen per peer, exactly once, before the fan-out: an SSL cluster that declares its
+    // 'https' ports probes over TLS, everything else over the plain listener that is always bound
+    // (issue #7563). The map holds full URLs rather than host:port for that reason.
+    final boolean useSSL = server != null
+        && server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
     final Map<RaftPeerId, String> peerAddresses = new LinkedHashMap<>();
     for (final RaftPeer peer : peers) {
       if (peer.getId().equals(localId))
         continue;
-      final String httpAddr = httpAddresses.get(peer.getId());
-      if (httpAddr == null) {
+      final String url = chooseUrl(httpAddresses.get(peer.getId()), haServer.getPeerHttpsAddress(peer.getId()), useSSL);
+      if (url == null) {
         LogManager.instance().log(this, Level.WARNING,
             "Bootstrap: peer %s has no known HTTP address; the election assumes it holds NO local data", peer.getId());
         continue;
       }
-      peerAddresses.put(peer.getId(), httpAddr);
+      peerAddresses.put(peer.getId(), url);
     }
 
+    // The fallback is the rule, but it is not silent: these probes carry the cluster token, and an operator who
+    // set arcadedb.ssl.enabled has no other way to learn that some of them went out in the clear (issue #7546).
+    if (useSSL && peerAddresses.values().stream().anyMatch(url -> url.startsWith("http://")))
+      PlainHttpFallbackNotice.sayOnce(BootstrapElection.class, "probing its bootstrap-state");
+
+    // One client for the whole fan-out, closed when it has finished. collectRemoteStatesWithRetry cancels a
+    // timed-out future rather than waiting on it, so a send CAN still be running when close() is reached;
+    // close() is an orderly shutdown that waits for it, and every request below carries its own
+    // .timeout(attemptTimeoutMs), so that wait is bounded by the per-attempt budget rather than open-ended.
+    //
+    // A failure to BUILD it is not a reason to send the cluster token in the clear. The affected probes fail
+    // instead, definitively (see queryPeer), so the election treats those peers as holding no local data -
+    // which is why the log below is SEVERE and says so: on a node whose truststore cannot be read the choice
+    // is between an unencrypted probe and a baseline chosen without that peer's answer, and this takes the
+    // second (issue #7563).
+    HttpClient httpsClient = null;
+    if (peerAddresses.values().stream().anyMatch(url -> url.startsWith("https://")))
+      try {
+        httpsClient = newTrustingClient(server);
+      } catch (final IOException e) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "Bootstrap: cannot build the HTTPS client from the cluster truststore, so every bootstrap-state probe "
+                + "that resolved an HTTPS endpoint fails rather than being downgraded to plain HTTP. If those peers "
+                + "never answer, the election proceeds assuming they hold NO local data - fix %s before letting it "
+                + "settle: %s",
+            GlobalConfiguration.NETWORK_SSL_TRUSTSTORE.getKey(), e.getMessage());
+      }
+
     final List<RaftPeerId> assumedEmpty = new ArrayList<>();
-    final Map<RaftPeerId, Map<String, PeerState>> remoteStates = collectRemoteStatesWithRetry(
-        peerAddresses, (pid, addr, attemptMs) -> queryPeer(pid, addr, dbFilter, attemptMs),
-        timeoutMs, Math.min(timeoutMs, probeAttemptTimeoutMs), probeRetryBackoffMs,
-        haServer::isLeader, assumedEmpty);
+    final Map<RaftPeerId, Map<String, PeerState>> remoteStates;
+    try (final HttpClient probeClient = httpsClient) {
+      remoteStates = collectRemoteStatesWithRetry(
+          peerAddresses, (pid, url, attemptMs) -> queryPeer(pid, url, dbFilter, attemptMs, probeClient),
+          timeoutMs, Math.min(timeoutMs, probeAttemptTimeoutMs), probeRetryBackoffMs,
+          haServer::isLeader, assumedEmpty);
+    }
 
     // Any configured peer that never returned a usable state after retries: warn loudly and state
     // exactly what the election assumes for it (empty baseline) so the operator can reason about
@@ -444,13 +484,37 @@ class BootstrapElection {
   }
 
   /**
-   * Builds the authenticated {@code POST /api/v1/cluster/bootstrap-state} request for {@code httpAddr}.
-   * Shared by the election's async fan-out and the synchronous single-peer probe
-   * {@link #fetchBootstrapState}, so both reach the endpoint with the same credentials (issue #6124).
+   * Picks the URL this probe is sent to. Prefers the peer's HTTPS endpoint when SSL is enabled and one
+   * resolves; otherwise plain HTTP. {@code null} when no usable address was provided. Package-private and
+   * pure for unit testing.
+   * <p>
+   * The same rule {@link LeaderDatabaseQuery#chooseEndpoint} applies to <em>the same endpoint</em>, and
+   * {@link PeerCapabilityQuery#chooseUrl}, {@code SnapshotInstaller} and {@code LeaderDial} apply to the
+   * other peer-to-peer dials. This probe was the one left hardcoded to {@code http://} (issue #7546,
+   * folded into issue #7563), which put the cluster token in the clear on every round of a cold boot of
+   * an {@code arcadedb.ssl.enabled} cluster.
+   * <p>
+   * Falling back to plain HTTP when no HTTPS endpoint resolves is deliberate and matches every sibling:
+   * an SSL cluster that never declared the optional 5th field of {@code arcadedb.ha.serverList} has only
+   * the plain listener to be reached on, and refusing there would stop it bootstrapping at all.
    */
-  static HttpRequest bootstrapStateRequest(final String httpAddr, final String clusterToken, final long timeoutMs) {
+  static String chooseUrl(final String httpAddr, final String httpsAddr, final boolean useSSL) {
+    if (useSSL && httpsAddr != null)
+      return "https://" + httpsAddr + BOOTSTRAP_STATE_ROUTE;
+    if (httpAddr != null)
+      return "http://" + httpAddr + BOOTSTRAP_STATE_ROUTE;
+    return null;
+  }
+
+  /**
+   * Builds the authenticated {@code POST /api/v1/cluster/bootstrap-state} request for {@code url}.
+   * Shared by the election's async fan-out and the synchronous single-peer probe
+   * {@link #fetchBootstrapState}, so both reach the endpoint with the same credentials (issue #6124) and
+   * on the same scheme (issue #7563).
+   */
+  static HttpRequest bootstrapStateRequestTo(final String url, final String clusterToken, final long timeoutMs) {
     final HttpRequest.Builder builder = HttpRequest.newBuilder()
-        .uri(URI.create("http://" + httpAddr + "/api/v1/cluster/bootstrap-state"))
+        .uri(URI.create(url))
         .timeout(Duration.ofMillis(timeoutMs))
         .header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString("{}"));
@@ -458,6 +522,37 @@ class BootstrapElection {
       builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
     builder.header("X-ArcadeDB-Forwarded-User", "root");
     return builder.build();
+  }
+
+  /**
+   * The plain-HTTP shorthand for {@link #bootstrapStateRequestTo}: the URL {@link #chooseUrl} builds for a peer
+   * that resolves no HTTPS endpoint, which is every cluster with SSL off and every SSL cluster that declared no
+   * {@code https} ports.
+   * <p>
+   * Both production callers now choose the scheme themselves and pass the finished URL, so the only caller left
+   * here is {@code BootstrapStateProbeParsingTest}, which pins the credentials this request carries. Kept rather
+   * than inlined into that test because the shape it pins - what the plain probe looks like on the wire - is
+   * still a live shape, and the test predates this change.
+   */
+  static HttpRequest bootstrapStateRequest(final String httpAddr, final String clusterToken, final long timeoutMs) {
+    return bootstrapStateRequestTo(chooseUrl(httpAddr, null, false), clusterToken, timeoutMs);
+  }
+
+  /**
+   * A client carrying this node's cluster trust context, for a probe that resolved an HTTPS endpoint.
+   * <p>
+   * Built per use rather than cached, the same trade {@link LeaderDatabaseQuery} makes and for the same
+   * reason: both callers are infrequent - one bootstrap election per cluster lifetime, one divergence probe
+   * per check window of at least five minutes - so a handshake per probe costs nothing that a cache would
+   * be worth the aliasing risk of. {@code HttpClient} is {@code AutoCloseable}, so the caller releases the
+   * selector thread rather than leaking it. If either caller ever moves onto a hot path, take the cached
+   * client from {@link RaftHAServer#getHttpsClients()} instead.
+   */
+  private static HttpClient newTrustingClient(final ArcadeDBServer server) throws IOException {
+    return HttpClient.newBuilder()
+        .connectTimeout(Duration.ofSeconds(5))
+        .sslContext(SnapshotInstaller.buildSSLContext(server))
+        .build();
   }
 
   /**
@@ -486,14 +581,28 @@ class BootstrapElection {
    * on any failure (unreachable peer, non-200, malformed body) - the caller retries on a later health
    * tick rather than drawing a conclusion from a failed probe.
    */
-  static Map<String, ArcadeStateMachine.BootstrapBaseline> fetchBootstrapState(final String httpAddr,
-      final String clusterToken, final Set<String> dbFilter, final long timeoutMs) {
+  static Map<String, ArcadeStateMachine.BootstrapBaseline> fetchBootstrapState(final ArcadeDBServer server,
+      final String httpAddr, final String httpsAddr, final String clusterToken, final Set<String> dbFilter,
+      final long timeoutMs) {
+    final boolean useSSL = server != null
+        && server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
+    final String url = chooseUrl(httpAddr, httpsAddr, useSSL);
+    if (url == null)
+      return null;
+    if (useSSL && url.startsWith("http://"))
+      PlainHttpFallbackNotice.sayOnce(BootstrapElection.class, "probing its bootstrap-state");
     try {
-      final HttpResponse<String> response = HTTP.send(bootstrapStateRequest(httpAddr, clusterToken, timeoutMs),
-          HttpResponse.BodyHandlers.ofString());
+      final HttpRequest request = bootstrapStateRequestTo(url, clusterToken, timeoutMs);
+      final HttpResponse<String> response;
+      if (url.startsWith("https://"))
+        try (final HttpClient client = newTrustingClient(server)) {
+          response = client.send(request, HttpResponse.BodyHandlers.ofString());
+        }
+      else
+        response = HTTP.send(request, HttpResponse.BodyHandlers.ofString());
       if (response.statusCode() != 200) {
         LogManager.instance().log(BootstrapElection.class, Level.INFO,
-            "bootstrap-state probe of %s answered HTTP %d", httpAddr, response.statusCode());
+            "bootstrap-state probe of %s answered HTTP %d", url, response.statusCode());
         return null;
       }
       return parseBootstrapState(response.body(), dbFilter);
@@ -507,11 +616,32 @@ class BootstrapElection {
     }
   }
 
-  private CompletableFuture<ProbeOutcome> queryPeer(final RaftPeerId peerId,
-      final String httpAddr, final Set<String> dbFilter, final long attemptTimeoutMs) {
-    final HttpRequest request = bootstrapStateRequest(httpAddr, haServer.getClusterToken(), attemptTimeoutMs);
+  /**
+   * @param url         the full {@code /bootstrap-state} URL for this peer, scheme already chosen by
+   *                    {@link #chooseUrl}
+   * @param httpsClient the trust-carrying client for an HTTPS {@code url}, or {@code null} when none could be
+   *                    built - in which case the probe fails retryably rather than going out in the clear
+   */
+  // Package-private rather than private so a test can drive the no-client branch below, which answers before
+  // anything else on this object is touched.
+  // @VisibleForTesting
+  CompletableFuture<ProbeOutcome> queryPeer(final RaftPeerId peerId,
+      final String url, final Set<String> dbFilter, final long attemptTimeoutMs, final HttpClient httpsClient) {
+    final boolean https = url.startsWith("https://");
+    if (https && httpsClient == null)
+      // FATAL, not RETRYABLE, and the difference is two minutes of every election. The client is built ONCE
+      // for the whole fan-out and never rebuilt between rounds, so this outcome cannot change on a retry -
+      // which is exactly what ProbeResult.FATAL means. Reported as retryable it kept the peer in `pending`,
+      // and collectRemoteStatesWithRetry re-probed it every probeRetryBackoffMs until HA_BOOTSTRAP_TIMEOUT_MS
+      // (default 120 s) ran out before reaching the same conclusion it could have reached on the first
+      // attempt (claude-review on PR #7838). FATAL drops the peer now; it still lands in assumedEmptyOut, so
+      // the SEVERE line that names the peers whose state the election had to assume is unchanged.
+      return CompletableFuture.completedFuture(
+          ProbeOutcome.fatal("no HTTPS client could be built from the cluster truststore"));
 
-    return HTTP.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+    final HttpRequest request = bootstrapStateRequestTo(url, haServer.getClusterToken(), attemptTimeoutMs);
+
+    return (https ? httpsClient : HTTP).sendAsync(request, HttpResponse.BodyHandlers.ofString())
         .thenApply(resp -> {
           final int status = resp.statusCode();
           if (status != 200) {
@@ -735,7 +865,7 @@ class BootstrapElection {
   /** A single peer probe, injected so {@link #collectRemoteStatesWithRetry} is testable without HTTP. */
   @FunctionalInterface
   interface ProbeFunction {
-    CompletableFuture<ProbeOutcome> probe(RaftPeerId peerId, String httpAddr, long attemptTimeoutMs);
+    CompletableFuture<ProbeOutcome> probe(RaftPeerId peerId, String url, long attemptTimeoutMs);
   }
 
   /** Classification of one {@code /bootstrap-state} probe attempt. */
