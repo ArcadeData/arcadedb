@@ -662,4 +662,35 @@ class FileUtilsTest {
     assertThat(callCount.get()).as("a channel capped at 3 bytes/call needs more than one call to drain the buffer")
         .isGreaterThan(1);
   }
+
+  /**
+   * CodeRabbit review: {@link WritableByteChannel#write(ByteBuffer)} may legitimately return 0 with bytes still
+   * remaining - a non-blocking channel with no room to write into right now - and {@link FileUtils#writeFully}
+   * does not support that case. Retrying such a 0 forever would trade a short write for an unbounded busy-loop
+   * burning CPU, so it must fail fast with an {@link IOException} instead.
+   */
+  @Test
+  void writeFullyThrowsRatherThanSpinOnAZeroProgressWrite() {
+    final AtomicInteger callCount = new AtomicInteger();
+    final WritableByteChannel zeroProgressChannel = new WritableByteChannel() {
+      @Override
+      public int write(final ByteBuffer buffer) {
+        callCount.incrementAndGet();
+        return 0;
+      }
+
+      @Override
+      public boolean isOpen() {
+        return true;
+      }
+
+      @Override
+      public void close() {
+      }
+    };
+
+    assertThatThrownBy(() -> FileUtils.writeFully(zeroProgressChannel, ByteBuffer.wrap(new byte[] { 1, 2, 3 })))
+        .isInstanceOf(IOException.class);
+    assertThat(callCount.get()).as("must fail on the first zero-progress call, not retry it").isEqualTo(1);
+  }
 }
