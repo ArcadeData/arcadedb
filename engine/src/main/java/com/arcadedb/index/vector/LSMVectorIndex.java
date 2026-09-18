@@ -7646,6 +7646,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * rather than inlined to {@code true}: it names the invariant this method actually depends on (index replay
    * happens later) instead of hard-coding today's one way of guaranteeing it.
    */
+  /** Whether no id appears in both of a journal's id sets. Assertion support for {@link #undoReplay}. */
+  private static boolean disjoint(final VectorIndexReplayUndo undo) {
+    for (int i = 0; i < undo.allocatedCount; i++)
+      for (int j = 0; j < undo.tombstonedCount; j++)
+        if (undo.allocatedIds[i] == undo.tombstonedIds[j])
+          return false;
+    return true;
+  }
+
   private boolean isTransactionalCall() {
     final TransactionContext tx = getDatabase().getTransaction();
     final TransactionContext.STATUS txStatus = tx.getStatus();
@@ -7661,10 +7670,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * {@code TransactionIndexContext.commit()} replays the queued operations, and it is the only state from which a
    * transaction can still reach {@code rollback()} with its pages undone. A write outside a transaction has nothing
    * to roll back, and one that has already reached the 2nd phase is durable.
-   * <p>
-   * <b>Must be called before the first page write of the operation</b>: the journal captures the insert cursor on
-   * construction, and that cursor is moved by the very first {@code persistVectorWithLocation} /
-   * {@code persistDeletionTombstones} call.
    */
   private VectorIndexReplayUndo openReplayUndo() {
     final TransactionContext tx = replayableTransaction();
@@ -7673,7 +7678,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     VectorIndexReplayUndo undo = (VectorIndexReplayUndo) tx.getIndexReplayUndo(this);
     if (undo == null) {
-      undo = new VectorIndexReplayUndo(this, currentInsertPageNum);
+      undo = new VectorIndexReplayUndo(this, vectorIndex());
       tx.addIndexReplayUndo(this, undo);
     }
     return undo;
@@ -7697,13 +7702,23 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * {@code TransactionContext.rollback()}, on the transaction's own thread and while it still holds this index
    * file's commit lock - so no other transaction can have moved these ids meanwhile.
    * <p>
-   * The order is the reverse of the replay's: the ids this transaction ALLOCATED are forgotten first (they may
-   * shadow nothing, but forgetting them before restoring the tombstoned ones keeps the two sets from ever being
-   * live at the same time), then the tombstones are lifted, then the delta entries the deletes dropped go back.
+   * The order is the reverse of the replay's: the ids this transaction ALLOCATED are forgotten first, then the
+   * tombstones are lifted, then the delta entries the deletes dropped go back. The two id sets are DISJOINT, which
+   * is what makes that unconditional: {@code TransactionIndexContext.commit()} replays every REMOVE of an index
+   * before any ADD/REPLACE of it, and {@link #allocateVectorId()} never reuses an id, so an id this transaction
+   * allocated cannot also be one it tombstoned. Asserted below rather than merely stated, because the invariant
+   * lives in another class: were it to break, forgetting an allocated id and then restoring its tombstoned
+   * location would publish an offset into a page the rollback has just discarded.
    * <p>
    * What is deliberately NOT undone: the vector ids themselves, which stay burnt - handing one back would let a
    * concurrent allocation collide with it, and an unused id costs nothing but a hole in the id space that the
    * location index is already chunked to tolerate - and the insert/delete metric counters, which count attempts.
+   * <p>
+   * <b>The persisted graph is not compensated either, and does not need to be.</b> A rebuild can publish between
+   * the replay and this call - it takes the same write lock, and both halves run inside it - folding an
+   * uncommitted delta entry into the graph as a node. Forgetting that id here is exactly what makes the node
+   * harmless: {@code LiveVectorBitsFilter} refuses a non-live id during the walk, which is the same state a
+   * committed DELETE leaves behind and the state issue #7842 made cheap to carry.
    */
   void undoReplay(final VectorIndexReplayUndo undo) {
     // Materialising cannot be needed (the replay already did it) but is the contract of every other write path here.
@@ -7711,7 +7726,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     lock.writeLock().lock();
     try {
-      if (undo.allocatedCount > 0) {
+      // A compaction or a rebuild that republished the location index wholesale did so from the COMMITTED pages,
+      // so the replacement never held this transaction's entries: there is nothing of ours left in it to undo, and
+      // the offsets recorded in the journal address a data file the compaction may already have replaced. Compare
+      // by identity - see VectorIndexReplayUndo.locationsAtReplay - and compensate only the counters below.
+      final boolean locationsStillOurs = locations == undo.locationsAtReplay;
+
+      assert !locationsStillOurs || disjoint(undo) :
+          "an id was both allocated and tombstoned by one replay: TransactionIndexContext.commit() no longer "
+              + "replays every REMOVE before any ADD, which this compensation depends on";
+
+      if (locationsStillOurs && undo.allocatedCount > 0) {
         // Sized in TABLE slots, which is what the constructor takes: at the element count itself the set would
         // rehash on the last few adds.
         final IntHashSet allocated = new IntHashSet(undo.allocatedCount * 2);
@@ -7741,7 +7766,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         }
       }
 
-      for (int i = undo.tombstonedCount - 1; i >= 0; i--) {
+      for (int i = locationsStillOurs ? undo.tombstonedCount - 1 : -1; i >= 0; i--) {
         final long offsetAndFlag = undo.tombstonedOffsetAndFlag[i];
         if (offsetAndFlag == VectorLocationIndex.ABSENT)
           // Cannot happen - the id was live when it was recorded - but restoring a location from a sentinel would
@@ -7753,7 +7778,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
             VectorLocationIndex.offsetOf(offsetAndFlag), undo.tombstonedRids[i], false);
       }
 
-      if (undo.droppedDeltaEntries != null) {
+      if (locationsStillOurs && undo.droppedDeltaEntries != null) {
         // Re-added directly rather than through queueDeltaEntry(): these entries were in the buffer a moment ago,
         // so re-applying the heap budget to them could only strip payloads the buffer had already accounted for.
         int restoredPayloads = 0;
@@ -7766,8 +7791,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
           deltaResidentPayloads.addAndGet(restoredPayloads);
       }
 
+      // Floored at zero on both counters: a rebuild that ran in the window already subtracted the mutations this
+      // replay charged, and a compaction resets the page gauge outright, so an unclamped refund could drive either
+      // negative - which reads to every policy that consults them as "nothing pending, ever".
       if (undo.mutationsCharged > 0)
-        mutationsSinceSerialize.addAndGet(-undo.mutationsCharged);
+        mutationsSinceSerialize.updateAndGet(v -> Math.max(0, v - undo.mutationsCharged));
 
       // Only when the refund brought the pending work back to nothing: anything still charged was charged by
       // another writer since, and that writer needs the graph to stay MUTABLE.
@@ -7775,11 +7803,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
         this.graphState = undo.graphStateFlippedFrom;
 
       if (undo.mutablePagesCreated > 0)
-        currentMutablePages.addAndGet(-undo.mutablePagesCreated);
+        currentMutablePages.updateAndGet(v -> Math.max(0, v - undo.mutablePagesCreated));
 
-      // The pages this cursor advanced onto are discarded with the transaction, so leaving it where the replay put
-      // it makes the NEXT insert address a page that does not exist.
-      currentInsertPageNum = undo.insertPageNumBefore;
+      // -1, not the value the replay found: "re-derive from the page count on the next insert", which is right
+      // whatever else happened in the window. Restoring the captured value would be wrong twice over - the pages
+      // the cursor advanced onto are discarded with the transaction, and a rebuild or a compaction that ran
+      // meanwhile has already repointed it (to -1 and to the new file's last page respectively), so putting the
+      // old number back would aim the next insert at a page of a file that no longer exists.
+      currentInsertPageNum = -1;
     } finally {
       lock.writeLock().unlock();
     }

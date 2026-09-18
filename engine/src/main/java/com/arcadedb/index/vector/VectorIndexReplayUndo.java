@@ -73,14 +73,16 @@ class VectorIndexReplayUndo implements IndexReplayUndo {
   LSMVectorIndex.GraphState graphStateFlippedFrom = null;
 
   /**
-   * The value of the index's insert cursor before this replay moved it. Always meaningful: the journal is opened
-   * before the operation's first page write, so even an untouched cursor is captured at its real value.
+   * The location index the replay wrote into. Compared by IDENTITY at undo time: a compaction or a rebuild
+   * republishes {@code residentLocations} wholesale, from the COMMITTED pages, and the replacement therefore
+   * never saw this transaction's entries at all. Compensating id by id against a replacement would be worse than
+   * unnecessary - the offsets recorded here address the file the compaction has already replaced.
    */
-  final int insertPageNumBefore;
+  final VectorLocationIndex locationsAtReplay;
 
-  VectorIndexReplayUndo(final LSMVectorIndex index, final int insertPageNumBefore) {
+  VectorIndexReplayUndo(final LSMVectorIndex index, final VectorLocationIndex locationsAtReplay) {
     this.index = index;
-    this.insertPageNumBefore = insertPageNumBefore;
+    this.locationsAtReplay = locationsAtReplay;
   }
 
   /** An id this replay allocated: its location, its delta entry and its mutation have to go away on abort. */
