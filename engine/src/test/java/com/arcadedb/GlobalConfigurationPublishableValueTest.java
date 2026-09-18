@@ -94,6 +94,27 @@ class GlobalConfigurationPublishableValueTest {
   }
 
   @Test
+  void aMissingClosingBracketDoesNotLeakTheEntry() {
+    // A '[' that is never closed is a MALFORMED credential block, not an absent one. It cannot be split into
+    // fields with any confidence about which is the password, so the whole remainder goes. Reachable live:
+    // SET SERVER SETTING writes the overlay and only the next startup parses it, and since #7784 these
+    // reports read the overlay.
+    assertThat(GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue("mydb[jay:hunter2"))
+        .as("a value the server has not parsed yet is still a value with a password in it")
+        .isEqualTo("mydb[*****");
+    assertThat(GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue("mydb[jay:hunter2;other"))
+        .as("entries are independent, so a later one must not lend its bracket to a broken one")
+        .isEqualTo("mydb[*****;other");
+  }
+
+  @Test
+  void anEmptyPasswordIsNotASecretToHide() {
+    // The server reads 'jay:' as a reference to an existing user (split(":") drops the trailing empty field,
+    // so parseCredentials sees one field), and there is no password in it to replace.
+    assertThat(GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue("mydb[jay:]")).isEqualTo("mydb[jay:]");
+  }
+
+  @Test
   void aCredentialWithNoPasswordIsLeftAsWritten() {
     assertThat(GlobalConfiguration.SERVER_DEFAULT_DATABASES.publishableValue("mydb[jay]")).isEqualTo("mydb[jay]");
   }

@@ -3837,13 +3837,26 @@ public enum GlobalConfiguration {
 
       final String entry = entries[e];
       final int credentialsBegin = entry.indexOf('[');
+      if (credentialsBegin < 0) {
+        // A bare database name. There is no credential block, so there is nothing in it to hide.
+        redacted.append(entry);
+        continue;
+      }
+
       // The FIRST ']' after the '[', which is the one ArcadeDBServer.loadDefaultDatabases closes the credential
       // block on. lastIndexOf() would pick a ']' inside the optional trailing {commands} segment instead - a
       // restore: path may contain one - and report a mangled entry for a value the server reads perfectly well.
-      final int credentialsEnd = credentialsBegin < 0 ? -1 : entry.indexOf(']', credentialsBegin);
-      if (credentialsBegin < 0 || credentialsEnd < credentialsBegin) {
-        // No credential block: nothing in it to hide.
-        redacted.append(entry);
+      final int credentialsEnd = entry.indexOf(']', credentialsBegin);
+      if (credentialsEnd < 0) {
+        // A '[' that is never closed. The block is malformed, so where the credentials end is not known and
+        // splitting it into fields would be guessing at which of them is the password. Fail closed on the
+        // whole remainder, the way isHidden() fails closed on a whole setting.
+        //
+        // Not a theoretical shape: SET SERVER SETTING writes this value straight into the overlay and only
+        // the NEXT startup parses it, so a malformed value sits there live - and since issue #7784 these
+        // reports read the overlay, which is precisely how it would reach an operator's screen, the
+        // schema:database step and the MCP tool. A report is not where anyone should learn what was in it.
+        redacted.append(entry, 0, credentialsBegin + 1).append("*****");
         continue;
       }
 
