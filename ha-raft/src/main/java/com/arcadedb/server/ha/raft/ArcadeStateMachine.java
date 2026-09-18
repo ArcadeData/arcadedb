@@ -1732,10 +1732,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * lives on the leader. See {@link MembershipSecuritySeeder#seedNowAndReport} for what an outstanding seed does
    * with a second request.
    *
+   * @param reason what the seed is for, carried through to the log lines the run writes
+   *
    * @throws IllegalStateException when no seed could be run or its outcome could not be read
    */
-  public List<String> seedSecurityNowAndReport(final long timeoutMs) {
-    return membershipSecuritySeeder.seedNowAndReport(timeoutMs);
+  public List<String> seedSecurityNowAndReport(final String reason, final long timeoutMs) {
+    return membershipSecuritySeeder.seedNowAndReport(reason, timeoutMs);
   }
 
   /** Package-private test seam (issue #7531): substitutes the seeder the configuration callback drives. */

@@ -142,7 +142,7 @@ public class PostSecuritySeedHandler extends AbstractServerHttpHandler {
 
     final List<String> failedSeeds;
     try {
-      failedSeeds = raftHAServer.getStateMachine().seedSecurityNowAndReport(seedReportTimeoutMs());
+      failedSeeds = raftHAServer.getStateMachine().seedSecurityNowAndReport(reason, seedReportTimeoutMs());
     } catch (final IllegalStateException e) {
       // The seed could not be run or its outcome could not be read. Reported as a failure of the REPORT, with
       // the documents unnamed, because that is exactly what is known: answering with an empty failedSeeds array
