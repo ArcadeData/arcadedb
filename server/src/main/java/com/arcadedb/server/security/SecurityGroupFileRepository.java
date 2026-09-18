@@ -49,7 +49,11 @@ public class SecurityGroupFileRepository {
   private final       File                       file;
   private final       int                        checkConfigReloadEveryMs;
   private             long                       fileLastUpdated = 0L;
-  private             Timer                      checkFileUpdatedTimer;
+  // VOLATILE: every writer holds this object's monitor, but two readers deliberately do not - stop(), which
+  // must not block behind a load() already in flight, and the TimerTask's stale-instance check, which runs on
+  // the timer thread. The write happens once per instance and the reads once per tick, so the barrier costs
+  // nothing measurable and buys both readers a guaranteed-current value.
+  private volatile    Timer                      checkFileUpdatedTimer;
   private             Callable<Void, JSONObject> reloadCallback  = null;
   private volatile    JSONObject                 latestGroupConfiguration;
 
@@ -235,6 +239,13 @@ public class SecurityGroupFileRepository {
     // it..." and run a full permission refresh on every single start. Nothing has been read or published at
     // this point, so a baseline here can only mean "report changes from now on", which is what a watcher
     // started at this moment is for; load() overwrites the field with what it really read, as it always did.
+    //
+    // It covers the server that already HAS a server-groups.json, which is every server after its first boot.
+    // A brand-new install does not have one yet, so there is no stamp to adopt; createDefault() then writes the
+    // file through save(), which leaves fileLastUpdated at 0, and the first tick logs one "configuration
+    // changed" and reloads the document it just wrote. Long-standing behaviour, unchanged here, and left alone
+    // for the reason spelled out in save(): the only cure is to stamp the file after writing it, and that is
+    // the swallowed-edit hazard this repository exists to avoid. One log line on first boot is the cheap side.
     if (fileLastUpdated == 0L && file.exists())
       fileLastUpdated = file.lastModified();
 
