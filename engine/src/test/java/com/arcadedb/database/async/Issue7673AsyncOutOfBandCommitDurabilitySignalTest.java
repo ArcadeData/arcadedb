@@ -120,6 +120,8 @@ class Issue7673AsyncOutOfBandCommitDurabilitySignalTest extends TestHelper {
    * One worker holding an open batch of three writes, a {@code commitEvery} no periodic boundary can reach, and an
    * {@code onOk()} listener that has not been told anything yet.
    *
+   * @param signalled counted down by the listener the first time it fires
+   *
    * @return the listener's invocation count, guaranteed still zero when this returns
    */
   private AtomicInteger prepareBatch(final CountDownLatch signalled) throws InterruptedException {

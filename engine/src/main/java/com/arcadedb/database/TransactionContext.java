@@ -342,6 +342,8 @@ public class TransactionContext implements Transaction {
    * neither be replayed onto whatever transaction is open now nor reported as lost. A rollback deliberately does
    * NOT move it - see the field's own comment. Never reset by {@link #reset()}, which would make a later commit
    * hand back a value a stale snapshot could match.
+   *
+   * @return the number of transactions committed on this context so far
    */
   public long getCommitCount() {
     return commitCount;

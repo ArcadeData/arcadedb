@@ -167,6 +167,8 @@ public class DatabaseAsyncCommand implements DatabaseAsyncTask {
    * and this command therefore straddles that commit (issue #7667) - still reports when the batch it left its
    * remaining writes in is abandoned. Without the override this would be the interface's no-op default, and the
    * submitter would be left holding only the {@code onComplete} it already received.
+   *
+   * @param cause the failure that closed the batch
    */
   @Override
   public void notifyBatchAbandoned(final Throwable cause) {
