@@ -143,11 +143,12 @@ public class PostSecuritySeedHandler extends AbstractServerHttpHandler {
 
     final List<String> failedSeeds;
     try {
-      // Only an admission - a request that named no fingerprints - may be answered by a seed that just
-      // finished. A caller that sent fingerprints has been told by the comparison above that it is out of
-      // step, so answering it from an unrelated recent result would leave it that way (CodeRabbit on PR #7854).
+      // Only an admission may be answered by a seed that just finished. A catch-up is a node repairing itself,
+      // and answering it from an unrelated recent result would leave it stale (CodeRabbit on PR #7854). The
+      // type is read from the request rather than inferred from whether it carried fingerprints: a catch-up on
+      // a node with no security store has none to send, and would otherwise pass for an admission.
       failedSeeds = raftHAServer.getStateMachine().seedSecurityNowAndReport(reason, seedReportTimeoutMs(),
-          fingerprints == null);
+          !payload.getBoolean("catchUp", false));
     } catch (final IllegalStateException e) {
       // The seed could not be run or its outcome could not be read. Reported as a failure of the REPORT, with
       // the documents unnamed, because that is exactly what is known: answering with an empty failedSeeds array

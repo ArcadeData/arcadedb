@@ -105,6 +105,31 @@ class PostSecuritySeedHandlerRequestTest {
           .hasMessageContaining("fingerprints");
   }
 
+  // ------------------------------------------------------------------ which requests may reuse a recent seed
+
+  /**
+   * The request type is read from the body, not inferred from whether fingerprints came with it. A catch-up on
+   * a node with NO security store has no digests to send, and inferring the type from their absence read it as
+   * an admission - which may be answered by a seed it did not cause, leaving the node it was repairing stale
+   * (CodeRabbit on PR #7854).
+   */
+  @Test
+  void aCatchUpWithNoFingerprintsIsStillACatchUp() {
+    final JSONObject request = new JSONObject().put("reason", "a node with no security store").put("catchUp", true);
+
+    assertThat(PostSecuritySeedHandler.readFingerprints(request)).as("it carries none").isNull();
+    assertThat(request.getBoolean("catchUp", false))
+        .as("and is still not allowed to reuse a recent seed")
+        .isTrue();
+  }
+
+  /** An admission says nothing, which is what lets it be answered by the membership change's own seed. */
+  @Test
+  void anAdmissionIsNotMarkedAsACatchUp() {
+    assertThat(new JSONObject().put("reason", "the admission of peer 'arcadedb-3'").getBoolean("catchUp", false))
+        .isFalse();
+  }
+
   /** The three digests a caller sends, in the shape the client builds them. */
   private static JSONObject fingerprints(final String users, final String groups, final String apiTokens) {
     return new JSONObject()

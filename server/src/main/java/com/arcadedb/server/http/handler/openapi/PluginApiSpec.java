@@ -849,6 +849,10 @@ public class PluginApiSpec implements OpenApiContributor {
     final Schema<Object> schema = SpecBuilders.object("What the caller wants seeded, and what it already holds");
     schema.addProperty("reason", SpecBuilders.string(
         "Why the seed was asked for, for the leader's log line. Optional."));
+    schema.addProperty("catchUp", SpecBuilders.bool(
+        "True when the caller is a node repairing ITSELF after coming back, false (or absent) for a node "
+            + "reporting on an admission it performed. A catch-up is always seeded; an admission may be "
+            + "answered by the seed the membership change it follows has just run."));
     schema.addProperty("fingerprints", createSecuritySeedFingerprintsSchema());
     return schema;
   }
