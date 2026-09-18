@@ -2363,8 +2363,21 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
    * @param waitIfQueueIsFull true to wait in case the queue is full, otherwise false
    * @return true if the task has been scheduled, otherwise false
    */
-  public boolean scheduleTask(int slot, final DatabaseAsyncTask task, final boolean waitIfQueueIsFull,
+  public boolean scheduleTask(final int slot, final DatabaseAsyncTask task, final boolean waitIfQueueIsFull,
                               final int applyBackPressureOnPercentage) {
+    return scheduleTask(slot, task, waitIfQueueIsFull, applyBackPressureOnPercentage, 0);
+  }
+
+  /**
+   * @param attempt how many times the dead-worker retry a few lines down has already recursed. Capped at 3 for the
+   * same reason {@link AsyncThread#drainQueueNotifyingWaiters()}'s sibling retry is (claude-review, symmetry pass):
+   * the doc comment there argues only one "current" live {@link #executorThreads} array can ever be racing at a
+   * time, which bounds this in practice, but nothing STRUCTURALLY stopped it before this cap - a future change to
+   * the resize/lifecycle locking that weakened that invariant would have turned this into silent unbounded stack
+   * growth instead of the fast, loud failure a cap gives it.
+   */
+  private boolean scheduleTask(int slot, final DatabaseAsyncTask task, final boolean waitIfQueueIsFull,
+                                final int applyBackPressureOnPercentage, final int attempt) {
     try {
       if (slot == -1)
         slot = getBestSlot();
@@ -2421,7 +2434,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         // "best-effort, not total" for precisely this reason; checking shutdown too closes the window a
         // shrink (rather than a terminal close) can open, which is the one a producer pinned to a single
         // bucket can hit on every resize (aProducerPinnedToOneBucketKeepsWorkingAcrossAShrink).
-        if ((target.shutdown || !target.isAlive()) && removeQuietly(queue, task))
+        if ((target.shutdown || !target.isAlive()) && removeQuietly(queue, task)) {
           // The task never got a chance to run on this worker. As documented on scheduleTask()'s only other
           // caller of getBestSlot() (#6526 review round 7), a "shut down" exception here must mean a genuine
           // terminal close, never an ordinary resize - so retry against whatever pool is live right now
@@ -2430,7 +2443,11 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
           // reported exactly as before. #5062 review r4 (point 4): completed() is deliberately NOT invoked on
           // the removed task here - the scheduling caller is still on the stack, so no waiter can be parked on
           // it yet, and the retry either runs it or reports the same terminal failure directly.
-          return scheduleTask(-1, task, waitIfQueueIsFull, applyBackPressureOnPercentage);
+          if (attempt >= 3)
+            throw new DatabaseOperationException(
+                "Async executor has been shut down; cannot schedule asynchronous task " + task);
+          return scheduleTask(-1, task, waitIfQueueIsFull, applyBackPressureOnPercentage, attempt + 1);
+        }
         counterScheduledTasks.incrementAndGet();
       }
       return scheduled;
