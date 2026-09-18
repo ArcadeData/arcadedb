@@ -3809,11 +3809,18 @@ public enum GlobalConfiguration {
   }
 
   /**
-   * Replaces the password of every {@code db[user:password,...]} credential in a
+   * Replaces the password of every {@code db[user:password[:group],...]} credential in a
    * {@code arcadedb.server.defaultDatabases} value, keeping everything else exactly as written - the database
-   * names, the separators, the user names and the entries that carry no credentials at all. What an operator
-   * needs from this report is WHICH databases and users are configured; the passwords are the only part that
-   * cannot be shown, so they are the only part replaced.
+   * names, the separators, the user names, the GROUP each user is granted, and the entries that carry no
+   * credentials at all. What an operator needs from this report is which databases exist and who may reach them
+   * with which role; the password is the only field that cannot be shown, so it is the only field replaced. The
+   * copy this replaced stopped at the first {@code ':'} and masked the group with the password, hiding the more
+   * interesting half of the answer.
+   * <p>
+   * The splits mirror {@code ArcadeDBServer.parseCredentials} exactly - {@code ','} between credentials, then
+   * {@code ':'} between fields - so what is treated as a password here is what the server treats as one. That
+   * parity is the point: a value the server reads as {@code user}/{@code password} and this method read
+   * differently would be a value whose secret is published in full.
    */
   private static String redactDefaultDatabaseCredentials(final String databases) {
     final String[] entries = databases.split(";");
@@ -3839,12 +3846,16 @@ public enum GlobalConfiguration {
           redacted.append(',');
 
         final String credential = credentials[c];
-        final int separator = credential.indexOf(':');
-        if (separator < 0)
-          // No ':' means there is no password in it, only a user name.
+        final String[] fields = credential.split(":");
+        if (fields.length < 2) {
+          // The server reads this as a reference to an already existing user: there is no password in it.
           redacted.append(credential);
-        else
-          redacted.append(credential, 0, separator + 1).append("*****");
+          continue;
+        }
+
+        redacted.append(fields[0]).append(":*****");
+        for (int f = 2; f < fields.length; f++)
+          redacted.append(':').append(fields[f]);
       }
 
       redacted.append(entry, credentialsEnd, entry.length());
