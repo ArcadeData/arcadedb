@@ -329,12 +329,38 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
    * Read per submission rather than cached, exactly as {@code RaftReplicatedDatabase.schemaDeltaEnabled} reads it:
    * a peer that stops answering stops receiving preconditions from the next mutation on, and one that finishes
    * upgrading starts receiving them without a leader restart.
+   * <p>
+   * <b>Asked through {@link RaftHAServer#peersMissingCapabilityNow} and not the cached
+   * {@link RaftHAServer#peersMissingCapability}</b> (issue #7559). The background capability monitor runs on the
+   * LEADER only - {@code startCapabilityMonitor} is called from {@code startLagMonitor} on gaining leadership and
+   * stopped on losing it - because #7219's only consumer was the leader-side schema-delta decision, where the
+   * leader is the only writer. A security entry is not a schema delta: any node can submit one, and the entry
+   * points that reach here on a FOLLOWER are precisely the ones that do NOT forward to the leader - the REST
+   * group and API-token routes, and openCypher {@code CREATE USER} / {@code ALTER USER} / {@code DROP USER} over
+   * Bolt or {@code /api/v1/command}, which arrive through {@code SecurityManager} and have no exchange to
+   * forward. They are the ones not already serialised onto a single node, and therefore the ones a
+   * compare-and-set was worth most to. Reading the cache there named every peer as missing and dropped the
+   * precondition silently, leaving the pre-#7509 behaviour behind nothing louder than the throttled line below.
+   * Making those paths reach the leader as {@code /server/users} does is issue #7826, and would make the
+   * question moot for them rather than replace this.
+   * <p>
+   * The ask-now variant also answers the harder half (issue #7540, absorbed into #7559): the verdict has to be the
+   * SAME on every node that might submit the same mutation. Two nodes disagreeing is not a lost update, it is a
+   * losing entry refused where a precondition is read and applied where it is not - divergent security state.
+   * <p>
+   * It costs a bounded, sequential probe round, paid only when the local cache is not already a full "yes" - so
+   * never on a warm leader - and only for a submission that actually carries a fingerprint, so no seed path
+   * ({@code PostAddPeerHandler}, {@code ServerControlPlane.connectCluster}, {@code ServerSecurity}'s bootstrap
+   * republish) pays for it at cluster formation, when peers are least likely to answer. For the two gated
+   * documents the round has just been run by {@link SecurityEntryCapabilityGate}, so this call finds a warm cache
+   * and dials nothing.
    */
-  private String preconditionEveryPeerCanRead(final String expectedFingerprint) {
+  // @VisibleForTesting - Issue7559SecurityPreconditionOnFollowerIT drives this decision on a real follower
+  String preconditionEveryPeerCanRead(final String expectedFingerprint) {
     return expectedFingerprint == null ?
         null :
         preconditionForPeers(expectedFingerprint,
-            raftHAServer.peersMissingCapability(PeerCapabilities.SECURITY_PRECONDITION));
+            raftHAServer.peersMissingCapabilityNow(PeerCapabilities.SECURITY_PRECONDITION));
   }
 
   /**

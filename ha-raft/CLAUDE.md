@@ -95,8 +95,26 @@ The first answer was a setting - `arcadedb.ha.schemaDelta`, off by default, with
 **Do not add another one.** Since #7219 a node publishes what it can decode at `POST /api/v1/cluster/capabilities`, the leader polls every peer in its Raft configuration every `PeerCapabilityRegistry.REFRESH_PERIOD_MS`, and an optional section is written only when every peer has answered that it understands it. To add a section:
 
 1. add a token to `PeerCapabilities` (permanent spelling - renaming one makes every older peer read as incapable, which is safe but silently turns the feature off cluster-wide) and put it in `PeerCapabilities.LOCAL`;
-2. gate the *emission* on `RaftHAServer.peersMissingCapability(token).isEmpty()`, the way `RaftReplicatedDatabase.schemaDeltaEnabled()` does;
+2. gate the *emission* on the capability - but **pick the accessor by asking who can WRITE the section, not by
+   what happens on a "no"**. `RaftHAServer.peersMissingCapability` reads a registry the background monitor fills
+   on the LEADER alone, so it is the right accessor only for a section none but the leader ever emits, which is
+   what `RaftReplicatedDatabase.schemaDeltaEnabled()` is. A section any node may emit reads
+   `RaftHAServer.peersMissingCapabilityNow`, which consults that cache first and runs one bounded synchronous
+   round when it is not already a full "yes";
 3. leave decoding unconditional, so the upgrade stays a one-way ratchet - every node reads the section before any node writes one.
+
+Step 2 is where #7559 came from, and it is worth being precise about why, because the obvious reading of the
+paragraph below - "a degrading section may read the cache, only a refusing one must ask" - is the reading that
+produced the bug. #7509 appends a compare-and-set precondition to a security entry, which degrades safely: no
+precondition is the pre-#7509 behaviour. It still gated on the cached answer and was therefore correct on the
+leader alone, and **any** node submits a security entry - the REST group and API-token routes do not forward,
+nor do the openCypher `CREATE USER` / `ALTER USER` / `DROP USER` commands, which arrive through `SecurityManager`
+on the engine side and have no exchange to forward. On a follower the registry named every peer as missing,
+the precondition was dropped, and the feature was off wherever it was needed most. The inverse case is just as
+real: a node demoted from leadership keeps its advertisements until they age out
+(`PeerCapabilityRegistry.ADVERTISEMENT_TTL_MS`, 20 s), so a cache can also answer "all clear" about a cluster that
+has since taken on an older node - and two nodes disagreeing about whether to write a section is a DIVERGENCE, not
+a degradation. Uniformity of the verdict across nodes is the property, and only the ask-now accessor has it.
 
 Three things about that mechanism that are easy to get wrong:
 
