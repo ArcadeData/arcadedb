@@ -851,8 +851,11 @@ public class PluginApiSpec implements OpenApiContributor {
         "Why the seed was asked for, for the leader's log line. Optional."));
     schema.addProperty("catchUp", SpecBuilders.bool(
         "True when the caller is a node repairing ITSELF after coming back, false (or absent) for a node "
-            + "reporting on an admission it performed. A catch-up is always seeded; an admission may be "
-            + "answered by the seed the membership change it follows has just run."));
+            + "reporting on an admission it performed. What it changes is REUSE: a catch-up is never answered "
+            + "by a seed that completed for somebody else, while an admission may be, since its request "
+            + "follows the membership change that already seeded for it. A catch-up can still complete "
+            + "without anything being submitted - that is what the fingerprint comparison is for, and it "
+            + "answers upToDate before any seeder is asked."));
     schema.addProperty("fingerprints", createSecuritySeedFingerprintsSchema());
     return schema;
   }
