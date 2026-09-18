@@ -22,6 +22,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.schema.Type;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -1600,7 +1601,7 @@ class PostgresTypeTest {
     int length = buffer.getInt();
     byte[] data = new byte[length];
     buffer.getByteBuffer().get(data);
-    assertThat(new String(data)).isEqualTo("{'a','b'}");
+    assertThat(new String(data)).isEqualTo("{\"a\",\"b\"}");
   }
 
   @Test
@@ -1739,7 +1740,27 @@ class PostgresTypeTest {
     int length = buffer.getInt();
     byte[] data = new byte[length];
     buffer.getByteBuffer().get(data);
-    assertThat(new String(data)).isEqualTo("{'a','b'}");
+    assertThat(new String(data)).isEqualTo("{\"a\",\"b\"}");
+  }
+
+  @Test
+  @DisplayName("[#7801] a char[] survives the round trip through the array literal this enum writes and reads")
+  @SuppressWarnings("unchecked")
+  void characterArrayRoundTripsThroughItsOwnArrayLiteral() {
+    // Single quotes are DATA inside a Postgres array literal, not element quoting, so {'a','b'} decoded back
+    // to the three-character strings 'a' and 'b' - this enum's own encoder and decoder disagreeing is the
+    // cleanest proof the literal was wrong. The comma and the double quote are exercised too: both would end
+    // an element early if the character were appended bare instead of quoted and escaped.
+    final char[] array = { 'a', ',', '"', '\\' };
+    final Binary buffer = new Binary();
+    PostgresType.ARRAY_CHAR.serializeAsText(PostgresType.ARRAY_CHAR, buffer, array);
+    buffer.flip();
+    final byte[] data = new byte[buffer.getInt()];
+    buffer.getByteBuffer().get(data);
+
+    final Object decoded = PostgresType.deserialize(PostgresType.ARRAY_CHAR.code, 0, data);
+    assertThat(decoded).isInstanceOf(List.class);
+    assertThat((List<Character>) decoded).containsExactly('a', ',', '"', '\\');
   }
 
   @Test

@@ -72,6 +72,22 @@ public class PostgresPortal {
    */
   public boolean                   catalogQuery         = false;
   /**
+   * Which transaction-control statement this portal carries, or null for everything else. Parse only RECORDS it here
+   * (the keyword is recognized there because it must never reach the SQL grammar, issue #6543); the session flag and
+   * the engine transaction are moved by {@code executeCommand()}, which is where PostgreSQL applies a transaction
+   * command too. Applying it at Parse let a client that prepares a statement without running it - Parse and Sync,
+   * no Bind or Execute - open, commit or roll back a transaction it never executed.
+   */
+  public TransactionControl        transactionControl;
+
+  /**
+   * The three transaction-control statements this server recognizes ahead of the SQL grammar, in any of their
+   * accepted spellings ({@code BEGIN WORK}, {@code COMMIT TRANSACTION}, {@code END}, ...).
+   */
+  public enum TransactionControl {
+    BEGIN, COMMIT, ROLLBACK
+  }
+  /**
    * Non-null when the statement is a {@code COPY ... TO STDOUT} (issue #7188): Describe answers {@code NoData},
    * since a COPY returns no result set, and Execute streams the rows as {@code CopyData} instead of
    * {@code DataRow}. {@link #sqlStatement} then holds the parsed query INSIDE the COPY.
@@ -136,6 +152,7 @@ public class PostgresPortal {
     portal.ignoreExecution = template.ignoreExecution;
     portal.isExpectingResult = template.isExpectingResult;
     portal.catalogQuery = template.catalogQuery;
+    portal.transactionControl = template.transactionControl;
     portal.copyStatement = template.copyStatement;
     portal.executed = template.executed;
     portal.cachedResultSet = template.cachedResultSet;
