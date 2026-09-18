@@ -18,7 +18,6 @@
  */
 package com.arcadedb.utility;
 
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.MockedStatic;
@@ -54,15 +53,6 @@ class Issue7465AtomicWriteDirectoryFsyncTest {
   @TempDir
   Path tempDir;
 
-  /**
-   * The "this platform will not fsync a directory" latch is a JVM-wide volatile, and one test here trips it on
-   * purpose. Cleared after every test so neither the next method nor the next class in this fork inherits it.
-   */
-  @AfterEach
-  void restoreDirectorySyncSupport() {
-    FileUtils.resetDirectorySyncSupport();
-  }
-
   @Test
   void atomicWriteForcesTheParentDirectoryAfterPublishingTheRename() throws Exception {
     final Path target = tempDir.resolve("schema.json");
@@ -72,7 +62,7 @@ class Issue7465AtomicWriteDirectoryFsyncTest {
 
     assertThat(directoryOpens)
         .as("the rename that publishes the file is directory metadata and has to be fsync'd on its own")
-        .isEqualTo(1);
+        .isEqualTo(isWindows() ? 0 : 1);
     assertThat(Files.readString(target)).isEqualTo("new");
   }
 
@@ -84,7 +74,7 @@ class Issue7465AtomicWriteDirectoryFsyncTest {
 
     final int directoryOpens = countDirectoryOpens(() -> FileUtils.atomicCopyFile(source.toFile(), target.toFile()));
 
-    assertThat(directoryOpens).isEqualTo(1);
+    assertThat(directoryOpens).isEqualTo(isWindows() ? 0 : 1);
     assertThat(Files.readString(target)).isEqualTo("generation-1");
     assertThat(Files.readString(source)).as("the source must never be moved aside").isEqualTo("generation-1");
   }
@@ -98,19 +88,46 @@ class Issue7465AtomicWriteDirectoryFsyncTest {
       assertThat(FileUtils.forceDirectory(tempDir)).isTrue();
   }
 
+  /**
+   * A path that cannot be forced is refused per call and says NOTHING about the rest of the JVM. Whether this
+   * platform can fsync a directory at all is decided once from the platform itself, so one uncooperative
+   * directory - a network mount, an unusual permission - cannot silently turn the guarantee off for every other
+   * database in the process (claude-review on PR #7855).
+   */
   @Test
-  void aPathThatIsNotADirectoryIsRefusedWithoutDisablingTheFsyncForTheWholeJvm() throws Exception {
+  void aPathThatCannotBeForcedIsRefusedWithoutDisablingTheFsyncForTheWholeJvm() throws Exception {
     final Path notADirectory = tempDir.resolve("plain.txt");
     Files.writeString(notADirectory, "x");
 
-    // No exception, and no claim about the platform: the latch that skips later attempts is only for a platform
-    // that will not open a REAL directory, or one odd call would silently disable the fsync everywhere.
     assertThatCode(() -> FileUtils.forceDirectory(tempDir.resolve("absent"))).doesNotThrowAnyException();
     assertThatCode(() -> FileUtils.forceDirectory(notADirectory)).doesNotThrowAnyException();
     assertThatCode(() -> FileUtils.forceDirectory(null)).doesNotThrowAnyException();
 
     if (!isWindows())
       assertThat(FileUtils.forceDirectory(tempDir)).as("a real directory must still be forced afterwards").isTrue();
+  }
+
+  /**
+   * And the same holds through the publish path: a directory the channel layer refuses leaves the write correct
+   * and the NEXT publish, into a directory that works, still fsync'd.
+   */
+  @Test
+  void oneRefusedDirectoryDoesNotStopTheNextPublishFromForcingItsOwn() throws Exception {
+    final Path target = tempDir.resolve("schema.json");
+    Files.writeString(target, "old");
+
+    try (final MockedStatic<FileChannel> ignored = mockStatic(FileChannel.class, invocation -> {
+      if (isDirectoryOpen(invocation))
+        throw new IOException("this directory will not open");
+      return invocation.callRealMethod();
+    })) {
+      FileUtils.atomicWriteFile(target.toFile(), "new");
+    }
+
+    assertThat(countDirectoryOpens(() -> FileUtils.atomicWriteFile(target.toFile(), "newer")))
+        .as("one directory's refusal must not be generalised into a verdict about every other")
+        .isEqualTo(isWindows() ? 0 : 1);
+    assertThat(Files.readString(target)).isEqualTo("newer");
   }
 
   @Test
