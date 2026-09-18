@@ -46,8 +46,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * though the mid-statement {@code commit()} had just made their writes durable. A later boundary conflict then
  * replayed the whole list on top of them.
  * <p>
- * The fix makes "the shared batch transaction was replaced under us" observable
- * ({@code TransactionContext.getGeneration()}) and treats it exactly as the out-of-band commit sites
+ * The fix makes "the shared batch transaction was committed out from under us" observable
+ * ({@code TransactionContext.getCommitCount()}) and treats it exactly as the out-of-band commit sites
  * ({@code DatabaseAsyncIndexCompaction}, {@code DatabaseAsyncParkWorker}, {@code DatabaseAsyncTransaction}) treat
  * their own commits: the buffered state is dropped, unnotified, because it is already durable.
  * <p>
