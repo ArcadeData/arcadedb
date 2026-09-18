@@ -46,6 +46,10 @@ import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
  * path is actually exercised, and so the exact reply sequence and the {@code CommandComplete} tag content can
  * be inspected (a JDBC client that always describes the statement, rather than the portal, would never reach
  * the first bug, and pgjdbc historically tolerated the second by accident - see the issue for why).
+ * <p>
+ * {@code ROLLBACK TO} no longer reaches Describe/Execute at all: issue #7846 made it fail at Parse instead of
+ * being accepted as a no-op, since a silent {@code CommandComplete} for a rollback this server can't perform
+ * would let a client believe writes made after the savepoint were undone when they are still pending.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -71,10 +75,48 @@ class Issue6930DescribeExecuteSetSavepointIT extends PostgresWireProtocolTestBas
   }
 
   @Test
-  @DisplayName("[#6930] Describe(P)+Execute on a ROLLBACK TO portal answers NoData then CommandComplete 'ROLLBACK'")
-  void rollbackToPortalDescribeAndExecute() throws Exception {
-    assertReplySequenceForIgnoredExecutionStatement("SAVEPOINT test_savepoint3", "SAVEPOINT");
-    assertReplySequenceForIgnoredExecutionStatement("ROLLBACK TO test_savepoint3", "ROLLBACK");
+  @DisplayName("[#7846] Parse on a ROLLBACK TO statement answers ErrorResponse, not ParseComplete, and aborts the transaction")
+  void rollbackToStatementFailsAtParse() throws Exception {
+    try (final Socket socket = new Socket()) {
+      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+      authenticate(out, in);
+
+      assertTimeoutPreemptively(Duration.ofSeconds(10), () -> {
+        sendSimpleQuery(out, "BEGIN");
+        readMessageOfType(in, 'Z');
+
+        // A ROLLBACK TO this server can't honor must not be silently accepted the way SAVEPOINT/RELEASE are
+        // above: this server has no savepoint checkpoint to roll back to, so claiming success here would let
+        // the client believe writes made after the savepoint were undone when they are still pending.
+        sendParse(out, "ROLLBACK TO test_savepoint4");
+        sendBind(out);
+        sendDescribePortal(out);
+        sendExecute(out);
+        sendSync(out);
+
+        boolean sawError = false;
+        WireMessage message;
+        do {
+          message = readWireMessage(in);
+          if (message.type() == 'E')
+            sawError = true;
+          // ParseComplete must not appear: Parse itself is what refuses the statement.
+          assertThat(message.type()).as("ROLLBACK TO must not be accepted as ParseComplete").isNotEqualTo('1');
+        } while (message.type() != 'Z');
+        assertThat(sawError).as("ROLLBACK TO must be refused with an ErrorResponse").isTrue();
+        // Sync's own error-recovery branch (syncCommand()) already rolled the underlying transaction back at
+        // this point - unlike the simple query protocol, where errorInTransaction is only cleared by an
+        // explicit COMMIT/ROLLBACK, Sync clears it unconditionally and reports 'T' (not 'E') since
+        // explicitTransactionStarted is untouched; the ROLLBACK below is what the client is expected to send
+        // next regardless; it is a no-op server-side, but is what finally reports the session idle again.
+        assertThat(message.body()[0]).as("Sync leaves the session reporting still 'in transaction'").isEqualTo((byte) 'T');
+
+        sendSimpleQuery(out, "ROLLBACK");
+        readMessageOfType(in, 'Z');
+      });
+    }
   }
 
   private void assertReplySequenceForIgnoredExecutionStatement(final String query, final String expectedTag) throws Exception {
@@ -118,6 +160,15 @@ class Issue6930DescribeExecuteSetSavepointIT extends PostgresWireProtocolTestBas
     readMessage(in); // AuthenticationCleartextPassword
     sendPasswordMessage(out, DEFAULT_PASSWORD_FOR_TESTS);
     readMessageOfType(in, 'Z'); // drain AuthenticationOk/BackendKeyData/ParameterStatus.../ReadyForQuery
+  }
+
+  private static void sendSimpleQuery(final DataOutputStream out, final String query) throws Exception {
+    final byte[] queryBytes = query.getBytes(StandardCharsets.UTF_8);
+    out.writeByte('Q');
+    out.writeInt(4 + queryBytes.length + 1);
+    out.write(queryBytes);
+    out.writeByte(0);
+    out.flush();
   }
 
   private static void sendParse(final DataOutputStream out, final String query) throws Exception {
