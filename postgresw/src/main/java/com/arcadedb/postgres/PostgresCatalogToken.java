@@ -174,19 +174,14 @@ class PostgresCatalogToken {
       // rewrites a client's "double quoted" identifiers into them before dispatching (see
       // PostgresQuotedIdentifierRewriter), so this is the form a catalog query actually arrives in.
       if (c == '`') {
-        // Read the way the grammar reads it - QUOTED_IDENTIFIER : BACKTICK ( ~[`\\] | '\\' . )+ BACKTICK - so a
-        // backslash consumes the character after it: `a\`b` is ONE identifier named a`b, not an unterminated one,
-        // and the token carries the PLAIN name rather than the escaped spelling. Both matter (issue #7858): a
-        // double-quoted identifier is tokenized to its plain name a few lines below, so the two spellings of the
-        // same name used to produce two different token texts, and whichever splice site re-emitted one of them
-        // was wrong for the other.
-        int end = i + 1;
-        while (end < length && query.charAt(end) != '`') {
-          if (query.charAt(end) == '\\')
-            ++end;
-          ++end;
-        }
-        if (end >= length)
+        // Read the way the grammar reads it, which is what Identifier.endOfQuoted() is: a backslash consumes the
+        // character after it, so `a\`b` is ONE identifier named a`b rather than an unterminated one. The token
+        // then carries the PLAIN name rather than the escaped spelling, which matters because a double-quoted
+        // identifier is tokenized to its plain name a few lines below (issue #7858): the two spellings of the same
+        // name used to produce two different token texts, and whichever splice site re-emitted one was wrong for
+        // the other.
+        final int end = Identifier.endOfQuoted(query, i);
+        if (end < 0)
           return null;
         tokens.add(new PostgresCatalogToken(Type.QUOTED_IDENTIFIER, Identifier.unescape(query.substring(i + 1, end))));
         i = end + 1;
