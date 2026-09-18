@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.rewriter;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.opencypher.ast.*;
 
@@ -45,6 +46,48 @@ public abstract class ExpressionRewriter {
   // instance shared and visited concurrently by every query on the JVM.
   private static final ThreadLocal<int[]> REWRITE_DEPTH = ThreadLocal.withInitial(() -> new int[1]);
 
+  // The limit in force for the parse the calling thread is running, bound by Cypher25AntlrParser around it
+  // (issue #7922). CYPHER_MAX_EXPRESSION_DEPTH is declared SCOPE.DATABASE, so `ALTER DATABASE
+  // 'arcadedb.cypher.maxExpressionDepth' <n>` is the documented way to raise it and is what the refusal below
+  // tells the user to do; reading the enum here consulted the JVM-wide value instead, so the advice could not be
+  // followed. Like REWRITE_DEPTH this has to be a ThreadLocal rather than a field: CypherASTBuilder.AST_REWRITER
+  // is a single instance shared by every query on the JVM, so it cannot hold any one query's database.
+  private static final ThreadLocal<Integer> MAX_DEPTH = new ThreadLocal<>();
+
+  /**
+   * The per-database expression-depth limit, or the JVM-wide default when there is no database to consult
+   * (a syntax-only parse). See {@link #bindMaxExpressionDepth(int)}.
+   */
+  public static int maxExpressionDepth(final Database database) {
+    return database == null ?
+        GlobalConfiguration.CYPHER_MAX_EXPRESSION_DEPTH.getValueAsInteger() :
+        database.getConfiguration().getValueAsInteger(GlobalConfiguration.CYPHER_MAX_EXPRESSION_DEPTH);
+  }
+
+  /**
+   * Binds the limit {@link #rewrite} enforces for the calling thread, for the duration of one parse.
+   *
+   * @return the previously bound limit, to hand back to {@link #restoreMaxExpressionDepth(Integer)} in a
+   * {@code finally}. Restoring rather than removing keeps a nested parse - a rewriter that parses a sub-query, or
+   * a parse started from inside another - from dropping the outer parse's limit on the way out.
+   */
+  public static Integer bindMaxExpressionDepth(final int maxDepth) {
+    final Integer previous = MAX_DEPTH.get();
+    MAX_DEPTH.set(maxDepth);
+    return previous;
+  }
+
+  /**
+   * Restores what {@link #bindMaxExpressionDepth(int)} returned. A null clears the binding, so a thread pooled
+   * between queries carries nothing over into the next one.
+   */
+  public static void restoreMaxExpressionDepth(final Integer maxDepth) {
+    if (maxDepth == null)
+      MAX_DEPTH.remove();
+    else
+      MAX_DEPTH.set(maxDepth);
+  }
+
   /**
    * Main entry point: rewrite an expression or boolean expression.
    * Dispatches to specific visit methods based on expression type.
@@ -56,11 +99,14 @@ public abstract class ExpressionRewriter {
     if (expression == null)
       return null;
 
+    final Integer bound = MAX_DEPTH.get();
+    final int maxDepth = bound != null ? bound : GlobalConfiguration.CYPHER_MAX_EXPRESSION_DEPTH.getValueAsInteger();
+
     final int[] depth = REWRITE_DEPTH.get();
-    if (++depth[0] > GlobalConfiguration.CYPHER_MAX_EXPRESSION_DEPTH.getValueAsInteger()) {
+    if (++depth[0] > maxDepth) {
       --depth[0];
       throw new CommandParsingException(
-          "Expression is too deeply nested or chained (exceeds " + GlobalConfiguration.CYPHER_MAX_EXPRESSION_DEPTH.getValueAsInteger()
+          "Expression is too deeply nested or chained (exceeds " + maxDepth
               + " levels). This protects the server against a stack overflow from a pathologically nested or long "
               + "expression, for example thousands of chained AND/OR terms; raise 'arcadedb.cypher.maxExpressionDepth' "
               + "if this is a legitimate query.");
