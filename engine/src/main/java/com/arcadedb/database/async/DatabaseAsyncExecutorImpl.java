@@ -297,12 +297,14 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     // way completedTaskCount above does for tasks). Thread-confined, same as pendingBatchCommands - only
     // this worker ever calls commitBatch() on itself.
     private          int                        batchCommitAttempt       = 0;
-    // #7667: the shared batch transaction the CURRENTLY RUNNING task was handed, and its generation at the moment
-    // it was handed over. Non-null only for the duration of one message.execute() call (set by executeTask right
-    // before it, cleared in its finally), so no later caller - commitBatch()'s own begin(), above all - can read a
-    // stale snapshot and mistake its own fresh transaction for a mid-statement one. Thread-confined, same as
-    // pendingBatchCommands.
+    /**
+     * #7667: the shared batch transaction the CURRENTLY RUNNING task was handed. Non-null only for the duration of
+     * one {@code message.execute()} call (set by {@code executeTask} right before it, cleared in its {@code finally}),
+     * so no later caller - {@code commitBatch()}'s own commit, above all - can read a stale snapshot and mistake its
+     * own transaction for a mid-statement one. Thread-confined, same as {@link #pendingBatchCommands}.
+     */
     private          TransactionContext         taskBatchTx              = null;
+    /** #7667: {@link #taskBatchTx}'s commit count at the moment it was handed to the running task. */
     private          long                       taskBatchTxCommitCount   = 0;
 
     // #7615: single choke point for "the shared batch's non-durable bookkeeping is now moot" - every site
