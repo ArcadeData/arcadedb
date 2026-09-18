@@ -40,9 +40,16 @@ import java.util.List;
  * which ids the replay allocated, or which delta entries it dropped. Recording as we go is the only way the set is
  * exact, and it also costs nothing on the paths that never abort.
  * <p>
- * <b>Thread confinement.</b> A transaction belongs to one thread, and both the filling and the reversal happen on
- * it, so nothing here is synchronized. The reversal additionally runs while the transaction still holds the index
- * file's commit lock, which is what keeps a concurrent transaction from having moved the same ids meanwhile.
+ * <b>Why nothing here is synchronized.</b> Not because a transaction is strictly thread-confined - the split
+ * commit of issue #6965 concludes the 2nd phase on the Raft apply thread ({@code RaftReplicatedDatabase} calls
+ * {@code completeCommit()} / {@code concludeFailedPhase2()} there), and the latter can reach {@code rollback()}
+ * when the publish failed before the WAL append. It is because the journal is never touched by two threads at
+ * once and the handoff that gives the apply thread this transaction carries the happens-before edge for
+ * everything the replay wrote: the originating thread is parked on the acknowledgement while that thread works.
+ * <p>
+ * The reversal additionally runs while the transaction still holds the index file's commit lock, which is what
+ * keeps a concurrent TRANSACTION from having moved the same ids meanwhile. A compaction or a rebuild is not
+ * covered by that lock, which is what {@link #locationsAtReplay} is for.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

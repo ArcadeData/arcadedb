@@ -7708,7 +7708,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * before any ADD/REPLACE of it, and {@link #allocateVectorId()} never reuses an id, so an id this transaction
    * allocated cannot also be one it tombstoned. Asserted below rather than merely stated, because the invariant
    * lives in another class: were it to break, forgetting an allocated id and then restoring its tombstoned
-   * location would publish an offset into a page the rollback has just discarded.
+   * location would publish an offset into a page the rollback has just discarded. (Assertions are on under
+   * Surefire, whose {@code enableAssertions} defaults to true and which this build does not turn off, so the
+   * tripwire is live in every {@code mvn test} run - the same basis {@link #queueDeltaEntry} relies on.)
+   * <p>
+   * The second implicit dependency is in {@link #remove}: it resolves the ids to tombstone purely by RID through
+   * {@code getVectorIdsForRid}, and {@code markDeleted} clears the id's presence bit before returning, so a RID
+   * whose replay reaches {@code removeReplay} twice - the ordered lane can, when a same-transaction rewrite
+   * collapses into one queued key - finds nothing live the second time and records nothing twice here.
    * <p>
    * What is deliberately NOT undone: the vector ids themselves, which stay burnt - handing one back would let a
    * concurrent allocation collide with it, and an unused id costs nothing but a hole in the id space that the
