@@ -229,11 +229,15 @@ public final class ClusterSecuritySeedQuery {
   /**
    * The documents the leader reported as not committed.
    * <p>
+   * Package-private so the answers this has to tell apart can be pinned without a live leader to produce them
+   * (claude-review on PR #7854).
+   * <p>
    * A 503 carrying a {@code failedSeeds} array is the seed's own partial failure and is returned as such, so
    * the caller reports the same list whether it ran the seed itself or asked for it. Every other non-2xx is an
    * {@link IOException}: the outcome is unknown, and "unknown" must not be reported as "nothing failed".
    */
-  private static List<String> parse(final HttpResponse<String> response, final String address) throws IOException {
+  // @VisibleForTesting
+  static List<String> parse(final HttpResponse<String> response, final String address) throws IOException {
     final JSONObject json;
     try {
       json = new JSONObject(response.body());
