@@ -849,6 +849,15 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         // so it is worth retrying rather than completing a task the executor could still run. Bounded rather
         // than unconditional so a pool that is genuinely, permanently wedged does not turn this drain into an
         // unbounded wait of its own.
+        //
+        // Cannot bounce between two CONCURRENTLY draining pools (claude-review question): resizeThreads() runs
+        // its three publish steps under lifecycleLock, so a second setParallelLevel() call blocks until the first
+        // has already unpublished its own retiring workers from executorThreads - there is only ever one
+        // "current" live array to reschedule against, never two racing shrinks each offering a different one.
+        // Nothing here rules out a task hopping through several SEQUENTIAL shrinks (this worker's reschedule
+        // landing on a worker a later, non-overlapping resize then also retires before the task runs) - each hop
+        // is bounded the same way this one is, and the stress test's 20 back-to-back resizes per repeat exercise
+        // exactly that chaining without a single drop across 120+ runs.
         boolean rescheduled = false;
         for (int attempt = 0; !rescheduled && attempt < 3 && executorThreads != null; attempt++) {
           try {

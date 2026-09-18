@@ -159,9 +159,13 @@ public class TruncateTypeStatement extends DDLStatement {
           truncateInCallerTransaction(db);
         else
           truncateInOwnTransaction(db, schema, typez);
-        truncateLightweightEdgeTypes(db, transactional, lightweightTypeNames);
-      } else
-        truncateLightweightEdgeTypes(db, transactional, List.of(typeName.toString()));
+      }
+      // lightweightTypeNames covers the all-lightweight case too, not a separate List.of(typeName.toString())
+      // (claude-review): hasRecordBackedTypeInScope is false only when the whole scope is lightweight, so
+      // collectTruncationScope already collected every entry that case needs, typeName's own quoted name included.
+      // A descendant beyond the root here is a redundant no-op delete against an already-empty type, same as the
+      // record-backed case above already tolerates, so one call covers both instead of two near-identical ones.
+      truncateLightweightEdgeTypes(db, transactional, lightweightTypeNames);
     } else if (transactional)
       truncateInCallerTransaction(db);
     else
