@@ -73,8 +73,9 @@ import java.util.logging.Level;
  *
  * <h2>Ordering</h2>
  * The once-per-start request waits, bounded, for this node's applied index to reach the commit index before
- * reading its own fingerprints: asking before catch-up finishes would compare documents this node is about to
- * be sent anyway, and answer a mismatch that the next entry was going to fix. The snapshot-install trigger does
+ * reading its own fingerprints, through {@code RaftHAServer.waitForLocalApply}: asking before catch-up
+ * finishes would compare documents this node is about to be sent anyway, and answer a mismatch that the next
+ * entry was going to fix. The snapshot-install trigger does
  * not wait - the install has just advanced the applied index to the snapshot point, which is the definition of
  * caught up for the documents a snapshot carries, and the ones it does not carry are precisely what is being
  * asked for.
@@ -83,10 +84,6 @@ import java.util.logging.Level;
  */
 final class SecurityCatchUp implements AutoCloseable {
 
-  /** How long the once-per-start request waits for this node to finish catching up before asking anyway. */
-  private static final long CATCH_UP_WAIT_MS      = 30_000L;
-  /** Poll period of that wait. Short: it is a local read of two longs. */
-  private static final long CATCH_UP_POLL_MS      = 200L;
   /**
    * How many times a request that failed for a transient reason is retried, and the wait before the first
    * retry (doubled each time).
@@ -211,7 +208,12 @@ final class SecurityCatchUp implements AutoCloseable {
         // below ends when this node is caught up - which on a simultaneous restart is the same instant for all
         // of them.
         Thread.sleep(ThreadLocalRandom.current().nextLong(START_JITTER_MS));
-        awaitCatchUp(raft);
+        // The module's own notify-based wait rather than a poll loop of this class's invention
+        // (claude-review on PR #7854): it is woken by notifyApplied on every path that advances the index,
+        // including the snapshot install, and it already knows about the stale-snapshot floor of issue #6111.
+        // Best-effort by contract, which is what this caller wants - a request made slightly early costs a
+        // comparison against documents that were about to arrive.
+        raft.waitForLocalApply();
       }
 
       final HAServerPlugin ha = server.getHA();
@@ -263,24 +265,6 @@ final class SecurityCatchUp implements AutoCloseable {
           e.getMessage());
       return false;
     }
-  }
-
-  /**
-   * Waits, bounded, for this node's state machine to reach the commit index it knows about. Best-effort by
-   * contract, exactly like {@code HAServerPlugin.awaitLocalApply}: when the deadline passes the request is made
-   * anyway, and the worst that costs is a comparison against documents that were about to arrive.
-   */
-  private static void awaitCatchUp(final RaftHAServer raft) throws InterruptedException {
-    final long deadline = System.currentTimeMillis() + CATCH_UP_WAIT_MS;
-    while (System.currentTimeMillis() < deadline) {
-      final long commitIndex = raft.getCommitIndex();
-      if (commitIndex <= 0 || raft.getLastAppliedIndex() >= commitIndex)
-        return;
-      Thread.sleep(CATCH_UP_POLL_MS);
-    }
-    LogManager.instance().log(SecurityCatchUp.class, Level.FINE,
-        "The security catch-up did not see this node reach the commit index within %dms; asking the leader anyway",
-        CATCH_UP_WAIT_MS);
   }
 
   @Override

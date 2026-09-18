@@ -130,6 +130,23 @@ class PostSecuritySeedHandlerRequestTest {
         .isFalse();
   }
 
+  // ------------------------------------------------------------------ an empty body
+
+  /**
+   * {@code AbstractServerHttpHandler} hands a null payload for an absent or blank body, and the handler reads
+   * the request for every decision it makes. An empty POST is a well-formed request for the whole document set
+   * - no reason, no fingerprints, no catchUp - so it is answered rather than refused, and certainly not with
+   * the NPE that reached the caller as a 500 (claude-review on PR #7854).
+   */
+  @Test
+  void anEmptyRequestBodyIsAWellFormedRequestForEverything() {
+    final JSONObject empty = new JSONObject();
+
+    assertThat(PostSecuritySeedHandler.readFingerprints(empty)).as("nothing to compare against").isNull();
+    assertThat(empty.getBoolean("catchUp", false)).as("so it is an admission").isFalse();
+    assertThat(empty.getString("reason", "a peer request")).isEqualTo("a peer request");
+  }
+
   /** The three digests a caller sends, in the shape the client builds them. */
   private static JSONObject fingerprints(final String users, final String groups, final String apiTokens) {
     return new JSONObject()

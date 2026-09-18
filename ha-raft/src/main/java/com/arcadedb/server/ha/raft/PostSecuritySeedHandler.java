@@ -103,6 +103,12 @@ public class PostSecuritySeedHandler extends AbstractServerHttpHandler {
           new JSONObject().put("error", "This route requires the root user or the cluster token").toString());
     checkRootUser(user);
 
+    // AbstractServerHttpHandler hands a null payload for an absent or blank body, and everything below reads
+    // the request (claude-review on PR #7854). An empty POST is a well-formed request for the whole document
+    // set - no reason, no fingerprints - so it is answered rather than refused, and certainly not with the NPE
+    // that would have reached the caller as a 500.
+    final JSONObject request = payload != null ? payload : new JSONObject();
+
     final RaftHAServer raftHAServer = plugin.getRaftHAServer();
     if (raftHAServer == null)
       return new ExecutionResponse(400, new JSONObject().put("error", "Raft HA is not enabled").toString());
@@ -124,11 +130,11 @@ public class PostSecuritySeedHandler extends AbstractServerHttpHandler {
           .put("seeded", false)
           .put("error", "This node has no security store to seed from").toString());
 
-    final String reason = payload.getString("reason", "a peer request");
+    final String reason = request.getString("reason", "a peer request");
 
     final JSONObject fingerprints;
     try {
-      fingerprints = readFingerprints(payload);
+      fingerprints = readFingerprints(request);
     } catch (final IllegalArgumentException e) {
       return new ExecutionResponse(400, new JSONObject().put("error", e.getMessage()).toString());
     }
@@ -154,7 +160,7 @@ public class PostSecuritySeedHandler extends AbstractServerHttpHandler {
       // type is read from the request rather than inferred from whether it carried fingerprints: a catch-up on
       // a node with no security store has none to send, and would otherwise pass for an admission.
       failedSeeds = raftHAServer.getStateMachine().seedSecurityNowAndReport(reason, seedReportTimeoutMs(),
-          !payload.getBoolean("catchUp", false));
+          !request.getBoolean("catchUp", false));
     } catch (final IllegalStateException e) {
       // The seed could not be run or its outcome could not be read. Reported as a failure of the REPORT, with
       // the documents unnamed, because that is exactly what is known: answering with an empty failedSeeds array

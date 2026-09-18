@@ -90,6 +90,26 @@ public final class ClusterSecuritySeedQuery {
    * premature one is not cosmetic - it asks an operator to chase a peer that is converging.
    */
   private static final long NOT_LEADER_MIN_BACKOFF_MS = 500L;
+  /** The wait between attempts when what failed was the socket rather than the leader's identity. */
+  private static final long TRANSIENT_BACKOFF_MS      = 500L;
+
+  /**
+   * The plain-HTTP client every dial from this class shares, built once.
+   * <p>
+   * {@code LeaderDial.newConnectTimeoutBoundedClient}'s own javadoc says a caller builds its client once
+   * rather than per request, and every other site in the module holds one in a field
+   * ({@code RaftHAServer.forwardHttpClient}, {@code PostBatchHandler}, {@code RaftReplicatedDatabase}). This
+   * class is a stateless utility, so it rebuilt one per attempt - and each build starts a selector thread that
+   * nothing closes, on a path that runs on every node restart and every snapshot install
+   * (claude-review on PR #7854, the leak PR #7650 fixed at those three sites).
+   * <p>
+   * A static with a fixed connect timeout, the shape {@code LeaderDatabaseQuery} uses for the same reason: the
+   * timeout is a property of a built client and cannot follow configuration afterwards, and this dial is an
+   * administrative round trip rather than one whose latency an operator tunes.
+   */
+  private static final HttpClient PLAIN_HTTP = HttpClient.newBuilder()
+      .connectTimeout(Duration.ofSeconds(5))
+      .build();
 
   private ClusterSecuritySeedQuery() {
   }
@@ -165,13 +185,32 @@ public final class ClusterSecuritySeedQuery {
         LogManager.instance().log(ClusterSecuritySeedQuery.class, Level.FINE,
             "The node dialled for the security seed is no longer the leader; re-resolving (attempt %d of %d)",
             attempt, NOT_LEADER_ATTEMPTS);
-        try {
-          Thread.sleep(notLeaderBackoffMs(server.getConfiguration()));
-        } catch (final InterruptedException interrupted) {
-          Thread.currentThread().interrupt();
-          throw new IOException("interrupted while waiting to re-request the cluster security seed", interrupted);
-        }
+        backOff(notLeaderBackoffMs(server.getConfiguration()));
+      } catch (final IOException e) {
+        // A refused connection, a reset, a timeout: the leader address was resolvable a moment ago and the
+        // condition may clear before the next attempt (claude-review on PR #7854). The seed this replaced ran
+        // through a RaftClient with a retry policy of its own, so failing an admission on the first blip would
+        // be a step back from what #7521 established - a transient failure must not read as a failed seed.
+        //
+        // Bounded by the same attempt count, and with a short wait rather than the election-sized one: what is
+        // being waited out here is a socket, not a leader election.
+        if (attempt >= NOT_LEADER_ATTEMPTS)
+          throw e;
+        LogManager.instance().log(ClusterSecuritySeedQuery.class, Level.FINE,
+            "The security seed request to the leader failed (%s); retrying (attempt %d of %d)", e.getMessage(),
+            attempt, NOT_LEADER_ATTEMPTS);
+        backOff(TRANSIENT_BACKOFF_MS);
       }
+    }
+  }
+
+  /** Sleeps between attempts, turning an interrupt into the failure this class reports. */
+  private static void backOff(final long millis) throws IOException {
+    try {
+      Thread.sleep(millis);
+    } catch (final InterruptedException interrupted) {
+      Thread.currentThread().interrupt();
+      throw new IOException("interrupted while waiting to re-request the cluster security seed", interrupted);
     }
   }
 
@@ -197,8 +236,7 @@ public final class ClusterSecuritySeedQuery {
       return raft.getStateMachine().seedSecurityNowAndReport(reason, reportTimeoutMs(server.getConfiguration()),
           !catchUp);
 
-    final LeaderDial dial = LeaderDial.resolve(plugin, LeaderDial.newConnectTimeoutBoundedClient(
-        server.getConfiguration()));
+    final LeaderDial dial = LeaderDial.resolve(plugin, PLAIN_HTTP);
     if (dial == null)
       throw new IOException("the cluster leader address is unknown, so the security seed cannot be requested");
     if (dial.refused())
@@ -221,17 +259,7 @@ public final class ClusterSecuritySeedQuery {
         .header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString(body.toString(), StandardCharsets.UTF_8));
 
-    // The two headers travel together or not at all, matching RaftHAPlugin.shutdownRequest (claude-review on
-    // PR #7854). The forwarded user is a claim about WHO, and the cluster token is the only thing that makes it
-    // worth anything: the handler reads the name only inside the branch the token opens, so sending a principal
-    // with no proof of the hop is noise on the wire at best and a misleading read of this code at worst. The
-    // older peer dials in this module set it unconditionally; they are harmless for the same reason, but this
-    // is the shape to copy.
-    final String clusterToken = raft.getClusterToken();
-    if (clusterToken != null && !clusterToken.isBlank()) {
-      builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
-      builder.header("X-ArcadeDB-Forwarded-User", RaftHAServer.FORWARDED_ROOT_USER);
-    }
+    PeerCredentials.attach(builder, raft.getClusterToken());
 
     try {
       return parse(dial.client().send(builder.build(), HttpResponse.BodyHandlers.ofString()), dial.address());

@@ -54,6 +54,13 @@ public class PostAddPeerHandler extends AbstractServerHttpHandler {
       final JSONObject payload) {
     checkRootUser(user);
 
+    // A null payload is what AbstractServerHttpHandler hands over for an absent or blank body, and every read
+    // below would NPE on it - answering 500 for a request that is merely missing its fields, when the 400 two
+    // lines down says exactly what is wrong (claude-review on PR #7854).
+    if (payload == null)
+      return new ExecutionResponse(400,
+          new JSONObject().put("error", "Missing required fields: peerId, address").toString());
+
     final RaftHAServer raftHAServer = plugin.getRaftHAServer();
     if (raftHAServer == null)
       return new ExecutionResponse(400, new JSONObject().put("error", "Raft HA is not enabled").toString());

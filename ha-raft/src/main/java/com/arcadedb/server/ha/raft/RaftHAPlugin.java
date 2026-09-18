@@ -46,6 +46,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
@@ -340,38 +341,12 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
    * Read per submission rather than cached, exactly as {@code RaftReplicatedDatabase.schemaDeltaEnabled} reads it:
    * a peer that stops answering stops receiving preconditions from the next mutation on, and one that finishes
    * upgrading starts receiving them without a leader restart.
-   * <p>
-   * <b>Asked through {@link RaftHAServer#peersMissingCapabilityNow} and not the cached
-   * {@link RaftHAServer#peersMissingCapability}</b> (issue #7559). The background capability monitor runs on the
-   * LEADER only - {@code startCapabilityMonitor} is called from {@code startLagMonitor} on gaining leadership and
-   * stopped on losing it - because #7219's only consumer was the leader-side schema-delta decision, where the
-   * leader is the only writer. A security entry is not a schema delta: any node can submit one, and the entry
-   * points that reach here on a FOLLOWER are precisely the ones that do NOT forward to the leader - the REST
-   * group and API-token routes, and openCypher {@code CREATE USER} / {@code ALTER USER} / {@code DROP USER} over
-   * Bolt or {@code /api/v1/command}, which arrive through {@code SecurityManager} and have no exchange to
-   * forward. They are the ones not already serialised onto a single node, and therefore the ones a
-   * compare-and-set was worth most to. Reading the cache there named every peer as missing and dropped the
-   * precondition silently, leaving the pre-#7509 behaviour behind nothing louder than the throttled line below.
-   * Making those paths reach the leader as {@code /server/users} does is issue #7826, and would make the
-   * question moot for them rather than replace this.
-   * <p>
-   * The ask-now variant also answers the harder half (issue #7540, absorbed into #7559): the verdict has to be the
-   * SAME on every node that might submit the same mutation. Two nodes disagreeing is not a lost update, it is a
-   * losing entry refused where a precondition is read and applied where it is not - divergent security state.
-   * <p>
-   * It costs a bounded, sequential probe round, paid only when the local cache is not already a full "yes" - so
-   * never on a warm leader - and only for a submission that actually carries a fingerprint, so no seed path
-   * ({@code PostAddPeerHandler}, {@code ServerControlPlane.connectCluster}, {@code ServerSecurity}'s bootstrap
-   * republish) pays for it at cluster formation, when peers are least likely to answer. For the two gated
-   * documents the round has just been run by {@link SecurityEntryCapabilityGate}, so this call finds a warm cache
-   * and dials nothing.
    */
-  // @VisibleForTesting - Issue7559SecurityPreconditionOnFollowerIT drives this decision on a real follower
-  String preconditionEveryPeerCanRead(final String expectedFingerprint) {
+  private String preconditionEveryPeerCanRead(final String expectedFingerprint) {
     return expectedFingerprint == null ?
         null :
         preconditionForPeers(expectedFingerprint,
-            raftHAServer.peersMissingCapabilityNow(PeerCapabilities.SECURITY_PRECONDITION));
+            raftHAServer.peersMissingCapability(PeerCapabilities.SECURITY_PRECONDITION));
   }
 
   /**
@@ -477,7 +452,22 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     // an optional wire-format section is safe to write. A node predating this route answers 404, and that 404 is
     // the answer - see PostCapabilitiesHandler.
     routes.addExactPath("/api/v1/cluster/capabilities", new PostCapabilitiesHandler(httpServer, this));
+    // Issues #7833/#7834: the one place a cluster security seed is asked for - by the node that admitted a peer
+    // and wants the outcome to report, and by a node that came back still a member and has to be put back in
+    // step. Both reach the leader's single seeder through it.
+    routes.addExactPath(PostSecuritySeedHandler.ROUTE, new PostSecuritySeedHandler(httpServer, this));
     LogManager.instance().log(this, Level.INFO, "Raft cluster management endpoints registered");
+  }
+
+  /**
+   * {@inheritDoc}
+   * <p>
+   * Delegated to {@link ClusterSecuritySeedQuery}, which runs the seed here when this node is the leader and
+   * dials the leader otherwise. See {@link PostSecuritySeedHandler} for why there is exactly one seeder.
+   */
+  @Override
+  public Optional<List<String>> seedSecurityStateForAdmission(final String admittedPeer) throws IOException {
+    return Optional.of(ClusterSecuritySeedQuery.seedForAdmission(server, this, admittedPeer));
   }
 
   @Override
@@ -641,7 +631,8 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
    * Where a remote shutdown is dialled: the peer's HTTPS endpoint when SSL is enabled and
    * {@link PeerDialAddress} resolved one, its plain-HTTP endpoint otherwise.
    * <p>
-   * This dial relays the cluster token in an {@code Authorization: Bearer} header, and until issue #7563 it
+   * This dial relays the cluster token in the {@code X-ArcadeDB-Cluster-Token} header (issue #7837; it used to
+   * be an unauthenticatable {@code Authorization: Bearer}), and until issue #7563 it
    * was hardcoded to {@code http://} - so on a cluster with {@code arcadedb.ssl.enabled} set it was one of
    * the two peer-to-peer dials still putting that token on the wire in clear text. The rule here is the one
    * every sibling applies ({@code LeaderDial}, {@code SnapshotInstaller}, {@link PeerCapabilityQuery},
@@ -701,24 +692,20 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
       // Same fallback as every sibling dial, and said out loud for the same reason: the command below carries
       // the cluster token, so an operator who set arcadedb.ssl.enabled should not have to guess (issue #7546).
       PlainHttpFallbackNotice.sayOnce(RaftHAPlugin.class, "sending it the shutdown command");
-    final String token = raft.getClusterToken();
-
-    final HttpRequest.Builder request = HttpRequest.newBuilder()
-        .uri(URI.create(url))
-        .header("Content-Type", "application/json")
-        .POST(HttpRequest.BodyPublishers.ofString(SHUTDOWN_COMMAND_BODY, StandardCharsets.UTF_8));
-    if (token != null && !token.isEmpty())
-      request.header("Authorization", "Bearer " + token);
+    final HttpRequest request = shutdownRequest(url, raft.getClusterToken());
 
     // One client per call, closed with the request: a remote shutdown is an operator action, not a hot path,
     // and a cached client would outlive the peer it was built to reach. The connect timeout is the same one
     // every other forward is bounded by; the response deadline is deliberately left off, matching the
     // HttpURLConnection this replaced, because a node answering slowly while it shuts down is not a failure.
     try (final HttpClient client = newShutdownClient(url.startsWith("https://"))) {
-      final int status = client.send(request.build(), HttpResponse.BodyHandlers.discarding()).statusCode();
-      if (status >= 400)
-        LogManager.instance().log(this, Level.WARNING, "Shutdown of remote server '%s' at %s answered HTTP %d",
-            serverName, url, status);
+      final int status = client.send(request, HttpResponse.BodyHandlers.discarding()).statusCode();
+      if (status < 200 || status >= 300)
+        // Raised, not logged (issue #7837). The operator asked for a node to stop; an answer that is not a
+        // success means it did not, and the previous WARNING left `shutdown <server>` reporting success on a
+        // node that is still serving traffic - the exact shape of the credential bug this method had.
+        throw new ServerException("Shutdown of remote server '" + serverName + "' at " + url + " answered HTTP "
+            + status + "; the server was NOT stopped");
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       throw new ServerException("Interrupted while shutting down remote server '" + serverName + "'", e);
@@ -728,19 +715,62 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   }
 
   /**
+   * The shutdown POST, with the credential a peer actually authenticates (issue #7837).
+   * <p>
+   * This used to present the cluster token as {@code Authorization: Bearer}, which
+   * {@code AbstractServerHttpHandler} authenticates in exactly two forms - an API token ({@code at-} prefix) and
+   * a session token ({@code AU-} prefix, resolved through the session manager). A cluster token is neither, so on
+   * a cluster that requires authentication the POST was answered 401, the peer stayed up, and the only trace was
+   * a WARNING: an operator's {@code shutdown &lt;server&gt;} reported success and did nothing.
+   * <p>
+   * The credential the peer does authenticate is the {@code X-ArcadeDB-Cluster-Token} +
+   * {@code X-ArcadeDB-Forwarded-User} pair every other peer-to-peer dial in this module sends
+   * ({@link PeerCapabilityQuery}, {@link LeaderDatabaseQuery}, {@link PeerAuthSessionQuery}, the snapshot
+   * download, the resync). The forwarded user is {@code root} because
+   * {@code PostServerCommandHandler.execute} answers {@code shutdown} only to a root principal, and a peer
+   * relaying a cluster-internal command forwards as root everywhere else for the same reason.
+   * <p>
+   * The token is omitted when the cluster does not have one, which leaves the request with no credentials at all
+   * - correct on a cluster that does not require authentication, and answered 401 (and now raised) on one that
+   * does, rather than silently ignored.
+   * <p>
+   * Package-private and pure so the headers can be asserted without a live peer to stop: the method that sends
+   * this request ends in the target node's exit.
+   */
+  // @VisibleForTesting
+  static HttpRequest shutdownRequest(final String url, final String clusterToken) {
+    return PeerCredentials.attach(HttpRequest.newBuilder()
+        .uri(URI.create(url))
+        .header("Content-Type", "application/json")
+        .POST(HttpRequest.BodyPublishers.ofString(SHUTDOWN_COMMAND_BODY, StandardCharsets.UTF_8)), clusterToken)
+        .build();
+  }
+
+  /**
    * The one peer {@code serverName} names, or a {@link ServerException} saying why it names none or several.
    * <p>
    * Separated from the dial so the naming rules are testable without a live cluster to shut down, which the
    * self-naming case in particular cannot be: the branch it selects ends in {@code System.exit}.
    *
+   * <p>
+   * <b>Reads {@code getRaftGroup().getPeers()} directly</b>, rather than through one of the reconciled-membership
+   * accessors this module steers "which peers exist" questions toward, and that is the right source here
+   * (claude-review on PR #7854). Those accessors answer "who counts as a replica" - who to replicate to, who to
+   * wait for a quorum from - and filter accordingly. This question is different: an operator typed a name, and
+   * the only useful answer is the peer that name DECLARES, including one that a configuration change has not
+   * finished committing. Filtering it out would answer "no such server" for a node that is plainly there.
+   *
    * @throws ServerException when no peer matches, or when more than one does
    */
   // @VisibleForTesting
   static RaftPeerId resolveShutdownTarget(final RaftHAServer raft, final String serverName) {
+    if (serverName == null || serverName.isEmpty())
+      throw new ServerException("Cannot shut down a server without naming it");
+
     final List<RaftPeerId> matches = new ArrayList<>();
     for (final var peer : raft.getRaftGroup().getPeers()) {
       final String httpAddr = raft.getHttpAddresses().get(peer.getId());
-      if (httpAddr != null && (peer.getId().toString().contains(serverName) || httpAddr.contains(serverName)))
+      if (httpAddr != null && (namesPeer(peer.getId().toString(), serverName) || namesPeer(httpAddr, serverName)))
         matches.add(peer.getId());
     }
     if (matches.isEmpty())
@@ -749,6 +779,38 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
       throw new ServerException("Server name '" + serverName + "' matches " + matches.size() + " peers " + matches
           + "; name one of them exactly");
     return matches.getFirst();
+  }
+
+  /**
+   * Whether {@code candidate} - a peer id ({@code host_raftPort}) or a declared address ({@code host:port}) -
+   * is the thing an operator named when they typed {@code serverName}.
+   * <p>
+   * The name has to be a <b>whole name</b>, not any substring. A plain {@code contains} was the previous rule
+   * and it shuts down the wrong node: in a cluster of {@code arcadedb-10} and {@code arcadedb-2},
+   * {@code shutdown arcadedb-1} is a substring of exactly ONE peer, so the ambiguity guard sees nothing to
+   * refuse and stops {@code arcadedb-10} (claude-review on PR #7854). The ambiguity guard only ever covered
+   * the case where the mistake happens to hit two peers at once; this covers the case where it hits one.
+   * <p>
+   * "Whole name" means the candidate either IS the name, or continues past it with a character that ends a
+   * name rather than extends one: {@code .} between DNS labels, {@code _} before a peer id's Raft port,
+   * {@code :} before an address's port. So {@code arcadedb-1} still names {@code arcadedb-1_2435},
+   * {@code arcadedb-1:2481} and the Kubernetes {@code arcadedb-1.arcadedb.ns.svc.cluster.local} - the
+   * shorthand an operator actually types - and no longer names {@code arcadedb-10} anything.
+   * <p>
+   * {@code -} is deliberately NOT a boundary: it is an ordinary character inside a DNS label, and treating it
+   * as one would make {@code arcadedb} name every pod of a StatefulSet. That would be refused as ambiguous
+   * rather than acted on, so it is safe either way - but "no such server" is the clearer answer to a name that
+   * is not a server's name.
+   */
+  // @VisibleForTesting
+  static boolean namesPeer(final String candidate, final String serverName) {
+    if (candidate == null || !candidate.startsWith(serverName))
+      return false;
+    if (candidate.length() == serverName.length())
+      return true;
+
+    final char next = candidate.charAt(serverName.length());
+    return next == '.' || next == '_' || next == ':';
   }
 
   /**
@@ -761,6 +823,8 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     LogManager.instance().log(this, Level.INFO,
         "Shutdown of server '%s' names this node; stopping locally instead of dialling our own listener", serverName);
     try {
+      // The empty name selects the local branch, which schedules the stop and returns; the catch is here
+      // because shutdownServer declares IOException for the REMOTE branch, not because this call can take it.
       new ServerControlPlane(server).shutdownServer("");
     } catch (final IOException e) {
       throw new ServerException("Failed to shut down this server, named '" + serverName + "'", e);
