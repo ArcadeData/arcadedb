@@ -4741,6 +4741,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
     }
 
     boolean acquired = REBUILD_SEMAPHORE.tryAcquire();
+    // The wait this thread gave up on, or 0 if it never had to give up. Read past the recheck below, where
+    // whether an unpermitted build actually happens is finally known.
+    long timedOutMs = 0L;
     try {
       if (!acquired) {
         final long timeoutMs = GlobalConfiguration.VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS.getValueAsLong();
@@ -4759,20 +4762,29 @@ public class LSMVectorIndex implements Index, IndexInternal {
           throw new IndexException(
               "Interrupted while waiting for a rebuild permit for vector index '" + indexName + "'", e);
         }
-        if (!acquired) {
-          metrics.incrementSearchRebuildsWithoutPermit();
-          LogManager.instance().log(this, Level.WARNING,
-              """
-                  Timed out after %d ms waiting for a rebuild permit for vector index %s, and a query cannot be \
-                  answered without the graph, so the build of %d vectors proceeds WITHOUT one. Another vector \
-                  index has held a permit for at least that long - if this recurs, that index's rebuild is likely \
-                  stuck, and until it is not, concurrent rebuilds are unbounded again (issue #7814)""",
-              timeoutMs, indexName, scope);
-        }
+        if (!acquired)
+          timedOutMs = timeoutMs; // gave up; whether that means an unpermitted build is settled past the recheck
       }
 
       if (!stillNeeded.getAsBoolean())
         return; // Someone built it while this thread queued - most likely whoever was holding the permit.
+
+      // Counted and warned HERE, past the recheck, rather than where the wait gave up. The two are not the same
+      // moment: the likeliest holder of the permit this thread waited out is this index's own async rebuild, and
+      // that rebuild publishing a graph just as the wait expires is precisely the case the recheck above catches.
+      // Counting at the timeout would report an unpermitted build that never ran - and this counter is the signal
+      // an operator is meant to read as "some other index has held a permit for at least the timeout", which
+      // would send them chasing contention that did not happen.
+      if (timedOutMs > 0) {
+        metrics.incrementSearchRebuildsWithoutPermit();
+        LogManager.instance().log(this, Level.WARNING,
+            """
+                Timed out after %d ms waiting for a rebuild permit for vector index %s, and a query cannot be \
+                answered without the graph, so the build of %d vectors proceeds WITHOUT one. Another vector \
+                index has held a permit for at least that long - if this recurs, that index's rebuild is likely \
+                stuck, and until it is not, concurrent rebuilds are unbounded again (issue #7814)""",
+            timedOutMs, indexName, scope);
+      }
 
       reclaimHeapForRebuild(scope);
       buildGraphFromScratch();
