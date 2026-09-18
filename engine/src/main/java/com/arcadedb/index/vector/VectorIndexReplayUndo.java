@@ -137,8 +137,21 @@ class VectorIndexReplayUndo implements IndexReplayUndo {
       graphStateFlippedFrom = previous;
   }
 
+  /**
+   * Set by the one call {@link #undoIndexReplay()} answers. A second call would refund every counter a second
+   * time - silently, since none of the refunds is idempotent - so it is refused loudly instead. The throw is
+   * safe: {@code TransactionContext.undoIndexReplay()} catches it and logs, precisely so a failure here cannot
+   * stop the rollback from releasing its file locks.
+   */
+  private boolean undone;
+
   @Override
   public void undoIndexReplay() {
+    if (undone)
+      throw new IllegalStateException(
+          "the replay compensation for index '" + index.getName() + "' was already applied; applying it twice "
+              + "would refund its counters twice");
+    undone = true;
     index.undoReplay(this);
   }
 }
