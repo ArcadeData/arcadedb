@@ -1709,10 +1709,27 @@ public enum GlobalConfiguration {
       Default is false, which keeps the behaviour this route has always had: Studio's own token UI mints over the very \
       same route, so enforcing by default would break every Studio deployment served over plain HTTP from a host that \
       is not the operator's own. When it is false and the transport is unprotected the mint is still logged at WARNING. \
-      A TLS-terminating reverse proxy in front of a cleartext listener presents as a remote cleartext peer unless it \
-      forwards from loopback: this setting reads the live connection, deliberately not the X-Forwarded-Proto header, \
-      which any client can send. Such a deployment has moved the trust boundary to the proxy (issue #7372)""",
+      A TLS-terminating reverse proxy in front of a cleartext listener presents as a remote cleartext peer unless the \
+      operator lists it in `arcadedb.server.apiTokenTrustedProxies`: this setting reads the live connection, and the \
+      X-Forwarded-Proto header only from a peer on that list, never from an arbitrary client (issues #7372, #7804). \
+      The default flips to true in 27.1.1. Until then an unprotected mint is allowed and logged; from 27.1.1 it is \
+      refused unless this is explicitly set back to false""",
       Boolean.class, false),
+
+  SERVER_API_TOKEN_TRUSTED_PROXIES("arcadedb.server.apiTokenTrustedProxies", SCOPE.SERVER,
+      """
+      Comma-separated list of literal IP addresses or CIDR ranges (IPv4 and IPv6) of the reverse proxies allowed to \
+      vouch for the transport of `POST /api/v1/server/api-tokens` through the X-Forwarded-Proto header. Empty by \
+      default, which trusts no proxy and leaves the header unread. \
+      When the request's direct peer matches an entry AND the header reports https for every hop, the mint is treated \
+      as protected even though the proxy-to-server leg is cleartext - that leg is on the network the operator owns, \
+      and by listing the proxy they state where their trust boundary is. A peer that is not on the list can send the \
+      same header and gain nothing: the header is otherwise ignored, because the caller asking for a token is exactly \
+      the caller who would forge it. \
+      Entries must be literal addresses - a hostname is rejected rather than resolved, since a DNS answer is not a \
+      trust decision. An unparseable list is treated as empty, so a typo denies rather than opening the gate \
+      (issue #7804)""",
+      String.class, ""),
 
   SERVER_SECURITY_IMPORT_BLOCK_LOCAL_NETWORKS("arcadedb.server.security.importBlockLocalNetworks", SCOPE.SERVER,
       "When enabled (default), the SQL `IMPORT DATABASE` command refuses HTTP(S) URLs that resolve to loopback, link-local, "
