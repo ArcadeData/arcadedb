@@ -739,15 +739,11 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
    */
   // @VisibleForTesting
   static HttpRequest shutdownRequest(final String url, final String clusterToken) {
-    final HttpRequest.Builder request = HttpRequest.newBuilder()
+    return PeerCredentials.attach(HttpRequest.newBuilder()
         .uri(URI.create(url))
         .header("Content-Type", "application/json")
-        .POST(HttpRequest.BodyPublishers.ofString(SHUTDOWN_COMMAND_BODY, StandardCharsets.UTF_8));
-    if (clusterToken != null && !clusterToken.isEmpty()) {
-      request.header("X-ArcadeDB-Cluster-Token", clusterToken);
-      request.header("X-ArcadeDB-Forwarded-User", RaftHAServer.FORWARDED_ROOT_USER);
-    }
-    return request.build();
+        .POST(HttpRequest.BodyPublishers.ofString(SHUTDOWN_COMMAND_BODY, StandardCharsets.UTF_8)), clusterToken)
+        .build();
   }
 
   /**
