@@ -50,10 +50,17 @@ import java.util.List;
  */
 public class FetchFromSchemaTriggersStep extends AbstractExecutionStep {
 
+  /** The whole listing, materialised on the first pull. */
   private final List<ResultInternal> result = new ArrayList<>();
 
+  /** How far {@link #result} has been handed out. */
   private int cursor = 0;
 
+  /**
+   * Builds the step. The listing itself is not read until the first pull.
+   *
+   * @param context the command context this step runs in
+   */
   public FetchFromSchemaTriggersStep(final CommandContext context) {
     super(context);
   }
