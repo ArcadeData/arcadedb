@@ -4455,6 +4455,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * on this rebuild's own dime, the same way an async rebuild always has.
    */
   private void buildOrReuseGraphForAsyncRebuild() {
+    // Deliberately does NOT consult searchRebuildPending, although it can reach the same "never loaded this
+    // session" state a search thread may already have claimed (issue #6798). This method runs holding the
+    // JVM-wide permit, and a search that claimed the build is at that moment waiting FOR that permit - so waiting
+    // here for the search's build to finish would be each side holding what the other is blocked on. The
+    // redundancy is settled on the search's side instead, by the stillNeeded recheck in
+    // buildGraphFromScratchUnderRebuildPermit(): whichever of the two publishes first, the other asks again and
+    // stands down (issue #7814).
     PersistedGraphCheck check = null;
     if (this.graphIndex == null) {
       graphBuildLock.lock();
@@ -4723,7 +4730,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private void buildGraphFromScratchUnderRebuildPermit(final BooleanSupplier stillNeeded) {
     final int scope = rebuildScopeSize();
     if (scope < ASYNC_REBUILD_MIN_GRAPH_SIZE) {
-      buildGraphFromScratch();
+      // Asked here too, not only after a permit wait. The caller decided under graphBuildLock and released it
+      // before calling, and the async rebuild the inactivity timer dispatches for an index this session has never
+      // loaded (issue #6798) can publish a graph inside that window - so the reason to build can be gone even
+      // though this thread never waited for anything. One volatile read against a redundant build of the whole
+      // corpus.
+      if (stillNeeded.getAsBoolean())
+        buildGraphFromScratch();
       return;
     }
 
@@ -4736,7 +4749,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
             """
                 Query on vector index %s needs a graph built over %d vectors and is waiting up to %d ms for one of \
                 the %d JVM-wide rebuild permits that %s allows, so this build does not run alongside every other \
-                index's""",
+                index's rebuild""",
             indexName, scope, timeoutMs, MAX_CONCURRENT_REBUILDS,
             GlobalConfiguration.VECTOR_INDEX_MAX_CONCURRENT_REBUILDS.getKey());
         try {
