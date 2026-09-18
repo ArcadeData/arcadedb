@@ -428,15 +428,10 @@ public final class PostgresCopyStatement {
         }
       } else if (c == '`') {
         // A back-tick identifier escapes with a backslash, which indexOf() cannot see: `a\`b)` used to end at the
-        // ESCAPED back-tick, leaving the ')' inside the identifier to close the query (found in review). Same rule
-        // the tokenizer reads them with, and the same rule Identifier.quote() writes them with.
-        int end = i + 1;
-        while (end < length && text.charAt(end) != '`') {
-          if (text.charAt(end) == '\\')
-            ++end;
-          ++end;
-        }
-        i = Math.min(end, length);
+        // ESCAPED back-tick, leaving the ')' inside the identifier to close the query (found in review). One scan,
+        // shared with the tokenizer, and the same rule Identifier.quote() writes them with.
+        final int end = Identifier.endOfQuoted(text, i);
+        i = end < 0 ? length : end;
       } else if (c == '"') {
         // A double-quoted identifier escapes by DOUBLING the quote, so stopping at the first one is right: the
         // next character is then the second quote of the pair, which re-enters this branch and scans on.
