@@ -86,6 +86,18 @@ class LSMVectorIndexMetrics {
   // number that keeps climbing is the signal to give the JVM more heap, lower graphBuildCacheMaxHeapPercent, or
   // split the index; one that climbed once and stopped is a transient the next trigger already recovered from.
   private final AtomicLong rebuildsDeferredForMemory = new AtomicLong(0);
+  // Searches that had to build this index's graph from scratch and found no JVM-wide rebuild permit free, so they
+  // queued for one instead of rebuilding alongside every other index at once (issue #7814). A query that waits is
+  // the gate working: the alternative it replaces is N large builds on N request threads, which is what pinned a
+  // 39 GB heap at its ceiling and had the node restarted under it. A number that climbs on every reopen says the
+  // indexes of this database are all resolving their graphs at once - raising maxConcurrentRebuilds trades heap
+  // for that latency, and persisting a graph (REBUILD INDEX before the restart) removes the build entirely.
+  private final AtomicLong searchRebuildsQueuedForPermit = new AtomicLong(0);
+  // Of those, the ones that gave up waiting after rebuildPermitTimeoutMs and built WITHOUT a permit, because a
+  // search cannot be answered without a graph (issue #7814). This is the only remaining unbounded case, so a
+  // non-zero value means some other index has been holding a permit for at least that timeout - almost always a
+  // rebuild that is stuck rather than slow - and concurrent builds were unbounded for as long as it lasted.
+  private final AtomicLong searchRebuildsWithoutPermit = new AtomicLong(0);
   // Times a stale persisted graph (more live vectors than it covers, no deletions) was reused as a prefix instead
   // of being discarded for a synchronous full rebuild on the calling search thread (issue #6655). Each one traded
   // a blocking rebuild sized to the whole index for an immediate answer plus a background rebuild; the gap
@@ -154,6 +166,14 @@ class LSMVectorIndexMetrics {
 
   void incrementRebuildsDeferredForMemory() {
     rebuildsDeferredForMemory.incrementAndGet();
+  }
+
+  void incrementSearchRebuildsQueuedForPermit() {
+    searchRebuildsQueuedForPermit.incrementAndGet();
+  }
+
+  void incrementSearchRebuildsWithoutPermit() {
+    searchRebuildsWithoutPermit.incrementAndGet();
   }
 
   void incrementStalePrefixGraphReuses() {
@@ -276,6 +296,8 @@ class LSMVectorIndexMetrics {
     stats.put("groupedSearchesMergingDelta", groupedSearchesMergingDelta.get());
     stats.put("unverifiedGraphReuses", unverifiedGraphReuses.get());
     stats.put("rebuildsDeferredForMemory", rebuildsDeferredForMemory.get());
+    stats.put("searchRebuildsQueuedForPermit", searchRebuildsQueuedForPermit.get());
+    stats.put("searchRebuildsWithoutPermit", searchRebuildsWithoutPermit.get());
     stats.put("stalePrefixGraphReuses", stalePrefixGraphReuses.get());
     stats.put("graphReusesWithTombstonedNodes", graphReusesWithTombstonedNodes.get());
     stats.put("compactionCount", compactionCount.get());
@@ -302,6 +324,8 @@ class LSMVectorIndexMetrics {
     groupedSearchesMergingDelta.set(0);
     unverifiedGraphReuses.set(0);
     rebuildsDeferredForMemory.set(0);
+    searchRebuildsQueuedForPermit.set(0);
+    searchRebuildsWithoutPermit.set(0);
     stalePrefixGraphReuses.set(0);
     graphReusesWithTombstonedNodes.set(0);
     compactionCount.set(0);
