@@ -205,6 +205,75 @@ class Issue7668TruncateHeavyweightWithLightweightSubtypeTest extends TestHelper 
     assertIndexSize("VeryCloseFollows[since]", 1);
   }
 
+  /**
+   * The {@code transactional == true} branch (claude-review): every other test in this class runs
+   * {@code TRUNCATE TYPE ... POLYMORPHIC UNSAFE} with no transaction open, exercising only
+   * {@code truncateInOwnTransaction()} joined with {@code truncateLightweightEdgeTypes(db, false, ...)}. Inside an
+   * open transaction the statement instead joins it via {@code truncateInCallerTransaction()} and
+   * {@code truncateLightweightEdgeTypes(db, true, ...)}, which is new code this PR added and had no coverage of its
+   * own. Both combinations must (a) apply within the transaction before it is closed, and (b) fully undo on
+   * ROLLBACK, mirroring what {@code Issue6220TruncateTransactionTest} already pins for the plain, non-mixed case.
+   */
+  @Test
+  void truncateInsideAnOpenTransactionAppliesBeforeCommitAndFullyUndoesOnRollback() {
+    database.command("sql", "CREATE VERTEX TYPE Person");
+    database.command("sql", "CREATE EDGE TYPE Follows");
+    database.command("sql", "CREATE PROPERTY Follows.since STRING");
+    database.command("sql", "CREATE INDEX ON Follows(since) UNIQUE");
+    database.command("sql", "CREATE EDGE TYPE CloseFollows EXTENDS Follows LIGHTWEIGHT");
+
+    final RID p1, p2, p3, p4;
+    database.begin();
+    try {
+      p1 = database.newVertex("Person").set("name", "p1").save().getIdentity();
+      p2 = database.newVertex("Person").set("name", "p2").save().getIdentity();
+      p3 = database.newVertex("Person").set("name", "p3").save().getIdentity();
+      p4 = database.newVertex("Person").set("name", "p4").save().getIdentity();
+
+      database.lookupByRID(p1, true).asVertex().modify().newEdge("Follows", p2).set("since", "2020").save();
+      database.lookupByRID(p3, true).asVertex().modify().newEdge("CloseFollows", p4);
+    } finally {
+      database.commit();
+    }
+
+    assertCount("Follows", 2);
+    assertIndexSize("Follows[since]", 1);
+
+    // ROLLBACK first: both the heavyweight record/index and the lightweight edge must come back.
+    database.begin();
+    database.command("sql", "TRUNCATE TYPE Follows POLYMORPHIC UNSAFE").close();
+    assertCount("Follows", 0);
+    assertIndexSize("Follows[since]", 0);
+    assertThat(database.lookupByRID(p3, true).asVertex().countEdges(Vertex.DIRECTION.OUT, "CloseFollows"))
+        .as("applied inside the open transaction, before it is closed").isEqualTo(0);
+    database.rollback();
+
+    assertCount("Follows", 2);
+    assertIndexSize("Follows[since]", 1);
+    assertThat(database.lookupByRID(p3, true).asVertex().countEdges(Vertex.DIRECTION.OUT, "CloseFollows"))
+        .as("a ROLLBACK of the caller's transaction must undo the lightweight DELETE FROM the same way it undoes "
+            + "the heavyweight per-record deletes (issue #6220)")
+        .isEqualTo(1);
+
+    // Then COMMIT: both must be gone for good, with the index still usable (per-record delete, not drop/rebuild).
+    database.begin();
+    database.command("sql", "TRUNCATE TYPE Follows POLYMORPHIC UNSAFE").close();
+    database.commit();
+
+    assertCount("Follows", 0);
+    assertIndexSize("Follows[since]", 0);
+    assertThat(database.lookupByRID(p3, true).asVertex().countEdges(Vertex.DIRECTION.OUT, "CloseFollows")).isEqualTo(0);
+
+    database.begin();
+    try {
+      database.lookupByRID(p1, true).asVertex().modify().newEdge("Follows", p2).set("since", "2020").save();
+    } finally {
+      database.commit();
+    }
+    assertCount("Follows", 1);
+    assertIndexSize("Follows[since]", 1);
+  }
+
   private void assertCount(final String typeName, final long expected) {
     try (final ResultSet rs = database.query("sql", "SELECT count(*) as cnt FROM " + typeName)) {
       assertThat(rs.next().<Long>getProperty("cnt")).isEqualTo(expected);
