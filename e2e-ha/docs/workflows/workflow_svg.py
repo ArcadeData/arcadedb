@@ -12,7 +12,7 @@ plain SVG strings drawn in the order given, so put cards first and arrows last.
 from dataclasses import dataclass, field
 from typing import List
 
-W, H = 1000, 580
+W, H = 1000, 620          # the last 40px are the transport bar
 
 BG = "#0b1220"
 PANEL = "#141f36"
@@ -29,6 +29,11 @@ FONT = "ui-sans-serif,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif"
 MONO = "ui-monospace,SFMono-Regular,Menlo,Consolas,monospace"
 
 FADE = 0.28  # seconds of cross-fade at each scene boundary
+
+STAGE_H = 424            # height of the rail / stage panels
+CAPTION_Y = 508          # top of the caption bar
+BAR_Y = 566              # top of the transport bar
+TRACK_X0, TRACK_X1 = 150, 850
 
 # ---------------------------------------------------------------------------- stage geometry
 CLIENT = (372, 246, 118, 76)          # x, y, w, h of the JUnit box
@@ -291,6 +296,133 @@ def _lint(scenes, subtitle, title):
                 print(f"    ! {title} / {sc.step}: {field} is {len(v)} chars (max {LIMITS[field]})")
 
 
+
+def _transport(scenes, total):
+    """The play/pause + scrub bar drawn inside the SVG.
+
+    The thumb is driven by SMIL, so it tracks the animation even where scripts never run (a GitHub
+    <img>, a thumbnail). The script on top adds pause, scrubbing and scene stepping, and runs
+    whenever the file is opened directly or embedded with <object> - never in an <img>.
+    """
+    tw = TRACK_X1 - TRACK_X0
+    starts, t = [], 0.0
+    for sc in scenes:
+        starts.append(t)
+        t += sc.dur
+
+    out = [rect(24, BAR_Y, W - 48, 42, fill=PANEL, r=12)]
+
+    # play / pause
+    out.append(f'<g id="btn-play" cursor="pointer">'
+               f'{rect(38, BAR_Y + 8, 32, 26, fill="#ffffff0d", stroke=PANEL_EDGE, r=8, sw=1.2)}'
+               f'<path id="icon-pause" d="M 50 {BAR_Y + 14} v 14 M 58 {BAR_Y + 14} v 14" stroke="{TEXT}" '
+               f'stroke-width="2.4" stroke-linecap="round"/>'
+               f'<path id="icon-play" d="M 50 {BAR_Y + 14} l 11 7 l -11 7 z" fill="{TEXT}" opacity="0"/>'
+               f'<title>play / pause (space)</title></g>')
+
+    # previous / next scene
+    for ident, x, d in (("btn-prev", 80, f"M {95} {BAR_Y + 14} l -9 7 l 9 7 z"),
+                        ("btn-next", 114, f"M {120} {BAR_Y + 14} l 9 7 l -9 7 z")):
+        out.append(f'<g id="{ident}" cursor="pointer">'
+                   f'{rect(x, BAR_Y + 8, 30, 26, fill="#ffffff0d", stroke=PANEL_EDGE, r=8, sw=1.2)}'
+                   f'<path d="{d}" fill="{TEXT}"/>'
+                   f'<title>{"previous" if ident.endswith("prev") else "next"} scene '
+                   f'({"left" if ident.endswith("prev") else "right"} arrow)</title></g>')
+
+    # track, one tick per scene boundary, and the SMIL-driven thumb
+    out.append(f'<g id="track" cursor="pointer">')
+    out.append(rect(TRACK_X0, BAR_Y + 34, tw, 14, fill="transparent", stroke="none", r=0, sw=0))
+    out.append(rect(TRACK_X0, BAR_Y + 18, tw, 6, fill="#ffffff14", stroke="none", r=3, sw=0))
+    for st in starts[1:]:
+        x = TRACK_X0 + tw * st / total
+        out.append(f'<path d="M {x} {BAR_Y + 15} v 12" stroke="{PANEL_EDGE}" stroke-width="1.4"/>')
+    out.append(f'<rect x="{TRACK_X0}" y="{BAR_Y + 18}" width="0" height="6" rx="3" fill="{BLUE}66">'
+               f'<animate attributeName="width" dur="{total}s" repeatCount="indefinite" '
+               f'values="0;{tw}" keyTimes="0;1" calcMode="linear"/></rect>')
+    out.append(f'<rect x="{TRACK_X0 - 2}" y="{BAR_Y + 12}" width="4" height="18" rx="2" fill="{BLUE}">'
+               f'<animate attributeName="x" dur="{total}s" repeatCount="indefinite" '
+               f'values="{TRACK_X0 - 2};{TRACK_X1 - 2}" keyTimes="0;1" calcMode="linear"/></rect>')
+    out.append("</g>")
+
+    out.append(f'<text id="loop-label" x="{W - 44}" y="{BAR_Y + 26}" font-family="{MONO}" '
+               f'font-size="11" fill="{MUTED}" text-anchor="end">loop {total:.0f}s</text>')
+    out.append(f'<text id="clock" x="{W - 44}" y="{BAR_Y + 26}" font-family="{MONO}" font-size="11" '
+               f'fill="{MUTED}" text-anchor="end" opacity="0">0.0 / {total:.0f}s</text>')
+
+    script = """
+(function () {
+  var svg = document.documentElement;
+  if (!svg.pauseAnimations) return;                 // no SMIL control here (rendered as an image)
+  var TOTAL = %TOTAL%, STARTS = %STARTS%;
+  var playing = true;
+  var pauseIcon = document.getElementById('icon-pause');
+  var playIcon = document.getElementById('icon-play');
+  var clock = document.getElementById('clock');
+  var loopLabel = document.getElementById('loop-label');
+
+  function now() { return svg.getCurrentTime() % TOTAL; }
+  function setPlaying(on) {
+    playing = on;
+    on ? svg.unpauseAnimations() : svg.pauseAnimations();
+    pauseIcon.setAttribute('opacity', on ? '1' : '0');
+    playIcon.setAttribute('opacity', on ? '0' : '1');
+  }
+  function seek(t) {
+    var base = Math.floor(svg.getCurrentTime() / TOTAL) * TOTAL;
+    svg.setCurrentTime(base + Math.max(0, Math.min(TOTAL - 0.001, t)));
+    tick();
+  }
+  function sceneAt(t) {
+    for (var i = STARTS.length - 1; i >= 0; i--) if (t >= STARTS[i] - 0.001) return i;
+    return 0;
+  }
+  function step(delta) {
+    var t = now(), i = sceneAt(t);
+    if (delta < 0 && t - STARTS[i] < 0.35) i--;     // a quick second press goes one further back
+    else if (delta > 0) i++;
+    if (i < 0) i = STARTS.length - 1;
+    if (i >= STARTS.length) i = 0;
+    setPlaying(false);
+    seek(STARTS[i] + 0.02);
+  }
+  function tick() {
+    clock.setAttribute('opacity', '1');
+    if (loopLabel) loopLabel.setAttribute('opacity', '0');
+    var t = now();
+    clock.textContent = t.toFixed(1) + ' / ' + TOTAL.toFixed(0) + 's  scene '
+      + (sceneAt(t) + 1) + '/' + STARTS.length;
+    requestAnimationFrame(tick);
+  }
+  function localX(evt) {
+    var p = svg.createSVGPoint();
+    p.x = evt.clientX; p.y = evt.clientY;
+    return p.matrixTransform(svg.getScreenCTM().inverse()).x;
+  }
+
+  document.getElementById('btn-play').addEventListener('click', function () { setPlaying(!playing); });
+  document.getElementById('btn-prev').addEventListener('click', function () { step(-1); });
+  document.getElementById('btn-next').addEventListener('click', function () { step(1); });
+
+  var track = document.getElementById('track'), dragging = false;
+  function scrub(evt) { seek((localX(evt) - %X0%) / %TW% * TOTAL); }
+  track.addEventListener('mousedown', function (e) { dragging = true; setPlaying(false); scrub(e); });
+  window.addEventListener('mousemove', function (e) { if (dragging) scrub(e); });
+  window.addEventListener('mouseup', function () { dragging = false; });
+
+  window.addEventListener('keydown', function (e) {
+    if (e.key === ' ' || e.key === 'k') { setPlaying(!playing); e.preventDefault(); }
+    else if (e.key === 'ArrowLeft') { step(-1); e.preventDefault(); }
+    else if (e.key === 'ArrowRight') { step(1); e.preventDefault(); }
+  });
+  tick();
+})();
+"""
+    script = (script.replace("%TOTAL%", f"{total}")
+                    .replace("%STARTS%", "[" + ",".join(f"{v:.2f}" for v in starts) + "]")
+                    .replace("%X0%", str(TRACK_X0)).replace("%TW%", str(tw)))
+    out.append(f'<script type="text/javascript"><![CDATA[{script}]]></script>')
+    return "".join(out)
+
 def build(out_path, title, subtitle, scenes, footer="", proxy=None):
     _lint(scenes, subtitle, title)
     total = sum(s.dur for s in scenes)
@@ -320,8 +452,8 @@ def build(out_path, title, subtitle, scenes, footer="", proxy=None):
 
     # ---- left rail: one row per scene, the active one highlighted
     rail_x, rail_y, rail_w = 24, 76, 300
-    s.append(rect(rail_x, rail_y, rail_w, H - 156, fill=PANEL, r=14))
-    row_h = (H - 156 - 20) / len(scenes)
+    s.append(rect(rail_x, rail_y, rail_w, STAGE_H, fill=PANEL, r=14))
+    row_h = (STAGE_H - 20) / len(scenes)
     start = 0.0
     for i, sc in enumerate(scenes):
         ry = rail_y + 10 + i * row_h
@@ -337,7 +469,7 @@ def build(out_path, title, subtitle, scenes, footer="", proxy=None):
         start += sc.dur
 
     # ---- stage chrome: JUnit box, optional proxy column, node boxes, Raft backbone
-    st_x, st_y, st_w, st_h = 348, 76, W - 348 - 24, H - 156
+    st_x, st_y, st_w, st_h = 348, 76, W - 348 - 24, STAGE_H
     s.append(rect(st_x, st_y, st_w, st_h, fill=PANEL, r=14))
 
     cx_, cy_, cw, ch = CLIENT
@@ -373,7 +505,7 @@ def build(out_path, title, subtitle, scenes, footer="", proxy=None):
         start += sc.dur
 
     # ---- caption bar
-    cap_y = H - 72
+    cap_y = CAPTION_Y
     s.append(rect(24, cap_y, W - 48, 48, fill=PANEL, r=12))
     start = 0.0
     for sc in scenes:
@@ -382,9 +514,8 @@ def build(out_path, title, subtitle, scenes, footer="", proxy=None):
             g.append(txt(44, cap_y + 38, sc.detail, size=10.5, fill=MUTED, font=MONO))
         s.append(f'<g opacity="0">{"".join(g)}{anim(start, sc.dur)}</g>')
         start += sc.dur
-    if footer:
-        s.append(txt(W - 44, cap_y + 30, footer, size=11, fill=MUTED, anchor="end", font=MONO))
 
+    s.append(_transport(scenes, total))
     s.append("</svg>")
     with open(out_path, "w") as f:
         f.write("".join(s) + "\n")

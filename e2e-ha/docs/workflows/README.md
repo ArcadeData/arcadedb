@@ -11,6 +11,26 @@ between them. Open it with `open index.html` (any browser; a plain `file://` URL
 A browser is the only reliable viewer: the animation is SMIL, which macOS Preview, Quick Look and
 the IntelliJ SVG preview render as a blank stage because they only ever draw frame 0.
 
+## Pausing, stepping and scrubbing
+
+Every diagram carries its own transport bar along the bottom:
+
+| Control | Does |
+|---|---|
+| play / pause button, <kbd>space</kbd> or <kbd>k</kbd> | freezes the animation where it is |
+| prev / next buttons, <kbd>&larr;</kbd> <kbd>&rarr;</kbd> | jumps to the previous or next scene and pauses there |
+| the track | click or drag anywhere to scrub; the ticks are the scene boundaries |
+| the readout | elapsed time and which scene is on screen |
+
+The controls live inside the SVG, so they work in `index.html` **and** when a single `.svg` is opened
+straight from the file system (`open raft-log-replication.svg`). The keyboard shortcuts need the
+diagram to have focus, so click it once first.
+
+Two places where the diagrams stay non-interactive, by design: a GitHub markdown preview and this
+README render them through `<img>`, which never runs the embedded script. The progress thumb is
+animated with SMIL rather than by the script, so it still tracks the animation there - what is lost
+is only the ability to stop it.
+
 ## Raft protocol
 
 These explain the algorithm, not the tests. Every number, entry type, setting and endpoint on them

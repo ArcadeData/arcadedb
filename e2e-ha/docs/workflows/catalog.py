@@ -51,7 +51,11 @@ nav button small{display:block;color:var(--muted);font-weight:400;font-size:11px
 section{background:var(--panel);border:1px solid var(--edge);border-radius:14px;padding:18px}
 section h2{margin:0 0 4px;font-size:17px}
 section p.blurb{margin:0 0 12px;color:var(--muted);font-size:13px;line-height:1.5}
-img{width:100%;height:auto;border-radius:12px;display:block;background:var(--bg)}
+object.stage{width:100%;aspect-ratio:1000/620;border-radius:12px;display:block;background:var(--bg);
+ border:0}
+p.hint{margin:10px 0 0;color:var(--muted);font-size:12px}
+p.hint kbd{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;
+ border:1px solid var(--edge);border-radius:5px;padding:1px 5px;color:var(--text)}
 ul.meta{list-style:none;display:flex;flex-wrap:wrap;gap:8px;padding:0;margin:12px 0 0}
 ul.meta li{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;
  color:var(--muted);border:1px solid var(--edge);border-radius:9px;padding:4px 9px}
@@ -75,15 +79,19 @@ def write_index():
   <p>Looping animations, two groups. <strong>Raft protocol</strong> explains the consensus algorithm as
      this codebase implements it, with the real entry types, settings and endpoints.
      <strong>Test workflows</strong> gives one animation per integration test in <code>e2e-ha</code>.
-     In every diagram the left rail is the sequence, the stage is the cluster, and the bottom bar
-     carries the contract. Regenerate with <code>python3 build_all.py</code>.</p>
+     In every diagram the left rail is the sequence, the stage is the cluster, the caption bar
+     carries the contract, and the transport bar at the bottom pauses, steps and scrubs.
+     Regenerate with <code>python3 build_all.py</code>.</p>
 </header>
 <main>
   <nav id="nav"></nav>
   <section>
     <h2 id="title"></h2>
     <p class="blurb" id="blurb"></p>
-    <img id="svg" alt="">
+    <object id="svg" class="stage" type="image/svg+xml" data=""></object>
+    <p class="hint">Click the diagram first, then: <kbd>space</kbd> pause / resume,
+       <kbd>&larr;</kbd> <kbd>&rarr;</kbd> step scenes. The bar at the bottom of every diagram has the
+       same controls, and can be dragged to scrub.</p>
     <ul class="meta" id="meta"></ul>
   </section>
 </main>
@@ -96,9 +104,9 @@ function show(i) {{
   const d = DIAGRAMS[i];
   document.getElementById('title').textContent = d.title;
   document.getElementById('blurb').textContent = d.blurb;
-  const img = document.getElementById('svg');
-  img.src = d.slug + '.svg?' + Date.now();   // force the animation to restart from scene 1
-  img.alt = d.title;
+  const obj = document.getElementById('svg');
+  obj.data = d.slug + '.svg?' + Date.now();  // reload, so the animation restarts from scene 1
+  obj.setAttribute('aria-label', d.title);
   const meta = ['<li>' + d.scenes + ' scenes</li>', '<li>' + d.loop + 's loop</li>'];
   if (d.methods.length)
     meta.push('<li>' + d.methods.length + ' @Test method' + (d.methods.length > 1 ? 's' : '') + '</li>');
