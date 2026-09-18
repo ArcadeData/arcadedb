@@ -164,10 +164,11 @@ public class ExpandStep extends AbstractExecutionStep {
           nextSubsequence = iterator;
         } else if (projValue instanceof Iterable iterable) {
           nextSubsequence = iterable.iterator();
-        } else if (isExpandableArray(projValue)) {
+        } else if (MultiValue.isSequenceArray(projValue)) {
           // A native array (ARRAY_OF_SHORTS/INTEGERS/LONGS/FLOATS/DOUBLES, or any Object[]) is a sequence just like
           // a LIST holding the same values, so it yields one row per element and not one row holding the whole
-          // array. MultiValue.getMultiValueIterator() boxes the elements of a primitive array through reflection.
+          // array. A byte[] is excluded: it is a BINARY blob, not a sequence. MultiValue.getMultiValueIterator()
+          // boxes the elements of a primitive array through reflection.
           nextSubsequence = MultiValue.getMultiValueIterator(projValue);
         } else {
           // A single non-collection value (scalar, Map, ...) is one element, not zero: treat it as a
@@ -180,16 +181,6 @@ public class ExpandStep extends AbstractExecutionStep {
           cost += System.nanoTime() - begin;
       }
     } while (true);
-  }
-
-  /**
-   * A value is expanded element by element when it is a native array, exactly as a {@code LIST} holding the same
-   * values is. The single exception is {@code byte[]}: that is how a {@code BINARY} property is represented, i.e. an
-   * opaque blob rather than a sequence, and expanding it one byte per row would turn a megabyte into a million rows.
-   */
-  private static boolean isExpandableArray(final Object value) {
-    final Class<?> type = value.getClass();
-    return type.isArray() && type.getComponentType() != byte.class;
   }
 
   @Override
