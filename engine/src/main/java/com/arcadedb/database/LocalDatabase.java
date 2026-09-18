@@ -134,6 +134,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.UnaryOperator;
 import java.util.logging.Level;
 import java.util.stream.Stream;
 
@@ -2479,6 +2480,21 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       return value;
     });
     return previous[0];
+  }
+
+  /**
+   * One {@code ConcurrentHashMap.compute}, so the read, the computation and the write are a single atomic operation
+   * on this node (issue #7776). {@code remapping} runs while the map holds the key's bin, which is why the contract
+   * on {@link DatabaseInternal#computeGlobalVariable} requires it to be short and to not re-enter this map.
+   */
+  @Override
+  public Object computeGlobalVariable(String name, final UnaryOperator<Object> remapping) {
+    if (name == null)
+      throw new IllegalArgumentException("Variable name cannot be null");
+    if (name.startsWith("$"))
+      name = name.substring(1);
+    SQLQueryEngine.validateVariableName(name);
+    return globalVariables.compute(name, (key, current) -> remapping.apply(current));
   }
 
   @Override

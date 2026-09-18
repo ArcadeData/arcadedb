@@ -52,6 +52,12 @@ import java.util.logging.Level;
  * @author Arcade Data Ltd
  */
 public class WebSocketInsertSessionManager {
+  /**
+   * Channel attribute set by {@link #closeChannelSessions}, so a {@code start} frame drained after the connection
+   * closed is refused instead of opening a session nothing will ever deregister (issue #7471).
+   */
+  private static final String CHANNEL_CLOSED_ATTRIBUTE = "arcadedb.ws.insert.channelClosed";
+
   private final ArcadeDBServer                          server;
   /**
    * Where a {@code start} frame's {@code transactionId} is resolved (issue #7403). The same registry
@@ -113,8 +119,9 @@ public class WebSocketInsertSessionManager {
    *                              this session is to write into instead of opening one of its own (issue #7403),
    *                              or {@code null}/blank for a server-managed session
    *
-   * @throws IllegalStateException    when the channel already has a session, the requested id is taken, or the
-   *                                  named external transaction is unknown or expired - which is the
+   * @throws IllegalStateException    when the channel already has a session, the channel has closed (or is
+   *                                  closing) underneath a frame that was still queued, the requested id is taken,
+   *                                  or the named external transaction is unknown or expired - which is the
    *                                  {@code FAILED_PRECONDITION} the gRPC path answers, never a silent
    *                                  fall-through to a server-managed transaction
    * @throws SecurityException        when the principal cannot access the database
@@ -146,10 +153,26 @@ public class WebSocketInsertSessionManager {
 
     // Claim the channel BEFORE the id: a client that pipelines two starts must be refused on the second one
     // whichever id it chose, and claiming the id first would leave it registered to a session that is refused.
-    final String alreadyOnChannel = byChannel.putIfAbsent(channelId, id);
-    if (alreadyOnChannel != null)
-      throw new IllegalStateException(
-          "This connection already has insert session '" + alreadyOnChannel + "' open. Commit or roll it back first");
+    //
+    // Through compute() rather than putIfAbsent() because this claim has a SECOND invariant to keep, and the two
+    // have to be decided together (issue #7471): the channel must still be one this connection can have a session
+    // on. A 'start' frame still queued when the connection dies is drained by the frame queue's worker task, while
+    // closeChannelSessions() runs on a worker task of its own, and nothing orders the two - so the start could open
+    // a session on a dead channel AFTER the sweep that would have cleaned it up had already been and gone, leaving
+    // an open transaction held until the idle sweep reclaimed it, once per abrupt disconnect. compute() and the
+    // compute() in closeChannelSessions() are mutually exclusive on this key, which decides the race either way
+    // round: a start that wins registers a session the close then rolls back, and a start that loses finds the
+    // marker the close left on the channel and is refused.
+    byChannel.compute(channelId, (key, alreadyOnChannel) -> {
+      if (alreadyOnChannel != null)
+        throw new IllegalStateException(
+            "This connection already has insert session '" + alreadyOnChannel + "' open. Commit or roll it back first");
+
+      if (channelIsGone(channel))
+        throw new IllegalStateException("This connection is closing and is not opening new insert sessions");
+
+      return id;
+    });
 
     final DatabaseInternal database;
     final WebSocketInsertSession session;
@@ -237,18 +260,51 @@ public class WebSocketInsertSessionManager {
   }
 
   /**
-   * Rolls back and forgets every session opened on a channel. Called when the connection closes, whether the
-   * client said goodbye or the socket simply went away.
+   * Rolls back and forgets every session opened on a channel, and marks the channel so no LATER {@code start} can
+   * open one on it. Called when the connection closes, whether the client said goodbye or the socket simply went
+   * away. Idempotent: both close paths may call it.
+   * <p>
+   * The marker is what makes this safe against a {@code start} frame that is still queued when the connection dies
+   * (issue #7471). It is set BEFORE the registry is cleared, and read inside {@link #start}'s claim of the same
+   * key, so the two orderings are the only two possible: this call sees a session and rolls it back, or the start
+   * sees the marker and is refused. It lives on the CHANNEL rather than in a set here, so it is reclaimed with the
+   * connection instead of accumulating one entry per connection the server has ever served.
+   *
+   * @param channel   the connection that closed, or {@code null} when it is not reachable - in which case the
+   *                  marker cannot be set and only the sessions already registered are rolled back
+   * @param channelId the id the sessions of that connection are registered under
    */
-  public void closeChannelSessions(final UUID channelId) {
-    final String sessionId = byChannel.remove(channelId);
-    if (sessionId == null)
+  public void closeChannelSessions(final WebSocketChannel channel, final UUID channelId) {
+    if (channel != null)
+      channel.setAttribute(CHANNEL_CLOSED_ATTRIBUTE, Boolean.TRUE);
+
+    // compute(), not remove(), to be explicit that this is the same per-key critical section start() claims under.
+    final String[] removed = new String[1];
+    byChannel.compute(channelId, (key, sessionId) -> {
+      removed[0] = sessionId;
+      return null;
+    });
+
+    if (removed[0] == null)
       return;
 
-    final WebSocketInsertSession session = sessions.remove(sessionId);
+    final WebSocketInsertSession session = sessions.remove(removed[0]);
     if (session != null && session.cancel())
       LogManager.instance().log(this, Level.FINE,
-          "Rolled back /ws insert session %s: its connection closed before it was committed", sessionId);
+          "Rolled back /ws insert session %s: its connection closed before it was committed", removed[0]);
+  }
+
+  /**
+   * Whether {@code channel} can no longer carry a session: either it is already closed, or
+   * {@link #closeChannelSessions} has marked it as closing.
+   * <p>
+   * Both tests are needed. {@code isOpen()} alone misses the courteous-close path, where the receive listener's
+   * {@code onClose} reaches {@link #closeChannelSessions} while Undertow is still completing the closing handshake
+   * and the channel therefore still reports itself open. The marker alone would miss a channel that died before
+   * any close handler had run.
+   */
+  private static boolean channelIsGone(final WebSocketChannel channel) {
+    return channel != null && (!channel.isOpen() || channel.getAttribute(CHANNEL_CLOSED_ATTRIBUTE) != null);
   }
 
   /**

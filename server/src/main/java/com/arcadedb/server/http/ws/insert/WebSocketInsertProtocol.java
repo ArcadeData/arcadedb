@@ -65,7 +65,9 @@ import java.util.logging.Level;
  *     the session's {@code targetType}; an edge record names its endpoints with {@code @from} / {@code @to}
  *     (gRPC's {@code out} / {@code in} are accepted too). Answered with {@code batchAck}.</li>
  * <li>{@code commit} / {@code rollback} - {@code sessionId}. Answered with {@code committed}, whose
- *     {@code outcome} says which of the two it was and whose {@code summary} carries the full-session totals.
+ *     {@code outcome} says which of the two it was and whose {@code summary} carries the full-session totals -
+ *     each chunk counted once, as its LATEST attempt left it, so a chunk that failed as a whole and was then
+ *     replayed is counted only as the replay wrote it (issue #7471).
  *     A session running on an externally-managed transaction ({@code transactionMode: "none"}) answers
  *     {@code outcome: "detached"} to BOTH, because neither frame decides anything: the HTTP {@code /commit} or
  *     {@code /rollback} that owns the transaction does, and saying {@code "commit"} there would tell a client
@@ -150,10 +152,10 @@ public class WebSocketInsertProtocol {
     if (channelId == null)
       return;
     try {
-      channel.getWorker().execute(() -> sessionManager.closeChannelSessions(channelId));
+      channel.getWorker().execute(() -> sessionManager.closeChannelSessions(channel, channelId));
     } catch (final RejectedExecutionException e) {
       // The worker is going away with the connection; roll back here rather than not at all.
-      sessionManager.closeChannelSessions(channelId);
+      sessionManager.closeChannelSessions(channel, channelId);
     }
   }
 

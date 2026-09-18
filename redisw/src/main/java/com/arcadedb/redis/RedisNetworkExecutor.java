@@ -51,6 +51,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.UnaryOperator;
 import java.util.logging.Level;
 
 public class RedisNetworkExecutor extends Thread {
@@ -424,20 +425,23 @@ public class RedisNetworkExecutor extends Thread {
     return message.replace('\r', ' ').replace('\n', ' ');
   }
 
+  /**
+   * DECR/DECRBY. The read, the subtraction and the write are ONE atomic operation on the key - see
+   * {@link #computeVariable} for why a get followed by a set is not good enough here (issue #7776).
+   */
   private void decrBy(final List<Object> list) {
     final String k = (String) list.get(1);
     final long by = list.size() > 2 ? Long.parseLong((String) list.get(2)) : 1L;
 
-    final long number = requireIntegralValue(getVariable(k)).longValue();
+    final long newValue = ((Number) computeVariable(k, stored -> {
+      final long number = requireIntegralValue(stored).longValue();
+      try {
+        return Math.subtractExact(number, by);
+      } catch (final ArithmeticException e) {
+        throw new RedisException("increment or decrement would overflow", e);
+      }
+    })).longValue();
 
-    final long newValue;
-    try {
-      newValue = Math.subtractExact(number, by);
-    } catch (final ArithmeticException e) {
-      throw new RedisException("increment or decrement would overflow", e);
-    }
-
-    setVariable(k, newValue);
     value.append(":");
     value.append(newValue);
   }
@@ -672,37 +676,38 @@ public class RedisNetworkExecutor extends Thread {
     } else
       by = 1L;
 
-    // INCRBYFLOAT has no integral restriction - it promotes an integral value to float and accepts any
-    // stored value it can read as a float ("3.3" included, issue #6942 code review) - while INCR/INCRBY
-    // reuse the DECR/DECRBY validation in requireIntegralValue().
-    final Number number;
-    if (decimal) {
-      final Object stored = getVariable(k);
-      if (stored == null)
-        number = 0L;
-      else if (stored instanceof Number storedNumber)
-        number = storedNumber;
-      else {
+    // The read, the addition and the write are ONE atomic operation on the key - see computeVariable() for why a
+    // get followed by a set is not good enough here (issue #7776).
+    final Number newValue = (Number) computeVariable(k, stored -> {
+      // INCRBYFLOAT has no integral restriction - it promotes an integral value to float and accepts any
+      // stored value it can read as a float ("3.3" included, issue #6942 code review) - while INCR/INCRBY
+      // reuse the DECR/DECRBY validation in requireIntegralValue().
+      final Number number;
+      if (decimal) {
+        if (stored == null)
+          number = 0L;
+        else if (stored instanceof Number storedNumber)
+          number = storedNumber;
+        else {
+          try {
+            number = Double.parseDouble(stored.toString());
+          } catch (final NumberFormatException e) {
+            throw new RedisException("value is not a valid float");
+          }
+        }
+      } else
+        number = requireIntegralValue(stored);
+
+      if (!decimal) {
         try {
-          number = Double.parseDouble(stored.toString());
-        } catch (final NumberFormatException e) {
-          throw new RedisException("value is not a valid float");
+          return Math.addExact(number.longValue(), by.longValue());
+        } catch (final ArithmeticException e) {
+          throw new RedisException("increment or decrement would overflow", e);
         }
       }
-    } else
-      number = requireIntegralValue(getVariable(k));
+      return Type.increment(number, by);
+    });
 
-    final Number newValue;
-    if (!decimal) {
-      try {
-        newValue = Math.addExact(number.longValue(), by.longValue());
-      } catch (final ArithmeticException e) {
-        throw new RedisException("increment or decrement would overflow", e);
-      }
-    } else
-      newValue = Type.increment(number, by);
-
-    setVariable(k, newValue);
     if (decimal) {
       final String text = newValue.toString();
       value.append("$");
@@ -1032,6 +1037,31 @@ public class RedisNetworkExecutor extends Thread {
       return value;
     });
     return previous[0];
+  }
+
+  /**
+   * Atomic read-modify-write on one key: {@code remapping} sees the current value (or {@code null} when the key is
+   * absent) and its result is stored, all as a single operation on the map underneath (issue #7776).
+   * <p>
+   * This is what INCR/DECR need and what {@link #getVariable} followed by {@link #setVariable} cannot give them:
+   * real Redis' single-threaded command loop makes INCR atomic, a counter is the single most common thing INCR is
+   * used for, and {@code RedisNetworkExecutor} is a thread per connection with no lock between them - so two
+   * connections incrementing one key interleaved their read and their write and lost updates, replying a plausible
+   * {@code :<n>} to each. It is the read-modify-write sibling of the check-and-set pair {@link #setVariableIfAbsent}
+   * / {@link #setVariableIfPresent} that SET NX/XX already had.
+   * <p>
+   * {@code remapping} runs while the map holds that key's bin, so it must stay short and must not touch the
+   * keyspace again. Throwing out of it - which is how a value INCR cannot operate on is refused - leaves the key
+   * unchanged and propagates to the caller.
+   *
+   * @return the value {@code remapping} returned, i.e. the key's new value
+   */
+  private Object computeVariable(final String key, final UnaryOperator<Object> remapping) {
+    final ResolvedKey resolved = resolveKeyAndDatabase(key);
+
+    if (resolved.database() != null)
+      return resolved.database().computeGlobalVariable(resolved.key(), remapping);
+    return defaultBucket.compute(resolved.key(), (k, current) -> remapping.apply(current));
   }
 
   private Object removeVariable(final String key) {

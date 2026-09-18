@@ -58,9 +58,10 @@ public interface MaintenanceCoordinator {
   /**
    * The whole-database maintenance operations that share one per-database slot.
    * <p>
-   * {@link #conflictsWith} is the whole admission policy. A {@link #RESTORE} excludes everything and is excluded by
-   * everything, because it drops and replaces the database directory every other operation is reading or writing.
-   * Apart from a restore, the only refusal left is an operation of the same kind as one already running, and
+   * {@link #conflictsWith} is the whole admission policy. A {@link #RESTORE} or a {@link #DROP} excludes everything
+   * and is excluded by everything, because each destroys the database directory every other operation is reading
+   * or writing - a restore by replacing it, a drop by deleting it outright with no replacement (issue #7641). Apart
+   * from those two, the only refusal left is an operation of the same kind as one already running, and
    * {@link #EXPORT} is the one kind exempt from even that.
    * <p>
    * A {@link #BACKUP} excludes another backup because two full backups of one database read and compress the same
@@ -77,7 +78,21 @@ public interface MaintenanceCoordinator {
      * A SQL {@code EXPORT DATABASE}: reads the whole database off disk and writes an archive, like a backup, but
      * to a target the statement names, so two of them are legitimate and are admitted together (issue #7450).
      */
-    EXPORT("export", "an export");
+    EXPORT("export", "an export"),
+    /**
+     * {@code drop database}: deletes the database directory outright, unconditionally and with no replacement -
+     * the same class of defect {@link #RESTORE} was given the slot for (#7384), on the one whole-database delete
+     * that was still left unslotted (issue #7641).
+     */
+    DROP("drop", "a drop"),
+    /**
+     * {@code close database}: closes the open instance and deregisters it from the server. It leaves the directory
+     * alone, so it is not a destroyer the way {@link #RESTORE} and {@link #DROP} are - but every operation in this
+     * enum works THROUGH that instance, and closing it underneath one fails just as silently by another route: a
+     * backup or an export loses the database it was streaming, half way into its archive. Enrolled with the same
+     * conflict rule as {@link #DROP} (issue #7469, the residue left over when create and drop were enrolled).
+     */
+    CLOSE("close", "a close");
 
     private final String verb;
     private final String phrase;
@@ -111,11 +126,20 @@ public interface MaintenanceCoordinator {
      * operations, and it is NOT reflexive: {@code EXPORT.conflictsWith(EXPORT)} is false.
      */
     public boolean conflictsWith(final Operation other) {
-      if (this == RESTORE || other == RESTORE)
+      if (excludesEverything(this) || excludesEverything(other))
         return true;
       // EVERY OTHER KIND EXCLUDES A SECOND OF ITS OWN - EXCEPT AN EXPORT, WHOSE TARGET THE STATEMENT NAMES, SO TWO
       // OF THEM ARE TWO DIFFERENT ARCHIVES RATHER THAN TWO WRITERS OF ONE (issue #7450)
       return this == other && this != EXPORT;
+    }
+
+    /**
+     * The kinds that take the database away from every other operation: {@link #RESTORE} and {@link #DROP} replace
+     * or delete its directory, {@link #CLOSE} closes the instance they all work through. Named rather than spelled
+     * out inline so the next such kind is added in one place instead of two halves of one condition.
+     */
+    private static boolean excludesEverything(final Operation operation) {
+      return operation == RESTORE || operation == DROP || operation == CLOSE;
     }
   }
 
