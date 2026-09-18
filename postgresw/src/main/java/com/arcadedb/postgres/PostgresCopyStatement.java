@@ -19,6 +19,7 @@
 package com.arcadedb.postgres;
 
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.query.sql.parser.Identifier;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -209,13 +210,19 @@ public final class PostgresCopyStatement {
       }
     }
 
+    // Identifier.quote() is the escaping, not a copy of it (issue #7858): the grammar's
+    // QUOTED_IDENTIFIER : BACKTICK ( ~[`\\] | '\\' . )+ BACKTICK gives a backslash its escaping meaning, so the
+    // back-quote AND the backslash both have to be escaped here. Splicing them raw and refusing only the
+    // back-quote - which is what this used to do - is the defect #7740 fixed in TimeSeriesTypeBuilder.quote():
+    // a type named `a\b` was read as `ab`, and one ending in a backslash swallowed the closing quote and ran
+    // into whatever parseTail() appended after it.
     final StringBuilder select = new StringBuilder("SELECT ");
     for (int c = 0; c < columns.size(); c++) {
       if (c > 0)
         select.append(", ");
-      select.append('`').append(columns.get(c)).append('`');
+      select.append(Identifier.quote(columns.get(c)));
     }
-    select.append(columns.isEmpty() ? "FROM `" : " FROM `").append(table).append('`');
+    select.append(columns.isEmpty() ? "FROM " : " FROM ").append(Identifier.quote(table));
     return parseTail(select.toString(), tokens, i, false);
   }
 
@@ -376,11 +383,6 @@ public final class PostgresCopyStatement {
     final PostgresCatalogToken token = tokens.get(i);
     if (token.type != PostgresCatalogToken.Type.IDENTIFIER && token.type != PostgresCatalogToken.Type.QUOTED_IDENTIFIER)
       throw new CopyException("syntax error in COPY at '" + token.text + "': expected a name", SQLSTATE_SYNTAX_ERROR);
-    // The table form splices its names into a SELECT between back-ticks, which ArcadeDB's SQL cannot escape inside
-    // an identifier: a name holding one would end the identifier early and read the rest as SQL. No type or
-    // property can be named that way, so there is nothing to lose by refusing it.
-    if (token.text.indexOf('`') >= 0)
-      throw new CopyException("syntax error in COPY: the name \"" + token.text + "\" cannot contain a back-tick", SQLSTATE_SYNTAX_ERROR);
     return token.text;
   }
 
