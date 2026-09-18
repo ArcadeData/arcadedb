@@ -248,7 +248,7 @@ public class MembershipSecuritySeeder implements AutoCloseable {
         "Peer(s) %s joined the Raft configuration at term=%d index=%d: seeding the cluster security documents",
         added, term, index);
 
-    schedule("the peer(s) " + added + " joining the Raft configuration");
+    schedule("the peer(s) " + added + " joining the Raft configuration", false);
   }
 
   /**
@@ -266,6 +266,12 @@ public class MembershipSecuritySeeder implements AutoCloseable {
    * merely serialising it: by the time an admitting node can call this, the membership change has committed and
    * the configuration callback above has already scheduled the seed for it. See {@link #outstandingSeed}.
    *
+   * @param mayReuseRecentSeed whether a seed that finished moments ago may ANSWER this request instead of a new
+   *                  one being run. True for an admission, whose request is a round trip behind the membership
+   *                  change that already seeded for it. <b>False for anything that has established it needs a
+   *                  seed</b> - a catch-up whose fingerprints did not match has just been told this node is out
+   *                  of step, and answering it from an unrelated recent result would leave it that way, which
+   *                  is the failure issue #7833 exists to repair (CodeRabbit on PR #7854)
    * @param reason    what the seed is FOR, in the caller's own words, because it is what the log lines this
    *                  run writes will name. Hardcoding an admission's phrasing here made the issue #7833
    *                  catch-up - the one caller with no concurrent membership seed to fold into, so the one
@@ -279,20 +285,9 @@ public class MembershipSecuritySeeder implements AutoCloseable {
    * @throws IllegalStateException when no seed could be run or awaited at all, so a caller never reads
    *                               "nothing failed" from a seed that never happened
    */
-  public List<String> seedNowAndReport(final String reason, final long timeoutMs) {
-    synchronized (this) {
-      // A seed that finished moments ago answers this request; see lastCompletedSeed for why that is the same
-      // answer a new one would produce.
-      if (lastCompletedSeed != null && System.currentTimeMillis() - lastCompletedSeedAt <= REUSE_WINDOW_MS
-          && (outstandingSeed == null || outstandingSeed.isDone())) {
-        LogManager.instance().log(this, Level.FINE,
-            "A cluster security seed finished %dms ago; reporting its outcome instead of running a second one",
-            System.currentTimeMillis() - lastCompletedSeedAt);
-        return report(lastCompletedSeed, timeoutMs);
-      }
-    }
-
-    final CompletableFuture<List<String>> seed = schedule(reason);
+  public List<String> seedNowAndReport(final String reason, final long timeoutMs,
+      final boolean mayReuseRecentSeed) {
+    final CompletableFuture<List<String>> seed = schedule(reason, mayReuseRecentSeed);
     if (seed == null)
       throw new IllegalStateException("the security seed could not be scheduled; this node may be stopping");
 
@@ -319,8 +314,11 @@ public class MembershipSecuritySeeder implements AutoCloseable {
    * Schedules a seed, or hands back the one that is already queued or running. {@code null} when the executor
    * refused the task, which on the owned executor means the node is stopping.
    */
-  private CompletableFuture<List<String>> schedule(final String reason) {
+  private CompletableFuture<List<String>> schedule(final String reason, final boolean mayReuseRecentSeed) {
     final CompletableFuture<List<String>> seed;
+    // Fold, reuse and install are ONE decision under ONE acquisition (CodeRabbit on PR #7854). Splitting the
+    // reuse check out let a caller pass it while the outstanding seed was still running, pause, and install a
+    // second seed after that one finished - the duplicate the reuse exists to prevent.
     synchronized (this) {
       // A DONE future does not block the next schedule, so the slot never has to be cleared: whoever comes
       // next simply installs their own. That is what lets the refusal below answer rather than undo.
@@ -328,6 +326,13 @@ public class MembershipSecuritySeeder implements AutoCloseable {
         LogManager.instance().log(this, Level.FINE,
             "A cluster security seed is already outstanding; the one for %s folds into it", reason);
         return outstandingSeed;
+      }
+      if (mayReuseRecentSeed && lastCompletedSeed != null
+          && System.currentTimeMillis() - lastCompletedSeedAt <= REUSE_WINDOW_MS) {
+        LogManager.instance().log(this, Level.FINE,
+            "A cluster security seed finished %dms ago; %s reports its outcome instead of running a second one",
+            System.currentTimeMillis() - lastCompletedSeedAt, reason);
+        return lastCompletedSeed;
       }
       seed = new CompletableFuture<>();
       outstandingSeed = seed;
@@ -362,8 +367,10 @@ public class MembershipSecuritySeeder implements AutoCloseable {
   private void runSeed(final String reason, final CompletableFuture<List<String>> result) {
     try {
       final List<String> failed = seed.seed(retryBudgetMs.getAsLong());
-      result.complete(List.copyOf(failed));
+      // Recorded BEFORE the future is completed: a caller that sees the outstanding seed done must also see
+      // the result it is allowed to reuse, or it installs a second seed for work that just finished.
       recordCompletion(result);
+      result.complete(List.copyOf(failed));
       if (failed.isEmpty())
         // "Committed", not "the peer now holds them": what the submit waits for is a Raft commit, which a
         // quorum satisfies. The joining peer applies the entries when it catches up, and nothing here observes
@@ -404,7 +411,13 @@ public class MembershipSecuritySeeder implements AutoCloseable {
    */
   // @VisibleForTesting
   CompletableFuture<List<String>> scheduleForTest(final String reason) {
-    return schedule(reason);
+    return schedule(reason, false);
+  }
+
+  /** {@link #scheduleForTest(String)} for the reuse path, which only an admission is allowed to take. */
+  // @VisibleForTesting
+  CompletableFuture<List<String>> scheduleReusingForTest(final String reason) {
+    return schedule(reason, true);
   }
 
   /** Publishes a finished seed for {@link #REUSE_WINDOW_MS}, so a request a round trip behind it is answered. */

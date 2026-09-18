@@ -1733,11 +1733,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * with a second request.
    *
    * @param reason what the seed is for, carried through to the log lines the run writes
+   * @param mayReuseRecentSeed whether a seed that just finished may answer this request; see
+   *               {@link MembershipSecuritySeeder#seedNowAndReport} for why only an admission may say true
    *
    * @throws IllegalStateException when no seed could be run or its outcome could not be read
    */
-  public List<String> seedSecurityNowAndReport(final String reason, final long timeoutMs) {
-    return membershipSecuritySeeder.seedNowAndReport(reason, timeoutMs);
+  public List<String> seedSecurityNowAndReport(final String reason, final long timeoutMs,
+      final boolean mayReuseRecentSeed) {
+    return membershipSecuritySeeder.seedNowAndReport(reason, timeoutMs, mayReuseRecentSeed);
   }
 
   /** Package-private test seam (issue #7531): substitutes the seeder the configuration callback drives. */
