@@ -73,7 +73,10 @@ public class SecurityUserFileRepository {
       final Path tmp = Files.createTempFile(target.getParent(), FILE_NAME, ".tmp");
       try {
         try (final FileChannel channel = FileChannel.open(tmp, StandardOpenOption.WRITE)) {
-          channel.write(ByteBuffer.wrap(bytes));
+          // Looped, because FileChannel.write() is only obliged to consume SOME of what remains: a short write
+          // here would fsync and publish a truncated server-users.jsonl, which load() cannot parse and falls back
+          // to createDefault() - a single 'root' user and nobody else, silently (issue #7825).
+          FileUtils.writeFully(channel, ByteBuffer.wrap(bytes));
           channel.force(true);
         }
 

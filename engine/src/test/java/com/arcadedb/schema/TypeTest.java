@@ -1279,6 +1279,11 @@ class TypeTest extends TestHelper {
 
     result = Type.castComparableNumber((short) 1, (byte) 2);
     assertThat(result[0]).isInstanceOf(Byte.class);
+
+    // issue #7669: Short had no right-hand BigInteger arm
+    result = Type.castComparableNumber((short) 1, new BigInteger("2"));
+    assertThat(result[0]).isInstanceOf(BigDecimal.class);
+    assertThat(result[1]).isInstanceOf(BigDecimal.class);
   }
 
   @Test
@@ -1302,6 +1307,11 @@ class TypeTest extends TestHelper {
 
     result = Type.castComparableNumber(1, (byte) 2);
     assertThat(result[1]).isInstanceOf(Integer.class);
+
+    // issue #7669: Integer had no right-hand BigInteger arm
+    result = Type.castComparableNumber(1, new BigInteger("2"));
+    assertThat(result[0]).isInstanceOf(BigDecimal.class);
+    assertThat(result[1]).isInstanceOf(BigDecimal.class);
   }
 
   @Test
@@ -1325,6 +1335,11 @@ class TypeTest extends TestHelper {
 
     result = Type.castComparableNumber(1L, (byte) 2);
     assertThat(result[1]).isInstanceOf(Long.class);
+
+    // issue #7669: Long had no right-hand BigInteger arm
+    result = Type.castComparableNumber(1L, new BigInteger("2"));
+    assertThat(result[0]).isInstanceOf(BigDecimal.class);
+    assertThat(result[1]).isInstanceOf(BigDecimal.class);
   }
 
   @Test
@@ -1346,6 +1361,27 @@ class TypeTest extends TestHelper {
 
     result = Type.castComparableNumber(1.0f, (short) 2);
     assertThat(result[1]).isInstanceOf(Float.class);
+
+    // issue #7669: Float had no right-hand BigInteger arm
+    result = Type.castComparableNumber(1.0f, new BigInteger("2"));
+    assertThat(result[0]).isInstanceOf(BigDecimal.class);
+    assertThat(result[1]).isInstanceOf(BigDecimal.class);
+
+    // Non-finite must not reach floatToBigDecimal(), which throws NumberFormatException on NaN/Infinity -
+    // both sides fall back to double instead (CodeRabbit review).
+    result = Type.castComparableNumber(Float.NaN, new BigInteger("2"));
+    assertThat(result[0]).isInstanceOf(Double.class);
+    assertThat((Double) result[0]).isNaN();
+    assertThat(result[1]).isInstanceOf(Double.class);
+
+    result = Type.castComparableNumber(Float.POSITIVE_INFINITY, new BigInteger("2"));
+    assertThat(result[0]).isEqualTo(Double.POSITIVE_INFINITY);
+
+    // An oversized BigInteger must stay LESS than a genuinely infinite Float, not collapse onto it via
+    // BigInteger.doubleValue()'s own overflow-to-infinity (CodeRabbit review).
+    result = Type.castComparableNumber(Float.POSITIVE_INFINITY, BigInteger.TEN.pow(400));
+    assertThat((Double) result[1]).isEqualTo(Double.MAX_VALUE);
+    assertThat((Double) result[1]).isLessThan((Double) result[0]);
   }
 
   @Test
@@ -1361,6 +1397,27 @@ class TypeTest extends TestHelper {
 
     result = Type.castComparableNumber(1.0, 2.0f);
     assertThat(result[1]).isInstanceOf(Double.class);
+
+    // issue #7669: Double had no right-hand BigInteger arm
+    result = Type.castComparableNumber(1.0, new BigInteger("2"));
+    assertThat(result[0]).isInstanceOf(BigDecimal.class);
+    assertThat(result[1]).isInstanceOf(BigDecimal.class);
+
+    // Non-finite must not reach BigDecimal.valueOf(), which throws NumberFormatException on NaN/Infinity - right
+    // falls back to double instead, left is already a Double (CodeRabbit review).
+    result = Type.castComparableNumber(Double.NaN, new BigInteger("2"));
+    assertThat((Double) result[0]).isNaN();
+    assertThat(result[1]).isInstanceOf(Double.class);
+
+    result = Type.castComparableNumber(Double.NEGATIVE_INFINITY, new BigInteger("2"));
+    assertThat(result[0]).isEqualTo(Double.NEGATIVE_INFINITY);
+    assertThat(result[1]).isInstanceOf(Double.class);
+
+    // An oversized BigInteger must stay GREATER than a genuinely negative-infinite Double, not collapse onto
+    // it via BigInteger.doubleValue()'s own overflow-to-infinity (CodeRabbit review).
+    result = Type.castComparableNumber(Double.NEGATIVE_INFINITY, BigInteger.TEN.pow(400));
+    assertThat((Double) result[1]).isEqualTo(Double.MAX_VALUE);
+    assertThat((Double) result[1]).isGreaterThan((Double) result[0]);
   }
 
   @Test
@@ -1385,6 +1442,98 @@ class TypeTest extends TestHelper {
     assertThat(result[1]).isInstanceOf(BigDecimal.class);
     assertThat(((BigDecimal) result[0])).isEqualByComparingTo(new BigDecimal("1"));
     assertThat(((BigDecimal) result[1])).isEqualByComparingTo(new BigDecimal("2"));
+
+    // Reverse direction (issue #7669): the top-level chain had no left-hand BigInteger branch at all, so
+    // (BigInteger, BigDecimal) came back untouched and the caller's compareTo()/equals() threw ClassCastException.
+    result = Type.castComparableNumber(new BigInteger("2"), new BigDecimal("1"));
+    assertThat(result[0]).isInstanceOf(BigDecimal.class);
+    assertThat(result[1]).isInstanceOf(BigDecimal.class);
+    assertThat(((BigDecimal) result[0])).isEqualByComparingTo(new BigDecimal("2"));
+    assertThat(((BigDecimal) result[1])).isEqualByComparingTo(new BigDecimal("1"));
+  }
+
+  @Test
+  void castComparableNumberBigInteger() {
+    // BigInteger on the left had no branch at all before #7669, so every one of these threw ClassCastException
+    // once the caller tried to compareTo()/equals() the untouched pair.
+    Number[] result = Type.castComparableNumber(new BigInteger("2"), (short) 1);
+    assertThat(result[0]).isInstanceOf(BigDecimal.class);
+    assertThat(result[1]).isInstanceOf(BigDecimal.class);
+    assertThat(((BigDecimal) result[0])).isEqualByComparingTo(new BigDecimal("2"));
+    assertThat(((BigDecimal) result[1])).isEqualByComparingTo(new BigDecimal("1"));
+
+    result = Type.castComparableNumber(new BigInteger("2"), 1);
+    assertThat(result[0]).isInstanceOf(BigDecimal.class);
+    assertThat(result[1]).isInstanceOf(BigDecimal.class);
+    assertThat(((BigDecimal) result[0])).isEqualByComparingTo(new BigDecimal("2"));
+    assertThat(((BigDecimal) result[1])).isEqualByComparingTo(new BigDecimal("1"));
+
+    result = Type.castComparableNumber(new BigInteger("2"), 1L);
+    assertThat(result[0]).isInstanceOf(BigDecimal.class);
+    assertThat(result[1]).isInstanceOf(BigDecimal.class);
+    assertThat(((BigDecimal) result[0])).isEqualByComparingTo(new BigDecimal("2"));
+    assertThat(((BigDecimal) result[1])).isEqualByComparingTo(new BigDecimal("1"));
+
+    result = Type.castComparableNumber(new BigInteger("2"), 1.0f);
+    assertThat(result[0]).isInstanceOf(BigDecimal.class);
+    assertThat(result[1]).isInstanceOf(BigDecimal.class);
+    assertThat(((BigDecimal) result[0])).isEqualByComparingTo(new BigDecimal("2"));
+    assertThat(((BigDecimal) result[1])).isEqualByComparingTo(new BigDecimal("1"));
+
+    result = Type.castComparableNumber(new BigInteger("2"), 1.0);
+    assertThat(result[0]).isInstanceOf(BigDecimal.class);
+    assertThat(result[1]).isInstanceOf(BigDecimal.class);
+    assertThat(((BigDecimal) result[0])).isEqualByComparingTo(new BigDecimal("2"));
+    assertThat(((BigDecimal) result[1])).isEqualByComparingTo(new BigDecimal("1"));
+
+    result = Type.castComparableNumber(new BigInteger("2"), (byte) 1);
+    assertThat(result[0]).isInstanceOf(BigDecimal.class);
+    assertThat(result[1]).isInstanceOf(BigDecimal.class);
+    assertThat(((BigDecimal) result[0])).isEqualByComparingTo(new BigDecimal("2"));
+    assertThat(((BigDecimal) result[1])).isEqualByComparingTo(new BigDecimal("1"));
+
+    result = Type.castComparableNumber(new BigInteger("2"), new BigDecimal("1"));
+    assertThat(result[0]).isInstanceOf(BigDecimal.class);
+    assertThat(result[1]).isInstanceOf(BigDecimal.class);
+    assertThat(((BigDecimal) result[0])).isEqualByComparingTo(new BigDecimal("2"));
+    assertThat(((BigDecimal) result[1])).isEqualByComparingTo(new BigDecimal("1"));
+
+    // Non-finite Float/Double must not reach BigDecimal.valueOf()/floatToBigDecimal(), which throw
+    // NumberFormatException on NaN/Infinity - both sides fall back to double instead (CodeRabbit review).
+    result = Type.castComparableNumber(new BigInteger("2"), Float.NaN);
+    assertThat(result[0]).isInstanceOf(Double.class);
+    assertThat(result[1]).isInstanceOf(Double.class);
+    assertThat((Double) result[1]).isNaN();
+
+    result = Type.castComparableNumber(new BigInteger("2"), Float.POSITIVE_INFINITY);
+    assertThat(result[0]).isInstanceOf(Double.class);
+    assertThat(result[1]).isEqualTo(Double.POSITIVE_INFINITY);
+
+    result = Type.castComparableNumber(new BigInteger("2"), Double.NaN);
+    assertThat(result[0]).isInstanceOf(Double.class);
+    assertThat((Double) result[0]).isEqualTo(new BigInteger("2").doubleValue());
+    assertThat(result[1]).isInstanceOf(Double.class);
+    assertThat((Double) result[1]).isNaN();
+
+    result = Type.castComparableNumber(new BigInteger("2"), Double.NEGATIVE_INFINITY);
+    assertThat(result[1]).isEqualTo(Double.NEGATIVE_INFINITY);
+
+    // An oversized BigInteger must stay LESS than a genuinely infinite Float/Double, not collapse onto it:
+    // BigInteger.doubleValue() itself returns +-Infinity past a double's range, so the naive conversion would
+    // make BigInteger.TEN.pow(400) - finite and merely enormous - compare EQUAL to Double.POSITIVE_INFINITY
+    // (CodeRabbit review).
+    final BigInteger huge = BigInteger.TEN.pow(400);
+    result = Type.castComparableNumber(huge, Double.POSITIVE_INFINITY);
+    assertThat((Double) result[0]).as("clamped to a finite value, not collapsed to infinity")
+        .isEqualTo(Double.MAX_VALUE);
+    assertThat((Double) result[0]).isLessThan((Double) result[1]);
+
+    result = Type.castComparableNumber(huge.negate(), Double.NEGATIVE_INFINITY);
+    assertThat((Double) result[0]).isEqualTo(-Double.MAX_VALUE);
+    assertThat((Double) result[0]).isGreaterThan((Double) result[1]);
+
+    result = Type.castComparableNumber(huge, Float.POSITIVE_INFINITY);
+    assertThat((Double) result[0]).isEqualTo(Double.MAX_VALUE);
   }
 
   @Test
@@ -1406,6 +1555,13 @@ class TypeTest extends TestHelper {
 
     result = Type.castComparableNumber((byte) 1, new BigDecimal("2"));
     assertThat(result[0]).isInstanceOf(BigDecimal.class);
+
+    // issue #7669: Byte had no right-hand BigInteger arm either
+    result = Type.castComparableNumber((byte) 1, new BigInteger("2"));
+    assertThat(result[0]).isInstanceOf(BigDecimal.class);
+    assertThat(result[1]).isInstanceOf(BigDecimal.class);
+    assertThat(((BigDecimal) result[0])).isEqualByComparingTo(new BigDecimal("1"));
+    assertThat(((BigDecimal) result[1])).isEqualByComparingTo(new BigDecimal("2"));
   }
 
   @Test
