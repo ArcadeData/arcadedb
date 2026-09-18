@@ -73,8 +73,9 @@ class Issue7790AlterTypeStatementTest extends AbstractParserTest {
     final AlterTypeStatement original = (AlterTypeStatement) checkSyntax("ALTER TYPE Foo NAME Bar", true);
     final AlterTypeStatement copy = (AlterTypeStatement) original.copy();
 
-    assertThat(copy.identifierValue).isNotNull();
-    assertThat(copy.identifierValue.getStringValue()).isEqualTo("Bar");
+    assertThat(copy.items).hasSize(1);
+    assertThat(copy.items.get(0).identifierValue).isNotNull();
+    assertThat(copy.items.get(0).identifierValue.getStringValue()).isEqualTo("Bar");
   }
 
   @Test
@@ -82,7 +83,8 @@ class Issue7790AlterTypeStatementTest extends AbstractParserTest {
     final AlterTypeStatement original = (AlterTypeStatement) checkSyntax("ALTER TYPE Foo BUCKETSELECTIONSTRATEGY `thread`", true);
     final AlterTypeStatement copy = (AlterTypeStatement) original.copy();
 
-    assertThat(copy.identifierValue.getStringValue()).isEqualTo(original.identifierValue.getStringValue());
+    assertThat(copy.items.get(0).identifierValue.getStringValue())
+        .isEqualTo(original.items.get(0).identifierValue.getStringValue());
   }
 
   @Test

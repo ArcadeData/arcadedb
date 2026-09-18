@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.EmbeddedDocument;
@@ -34,7 +35,6 @@ import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 import java.lang.reflect.Array;
-import java.text.SimpleDateFormat;
 import java.time.LocalDateTime;
 import java.util.*;
 
@@ -183,7 +183,12 @@ public interface Result {
         if (database != null)
           return DateUtils.format(val, database.getSchema().getDateTimeFormat());
         else
-          return new SimpleDateFormat().format(val);
+          // No database to take the schema's format from, so the product-wide default pattern stands in - rendered
+          // through the same locale-pinned chain (issue #7112) as the branch above. A bare `new SimpleDateFormat()`
+          // used to render this: no pattern and no locale, so the JSON a client read back carried the server's
+          // default SHORT date/time - `9/18/26, 3:04 PM` on one host, `18.09.26, 15:04` on another, and neither
+          // shape parseable by the format every other Date in the same answer uses (issue #7921).
+          return DateUtils.format(val, GlobalConfiguration.DATE_TIME_FORMAT.getValueAsString());
 
       } else if (val instanceof LocalDateTime) {
         final Database database = getDatabase();

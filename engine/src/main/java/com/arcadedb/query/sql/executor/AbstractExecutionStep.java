@@ -18,7 +18,8 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import java.text.DecimalFormat;
+import java.text.NumberFormat;
+import java.util.Locale;
 
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
@@ -88,7 +89,7 @@ public abstract class AbstractExecutionStep implements ExecutionStepInternal {
   }
 
   private static String formatCost(final long cost) {
-    return cost > -1 ? new DecimalFormat().format(cost / 1000) + "μs" : "";
+    return cost > -1 ? groupedNumber(cost / 1000) + "μs" : "";
   }
 
   public long getRowCount() {
@@ -96,7 +97,21 @@ public abstract class AbstractExecutionStep implements ExecutionStepInternal {
   }
 
   protected String getRowCountFormatted() {
-    return rowCount > 0 ? new DecimalFormat().format(rowCount) + " rows" : "";
+    return rowCount > 0 ? groupedNumber(rowCount) + " rows" : "";
+  }
+
+  /**
+   * Formats a plan number with a grouping separator that does not depend on where the server happens to run
+   * (issue #7921). A bare {@code new DecimalFormat()} takes the JVM's default FORMAT locale, so the same query over
+   * the same data printed {@code 1,234,567μs} on an en_US server and {@code 1.234.567μs} on a de_DE one, and
+   * anything diffing two servers' plans - or parsing one - saw a difference that is not a difference. Pinned to
+   * {@link Locale#ROOT} the way {@code StringUtils.format} was in #7788.
+   * <p>
+   * Constructed per call rather than hoisted into a static: {@link NumberFormat} is not thread safe, and an
+   * EXPLAIN/PROFILE tree is rendered once per query, so sharing one would trade a real hazard for nothing.
+   */
+  private static String groupedNumber(final long value) {
+    return NumberFormat.getInstance(Locale.ROOT).format(value);
   }
 
   protected ExecutionStepInternal checkForPrevious() {

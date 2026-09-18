@@ -400,13 +400,18 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
   }
 
   /**
-   * A hierarchy where the named type itself is not lightweight but a subtype below it is: TRUNCATE cannot silently
-   * pick one meaning of "not POLYMORPHIC" (there is no bucket-only truncation that also reaches a subtype's
-   * lightweight edges, which have no bucket at all), so it refuses rather than under- or over-deleting, and POLYMORPHIC
-   * says which behaviour the caller actually wants.
+   * A hierarchy where the named type itself is not lightweight but a subtype below it is.
+   * <p>
+   * This used to be REFUSED without POLYMORPHIC, on the grounds that there is no bucket-only truncation that also
+   * reaches a subtype's lightweight edges. Reaching them is precisely what "not POLYMORPHIC" asks it NOT to do,
+   * though, and {@code Mentions} is record-backed: it has a bucket of its own, and clearing exactly that bucket is
+   * what a non-polymorphic TRUNCATE means for any type with subtypes, lightweight or not. The refusal survived
+   * #7668 only because its guard still read the conflated {@code holdsLightweightEdges()} - true for a
+   * record-backed root that merely has a lightweight type below it - while #7668's own execution split had already
+   * made this shape well defined (issue #7919).
    */
   @Test
-  void truncateOnAMixedHierarchyRefusesWithoutPolymorphicAndDeletesBothShapesWithIt() {
+  void truncateOnAMixedHierarchyScopesToTheRootWithoutPolymorphicAndDeletesBothShapesWithIt() {
     database.transaction(() -> database.getSchema().buildEdgeType().withName("Mentions").create());
     database.transaction(() -> database.getSchema().buildEdgeType().withName("Quotes").withLightweight(true)
         .withSuperType("Mentions").create());
@@ -415,13 +420,32 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
     connect("Mentions", works[0], works[1]);
     connect("Quotes", works[0], works[2]);
 
-    assertThatThrownBy(() -> database.command("sql", "truncate type Mentions").close())
-        .isInstanceOf(CommandExecutionException.class)
-        .hasMessageContaining("POLYMORPHIC");
-    assertThat(query("select from Mentions")).as("a refused TRUNCATE must not have deleted anything").hasSize(2);
+    database.command("sql", "truncate type Mentions").close();
+    assertThat(query("select from Mentions"))
+        .as("only the root's own bucket is cleared; the lightweight subtype's edge was not in scope")
+        .hasSize(1);
 
     database.command("sql", "truncate type Mentions polymorphic").close();
     assertThat(query("select from Mentions")).isEmpty();
+  }
+
+  /**
+   * The shape the structural refusal is actually for: a LIGHTWEIGHT ROOT with a subtype. That one has no bucket to
+   * scope a non-polymorphic TRUNCATE to, so the only way to serve it is the unconditionally-polymorphic
+   * {@code DELETE FROM}, which would reach into the subtype the caller did not ask for (issue #7481/#7919).
+   */
+  @Test
+  void truncateOnALightweightRootWithASubtypeRefusesWithoutPolymorphic() {
+    database.transaction(() -> database.getSchema().buildEdgeType().withName("Hints").withLightweight(true).create());
+    database.transaction(() -> database.getSchema().buildEdgeType().withName("StrongHints").withSuperType("Hints").create());
+
+    final RID[] works = newWorks(2);
+    connect("Hints", works[0], works[1]);
+
+    assertThatThrownBy(() -> database.command("sql", "truncate type Hints").close())
+        .isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("POLYMORPHIC");
+    assertThat(query("select from Hints")).as("a refused TRUNCATE must not have deleted anything").hasSize(1);
   }
 
   /** A lightweight LEAF type (no subtypes of its own) truncates the same way with or without POLYMORPHIC. */
@@ -437,15 +461,14 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
 
   /** UNSAFE keeps meaning "the type is not empty", not "force past a structural refusal". */
   @Test
-  void truncateOnAMixedHierarchyStillRefusesWithoutPolymorphicEvenWithUnsafe() {
-    database.transaction(() -> database.getSchema().buildEdgeType().withName("Mentions").create());
-    database.transaction(() -> database.getSchema().buildEdgeType().withName("Quotes").withLightweight(true)
-        .withSuperType("Mentions").create());
+  void truncateOnALightweightRootWithASubtypeStillRefusesWithoutPolymorphicEvenWithUnsafe() {
+    database.transaction(() -> database.getSchema().buildEdgeType().withName("Hints").withLightweight(true).create());
+    database.transaction(() -> database.getSchema().buildEdgeType().withName("StrongHints").withSuperType("Hints").create());
 
     final RID[] works = newWorks(2);
-    connect("Quotes", works[0], works[1]);
+    connect("Hints", works[0], works[1]);
 
-    assertThatThrownBy(() -> database.command("sql", "truncate type Mentions unsafe").close())
+    assertThatThrownBy(() -> database.command("sql", "truncate type Hints unsafe").close())
         .isInstanceOf(CommandExecutionException.class)
         .hasMessageContaining("POLYMORPHIC");
   }

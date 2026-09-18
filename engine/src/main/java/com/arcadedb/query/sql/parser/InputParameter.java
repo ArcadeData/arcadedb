@@ -143,7 +143,11 @@ public class InputParameter extends SimpleNode {
       final Expression dateExpr = new Expression();
       dateExpr.singleQuotes = true;
       dateExpr.doubleQuotes = false;
-      final SimpleDateFormat dateFormat = new SimpleDateFormat(dateFormatString);
+      // Locale.ENGLISH, not the JVM default (issue #7921): the text produced here is handed straight back to
+      // `date(<text>, <pattern>)`, whose parse side (Type.convert) has been pinned to ENGLISH all along. Formatting
+      // with the server's own locale and parsing with ENGLISH is a round trip that only holds where the two agree -
+      // under a locale with a non-Gregorian calendar or non-Latin digits the bound Date came back as a parse error.
+      final SimpleDateFormat dateFormat = new SimpleDateFormat(dateFormatString, Locale.ENGLISH);
       dateExpr.value = dateFormat.format(value);
       function.getParams().add(dateExpr);
 

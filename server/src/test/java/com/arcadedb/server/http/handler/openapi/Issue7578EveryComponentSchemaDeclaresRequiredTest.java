@@ -53,22 +53,27 @@ class Issue7578EveryComponentSchemaDeclaresRequiredTest {
    * The schemas with no {@code required} list, and why each is right to have none. An exemption is a claim about
    * behaviour, so it carries its reason here rather than being a bare name on a list.
    */
-  private static final Map<String, String> EXEMPT = Map.of(
+  private static final Map<String, String> EXEMPT = Map.ofEntries(
       // A partial update: every field is optional BECAUSE an omitted one keeps its current value. This schema
       // exists precisely so McpConfig can carry the response's required list without the document refusing the
       // partial update its own description asks for.
-      "McpConfigUpdate", "a partial update: an omitted field keeps its current value",
-      "McpDatabaseOverride", "every field is optional by design - an omitted one inherits the server-wide value",
+      Map.entry("McpConfigUpdate", "a partial update: an omitted field keeps its current value"),
+      Map.entry("McpDatabaseOverride", "every field is optional by design - an omitted one inherits the server-wide value"),
       // The two streaming line schemas name their kind by WHICH key is present, so requiring any of them would
       // refuse the other kinds of line.
-      "NdJsonQueryEvent", "exactly one of 'record', 'stats' or 'error' is present, so none of them can be required",
-      "NdJsonBatchEvent", "exactly one of 'progress', 'summary' or 'error' is present",
+      Map.entry("NdJsonQueryEvent", "exactly one of 'record', 'stats' or 'error' is present, so none of them can be required"),
+      Map.entry("NdJsonBatchEvent", "exactly one of 'progress', 'summary' or 'error' is present"),
       // A oneOf wrapper: the constraint lives in the branches it names.
-      "BatchLine", "a oneOf over BatchVertexLine and BatchEdgeLine, which carry the required lists",
-      "JsonRpcMessage", "a oneOf over one envelope and a batch of them; the envelope carries the required list",
-      "VerifyDatabaseResponse", "a oneOf over the local and cluster shapes, which carry the required lists",
-      "TransferLeaderRequest", "an empty object is a valid request - it lets Raft choose the target",
-      "UpdateUserRequest", "both members are optional; a body carrying neither is accepted and changes nothing");
+      Map.entry("BatchLine", "a oneOf over BatchVertexLine and BatchEdgeLine, which carry the required lists"),
+      Map.entry("JsonRpcMessage", "a oneOf over one envelope and a batch of them; the envelope carries the required list"),
+      Map.entry("VerifyDatabaseResponse", "a oneOf over the local and cluster shapes, which carry the required lists"),
+      Map.entry("TransferLeaderRequest", "an empty object is a valid request - it lets Raft choose the target"),
+      Map.entry("UpdateUserRequest", "both members are optional; a body carrying neither is accepted and changes nothing"),
+      // Every member is optional and the schema's own descriptions say so: `reason` is "Optional.", `catchUp`
+      // reads "false (or absent)", and `fingerprints` says "Omit them to have every document seeded", which is
+      // exactly what an admission does. An empty body is therefore a valid seed request.
+      Map.entry("SecuritySeedRequest",
+          "every member is optional - an empty body asks for a full seed, which is what an admission sends"));
 
   /**
    * The sweep. Collected into one list rather than asserted per schema so the failure names every offender at

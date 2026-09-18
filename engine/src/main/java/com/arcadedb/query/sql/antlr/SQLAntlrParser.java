@@ -328,15 +328,28 @@ public record SQLAntlrParser(Database database) {
    * token stream rather than raw characters means a '(' inside a string literal or comment - already lexed
    * as part of that token, never as a standalone LPAREN - is not miscounted.
    */
-  private static CommonTokenStream tokenize(final SQLLexer lexer) {
+  private CommonTokenStream tokenize(final SQLLexer lexer) {
     final CommonTokenStream tokens = new CommonTokenStream(lexer);
     tokens.fill(); // the parser reuses this same fully-buffered stream
     checkExpressionDepth(tokens);
     return tokens;
   }
 
-  private static void checkExpressionDepth(final CommonTokenStream tokens) {
-    final int maxDepth = GlobalConfiguration.SQL_MAX_EXPRESSION_DEPTH.getValueAsInteger();
+  /**
+   * Reads the limit off the database rather than off the enum (issue #7922).
+   * <p>
+   * {@code SQL_MAX_EXPRESSION_DEPTH} is declared {@code SCOPE.DATABASE}, so
+   * {@code ALTER DATABASE 'arcadedb.sql.maxExpressionDepth' <n>} is the documented way to raise it - which is
+   * exactly what the refusal below tells the user to do. Reading the enum made that advice impossible to follow:
+   * the per-database value was written and never consulted, so the only thing that moved the limit was the
+   * JVM-wide default, which lowers the protection for every other database on the server. Same shape, and same
+   * fix, as #7786. A null database is a syntax-only parse with no per-database configuration to consult, so it
+   * keeps the JVM default.
+   */
+  private void checkExpressionDepth(final CommonTokenStream tokens) {
+    final int maxDepth = database == null ?
+        GlobalConfiguration.SQL_MAX_EXPRESSION_DEPTH.getValueAsInteger() :
+        database.getConfiguration().getValueAsInteger(GlobalConfiguration.SQL_MAX_EXPRESSION_DEPTH);
     int depth = 0;
     for (final Token token : tokens.getTokens()) {
       if (token.getChannel() != Token.DEFAULT_CHANNEL)

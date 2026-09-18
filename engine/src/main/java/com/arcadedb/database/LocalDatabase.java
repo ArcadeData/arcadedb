@@ -265,7 +265,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       this.executionPlanCache = new ExecutionPlanCache(this,
           configuration.getValueAsInteger(GlobalConfiguration.SQL_STATEMENT_CACHE));
       this.cypherStatementCache =
-          new CypherStatementCache(configuration.getValueAsInteger(GlobalConfiguration.OPENCYPHER_STATEMENT_CACHE));
+          new CypherStatementCache(this, configuration.getValueAsInteger(GlobalConfiguration.OPENCYPHER_STATEMENT_CACHE));
       this.cypherPlanCache = new CypherPlanCache(this,
           configuration.getValueAsInteger(GlobalConfiguration.OPENCYPHER_PLAN_CACHE));
 

@@ -23,7 +23,6 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.serializer.BinaryComparator;
 
-import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -52,8 +51,14 @@ public class TableFormatter {
     LEFT, CENTER, RIGHT
   }
 
-  protected final static String           MORE           = "...";
-  protected final static SimpleDateFormat DEF_DATEFORMAT = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS");
+  protected final static String MORE = "...";
+
+  // The pattern a Date column is printed with, rendered through DateUtils.getFormatter(), which pins the locale
+  // (issue #7112), rather than through a SimpleDateFormat built with none (issue #7921): the default locale decides
+  // both the digits and the calendar system, so the same instant printed a Buddhist-era year under th_TH. Going
+  // through DateUtils also drops the lock this needed - DateTimeFormatter is immutable and thread safe, unlike
+  // SimpleDateFormat.
+  protected final static String DEF_DATEFORMAT = "yyyy-MM-dd HH:mm:ss.SSS";
 
   protected       Pair<String, Boolean>            columnSorting        = null;
   protected final Map<String, ALIGNMENT>           columnAlignment      = new LinkedHashMap<String, ALIGNMENT>();
@@ -373,11 +378,9 @@ public class TableFormatter {
       } else {
         value = record.getIdentity().toString();
       }
-    } else if (value instanceof Date date) {
-      synchronized (DEF_DATEFORMAT) {
-        value = DEF_DATEFORMAT.format(date);
-      }
-    } else if (value instanceof byte[] bytes)
+    } else if (value instanceof Date date)
+      value = DateUtils.format(date, DEF_DATEFORMAT);
+    else if (value instanceof byte[] bytes)
       value = "byte[" + bytes.length + "]";
 
     return value;

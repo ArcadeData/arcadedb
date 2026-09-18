@@ -32,6 +32,7 @@ import com.arcadedb.utility.DateUtils;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.math.RoundingMode;
 import java.time.Duration;
 import java.time.temporal.ChronoUnit;
@@ -662,12 +663,33 @@ public class MathExpression extends SimpleNode {
       return null;
     }
 
+    /**
+     * The arithmetic promotion chain, the twin of {@link Type#castComparableNumber} on the comparison side.
+     * <p>
+     * {@code Byte} and {@code BigInteger} used to be missing from every arm in both positions, so
+     * {@code abs(:big) + 1}, {@code 1 + :big} and even {@code :big + :big} fell off the end into the
+     * {@code IllegalArgumentException} below - which, not being one of the classified engine exceptions, reached
+     * the caller as an HTTP 500 rather than as a 400 naming the values (issue #7917). Both types reach here
+     * routinely: a {@code BigInteger} from {@code abs()}/{@code sqrt()}/{@code pow()}, from an openCypher inline
+     * property and from any bound Java parameter, a {@code Byte} from a property declared {@code BYTE} and from a
+     * bound parameter. Comparing the identical pair has worked since #7669; only the arithmetic path was left
+     * behind, which is what made the gap look arbitrary from outside.
+     * <p>
+     * Promotions mirror {@code castComparableNumber}'s for the pairs it covers - a {@code BigInteger} has no
+     * narrower common type with any other {@code Number}, so both operands meet in {@code BigDecimal}, with the
+     * non-finite guards {@code floatToBigDecimal}/{@code BigDecimal.valueOf(double)} need (NaN and the infinities
+     * have no {@code BigDecimal} form at all). What this deliberately does NOT do is route the whole method
+     * through {@code castComparableNumber}: that chain answers a different question and meets {@code Integer} and
+     * {@code Float} at {@code double} (#7614), so reusing it wholesale would silently change the type every
+     * existing mixed-width expression returns. The two chains stay separate, and this javadoc is the pointer
+     * between them.
+     */
     public Number apply(final Number a, final Operator operation, final Number b) {
       if (a == null || b == null)
         throw new IllegalArgumentException("Cannot increment a null value");
 
-      if (a instanceof Integer || a instanceof Short) {
-        if (b instanceof Integer || b instanceof Short) {
+      if (a instanceof Integer || a instanceof Short || a instanceof Byte) {
+        if (b instanceof Integer || b instanceof Short || b instanceof Byte) {
           return operation.apply(a.intValue(), b.intValue());
         } else if (b instanceof Long) {
           return operation.apply(a.longValue(), b.longValue());
@@ -676,9 +698,13 @@ public class MathExpression extends SimpleNode {
         else if (b instanceof Double)
           return operation.apply(a.doubleValue(), b.doubleValue());
         else if (b instanceof BigDecimal decimal)
-          return operation.apply(new BigDecimal((Integer) a), decimal);
+          // a.intValue(), not (Integer) a: this arm has always also accepted a Short, which that cast threw a
+          // ClassCastException on, and now a Byte as well.
+          return operation.apply(new BigDecimal(a.intValue()), decimal);
+        else if (b instanceof BigInteger bigInteger)
+          return operation.apply(new BigDecimal(a.intValue()), new BigDecimal(bigInteger));
       } else if (a instanceof Long) {
-        if (b instanceof Integer || b instanceof Long || b instanceof Short)
+        if (b instanceof Integer || b instanceof Long || b instanceof Short || b instanceof Byte)
           return operation.apply(a.longValue(), b.longValue());
         else if (b instanceof Float)
           return operation.apply(a.floatValue(), b.floatValue());
@@ -686,22 +712,38 @@ public class MathExpression extends SimpleNode {
           return operation.apply(a.doubleValue(), b.doubleValue());
         else if (b instanceof BigDecimal decimal)
           return operation.apply(new BigDecimal((Long) a), decimal);
+        else if (b instanceof BigInteger bigInteger)
+          return operation.apply(new BigDecimal(a.longValue()), new BigDecimal(bigInteger));
       } else if (a instanceof Float float1) {
-        if (b instanceof Short || b instanceof Integer || b instanceof Long || b instanceof Float)
+        if (b instanceof Byte || b instanceof Short || b instanceof Integer || b instanceof Long || b instanceof Float)
           return operation.apply(a.floatValue(), b.floatValue());
         else if (b instanceof Double)
           // The decimal form, not .doubleValue(), which would carry the single precision error along (issue #7609).
           return operation.apply(Type.widenFloat(float1), b.doubleValue());
         else if (b instanceof BigDecimal decimal)
           return operation.apply(Type.floatToBigDecimal(float1), decimal);
+        else if (b instanceof BigInteger bigInteger) {
+          // floatToBigDecimal() throws NumberFormatException on NaN/Infinity, which BigDecimal cannot represent,
+          // so a non-finite float meets the BigInteger in double instead - the same guard Type's own Float/
+          // BigInteger arm carries (#7669).
+          if (Float.isFinite(float1))
+            return operation.apply(Type.floatToBigDecimal(float1), new BigDecimal(bigInteger));
+          return operation.apply(Type.widenFloat(float1), Type.finiteDoubleValue(bigInteger));
+        }
 
       } else if (a instanceof Double double1) {
         if (b instanceof Float float2)
           return operation.apply(a.doubleValue(), Type.widenFloat(float2));
-        else if (b instanceof Short || b instanceof Integer || b instanceof Long || b instanceof Double)
+        else if (b instanceof Byte || b instanceof Short || b instanceof Integer || b instanceof Long || b instanceof Double)
           return operation.apply(a.doubleValue(), b.doubleValue());
         else if (b instanceof BigDecimal decimal)
           return operation.apply(BigDecimal.valueOf(double1), decimal);
+        else if (b instanceof BigInteger bigInteger) {
+          // Same non-finite guard as the Float arm above: BigDecimal.valueOf(double) throws on NaN/Infinity.
+          if (Double.isFinite(double1))
+            return operation.apply(BigDecimal.valueOf(double1), new BigDecimal(bigInteger));
+          return operation.apply(double1, Type.finiteDoubleValue(bigInteger));
+        }
 
       } else if (a instanceof BigDecimal bigDecimal) {
         if (b instanceof Integer integer)
@@ -710,12 +752,34 @@ public class MathExpression extends SimpleNode {
           return operation.apply(bigDecimal, new BigDecimal(long1));
         else if (b instanceof Short short1)
           return operation.apply(bigDecimal, new BigDecimal(short1));
+        else if (b instanceof Byte byte1)
+          return operation.apply(bigDecimal, new BigDecimal(byte1.intValue()));
         else if (b instanceof Float float1)
           return operation.apply(bigDecimal, Type.floatToBigDecimal(float1));
         else if (b instanceof Double double1)
           return operation.apply(bigDecimal, BigDecimal.valueOf(double1));
         else if (b instanceof BigDecimal decimal)
           return operation.apply(bigDecimal, decimal);
+        else if (b instanceof BigInteger bigInteger)
+          return operation.apply(bigDecimal, new BigDecimal(bigInteger));
+
+      } else if (a instanceof BigInteger bigInteger) {
+        // The left-hand counterpart of every `b instanceof BigInteger` arm above, and the reason `:big + 1` and
+        // `:big + :big` both threw: there was no top-level BigInteger arm at all.
+        if (b instanceof Integer || b instanceof Long || b instanceof Short || b instanceof Byte)
+          return operation.apply(new BigDecimal(bigInteger), new BigDecimal(b.longValue()));
+        else if (b instanceof Float float1) {
+          if (Float.isFinite(float1))
+            return operation.apply(new BigDecimal(bigInteger), Type.floatToBigDecimal(float1));
+          return operation.apply(Type.finiteDoubleValue(bigInteger), Type.widenFloat(float1));
+        } else if (b instanceof Double double1) {
+          if (Double.isFinite(double1))
+            return operation.apply(new BigDecimal(bigInteger), BigDecimal.valueOf(double1));
+          return operation.apply(Type.finiteDoubleValue(bigInteger), double1);
+        } else if (b instanceof BigDecimal decimal)
+          return operation.apply(new BigDecimal(bigInteger), decimal);
+        else if (b instanceof BigInteger bigInteger1)
+          return operation.apply(new BigDecimal(bigInteger), new BigDecimal(bigInteger1));
       }
 
       throw new IllegalArgumentException(
