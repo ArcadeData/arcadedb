@@ -20,6 +20,8 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -393,5 +395,189 @@ class ExpandStepTest extends TestHelper {
     final Result item = result.next();
     assertThat(item.<Integer>getProperty("value")).isEqualTo(5);
     result.close();
+  }
+
+  /**
+   * Regression test for issue #7910: the #7787 else arm wrapped a native array whole, so {@code expand()} of an
+   * {@code ARRAY_OF_FLOATS} property answered ONE row holding the entire array where the same numbers in a
+   * {@code LIST} answer one row per element.
+   */
+  @Test
+  void expandOfANativeArrayProducesOneRowPerElement() {
+    final DocumentType type = database.getSchema().createDocumentType("FloatArrayExpand");
+    type.createProperty("arrf", Type.ARRAY_OF_FLOATS);
+
+    database.transaction(() -> database.newDocument("FloatArrayExpand").set("arrf", new float[] { 1, 2, 3 }).save());
+
+    final List<Object> values = new ArrayList<>();
+    try (final ResultSet result = database.query("sql", "SELECT expand(arrf) FROM FloatArrayExpand")) {
+      while (result.hasNext())
+        values.add(result.next().getProperty("value"));
+    }
+
+    assertThat(values).containsExactly(1F, 2F, 3F);
+  }
+
+  @Test
+  void expandOfANativeArrayAgreesWithTheSameValuesInAList() {
+    final DocumentType type = database.getSchema().createDocumentType("ArrayVsList");
+    type.createProperty("arrf", Type.ARRAY_OF_FLOATS);
+    type.createProperty("list", Type.LIST);
+
+    database.transaction(() -> database.newDocument("ArrayVsList")//
+        .set("arrf", new float[] { 1, 2, 3 })//
+        .set("list", List.of(1F, 2F, 3F)).save());
+
+    final List<Object> fromArray = new ArrayList<>();
+    try (final ResultSet result = database.query("sql", "SELECT expand(arrf) FROM ArrayVsList")) {
+      while (result.hasNext())
+        fromArray.add(result.next().getProperty("value"));
+    }
+
+    final List<Object> fromList = new ArrayList<>();
+    try (final ResultSet result = database.query("sql", "SELECT expand(list) FROM ArrayVsList")) {
+      while (result.hasNext())
+        fromList.add(result.next().getProperty("value"));
+    }
+
+    assertThat(fromArray).isEqualTo(fromList);
+  }
+
+  /**
+   * {@code UnwindStep} has always routed a native array through {@code MultiValue.getMultiValueIterator}: the two
+   * steps in the same package must not disagree about what an array is.
+   */
+  @Test
+  void expandOfANativeArrayAgreesWithUnwind() {
+    final DocumentType type = database.getSchema().createDocumentType("ArrayVsUnwind");
+    type.createProperty("arrl", Type.ARRAY_OF_LONGS);
+
+    database.transaction(() -> database.newDocument("ArrayVsUnwind").set("arrl", new long[] { 7, 8 }).save());
+
+    final List<Object> expanded = new ArrayList<>();
+    try (final ResultSet result = database.query("sql", "SELECT expand(arrl) FROM ArrayVsUnwind")) {
+      while (result.hasNext())
+        expanded.add(result.next().getProperty("value"));
+    }
+
+    final List<Object> unwound = new ArrayList<>();
+    try (final ResultSet result = database.query("sql", "SELECT arrl FROM ArrayVsUnwind UNWIND arrl")) {
+      while (result.hasNext())
+        unwound.add(result.next().getProperty("arrl"));
+    }
+
+    assertThat(expanded).isEqualTo(unwound);
+    assertThat(expanded).containsExactly(7L, 8L);
+  }
+
+  @Test
+  void expandOfEveryNativeArrayTypeProducesOneRowPerElement() {
+    final DocumentType type = database.getSchema().createDocumentType("AllArrayExpand");
+    type.createProperty("arrs", Type.ARRAY_OF_SHORTS);
+    type.createProperty("arri", Type.ARRAY_OF_INTEGERS);
+    type.createProperty("arrl", Type.ARRAY_OF_LONGS);
+    type.createProperty("arrf", Type.ARRAY_OF_FLOATS);
+    type.createProperty("arrd", Type.ARRAY_OF_DOUBLES);
+
+    database.transaction(() -> database.newDocument("AllArrayExpand")//
+        .set("arrs", new short[] { 1, 2 })//
+        .set("arri", new int[] { 1, 2 })//
+        .set("arrl", new long[] { 1, 2 })//
+        .set("arrf", new float[] { 1, 2 })//
+        .set("arrd", new double[] { 1, 2 }).save());
+
+    for (final String property : List.of("arrs", "arri", "arrl", "arrf", "arrd")) {
+      int count = 0;
+      try (final ResultSet result = database.query("sql", "SELECT expand(" + property + ") FROM AllArrayExpand")) {
+        while (result.hasNext()) {
+          assertThat(result.next().<Object>getProperty("value")).isInstanceOf(Number.class);
+          count++;
+        }
+      }
+      assertThat(count).as(property).isEqualTo(2);
+    }
+  }
+
+  @Test
+  void expandOfANativeArrayWithAliasUsesAliasAsPropertyName() {
+    final DocumentType type = database.getSchema().createDocumentType("ArrayExpandAlias");
+    type.createProperty("arri", Type.ARRAY_OF_INTEGERS);
+
+    database.transaction(() -> database.newDocument("ArrayExpandAlias").set("arri", new int[] { 5, 6 }).save());
+
+    int count = 0;
+    try (final ResultSet result = database.query("sql", "SELECT expand(arri) AS n FROM ArrayExpandAlias")) {
+      while (result.hasNext()) {
+        final Result item = result.next();
+        assertThat(item.getPropertyNames()).containsExactly("n");
+        count++;
+      }
+    }
+
+    assertThat(count).isEqualTo(2);
+  }
+
+  @Test
+  void expandOfAnEmptyNativeArrayProducesNoRows() {
+    final DocumentType type = database.getSchema().createDocumentType("EmptyArrayExpand");
+    type.createProperty("arri", Type.ARRAY_OF_INTEGERS);
+
+    database.transaction(() -> database.newDocument("EmptyArrayExpand").set("arri", new int[0]).save());
+
+    try (final ResultSet result = database.query("sql", "SELECT expand(arri) FROM EmptyArrayExpand")) {
+      assertThat(result.hasNext()).isFalse();
+    }
+  }
+
+  /**
+   * A {@code BINARY} property is a {@code byte[]}, i.e. an opaque blob rather than a sequence of values: expanding it
+   * one byte per row would turn a megabyte into a million rows. It stays a single value, like any other scalar.
+   */
+  @Test
+  void expandOfABinaryPropertyProducesOneRowHoldingTheWholeBlob() {
+    final DocumentType type = database.getSchema().createDocumentType("BinaryExpand");
+    type.createProperty("blob", Type.BINARY);
+
+    database.transaction(() -> database.newDocument("BinaryExpand").set("blob", new byte[] { 1, 2, 3 }).save());
+
+    try (final ResultSet result = database.query("sql", "SELECT expand(blob) FROM BinaryExpand")) {
+      assertThat(result.hasNext()).isTrue();
+      assertThat(result.next().<byte[]>getProperty("value")).containsExactly(1, 2, 3);
+      assertThat(result.hasNext()).isFalse();
+    }
+  }
+
+  /**
+   * {@code expand()} flattens one level only: a list nested in a list yields one row whose value IS the nested list.
+   * A nested array must behave the same way, so the array arm must not flatten deeper than the list arm does.
+   */
+  @Test
+  void expandFlattensOneLevelOnlyForArraysJustLikeForLists() {
+    final List<Object> fromNestedLists = new ArrayList<>();
+    try (final ResultSet result = database.query("sql", "SELECT expand($x) FROM (SELECT 1) LET $x = [ [1,2], [3,4] ]")) {
+      while (result.hasNext())
+        fromNestedLists.add(result.next().getProperty("value"));
+    }
+
+    // a list nested in a list is NOT flattened further: one row per nested list, each holding the whole nested list
+    assertThat(fromNestedLists).hasSize(2);
+    assertThat(fromNestedLists.getFirst()).isInstanceOf(List.class);
+
+    final DocumentType type = database.getSchema().createDocumentType("NestedArrayExpand");
+    type.createProperty("outer", Type.LIST);
+
+    database.transaction(() -> database.newDocument("NestedArrayExpand")//
+        .set("outer", List.of(new int[] { 1, 2 }, new int[] { 3, 4 })).save());
+
+    int count = 0;
+    try (final ResultSet result = database.query("sql", "SELECT expand(outer) FROM NestedArrayExpand")) {
+      while (result.hasNext()) {
+        // an array nested in a list must behave exactly as the nested list above: one row, not flattened further
+        assertThat(result.next().<Object>getProperty("value")).isNotInstanceOf(Number.class);
+        count++;
+      }
+    }
+
+    assertThat(count).isEqualTo(2);
   }
 }
