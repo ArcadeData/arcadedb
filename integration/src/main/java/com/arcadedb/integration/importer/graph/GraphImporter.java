@@ -177,14 +177,15 @@ public class GraphImporter implements AutoCloseable {
     final Database database = new DatabaseFactory(dbPath).create();
 
     try {
+      // PARSED FIRST, EXECUTED LAST. THE COMMANDS THEMSELVES NEED THE IMPORTED DATA, SO THEY STILL RUN AFTER THE
+      // IMPORT - BUT A TYPO IN THE ENTRY THAT CARRIES ONE IS A CONFIGURATION MISTAKE, AND BEING TOLD ABOUT IT ONLY
+      // ONCE EVERY ROW HAS BEEN READ MEANT REPEATING THE WHOLE IMPORT TO FIND OUT WHETHER THERE IS A SECOND ONE
+      // (ISSUE #7864). AHEAD OF createSchemaFromConfig TOO, SO THE REFUSAL COSTS NOT EVEN THE TYPES IT WOULD
+      // OTHERWISE HAVE LEFT BEHIND IN A DATABASE THE OPERATOR IS ABOUT TO RE-CREATE ANYWAY
+      final List<PostImportCommand> postImportCommands = parsePostImportCommands(config);
+
       // Auto-create schema from the JSON config
       createSchemaFromConfig(database, config);
-
-      // PARSED BEFORE THE IMPORT, EXECUTED AFTER IT. THE COMMANDS THEMSELVES NEED THE IMPORTED DATA, SO THEY STILL
-      // RUN LAST - BUT A TYPO IN THE ENTRY THAT CARRIES ONE IS A CONFIGURATION MISTAKE, AND BEING TOLD ABOUT IT ONLY
-      // ONCE EVERY ROW HAS BEEN READ MEANT REPEATING THE WHOLE IMPORT TO FIND OUT WHETHER THERE IS A SECOND ONE
-      // (ISSUE #7864)
-      final List<PostImportCommand> postImportCommands = parsePostImportCommands(config);
 
       try (final GraphImporter importer = fromJSON(database, config, baseDir)) {
         importer.run();

@@ -149,9 +149,9 @@ class Issue7864PostImportCommandValidationTest {
           .hasMessageContaining("\"command\"");
 
       try (final Database db = new DatabaseFactory(databasePath).open()) {
-        assertThat(db.countType("Person", false))
-            .as("not one row was read: the configuration mistake was answered before the import started")
-            .isZero();
+        assertThat(db.getSchema().existsType("Person"))
+            .as("the refusal comes before every side effect, schema auto-creation included")
+            .isFalse();
       }
     } finally {
       final DatabaseFactory factory = new DatabaseFactory(databasePath);
