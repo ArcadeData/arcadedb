@@ -23,6 +23,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
+import java.util.stream.StreamSupport;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -105,7 +106,7 @@ class Issue7914BoundEdgeTypeArgumentTest extends TestHelper {
     assertThat(result.hasNext()).isTrue();
     final Object vertices = result.next().getProperty("vertices");
     return vertices instanceof Iterable<?> iterable ?
-        java.util.stream.StreamSupport.stream(iterable.spliterator(), false).count() :
+        StreamSupport.stream(iterable.spliterator(), false).count() :
         vertices == null ? 0 : 1;
   }
 }
