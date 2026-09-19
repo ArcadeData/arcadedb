@@ -326,18 +326,31 @@ public class DeferredExistenceChecks {
 
     // Best effort, like discard()'s: the ValidationException below names the constraint the statement actually
     // broke, and a failure to tidy up after it must not take its place.
+    int removed = 0;
     try {
-      deleteProvisionalRecords(incomplete);
+      removed = deleteProvisionalRecords(incomplete);
     } catch (final RuntimeException | Error e) {
       LogManager.instance().log(this, Level.WARNING,
           "Could not take back the incomplete records of a statement that failed its existence constraints", e);
     }
 
+    // What the message claims is what actually happened. Taking the records back is best effort - a delete can
+    // fail, and the whole cleanup transaction can - so an exception that always said they were gone would send an
+    // operator looking for records that are still there.
+    final String outcome;
+    if (removed == incomplete.size())
+      outcome = incomplete.size() == 1 ? ". The record has been removed" : ". They have been removed";
+    else if (removed == 0)
+      outcome = incomplete.size() == 1 ?
+          ". The record could not be removed and is still in the database" :
+          ". They could not be removed and are still in the database";
+    else
+      outcome = ". " + removed + " of them have been removed; the rest are still in the database";
+
     throw new ValidationException(
         (incomplete.size() == 1 ?
             "A record created by this statement was left incomplete: " :
-            incomplete.size() + " records created by this statement were left incomplete: ") + violations
-            + (incomplete.size() == 1 ? ". The record has been removed" : ". They have been removed"));
+            incomplete.size() + " records created by this statement were left incomplete: ") + violations + outcome);
   }
 
   /**
@@ -427,9 +440,9 @@ public class DeferredExistenceChecks {
    * error that is on its way out: a record that cannot be deleted is logged, because the exception the caller is
    * about to see is the more useful of the two.
    */
-  private void deleteProvisionalRecords(final List<RID> rids) {
+  private int deleteProvisionalRecords(final List<RID> rids) {
     if (rids.isEmpty())
-      return;
+      return 0;
 
     // One transaction for the whole set rather than one per record: a statement that wrote thousands of records it
     // never completed would otherwise pay thousands of commits on its way out.
@@ -441,23 +454,35 @@ public class DeferredExistenceChecks {
     // transaction" is a session-long explicit one holding work this statement knows nothing about. Discarding that
     // to report a record we could not tidy up would be silent data loss well beyond the failure being reported, so
     // each delete swallows and logs its own failure and the sweep continues.
+    final int[] removed = { 0 };
     database.transaction(() -> {
+      removed[0] = 0;
       for (final RID rid : rids)
-        deleteProvisionalRecord(rid);
+        if (deleteProvisionalRecord(rid))
+          removed[0]++;
     }, true);
+
+    return removed[0];
   }
 
-  /** Deletes one provisional record, best effort: see {@link #deleteProvisionalRecords} for why it cannot throw. */
-  private void deleteProvisionalRecord(final RID rid) {
+  /**
+   * Deletes one provisional record, best effort: see {@link #deleteProvisionalRecords} for why it cannot throw.
+   *
+   * @return whether the record is gone, which a record that was already gone also satisfies
+   */
+  private boolean deleteProvisionalRecord(final RID rid) {
     try {
       final Record record = database.lookupByRID(rid, false);
       if (record != null)
         database.deleteRecord(record);
+      return true;
     } catch (final RecordNotFoundException e) {
       // Already gone - rolled back with the transaction that created it, or deleted by the statement itself.
+      return true;
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING,
           "Could not remove the incomplete record %s left by a statement that failed its existence constraints", e, rid);
+      return false;
     }
   }
 
