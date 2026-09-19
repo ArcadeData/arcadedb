@@ -543,7 +543,10 @@ public class TimeSeriesEngine implements AutoCloseable {
    * <p>
    * Folded over {@link #forEachRow} with a visitor that stops on the first row, rather than given a walk of its
    * own: the sealed layer already drops a block whose directory entry puts it outside the range, so the answer
-   * costs one block read at most - and a "no" costs none at all.
+   * costs one block read at most - and a "no" costs no block read at all. It does cost one mutable-bucket scan per
+   * shard either way, because {@link TimeSeriesShard#forEachRow} reads that bucket in the same lock window it
+   * snapshots the sealed directory in and so cannot skip it for a visitor that stops early (issue #7897, and
+   * issue #7965 for giving it back its laziness).
    * <p>
    * This is what scopes {@code /label/__name__/values} to the requested range, which is a metric name rather than
    * a tag value and so has no declaration to read.

@@ -381,6 +381,13 @@ public class TimeSeriesShard implements AutoCloseable {
    * Both iterators are eagerly materialized under the read lock to prevent
    * concurrent {@link #compact()} from clearing the mutable bucket and causing
    * stale reads after the lock is released.
+   * <p>
+   * What that window no longer freezes is the sealed store's block DIRECTORY. Since issue #7897 the sealed walk
+   * takes {@code directoryLock} one block at a time, and a retention pass ({@code truncateBefore},
+   * {@code downsampleBlocks}) takes only that lock - not this one - so a pass landing between two blocks removes
+   * them from this answer instead of waiting behind the whole walk. The rows concerned are the ones retention is
+   * deleting; what the per-block lock buys in exchange is that a caller's own work can no longer park a
+   * compaction, and with it every append.
    */
   public Iterator<Object[]> iterateRange(final long fromTs, final long toTs, final int[] columnIndices,
                                          final TagFilter tagFilter) throws IOException {
@@ -472,6 +479,20 @@ public class TimeSeriesShard implements AutoCloseable {
    * {@code iterateRange} materialises it - a lazy read of it could see pages a concurrent {@code compact()} has
    * cleared - and it is bounded by the bucket, not by the series.
    * <p>
+   * <b>The visitor never runs under {@code compactionLock}</b> (issue #7897). The lock is held to take the sealed
+   * store's directory snapshot and to read the mutable bucket, both of which cost what the shard holds rather than
+   * what the caller does with it, and is released before a single row is handed over. It used to be held across
+   * the whole visit, which made the time a compaction waited - and therefore the time {@link #appendSamples}
+   * queued behind that waiting writer - the caller's total work: an {@code EXPORT DATABASE} writing a gzip chunk
+   * from inside the visitor stalled ingest for the whole export. The two are taken in ONE window because they have
+   * to be consistent with each other: a compaction landing between them would seal the bucket's rows into blocks
+   * the sealed walk then visits as well, and the same sample would be handed over twice.
+   * <p>
+   * What that costs is the mutable bucket read a visitor stopping inside the SEALED layer used to skip - it is now
+   * read before the walk starts rather than after it ends. It is bounded by the bucket, which is what every
+   * {@code iterateRange} caller already pays on every call, and {@link TimeSeriesEngine#hasRowsInRange} is the
+   * one caller that notices; issue #7965 tracks giving it back its laziness.
+   * <p>
    * The rows arrive sealed-then-mutable, NOT merged by timestamp. Merging is what forces every shard's rows to be
    * resident at once; a folding answer does not need the order, and one that does wants {@code iterateQuery}.
    *
@@ -482,22 +503,27 @@ public class TimeSeriesShard implements AutoCloseable {
    */
   public boolean forEachRow(final long fromTs, final long toTs, final int[] columnIndices, final TagFilter tagFilter,
       final AggregationMetrics metrics, final TimeSeriesRowVisitor visitor) throws IOException {
+    final List<TimeSeriesSealedStore.BlockEntry> sealedBlocks;
+    final List<Object[]> mutableRows;
     compactionLock.readLock().lock();
     try {
-      if (!sealedStore.forEachRow(fromTs, toTs, columnIndices, tagFilter, metrics, visitor))
-        return false;
-
+      sealedBlocks = sealedStore.snapshotBlockDirectory();
       // Filtered by the bucket, on the page: see scanRange (issue #7733).
-      for (final Object[] row : mutableBucket.scanRange(fromTs, toTs, columnIndices, tagFilter, null)) {
-        if (metrics != null)
-          metrics.addMaterializedRows(1);
-        if (!visitor.visit(row))
-          return false;
-      }
-      return true;
+      mutableRows = mutableBucket.scanRange(fromTs, toTs, columnIndices, tagFilter, null);
     } finally {
       compactionLock.readLock().unlock();
     }
+
+    if (!sealedStore.forEachRow(sealedBlocks, fromTs, toTs, columnIndices, tagFilter, metrics, visitor))
+      return false;
+
+    for (final Object[] row : mutableRows) {
+      if (metrics != null)
+        metrics.addMaterializedRows(1);
+      if (!visitor.visit(row))
+        return false;
+    }
+    return true;
   }
 
   /**
@@ -515,21 +541,28 @@ public class TimeSeriesShard implements AutoCloseable {
    */
   public boolean forEachTagCombination(final long fromTs, final long toTs, final int[] columnIndices,
       final AggregationMetrics metrics, final TimeSeriesRowVisitor visitor) throws IOException {
+    // One window for both layers, then the visit with nothing held - see forEachRow for why each half is the way
+    // it is (issue #7897).
+    final List<TimeSeriesSealedStore.BlockEntry> sealedBlocks;
+    final List<Object[]> mutableRows;
     compactionLock.readLock().lock();
     try {
-      if (!sealedStore.forEachTagCombination(fromTs, toTs, columnIndices, metrics, visitor))
-        return false;
-
-      for (final Object[] row : mutableBucket.scanRange(fromTs, toTs, columnIndices)) {
-        if (metrics != null)
-          metrics.addMaterializedRows(1);
-        if (!visitor.visit(row))
-          return false;
-      }
-      return true;
+      sealedBlocks = sealedStore.snapshotBlockDirectory();
+      mutableRows = mutableBucket.scanRange(fromTs, toTs, columnIndices);
     } finally {
       compactionLock.readLock().unlock();
     }
+
+    if (!sealedStore.forEachTagCombination(sealedBlocks, fromTs, toTs, columnIndices, metrics, visitor))
+      return false;
+
+    for (final Object[] row : mutableRows) {
+      if (metrics != null)
+        metrics.addMaterializedRows(1);
+      if (!visitor.visit(row))
+        return false;
+    }
+    return true;
   }
 
   /**
