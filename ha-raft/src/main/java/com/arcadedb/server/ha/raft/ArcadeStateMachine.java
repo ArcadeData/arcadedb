@@ -361,12 +361,21 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * <p>
    * Registered by {@link #installFromLeaderForBootstrap} around the install and read by
    * {@link #bootstrapWindowReason()}, which is what takes the node out of the Kubernetes Service for the
-   * duration. A {@code Set} rather than a counter: {@link SnapshotInstaller#install} logs a WARNING if two
-   * installs of the same database ever overlap, so a second registration for a name already present is a
-   * condition that is reported there rather than counted here, and the remove in this method's {@code finally}
-   * cannot then strand the name.
+   * duration.
+   * <p>
+   * <b>A depth per database, not a set</b> (review of PR #7964), and for the same reason
+   * {@link SnapshotInstaller}'s own {@code INSTALLS_IN_FLIGHT} is one: with a set, two overlapping installs of
+   * the same database would have the FIRST {@code finally} to run drop the name while the second was still
+   * moving files, and the node would report itself ready in the middle of a directory replacement - silently,
+   * with no log line and nothing a test would catch. The four production callers of
+   * {@code installFromLeaderForBootstrap} sit on two single-threaded executors (the Ratis apply thread for the
+   * two {@code applyBootstrapFingerprintEntry} arms, the {@code lifecycleExecutor} for
+   * {@code retryBootstrapInstall} and {@code retryMissingBootstrapDatabase}), so neither pair can race itself
+   * and an apply/lifecycle overlap needs a replayed baseline to meet a live retry for the same database. That
+   * is narrow rather than impossible, and proving it impossible across two pools is worth less than the six
+   * lines that make it not matter.
    */
-  private final Set<String> bootstrapInstallsInFlight = ConcurrentHashMap.newKeySet();
+  private final ConcurrentHashMap<String, Integer> bootstrapInstallsInFlight = new ConcurrentHashMap<>();
 
   // Wall-clock of the last bootstrap-divergence verification submitted by verifyBootstrapDivergence();
   // 0 = none yet. Throttles the HealthMonitor-driven check, which ticks far more often than a probe of
@@ -3751,7 +3760,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // install - the download most of all, which is where the local copy is still open and serving the very
     // bytes the cluster has decided against - and not the file swap at the end, which
     // SnapshotInstaller.install already guards with the node-wide snapshotInstallInProgress 503 (HTTP only).
-    bootstrapInstallsInFlight.add(dbName);
+    beginBootstrapInstall(dbName);
     try {
       // Resolve the leader address on each retry: the bootstrap-mismatch entry is applied
       // during Raft log replay on startup, which can race ahead of leader election on this peer.
@@ -3773,8 +3782,25 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // installing any more, and holding readiness on a condition nothing clears would wedge it out of the
       // Service for good. What it holds then is a copy the cluster did not adopt, which is what the
       // unreconciled mark records and what bootstrapWindowReason() reports in its own right.
-      bootstrapInstallsInFlight.remove(dbName);
+      endBootstrapInstall(dbName);
     }
+  }
+
+  /**
+   * Adds one holder to {@code dbName}'s bootstrap-install depth (issue #7519). Paired with
+   * {@link #endBootstrapInstall} in a {@code finally} by its single caller.
+   */
+  private void beginBootstrapInstall(final String dbName) {
+    bootstrapInstallsInFlight.merge(dbName, 1, Integer::sum);
+  }
+
+  /**
+   * Removes one holder, and the entry itself once the last holder leaves - so the map does not keep the name of
+   * every database this node ever reinstalled for the node's lifetime, the same rule the per-database applied
+   * index and the bootstrap baselines already follow.
+   */
+  private void endBootstrapInstall(final String dbName) {
+    bootstrapInstallsInFlight.computeIfPresent(dbName, (name, depth) -> depth > 1 ? depth - 1 : null);
   }
 
   /**
@@ -3787,7 +3813,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // The overwhelmingly common answer, and this is on the readiness-probe path: allocate nothing for it.
     if (bootstrapInstallsInFlight.isEmpty())
       return Collections.emptyList();
-    final List<String> names = new ArrayList<>(bootstrapInstallsInFlight);
+    final List<String> names = new ArrayList<>(bootstrapInstallsInFlight.keySet());
     Collections.sort(names);
     return names;
   }

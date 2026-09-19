@@ -33,6 +33,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -264,6 +265,50 @@ class Issue7519BootstrapWindowGateTest {
     assertThat(sm.bootstrapWindowReason())
         .as("a matching peer is serving the cluster's own copy and belongs in the Service")
         .isNull();
+  }
+
+  /**
+   * Two overlapping installs of the same database must not have the first one to finish declare the node ready
+   * while the second is still moving files. That is why the registration is a depth per database rather than a
+   * set - the same shape {@code SnapshotInstaller.INSTALLS_IN_FLIGHT} settled on for its own overlap guard, and
+   * for the same reason: with a set the failure is silent, with no log line and nothing to assert on.
+   * <p>
+   * Driven through the real apply path twice, reentrantly: the inner apply runs from inside the outer install's
+   * {@code getBackupCoordinator()} call, so when the inner one returns and releases its holder, the outer install
+   * is still in flight and the node must still be reporting itself unfit to serve.
+   */
+  @Test
+  void anOverlappingInstallOfTheSameDatabaseDoesNotReleaseTheGateEarly() {
+    final ArcadeDBServer server = stubbedServer(configuration());
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+
+    final AtomicReference<List<String>> inFlightAfterTheInnerInstallReturned = new AtomicReference<>();
+    final AtomicBoolean reentered = new AtomicBoolean();
+    when(server.getBackupCoordinator()).thenAnswer(invocation -> {
+      if (reentered.compareAndSet(false, true)) {
+        // A second install of the SAME database, started and finished while this one is still in flight.
+        sm.applyBootstrapFingerprintEntry(baselineOfAnotherCopy(Long.MAX_VALUE), 8L);
+        inFlightAfterTheInnerInstallReturned.set(sm.getBootstrapInstallsInFlight());
+      }
+      return null;
+    });
+
+    sm.setServer(server);
+
+    assertThatNoException().isThrownBy(
+        () -> sm.applyBootstrapFingerprintEntry(baselineOfAnotherCopy(Long.MAX_VALUE), 7L));
+
+    assertThat(reentered).as("the reentrant install really did run").isTrue();
+    // Asserted on the in-flight registration, NOT on bootstrapWindowReason(): the failed inner install also
+    // records the unreconciled mark, so the reason string is non-null either way and a test written against it
+    // passes whether the depth works or not. Checked by reverting endBootstrapInstall to a plain remove, which
+    // left the reason assertion green and only this one red.
+    assertThat(inFlightAfterTheInnerInstallReturned.get())
+        .as("the inner install releasing its holder must not deregister the outer one, which is still running")
+        .containsExactly(DB_NAME);
+    assertThat(sm.getBootstrapInstallsInFlight())
+        .as("and once both holders are gone the entry is removed rather than left behind at zero")
+        .isEmpty();
   }
 
   /** No bootstrap has happened at all: nothing to report, and nothing allocated on the readiness-probe path. */
