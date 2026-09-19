@@ -145,6 +145,44 @@ class Issue7918CreatePropertyValidationUnderWriteLockTest extends TestHelper {
   }
 
   /**
+   * {@code rename()}'s name bookkeeping, which the same issue touched (and which CodeRabbit's review of PR #7935
+   * sharpened): the old name has to stay mapped to the type for the WHOLE rename, because the rename can still
+   * roll back after the new name is reserved. Released early, a concurrent {@code CREATE TYPE} could legitimately
+   * take it in that window and the rollback's restore would have evicted that type.
+   * <p>
+   * The window itself needs a failure injected mid-rename to observe directly; what is pinned here are the two
+   * post-conditions that bracket it and that any regression in the bookkeeping breaks - a rename that succeeds
+   * releases exactly the old name, and a rename that is refused changes nothing and evicts nobody.
+   */
+  @Test
+  void renameReleasesTheOldNameOnlyOnSuccessAndEvictsNobodyOnRefusal() {
+    final Schema schema = database.getSchema();
+    schema.createDocumentType("Issue7918Renamed").createProperty("label", Type.STRING);
+
+    // A rename that succeeds: the old name is gone, the new one resolves to the same type, and it kept its
+    // properties (so the map entry really is the type, not a fresh one).
+    schema.getType("Issue7918Renamed").rename("Issue7918RenamedNow");
+
+    assertThat(schema.existsType("Issue7918Renamed")).isFalse();
+    assertThat(schema.existsType("Issue7918RenamedNow")).isTrue();
+    assertThat(schema.getType("Issue7918RenamedNow").existsProperty("label")).isTrue();
+
+    // A rename onto a name somebody else holds is refused, and - the part that matters - the holder is still
+    // there afterwards, under its own name, with its own properties.
+    schema.createDocumentType("Issue7918Occupant").createProperty("occupied", Type.STRING);
+
+    assertThatThrownBy(() -> schema.getType("Issue7918RenamedNow").rename("Issue7918Occupant"))
+        .isInstanceOf(IllegalArgumentException.class);
+
+    assertThat(schema.existsType("Issue7918Occupant")).isTrue();
+    assertThat(schema.getType("Issue7918Occupant").existsProperty("occupied"))
+        .as("the refused rename must not have evicted the type that legitimately holds the name").isTrue();
+    assertThat(schema.existsType("Issue7918RenamedNow"))
+        .as("and the type that tried to rename is still reachable under its own name").isTrue();
+    assertThat(schema.getType("Issue7918RenamedNow").existsProperty("label")).isTrue();
+  }
+
+  /**
    * The property must survive a reopen, i.e. the mutation still goes through {@code recordFileChanges} and still
    * reaches {@code schema.json} - the move must not have turned the write into an in-memory-only one.
    */

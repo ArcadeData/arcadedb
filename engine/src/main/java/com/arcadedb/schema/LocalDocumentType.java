@@ -231,8 +231,9 @@ public class LocalDocumentType implements DocumentType {
   /**
    * Renames the type, its buckets and its indexes.
    * <p>
-   * The name-uniqueness check below is a fast, friendly refusal only; the AUTHORITATIVE one is the atomic
-   * {@code putIfAbsent} further down, next to the mutation it guards. A check up here on its own is a
+   * The name-uniqueness check below is a fast, friendly refusal only, and it earns its place by running BEFORE
+   * the bucket renames: the common "that name is taken" case is answered without moving a single file. The
+   * AUTHORITATIVE check is the atomic {@code putIfAbsent} further down, next to the mutation it guards. A check up here on its own is a
    * time-of-check to time-of-use hole - two concurrent renames onto the same target both pass it and the second
    * silently overwrites the first's map entry (issue #7918) - and it cannot be closed by moving the whole method
    * under {@link #recordFileChanges}: every bucket rename in the loop below waits for the WHOLE database's page
@@ -278,8 +279,6 @@ public class LocalDocumentType implements DocumentType {
           throw new SchemaException("Type with name '" + newName + "' already exists");
 
         name = newName;
-
-        schema.types.remove(oldName);
         return null;
       });
 
@@ -292,13 +291,27 @@ public class LocalDocumentType implements DocumentType {
 
       schema.saveConfiguration();
 
+      // OLD NAME RELEASED ONLY HERE, once nothing left can fail and send us to the catch below (found by
+      // CodeRabbit on PR #7935). Releasing it at the reservation instead opened a window in which the name was
+      // free while this rename could still roll back: a concurrent CREATE TYPE could take it - legitimately, and
+      // under the very write lock the reservation uses - and the rollback's restore would then have evicted that
+      // type and left it answering to no name at all. Held across the index renames and the save, the window
+      // cannot open, so the rollback has nothing to restore and nothing to overwrite.
+      //
+      // The cost is that the type answers to BOTH names in between, which is the conservative direction: a
+      // concurrent CREATE TYPE on the old name is refused while the rename may still come back, and a reader
+      // resolving the old name gets this type rather than nothing. schema.json is unaffected either way -
+      // saveConfiguration() keys each entry by t.getName(), so two keys onto one type collapse into one entry.
+      ((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance()
+          .executeInWriteLock(() -> schema.types.remove(oldName, this));
+
       // SchemaException too: it is a RuntimeException, and letting it past this catch would leave the buckets
       // already renamed on disk with a schema.json that still names the old files.
     } catch (IOException | SchemaException e) {
       name = oldName;
-      schema.types.put(oldName, this);
-      // Only OUR reservation goes: the two-argument remove() is what keeps a refusal from evicting the entry of
-      // the type that legitimately holds the name (#7918).
+      // ONLY OUR RESERVATION GOES, and nothing is restored: the old name was never released above, so it still
+      // maps to this type. The two-argument remove() is what keeps a refusal - the putIfAbsent losing to whoever
+      // already holds the new name - from evicting that winner's entry (#7918).
       schema.types.remove(newName, this);
 
       boolean corrupted = false;
