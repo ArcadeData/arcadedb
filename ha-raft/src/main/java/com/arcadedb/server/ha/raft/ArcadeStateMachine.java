@@ -99,6 +99,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 import java.util.logging.Level;
@@ -456,7 +457,27 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // node for one database's bad entry froze replication for all co-located databases. Such failures
   // are now quarantined per-database (see applyWithRetry): the affected database is marked diverged
   // and resynced from the leader while the node stays up and healthy databases keep replicating.
-  private final AtomicBoolean haltedAfterCriticalError = new AtomicBoolean(false);
+  //
+  // Holds WHAT tripped it, not just that something did (issue #7872). The halt is now published in
+  // GET /api/v1/cluster, and the index and reason are what tell an operator whether the answer is "upgrade this
+  // node" (a newer peer committed an entry type it cannot decode) or "file a bug" (an unexpected apply error).
+  // Set with compareAndSet so the FIRST halt is the one recorded, like raftLogFailure: every later apply is
+  // refused by the guard below, and a cascade of follow-on failures would otherwise overwrite the cause.
+  private final AtomicReference<CriticalHalt> haltedAfterCriticalError = new AtomicReference<>();
+
+  /**
+   * What tripped the node-wide critical halt (issue #7872).
+   *
+   * @param index     the Raft log index being applied when it tripped, or -1 when there was none
+   * @param reason    one line naming the condition, in the vocabulary an operator can act on
+   * @param timestamp when it tripped, as epoch milliseconds
+   */
+  public record CriticalHalt(long index, String reason, long timestamp) {
+    /** One-line description for logs and the cluster status alert, the shape {@link RaftLogFailure#describe()} uses. */
+    public String describe() {
+      return (index >= 0 ? "at index " + index : "on an entry with no index") + ": " + reason;
+    }
+  }
 
   // Database names whose state has diverged from the committed Raft log (a WALVersionGapException
   // was detected while applying an entry for them). While a database is in this set, unexpected
@@ -925,9 +946,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // Refuse to apply once a prior entry tripped the critical-error halt. Continuing would
     // operate on the inconsistent in-memory state left behind by the failed apply and cascade
     // into additional SEVERE errors before the async server.stop() completes (#4219).
-    if (haltedAfterCriticalError.get())
+    final CriticalHalt halt = haltedAfterCriticalError.get();
+    if (halt != null)
       return CompletableFuture.failedFuture(new ReplicationException(
-          "State machine halted after critical error at earlier index; refusing to apply index " + index));
+          "State machine halted after critical error " + halt.describe() + "; refusing to apply index " + index));
 
     // Captured after decode so the catch blocks can tell whether a ReplicationException is the expected
     // resync-in-progress signal for an already-quarantined database (throttled at the source) or a
@@ -952,7 +974,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
             "CRITICAL: Unknown Raft log entry type at index %d (likely written by a newer node version). "
                 + "Refusing to skip a committed entry and halting to prevent silent state divergence; "
                 + "upgrade this node to a compatible version to resume.", index);
-        triggerCriticalHalt();
+        triggerCriticalHalt(index, "unknown Raft log entry type, most likely written by a newer node version; "
+            + "upgrade this node to a version that understands it");
         return CompletableFuture.failedFuture(new ReplicationException(
             "Unknown Raft log entry type at index " + index + "; node halted to prevent silent divergence"));
       }
@@ -1056,7 +1079,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
       } catch (final ReplicationException quarantined) {
         return CompletableFuture.failedFuture(quarantined);
       } catch (final RuntimeException fatal) {
-        triggerCriticalHalt();
+        triggerCriticalHalt(index, "a committed entry of type " + e.getType() + " could not be decoded and the "
+            + "envelope named no database to quarantine instead: " + e.getMessage());
         return CompletableFuture.failedFuture(fatal);
       }
       // handleUnexpectedApplyError always throws; unreachable, but the compiler needs a value.
@@ -1068,7 +1092,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
           """
           CRITICAL: Unexpected error applying Raft log entry at index %d. \
           Shutting down to prevent state divergence.""", e, index);
-      triggerCriticalHalt();
+      triggerCriticalHalt(index, "unexpected error applying a committed entry: " + e);
       return CompletableFuture.failedFuture(e instanceof Exception ex ? ex : new RuntimeException(e));
     }
   }
@@ -1083,9 +1107,18 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * Callers must NOT advance or persist {@link #lastAppliedIndex} before invoking this: leaving the
    * index untouched is what lets the offending entry be replayed (instead of silently skipped) once
    * the node restarts on a compatible version.
+   * <p>
+   * The cause is recorded with the flag (issue #7872), because the emergency stop below can fail - its only
+   * failure handling is a log line - and a process that stays up with a dead state machine has to be able to say
+   * so through {@code GET /api/v1/cluster} rather than only through a SEVERE that has already scrolled past.
+   * {@code compareAndSet} keeps the FIRST cause: it is the one that explains the halt, and every apply after it
+   * is refused by the guard in {@code applyTransaction} rather than being a new problem.
+   *
+   * @param index  the Raft log index being applied, or -1 when there is none
+   * @param reason one line naming the condition, in the vocabulary an operator can act on
    */
-  private void triggerCriticalHalt() {
-    haltedAfterCriticalError.set(true);
+  private void triggerCriticalHalt(final long index, final String reason) {
+    haltedAfterCriticalError.compareAndSet(null, new CriticalHalt(index, reason, System.currentTimeMillis()));
     final Thread stopThread = new Thread(() -> {
       try {
         if (server != null)
@@ -3679,8 +3712,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
       LogManager.instance().log(this, Level.SEVERE,
           "Database '%s' was applied on this node in a previous session but is missing now, and reinstalling it from "
               + "the leader failed again: %s. The node is running WITHOUT it, and says so in the cluster status "
-              + "until it is back. The periodic bootstrap-divergence check retries the install; to force it, run "
-              + "POST /api/v1/cluster/resync/%s on this node once a leader is reachable.",
+              + "until it is back (alert 'bootstrap-database-missing'). The periodic bootstrap-divergence check "
+              + "retries the install once this node is a FOLLOWER - a node cannot install a database from itself, so "
+              + "if this node is the leader, transfer leadership first (POST /api/v1/cluster/leader). To force it, "
+              + "run POST /api/v1/cluster/resync/%s on this node once a leader that holds it is reachable.",
           e, dbName, e.getMessage(), dbName);
     }
   }
@@ -3694,11 +3729,27 @@ public class ArcadeStateMachine extends BaseStateMachine {
   /**
    * Close the local database and pull a full snapshot from the current leader. Same low-level
    * snapshot install machinery as {@code applyInstallDatabaseEntry(forceSnapshot=true)}.
+   * <p>
+   * The leader short-circuit below ASSERTS its premise rather than assuming it (issue #7901). It was written for
+   * one caller - the fingerprint-mismatch arm, where this node has a local copy that differs from the cluster
+   * baseline - and for that caller "the leader is the bootstrap source, so it already holds the chosen baseline"
+   * is true by construction. Issue #7298 gave the method a second caller with the opposite premise: the database
+   * is not on this node, and this node being the Raft leader does not make it appear. Returning normally there
+   * meant no retry was scheduled, no durable mark recorded, and one TRACE line stood as the entire record of a
+   * node permanently short of a database the cluster believes it has - the exact outcome #7298 existed to
+   * prevent. Throwing routes that case into the handling already written for it.
    */
   private void installFromLeaderForBootstrap(final String dbName) {
     // One read for both the leader check and the cluster token below (issue #7253).
     final RaftHAServer raft = this.raftHAServer;
     if (raft != null && raft.isLeader()) {
+      // "Present" means registered OR on disk, the same pair getBootstrapUnreconciled classifies on: a leader
+      // whose copy is merely closed is still the source every peer installs from, and making it throw here would
+      // mark it unreconciled and retry a download over files that are perfectly good.
+      if (server != null && !server.existsDatabase(dbName) && !databaseDirectoryExists(dbName))
+        throw new IllegalStateException("Database '" + dbName + "' is missing on this node and this node is the Raft "
+            + "leader, so there is nowhere to install it from. Transfer leadership (POST /api/v1/cluster/leader) to "
+            + "a node that holds it, then force the install here (POST /api/v1/cluster/resync/" + dbName + ")");
       // The leader has the chosen baseline by definition (it's the source). No need to install.
       HALog.log(this, HALog.TRACE, "Leader skips bootstrap snapshot install for '%s'", dbName);
       return;
@@ -3816,6 +3867,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * reconciled with the cluster since (issue #6124), sorted for deterministic output. Read by
    * {@code ClusterAlerts} so the condition is visible in {@code GET /api/v1/cluster} rather than only in
    * a SEVERE line emitted once, at bootstrap, possibly several restarts ago.
+   * <p>
+   * The WHOLE marked set, both of the conditions {@link BootstrapUnreconciled} separates. A caller that renders
+   * it to an operator wants that split instead - see there for why.
    */
   public List<String> getBootstrapUnreconciledDatabases() {
     ensureBootstrapBaselinesLoaded();
@@ -3826,6 +3880,73 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final List<String> names = new ArrayList<>(bootstrapUnreconciledDatabases);
     Collections.sort(names);
     return names;
+  }
+
+  /**
+   * The marked set split by the one fact that decides what an operator should do about it: whether this node
+   * still holds a copy of the database (issue #7902).
+   * <p>
+   * Both halves reach {@link #markBootstrapUnreconciled} and are indistinguishable in the set itself, but they
+   * are opposite conditions:
+   * <ul>
+   *   <li>{@link #keptLocalCopy()} - the #6124 overwrite guard kept a copy FRESHER than the cluster's baseline.
+   *       The data is here and intact; what is wrong is that its file ids came from a history no peer shares.</li>
+   *   <li>{@link #missingLocally()} - the #7298 replay-skip found the database gone and could not pull it back.
+   *       There is no copy here at all.</li>
+   * </ul>
+   * Reporting the second under the first's text told an operator that a database this node does not have was
+   * "kept", and recommended copying this node's directory to every peer - which for a missing database would
+   * overwrite every good copy in the cluster.
+   *
+   * @param seen which databases the caller may be told about by NAME; {@code null} for the unrestricted operator
+   *             view. It reduces the names only: {@link #missingCount()} is the raw figure, because whether this
+   *             node is serving a database is a node-level fact and not a per-tenant one, exactly as
+   *             {@code localResync.inProgress} is
+   */
+  public BootstrapUnreconciled getBootstrapUnreconciled(final Set<String> seen) {
+    ensureBootstrapBaselinesLoaded();
+    // Same fast path as above, and for the same reason: this runs on every Studio status poll, and the answer
+    // is almost always "nothing is marked". Nothing is allocated and no file is stat'ed for it.
+    if (bootstrapUnreconciledDatabases.isEmpty())
+      return BootstrapUnreconciled.NONE;
+
+    final List<String> kept = new ArrayList<>();
+    final List<String> missing = new ArrayList<>();
+    int missingTotal = 0;
+    for (final String dbName : getBootstrapUnreconciledDatabases()) {
+      // The LIVE fact, not the reason the mark was recorded. A mark is durable and the condition under it is
+      // not: an operator who restores a missing directory by hand, or deletes a kept copy, moves the database
+      // from one half to the other without anything re-running the branch that marked it. The remedy has to
+      // follow the database, so it is derived from where the database is now.
+      //
+      // existsDatabase OR the directory, because a closed-but-present database is still a copy this node holds:
+      // reporting it as missing would recommend a reinstall over files an operator deliberately left closed.
+      if (server != null && !server.existsDatabase(dbName) && !databaseDirectoryExists(dbName)) {
+        ++missingTotal;
+        if (seen == null || seen.contains(dbName))
+          missing.add(dbName);
+      } else if (seen == null || seen.contains(dbName))
+        kept.add(dbName);
+    }
+    return new BootstrapUnreconciled(kept, missing, missingTotal);
+  }
+
+  /**
+   * The two halves of the bootstrap-unreconciled set, as {@link #getBootstrapUnreconciled(Set)} classifies them.
+   *
+   * @param keptLocalCopy  marked databases this node still holds a copy of, reduced to the names the caller may
+   *                       see
+   * @param missingLocally marked databases that are not on this node at all, reduced the same way
+   * @param missingCount   how many databases are missing BEFORE that reduction, so a caller scoped to no database
+   *                       still learns that this node is running short of some
+   */
+  public record BootstrapUnreconciled(List<String> keptLocalCopy, List<String> missingLocally, int missingCount) {
+    static final BootstrapUnreconciled NONE = new BootstrapUnreconciled(List.of(), List.of(), 0);
+
+    public BootstrapUnreconciled {
+      keptLocalCopy = List.copyOf(keptLocalCopy);
+      missingLocally = List.copyOf(missingLocally);
+    }
   }
 
   /**
@@ -5218,6 +5339,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   // @VisibleForTesting
   boolean isHaltedAfterCriticalError() {
+    return haltedAfterCriticalError.get() != null;
+  }
+
+  /**
+   * What tripped the node-wide critical halt, or {@code null} while this state machine is still applying entries
+   * (issue #7872).
+   * <p>
+   * Public, unlike {@link #isHaltedAfterCriticalError()}, which was and stays a test seam. The halt is a terminal,
+   * operator-visible condition pinning {@code /api/v1/ready} at 503, and until this it was recorded nowhere a
+   * machine could read it: {@code GET /api/v1/cluster} answered 200 with an empty {@code alerts} array on a node
+   * whose state machine had stopped for good, which is the state the #7136 invariant exists to make impossible.
+   */
+  public CriticalHalt getCriticalHalt() {
     return haltedAfterCriticalError.get();
   }
 

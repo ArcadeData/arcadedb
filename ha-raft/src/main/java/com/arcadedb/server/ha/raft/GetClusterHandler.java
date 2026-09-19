@@ -70,6 +70,27 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     this.plugin = plugin;
   }
 
+  /**
+   * Per REQUEST, not per handler (issue #7861). Only {@code ?presence=true} blocks: it issues one synchronous
+   * bootstrap-state RPC per peer, each bounded by {@link #PRESENCE_QUERY_TIMEOUT_MS}, so worst case it holds its
+   * thread for {@code peers x 5s}. On an Undertow IO thread that is a shared selector, and everything multiplexed
+   * onto it - the kubelet readiness and liveness probes among them - waits behind the fan-out.
+   * <p>
+   * The far commoner request, the cheap auto-poll Studio's HA panel runs, reads in-memory Raft state and never
+   * opens a database ({@code ClusterAlerts} passes {@code allowLoad=false}), so it keeps the IO-thread fast path
+   * rather than paying a worker handoff on every tick. That is why this is the per-exchange overload and not the
+   * handler-wide {@code mustExecuteOnWorkerThread()} the sibling admin handlers declare: for them every request
+   * blocks, for this one exactly the opt-in query parameter does.
+   * <p>
+   * Decided from the query parameter alone, before authorization: a non-root caller asking for the matrix is
+   * refused by {@code checkRootUser} either way, and refusing it one thread handoff later costs nothing next to
+   * deciding the dispatch from state this method cannot see.
+   */
+  @Override
+  protected boolean mustExecuteOnWorkerThread(final HttpServerExchange exchange) {
+    return isPresenceRequested(exchange);
+  }
+
   @Override
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final JSONObject payload) {
     final RaftHAServer raftHAServer = plugin.getRaftHAServer();
@@ -279,15 +300,30 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     // The membership divergence is a cluster-level condition: the only one on this endpoint that nothing else
     // flags, and the one an operator most needs told rather than left to diff the peer list by eye (issue #7040).
     // The local node's resync / WAL-gap quarantine state (issue #7136): the invariant is that anything making
-    // readiness answer 503 is visible here. ArcadeStateMachine.isResyncInProgress() - the readiness gate - is
-    // LocalResyncState.inProgress() on this very object, so the two cannot drift apart. Sampled once and shared
-    // with the alert scan below, so the document cannot report the two halves from different instants.
+    // readiness answer 503 is visible in this DOCUMENT. ArcadeStateMachine.isResyncInProgress() - the readiness
+    // gate - is LocalResyncState.inProgress() on this very object, so the two cannot drift apart. Sampled once
+    // and shared with the alert scan below, so the document cannot report the two halves from different instants.
+    // This member carries the resync inputs of that invariant and not the whole of it: the two terminal ones are
+    // criticalHalt and raftLogFailure just below (issue #7872).
     final LocalResyncState localResync = stateMachine.getLocalResyncState();
     response.put("localResync", buildLocalResync(localResync, authorizedDatabases));
 
+    // The two remaining readiness inputs the #7136 invariant did not publish (issue #7872). Both are terminal
+    // node-level conditions with no per-tenant component, so neither is scoped: a node whose state machine has
+    // halted, or whose Raft log writer has failed, serves nothing correctly for anybody. Until this, a monitoring
+    // rule built on the documented invariant - watch alerts and localResync.inProgress - read a perfectly healthy
+    // node while /api/v1/ready was pinned at 503, and waited forever.
+    // Written as null rather than omitted when absent, like leaderId above, so a client can tell "healthy" from
+    // "this build does not report it".
+    response.put("criticalHalt", buildCriticalHalt(stateMachine.getCriticalHalt()));
+    response.put("raftLogFailure", buildRaftLogFailure(stateMachine.getRaftLogFailure()));
+    // The liveness counterpart (issue #7622): isCrashLoopEscalated() is what fails /api/v1/health, and it was
+    // equally invisible here. Same reasoning, same scoping - none.
+    response.put("crashLoopEscalated", raftHAServer.isCrashLoopEscalated());
+
     response.put("alerts",
         ClusterAlerts.scan(httpServer.getServer(), stateMachine, followerSamples, authorizedDatabases, membership,
-            localPeerId.toString(), localResync));
+            localPeerId.toString(), localResync, raftHAServer.isCrashLoopEscalated()));
 
     return new ExecutionResponse(200, response.toString());
   }
@@ -316,6 +352,40 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
         .put("divergenceCauses", ClusterAlerts.causesObject(state, visibleDatabases))
         .put("snapshotAppliedFloor", state.snapshotAppliedFloor())
         .put("databaseAppliedFloors", ClusterAlerts.visibleFloors(state.databaseAppliedFloors(), visibleDatabases));
+  }
+
+  /**
+   * Renders the critical halt for the status document (issue #7872), or {@link JSONObject#NULL} when this node's
+   * state machine is still applying entries.
+   * <p>
+   * Explicitly null rather than absent, like {@code leaderId}: a member that disappears reads the same whether
+   * the node is healthy or the build does not report it, and those are not the same answer.
+   * <p>
+   * Package-private, and built as one chained expression, for the same reason {@link #buildLocalResync} is: the
+   * shape can then be pinned against {@code PluginApiSpec} without a live cluster, which is what keeps a member
+   * from reaching the response and not the contract - the exact defect #7741 had and #7872 repeated.
+   */
+  static Object buildCriticalHalt(final ArcadeStateMachine.CriticalHalt halt) {
+    if (halt == null)
+      return JSONObject.NULL;
+    return new JSONObject()
+        .put("index", halt.index())
+        .put("reason", halt.reason())
+        .put("timestamp", halt.timestamp());
+  }
+
+  /**
+   * Renders the persistent Raft log-write failure for the status document (issue #7872, publishing the #7037
+   * signal the #7118 readiness gate already reads), or {@link JSONObject#NULL} while the log writer is healthy.
+   * Same shape and same reasoning as {@link #buildCriticalHalt}.
+   */
+  static Object buildRaftLogFailure(final ArcadeStateMachine.RaftLogFailure failure) {
+    if (failure == null)
+      return JSONObject.NULL;
+    return new JSONObject()
+        .put("index", failure.index())
+        .put("cause", failure.cause())
+        .put("timestamp", failure.timestamp());
   }
 
   /**
@@ -380,7 +450,8 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
    * missing:[...]}]}}. A peer that cannot be reached is reported in {@code unreachable} and omitted from the
    * present/missing accounting so a transient blip is not mistaken for a dropped database.
    * <p>
-   * The fan-out is sequential on the Undertow worker thread, with a short per-peer timeout
+   * The fan-out is sequential on an Undertow worker thread - which {@link #mustExecuteOnWorkerThread(HttpServerExchange)}
+   * is what makes true, request by request (issue #7861) - with a short per-peer timeout
    * ({@link #PRESENCE_QUERY_TIMEOUT_MS}), so worst-case latency is {@code peers x 5s}. This is acceptable because
    * it is opt-in ({@code ?presence=true}) and leader-only, not part of the cheap auto-poll; a parallel fan-out
    * would bound it for very large clusters. If parallelized later, honor the CLAUDE.md concurrency rule - do not
@@ -393,8 +464,10 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     final ArcadeDBServer server = httpServer.getServer();
     final String clusterToken = raftHAServer.getClusterToken();
     // Use a short per-peer timeout (not HA_BOOTSTRAP_TIMEOUT_MS, which defaults to 120s): this fan-out runs on an
-    // Undertow worker thread, and a peer that accepts the connection but then hangs would otherwise tie up the
-    // worker for the full bootstrap budget per peer. A few seconds is plenty for a peer to list its databases; a
+    // Undertow worker thread (the dispatch above), and a peer that accepts the connection but then hangs would
+    // otherwise tie up the worker for the full bootstrap budget per peer. A worker is a far cheaper thing to hold
+    // than the IO thread this used to run on, but it is still one of a bounded pool, so the bound stays short.
+    // A few seconds is plenty for a peer to list its databases; a
     // slower peer is simply reported unreachable in the matrix.
     final long timeoutMs = PRESENCE_QUERY_TIMEOUT_MS;
 
