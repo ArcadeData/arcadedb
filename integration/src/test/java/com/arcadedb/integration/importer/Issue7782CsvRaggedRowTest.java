@@ -219,6 +219,46 @@ class Issue7782CsvRaggedRowTest {
   }
 
   /**
+   * A source the analysis derived no entity from - a header-only file here - reached {@code entity.getProperties()}
+   * in {@code loadDocuments()}' include-list branch and threw {@code NullPointerException}, while the very same
+   * source imported fine under the default {@code -documentPropertiesInclude '*'}, which had the null check the
+   * other branch lacked (claude-review).
+   */
+  @Test
+  void aSourceWithNoDataRowDoesNotFailOnAnIncludeList() throws Exception {
+    final String databasePath = "target/databases/test-import-7782-header-only";
+    final File source = new File("target/importer-7782-header-only.csv");
+    Files.writeString(source.toPath(), "a,b\n", StandardCharsets.UTF_8);
+
+    final DatabaseFactory factory = new DatabaseFactory(databasePath);
+    if (factory.exists())
+      factory.open().drop();
+    FileUtils.deleteRecursively(new File(databasePath));
+
+    final Database db = factory.create();
+    try {
+      db.command("sql", "CREATE DOCUMENT TYPE Doc");
+
+      final Importer importer = new Importer(db, "file://" + source.getAbsolutePath());
+      importer.settings.documentTypeName = "Doc";
+      // The non-default branch: an explicit include list rather than '*'.
+      importer.settings.documentPropertiesInclude = "a";
+
+      importer.load();
+
+      assertThat(db.countType("Doc", true))
+          .as("a header-only source imports nothing, rather than throwing NullPointerException")
+          .isEqualTo(0);
+    } finally {
+      while (db.isTransactionActive())
+        db.rollback();
+      db.drop();
+      FileUtils.deleteRecursively(new File(databasePath));
+      source.delete();
+    }
+  }
+
+  /**
    * {@code -parsingLimitEntries} bounds the edge loop even when every row it is reading is being refused for its
    * shape. The refusal used to {@code continue} straight past the cap check at the bottom of the loop, so a run of
    * oversized rows parsed on indefinitely - and it put edges out of step with documents and vertices, where a row
