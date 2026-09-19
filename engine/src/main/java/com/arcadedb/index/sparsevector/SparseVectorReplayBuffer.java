@@ -72,8 +72,9 @@ final class SparseVectorReplayBuffer implements IndexReplayConclusion {
   // issued during the commit itself never gets a SparsePostingReplayKey, and would have to allocate one to be
   // recorded.
   //
-  // A NaN weight is the REMOVE: it is the same sentinel the Memtable itself stores for a tombstone, and
-  // PaginatedSparseVectorEngine.put rejects NaN outright, so no real weight can ever be mistaken for one.
+  // A NaN weight is the REMOVE: it is the same sentinel the Memtable itself stores for a tombstone, and no real
+  // weight can ever be mistaken for one because two layers refuse it before it gets here - LSMSparseVectorIndex.put
+  // at the API boundary, and Memtable.put, which is where PaginatedSparseVectorEngine.put ends up.
   private int[]   dims    = new int[INITIAL_CAPACITY];
   private RID[]   rids    = new RID[INITIAL_CAPACITY];
   private float[] weights = new float[INITIAL_CAPACITY];
