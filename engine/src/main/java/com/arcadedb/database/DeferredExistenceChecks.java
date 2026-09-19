@@ -307,6 +307,10 @@ public class DeferredExistenceChecks {
    * every offending property is raised.
    */
   public void check() {
+    // Unlike discard(), takeIncomplete() is not wrapped here, and deliberately: this runs on the success path,
+    // where there is no earlier exception for a failure to displace, and a database that cannot even re-read the
+    // records it just wrote should say so rather than have it logged and swallowed. If it does throw, the caller's
+    // catch hands it to discard() - the guarded one - and close() clears this scope in its finally either way.
     final StringJoiner violations = new StringJoiner("; ");
     final List<RID> incomplete = takeIncomplete(violations);
     if (incomplete.isEmpty())
