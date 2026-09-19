@@ -52,7 +52,11 @@ function refreshSecurityClusterReadiness(callback) {
       securityClusterStatus = data;
     })
     .fail(function () {
-      securityClusterStatus = null;
+      // The last successful answer is KEPT, not discarded. A refresh can fail for reasons that say nothing
+      // about the cluster - a blip, a proxy, a leader election in progress - and clearing it would report
+      // "nothing to gate" and re-enable a control the leader is still refusing, which is the exact failure
+      // this gate exists to prevent. A standalone server is unaffected: it never had an answer to keep
+      // (PR #7939 review).
     })
     .always(function () {
       renderSecurityCapabilityGate();

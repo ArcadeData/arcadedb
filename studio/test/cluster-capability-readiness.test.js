@@ -257,6 +257,23 @@ test("the security page gates the two create controls and routes their 409s", ()
     "opening the panel has to re-ask: a rolling upgrade finishes while Studio is open");
 });
 
+// A refresh can fail for reasons that say nothing about the cluster - a blip, a proxy, a leader election. If
+// the failure cleared the last answer the gate would report "nothing to gate" and re-enable a control the
+// leader is still refusing, which is the failure the gate exists to prevent.
+test("a failed readiness refresh keeps the last answer instead of opening the gate", () => {
+  const refresh = extractFn(securitySrc, "refreshSecurityClusterReadiness");
+  const failHandler = refresh.slice(refresh.indexOf(".fail("), refresh.indexOf(".always("));
+
+  assert.ok(
+    !/securityClusterStatus\s*=/.test(failHandler),
+    "the fail handler must not reassign securityClusterStatus: clearing it silently re-enables the controls"
+  );
+  assert.ok(!/globalNotify/.test(failHandler), "a standalone server answers 404 here; that is not an error to show");
+
+  // And an answer that was never obtained still gates nothing, which is what keeps a standalone server silent.
+  assert.deepEqual(clusterSecurityCapabilityGaps(null), []);
+});
+
 test("the group modal carries the gate too, because Edit is reachable while Create is disabled", () => {
   // An EDIT is replicated by the very same entry a create is, and it is opened from the table rather than from
   // the disabled Create Group button - so gating only the button would leave one door open.
