@@ -1421,11 +1421,15 @@ public class BoltNetworkExecutor extends Thread {
    * A command with no tail - by far the common case - costs one lexer pass and nothing else.
    */
   private void applySystemQueryTail(final String query, final Map<String, Object> params, final BoltQueryStream stream) {
-    if (stream.syntheticResults == null || stream.fields == null || !ShowCommandTail.hasTail(query))
+    if (stream.syntheticResults == null || stream.fields == null)
       return;
 
+    // apply() answers with the table unchanged when the command has no tail, so it is called unconditionally
+    // rather than after a hasTail() that would tokenize the query a second time.
     final ShowCommandTail.Table table = ShowCommandTail.apply(database, query, stream.fields, stream.syntheticResults,
         params);
+    if (table.rows() == stream.syntheticResults && table.fields() == stream.fields)
+      return;
 
     stream.fields = table.fields();
     // Copied into a list PULL may consume destructively: it removes each row as it sends it.

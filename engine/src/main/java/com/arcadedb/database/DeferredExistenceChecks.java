@@ -99,6 +99,11 @@ public class DeferredExistenceChecks {
    * busy server is always, while it is armed only between a creation that could not be validated yet and the write
    * that completes it. So a database that never leaves a record incomplete pays a single read for this class no
    * matter how much Cypher is running against it.
+   * <p>
+   * JVM-wide rather than per database, deliberately: one counter is one volatile read, where a per-database one
+   * would be a lookup before the read it is meant to avoid. The cost of that choice is that a single database
+   * holding a provisional record makes every other database's writes attempt the {@link #completed} lookup too -
+   * a thread-local get that finds nothing.
    */
   private static final AtomicInteger ARMED_SCOPES = new AtomicInteger();
 
@@ -385,28 +390,21 @@ public class DeferredExistenceChecks {
 
     // One transaction for the whole set rather than one per record: a statement that wrote thousands of records it
     // never completed would otherwise pay thousands of commits on its way out.
-    try {
-      database.transaction(() -> {
-        for (final RID rid : rids)
-          deleteProvisionalRecord(rid);
-      }, true);
-    } catch (final Exception e) {
-      LogManager.instance().log(this, Level.FINE,
-          "Could not remove in one transaction the incomplete records left by a statement that failed its existence "
-              + "constraints, retrying one by one", e);
-
-      // One undeletable record must not keep the rest alive, so the fallback is per record and best effort.
+    //
+    // joinCurrentTx is true because it has to be: inside an explicit transaction the provisional records are not
+    // committed yet, so a private transaction could not even see them. That makes it critical that nothing thrown
+    // by a delete escapes this block - LocalDatabase.transaction() rolls the current transaction back on any
+    // exception it does not recognise as retryable, and when it has joined the caller's transaction, "the current
+    // transaction" is a session-long explicit one holding work this statement knows nothing about. Discarding that
+    // to report a record we could not tidy up would be silent data loss well beyond the failure being reported, so
+    // each delete swallows and logs its own failure and the sweep continues.
+    database.transaction(() -> {
       for (final RID rid : rids)
-        try {
-          database.transaction(() -> deleteProvisionalRecord(rid), true);
-        } catch (final Exception single) {
-          LogManager.instance().log(this, Level.WARNING,
-              "Could not remove the incomplete record %s left by a statement that failed its existence constraints",
-              single, rid);
-        }
-    }
+        deleteProvisionalRecord(rid);
+    }, true);
   }
 
+  /** Deletes one provisional record, best effort: see {@link #deleteProvisionalRecords} for why it cannot throw. */
   private void deleteProvisionalRecord(final RID rid) {
     try {
       final Record record = database.lookupByRID(rid, false);
@@ -414,6 +412,9 @@ public class DeferredExistenceChecks {
         database.deleteRecord(record);
     } catch (final RecordNotFoundException e) {
       // Already gone - rolled back with the transaction that created it, or deleted by the statement itself.
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Could not remove the incomplete record %s left by a statement that failed its existence constraints", e, rid);
     }
   }
 
