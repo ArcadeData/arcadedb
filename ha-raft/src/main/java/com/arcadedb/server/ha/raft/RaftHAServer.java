@@ -3389,21 +3389,27 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * with {@code refreshRaftClient}'s leader re-seeding, TLS parameters and teardown.
    *
    * <p>
-   * <b>The per-RPC timeout is set here rather than inherited</b> (review of PR #7941). Bounding the retry COUNT
-   * bounds nothing on its own: a {@code setConfiguration} whose RPC hangs at the transport with no reply never
-   * reaches a second attempt, so the deadline in {@code RaftClusterManager} is not consulted until that one call
-   * returns. {@link #CLIENT_REQUEST_TIMEOUT_MS} is what makes it return, and it is written on these properties
-   * by {@link #buildRaftClient} - on the same shared object, so it is already there in practice. Setting it
-   * again is a no-op that costs nothing and removes the dependency on that ordering, which is the kind of
-   * implicit thing that stops being true when someone moves a call.
+   * <b>The per-RPC timeout is set here rather than inherited, on a COPY of the properties</b> (review of PR
+   * #7941). Bounding the retry COUNT bounds nothing on its own: a {@code setConfiguration} whose RPC hangs at
+   * the transport with no reply never reaches a second attempt, so the deadline in {@code RaftClusterManager}
+   * is not consulted until that one call returns. {@link #CLIENT_REQUEST_TIMEOUT_MS} is what makes it return,
+   * and it is written onto the shared properties by {@link #buildRaftClient} - so it is already there in
+   * practice, by an ordering nothing states. Writing it here says so locally.
+   * <p>
+   * The copy is what keeps that honest rather than merely redundant. {@link #raftProperties} is the object the
+   * Raft SERVER was built from and is shared with every other client built from it, and two membership changes
+   * can run at once - add-peer and remove-peer are not serialised with each other. Writing the same value from
+   * two threads into one configuration map is benign only by luck; taking a copy means this method reads shared
+   * state and mutates nothing, which needs no luck at all.
    *
    * @return null before {@code start()} has built the Raft properties, which is also what a unit-test harness
    * that never stood up a Raft server has - the caller then falls back to {@link #getClient()}
    */
   RaftClient newMembershipClient() {
-    final RaftProperties properties = raftProperties;
-    if (properties == null)
+    final RaftProperties shared = raftProperties;
+    if (shared == null)
       return null;
+    final RaftProperties properties = new RaftProperties(shared);
     RaftClientConfigKeys.Rpc.setRequestTimeout(properties,
         TimeDuration.valueOf(CLIENT_REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS));
     final RaftClient.Builder builder = RaftClient.newBuilder()
