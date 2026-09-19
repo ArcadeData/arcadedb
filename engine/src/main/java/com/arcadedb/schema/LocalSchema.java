@@ -2845,15 +2845,6 @@ public class LocalSchema implements Schema {
   }
 
   /**
-   * Takes down the refresh resources a registered materialized view owns - an INCREMENTAL view's listeners on its
-   * source types, a PERIODIC view's scheduled task - leaving the view itself in the map for the caller to replace or
-   * remove.
-   * <p>
-   * What {@link #dropMaterializedView} tears down, minus the backing type: that type holds the view's rows, and a
-   * definition replacing this one names the same type, so dropping it here would delete the data the restore is
-   * about to adopt. A view of that name that is not registered is a no-op.
-   */
-  /**
    * Installs the refresh resources a registered materialized view needs: an INCREMENTAL view's listeners on its
    * source types, a PERIODIC view's scheduled task. The counterpart of {@link #unregisterMaterializedViewRefresh},
    * and the view must already be in {@code materializedViews} so that one can find it again to take them down.
@@ -2866,6 +2857,15 @@ public class LocalSchema implements Schema {
       getMaterializedViewScheduler().schedule(database, view);
   }
 
+  /**
+   * Takes down the refresh resources a registered materialized view owns - an INCREMENTAL view's listeners on its
+   * source types, a PERIODIC view's scheduled task - leaving the view itself in the map for the caller to replace or
+   * remove.
+   * <p>
+   * What {@link #dropMaterializedView} tears down, minus the backing type: that type holds the view's rows, and a
+   * definition replacing this one names the same type, so dropping it here would delete the data the restore is
+   * about to adopt. A view of that name that is not registered is a no-op.
+   */
   private void unregisterMaterializedViewRefresh(final String viewName) {
     final MaterializedViewImpl previous = materializedViews.get(viewName);
     if (previous == null)
