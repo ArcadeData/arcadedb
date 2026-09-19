@@ -1228,7 +1228,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           indexer.createDocument(doc, doc.getType(), bucket);
         } catch (final RuntimeException e) {
           indexChanges.undoRecordChanges();
-          undoRecordCreation(record, bucket, transaction);
+          undoRecordWrite(record, bucket, transaction);
           throw e;
         } finally {
           indexChanges.disarmRecordUndo();
@@ -1255,10 +1255,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   /**
-   * Takes the record body back out of the transaction after the indexing of a freshly created record refused it
-   * (issue #7467). The mirror image of the five statements {@code createRecordNoLock} runs between
-   * {@code bucket.createRecord} and the indexer, undone in the reverse order, plus the identity reset that makes
-   * the same object cleanly re-insertable - which is what {@link TransactionContext#rollback} does for the whole
+   * Takes the record body back out of the transaction after the indexing of a record just written refused it
+   * (issue #7467). Shared by {@link #createRecordNoLock} and {@code restoreRecordInTransaction}, which write the
+   * body, assign the identity, fold the bucket delta and register the new record in the same order and only then
+   * hand it to the indexer - so they leave the same residue behind and it comes back the same way.
+   * <p>
+   * The mirror image of those statements, undone in the reverse order, plus the identity reset that makes the
+   * same object cleanly re-insertable - which is what {@link TransactionContext#rollback} does for the whole
    * transaction and what a caller retrying the row after fixing it needs here.
    * <p>
    * An implicit transaction rolls back anyway, so this changes nothing for one; the case it exists for is a
@@ -1269,7 +1272,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * could not run leaves a record with no index entry - which is what this method exists to prevent - so it is
    * reported at WARNING with the RID, not swallowed.
    */
-  private void undoRecordCreation(final Record record, final LocalBucket bucket, final TransactionContext transaction) {
+  private void undoRecordWrite(final Record record, final LocalBucket bucket, final TransactionContext transaction) {
     final RID rid = record.getIdentity();
     try {
       bucket.deleteRecord(rid, false);
@@ -1395,15 +1398,32 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       //
       // Registered BEFORE indexing, matching createRecordNoLock's order: indexer.createDocument can throw inline
       // (Index.put -> checkIsValid on a dropped/invalidated index, or convertKeys on a key it cannot coerce), and
-      // registering after would skip the rollback identity reset on exactly those paths. Note this is NOT the
-      // unique-constraint path - a duplicate key is detected at commit, by which point both calls have run.
+      // registering after would skip the rollback identity reset on exactly those paths. The unique constraint
+      // reaches the same call too: against COMMITTED state it is decided at commit, but against a key THIS
+      // transaction has already queued it is decided inline - which is what two RESTOREs of one key in one
+      // transaction do (issue #7467, claude-review on PR #7936).
       transaction.registerNewRecord(record);
 
       // #6120: the index entries. Without this the restored record is returned by a full scan but not by any
       // index-resolved query, and a UNIQUE index never learns the key came back - so a later restore or insert
       // could hand the same key to a second record unchallenged. Deliberately the same call createRecordNoLock
       // makes: a restored record is indexed exactly like an inserted one, duplicate rejection included.
-      indexer.createDocument(doc, doc.getType(), bucket);
+      //
+      // And undone exactly as createRecordNoLock undoes it (issue #7467): everything above has already written
+      // the record, so an exception here would leave a body in the bucket that no index entry points at - the
+      // same three-way disagreement between the scan, the index and the answer given to the caller, on a
+      // RESTORE instead of on a CREATE.
+      final TransactionIndexContext indexChanges = transaction.getIndexChanges();
+      indexChanges.armRecordUndo();
+      try {
+        indexer.createDocument(doc, doc.getType(), bucket);
+      } catch (final RuntimeException e) {
+        indexChanges.undoRecordChanges();
+        undoRecordWrite(record, bucket, transaction);
+        throw e;
+      } finally {
+        indexChanges.disarmRecordUndo();
+      }
     }
 
     ((RecordInternal) record).unsetDirty();

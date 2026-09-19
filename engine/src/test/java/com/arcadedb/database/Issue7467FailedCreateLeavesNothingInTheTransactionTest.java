@@ -176,6 +176,44 @@ class Issue7467FailedCreateLeavesNothingInTheTransactionTest extends TestHelper 
   }
 
   /**
+   * {@code RESTORE} writes the record the same way and hands it to the same indexer afterwards, so it left the
+   * same residue behind and comes back the same way (claude-review on PR #7936).
+   * <p>
+   * The inline check is reached by two RESTOREs of one key in ONE transaction: the comment that used to sit on
+   * that call said a duplicate is decided at commit, which is true only of a duplicate of COMMITTED state - a
+   * key this transaction has already queued is decided at the {@code put}, exactly as it is on the CREATE path.
+   */
+  @Test
+  void aRefusedRestoreIsNotCommittedEither() {
+    final RID[] rids = new RID[2];
+    database.transaction(() -> {
+      rids[0] = database.newDocument(TYPE).set("name", "first").save().getIdentity();
+      rids[1] = database.newDocument(TYPE).set("name", "second").save().getIdentity();
+    });
+    database.transaction(() -> {
+      database.lookupByRID(rids[0], true).asDocument().delete();
+      database.lookupByRID(rids[1], true).asDocument().delete();
+    });
+    assertThat(database.countType(TYPE, false)).isZero();
+
+    database.transaction(() -> {
+      database.command("sql", "RESTORE DOCUMENT " + TYPE + " RID " + rids[0] + " SET name = 'dup'").close();
+
+      assertThat(catchThrowable(() -> database.command("sql",
+          "RESTORE DOCUMENT " + TYPE + " RID " + rids[1] + " SET name = 'dup'").close()))
+          .as("the second restore of the same key must be refused")
+          .isInstanceOf(DuplicatedKeyException.class);
+    });
+
+    assertThat(database.countType(TYPE, false)).as("the refused restore must not be in the bucket").isEqualTo(1);
+    assertThat(scanCount()).isEqualTo(1);
+
+    try (final ResultSet rs = database.query("sql", "SELECT FROM " + TYPE + " WHERE name = 'dup'")) {
+      assertThat(rs.stream().count()).isEqualTo(1);
+    }
+  }
+
+  /**
    * The counter-case that keeps the undo honest: a duplicate of a record that is already COMMITTED is not
    * decided at {@code save()} at all - the check runs inside the commit lock - so the whole transaction fails
    * and nothing of it lands. Unchanged by this fix, and the reason the /ws session documents {@code per_stream}

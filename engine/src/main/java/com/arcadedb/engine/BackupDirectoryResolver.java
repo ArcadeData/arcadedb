@@ -73,9 +73,18 @@ public interface BackupDirectoryResolver {
   }
 
   /**
-   * The backup directory for {@code database}, falling back to {@code globalSetting} when no server bound one -
-   * or when the bound one answers nothing usable, which keeps a misconfigured server writing where it always did
-   * rather than failing the backup outright.
+   * The backup directory for {@code database}, falling back to {@code globalSetting} when no server bound a
+   * resolver - an embedded process, or a {@code RemoteDatabase} - or when the bound one answers nothing at all,
+   * which is a resolver that has no opinion rather than one that objects.
+   * <p>
+   * A resolver that REFUSES is a different thing and is not absorbed here. {@code config/backup.json} naming a
+   * directory outside the server root, or one that walks out of it, fails
+   * {@code AutoBackupSchedulerPlugin.validateAndResolveBackupPath} with an {@link IllegalArgumentException},
+   * and that propagates out of {@code BACKUP DATABASE} as the statement's own error. Falling back to the global
+   * setting there would write the archive past a check the operator's own configuration failed, and would put
+   * it where nothing else looks - which is the defect this interface exists to close (issue #7863,
+   * claude-review on PR #7936). It is a new refusal for the statement, which used to read the never-validated
+   * global setting directly, and the honest one.
    */
   static String resolveFor(final Database database, final String globalSetting) {
     final BackupDirectoryResolver resolver = boundTo(database);
