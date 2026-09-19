@@ -2596,6 +2596,16 @@ public class LocalSchema implements Schema {
         final JSONObject triggerJSON = triggersJSON.getJSONObject(triggerName);
         try {
           final Trigger trigger = TriggerImpl.fromJSON(triggerJSON);
+
+          // A trigger of this name already installed is being REPLACED by this one, not joined by it - the map
+          // holds one entry per name either way. The sweep above covers that on the replace path; on the MERGE
+          // path (an import into a database with a trigger of its own by that name) nothing did, and the put
+          // below would have left the previous adapter registered on ITS type's event registry with nothing
+          // pointing at it any more: firing on every matching record, unreachable even to dropTrigger(), which
+          // would only ever find the newer one. Redundant after the sweep and harmless there - the adapter is
+          // already gone, so this returns immediately.
+          unregisterTriggerListener(trigger.getName());
+
           triggers.put(trigger.getName(), trigger);
 
           // Re-register trigger listeners after loading
@@ -2616,15 +2626,26 @@ public class LocalSchema implements Schema {
     }
 
     // Load materialized views
-    // On a schema-file read, always clear and re-populate to keep in sync
-    if (replaceExisting)
+    // On a schema-file read, always clear and re-populate to keep in sync - taking the refresh resources of every
+    // view down first, for the reason the trigger sweep above does: an INCREMENTAL view holds listeners on its
+    // source types and a PERIODIC one holds a scheduled task, and neither goes away with the map entry.
+    if (replaceExisting) {
+      for (final String viewName : new ArrayList<>(materializedViews.keySet()))
+        unregisterMaterializedViewRefresh(viewName);
       materializedViews.clear();
+    }
     if (root.has("materializedViews")) {
       final JSONObject mvJSON = root.getJSONObject("materializedViews");
       for (final String viewName : mvJSON.keySet()) {
         try {
           final JSONObject viewDef = mvJSON.getJSONObject(viewName);
           final MaterializedViewImpl view = MaterializedViewImpl.fromJSON(database, viewDef);
+
+          // Same replacement rule as the trigger above, and the same merge-path hole: a same-named view already
+          // installed has its own listeners and schedule, and the put below is the only thing that used to happen
+          // to it - leaving the old instance maintaining itself off records the new one is also maintaining.
+          unregisterMaterializedViewRefresh(viewName);
+
           materializedViews.put(viewName, view);
 
           // Re-register listeners for INCREMENTAL views
@@ -2717,6 +2738,27 @@ public class LocalSchema implements Schema {
     }
 
     return failures;
+  }
+
+  /**
+   * Takes down the refresh resources a registered materialized view owns - an INCREMENTAL view's listeners on its
+   * source types, a PERIODIC view's scheduled task - leaving the view itself in the map for the caller to replace or
+   * remove.
+   * <p>
+   * What {@link #dropMaterializedView} tears down, minus the backing type: that type holds the view's rows, and a
+   * definition replacing this one names the same type, so dropping it here would delete the data the restore is
+   * about to adopt. A view of that name that is not registered is a no-op.
+   */
+  private void unregisterMaterializedViewRefresh(final String viewName) {
+    final MaterializedViewImpl previous = materializedViews.get(viewName);
+    if (previous == null)
+      return;
+
+    if (materializedViewScheduler != null)
+      materializedViewScheduler.cancel(viewName);
+
+    if (previous.getRefreshMode() == MaterializedViewRefreshMode.INCREMENTAL)
+      MaterializedViewBuilder.unregisterListeners(this, previous);
   }
 
   public synchronized void saveConfiguration() {
