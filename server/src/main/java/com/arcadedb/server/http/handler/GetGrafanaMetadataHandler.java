@@ -42,20 +42,10 @@ import io.undertow.server.HttpServerExchange;
  * nothing else. Answered from outside the session, a panel that had just created a type was told the type
  * does not exist.
  */
-public class GetGrafanaMetadataHandler extends DatabaseAbstractHandler {
+public class GetGrafanaMetadataHandler extends AbstractObservabilityHandler {
 
   public GetGrafanaMetadataHandler(final HttpServer httpServer) {
     super(httpServer);
-  }
-
-  /**
-   * A read: an auto-commit wrapper would only add a commit with nothing to commit, and an unresolvable session
-   * id therefore degrades rather than being refused - see
-   * {@link DatabaseAbstractHandler#rejectsUnresolvableSession()}.
-   */
-  @Override
-  protected boolean requiresTransaction() {
-    return false;
   }
 
   /**

@@ -65,7 +65,7 @@ import java.util.List;
  * is that an unresolvable session id degrades to a session-less read rather than being refused - see
  * {@link DatabaseAbstractHandler#rejectsUnresolvableSession()}.
  */
-public class PostGrafanaQueryHandler extends DatabaseAbstractHandler {
+public class PostGrafanaQueryHandler extends AbstractObservabilityHandler {
 
   public PostGrafanaQueryHandler(final HttpServer httpServer) {
     super(httpServer);
@@ -74,11 +74,6 @@ public class PostGrafanaQueryHandler extends DatabaseAbstractHandler {
   @Override
   protected boolean mustExecuteOnWorkerThread() {
     return true;
-  }
-
-  @Override
-  protected boolean requiresTransaction() {
-    return false;
   }
 
   @Override

@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.exception.*;
+import com.arcadedb.index.fulltext.FullTextQueryParseException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONArray;
@@ -932,6 +933,20 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // Gremlin syntax such as Groovy closures, ...) is a client error - the query text is invalid, not an
     // internal server fault. Surfaced with the real validation message so API consumers can fix the query,
     // instead of a misleading 500. See issues #5191 and #5201.
+    // The Lucene parser refusing the search expression the caller supplied. Its own arm rather than a wrap at
+    // every call site, because the call sites keep arriving: issue #7393 re-typed the two the report came in
+    // through and #7862 found four more - SEARCH_INDEX(), SEARCH_FIELDS() and the two db.index.fulltext.query
+    // procedures - still answering 500 with a stack trace for a client's typo. FullTextQueryParseException
+    // extends IndexException, which has NO arm here and must not get one: a tokenizer, an analyzer or an index
+    // read failing IS a server fault. Only the parser's own exception is a client error, so only it is named.
+    // Placed above the parsing arm because the two say the same thing and this one says which parser.
+    final FullTextQueryParseException fullTextParsing = firstOf(e, cause, FullTextQueryParseException.class);
+    if (fullTextParsing != null) {
+      logUserError(fullTextParsing);
+      sendErrorResponse(exchange, 400, "Cannot execute command", fullTextParsing, null);
+      return;
+    }
+
     final CommandParsingException parsing = firstOf(e, cause, CommandParsingException.class);
     if (parsing != null) {
       logUserError(parsing);
