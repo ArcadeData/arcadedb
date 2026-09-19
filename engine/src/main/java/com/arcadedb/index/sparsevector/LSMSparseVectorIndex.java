@@ -30,6 +30,7 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexFactoryHandler;
 import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.IndexReplayConclusion;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
@@ -485,7 +486,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    * {@code LocalDatabase.closeInternal}) regardless of the memtable size.
    */
   private void queueOrApply(final boolean add, final int dim, final RID rid, final float weight) {
-    final TransactionContext tx = underlyingIndex.getMutableIndex().getDatabase().getTransaction();
+    final TransactionContext tx = underlyingIndex.getMutableIndex().getDatabase().getTransactionIfExists();
     if (tx != null && tx.getStatus() == TransactionContext.STATUS.BEGUN) {
       tx.addIndexOperation(this,
           add ? TransactionIndexContext.IndexKey.IndexKeyOperation.ADD
@@ -496,18 +497,117 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       tx.addAfterCommitCallbackIfAbsent(afterCommitFlushKey, engine::maybeFlush);
       return;
     }
+    // #7933: no open transaction to queue onto, but the commit of one may still be in flight. An UPDATE indexes at
+    // commit time, not at save() time - TransactionContext.commit1stPhase() drains its deferred writes through
+    // updateRecordNoLock, which re-runs DocumentIndexer and lands right here, with the status no longer BEGUN - and
+    // that is BEFORE the page versions are validated, so applying straight through would leak exactly what the
+    // deferral below exists to prevent. This path is what a conflicted vector REWRITE travels.
+    // record() carries a tripwire for a posting arriving after its transaction concluded. Should it ever fire, it
+    // surfaces from inside commit1stPhase() - here, or through indexChanges.commit() below - not from wherever the
+    // conclusion ran, which is where a reader would go looking first.
+    final SparseVectorReplayBuffer buffer = replayBuffer(tx);
+    if (buffer != null) {
+      buffer.record(dim, rid, weight, !add);
+      return;
+    }
+
     if (add)
       engine.put(dim, rid, weight);
     else
       engine.remove(dim, rid);
   }
 
-  /** Apply a single posting carried through commit replay via {@link SparsePostingReplayKey}. */
+  /**
+   * Takes delivery of a single posting carried through commit replay via {@link SparsePostingReplayKey}.
+   * <p>
+   * <b>Deferred, not applied (issue #7933).</b> The replay runs inside {@code commit1stPhase()} BEFORE the page
+   * versions are validated, so a transaction that then loses the MVCC check has already replayed every one of its
+   * postings - and this index's replay writes into the engine's process-wide {@link Memtable}, which no rollback
+   * can reach. Buffering here and publishing from {@link SparseVectorReplayBuffer#publishIndexReplay()} - which
+   * {@code TransactionContext.reset()} calls, and which a rolled back transaction never reaches - is what keeps an
+   * aborted transaction's postings and tombstones out of the index. See {@link SparseVectorReplayBuffer} for why
+   * deferring rather than journalling-and-undoing is the only correct answer for this index.
+   * <p>
+   * The direct branch is for a replay with no transaction driving it. Nothing in the engine does that today -
+   * {@code TransactionIndexContext.commit()} is the only caller of {@code putReplay}/{@code removeReplay} - but a
+   * marker reaching {@link #put} outside a commit must still land somewhere rather than be silently dropped.
+   */
   private void applyReplayPosting(final SparsePostingReplayKey key, final boolean add) {
+    // See the note in queueOrApply on where record()'s tripwire surfaces if it ever fires.
+    final SparseVectorReplayBuffer buffer = replayBuffer();
+    if (buffer != null) {
+      buffer.record(key.dim(), key.rid(), key.weight(), !add);
+      return;
+    }
+
     if (add)
       engine.put(key.dim(), key.rid(), key.weight());
     else
       engine.remove(key.dim(), key.rid());
+  }
+
+  /**
+   * This transaction's deferred-posting buffer, created and registered on first use, or null when no transaction is
+   * replaying - in which case the caller applies straight through.
+   * <p>
+   * Gated on the commit being IN FLIGHT rather than merely on a transaction being present: that is what tells a
+   * write which a conclusion is about to be applied to apart from one issued in an ordinary open transaction, whose
+   * posting would be buffered against a conclusion that is not coming. {@code LSMVectorIndex.replayableTransaction()}
+   * makes the same test for the same reason.
+   * <p>
+   * {@code getTransactionIfExists()} rather than {@code getTransaction()}: the latter THROWS
+   * {@code TransactionException} on a thread with no database context rather than answering null, which would make
+   * the null branch dead code and raise on a caller that legitimately has no transaction instead of letting it
+   * write straight through (#7934 review). Same correction applied to {@link #queueOrApply}, whose own null check
+   * had been dead for the same reason since it was written.
+   */
+  private SparseVectorReplayBuffer replayBuffer() {
+    return replayBuffer(underlyingIndex.getMutableIndex().getDatabase().getTransactionIfExists());
+  }
+
+  /**
+   * As {@link #replayBuffer()}, for a caller that has already resolved the thread's transaction. Resolving it costs
+   * a thread-local lookup plus the database-identity checks {@code getTransactionIfExists()} makes, and this runs
+   * once per POSTING - hundreds per record on a learned-sparse corpus - so the one caller that has the answer in
+   * hand passes it rather than asking again (#7934 review).
+   *
+   * @param tx the thread's transaction, or null if it has none
+   */
+  private SparseVectorReplayBuffer replayBuffer(final TransactionContext tx) {
+    if (tx == null || !isCommitInFlight(tx.getStatus()))
+      return null;
+
+    final IndexReplayConclusion registered = tx.getIndexReplayConclusion(this);
+    if (registered != null)
+      return (SparseVectorReplayBuffer) registered;
+
+    final SparseVectorReplayBuffer created = new SparseVectorReplayBuffer(engine);
+    tx.addIndexReplayConclusion(this, created);
+    // Registered here as well as in queueOrApply, and keyed so the two never register it twice: a transaction whose
+    // ONLY sparse writes are deferred updates (which never pass through the BEGUN branch) would otherwise leave the
+    // memtable to be bounded by some later transaction's commit.
+    tx.addAfterCommitCallbackIfAbsent(afterCommitFlushKey, engine::maybeFlush);
+    return created;
+  }
+
+  /**
+   * Whether a commit is under way on {@code status}, and so will conclude and apply that conclusion to this index.
+   * <p>
+   * Only {@code COMMIT_1ST_PHASE} is reachable today: both routes into the buffer run there, and nothing in
+   * {@code commit2ndPhase()}/{@code publishCommittedPages()} writes to an index. The 2nd phase is admitted anyway
+   * because the cost of being wrong is asymmetric (#7934 review): a status this test does not recognise falls
+   * through to the direct-apply branch, which publishes into the shared memtable ahead of the conclusion and is
+   * precisely the defect issue #7933 fixes, while a status it recognises too eagerly merely defers a write to the
+   * end of the very commit that issued it. So the question asked is "is a commit in flight", not "is this the one
+   * phase that writes indexes today".
+   * <p>
+   * Admitting the 2nd phase cannot strand a buffer that nothing will conclude, which is the one way the eager
+   * reading would be the safer of the two: {@code reset()} publishes and clears the registrations and then, two
+   * lines later and before it releases anything, sets the status to {@code INACTIVE}. There is no instant at which
+   * a write sees {@code COMMIT_2ND_PHASE} on a transaction whose conclusion has already run.
+   */
+  private static boolean isCommitInFlight(final TransactionContext.STATUS status) {
+    return status == TransactionContext.STATUS.COMMIT_1ST_PHASE || status == TransactionContext.STATUS.COMMIT_2ND_PHASE;
   }
 
   // --------------------------- pure delegation below ---------------------------

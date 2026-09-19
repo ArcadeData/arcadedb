@@ -4340,6 +4340,32 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * do, and that deferred rebuild is itself still synchronous on whichever search first reaches it, not async.
    */
   private static final int ASYNC_REBUILD_MIN_GRAPH_SIZE = 1000;
+
+  /**
+   * How many vectors' worth of PERMIT-EXEMPT graph building may be in flight across the JVM at once (issue #7930).
+   * <p>
+   * {@link #buildGraphFromScratchUnderRebuildPermit} lets a build below {@link #ASYNC_REBUILD_MIN_GRAPH_SIZE} past
+   * the permit, and on its own terms that is right: queueing a millisecond of work behind a multi-minute rebuild is
+   * the wrong trade, and a thousand vectors cannot threaten the heap. But it is a PER-BUILD test, and it therefore
+   * says nothing about how many such builds run at once - a database of hundreds of small vector indexes reopening
+   * together used to start one build per index, on one request thread each, bounded by nothing.
+   * <p>
+   * This is the aggregate the per-build test cannot express. Each exempt build charges its own scope for the
+   * duration and the charge is refused once the total would exceed this budget, at which point the build stops
+   * being negligible and goes through the permit (and the heap reclaim) like any other. Charging the SCOPE rather
+   * than counting builds is what makes it self-scaling: a thousand one-vector indexes are still free, while two
+   * near-threshold ones already look like the one large build the permit exists for.
+   * <p>
+   * Sized as the threshold itself, once per permit the JVM is willing to spend concurrently: the exemption's claim
+   * is that {@link #ASYNC_REBUILD_MIN_GRAPH_SIZE} vectors are negligible, so that is exactly how much unbounded
+   * work it can justify, and an operator who widens {@code maxConcurrentRebuilds} widens both together rather than
+   * having to find a second knob. The floor of 1 keeps a configuration of zero permits - which parks every
+   * permitted build - from also refusing every exempt one, which would deadlock a search that has nothing to
+   * return without its graph.
+   */
+  private static final long       SMALL_REBUILD_BUDGET_VECTORS = (long) ASYNC_REBUILD_MIN_GRAPH_SIZE
+      * Math.max(MAX_CONCURRENT_REBUILDS, 1);
+  private static final AtomicLong SMALL_REBUILD_VECTORS_IN_FLIGHT = new AtomicLong();
   private static final int[] EMPTY_ORDINALS             = new int[0];
 
   /**
@@ -4714,10 +4740,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * Below {@link #ASYNC_REBUILD_MIN_GRAPH_SIZE} - the same threshold this class already uses to separate a build
    * cheap enough to run inline from one worth a background thread - queueing would trade milliseconds of work for
    * however long the permit holder's rebuild takes, which is the wrong trade for an index that cannot threaten
-   * the heap in the first place. It does leave a second, much narrower unbounded case for a future reader to
-   * know about: a database of MANY such indexes, all rebuilding at once, is bounded by nothing here. That is
-   * pre-existing and not what issue #7814 reports - a thousand vectors is a rounding error against the half a
-   * million one large index carries - but it is the reason this exemption is a threshold rather than a promise.
+   * the heap in the first place.
+   * <p>
+   * <b>But the exemption is bounded in aggregate</b> (issue #7930). "Too small to matter" is a per-build test and
+   * says nothing about how many such builds run at once, which is what a database of hundreds of small vector
+   * indexes reopening together produces - one per index, on one request thread each. Each exempt build therefore
+   * charges its scope against {@link #SMALL_REBUILD_BUDGET_VECTORS} for its duration, and one that no longer fits
+   * falls through to the permit below: N small builds together are the large build the permit exists for, and at
+   * that point the queueing this exemption avoids is the right trade after all. Charging the scope rather than
+   * counting builds keeps a thousand one-vector indexes free while two near-threshold ones already count.
    * <p>
    * <b>On timeout it proceeds rather than fails.</b> The bound is
    * {@code VECTOR_INDEX_REBUILD_PERMIT_TIMEOUT_MS}, ten minutes by default, and it exists for a permit holder
@@ -4733,16 +4764,27 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private void buildGraphFromScratchUnderRebuildPermit(final BooleanSupplier stillNeeded) {
     final int scope = rebuildScopeSize();
-    if (scope < ASYNC_REBUILD_MIN_GRAPH_SIZE) {
-      // Asked here too, not only after a permit wait. The caller decided under graphBuildLock and released it
-      // before calling, and the async rebuild the inactivity timer dispatches for an index this session has never
-      // loaded (issue #6798) can publish a graph inside that window - so the reason to build can be gone even
-      // though this thread never waited for anything. One volatile read against a redundant build of the whole
-      // corpus.
-      if (stillNeeded.getAsBoolean())
-        buildGraphFromScratch();
+    if (scope < ASYNC_REBUILD_MIN_GRAPH_SIZE && chargeSmallRebuildBudget(scope)) {
+      try {
+        // Asked here too, not only after a permit wait. The caller decided under graphBuildLock and released it
+        // before calling, and the async rebuild the inactivity timer dispatches for an index this session has never
+        // loaded (issue #6798) can publish a graph inside that window - so the reason to build can be gone even
+        // though this thread never waited for anything. One volatile read against a redundant build of the whole
+        // corpus.
+        if (stillNeeded.getAsBoolean())
+          buildGraphFromScratch();
+      } finally {
+        releaseSmallRebuildBudget(scope);
+      }
       return;
     }
+    if (scope < ASYNC_REBUILD_MIN_GRAPH_SIZE)
+      // Small, but the budget for small builds is already spent: N of them at once ARE the large build the permit
+      // exists for (issue #7930), so this one takes the slow path with the rest. Counted separately from
+      // searchRebuildsQueuedForPermit, which it is about to bump as well, because the cause is different and so is
+      // the remedy: that one says some OTHER index is holding the permit, this one says this database has more
+      // small indexes resolving their graphs at once than the budget covers.
+      metrics.incrementSmallRebuildsOverBudget();
 
     boolean acquired = REBUILD_SEMAPHORE.tryAcquire();
     // The wait this thread gave up on, or 0 if it never had to give up. Read past the recheck below, where
@@ -4820,6 +4862,46 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private int rebuildScopeSize() {
     final long scope = (long) Math.max(vectorIndex().size(), 0) + Math.max(deltaVectors.size(), 0);
     return (int) Math.min(scope, Integer.MAX_VALUE);
+  }
+
+  /**
+   * Reserves {@code vectors} of the process-wide budget for permit-exempt graph builds, or refuses when the total
+   * already in flight would exceed {@link #SMALL_REBUILD_BUDGET_VECTORS} (issue #7930). Every successful charge is
+   * paired with exactly one {@link #releaseSmallRebuildBudget(int)} in a {@code finally}.
+   * <p>
+   * A scope of 0 - an index with nothing to build - is always admitted: it consumes nothing, and sending it to
+   * queue for a permit would be pure latency for no work.
+   * <p>
+   * Package-private, and static, because it is the bound itself rather than one index's view of it: the budget is
+   * JVM-wide, exactly like {@code REBUILD_SEMAPHORE}, and a test that pins the admission rule has to be able to
+   * spend it without contriving concurrent builds to do so.
+   */
+  static boolean chargeSmallRebuildBudget(final int vectors) {
+    long current = SMALL_REBUILD_VECTORS_IN_FLIGHT.get();
+    while (true) {
+      final long next = current + vectors;
+      if (next > SMALL_REBUILD_BUDGET_VECTORS)
+        return false;
+      final long witness = SMALL_REBUILD_VECTORS_IN_FLIGHT.compareAndExchange(current, next);
+      if (witness == current)
+        return true;
+      current = witness;
+    }
+  }
+
+  /** Returns a charge taken by {@link #chargeSmallRebuildBudget(int)}. Never called for a refused charge. */
+  static void releaseSmallRebuildBudget(final int vectors) {
+    SMALL_REBUILD_VECTORS_IN_FLIGHT.addAndGet(-vectors);
+  }
+
+  /** How much of the permit-exempt build budget is currently reserved, JVM-wide. */
+  static long smallRebuildVectorsInFlight() {
+    return SMALL_REBUILD_VECTORS_IN_FLIGHT.get();
+  }
+
+  /** The whole budget, so a test can spend exactly it without restating how it is derived. */
+  static long smallRebuildBudgetVectors() {
+    return SMALL_REBUILD_BUDGET_VECTORS;
   }
 
   /**
@@ -8057,10 +8139,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     final VectorLocationIndex locations = vectorIndex();
 
-    VectorIndexReplayUndo undo = (VectorIndexReplayUndo) tx.getIndexReplayUndo(this);
+    VectorIndexReplayUndo undo = (VectorIndexReplayUndo) tx.getIndexReplayConclusion(this);
     if (undo == null) {
       undo = new VectorIndexReplayUndo(this, locations);
-      tx.addIndexReplayUndo(this, undo);
+      tx.addIndexReplayConclusion(this, undo);
     } else if (undo.locationsAtReplay != locations)
       // A rebuild or a compaction republished the locations since an EARLIER operation of this same replay: put
       // and remove hold the write lock per call, not for the whole replay, so the window is between two of this
@@ -8074,12 +8156,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /** The journal {@link #openReplayUndo()} already opened for the transaction in flight, or null. Never creates one. */
   private VectorIndexReplayUndo replayUndoIfOpen() {
     final TransactionContext tx = replayableTransaction();
-    return tx != null ? (VectorIndexReplayUndo) tx.getIndexReplayUndo(this) : null;
+    return tx != null ? (VectorIndexReplayUndo) tx.getIndexReplayConclusion(this) : null;
   }
 
-  /** The transaction whose replay is running and can still abort, or null. See {@link #openReplayUndo()}. */
+  /**
+   * The transaction whose replay is running and can still abort, or null. See {@link #openReplayUndo()}.
+   * <p>
+   * {@code getTransactionIfExists()} rather than {@code getTransaction()}: the latter THROWS
+   * {@code TransactionException} on a thread with no database context rather than answering null, so the null
+   * branch below would never be reached and this would raise on a caller that legitimately has no transaction -
+   * a background compaction or flush worker, say - instead of answering "not a replay" (#7934 review).
+   */
   private TransactionContext replayableTransaction() {
-    final TransactionContext tx = getDatabase().getTransaction();
+    final TransactionContext tx = getDatabase().getTransactionIfExists();
     return tx != null && tx.getStatus() == TransactionContext.STATUS.COMMIT_1ST_PHASE ? tx : null;
   }
 

@@ -39,7 +39,7 @@ import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.MutableEdgeSegment;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
-import com.arcadedb.index.IndexReplayUndo;
+import com.arcadedb.index.IndexReplayConclusion;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
@@ -138,15 +138,15 @@ public class TransactionContext implements Transaction {
   // re-inserted in a later transaction instead of being treated as an update of a missing record (issue #4562).
   private final List<Record>                         newRecords            = new ArrayList<>();
   private final TransactionIndexContext              indexChanges;
-  // #7931: the compensation an index hands over for the NON-transactional state its replay published. The replay
-  // runs inside commit1stPhase BEFORE the page versions are validated, so a transaction that then loses the MVCC
-  // check has already applied every one of its index operations - harmless for an index whose replay only writes
-  // transaction-local pages, not harmless for one that also mutates process-wide in-memory state. Lazily
-  // allocated: nothing but LSMVectorIndex registers anything here, so an ordinary transaction never pays for it.
-  // Keyed by index so each one keeps a single journal for the whole replay rather than one per operation, and
-  // insertion-ordered so a rollback that logs a compensation failure names them in a stable order. See
-  // IndexReplayUndo.
-  private       Map<IndexInternal, IndexReplayUndo>  indexReplayUndo       = null;
+  // #7931/#7933: what an index hands over so this transaction's CONCLUSION can be applied to the non-transactional
+  // state its replay touched. The replay runs inside commit1stPhase BEFORE the page versions are validated, so a
+  // transaction that then loses the MVCC check has already carried out every one of its index operations -
+  // harmless for an index whose replay only writes transaction-local pages, not harmless for one that also mutates
+  // process-wide in-memory state. Lazily allocated: only the two vector index families register anything here, so
+  // an ordinary transaction never pays for it. Keyed by index so each one keeps a single journal for the whole
+  // replay rather than one per operation, and insertion-ordered so a failure logged while concluding names them in
+  // a stable order. See IndexReplayConclusion.
+  private       Map<IndexInternal, IndexReplayConclusion> indexReplayConclusion = null;
   private final Map<PageId, ImmutablePage>           immutablePages        = new HashMap<>(64);
   private final RidHashSet                            deletedRecordsInTx    = new RidHashSet();
   private       Map<PageId, MutablePage>             modifiedPages;
@@ -507,7 +507,9 @@ public class TransactionContext implements Transaction {
     // against a concurrent writer of the same index are still held until reset(). Deliberately not in reset():
     // the other non-committed conclusions route through reset() precisely BECAUSE their changes are durable (a
     // failure past the WAL append, a remotely-committed apply), and undoing the index state there would drop
-    // effects that recovery is going to replay.
+    // effects that recovery is going to replay. Running here is also what stops reset() - reached at the end of
+    // this method - from taking the opposite branch and PUBLISHING a deferred replay buffer (#7933): this clears
+    // the registrations, so the reset() below finds nothing left to conclude.
     undoIndexReplay();
 
     if (database.isOpen() && database.getSchema().getDictionary() != null) {
@@ -1615,6 +1617,17 @@ public class TransactionContext implements Transaction {
       lockedFiles = null;
     }
     releaseInsertSlotReservations();
+    // #7933: dropped, neither undone nor published. A kill abandons this transaction's pages without a rollback, so
+    // its index replay has no conclusion to apply either - and leaving the registration behind would have the next
+    // reset() of this REUSED context publish a buffer belonging to a transaction that was killed.
+    //
+    // #7934 review: the asymmetry with rollback() - which undoes - is deliberate, not an oversight. The only caller
+    // is LocalDatabase.kill(), a CRASH SIMULATION, and a crash reverses nothing in memory: it takes the process with
+    // it. What makes that faithful here rather than merely cheap is that the simulation discards the schema and with
+    // it every index instance, so an eagerly-published replay (LSMVectorIndex's) dies with the object that holds it
+    // and is re-read from disk on the reopen. This context is the one thing that DOES outlive the kill, which is
+    // exactly what the drop is for.
+    indexReplayConclusion = null;
     modifiedPages = null;
     newPages = null;
     edgeAppendsBySegment = null;
@@ -1869,6 +1882,13 @@ public class TransactionContext implements Transaction {
       }
 
       if (!hasChanges()) {
+        // #7934 review: returning without reset() does NOT strand an index replay conclusion registered by the
+        // updateRecordNoLock above - which can register one, since a deferred UPDATE indexes here rather than at
+        // save() time. Every caller of this method concludes the transaction on the null it gets back: commit()
+        // through resetAndFireCallbacks(), and the Raft path through an explicit tx.reset() on its own read-only
+        // arm. Both reach reset(), which publishes. Publishing is also the right answer rather than a tolerated
+        // one: a replay that indexed anything dirtied the record's own page, so "a buffer exists" and "nothing
+        // changed" cannot both be true, and an empty buffer publishes nothing.
         if (lockedFiles != null) {
           database.getTransactionManager().unlockFilesInOrder(lockedFiles, getRequester());
           lockedFiles = null;
@@ -2255,12 +2275,21 @@ public class TransactionContext implements Transaction {
       // modified records are intentionally NOT reloaded: their in-memory content is exactly what the
       // cluster committed, so there is nothing to restore.
       reset();
-    else if (database.getEmbedded() instanceof LocalDatabase localDatabase && localDatabase.isFencedForRecovery())
+    else if (database.getEmbedded() instanceof LocalDatabase localDatabase && localDatabase.isFencedForRecovery()) {
       // A fence-REFUSED commit (this tx appended nothing; the fence came from an earlier failure) cannot
       // roll back its record state: rollback()'s record reload would hit the fence choke point itself and
       // replace the fence error with a confusing secondary failure. Release resources only - the database
       // is unusable until close/reopen anyway, so user-held record state is moot.
+      //
+      // #7934 review: the INDEX replay is the one thing that does have to come back, and the reason is in the
+      // first line of this comment - this transaction appended nothing, so unlike every other branch that
+      // reaches reset(), its changes are not durable and must not be published. This is the only piece of
+      // rollback() that is safe to run here: it is index-scoped, it never touches the dictionary or reloads a
+      // record, so it cannot reach the fence choke point that makes the rest of rollback() unusable. Running it
+      // is also what stops the reset() below from taking the publish branch.
+      undoIndexReplay();
       reset();
+    }
     else
       // #4940: the failure happened BEFORE anything durable exists. Restore user-held records exactly like
       // a phase-1 failure does: reload the modified records to their committed content and reset the
@@ -2289,22 +2318,23 @@ public class TransactionContext implements Transaction {
   }
 
   /**
-   * The compensation {@code index} already registered for this transaction's index replay, or null if it has not
-   * registered one yet. See {@link IndexReplayUndo}.
+   * The journal {@code index} already registered for this transaction's index replay, or null if it has not
+   * registered one yet. See {@link IndexReplayConclusion}.
    */
-  public IndexReplayUndo getIndexReplayUndo(final IndexInternal index) {
-    return indexReplayUndo != null ? indexReplayUndo.get(index) : null;
+  public IndexReplayConclusion getIndexReplayConclusion(final IndexInternal index) {
+    return indexReplayConclusion != null ? indexReplayConclusion.get(index) : null;
   }
 
   /**
-   * Registers the compensation for the non-transactional side effects of {@code index}'s replay, to be run if this
-   * transaction rolls back. One per index per transaction: the index accumulates into the journal it gets back from
-   * {@link #getIndexReplayUndo(IndexInternal)} for the rest of the replay.
+   * Registers what this transaction's conclusion has to do to the non-transactional state of {@code index}'s
+   * replay - undo it on a rollback, publish it on anything else. One per index per transaction: the index
+   * accumulates into the journal it gets back from {@link #getIndexReplayConclusion(IndexInternal)} for the rest
+   * of the replay.
    */
-  public void addIndexReplayUndo(final IndexInternal index, final IndexReplayUndo undo) {
-    if (indexReplayUndo == null)
-      indexReplayUndo = new LinkedHashMap<>(4);
-    indexReplayUndo.put(index, undo);
+  public void addIndexReplayConclusion(final IndexInternal index, final IndexReplayConclusion conclusion) {
+    if (indexReplayConclusion == null)
+      indexReplayConclusion = new LinkedHashMap<>(4);
+    indexReplayConclusion.put(index, conclusion);
   }
 
   /**
@@ -2325,11 +2355,15 @@ public class TransactionContext implements Transaction {
    * this transaction's file locks. A tripwire must not be able to wedge the database it is guarding.
    */
   private void undoIndexReplay() {
-    final Map<IndexInternal, IndexReplayUndo> undos = indexReplayUndo;
-    if (undos == null)
+    final Map<IndexInternal, IndexReplayConclusion> conclusions = indexReplayConclusion;
+    if (conclusions == null)
       return;
 
-    for (final Map.Entry<IndexInternal, IndexReplayUndo> entry : undos.entrySet())
+    // Cleared BEFORE the loop, not after: an undo is allowed to reach code that reads this map back, and a second
+    // conclusion of the same journal - by the reset() at the end of rollback(), say - must find nothing.
+    indexReplayConclusion = null;
+
+    for (final Map.Entry<IndexInternal, IndexReplayConclusion> entry : conclusions.entrySet())
       try {
         entry.getValue().undoIndexReplay();
       } catch (final Throwable e) {
@@ -2337,8 +2371,47 @@ public class TransactionContext implements Transaction {
             "Error while compensating the replay of index '%s' of the rolled back tx %d (the primary error is "
                 + "propagated)", e, entry.getKey().getName(), txId);
       }
+  }
 
-    indexReplayUndo = null;
+  /**
+   * The other half of {@link #undoIndexReplay()}: this transaction's changes STAND, so whatever its index replay
+   * deferred has to be published now (issue #7933).
+   * <p>
+   * Called from {@link #reset()}, which is the single point every non-rolled-back conclusion reaches - the commit,
+   * and the failure regimes {@link #concludePhase2} routes through {@code reset()} precisely because their changes
+   * are durable regardless: a failure past the WAL append that recovery will replay, and a local apply that failed
+   * after the cluster had already committed. {@code rollback()} cannot reach it: it runs
+   * {@link #undoIndexReplay()} first, which clears the registrations before its own {@code reset()} gets here.
+   * <p>
+   * The fence-REFUSED branch of {@code concludePhase2} is the one arm that reaches {@code reset()} without durable
+   * changes - it appended nothing - and it therefore runs {@link #undoIndexReplay()} itself before getting here.
+   * Durability, not the route taken, is what decides which of the two conclusions applies.
+   * <p>
+   * Runs BEFORE {@code reset()} releases the file locks, which is deliberately the SAME lock state the eager
+   * replay it replaces ran in: a deferred publication must not be able to reach a lock ordering the eager one
+   * could not, and the index it publishes into is free to take whatever internal lock it already took at replay
+   * time, no more.
+   * <p>
+   * A failure is degraded to a warning for the same reason the undo degrades one: this runs after the commit has
+   * already been decided, and nothing here can un-decide it. {@code Throwable} rather than {@code Exception}
+   * because an escaping {@link AssertionError} - assertions ARE enabled under Surefire - would skip the rest of
+   * {@code reset()}, and the rest of {@code reset()} is what releases this transaction's file locks.
+   */
+  private void publishIndexReplay() {
+    final Map<IndexInternal, IndexReplayConclusion> conclusions = indexReplayConclusion;
+    if (conclusions == null)
+      return;
+
+    indexReplayConclusion = null;
+
+    for (final Map.Entry<IndexInternal, IndexReplayConclusion> entry : conclusions.entrySet())
+      try {
+        entry.getValue().publishIndexReplay();
+      } catch (final Throwable e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Error while publishing the deferred replay of index '%s' of the committed tx %d", e,
+            entry.getKey().getName(), txId);
+      }
   }
 
   public void addIndexOperation(final IndexInternal index, final TransactionIndexContext.IndexKey.IndexKeyOperation operation,
@@ -2357,6 +2430,12 @@ public class TransactionContext implements Transaction {
   }
 
   public void reset() {
+    // #7933: FIRST, while the file locks below are still held. This is the point every conclusion that is NOT a
+    // rollback passes through - the commit, and each durable-but-locally-failed regime concludePhase2 routes here -
+    // so it is where a replay that deferred its non-transactional writes gets to make them. A rollback never
+    // reaches it with anything registered: undoIndexReplay() ran first and cleared the map.
+    publishIndexReplay();
+
     remotelyCommitted = false;
     phase2WalAppended = false;
     status = STATUS.INACTIVE;
@@ -2372,9 +2451,6 @@ public class TransactionContext implements Transaction {
     }
 
     indexChanges.reset();
-    // Discarded rather than run: see undoIndexReplay(). A committed transaction keeps everything its replay did,
-    // and so does one whose changes are durable even though the local apply failed.
-    indexReplayUndo = null;
     releaseInsertSlotReservations();
 
     modifiedPages = null;
