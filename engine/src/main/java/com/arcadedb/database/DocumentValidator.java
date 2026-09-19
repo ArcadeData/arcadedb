@@ -50,13 +50,22 @@ public class DocumentValidator {
     // arithmetic in newDeadline() for types that never use REGEXP at all would be pure waste on that hot path.
     long regexDeadline = 0;
     boolean regexDeadlineComputed = false;
+    boolean deferred = false;
     for (Property entry : document.getType().getPolymorphicProperties()) {
       if (!regexDeadlineComputed && entry.getRegexp() != null) {
         regexDeadline = TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(document.getDatabase()));
         regexDeadlineComputed = true;
       }
-      validateField(document, entry, regexDeadline);
+      deferred |= validateFieldInternal(document, entry, regexDeadline);
     }
+
+    // The document satisfies every existence constraint it has: if it was provisional - created moments ago by this
+    // same statement, missing a property a later clause was going to supply (issue #7945) - this is the write that
+    // completed it, and the end-of-statement check has nothing left to do for it. Skipped entirely unless some
+    // statement somewhere in this JVM is holding a provisional record right now, so the ordinary write path pays
+    // one volatile read.
+    if (!deferred && DeferredExistenceChecks.anyScopeArmed() && document.getIdentity() != null)
+      DeferredExistenceChecks.completed(document);
   }
 
   /**
@@ -71,15 +80,34 @@ public class DocumentValidator {
   }
 
   public static void validateField(final MutableDocument document, final Property p, final long regexDeadline) throws ValidationException {
-    if (p.isMandatory() && !document.has(p.getName()))
-      throwValidationException(document.getType(), p, "is mandatory, but not found on record: " + document);
+    validateFieldInternal(document, p, regexDeadline);
+  }
+
+  /**
+   * @return true when an existence constraint the document does not satisfy has been deferred to the end of the
+   * statement instead of being raised here - see {@link DeferredExistenceChecks}
+   */
+  private static boolean validateFieldInternal(final MutableDocument document, final Property p, final long regexDeadline)
+      throws ValidationException {
+    boolean deferred = false;
+
+    if (p.isMandatory() && !document.has(p.getName())) {
+      if (DeferredExistenceChecks.defer(document))
+        deferred = true;
+      else
+        throwValidationException(document.getType(), p, "is mandatory, but not found on record: " + document);
+    }
 
     final Object fieldValue = document.get(p.getName());
 
     if (fieldValue == null) {
-      if (p.isNotNull() && document.has(p.getName()))
+      if (p.isNotNull() && document.has(p.getName())) {
         // NULLITY
-        throwValidationException(document.getType(), p, "cannot be null, record: " + document);
+        if (DeferredExistenceChecks.defer(document))
+          deferred = true;
+        else
+          throwValidationException(document.getType(), p, "cannot be null, record: " + document);
+      }
     } else {
       if (p.getRegexp() != null)
         // REGEXP - bounded against catastrophic backtracking (issue #5886): this runs on every insert/update of
@@ -119,6 +147,8 @@ public class DocumentValidator {
           throwValidationException(document.getType(), p, "is immutable and cannot be altered. Field value is: " + fieldValue);
       }
     }
+
+    return deferred;
   }
 
   private static void validateMaxValue(MutableDocument document, Property p, Object fieldValue) {
