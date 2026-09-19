@@ -22,12 +22,16 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -88,9 +92,32 @@ class Issue7298BootstrapReplaySkipMissingDatabaseTest {
     return server;
   }
 
-  private static ArcadeStateMachine stateMachineOn(final ArcadeDBServer server) {
+  /**
+   * Every state machine this class builds, closed in {@link #closeStateMachines()}.
+   * <p>
+   * A state machine owns two executors, and an install that fails - which is what half of these tests drive -
+   * leaves work queued on one of them. Left running, those threads outlive the test method and race JUnit's
+   * {@code @TempDir} cleanup for {@code serverDir/.raft}, which surfaces as a {@code DirectoryNotEmptyException}
+   * out of the extension rather than as any test failing: the CI run of PR #7941 hit exactly that with all six
+   * tests green. Closing them is what makes the directory quiet before JUnit deletes it.
+   */
+  private final List<ArcadeStateMachine> stateMachines = new ArrayList<>();
+
+  @AfterEach
+  void closeStateMachines() {
+    for (final ArcadeStateMachine sm : stateMachines)
+      try {
+        sm.close();
+      } catch (final IOException e) {
+        // Teardown of a unit-test fixture: a close that fails must not replace the test's own verdict.
+      }
+    stateMachines.clear();
+  }
+
+  private ArcadeStateMachine stateMachineOn(final ArcadeDBServer server) {
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     sm.setServer(server);
+    stateMachines.add(sm);
     return sm;
   }
 

@@ -51,6 +51,7 @@ import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.protocol.SnapshotManagementRequest;
 import org.apache.ratis.protocol.exceptions.NotLeaderException;
 import org.apache.ratis.retry.RetryPolicies;
+import org.apache.ratis.retry.RetryPolicy;
 import org.apache.ratis.server.DivisionInfo;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.RaftServerConfigKeys;
@@ -226,12 +227,23 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private volatile RaftTransactionBroker     transactionBroker;
   private          RaftClusterStatusExporter statusExporter;
   private          ScheduledExecutorService  lagMonitorExecutor;
-  // Peer-capability discovery (issue #7219). Leader-only: a follower writes no optional wire-format section,
-  // so it has no question to ask. Refreshed on its OWN scheduled thread rather than the lag monitor's, because
-  // a probe round is a sequential HTTP fan-out that can take peers x PROBE_TIMEOUT_MS, and replica
-  // classification must not be delayed by an unreachable peer's connect timeout - the same reasoning that keeps
-  // channelRecoveryExecutor off the resync executor below.
+  // Peer-capability discovery (issues #7219, #7549). Runs in EVERY role: a follower writes no optional
+  // wire-format section, but it does serve GET /api/v1/cluster and the security compare-and-set gate of #7511,
+  // and both have to answer for peers other than itself. Refreshed on its OWN scheduled thread rather than the
+  // lag monitor's, because a probe round is a sequential HTTP fan-out that can take peers x PROBE_TIMEOUT_MS,
+  // and replica classification must not be delayed by an unreachable peer's connect timeout - the same
+  // reasoning that keeps channelRecoveryExecutor off the resync executor below.
+  //
+  // Guarded by capabilityMonitorLock, NOT by the field's own visibility (review of PR #7941). Since #7549 the
+  // start has two callers that can run at once: the startup thread, and the Ratis leader-change callback via
+  // startLagMonitor() - raftServer.start() does not wait for an election, so a node that wins one immediately
+  // (a single-node bootstrap is the obvious case) reaches both. A plain check-then-act lets both see null,
+  // both create an executor, and the second assignment orphan the first - a daemon thread and its probe
+  // schedule that stopCapabilityMonitor() can no longer reach, which is the same leak class this file already
+  // guards against for the HttpClients in shutdown().
   private          ScheduledExecutorService  capabilityMonitorExecutor;
+  /** Serialises start/stop of {@link #capabilityMonitorExecutor}; never held across anything that blocks. */
+  private final    Object                    capabilityMonitorLock = new Object();
   private final    PeerCapabilityRegistry    peerCapabilities = new PeerCapabilityRegistry();
   // How one capability probe is made (see CapabilityProber). A method reference rather than a lambda reading
   // arcadeServer, which is a blank final the constructor has not assigned yet at this point.
@@ -471,7 +483,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     this.quorum = Quorum.parse(configuration.getValueAsString(GlobalConfiguration.HA_QUORUM));
     this.quorumTimeout = configuration.getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
 
-    this.clusterManager = new RaftClusterManager(this);
+    this.clusterManager = new RaftClusterManager(this,
+        configuration.getValueAsLong(GlobalConfiguration.HA_MEMBERSHIP_CHANGE_TIMEOUT));
     this.statusExporter = new RaftClusterStatusExporter(this, this.clusterMonitor);
 
     LogManager.instance().log(this, Level.INFO,
@@ -1153,6 +1166,25 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         divergedFollowerRecovery, divergedFollowerMaxReformats, crashLoopRestartThreshold);
     this.healthMonitor.start();
 
+    // Peer capabilities are refreshed on EVERY node, not only the leader (issue #7549). #7219 introduced the
+    // monitor for a leader-side consumer - the schema-delta decision - and started it from startLagMonitor(),
+    // so a follower's registry was empty by construction. Two consumers have since arrived that are not
+    // leader-side: the security compare-and-set gate of #7511, which runs wherever the client landed because
+    // the group and API-token routes do not forward, and GET /api/v1/cluster, which an operator polls to ask
+    // whether a rolling upgrade is complete. Both had to work around the emptiness - the gate by paying one
+    // synchronous probe round under the ServerSecurity monitor, the status document by simply omitting the
+    // rows - and an operator could not answer "is this cluster ready for a group change" without first finding
+    // the leader. A probe is a read-only peer-to-peer GET and configuredPeers() is available in every role, so
+    // there was never anything leader-shaped about the asking itself.
+    //
+    // WHAT IT COSTS, said out loud because it is a change in shape and not only in role (review of PR #7941):
+    // the fan-out was N-1 probes per REFRESH_PERIOD_MS cluster-wide and is now N*(N-1), because every node asks
+    // rather than one. On the cluster sizes Raft is useful at - single-digit voters, since every write needs a
+    // majority round trip - that is a handful of read-only HTTP GETs every five seconds against an endpoint
+    // that answers from memory, which is why it is paid rather than avoided. It is quadratic, though, so a
+    // deployment that grows the voter count well past that should know where the traffic comes from.
+    startCapabilityMonitor();
+
     // Periodic snapshot/log-purge trigger (issue #5345). Started on every node, not only the leader:
     // Ratis purges each server's own log against that server's own snapshot index, so a follower whose
     // snapshot index never advances fills its volume even while the leader stays healthy.
@@ -1727,7 +1759,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       logCompactionScheduler = null;
     }
     stopLagMonitor();
-    // After stopLagMonitor(), which ends the capability refresh: nothing asks for the client past this point, and
+    // The capability refresh runs in every role since issue #7549, so shutdown is the only thing that ends it;
+    // it used to come along with stopLagMonitor() because it only ever ran on a leader.
+    stopCapabilityMonitor();
+    // After stopCapabilityMonitor(): nothing asks for the client past this point, and
     // an HttpClient left behind holds a connection pool and a selector thread for the life of the JVM - which in
     // the HA suites outlives many server start/stop cycles (PR #7314 review).
     //
@@ -3335,6 +3370,75 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return builder.build();
   }
 
+  /**
+   * The per-call retry policy of the membership-change client (issues #7539, #7561).
+   * <p>
+   * Short on purpose, and short is safe here because it does not bound the operation - {@code RaftClusterManager}
+   * has its own deadline and its own backoff around it. What it bounds is how many times ONE
+   * {@code admin().setConfiguration()} call re-issues before control comes back, and therefore how often the
+   * operator's budget is looked at. The shared {@link #raftClient} carries {@code RetryLimited(60, 1s)}, which
+   * is right for a data write waiting out an election and wrong for an admin call whose caller is an HTTP
+   * worker thread: it made the 90 s budget observable once a minute, so a change that could not commit cost
+   * about 150 s.
+   * <p>
+   * <b>Three attempts is not "three seconds".</b> The sleep is 500 ms, but each attempt is also bounded by
+   * {@link #CLIENT_REQUEST_TIMEOUT_MS}, so a call whose RPC hangs at the transport can take about 31 s before
+   * it comes back - and the common shape, a synchronous rejection, comes back in milliseconds. The budget check
+   * in {@code RaftClusterManager.canAttemptAgain} sizes itself on the OBSERVED attempt duration rather than on
+   * either figure, which is why it stays correct across that spread; the numbers matter for an operator sizing
+   * {@code arcadedb.ha.membershipChangeTimeout}, not for the loop.
+   * <p>
+   * {@code KubernetesAutoJoin.PROBE_RETRY_POLICY} is the same reasoning applied to the auto-join probe
+   * (issue #5973), and the numbers are deliberately of the same order.
+   */
+  static final RetryPolicy MEMBERSHIP_RETRY_POLICY =
+      RetryPolicies.retryUpToMaximumCountWithFixedSleep(3, TimeDuration.valueOf(500, TimeUnit.MILLISECONDS));
+
+  /**
+   * A {@link RaftClient} for one membership change, carrying {@link #MEMBERSHIP_RETRY_POLICY} instead of the
+   * shared client's minute-long one (issue #7561). The caller closes it.
+   * <p>
+   * A client per operation rather than a long-lived second one: add- and remove-peer are operator actions, so
+   * the connection setup is paid once per administrative request and there is no second client to keep in step
+   * with {@code refreshRaftClient}'s leader re-seeding, TLS parameters and teardown.
+   *
+   * <p>
+   * <b>The per-RPC timeout is set here rather than inherited, on a COPY of the properties</b> (review of PR
+   * #7941). Bounding the retry COUNT bounds nothing on its own: a {@code setConfiguration} whose RPC hangs at
+   * the transport with no reply never reaches a second attempt, so the deadline in {@code RaftClusterManager}
+   * is not consulted until that one call returns. {@link #CLIENT_REQUEST_TIMEOUT_MS} is what makes it return,
+   * and it is written onto the shared properties by {@link #buildRaftClient} - so it is already there in
+   * practice, by an ordering nothing states. Writing it here says so locally.
+   * <p>
+   * The copy is what keeps that honest rather than merely redundant. {@link #raftProperties} is the object the
+   * Raft SERVER was built from and is shared with every other client built from it, and two membership changes
+   * can run at once - add-peer and remove-peer are not serialised with each other. Writing the same value from
+   * two threads into one configuration map is benign only by luck; taking a copy means this method reads shared
+   * state and mutates nothing, which needs no luck at all.
+   *
+   * @return null before {@code start()} has built the Raft properties, which is also what a unit-test harness
+   * that never stood up a Raft server has - the caller then falls back to {@link #getClient()}
+   */
+  RaftClient newMembershipClient() {
+    final RaftProperties shared = raftProperties;
+    if (shared == null)
+      return null;
+    final RaftProperties properties = new RaftProperties(shared);
+    RaftClientConfigKeys.Rpc.setRequestTimeout(properties,
+        TimeDuration.valueOf(CLIENT_REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS));
+    final RaftClient.Builder builder = RaftClient.newBuilder()
+        .setRaftGroup(raftGroup)
+        .setProperties(properties)
+        .setParameters(raftParameters)
+        .setRetryPolicy(MEMBERSHIP_RETRY_POLICY);
+    // Seeded with the leader this node believes in, so the first request does not pay a probe round trip; a
+    // stale belief costs one redirect, exactly as it does for the shared client.
+    final RaftPeerId leaderId = getLeaderId();
+    if (leaderId != null)
+      builder.setLeaderId(leaderId);
+    return builder.build();
+  }
+
   public void transferLeadership(final String targetPeerId, final long timeoutMs) {
     clusterManager.transferLeadership(targetPeerId, timeoutMs);
   }
@@ -4477,54 +4581,79 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   /**
    * Stops the periodic lag monitoring task. Called when this node loses leadership.
+   * <p>
+   * Deliberately does NOT stop the capability monitor any more (issue #7549): it runs in every role, so that a
+   * follower can answer what its peers advertise without the cluster having to locate a leader first. Losing
+   * leadership ends the lag sampling, which really is the leader's view of its followers; it does not end a
+   * read-only question every node can ask.
    */
   void stopLagMonitor() {
     if (lagMonitorExecutor != null) {
       lagMonitorExecutor.shutdownNow();
       lagMonitorExecutor = null;
     }
-    stopCapabilityMonitor();
   }
 
   /**
-   * Starts the leader-side peer-capability refresh (issue #7219).
+   * Starts the peer-capability refresh (issue #7219), which since issue #7549 runs on every node rather than only
+   * on the leader - see {@code start()} for why, and {@link #stopLagMonitor} for what stopped stopping it.
    * <p>
    * The first round runs with NO initial delay, because until it lands every peer reads as incapable and the
    * leader ships whole schema documents: correct, but it is the state the whole mechanism exists to leave, and a
    * leader that has just been elected is precisely when a burst of DDL tends to arrive.
+   * <p>
+   * Idempotent, and that is what keeps the invalidation below honest now that the monitor is normally already
+   * running by the time leadership is acquired: {@code startLagMonitor} still calls this, and on a node whose
+   * monitor never stopped it returns at the guard without clearing anything. There is nothing to invalidate
+   * there - no window in which nobody was asking, which is the window #7301's clear exists to close - so the
+   * warm registry is kept and a new leader can write a schema delta on its first DDL instead of waiting out a
+   * refresh period.
    */
   // @VisibleForTesting - the invalidation below is asserted through this method, not through the field it clears
   void startCapabilityMonitor() {
-    if (capabilityMonitorExecutor != null)
-      return;
-    // A fresh term says nothing about what the peers can decode - a build does not change because an election
-    // happened - but the advertisements were observed under the previous leadership and their timestamps are
-    // what the TTL is measured against, so they are re-asked immediately rather than inherited silently. Until
-    // #7301 only the log-throttle shadow was cleared and the advertisements themselves were inherited, so a node
-    // that led again believed the previous term's answers - and could write an optional wire-format section on
-    // them - for the length of one refresh round.
-    peerCapabilities.clear();
-    capabilityMonitorExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
-      final Thread t = new Thread(r, "arcadedb-raft-capability-monitor");
-      t.setDaemon(true);
-      return t;
-    });
-    capabilityMonitorExecutor.scheduleWithFixedDelay(this::refreshPeerCapabilities, 0,
-        PeerCapabilityRegistry.REFRESH_PERIOD_MS, TimeUnit.MILLISECONDS);
+    synchronized (capabilityMonitorLock) {
+      if (capabilityMonitorExecutor != null)
+        return;
+      // A fresh term says nothing about what the peers can decode - a build does not change because an election
+      // happened - but the advertisements were observed under the previous leadership and their timestamps are
+      // what the TTL is measured against, so they are re-asked immediately rather than inherited silently. Until
+      // #7301 only the log-throttle shadow was cleared and the advertisements themselves were inherited, so a
+      // node that led again believed the previous term's answers - and could write an optional wire-format
+      // section on them - for the length of one refresh round.
+      peerCapabilities.clear();
+      capabilityMonitorExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
+        final Thread t = new Thread(r, "arcadedb-raft-capability-monitor");
+        t.setDaemon(true);
+        return t;
+      });
+      capabilityMonitorExecutor.scheduleWithFixedDelay(this::refreshPeerCapabilities, 0,
+          PeerCapabilityRegistry.REFRESH_PERIOD_MS, TimeUnit.MILLISECONDS);
+    }
+  }
+
+  /** Whether the capability refresh is running, so a test can pin that a role change does not end it (#7549). */
+  // @VisibleForTesting
+  boolean isCapabilityMonitorRunning() {
+    synchronized (capabilityMonitorLock) {
+      return capabilityMonitorExecutor != null;
+    }
   }
 
   /**
-   * Stops the peer-capability refresh. Called when this node loses leadership.
+   * Stops the peer-capability refresh. Called on shutdown - and, since issue #7549, only on shutdown: losing
+   * leadership no longer ends it, because every role has a consumer for what it records.
    * <p>
    * The advertisements are deliberately left in place rather than dropped here: they age out on their own, and
    * {@code unknownReasonOf} has a sentence for exactly that window. Whatever survives it is cleared the moment
-   * this node leads again, which is where the invalidation belongs (issue #7301).
+   * the monitor is started again, which is where the invalidation belongs (issue #7301).
    */
   // @VisibleForTesting
   void stopCapabilityMonitor() {
-    if (capabilityMonitorExecutor != null) {
-      capabilityMonitorExecutor.shutdownNow();
-      capabilityMonitorExecutor = null;
+    synchronized (capabilityMonitorLock) {
+      if (capabilityMonitorExecutor != null) {
+        capabilityMonitorExecutor.shutdownNow();
+        capabilityMonitorExecutor = null;
+      }
     }
   }
 
@@ -4770,9 +4899,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * The peers that have NOT proved they can decode {@code capability}, asking them NOW when the cached answer
    * does not already cover every one of them (issue #7511).
    * <p>
-   * {@link #peersMissingCapability} alone is not enough for a caller that REFUSES on a "no". The background
-   * capability monitor runs on the leader only ({@link #startCapabilityMonitor}, called from
-   * {@link #startLagMonitor}), because #7219's only consumer was the leader-side schema-delta decision. The
+   * {@link #peersMissingCapability} alone was not enough for a caller that REFUSES on a "no", because the
+   * background capability monitor used to run on the leader only - #7219's only consumer was the leader-side
+   * schema-delta decision. Since issue #7549 it runs in every role, so on a node that has been up for one
+   * refresh period the cached answer below is already the full one and nothing is dialled here; what remains is
+   * the window before a freshly started node's first round lands, and the round below is what covers it. The
    * consumer this exists for is not leader-side: the group and API-token REST routes do not forward, so
    * {@code ServerSecurity.saveGroupClusterWide} and friends run on whichever node the client or load balancer
    * picked, and submit through a Raft client that routes to the leader. On a FOLLOWER the registry is empty by

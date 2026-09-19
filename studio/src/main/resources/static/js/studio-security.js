@@ -401,7 +401,11 @@ function renderApiTokensTable(tokens) {
   var tableData = [];
   for (var i = 0; i < tokens.length; i++) {
     var t = tokens[i];
+    // An expired token stays in the list until the next token change retires it (issue #7601), so the row says
+    // so instead of leaving the reader to compare the date with today's.
     var expiration = t.expiresAt > 0 ? new Date(t.expiresAt).toLocaleString() : "Never";
+    if (t.expired)
+      expiration = '<span class="text-danger">' + escapeHtml(expiration) + ' (expired)</span>';
     var created = t.createdAt > 0 ? new Date(t.createdAt).toLocaleString() : "-";
     var tokenDisplay = 'at-...' + (t.tokenSuffix ? escapeHtml(t.tokenSuffix) : '');
     tableData.push([t.name, t.database, created, expiration, '<code>' + tokenDisplay + '</code>', t.tokenHash]);

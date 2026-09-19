@@ -40,7 +40,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * This is the test the issue asks for. The unit tests pin the decision and the two transports' statuses; what only
  * a cluster can show is that the gate reaches its answer through the actual capability RPC, over the wire, from a
  * FOLLOWER as well as from the leader - the path that would otherwise refuse every group change ever made on a
- * follower, because the background capability monitor runs on the leader alone.
+ * follower, because the background capability monitor ran on the leader alone until issue #7549 moved it onto
+ * every node.
  *
  * <h2>How an "old" node is built inside one JVM</h2>
  *

@@ -1304,6 +1304,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // The pages of an entry this node originated are published by the apply thread before lastAppliedIndex moves past
     // it (issue #6965), so the applied position is the durable position on the leader exactly as it is on a follower,
     // and no clamp for an in-flight leader-side phase 2 is needed any more (the #5407 ticket this replaced).
+    //
+    // That premise depends on an entry whose pages did NOT reach this node never advancing the index in the first
+    // place, which is what issue #7602 restored: publishLocalCommit throws when the publication and the reconcile
+    // both fail, so applyTransaction never reaches the getAndSet below for it and there is no advanced position
+    // here to checkpoint. Before that it swallowed the double failure, and this method duly recorded a position
+    // covering an entry the node does not hold - the exact state the removed #5407 clamp used to keep replayable.
 
     // Regressing the marker below an existing one would let Ratis replay from an index whose log
     // entries a previous checkpoint already authorised for purging. Skip this round instead; the
@@ -2340,6 +2346,17 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * Publishes the prepared pages of a transaction this node originated. A failure is recorded on the claim for the
    * committing thread to surface, and the pages are reconciled from the entry's WAL bytes, which are what every other
    * node applied.
+   * <p>
+   * <b>When the reconcile fails too, this throws</b> (issue #7602). It used to log and return, and the cost of
+   * that was the one thing an apply path must never do: {@code applyTransaction} advanced {@code lastAppliedIndex}
+   * over an entry whose pages are not on this node, answered OK, and the next {@code takeSnapshot} checkpointed
+   * the advanced position - so the entry was neither applied nor replayable, on the very node that originated it,
+   * with one SEVERE line as the only evidence. The #5407 replay floor that used to keep such an entry replayable
+   * was removed with the #6965 rework, which is why the swallow stopped being survivable.
+   * {@link #applyReplicatedTransaction} throws on the identical double failure and reaches the quarantine, so
+   * throwing here is what makes the two paths answer alike rather than a new disposition for this one.
+   *
+   * @throws LocalCommitNotAppliedException when the pages could neither be published nor reconciled
    */
   private void publishLocalCommit(final LocalCommit local, final RaftLogEntryCodec.DecodedEntry decoded, final long entryIndex) {
     HALog.log(this, HALog.DETAILED, "Publishing locally-originated tx %d on database '%s' at log index %d",
@@ -2347,6 +2364,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     boolean published = false;
     Throwable failure = null;
     boolean reconciled = false;
+    Exception reconcileFailure = null;
     try {
       final Consumer<String> phase2Fault = RaftReplicatedDatabase.TEST_PHASE2_COMMIT_FAULT;
       if (phase2Fault != null)
@@ -2371,17 +2389,45 @@ public class ArcadeStateMachine extends BaseStateMachine {
       } catch (final Error reconcileError) {
         throw reconcileError;
       } catch (final Exception reconcileError) {
+        reconcileFailure = reconcileError;
         LogManager.instance().log(this, Level.SEVERE,
             "Reconciling the pages of tx %d on database '%s' from the replicated payload also failed: %s",
             local.walTxId(), decoded.databaseName(), reconcileError.getMessage());
       }
     } finally {
       // The committing thread waits on this claim without a timeout: whatever happened above, it is resolved here.
+      // Resolved in the FINALLY, so it happens before the throw below as well: a committing thread parked on this
+      // claim must be woken whether the apply thread goes on to quarantine the database or not.
       if (published)
         local.published();
       else
         local.failed(failure, reconciled);
     }
+
+    // Neither the prepared pages nor the replicated payload reached this database, so this entry is NOT applied
+    // here and must not be recorded as if it were (issue #7602). Thrown after the claim is resolved and outside
+    // the finally, so it cannot replace an Error already on its way out of the block above.
+    if (!published && !reconciled)
+      throw localCommitNotApplied(local, decoded, entryIndex, failure, reconcileFailure);
+  }
+
+  /**
+   * The failure a doubly-failed local publication is reported with (issue #7602), carrying both halves: the
+   * publication failure as the cause, the reconcile failure suppressed on it. Two failures, one exception, so the
+   * quarantine log line and the stack trace an operator reads describe the whole of what happened.
+   */
+  private static LocalCommitNotAppliedException localCommitNotApplied(final LocalCommit local,
+      final RaftLogEntryCodec.DecodedEntry decoded, final long entryIndex, final Throwable publishFailure,
+      final Exception reconcileFailure) {
+    final LocalCommitNotAppliedException notApplied = new LocalCommitNotAppliedException(
+        "Locally-originated tx " + local.walTxId() + " on database '" + decoded.databaseName() + "' at log index "
+            + entryIndex + " could neither be published from the prepared transaction nor reconciled from the"
+            + " replicated payload, so this node does not hold an entry the cluster committed: "
+            + (publishFailure == null ? "no error detail" : publishFailure.getMessage()),
+        publishFailure);
+    if (reconcileFailure != null)
+      notApplied.addSuppressed(reconcileFailure);
+    return notApplied;
   }
 
   /**
