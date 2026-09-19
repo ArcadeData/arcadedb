@@ -47,12 +47,26 @@ const check = (label, actual, expected) => {
 
 const recorder = () => {
   const log = [];
+  // core.summary is chainable and writes to the job summary file; record it instead.
+  const summary = {
+    addHeading: () => summary,
+    addTable: (rows) => {
+      log.push(`::summary table rows=${rows.length}`);
+      return summary;
+    },
+    addRaw: () => summary,
+    write: async () => {
+      log.push("::summary write");
+      return summary;
+    },
+  };
   return {
     log,
     core: {
       info: (m) => log.push(m),
       warning: (m) => log.push(`WARN ${m}`),
       setOutput: (k, v) => log.push(`::output ${k}=${v}`),
+      summary,
     },
   };
 };
@@ -244,6 +258,16 @@ const collectCases = async () => {
     issue(4),
   ]);
   check("skips assigned and in-progress issues", r.pools, [["timeseries", [3, 4]]]);
+  check(
+    "and names them in the log",
+    r.log.some((l) => l.includes("skipped_busy=#1|#2")),
+    true
+  );
+  check(
+    "and lists what it sent to the model",
+    r.log.filter((l) => l.includes("candidate module=timeseries")).length,
+    2
+  );
 
   // An umbrella carries the module label and severity:minor itself. Sweeping it up again would
   // let two umbrellas be merged into a third, orphaning everything the older one tracked.
@@ -286,9 +310,26 @@ const collectCases = async () => {
 
   r = await runCollect([issue(1), issue(2), issue(3)], { 1: "error" });
   check("an unreadable timeline fails closed", r.pools, [["timeseries", [2, 3]]]);
+  // Why an issue was left out has to be readable off the run log, issue by issue: a counter
+  // cannot tell "nothing qualified" apart from "nothing ran".
+  check(
+    "and says which issue and why",
+    r.log.some((l) => l.includes("skipped_spoken_for=#1=errored")),
+    true
+  );
 
   r = await runCollect([issue(1), issue(10, { labels: ["severity:minor", "server"] })]);
   check("a module with one candidate is dropped", r.pools, []);
+  check(
+    "and says which modules had only one",
+    r.log.some((l) => l.includes("modules_with_one_candidate=")),
+    true
+  );
+  check(
+    "and says the run had nothing to group",
+    r.log.some((l) => l.includes("action=nothing_to_group")),
+    true
+  );
 
   r = await runCollect([
     issue(1, { labels: ["severity:minor", "bug"] }),
@@ -349,7 +390,19 @@ const runMerge = async (reply, opts = {}) => {
   const payloadFile = path.join(tmp, PAYLOAD_FILE);
   const execFile = path.join(tmp, "merge-exec.json");
   fs.writeFileSync(payloadFile, JSON.stringify(opts.pools ?? POOL));
-  fs.writeFileSync(execFile, JSON.stringify([{ type: "result", result: reply }]));
+  // The shape the action actually writes, envelope fields included.
+  fs.writeFileSync(
+    execFile,
+    JSON.stringify([
+      {
+        type: "result",
+        subtype: opts.subtype ?? "success",
+        is_error: opts.isError ?? false,
+        num_turns: 2,
+        result: reply,
+      },
+    ])
+  );
   Object.assign(process.env, {
     EXECUTION_FILE: execFile,
     DRY_RUN: opts.dryRun ? "true" : "false",
@@ -444,13 +497,50 @@ const mergeCases = async () => {
 
   r = await runMerge("GROUP: kubernetes | 1,2 | wrong module");
   check("an unknown module is refused", r.created, []);
+  check("and the reason is in the log", r.audit.includes("rejected unknown_module:kubernetes"), true);
+  check(
+    "and an all-refused run warns",
+    r.log.some((l) => l.startsWith("WARN ")),
+    true
+  );
 
   r = await runMerge("GROUP: timeseries 1,2 no pipes");
   check("a malformed line is refused", r.created, []);
 
-  r = await runMerge("GROUPS: none");
+  r = await runMerge("I read all four and none of them belong together.\nGROUPS: none");
   check("no groups means no writes", r.created, []);
-  check("and says so", r.audit.includes("action=no_groups"), true);
+  // An explicit decline and an unparseable reply are different events with different fixes.
+  check(
+    "an explicit decline says so",
+    r.audit.includes("action=declined_no_group_qualifies"),
+    true
+  );
+
+  r = await runMerge("Sorry, I could not open the file.");
+  check("an unparseable reply writes nothing", r.created, []);
+  check("and is reported as no_decision", r.audit.includes("action=no_decision"), true);
+  check(
+    "and carries the reply so it can be diagnosed",
+    r.audit.includes("could not open the file"),
+    true
+  );
+  check(
+    "and warns, because it is not a normal outcome",
+    r.log.some((l) => l.startsWith("WARN ")),
+    true
+  );
+
+  // The reply is untrusted: it must not be able to forge a ::workflow command in the log.
+  r = await runMerge("::error::forged\nnot a decision");
+  check(
+    "a forged workflow command is defused",
+    r.audit.includes("::error::"),
+    false
+  );
+
+  r = await runMerge("GROUP: timeseries | 1,2 | ok");
+  check("the model envelope is reported", r.audit.includes("model_result=success"), true);
+  check("and the proposal is echoed", r.audit.includes("proposed timeseries | 1,2 | ok"), true);
 
   const big = {
     modules: [

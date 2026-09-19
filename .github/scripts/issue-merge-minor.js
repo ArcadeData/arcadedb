@@ -48,12 +48,15 @@ module.exports = async ({ github, context, core }) => {
   // The execution log is the JSON array of SDK messages. The final `result` message carries
   // Claude's last reply; fall back to the last assistant text block.
   let text = "";
+  let envelope = null;
   try {
     const raw = JSON.parse(fs.readFileSync(process.env.EXECUTION_FILE, "utf8"));
     const messages = Array.isArray(raw) ? raw : [raw];
     for (const m of messages) {
-      if (m?.type === "result" && typeof m.result === "string") text = m.result;
-      else if (m?.type === "assistant" && Array.isArray(m.message?.content)) {
+      if (m?.type === "result") {
+        envelope = m;
+        if (typeof m.result === "string") text = m.result;
+      } else if (m?.type === "assistant" && Array.isArray(m.message?.content)) {
         for (const c of m.message.content)
           if (c?.type === "text" && typeof c.text === "string") text = c.text;
       }
@@ -64,11 +67,42 @@ module.exports = async ({ github, context, core }) => {
     return;
   }
 
+  // The reply is untrusted text. Logged as one capped line with no line starts of its own, so
+  // it cannot forge a ::workflow command, and with `::` defused for the same reason.
+  const forLog = (s, max) =>
+    (s ?? "")
+      .replace(/[\u0000-\u001f\u007f]/g, " ")
+      .replace(/::/g, ":")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, max) || "-";
+
+  audit(
+    `model_result=${envelope?.subtype ?? "absent"}, is_error=${envelope?.is_error ?? "?"}, ` +
+    `turns=${envelope?.num_turns ?? "?"}, reply_chars=${text.length}`
+  );
+
   const lines = [...text.matchAll(/^\s*GROUP:\s*(.+)$/gim)].map((m) => m[1]);
   if (lines.length === 0) {
-    audit("groups=0, action=no_groups");
+    // "It looked and found nothing" and "it never answered in the agreed shape" are different
+    // events with different fixes, and the old single message could not tell them apart.
+    if (/^\s*GROUPS:\s*none\s*$/im.test(text)) {
+      audit("groups=0, action=declined_no_group_qualifies");
+      core.summary
+        .addHeading("Minor-issue consolidation: nothing merged", 3)
+        .addRaw("The model read the candidates and found no set that one umbrella issue would ")
+        .addRaw("faithfully replace. Every candidate was left untouched.");
+      await core.summary.write();
+      return;
+    }
+    audit(`groups=0, action=no_decision, reply_tail="${forLog(text.slice(-400), 400)}"`);
+    core.warning(
+      "merge-minor: the model's reply carried neither a GROUP: line nor `GROUPS: none`; " +
+      "nothing was changed. See the reply_tail in the log."
+    );
     return;
   }
+  for (const line of lines) audit(`proposed ${forLog(line, 200)}`);
 
   // A title is the only untrusted text that reaches GitHub, so it is stripped of anything that
   // could mention a team, break out of the line, or run long. The umbrella BODY quotes nothing:
@@ -135,8 +169,17 @@ module.exports = async ({ github, context, core }) => {
     });
   }
 
-  audit(`proposed=${lines.length}, accepted=${groups.length}, rejected=${rejected.join(" ") || "-"}`);
-  if (groups.length === 0) return;
+  audit(`proposed=${lines.length}, accepted=${groups.length}, rejected=${rejected.length}`);
+  for (const r of rejected) audit(`rejected ${r}`);
+  for (const g of groups)
+    audit(`accepted module=${g.module}, members=${g.numbers.map((n) => `#${n}`).join("|")}`);
+  if (groups.length === 0) {
+    core.warning(
+      `merge-minor: ${lines.length} grouping(s) proposed and every one was refused; ` +
+      "nothing was changed. See the `rejected` lines in the log."
+    );
+    return;
+  }
 
   // Only labels that already exist may be applied, same rule as the classifier.
   let existing = [];
@@ -174,6 +217,7 @@ module.exports = async ({ github, context, core }) => {
     }
   };
 
+  const merged = [];
   for (const group of groups) {
     const members = [];
     const dropped = [];
@@ -269,5 +313,24 @@ module.exports = async ({ github, context, core }) => {
       `module=${group.module}, umbrella=${umbrella}, closed=${closed.join("|") || "-"}, ` +
       `failed=${failed.join("|") || "-"}, dropped=${dropped.join("|") || "-"}, action=merged`
     );
+    merged.push({ module: group.module, umbrella, closed, failed, dropped });
+  }
+
+  if (merged.length > 0) {
+    core.summary.addHeading("Minor-issue consolidation", 3).addTable([
+      [
+        { data: "Umbrella", header: true },
+        { data: "Module", header: true },
+        { data: "Closed as duplicate", header: true },
+        { data: "Left open", header: true },
+      ],
+      ...merged.map((m) => [
+        `#${m.umbrella}`,
+        m.module,
+        m.closed.map((n) => `#${n}`).join(", ") || "-",
+        [...m.failed, ...m.dropped].map((n) => `#${n}`).join(", ") || "-",
+      ]),
+    ]);
+    await core.summary.write();
   }
 };

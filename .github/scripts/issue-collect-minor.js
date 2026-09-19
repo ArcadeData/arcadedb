@@ -29,6 +29,10 @@ module.exports = async ({ github, context, core }) => {
   const bodyLimit = BODY_LIMIT;
 
   const audit = (msg) => core.info(`merge-minor: ${msg}`);
+  // A run that decides to do nothing is the common case, so it has to say WHY it decided that,
+  // issue by issue. Counters alone cannot tell "nothing qualified" apart from "nothing ran".
+  const reason = (label, numbers) =>
+    audit(`${label}=${numbers.length === 0 ? "-" : numbers.map((n) => `#${n}`).join("|")}`);
 
   let issues;
   try {
@@ -47,8 +51,9 @@ module.exports = async ({ github, context, core }) => {
 
   // First pass: the filters that cost nothing, straight off the list payload.
   const byModule = new Map();
-  let skippedBusy = 0;
-  let skippedUmbrella = 0;
+  const skippedBusy = [];
+  const skippedUmbrella = [];
+  const skippedNoModule = [];
   for (const issue of issues) {
     if (issue.pull_request) continue;
     const names = issue.labels.map((l) => (typeof l === "string" ? l : l.name).toLowerCase());
@@ -56,11 +61,11 @@ module.exports = async ({ github, context, core }) => {
     // would come back as a candidate on the next run, and two umbrellas of one module could be
     // merged into a third - closing the older one and orphaning everything it tracked.
     if (names.includes(umbrellaLabel)) {
-      skippedUmbrella++;
+      skippedUmbrella.push(issue.number);
       continue;
     }
     if (issue.assignees?.length > 0 || names.includes("in progress")) {
-      skippedBusy++;
+      skippedBusy.push(issue.number);
       continue;
     }
     const modules = names.filter(
@@ -72,17 +77,34 @@ module.exports = async ({ github, context, core }) => {
     );
     // An issue carrying two module labels belongs to the alphabetically first of them and to
     // no other pool, so that a single issue can never land in two umbrellas.
-    if (modules.length === 0) continue;
+    if (modules.length === 0) {
+      skippedNoModule.push(issue.number);
+      continue;
+    }
     const key = modules.sort()[0];
     if (!byModule.has(key)) byModule.set(key, []);
     byModule.get(key).push(issue);
   }
 
+  audit(
+    `open_minor=${issues.length}, module_filter=${moduleFilter || "-"}, ` +
+    `bucketed=${[...byModule.entries()].map(([m, l]) => `${m}:${l.length}`).join("|") || "-"}`
+  );
+  reason("skipped_umbrella", skippedUmbrella);
+  reason("skipped_busy", skippedBusy);
+  reason("skipped_no_module_label", skippedNoModule);
+
   // A module with a single candidate has nothing to merge with.
-  const ordered = [...byModule.entries()]
-    .filter(([, list]) => list.length >= 2)
-    .sort((a, b) => b[1].length - a[1].length)
-    .slice(0, maxModules);
+  const eligible = [...byModule.entries()].filter(([, list]) => list.length >= 2);
+  const tooSmall = [...byModule.entries()].filter(([, list]) => list.length < 2);
+  const ordered = eligible.sort((a, b) => b[1].length - a[1].length).slice(0, maxModules);
+  if (tooSmall.length > 0)
+    audit(`modules_with_one_candidate=${tooSmall.map(([m]) => m).join("|")}`);
+  if (eligible.length > ordered.length)
+    audit(
+      `modules_over_cap=${eligible.slice(maxModules).map(([m, l]) => `${m}:${l.length}`).join("|")}` +
+      `, cap=${maxModules}`
+    );
 
   // Second pass, on the capped pool only. Two reasons to leave an issue alone, both read off
   // the same timeline fetch:
@@ -139,12 +161,13 @@ module.exports = async ({ github, context, core }) => {
 
   const modules = [];
   let candidateCount = 0;
-  let skippedSpokenFor = 0;
+  const skippedSpokenFor = [];
   for (const [name, list] of ordered) {
     const candidates = [];
     for (const issue of list.slice(0, maxPerModule)) {
-      if ((await spokenFor(issue.number)) !== null) {
-        skippedSpokenFor++;
+      const why = await spokenFor(issue.number);
+      if (why !== null) {
+        skippedSpokenFor.push(`${issue.number}=${why}`);
         continue;
       }
       candidates.push({
@@ -154,7 +177,10 @@ module.exports = async ({ github, context, core }) => {
         body: truncate(issue.body),
       });
     }
-    if (candidates.length < 2) continue;
+    if (candidates.length < 2) {
+      audit(`module=${name}, eligible=${candidates.length}, action=too_few_after_filtering`);
+      continue;
+    }
     modules.push({ module: name, candidates });
     candidateCount += candidates.length;
   }
@@ -162,8 +188,32 @@ module.exports = async ({ github, context, core }) => {
   fs.writeFileSync(PAYLOAD_FILE, JSON.stringify({ modules }, null, 1));
   core.setOutput("count", String(candidateCount));
   audit(
-    `open_minor=${issues.length}, skipped_umbrella=${skippedUmbrella}, ` +
-    `skipped_busy=${skippedBusy}, skipped_spoken_for=${skippedSpokenFor}, ` +
-    `modules=${modules.map((m) => `${m.module}:${m.candidates.length}`).join("|") || "-"}`
+    `skipped_spoken_for=${skippedSpokenFor.map((s) => `#${s}`).join("|") || "-"}`
   );
+
+  // The exact set handed to the model, so the next log line can be read against what it saw.
+  for (const m of modules)
+    for (const c of m.candidates)
+      audit(`candidate module=${m.module} #${c.number} ${c.title}`);
+
+  if (candidateCount === 0) {
+    audit("candidates=0, action=nothing_to_group");
+    return;
+  }
+  audit(
+    `candidates=${candidateCount}, ` +
+    `modules=${modules.map((m) => `${m.module}:${m.candidates.length}`).join("|")}, ` +
+    `action=sent_to_model`
+  );
+
+  core.summary
+    .addHeading("Minor-issue consolidation: candidates", 3)
+    .addTable([
+      [
+        { data: "Module", header: true },
+        { data: "Issues", header: true },
+      ],
+      ...modules.map((m) => [m.module, m.candidates.map((c) => `#${c.number}`).join(", ")]),
+    ]);
+  await core.summary.write();
 };
