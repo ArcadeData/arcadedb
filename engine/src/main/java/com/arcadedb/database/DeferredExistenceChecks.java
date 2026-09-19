@@ -288,6 +288,14 @@ public class DeferredExistenceChecks {
       // statement's row count.
       scope.resolve();
       scope.pending.remove(rid);
+
+      // Nothing incomplete left, so this scope stops making every other write in the JVM look for it. Without this
+      // the counter would stay up for the rest of the statement, and a bulk upsert - which holds a provisional
+      // record for a moment per row, for as long as the import runs - would tax every other database's writes for
+      // its whole duration, which is the opposite of what the counter is for. The atomic is paid only when the
+      // state actually changes, and the write pipeline batches, so it is one disarm per batch rather than per row.
+      if (scope.isEmpty())
+        scope.disarm();
     }
   }
 
