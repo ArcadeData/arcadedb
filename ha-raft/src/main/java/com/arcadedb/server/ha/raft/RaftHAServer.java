@@ -51,6 +51,7 @@ import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.protocol.SnapshotManagementRequest;
 import org.apache.ratis.protocol.exceptions.NotLeaderException;
 import org.apache.ratis.retry.RetryPolicies;
+import org.apache.ratis.retry.RetryPolicy;
 import org.apache.ratis.server.DivisionInfo;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.RaftServerConfigKeys;
@@ -471,7 +472,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     this.quorum = Quorum.parse(configuration.getValueAsString(GlobalConfiguration.HA_QUORUM));
     this.quorumTimeout = configuration.getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
 
-    this.clusterManager = new RaftClusterManager(this);
+    this.clusterManager = new RaftClusterManager(this,
+        configuration.getValueAsLong(GlobalConfiguration.HA_MEMBERSHIP_CHANGE_TIMEOUT));
     this.statusExporter = new RaftClusterStatusExporter(this, this.clusterMonitor);
 
     LogManager.instance().log(this, Level.INFO,
@@ -3332,6 +3334,51 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         .setRetryPolicy(RetryPolicies.retryUpToMaximumCountWithFixedSleep(60, TimeDuration.valueOf(1, TimeUnit.SECONDS)));
     if (knownLeaderId != null)
       builder.setLeaderId(knownLeaderId);
+    return builder.build();
+  }
+
+  /**
+   * The per-call retry policy of the membership-change client (issues #7539, #7561).
+   * <p>
+   * Short on purpose, and short is safe here because it does not bound the operation - {@code RaftClusterManager}
+   * has its own deadline and its own backoff around it. What it bounds is how long ONE
+   * {@code admin().setConfiguration()} call can sit inside the Ratis client before control comes back, and
+   * therefore how often the operator's budget is looked at. The shared {@link #raftClient} carries
+   * {@code RetryLimited(60, 1s)}, which is right for a data write waiting out an election and wrong for an admin
+   * call whose caller is an HTTP worker thread: it made the 90 s budget observable once a minute, so a change
+   * that could not commit cost about 150 s.
+   * <p>
+   * {@code KubernetesAutoJoin.PROBE_RETRY_POLICY} is the same reasoning applied to the auto-join probe
+   * (issue #5973), and the numbers are deliberately of the same order.
+   */
+  static final RetryPolicy MEMBERSHIP_RETRY_POLICY =
+      RetryPolicies.retryUpToMaximumCountWithFixedSleep(3, TimeDuration.valueOf(500, TimeUnit.MILLISECONDS));
+
+  /**
+   * A {@link RaftClient} for one membership change, carrying {@link #MEMBERSHIP_RETRY_POLICY} instead of the
+   * shared client's minute-long one (issue #7561). The caller closes it.
+   * <p>
+   * A client per operation rather than a long-lived second one: add- and remove-peer are operator actions, so
+   * the connection setup is paid once per administrative request and there is no second client to keep in step
+   * with {@code refreshRaftClient}'s leader re-seeding, TLS parameters and teardown.
+   *
+   * @return null before {@code start()} has built the Raft properties, which is also what a unit-test harness
+   * that never stood up a Raft server has - the caller then falls back to {@link #getClient()}
+   */
+  RaftClient newMembershipClient() {
+    final RaftProperties properties = raftProperties;
+    if (properties == null)
+      return null;
+    final RaftClient.Builder builder = RaftClient.newBuilder()
+        .setRaftGroup(raftGroup)
+        .setProperties(properties)
+        .setParameters(raftParameters)
+        .setRetryPolicy(MEMBERSHIP_RETRY_POLICY);
+    // Seeded with the leader this node believes in, so the first request does not pay a probe round trip; a
+    // stale belief costs one redirect, exactly as it does for the shared client.
+    final RaftPeerId leaderId = getLeaderId();
+    if (leaderId != null)
+      builder.setLeaderId(leaderId);
     return builder.build();
   }
 
