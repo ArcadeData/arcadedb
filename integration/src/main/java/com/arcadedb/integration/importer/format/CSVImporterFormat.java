@@ -863,6 +863,10 @@ public class CSVImporterFormat extends AbstractImporterFormat {
               LogManager.instance().log(this, Level.SEVERE, "Error on parsing line %d", e, line);
             }
 
+            // INSIDE THE else, SO A REFUSED ROW DOES NOT REACH IT. NO BEHAVIOUR CHANGE - txCount IS ONLY INCREMENTED
+            // BY AN ATTEMPTED ROW, SO A REFUSED ONE COULD NEVER HAVE TRIPPED THE CADENCE ANYWAY - BUT IT SAVES THE
+            // NEXT READER DERIVING THAT: THE COMMIT CADENCE COUNTS ATTEMPTED ROWS, NOT PARSED ONES.
+            //
             // Deliberately outside the per-row catch above: a commit failure is not a row error. Caught there it
             // would be logged under a "parsing line N" message, and the loop would carry on with no transaction
             // active - LocalDatabase#commit() pops in its own finally and the begin() below never runs - turning
