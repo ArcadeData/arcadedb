@@ -505,7 +505,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     // record() carries a tripwire for a posting arriving after its transaction concluded. Should it ever fire, it
     // surfaces from inside commit1stPhase() - here, or through indexChanges.commit() below - not from wherever the
     // conclusion ran, which is where a reader would go looking first.
-    final SparseVectorReplayBuffer buffer = replayBuffer();
+    final SparseVectorReplayBuffer buffer = replayBuffer(tx);
     if (buffer != null) {
       buffer.record(dim, rid, weight, !add);
       return;
@@ -562,7 +562,18 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    * had been dead for the same reason since it was written.
    */
   private SparseVectorReplayBuffer replayBuffer() {
-    final TransactionContext tx = underlyingIndex.getMutableIndex().getDatabase().getTransactionIfExists();
+    return replayBuffer(underlyingIndex.getMutableIndex().getDatabase().getTransactionIfExists());
+  }
+
+  /**
+   * As {@link #replayBuffer()}, for a caller that has already resolved the thread's transaction. Resolving it costs
+   * a thread-local lookup plus the database-identity checks {@code getTransactionIfExists()} makes, and this runs
+   * once per POSTING - hundreds per record on a learned-sparse corpus - so the one caller that has the answer in
+   * hand passes it rather than asking again (#7934 review).
+   *
+   * @param tx the thread's transaction, or null if it has none
+   */
+  private SparseVectorReplayBuffer replayBuffer(final TransactionContext tx) {
     if (tx == null || !isCommitInFlight(tx.getStatus()))
       return null;
 
