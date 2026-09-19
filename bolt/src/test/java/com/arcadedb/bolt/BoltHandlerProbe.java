@@ -115,6 +115,46 @@ final class BoltHandlerProbe {
   }
 
   /**
+   * Runs the private {@code ensureDatabase()} against {@code server} and returns the FAILURE metadata it sent,
+   * or {@code null} when it resolved a database instead.
+   * <p>
+   * Separate from {@link #failureMetadataOf} because the subject is different: that one asks what a handler does
+   * with a database it already has, this one asks what the SELECTION of a database answers - the first thing RUN
+   * and BEGIN do, and so the first failure a Neo4j driver meets (issue #7874).
+   *
+   * @param server       a server double, stubbed for whichever of {@code getDatabaseNames()} /
+   *                     {@code getDatabase(String)} the case under test needs
+   * @param databaseName the name the client asked for, or {@code null} to take the default-database path
+   */
+  @SuppressWarnings("unchecked")
+  static Map<String, Object> databaseSelectionFailureOf(final ArcadeDBServer server, final String databaseName)
+      throws Exception {
+    try (final Socket socket = new Socket()) {
+      final BoltNetworkExecutor executor = new BoltNetworkExecutor(server, socket, null);
+      final ByteArrayOutputStream wire = new ByteArrayOutputStream();
+
+      set(executor, "output", new BoltChunkedOutput(wire));
+      set(executor, "protocolVersion", 0x00000405);
+      set(executor, "databaseName", databaseName);
+      set(executor, "state", stateNamed(READY));
+
+      final Method ensureDatabase = BoltNetworkExecutor.class.getDeclaredMethod("ensureDatabase");
+      ensureDatabase.setAccessible(true);
+      if (Boolean.TRUE.equals(ensureDatabase.invoke(executor)))
+        return null;
+
+      final byte[] message = new BoltChunkedInput(new ByteArrayInputStream(wire.toByteArray())).readMessage();
+      if (message[1] != BoltMessage.FAILURE)
+        throw new IllegalStateException("ensureDatabase() refused but did not answer FAILURE");
+
+      final PackStreamReader reader = new PackStreamReader(message);
+      reader.readRawByte();
+      reader.readRawByte();
+      return (Map<String, Object>) reader.readValue();
+    }
+  }
+
+  /**
    * A {@link Database} that answers the handful of questions {@code ensureDatabase()} asks of an already-resolved
    * handle and raises {@code failure} from the three transaction methods. A dynamic proxy rather than a mock so
    * the default for every other method of a very wide interface is an explicit, loud failure.
