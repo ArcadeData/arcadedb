@@ -69,6 +69,9 @@ class RaftClusterManager {
    */
   static final long DEFAULT_SET_CONFIGURATION_BUDGET_MS = 90_000;
 
+  /** How far {@link #isPermanent} follows a failure's cause chain. Deeper than any Ratis failure nests. */
+  private static final int MAX_CAUSE_DEPTH = 16;
+
   private final RaftHAServer raftHAServer;
   private final long         setConfigurationBudgetMs;
 
@@ -570,12 +573,12 @@ class RaftClusterManager {
    * as permanent would turn a slow but succeeding join into a refusal.
    */
   private static boolean isPermanent(final Throwable failure) {
-    for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+    // Bounded rather than walked to the end: a Ratis failure wraps a handful of causes at most, and a bound is
+    // the one cycle guard that needs no identity comparison of two Throwables.
+    Throwable cause = failure;
+    for (int depth = 0; cause != null && depth < MAX_CAUSE_DEPTH; cause = cause.getCause(), depth++)
       if (cause instanceof GroupMismatchException)
         return true;
-      if (cause.getCause() == cause)
-        break;
-    }
     return false;
   }
 
