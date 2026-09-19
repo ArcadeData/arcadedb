@@ -589,6 +589,11 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    * precisely the defect issue #7933 fixes, while a status it recognises too eagerly merely defers a write to the
    * end of the very commit that issued it. So the question asked is "is a commit in flight", not "is this the one
    * phase that writes indexes today".
+   * <p>
+   * Admitting the 2nd phase cannot strand a buffer that nothing will conclude, which is the one way the eager
+   * reading would be the safer of the two: {@code reset()} publishes and clears the registrations and then, two
+   * lines later and before it releases anything, sets the status to {@code INACTIVE}. There is no instant at which
+   * a write sees {@code COMMIT_2ND_PHASE} on a transaction whose conclusion has already run.
    */
   private static boolean isCommitInFlight(final TransactionContext.STATUS status) {
     return status == TransactionContext.STATUS.COMMIT_1ST_PHASE || status == TransactionContext.STATUS.COMMIT_2ND_PHASE;
