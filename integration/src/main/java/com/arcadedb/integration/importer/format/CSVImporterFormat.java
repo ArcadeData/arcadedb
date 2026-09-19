@@ -201,7 +201,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       beginRowTransaction(database, transactionActiveOnEntry, ownsTransaction);
 
       final AnalyzedEntity entity = sourceSchema.getSchema().getEntity(settings.documentTypeName);
-      checkAnalysisFoundUsableRows(entity, entityType);
+      checkAnalysisFoundUsableRows(entity, entityType, settings);
 
       // The null check covers BOTH branches below, where it used to guard only the second: a source the analysis
       // derived no entity from - a header-only file, or one whose every row was refused - reached
@@ -362,8 +362,19 @@ public class CSVImporterFormat extends AbstractImporterFormat {
    * between refusing the row and dropping data silently, and the message has to carry what the raw
    * {@code IndexOutOfBoundsException} did not: the line, and both column counts.
    */
+  /**
+   * Whether {@code columns} exceeds a known header width. The single expression behind both
+   * {@link #checkRowIsNotLongerThanHeader} (which throws) and {@code loadEdges()} (which skips and counts, because
+   * edge rows do not honour {@code -onRowError}), so the two outcomes cannot end up disagreeing about which rows
+   * they apply to - which is the same guarantee, one level down, that sharing the check between the analysis and
+   * the load passes buys (issue #7782).
+   */
+  private static boolean isLongerThanHeader(final int columns, final int headerColumns) {
+    return headerColumns > 0 && columns > headerColumns;
+  }
+
   private static void checkRowIsNotLongerThanHeader(final long line, final int columns, final int headerColumns) {
-    if (headerColumns > 0 && columns > headerColumns)
+    if (isLongerThanHeader(columns, headerColumns))
       throw new ImportException(
           "Row at line " + line + " has " + columns + " column(s) while the header has " + headerColumns
               + ": the extra value(s) have no field name to be stored under (use -onRowError skip to skip such rows"
@@ -422,11 +433,35 @@ public class CSVImporterFormat extends AbstractImporterFormat {
    * does declare, and {@code loadDocuments()} says nothing at all and writes one empty document per row. Misdirection
    * of exactly the kind #7782, #7781 and #7771 are all about.
    */
-  private static void checkAnalysisFoundUsableRows(final AnalyzedEntity entity, final AnalyzedEntity.EntityType entityType) {
-    if (entity != null && entity.getProperties().isEmpty())
-      throw new ImportException("No usable row found in the " + entityType.name().toLowerCase(Locale.ENGLISH)
-          + " source: every row the analysis read was refused because its column count did not match the header's (see the"
-          + " WARNING lines above), so no property could be derived from it");
+  private static void checkAnalysisFoundUsableRows(final AnalyzedEntity entity, final AnalyzedEntity.EntityType entityType,
+      final ImporterSettings settings) {
+    if (entity == null || !entity.getProperties().isEmpty())
+      return;
+
+    throw new ImportException("No usable row found in the " + entityType.name().toLowerCase(Locale.ENGLISH)
+        + " source: every row the analysis read was refused because its column count did not match the header's (see the"
+        + " WARNING lines above), so no property could be derived from it" + analysisWindowHint(settings));
+  }
+
+  /**
+   * The part of the refusal above that names {@code -analysisLimitEntries}/{@code -analysisLimitBytes}, when one of
+   * them is set.
+   * <p>
+   * Those two bound the ANALYSIS and not the load, so "every row the analysis read" can mean "every row in the
+   * sampled head of the file" while the rest of it is perfectly well formed - and then the refusal is right about
+   * what it saw and useless about what to do next, because the operator's fix is to widen the window rather than to
+   * go looking for ragged rows that may not be there. Only appended when a limit is actually configured: with no
+   * limit the analysis read the whole source and the window is not the story.
+   */
+  private static String analysisWindowHint(final ImporterSettings settings) {
+    if (settings == null || (settings.analysisLimitEntries <= 0 && settings.analysisLimitBytes <= 0))
+      return "";
+
+    return ". Note the analysis only sampled the head of the source ("
+        + (settings.analysisLimitEntries > 0 ? "-analysisLimitEntries " + settings.analysisLimitEntries : "")
+        + (settings.analysisLimitEntries > 0 && settings.analysisLimitBytes > 0 ? ", " : "")
+        + (settings.analysisLimitBytes > 0 ? "-analysisLimitBytes " + settings.analysisLimitBytes : "")
+        + "), so raising that limit may be the fix if the rest of the source is well formed";
   }
 
   /** How many columns the analysis measured this source's rows against, or -1 when it recorded no header. */
@@ -518,7 +553,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       return;
     }
 
-    checkAnalysisFoundUsableRows(entity, AnalyzedEntity.EntityType.VERTEX);
+    checkAnalysisFoundUsableRows(entity, AnalyzedEntity.EntityType.VERTEX, settings);
 
     int idIndex = -1;
     if (settings.typeIdProperty != null) {
@@ -740,7 +775,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       return;
     }
 
-    checkAnalysisFoundUsableRows(entity, AnalyzedEntity.EntityType.EDGE);
+    checkAnalysisFoundUsableRows(entity, AnalyzedEntity.EntityType.EDGE, settings);
 
     final AnalyzedProperty from = entity.getProperty(settings.edgeFromField);
     if (from == null)
@@ -852,7 +887,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           // THE LOOP. A continue HERE WOULD LET A RUN OF OVERSIZED ROWS PARSE PAST THAT CAP INDEFINITELY, AND IT
           // WOULD ALSO PUT EDGES OUT OF STEP WITH loadDocuments()/loadVertices(), WHERE A ROW THAT FAILED FALLS
           // THROUGH TO THE SAME CHECK RATHER THAN JUMPING OVER IT (issue #7782).
-          if (headerColumns > 0 && row.length > headerColumns) {
+          if (isLongerThanHeader(row.length, headerColumns)) {
             LogManager.instance().log(this, Level.WARNING,
                 "Error on importing edge at line %d, skipping it (reason: it has %d column(s) while the header has %d)", null,
                 line, row.length, headerColumns);
@@ -1261,7 +1296,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           // EVERY ROW IN THE FILE IS RAGGED AND NONE OF THEM CONTRIBUTES A PROPERTY (ISSUE #7782)
           entity.setHeaderColumns(fieldNames.size());
 
-          if (!fieldNames.isEmpty() && row.length > fieldNames.size()) {
+          if (isLongerThanHeader(row.length, fieldNames.size())) {
             // THROWS UNLESS THE POLICY SAYS TO SKIP - THE SAME REFUSAL, WORDED THE SAME WAY, THAT THE LOAD PASS
             // RAISES FOR THIS ROW
             if (!settings.isSkipOnRowError())

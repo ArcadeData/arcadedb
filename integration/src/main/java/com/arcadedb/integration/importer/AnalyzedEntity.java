@@ -100,7 +100,7 @@ public class AnalyzedEntity {
   }
 
   public void setRowSize(final String[] row) {
-    for (String s : row) {
+    for (final String s : row) {
       if (s != null)
         totalRowLength += s.length();
 

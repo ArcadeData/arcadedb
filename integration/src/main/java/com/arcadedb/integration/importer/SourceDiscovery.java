@@ -383,7 +383,10 @@ public class SourceDiscovery {
       final Class<FormatImporter> clazz = (Class<FormatImporter>) Class.forName(className);
       return clazz.getConstructor().newInstance();
     } catch (final ClassNotFoundException | InvocationTargetException | InstantiationException | IllegalAccessException |
-                   NoSuchMethodException e) {
+                   NoSuchMethodException | ClassCastException e) {
+      // ClassCastException too: the cast above is unchecked, so a class that RESOLVES but is not a FormatImporter -
+      // a gremlin module whose version does not match this one - would otherwise escape as a raw cast failure naming
+      // neither the format nor the module, which is the exact shape of failure this method exists to replace.
       throw new ImportException(
           "Cannot import a '" + fileType + "' source: its importer is provided by the optional arcadedb-gremlin module, "
               + "which is not available on this classpath", e);

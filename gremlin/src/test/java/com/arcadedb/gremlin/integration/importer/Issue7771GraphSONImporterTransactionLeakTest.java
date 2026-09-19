@@ -252,6 +252,48 @@ class Issue7771GraphSONImporterTransactionLeakTest {
     }
   }
 
+  /**
+   * Every other case here fails during the VERTEX pass. {@code importWithIdMapping()} runs two passes, each through
+   * its own {@code inTransaction()} call, so the edge pass has a second, independent transaction to leak - and the
+   * vertex pass has committed by the time it runs, which is the condition under which a leak there would be least
+   * visible.
+   * <p>
+   * The label of the edge names an existing DOCUMENT type, which the edge pass refuses the same way the vertex pass
+   * refuses a non-vertex label.
+   */
+  @Test
+  void aFailureInTheEdgePassLeavesNothingOnTheStackEither() throws Exception {
+    final String databasePath = "target/databases/test-import-7771-edge-pass";
+    final File source = sourceFile("7771-edge-pass", """
+        {"id":"http://ex/n1","label":"Person","properties":{"name":[{"id":1,"value":"Jay"}]},\
+        "outE":{"NotAnEdge":[{"id":10,"inV":"http://ex/n2"}]}}
+        {"id":"http://ex/n2","label":"Person","properties":{"name":[{"id":2,"value":"Kim"}]}}
+        """);
+
+    final Database db = freshDatabase(databasePath);
+    try {
+      db.command("sql", "CREATE DOCUMENT TYPE NotAnEdge");
+
+      assertThatThrownBy(() -> new Importer(db, "file://" + source.getAbsolutePath()).load())
+          .as("the edge pass refuses a label that names a non-edge type")
+          .isInstanceOf(ImportException.class)
+          .hasMessageContaining("NotAnEdge");
+
+      assertThat(db.isTransactionActive())
+          .as("and the transaction the EDGE pass opened was discarded, not left on the stack")
+          .isFalse();
+
+      // The vertex pass committed before the edge pass began, so its work is durable - that is the two-pass
+      // structure this fix deliberately preserved, not a leak.
+      assertThat(db.countType("Person", true)).isEqualTo(2);
+      assertThat(db.getSchema().existsType("NotAnEdge") ? db.countType("NotAnEdge", true) : 0)
+          .as("and the edge pass published nothing")
+          .isEqualTo(0);
+    } finally {
+      cleanUp(db, databasePath, source);
+    }
+  }
+
   /** How many transaction levels this thread has on the stack for {@code db} - the "nested" number in the issue. */
   private static int nestedLevels(final Database db) {
     return ((DatabaseInternal) db).getNestedTransactions();
