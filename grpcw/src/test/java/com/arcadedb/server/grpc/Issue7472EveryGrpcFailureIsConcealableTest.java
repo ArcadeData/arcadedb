@@ -354,6 +354,11 @@ class Issue7472EveryGrpcFailureIsConcealableTest {
     // ...and a .getMessage() that is only MENTIONED in a string or a comment is not a call site
     assertThat(insertErrorsCarryingARawMessage("Fixture.java",
         "        c.err(0, \"CONFLICT\", insertErrorMessage(dup), \"use e.getMessage() instead\");")).isEmpty();
+
+    // a semicolon inside a string argument does not end the statement, or everything past it - the raw message
+    // included - would fall outside the text the rule is applied to
+    assertThat(insertErrorsCarryingARawMessage("Fixture.java",
+        "        c.err(0, \"a; b\", retryEx.getMessage(), \"\");")).hasSize(1);
   }
 
   /** A mapper call that does not state whether to conceal. */
@@ -465,6 +470,15 @@ class Issue7472EveryGrpcFailureIsConcealableTest {
     return result.append(text.substring(from)).toString();
   }
 
+  /** The first {@code ;} at or after {@code from} that is real code, or {@code -1} if there is none. */
+  private static int codeSemicolon(final String source, final int from) {
+    final boolean[] isCode = codeMask(source);
+    for (int at = source.indexOf(';', from); at > -1; at = source.indexOf(';', at + 1))
+      if (isCode[at])
+        return at;
+    return -1;
+  }
+
   /**
    * For each character, whether it is CODE rather than the inside of a string literal, a char literal or a comment.
    * <p>
@@ -572,7 +586,10 @@ class Issue7472EveryGrpcFailureIsConcealableTest {
       if (before.startsWith("//") || before.startsWith("*") || before.startsWith("/*"))
         continue;
 
-      final int end = source.indexOf(';', at);
+      // The terminator has to be a CODE semicolon: one inside a string argument - an error message ending in
+      // ";" - would cut the statement short, and anything past the cut, a raw .getMessage() included, would never
+      // be judged. That is a false NEGATIVE, which is the failure this class exists to prevent (PR #7942 review).
+      final int end = codeSemicolon(source, at);
       statements.add(source.substring(lineStart, end > -1 ? end : source.length()));
     }
     return statements;

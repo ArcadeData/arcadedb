@@ -65,18 +65,37 @@ public class RemoteVertex {
   }
 
   public long countEdges(final Vertex.DIRECTION direction, final String... edgeTypes) {
-    StringBuilder query = new StringBuilder("select " + direction.toString().toLowerCase(Locale.ENGLISH) + "(");
-    if (edgeTypes != null && edgeTypes.length > 0) {
-      for (int i = 0; i < edgeTypes.length; i++) {
-        if (i > 0)
-          query.append(", ");
-        query.append("'").append(edgeTypes[i]).append("'");
-      }
-    }
+    final StringBuilder query = new StringBuilder("select " + direction.toString().toLowerCase(Locale.ENGLISH) + "(");
+    final Map<String, Object> params = new HashMap<>();
+    appendBoundTypes(query, edgeTypes, params);
 
     query.append(").size() as count from ").append(vertex.getIdentity());
-    final ResultSet resultSet = remoteDatabase.query("sql", query.toString());
+    final ResultSet resultSet = remoteDatabase.query("sql", query.toString(), params);
     return resultSet.next().<Number>getProperty("count").longValue();
+  }
+
+  /**
+   * Appends the traversal's type filter as BOUND parameters rather than as single-quoted literals.
+   * <p>
+   * A type name carrying a quote used to end the literal early and have its remainder parsed as more SQL. That is
+   * the defect #7914 is about, and these two call sites survived both passes over this class: the first swept for
+   * hand-rolled back-ticks, the second for {@code "'" + name + "'"} string concatenation, and these build the
+   * literal with chained {@code append} calls instead (PR #7942 review). The traversal functions read their labels
+   * from already-evaluated argument values, so a parameter is exactly as good as a literal there.
+   */
+  private static void appendBoundTypes(final StringBuilder query, final String[] types,
+      final Map<String, Object> params) {
+    if (types == null)
+      return;
+
+    for (int i = 0; i < types.length; i++) {
+      if (i > 0)
+        query.append(", ");
+
+      final String name = "t" + i;
+      query.append(':').append(name);
+      params.put(name, types[i]);
+    }
   }
 
   public IterableGraph<Edge> getEdges() {
@@ -398,16 +417,14 @@ public class RemoteVertex {
       final int skip) {
     final StringBuilder query = new StringBuilder(
         "select expand( " + direction.toString().toLowerCase(Locale.ENGLISH) + suffix + "(");
-    for (int i = 0; i < types.length; ++i) {
-      if (i > 0)
-        query.append(",");
-      query.append("'").append(types[i]).append("'");
-    }
+    final Map<String, Object> params = new HashMap<>();
+    appendBoundTypes(query, types, params);
+
     query.append(") ) from ").append(vertex.getIdentity());
     if (skip > 0)
       query.append(" SKIP ").append(skip);
     if (limit > 0)
       query.append(" LIMIT ").append(limit);
-    return remoteDatabase.query("sql", query.toString());
+    return remoteDatabase.query("sql", query.toString(), params);
   }
 }
