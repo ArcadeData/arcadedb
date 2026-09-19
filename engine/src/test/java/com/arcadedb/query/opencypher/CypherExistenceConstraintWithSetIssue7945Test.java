@@ -24,6 +24,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -275,6 +276,73 @@ class CypherExistenceConstraintWithSetIssue7945Test {
     assertThat(countRecords()).isEqualTo(rows.size());
     try (final ResultSet rs = database.query("cypher", "MATCH (n:Record) WHERE n.orgId IS NULL RETURN count(n) AS c")) {
       assertThat(rs.next().<Number>getProperty("c").longValue()).isZero();
+    }
+  }
+
+  /**
+   * The mistake the deferral makes possible: a bulk write that never supplies the required property at all. Every
+   * row stays provisional to the end, which is the one shape where the pending set grows instead of draining.
+   * <p>
+   * The bound is a tripwire between a bounded operation and an unbounded one, not a latency budget: the sweep that
+   * keeps the pending set honest used to run on every registration past the first thousand, re-reading the whole
+   * (growing) set each time, which is quadratic in the number of rows. It is generous on purpose - what must not
+   * happen here is minutes, not milliseconds.
+   */
+  @Test
+  void aBulkWriteThatCompletesNothingStillFailsQuickly() {
+    final List<Map<String, Object>> rows = new ArrayList<>();
+    for (int i = 0; i < 5_000; i++)
+      rows.add(Map.of("id", "never-" + i));
+
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
+
+    assertThatThrownBy(() -> database.command("cypher", "UNWIND $rows AS r CREATE (n:Record {id: r.id})",
+        Map.of("rows", rows)))
+        .isInstanceOf(CommandExecutionException.class)
+        .rootCause().isInstanceOf(ValidationException.class);
+
+    stopwatch.assertGaveUpWithin(60_000, "a linear end-of-statement sweep from a quadratic one");
+
+    // Nothing this statement created satisfied its constraints, so nothing it created survives.
+    assertThat(countRecords()).isZero();
+  }
+
+  /**
+   * Inside an explicit transaction the provisional records are the caller's to keep or discard: the statement
+   * fails, its own creations are taken back, and a COMMIT the client issues anyway commits what is left rather
+   * than the incomplete records.
+   */
+  @Test
+  void insideAnExplicitTransactionTheFailedStatementLeavesNothingToCommit() {
+    database.command("cypher", "START TRANSACTION").close();
+    database.command("cypher", "CREATE (n:Record {id: 'tx-ok', orgId: 'org'})").close();
+
+    assertThatThrownBy(() -> database.command("cypher", "CREATE (n:Record {id: 'tx-bad'})"))
+        .isInstanceOf(CommandExecutionException.class)
+        .rootCause().isInstanceOf(ValidationException.class);
+
+    database.command("cypher", "COMMIT").close();
+
+    assertThat(countRecords()).isEqualTo(1);
+    try (final ResultSet rs = database.query("cypher", "MATCH (n:Record) RETURN n.id AS id")) {
+      assertThat(rs.next().<String>getProperty("id")).isEqualTo("tx-ok");
+    }
+  }
+
+  /**
+   * The invariant the end-of-statement check rests on: a write statement is drained to completion before
+   * {@code command()} returns, so the moment after it is the end of the statement. Pinned behaviourally - the
+   * record is there before the caller has pulled a single row - because if writes ever became lazy again the
+   * deferred check would run before the writes it is meant to check (the profile path was converted from draining
+   * to streaming once already, in #7330).
+   */
+  @Test
+  void aWriteStatementIsDrainedBeforeItsResultIsReturned() {
+    try (final ResultSet unconsumed = database.command("cypher",
+        "CREATE (n:Record {id: 'drained', orgId: 'org'}) RETURN n")) {
+      // Deliberately not pulled: the write must already have happened.
+      assertThat(countRecords()).isEqualTo(1);
+      assertThat(unconsumed.hasNext()).isTrue();
     }
   }
 
