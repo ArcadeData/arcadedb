@@ -686,8 +686,14 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       throw new IllegalArgumentException("Specify -edgeToField <from-field-name>");
 
     long expectedEdges = settings.expectedEdges;
-    if (expectedEdges <= 0)
-      expectedEdges = (int) (sourceSchema.getSource().totalSize / entity.getAverageRowLength());
+    // GATED ON A MEASURED AVERAGE, NOT JUST ON A MISSING -expectedEdges: getAverageRowLength() ANSWERS 0 WHEN THE
+    // ANALYSIS MEASURED NO ROW, WHICH A FILE WHOSE ROWS WERE ALL REFUSED FOR THEIR SHAPE PRODUCES (ISSUE #7782), AND
+    // THIS IS INTEGER DIVISION - totalSize IS A long, SO A ZERO DIVISOR THROWS ArithmeticException RATHER THAN
+    // YIELDING AN INFINITY THE GUARD BELOW COULD CATCH. LEAVING expectedEdges AT 0 HANDS THE ANSWER TO THAT SAME
+    // GUARD, WHICH IS ALREADY THE "NO IDEA HOW BIG THIS SOURCE IS" BRANCH (CodeRabbit REVIEW ON PR #7948).
+    final int averageRowLength = entity.getAverageRowLength();
+    if (expectedEdges <= 0 && averageRowLength > 0)
+      expectedEdges = (int) (sourceSchema.getSource().totalSize / averageRowLength);
 
     if (expectedEdges <= 0 || expectedEdges > _32MB)
       // USE CHUNKS OF 16MB EACH
@@ -783,6 +789,11 @@ public class CSVImporterFormat extends AbstractImporterFormat {
             context.errors.incrementAndGet();
             continue;
           }
+
+          // AND THE SHORT DIRECTION, COUNTED THE SAME WAY loadDocuments()/loadVertices() COUNT IT: createEdgeFromRow()
+          // BELOW IMPORTS SUCH A ROW FROM THE COLUMNS IT DOES SUPPLY, SO WITHOUT THIS THE ONE RAGGED-ROW NUMBER THE
+          // OPERATOR IS SHOWN WOULD COUNT DOCUMENTS AND VERTICES BUT NOT EDGES (CodeRabbit REVIEW ON PR #7948).
+          reportShortRow(line, row.length, headerColumns, context);
 
           try {
             createEdgeFromRow(database, row, properties, from, to, context, settings);

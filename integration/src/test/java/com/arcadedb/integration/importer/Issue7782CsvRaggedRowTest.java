@@ -142,10 +142,13 @@ class Issue7782CsvRaggedRowTest {
       importer.settings.edgeFromField = "from";
       importer.settings.edgeToField = "to";
 
-      importer.load();
+      final Map<String, Object> result = importer.load();
 
       assertThat(db.countType("Node", true)).isEqualTo(2);
       assertThat(db.countType("Relationship", true)).as("the short edge row still produced its edge").isEqualTo(2);
+      assertThat(result.get("warnings"))
+          .as("and it is counted, so the one ragged-row number the operator sees covers edges too")
+          .isEqualTo(1L);
     } finally {
       while (db.isTransactionActive())
         db.rollback();
