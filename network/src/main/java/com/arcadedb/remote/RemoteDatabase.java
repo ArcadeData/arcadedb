@@ -526,7 +526,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     checkDatabaseIsOpen();
     stats.countBucket.incrementAndGet();
     return ((Number) ((ResultSet) databaseCommand("query", "sql",
-        "select count(*) as count from bucket:" + bucketName, null, false,
+        "select count(*) as count from bucket:" + Identifier.quote(bucketName), null, false,
         (connection, response) -> createResultSet(response))).nextIfAvailable().getProperty("count")).longValue();
   }
 
@@ -534,9 +534,13 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   public long countType(final String typeName, final boolean polymorphic) {
     checkDatabaseIsOpen();
     stats.countType.incrementAndGet();
-    final String appendix = polymorphic ? "" : " where @type = '" + typeName + "'";
+    // The target is escaped as an IDENTIFIER and the @type filter bound as a string PARAMETER, the same split
+    // iterateType() uses: unescaped, a type name carrying a back-tick or a quote counted a different type or
+    // failed to parse (PR #7942 review).
+    final String appendix = polymorphic ? "" : " where @type = :typeName";
+    final Map<String, Object> params = polymorphic ? null : Map.of("typeName", typeName);
     return ((Number) ((ResultSet) databaseCommand("query", "sql",
-        "select count(*) as count from " + typeName + appendix, null,
+        "select count(*) as count from " + Identifier.quote(typeName) + appendix, params,
         false, (connection, response) -> createResultSet(response))).nextIfAvailable().getProperty("count")).longValue();
   }
 
@@ -1636,7 +1640,8 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       if (updated == 0)
         throw new RecordNotFoundException("Record " + rid + " not found", rid);
     } else {
-      final ResultSet result = command("sql", "insert into " + record.getTypeName() + " content " + json);
+      final ResultSet result = command("sql",
+          "insert into " + Identifier.quote(record.getTypeName()) + " content " + json);
       rid = result.next().getIdentity().get();
       trackCreatedRecord(record);
     }
@@ -1652,8 +1657,11 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
     final JSONObject json = record.toJSON();
     json.remove(RID_PROPERTY);  // Remove @rid to avoid SQL parsing issues
+    // Both names escaped: the bucket name is caller-supplied on this overload, and the type name is only as
+    // trustworthy as whoever built the record (PR #7942 review).
     final ResultSet result = command("sql",
-        "insert into " + record.getTypeName() + " bucket " + bucketName + " content " + json);
+        "insert into " + Identifier.quote(record.getTypeName()) + " bucket " + Identifier.quote(bucketName)
+            + " content " + json);
     final RID newRID = result.next().getIdentity().get();
     trackCreatedRecord(record);
     return newRID;

@@ -30,7 +30,9 @@ import com.arcadedb.query.sql.parser.CreateIndexStatement;
 import com.arcadedb.query.sql.parser.CreatePropertyStatement;
 import com.arcadedb.query.sql.parser.CreateVertexTypeStatement;
 import com.arcadedb.query.sql.parser.DropTypeStatement;
+import com.arcadedb.query.sql.parser.InsertStatement;
 import com.arcadedb.query.sql.parser.Statement;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -237,6 +239,58 @@ class Issue7914RemoteIdentifierQuotingTest {
 
     assertThat(sql.getValue()).doesNotContain("hostile");
     assertThat(params.getValue()).containsEntry("edgeType", "it's`hostile");
+  }
+
+  /**
+   * {@code getTypeByBucketName} interpolated the bucket name into a string LITERAL. A back-tick sweep does not see
+   * that shape, which is how it survived the first pass over this class (PR #7942 review).
+   */
+  @Test
+  void getTypeByBucketNameBindsTheBucketRatherThanInterpolatingIt() {
+    final RemoteDatabase db = mock(RemoteDatabase.class);
+    final ResultSet empty = mock(ResultSet.class);
+    when(db.command(anyString(), anyString(), any(Map.class))).thenReturn(empty);
+
+    new RemoteSchema(db).getTypeByBucketName("it's");
+
+    final ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+    final ArgumentCaptor<Map<String, Object>> params = ArgumentCaptor.forClass(Map.class);
+    verify(db).command(anyString(), sql.capture(), params.capture());
+
+    assertThat(sql.getValue()).doesNotContain("it's");
+    assertThat(params.getValue()).containsEntry("bucketName", "it's");
+  }
+
+  /**
+   * The insert paths named the type and the bucket with NO quoting at all - not even the hand-rolled back-ticks
+   * the rest of the class used - so they were invisible to a back-tick sweep as well (PR #7942 review).
+   */
+  @Test
+  void insertingIntoABucketNamesTheTypeAndBucketTheCallerAskedFor() {
+    for (final String hostile : HOSTILE_NAMES) {
+      final RemoteDatabase db = mock(RemoteDatabase.class);
+      final ResultSet empty = mock(ResultSet.class);
+      when(db.command(anyString(), anyString())).thenReturn(empty);
+      when(db.command(anyString(), anyString(), any(Map.class))).thenReturn(empty);
+      when(db.query(anyString(), anyString())).thenReturn(empty);
+      final EdgeType edgeType = mock(EdgeType.class);
+      when(edgeType.getName()).thenReturn(hostile);
+      final RemoteSchema schema = mock(RemoteSchema.class);
+      when(schema.getType(anyString())).thenReturn(edgeType);
+      when(db.getSchema()).thenReturn(schema);
+
+      final RemoteMutableEdge edge = new RemoteMutableEdge(
+          new RemoteImmutableEdge(db, Map.of("@type", hostile, "@cat", "e", "@out", "#1:0", "@in", "#2:0")));
+      try {
+        edge.save(hostile + "bucket");
+      } catch (final RuntimeException ignore) {
+        // the mocked command answers null; the statement is already captured
+      }
+
+      final InsertStatement statement = (InsertStatement) parse(commandSent(db));
+      assertThat(statement.targetType.getStringValue()).isEqualTo(hostile);
+      assertThat(statement.targetBucketName.getStringValue()).isEqualTo(hostile + "bucket");
+    }
   }
 
   private RemoteDocumentType documentType(final RemoteDatabase db, final String typeName) {
