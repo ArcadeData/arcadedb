@@ -29,6 +29,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -309,6 +310,7 @@ class CypherExistenceConstraintWithSetIssue7945Test {
    * the pending set is swept rather than grown, so this shape must not depend on how many rows it carries.
    */
   @Test
+  @Tag("slow")
   void aBulkUpsertCompletesEveryRow() {
     final List<Map<String, Object>> rows = new ArrayList<>();
     for (int i = 0; i < 2_500; i++)
@@ -331,6 +333,7 @@ class CypherExistenceConstraintWithSetIssue7945Test {
    * pull window, which is exactly the case the sweep has to stay linear for.
    */
   @Test
+  @Tag("slow")
   void aBulkCreateThenSetCompletesEveryRow() {
     final List<Map<String, Object>> rows = new ArrayList<>();
     for (int i = 0; i < 3_000; i++)
@@ -359,6 +362,7 @@ class CypherExistenceConstraintWithSetIssue7945Test {
    * happen here is minutes, not milliseconds.
    */
   @Test
+  @Tag("slow")
   void aBulkWriteThatCompletesNothingStillFailsQuickly() {
     final List<Map<String, Object>> rows = new ArrayList<>();
     for (int i = 0; i < 5_000; i++)
@@ -474,6 +478,38 @@ class CypherExistenceConstraintWithSetIssue7945Test {
         .rootCause().isInstanceOf(ValidationException.class);
 
     assertThat(countRecords()).isEqualTo(1);
+  }
+
+  /**
+   * A record created inside a {@code CALL} subquery and completed by a {@code SET} of the enclosing statement. It
+   * is the nesting the scope's "join, don't open" rule exists for: were the subquery to open a scope of its own, it
+   * would check - and delete - the record at the end of the subquery, before the outer {@code SET} ever ran. It is
+   * also what pins the thread-affinity the class Javadoc calls out, since a nested plan moved onto another thread
+   * would silently fall back to eager validation and fail here.
+   */
+  @Test
+  void aRecordCreatedInACallSubqueryIsCompletedByTheOuterStatement() {
+    database.command("cypher", "CALL { CREATE (n:Record {id: 'sub-1'}) RETURN n } SET n.orgId = 'org-sub'").close();
+
+    assertThat(countRecords()).isEqualTo(1);
+    try (final ResultSet rs = database.query("cypher", "MATCH (n:Record {id: 'sub-1'}) RETURN n.orgId AS o")) {
+      assertThat(rs.next().<String>getProperty("o")).isEqualTo("org-sub");
+    }
+  }
+
+  /**
+   * The same through a correlated subquery, which is driven once per input row.
+   */
+  @Test
+  void aRecordCreatedInACorrelatedCallSubqueryIsCompletedByTheOuterStatement() {
+    database.command("cypher",
+        "UNWIND [1, 2] AS x CALL { WITH x CREATE (n:Record {id: 'sub-' + x}) RETURN n } SET n.orgId = 'org-' + x")
+        .close();
+
+    assertThat(countRecords()).isEqualTo(2);
+    try (final ResultSet rs = database.query("cypher", "MATCH (n:Record) WHERE n.orgId IS NULL RETURN count(n) AS c")) {
+      assertThat(rs.next().<Number>getProperty("c").longValue()).isZero();
+    }
   }
 
   private long countRecords() {
