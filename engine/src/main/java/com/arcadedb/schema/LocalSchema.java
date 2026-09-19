@@ -2579,6 +2579,17 @@ public class LocalSchema implements Schema {
     int failures = 0;
 
     // LOAD TRIGGERS
+    // Dropped and repopulated on a schema-file read, the way the four members below already were. A bare
+    // triggers.clear() would NOT have been the equivalent and is why this was left out when the blocks sat inline:
+    // a trigger owns a listener adapter registered on its type's event registry, so forgetting the map entry
+    // without unregistering leaves the trigger FIRING while invisible to the schema. dropTrigger() pairs the two,
+    // and so does this. Without it a trigger deleted from schema.json by hand survived a reload, while the same
+    // edit to a materialized view or an extension took effect.
+    if (replaceExisting) {
+      for (final String triggerName : new ArrayList<>(triggers.keySet()))
+        unregisterTriggerListener(triggerName);
+      triggers.clear();
+    }
     if (root.has("triggers")) {
       final JSONObject triggersJSON = root.getJSONObject("triggers");
       for (final String triggerName : triggersJSON.keySet()) {
