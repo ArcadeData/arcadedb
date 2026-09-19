@@ -137,14 +137,22 @@ class ApiTokenConfigurationTest {
     assertThat(tokens.get(0).getString("name")).isEqualTo("Persistent");
   }
 
+  /**
+   * Expired tokens leave the store on the next token CHANGE, not on load (issue #7601). Loading them back is
+   * what keeps a clustered node's copy of the replicated document identical to its peers' - the prune used to
+   * run at whatever moment each node restarted, which diverged the #7509 fingerprints with no entry applied.
+   */
   @Test
-  void loadRemovesExpiredTokens() {
-    // Create a token that will expire immediately
+  void aTokenChangeRemovesExpiredTokensAndALoadKeepsThem() {
     final long pastTime = System.currentTimeMillis() - 1000;
     config.createToken("WillExpire", "db1", pastTime, new JSONObject());
+
+    final ApiTokenConfiguration afterRestart = new ApiTokenConfiguration(TEST_CONFIG_PATH);
+    afterRestart.load();
+    assertThat(afterRestart.listTokens()).as("a restart does not edit the document").hasSize(1);
+
     config.createToken("StillValid", "db2", 0, new JSONObject());
 
-    // Reload
     final ApiTokenConfiguration config2 = new ApiTokenConfiguration(TEST_CONFIG_PATH);
     config2.load();
 

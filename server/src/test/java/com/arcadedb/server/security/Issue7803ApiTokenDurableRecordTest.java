@@ -168,21 +168,22 @@ class Issue7803ApiTokenDurableRecordTest {
   }
 
   /**
-   * The authentication read path writes nothing (issue #7525).
+   * The authentication read path writes nothing (issue #7525), and since issue #7601 it changes nothing in
+   * memory either.
    * <p>
-   * Probed by deleting the file and then driving the eviction: a {@code save()} anywhere under {@code getToken}
-   * re-creates it, so an absent file afterwards is proof that the lookup did no I/O at all. A timestamp
-   * comparison would not be proof - the granularity is coarser than the two calls are apart.
+   * Probed by deleting the file and then presenting the expired token: a {@code save()} anywhere under
+   * {@code getToken} re-creates it, so an absent file afterwards is proof that the lookup did no I/O at all. A
+   * timestamp comparison would not be proof - the granularity is coarser than the two calls are apart.
    */
   @Test
-  void anExpiredTokenIsEvictedInMemoryWithoutRewritingTheFile() {
+  void anExpiredTokenIsRefusedWithoutTouchingTheStore() {
     final JSONObject expired = config.createToken("expired", "graph", System.currentTimeMillis() - 10_000,
         new JSONObject());
     assertThat(tokenFile).isFile();
     assertThat(tokenFile.delete()).isTrue();
 
     assertThat(config.getToken(expired.getString("token")))
-        .as("an expired token is refused whether or not the eviction was made durable")
+        .as("an expired token is refused whether or not anything was removed")
         .isNull();
 
     assertThat(tokenFile)
@@ -190,20 +191,21 @@ class Issue7803ApiTokenDurableRecordTest {
         .doesNotExist();
 
     assertThat(config.listTokens())
-        .as("the eviction still happens, it is just not persisted from the read path")
-        .isEmpty();
+        .as("nor remove the entry: the document is replicated, and a read that edits it diverges the #7509 "
+            + "fingerprint on this node alone (issue #7601)")
+        .hasSize(1);
   }
 
   /**
-   * What makes not persisting the eviction safe: an expired entry that survives in the file authenticates
-   * nobody, because every lookup re-checks the expiry, and the next {@code load()} drops it and rewrites the
-   * file without it.
+   * What makes leaving the entry in place safe: an expired entry authenticates nobody, because every lookup
+   * re-checks the expiry - and the next token CHANGE rewrites the file without it (issue #7601 moved the
+   * removal there from {@code load()}, so that it reaches every node in one replicated entry instead of at each
+   * node's own restart).
    */
   @Test
-  void anExpiredEntryLeftInTheFileNeverAuthenticatesAndIsPrunedAtTheNextLoad() throws Exception {
+  void anExpiredEntryLeftInTheFileNeverAuthenticatesAndGoesWithTheNextTokenChange() throws Exception {
     final JSONObject expired = config.createToken("expired", "graph", System.currentTimeMillis() - 10_000,
         new JSONObject());
-    final JSONObject valid = config.createToken("valid", "graph", 0, new JSONObject());
 
     final String expiredHash = ApiTokenConfiguration.hashToken(expired.getString("token"));
     assertThat(Files.readString(tokenFile.toPath()))
@@ -214,9 +216,15 @@ class Issue7803ApiTokenDurableRecordTest {
     reloaded.load();
 
     assertThat(reloaded.getToken(expired.getString("token"))).isNull();
+    assertThat(Files.readString(tokenFile.toPath()))
+        .as("a restart does not edit the replicated document")
+        .contains(expiredHash);
+
+    final JSONObject valid = reloaded.createToken("valid", "graph", 0, new JSONObject());
+
     assertThat(reloaded.getToken(valid.getString("token"))).isNotNull();
     assertThat(Files.readString(tokenFile.toPath()))
-        .as("load() prunes the expired entry and rewrites the file, so the store self-cleans at restart")
+        .as("the next token change retires it and rewrites the file without it")
         .doesNotContain(expiredHash);
   }
 

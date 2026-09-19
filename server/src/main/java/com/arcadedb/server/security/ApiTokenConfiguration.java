@@ -41,7 +41,6 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HexFormat;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
@@ -83,16 +82,17 @@ public class ApiTokenConfiguration {
       }
 
       final JSONArray tokenArray = json.getJSONArray("tokens");
-      final long now = System.currentTimeMillis();
       boolean needsSave = false;
 
+      // EXPIRED ENTRIES ARE LOADED like any other, and refused like any other by isExpired() at every read
+      // (issue #7601). Dropping them here is what this used to do, and in a cluster that was a node-local edit
+      // of a REPLICATED document: it ran at whatever moment each node happened to restart, so the nodes' token
+      // sets - and with them the #7509 compare-and-set fingerprints computed from them - drifted apart with no
+      // entry applied and nothing logged. #pruneExpired is where the removal lives now: on the write paths,
+      // which reach every node in one entry. The only rewrite this loop still asks for is the legacy plaintext
+      // migration below.
       for (int i = 0; i < tokenArray.length(); i++) {
         final JSONObject tokenJson = tokenArray.getJSONObject(i);
-        final long expiresAt = tokenJson.getLong("expiresAt", 0);
-        if (expiresAt > 0 && expiresAt < now) {
-          needsSave = true;
-          continue;
-        }
 
         // Backward compatibility: migrate plaintext tokens to hashed
         if (tokenJson.has("token") && !tokenJson.has("tokenHash")) {
@@ -300,7 +300,10 @@ public class ApiTokenConfiguration {
       final JSONObject permissions) {
     final NewToken minted = newTokenDocument(name, database, expiresAt, permissions);
 
-    final List<JSONObject> next = new ArrayList<>(tokens.values());
+    // The document that WILL be in force drops whatever has expired; the one pinned as the precondition is the
+    // unpruned document actually in force right now (issue #7601). Both are read in this one critical section,
+    // so the pair cannot straddle a replicated apply.
+    final List<JSONObject> next = pruneExpired(tokens.values());
     next.add(minted.document());
 
     final JSONObject response = minted.document().copy();
@@ -322,10 +325,12 @@ public class ApiTokenConfiguration {
     if (!tokens.containsKey(tokenHash))
       return null;
 
+    // Same pairing as mintToken: the revocation carries whatever expired away with it, and the precondition is
+    // the unpruned document in force (issue #7601).
     final List<JSONObject> next = new ArrayList<>(tokens.size());
-    for (final Map.Entry<String, JSONObject> entry : tokens.entrySet())
-      if (!entry.getKey().equals(tokenHash))
-        next.add(entry.getValue());
+    for (final JSONObject live : pruneExpired(tokens.values()))
+      if (!tokenHash.equals(live.getString("tokenHash")))
+        next.add(live);
 
     // The before/after pair leaves this monitor together, so a cluster-wide revocation can pin its
     // compare-and-set to the very document it removed the token from (issue #7509).
@@ -385,7 +390,13 @@ public class ApiTokenConfiguration {
   public synchronized JSONObject createToken(final String name, final String database, final long expiresAt, final JSONObject permissions) {
     final NewToken minted = newTokenDocument(name, database, expiresAt, permissions);
 
-    tokens.put(minted.document().getString("tokenHash"), minted.document());
+    // A whole-map swap rather than a put, so the expired entries this change also retires leave memory and the
+    // file in the same step (issue #7601). Readers grab the map reference once, so they never see the window.
+    final ConcurrentHashMap<String, JSONObject> next = new ConcurrentHashMap<>();
+    for (final JSONObject live : pruneExpired(tokens.values()))
+      next.put(live.getString("tokenHash"), live);
+    next.put(minted.document().getString("tokenHash"), minted.document());
+    tokens = next;
     save();
 
     // Return a response that includes the plaintext token (one-time display)
@@ -400,8 +411,12 @@ public class ApiTokenConfiguration {
    */
   private NewToken newTokenDocument(final String name, final String database, final long expiresAt,
       final JSONObject permissions) {
+    // Expired entries linger in the document until the next token change retires them (issue #7601), and an
+    // expired token authenticates nobody - so it must not reserve its name against the replacement an operator
+    // is minting for exactly that reason.
+    final long now = System.currentTimeMillis();
     for (final JSONObject existing : tokens.values()) {
-      if (name.equals(existing.getString("name", "")))
+      if (name.equals(existing.getString("name", "")) && !isExpired(existing, now))
         throw new IllegalArgumentException("A token with name '" + name + "' already exists");
     }
 
@@ -442,53 +457,82 @@ public class ApiTokenConfiguration {
     // reaches memory and the file keeps the token.
     if (tokenHash.startsWith(TOKEN_PREFIX))
       throw new IllegalArgumentException("Use token hash instead of plaintext token for deletion");
-    if (tokens.remove(tokenHash) != null) {
-      save();
-      return true;
-    }
-    return false;
+    if (!tokens.containsKey(tokenHash))
+      return false;
+
+    // Swapped whole, for the same reason createToken does (issue #7601): the revocation and the retirement of
+    // whatever expired are one change to the document, not a removal followed by a drifting set.
+    final ConcurrentHashMap<String, JSONObject> next = new ConcurrentHashMap<>();
+    for (final JSONObject live : pruneExpired(tokens.values()))
+      if (!tokenHash.equals(live.getString("tokenHash")))
+        next.put(live.getString("tokenHash"), live);
+    tokens = next;
+    save();
+    return true;
   }
 
   /**
-   * Resolves a plaintext token, evicting it from memory if it has expired.
+   * Resolves a plaintext token, refusing it when it has expired.
    * <p>
    * Deliberately NOT {@code synchronized}: this is the API-token authentication path, reached on every request
    * carrying one, and the writers it would contend with hold their monitor across a file write. The map
-   * generation is read ONCE into a local, so the lookup and the eviction cannot straddle a
-   * {@link #applyReplicated} swap and remove from a generation the hit did not come from. When they do straddle
-   * one, the eviction lands on a map that is no longer live and the newer generation keeps the entry - which is
-   * the right outcome: the replicated document wins, and the expired token is refused here either way.
+   * generation is read ONCE into a local, so a concurrent {@link #applyReplicated} swap cannot be observed
+   * half-applied.
    * <p>
-   * <b>The eviction is not persisted</b> (issue #7525). It used to call {@link #save}, which since issue #7513
-   * writes through a temp file that is <i>fsynced</i> before the rename - so an expiry turned a request thread
-   * into an I/O thread, and made it queue behind every other writer on this object's monitor. The amortised
-   * cost is one write per token, at the moment it first expires; the tail is a batch of tokens minted with the
-   * same TTL, all first used again after it, fsyncing on Undertow workers at the same instant.
-   * <p>
-   * Leaving the entry in the file is safe, and is not a revocation that failed to stick:
+   * <b>An expired token is refused, never removed</b> (issues #7525, #7601). The removal went in two steps.
+   * Issue #7525 dropped the {@link #save} that came with it: since issue #7513 a save writes through a temp file
+   * that is <i>fsynced</i> before the rename, so an expiry turned a request thread into an I/O thread and made it
+   * queue behind every other writer on this object's monitor - with a tail of tokens minted on one TTL all
+   * fsyncing on Undertow workers at the same instant. Issue #7601 dropped the in-memory removal too, which is
+   * the half that mattered in a cluster:
    * <ul>
-   *   <li>this method re-reads {@code expiresAt} on every lookup, so an expired entry authenticates nobody
-   *       whether or not it is still in the file;</li>
-   *   <li>{@link #load} drops expired entries and rewrites the file, so the store self-cleans at the next
-   *       restart;</li>
-   *   <li>{@link #createToken}, {@link #deleteToken} and {@link #applyReplicated} each rewrite the whole
-   *       document, so the entry disappears at the next token change in any case.</li>
+   *   <li>the token document is REPLICATED, and issue #7509 gates every replicated change on a fingerprint of
+   *       the document in force. Removing an entry here changed that fingerprint on one node - the node a client
+   *       happened to present the expired token to - with no Raft entry applied and nothing logged;</li>
+   *   <li>from then on that node submitted a precondition no node could match against the last document the
+   *       cluster installed, so its every later token change was refused, permanently and across restarts,
+   *       while the same operations kept working from its peers.</li>
    * </ul>
+   * Leaving the entry in place costs nothing: {@link #isExpired} is re-read on every lookup, so an expired entry
+   * authenticates nobody, and {@link #pruneExpired} takes it out of the document the next token change writes -
+   * through Raft, on every node at once, which is the only way a replicated document may change.
    */
   public JSONObject getToken(final String plaintextToken) {
     final ConcurrentHashMap<String, JSONObject> current = tokens;
-    final String hash = hashToken(plaintextToken);
-    final JSONObject tokenJson = current.get(hash);
-    if (tokenJson == null)
+    final JSONObject tokenJson = current.get(hashToken(plaintextToken));
+    if (tokenJson == null || isExpired(tokenJson, System.currentTimeMillis()))
       return null;
-
-    final long expiresAt = tokenJson.getLong("expiresAt", 0);
-    if (expiresAt > 0 && expiresAt < System.currentTimeMillis()) {
-      current.remove(hash);
-      return null;
-    }
 
     return tokenJson;
+  }
+
+  /** Whether {@code tokenJson} carries an expiry that has passed at {@code now}. A zero or absent one never has. */
+  private static boolean isExpired(final JSONObject tokenJson, final long now) {
+    final long expiresAt = tokenJson.getLong("expiresAt", 0);
+    return expiresAt > 0 && expiresAt < now;
+  }
+
+  /**
+   * {@code current} without the entries whose expiry has passed, in iteration order (issue #7601).
+   * <p>
+   * The one place an expired token is physically removed, and it is only ever called to build the document a
+   * token change is about to write - locally by {@link #createToken} and {@link #deleteToken}, and through Raft
+   * by {@link #mintToken} and {@link #documentWithout}. That is what keeps expiry out of the compare-and-set
+   * premise: the "before" document a cluster-wide change pins is always the unpruned one in force, so it matches
+   * what every node holds, and the "after" document is computed once by the submitter and installed verbatim
+   * everywhere, so the prune reaches every node in the same entry rather than at each node's own clock.
+   * <p>
+   * A cluster that never administers a token therefore keeps its expired entries, which is the right trade: they
+   * authenticate nobody, their number is bounded by the tokens ever minted, and the alternative is a read path
+   * that writes.
+   */
+  private static List<JSONObject> pruneExpired(final Collection<JSONObject> current) {
+    final long now = System.currentTimeMillis();
+    final List<JSONObject> live = new ArrayList<>(current.size());
+    for (final JSONObject tokenJson : current)
+      if (!isExpired(tokenJson, now))
+        live.add(tokenJson);
+    return live;
   }
 
   public List<JSONObject> listTokens() {
