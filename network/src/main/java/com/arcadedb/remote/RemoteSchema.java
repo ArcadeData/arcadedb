@@ -75,6 +75,12 @@ import java.util.stream.Collectors;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class RemoteSchema implements Schema {
+  /**
+   * The trailing words {@link com.arcadedb.schema.TypeIndexBuilder} reads as a MODIFIER on a MAP or LIST property
+   * rather than as part of its name.
+   */
+  private static final List<String> INDEX_PROPERTY_MODIFIERS = List.of(" by key", " by value", " by item");
+
   private final    RemoteDatabase                  remoteDatabase;
   private volatile Map<String, RemoteDocumentType> types   = null;
   private volatile Map<String, RemoteBucket>       buckets = null;
@@ -253,12 +259,6 @@ public class RemoteSchema implements Schema {
         " ENGINE " + indexType.name());
     return null;
   }
-
-  /**
-   * The trailing words {@link com.arcadedb.schema.TypeIndexBuilder} reads as a MODIFIER on a MAP or LIST property
-   * rather than as part of its name.
-   */
-  private static final List<String> INDEX_PROPERTY_MODIFIERS = List.of(" by key", " by value", " by item");
 
   /**
    * The SQL spelling of one entry of a {@code propertyNames} array: the name escaped, and the modifier - if the
