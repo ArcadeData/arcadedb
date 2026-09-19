@@ -134,13 +134,25 @@ class NoDefaultLocaleCaseConversionTest {
 
     assertThat(offendersIn("Fixture.java", "  final String k = keyword.toUpperCase(Locale.ROOT);")).isEmpty();
     assertThat(offendersIn("Fixture.java", "  // match field.toLowerCase() against a CI index")).isEmpty();
-    assertThat(offendersIn("Fixture.java", "   * {@code haystack.toUpperCase().contains(needle)} copies")).isEmpty();
+    assertThat(offendersIn("Fixture.java",
+        "  /**\n   * {@code haystack.toUpperCase().contains(needle)} copies the whole haystack.\n   */\n  void f();"))
+        .isEmpty();
 
     // a comment TRAILING real code is still a comment
     assertThat(offendersIn("Fixture.java", "  foo(); // see keyword.toUpperCase() below")).isEmpty();
 
     // ...but a `//` inside a string literal does not start one, or the guard would walk past a real offender
     assertThat(offendersIn("Fixture.java", "  final String k = uri(\"http://x\").toUpperCase();")).hasSize(1);
+
+    // a block comment whose continuation lines carry no leading asterisk is still a comment
+    assertThat(offendersIn("Fixture.java", "  /* a note about\n     keyword.toUpperCase() and friends */\n  foo();"))
+        .isEmpty();
+
+    // ...and code after that block closes is judged again
+    assertThat(offendersIn("Fixture.java", "  /* a note */ final String k = keyword.toUpperCase();")).hasSize(1);
+
+    // an escaped quote does not end the literal, so what follows is still code
+    assertThat(offendersIn("Fixture.java", "  final String k = q(\"a\\\\\"b\").toUpperCase();")).hasSize(1);
   }
 
   /**
@@ -149,17 +161,16 @@ class NoDefaultLocaleCaseConversionTest {
    * guard that flagged its own documentation would be turned off rather than obeyed.
    */
   private static List<String> offendersIn(final String fileName, final String text) {
+    final boolean[] inComment = commentMask(text);
+
     final List<String> offenders = new ArrayList<>();
     final Matcher matcher = NO_ARG_CASE_CONVERSION.matcher(text);
 
     while (matcher.find()) {
-      final int lineStart = text.lastIndexOf('\n', matcher.start()) + 1;
-      final String before = text.substring(lineStart, matcher.start());
-      if (before.stripLeading().startsWith("*") || before.stripLeading().startsWith("/*"))
-        continue;
-      if (commentStart(before) > -1)
+      if (inComment[matcher.start()])
         continue;
 
+      final int lineStart = text.lastIndexOf('\n', matcher.start()) + 1;
       final int lineEnd = text.indexOf('\n', matcher.start());
       offenders.add(fileName + ": " + text.substring(lineStart, lineEnd < 0 ? text.length() : lineEnd).strip());
     }
@@ -167,21 +178,46 @@ class NoDefaultLocaleCaseConversionTest {
   }
 
   /**
-   * Where a line-comment begins in {@code beforeTheMatch}, or {@code -1} if the match is in real code.
+   * For each character of {@code text}, whether it sits inside a comment - one pass over the whole file,
+   * tracking string literals, char literals, {@code //} comments and {@code /* *}{@code /} blocks.
    * <p>
-   * String literals are tracked rather than ignored, and that direction matters: treating any {@code //} as a
-   * comment start would let {@code uri("http://x").toUpperCase()} through, and a guard's FALSE NEGATIVE is the
-   * expensive kind - it is the one thing this class exists to prevent. Testing only whether the line STARTS with
-   * {@code //} had the opposite flaw, flagging a trailing comment after real code (PR #7942 review).
+   * It reads the file rather than the line because the three heuristics this replaced each had a hole, and the
+   * two directions are not equally cheap. Asking whether the LINE starts with {@code //} flagged a comment
+   * trailing real code; taking any {@code //} as a comment start would walk past the real offender in
+   * {@code uri("http://x").toUpperCase()}; and looking for a leading {@code *} missed a block comment whose
+   * continuation lines carry none. The first and third are false POSITIVES - a surprising red build somebody
+   * has to puzzle out - while the second is a false NEGATIVE, which is the one outcome this class exists to
+   * prevent. Tracking the real lexical state costs a dozen lines and has none of the three holes (PR #7942
+   * review).
    */
-  private static int commentStart(final String beforeTheMatch) {
+  private static boolean[] commentMask(final String text) {
+    final boolean[] inComment = new boolean[text.length()];
+
     boolean inString = false;
     boolean inChar = false;
+    boolean inLineComment = false;
+    boolean inBlockComment = false;
 
-    for (int i = 0; i < beforeTheMatch.length(); i++) {
-      final char c = beforeTheMatch.charAt(i);
+    for (int i = 0; i < text.length(); i++) {
+      final char c = text.charAt(i);
+      inComment[i] = inLineComment || inBlockComment;
 
-      if (c == '\\' && (inString || inChar)) {
+      if (inLineComment) {
+        if (c == '\n')
+          inLineComment = false;
+        continue;
+      }
+
+      if (inBlockComment) {
+        if (c == '*' && i + 1 < text.length() && text.charAt(i + 1) == '/') {
+          inComment[++i] = true;
+          inBlockComment = false;
+        }
+        continue;
+      }
+
+      if ((inString || inChar) && c == '\\') {
+        // an escape consumes the next character, so a literal \" does not end the literal
         ++i;
         continue;
       }
@@ -189,10 +225,19 @@ class NoDefaultLocaleCaseConversionTest {
         inString = !inString;
       else if (c == '\'' && !inString)
         inChar = !inChar;
-      else if (c == '/' && !inString && !inChar && i + 1 < beforeTheMatch.length()
-          && beforeTheMatch.charAt(i + 1) == '/')
-        return i;
+      else if (c == '\n')
+        // an unterminated literal cannot span a line; resynchronise rather than mis-read the rest of the file
+        inString = inChar = false;
+      else if (c == '/' && !inString && !inChar && i + 1 < text.length()) {
+        if (text.charAt(i + 1) == '/') {
+          inLineComment = true;
+          inComment[i] = true;
+        } else if (text.charAt(i + 1) == '*') {
+          inBlockComment = true;
+          inComment[i] = true;
+        }
+      }
     }
-    return -1;
+    return inComment;
   }
 }
