@@ -3746,7 +3746,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // "Present" means registered OR on disk, the same pair getBootstrapUnreconciled classifies on: a leader
       // whose copy is merely closed is still the source every peer installs from, and making it throw here would
       // mark it unreconciled and retry a download over files that are perfectly good.
-      if (server != null && !server.existsDatabase(dbName) && !databaseDirectoryExists(dbName))
+      if (!isDatabasePresentLocally(dbName))
         throw new IllegalStateException("Database '" + dbName + "' is missing on this node and this node is the Raft "
             + "leader, so there is nowhere to install it from. Transfer leadership (POST /api/v1/cluster/leader) to "
             + "a node that holds it, then force the install here (POST /api/v1/cluster/resync/" + dbName + ")");
@@ -3921,7 +3921,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       //
       // existsDatabase OR the directory, because a closed-but-present database is still a copy this node holds:
       // reporting it as missing would recommend a reinstall over files an operator deliberately left closed.
-      if (server != null && !server.existsDatabase(dbName) && !databaseDirectoryExists(dbName)) {
+      if (!isDatabasePresentLocally(dbName)) {
         ++missingTotal;
         if (seen == null || seen.contains(dbName))
           missing.add(dbName);
@@ -4135,6 +4135,24 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * A path that cannot be resolved answers {@code true} - "present" is the conservative answer here, because it
    * is the one that leaves the local files alone.
    */
+  /**
+   * Whether this node holds a copy of {@code dbName} at all: registered in the server, OR merely closed with its
+   * directory still on disk. The question two separate decisions turn on (review on PR #7953), so it is named
+   * once rather than spelled out at each - inverted, which is how it is actually written at both.
+   * <ul>
+   *   <li>{@link #installFromLeaderForBootstrap} refuses the leader short-circuit when this is false: a leader
+   *       that does not hold the database cannot be the source it is about to install from.</li>
+   *   <li>{@link #getBootstrapUnreconciled(Set)} reports the database as missing rather than kept when this is
+   *       false, which decides which remedy an operator is given.</li>
+   * </ul>
+   * Neither can use {@code existsDatabase} alone: that answers "is it in the registry", so a database an operator
+   * deliberately left closed would read as gone, and both decisions would then act against files that are
+   * perfectly good.
+   */
+  private boolean isDatabasePresentLocally(final String dbName) {
+    return server != null && (server.existsDatabase(dbName) || databaseDirectoryExists(dbName));
+  }
+
   private boolean databaseDirectoryExists(final String dbName) {
     try {
       final String path = SnapshotInstaller.resolveDatabasePath(server, dbName);
