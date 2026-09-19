@@ -1,0 +1,8 @@
+{
+  "name": "arcadedb-github-scripts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "Stops Node's module loader walking past this directory. It is not a package, and nothing installs from it.",
+  "license": "Apache-2.0"
+}
