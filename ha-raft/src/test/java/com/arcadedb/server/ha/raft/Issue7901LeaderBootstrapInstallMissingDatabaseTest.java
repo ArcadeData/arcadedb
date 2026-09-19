@@ -196,6 +196,36 @@ class Issue7901LeaderBootstrapInstallMissingDatabaseTest {
   }
 
   /**
+   * A state machine with no server wired must not read as a node that is missing every database.
+   * <p>
+   * Both call sites of the presence check originally spelled it out with a leading {@code server != null}, so an
+   * unwired state machine fell through to the previous behaviour: the leader short-circuit returned, and the
+   * marked set reported its databases as KEPT. Folding the two into one {@code isDatabasePresentLocally} helper
+   * inverted that null case - the helper answered false, which reads as "missing" - and nothing caught it,
+   * because no other test here leaves the server unset (review on PR #7953).
+   * <p>
+   * "Present" is the conservative answer when this node cannot be asked: it is the one that leaves local files
+   * alone and recommends nothing, which is the same doctrine {@code databaseDirectoryExists} follows for a path
+   * it cannot resolve.
+   */
+  @Test
+  void aStateMachineWithNoServerReportsNothingMissing() {
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    stateMachines.add(sm);
+    sm.markBootstrapUnreconciled(DB_NAME);
+
+    final ArcadeStateMachine.BootstrapUnreconciled unreconciled = sm.getBootstrapUnreconciled(null);
+
+    assertThat(unreconciled.missingLocally())
+        .as("a node that cannot be asked has not been shown to be missing anything")
+        .isEmpty();
+    assertThat(unreconciled.missingCount()).isZero();
+    assertThat(unreconciled.keptLocalCopy())
+        .as("the mark is still real, it is just not a 'missing database' one")
+        .containsExactly(DB_NAME);
+  }
+
+  /**
    * The periodic check reaches the same guard by a different road, and must reach the same verdict. A marked
    * database whose directory is gone is retried by {@code reconcileBootstrapDivergence}; on a leader that retry
    * can only fail, and the mark has to survive so the alert stays raised until leadership moves and the follower

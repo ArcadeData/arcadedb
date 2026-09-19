@@ -315,19 +315,27 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     // node while /api/v1/ready was pinned at 503, and waited forever.
     // Written as null rather than omitted when absent, like leaderId above, so a client can tell "healthy" from
     // "this build does not report it".
-    response.put("criticalHalt", buildCriticalHalt(stateMachine.getCriticalHalt()));
-    response.put("raftLogFailure", buildRaftLogFailure(stateMachine.getRaftLogFailure()));
+    // The CONDITION is node-level and reaches every caller; the raw text behind it does not (review on PR #7953).
+    // Both strings are exception text this node did not compose: Ratis's own cause for the log failure, and for
+    // the halt an arbitrary Throwable's toString(). Either can carry a filesystem path, and the halt's can carry
+    // the name of whichever database was being applied - which is precisely the cross-tenant disclosure the
+    // visible() machinery on this endpoint exists to prevent. A tenant learns THAT this node has stopped, which
+    // is what the #7136 invariant owes them and all they can act on; an operator gets the detail that says
+    // whether the answer is "upgrade this node" or "file a bug".
+    // Sampled ONCE and shared with the alert scan below, for the reason localResync is: two reads of a live
+    // field can disagree, and the document would then carry a null criticalHalt next to a
+    // halted-after-critical-error alert, or the reverse.
+    final ClusterAlerts.NodeStatus nodeStatus = new ClusterAlerts.NodeStatus(stateMachine.getCriticalHalt(),
+        stateMachine.getRaftLogFailure(), raftHAServer.isCrashLoopEscalated(), isRootUser(user));
+    response.put("criticalHalt", buildCriticalHalt(nodeStatus.halt(), nodeStatus.detailedDiagnostics()));
+    response.put("raftLogFailure", buildRaftLogFailure(nodeStatus.logFailure(), nodeStatus.detailedDiagnostics()));
     // The liveness counterpart (issue #7622): isCrashLoopEscalated() is what fails /api/v1/health, and it was
     // equally invisible here. Same reasoning, same scoping - none.
-    // Sampled ONCE and shared with the alert scan below, for the reason localResync is sampled once: two reads of
-    // a live flag can disagree, and the document would then carry crashLoopEscalated: false next to a
-    // crash-loop-escalated alert, or the reverse.
-    final boolean crashLoopEscalated = raftHAServer.isCrashLoopEscalated();
-    response.put("crashLoopEscalated", crashLoopEscalated);
+    response.put("crashLoopEscalated", nodeStatus.crashLoopEscalated());
 
     response.put("alerts",
         ClusterAlerts.scan(httpServer.getServer(), stateMachine, followerSamples, authorizedDatabases, membership,
-            localPeerId.toString(), localResync, crashLoopEscalated));
+            localPeerId.toString(), localResync, nodeStatus));
 
     return new ExecutionResponse(200, response.toString());
   }
@@ -369,12 +377,12 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
    * shape can then be pinned against {@code PluginApiSpec} without a live cluster, which is what keeps a member
    * from reaching the response and not the contract - the exact defect #7741 had and #7872 repeated.
    */
-  static Object buildCriticalHalt(final ArcadeStateMachine.CriticalHalt halt) {
+  static Object buildCriticalHalt(final ArcadeStateMachine.CriticalHalt halt, final boolean detailed) {
     if (halt == null)
       return JSONObject.NULL;
     return new JSONObject()
         .put("index", halt.index())
-        .put("reason", halt.reason())
+        .put("reason", detailed ? halt.reason() : REDACTED_REASON)
         .put("timestamp", halt.timestamp());
   }
 
@@ -383,13 +391,32 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
    * signal the #7118 readiness gate already reads), or {@link JSONObject#NULL} while the log writer is healthy.
    * Same shape and same reasoning as {@link #buildCriticalHalt}.
    */
-  static Object buildRaftLogFailure(final ArcadeStateMachine.RaftLogFailure failure) {
+  static Object buildRaftLogFailure(final ArcadeStateMachine.RaftLogFailure failure, final boolean detailed) {
     if (failure == null)
       return JSONObject.NULL;
     return new JSONObject()
         .put("index", failure.index())
-        .put("cause", failure.cause())
+        .put("cause", detailed ? failure.cause() : REDACTED_REASON)
         .put("timestamp", failure.timestamp());
+  }
+
+  /**
+   * What a non-root caller reads in place of the raw exception text (review on PR #7953). Deliberately says the
+   * text was withheld rather than going absent or empty: a field that disappears reads as "this build does not
+   * report it", and an operator chasing an incident needs to know the detail exists and who can see it.
+   */
+  static final String REDACTED_REASON = "<available to the root user>";
+
+  /**
+   * Whether this caller may be shown the raw diagnostic text, without throwing the way
+   * {@code checkRootUser} does - this is a per-field reduction inside a response the caller is entitled to, not
+   * a refusal of the request.
+   * <p>
+   * A null user is the non-HTTP caller (and the unauthenticated path, which does not reach here), and it gets the
+   * reduced view: the safe default is the one that discloses less.
+   */
+  private static boolean isRootUser(final ServerSecurityUser user) {
+    return user != null && "root".equals(user.getName());
   }
 
   /**

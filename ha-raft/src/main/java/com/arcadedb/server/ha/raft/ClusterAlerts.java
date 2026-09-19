@@ -138,26 +138,56 @@ public class ClusterAlerts {
       final ClusterMembership membership, final String localPeerId,
       final LocalResyncState localResyncState) {
     return scan(server, stateMachine, followerSamples, visibleDatabases, membership, localPeerId, localResyncState,
-        false);
+        NodeStatus.of(stateMachine));
   }
 
   /**
-   * Scan overload that also takes this node's crash-loop escalation (issue #7872), which lives on
-   * {@code RaftHAServer} rather than on the state machine and so cannot be read from here. {@code false} for a
-   * caller that has no HA server to ask, which is every caller outside the cluster status endpoint.
+   * This node's terminal conditions, sampled once by the caller (issue #7872).
+   * <p>
+   * A record rather than three more positional parameters, for two reasons. {@code crashLoopEscalated} lives on
+   * {@code RaftHAServer} and cannot be read from here at all; and the halt and the log failure have to be the
+   * SAME sample the caller rendered into the status document, or the document can carry a null
+   * {@code criticalHalt} next to a {@code halted-after-critical-error} alert - the inconsistency the
+   * {@code localResync} sample is passed in to avoid.
+   *
+   * @param halt                 what tripped the node-wide critical halt, or null
+   * @param logFailure           the persistent Raft log-write failure, or null
+   * @param crashLoopEscalated   whether the health monitor has given up restarting the HA layer (issue #7622)
+   * @param detailedDiagnostics  whether this caller may be shown the RAW exception text behind the two above.
+   *                             Both are text this node did not compose and either can name a filesystem path or
+   *                             another tenant's database, so a non-root HTTP caller is told the condition and
+   *                             not the detail (review on PR #7953)
+   */
+  public record NodeStatus(ArcadeStateMachine.CriticalHalt halt, ArcadeStateMachine.RaftLogFailure logFailure,
+      boolean crashLoopEscalated, boolean detailedDiagnostics) {
+
+    /**
+     * What the state machine alone can answer, for the callers that have no HA server and no HTTP user: the
+     * unrestricted operator view, matching what a {@code null visibleDatabases} means to the rest of this class.
+     */
+    static NodeStatus of(final ArcadeStateMachine stateMachine) {
+      if (stateMachine == null)
+        return new NodeStatus(null, null, false, true);
+      return new NodeStatus(stateMachine.getCriticalHalt(), stateMachine.getRaftLogFailure(), false, true);
+    }
+  }
+
+  /**
+   * Scan overload taking this node's terminal conditions explicitly (issue #7872): see {@link NodeStatus} for why
+   * they arrive as one sample rather than being re-read here.
    */
   public static JSONArray scan(final ArcadeDBServer server, final ArcadeStateMachine stateMachine,
       final List<FollowerSample> followerSamples, final Set<String> visibleDatabases,
       final ClusterMembership membership, final String localPeerId,
-      final LocalResyncState localResyncState, final boolean crashLoopEscalated) {
+      final LocalResyncState localResyncState, final NodeStatus nodeStatus) {
     final JSONArray alerts = new JSONArray();
     checkSingleBucketTypes(server, alerts, visibleDatabases);
     if (stateMachine != null) {
       // First, because they are the only conditions here from which this node does not recover by waiting: the
       // state machine has stopped applying, or the log writer has been refusing every append since it failed. An
       // operator reading a lagging-follower warning above them would be reading a symptom (issue #7872).
-      addCriticalHaltAlert(stateMachine.getCriticalHalt(), alerts);
-      addRaftLogFailureAlert(stateMachine.getRaftLogFailure(), alerts);
+      addCriticalHaltAlert(nodeStatus.halt(), nodeStatus.detailedDiagnostics(), alerts);
+      addRaftLogFailureAlert(nodeStatus.logFailure(), nodeStatus.detailedDiagnostics(), alerts);
       checkLeaderMissingDatabases(stateMachine, alerts, visibleDatabases);
       checkFailedAcquireDatabases(stateMachine, alerts, visibleDatabases);
       checkBootstrapDivergedDatabases(stateMachine, alerts, visibleDatabases);
@@ -166,7 +196,7 @@ public class ClusterAlerts {
       // an operator is asking when they poll the node readiness has taken out of the Service.
       addLocalResyncAlert(localResyncState, visibleDatabases, alerts);
     }
-    addCrashLoopEscalatedAlert(crashLoopEscalated, alerts);
+    addCrashLoopEscalatedAlert(nodeStatus.crashLoopEscalated(), alerts);
     addLaggingFollowerAlert(followerSamples, alerts);
     if (membership != null)
       addMembershipDivergenceAlert(membership.notInConfiguration(), membership.notInServerList(), localPeerId, alerts);
@@ -184,15 +214,23 @@ public class ClusterAlerts {
    * entry type" during a rolling upgrade means this node is behind the cluster's write format and the answer is
    * to finish the upgrade; anything else is a bug worth a report, with that index as the evidence.
    */
-  static void addCriticalHaltAlert(final ArcadeStateMachine.CriticalHalt halt, final JSONArray alerts) {
+  static void addCriticalHaltAlert(final ArcadeStateMachine.CriticalHalt halt, final boolean detailed,
+      final JSONArray alerts) {
     if (halt == null)
       return;
+
+    // The reason is an arbitrary Throwable's toString() on one of the three trip sites, so it can name a
+    // filesystem path or the database that was being applied. A caller who may not be told a database name
+    // elsewhere in this document must not be told one here (review on PR #7953).
+    final String reason = detailed ? halt.reason() : GetClusterHandler.REDACTED_REASON;
+    final String described = detailed ? halt.describe()
+        : (halt.index() >= 0 ? "at index " + halt.index() : "on an entry with no index");
 
     alerts.put(new JSONObject()
         .put("id", "halted-after-critical-error")
         .put("severity", SEVERITY_CRITICAL)
         .put("title", "This node's replication state machine has halted")
-        .put("message", "A committed Raft entry could not be applied on this node " + halt.describe() + ". Every "
+        .put("message", "A committed Raft entry could not be applied on this node " + described + ". Every "
             + "entry after it is refused outright, so this node's databases are frozen at that point and will not "
             + "advance again in this process. An emergency stop was started when the halt tripped; the fact that "
             + "this document is being served means it has not completed, so the node is still answering HTTP with a "
@@ -204,7 +242,7 @@ public class ClusterAlerts {
             + "same index. Any other reason is a bug: report it with the index above and this node's log.")
         .put("details", new JSONObject()
             .put("index", halt.index())
-            .put("reason", halt.reason())
+            .put("reason", reason)
             .put("timestamp", halt.timestamp())));
   }
 
@@ -215,15 +253,22 @@ public class ClusterAlerts {
    * Unlike the halt above this one is recoverable in place - {@code HealthMonitor} restarts the log writer once
    * the storage volume has room - so the recommendation is about the volume rather than about the process.
    */
-  static void addRaftLogFailureAlert(final ArcadeStateMachine.RaftLogFailure failure, final JSONArray alerts) {
+  static void addRaftLogFailureAlert(final ArcadeStateMachine.RaftLogFailure failure, final boolean detailed,
+      final JSONArray alerts) {
     if (failure == null)
       return;
+
+    // Ratis's own cause text, which routinely carries the Raft storage path. Reduced for the same reason and in
+    // the same shape as the halt above.
+    final String cause = detailed ? failure.cause() : GetClusterHandler.REDACTED_REASON;
+    final String described = detailed ? failure.describe()
+        : (failure.index() >= 0 ? "at index " + failure.index() : "on a log segment");
 
     alerts.put(new JSONObject()
         .put("id", "raft-log-writer-failed")
         .put("severity", SEVERITY_CRITICAL)
         .put("title", "This node's replication log writer has failed")
-        .put("message", "Ratis has marked this node's Raft log failed " + failure.describe() + ", and rejects every "
+        .put("message", "Ratis has marked this node's Raft log failed " + described + ", and rejects every "
             + "append after it. The node can neither catch up nor become caught up: everything it serves is frozen "
             + "at the moment the writer failed, which is why /api/v1/ready answers 503 and a Kubernetes Service has "
             + "taken it out of rotation. The usual cause is a full or unwritable Raft storage volume.")
@@ -232,7 +277,7 @@ public class ClusterAlerts {
             + "restart budget is bounded, so if it is exhausted the node stays out until it is restarted by hand.")
         .put("details", new JSONObject()
             .put("index", failure.index())
-            .put("cause", failure.cause())
+            .put("cause", cause)
             .put("timestamp", failure.timestamp())));
   }
 
