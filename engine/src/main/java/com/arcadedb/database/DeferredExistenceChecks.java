@@ -312,7 +312,14 @@ public class DeferredExistenceChecks {
     if (incomplete.isEmpty())
       return;
 
-    deleteProvisionalRecords(incomplete);
+    // Best effort, like discard()'s: the ValidationException below names the constraint the statement actually
+    // broke, and a failure to tidy up after it must not take its place.
+    try {
+      deleteProvisionalRecords(incomplete);
+    } catch (final RuntimeException | Error e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Could not take back the incomplete records of a statement that failed its existence constraints", e);
+    }
 
     throw new ValidationException(
         "A record created by this statement was left incomplete: " + violations + ". The record has been removed");
