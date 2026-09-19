@@ -227,12 +227,23 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private volatile RaftTransactionBroker     transactionBroker;
   private          RaftClusterStatusExporter statusExporter;
   private          ScheduledExecutorService  lagMonitorExecutor;
-  // Peer-capability discovery (issue #7219). Leader-only: a follower writes no optional wire-format section,
-  // so it has no question to ask. Refreshed on its OWN scheduled thread rather than the lag monitor's, because
-  // a probe round is a sequential HTTP fan-out that can take peers x PROBE_TIMEOUT_MS, and replica
-  // classification must not be delayed by an unreachable peer's connect timeout - the same reasoning that keeps
-  // channelRecoveryExecutor off the resync executor below.
+  // Peer-capability discovery (issues #7219, #7549). Runs in EVERY role: a follower writes no optional
+  // wire-format section, but it does serve GET /api/v1/cluster and the security compare-and-set gate of #7511,
+  // and both have to answer for peers other than itself. Refreshed on its OWN scheduled thread rather than the
+  // lag monitor's, because a probe round is a sequential HTTP fan-out that can take peers x PROBE_TIMEOUT_MS,
+  // and replica classification must not be delayed by an unreachable peer's connect timeout - the same
+  // reasoning that keeps channelRecoveryExecutor off the resync executor below.
+  //
+  // Guarded by capabilityMonitorLock, NOT by the field's own visibility (review of PR #7941). Since #7549 the
+  // start has two callers that can run at once: the startup thread, and the Ratis leader-change callback via
+  // startLagMonitor() - raftServer.start() does not wait for an election, so a node that wins one immediately
+  // (a single-node bootstrap is the obvious case) reaches both. A plain check-then-act lets both see null,
+  // both create an executor, and the second assignment orphan the first - a daemon thread and its probe
+  // schedule that stopCapabilityMonitor() can no longer reach, which is the same leak class this file already
+  // guards against for the HttpClients in shutdown().
   private          ScheduledExecutorService  capabilityMonitorExecutor;
+  /** Serialises start/stop of {@link #capabilityMonitorExecutor}; never held across anything that blocks. */
+  private final    Object                    capabilityMonitorLock = new Object();
   private final    PeerCapabilityRegistry    peerCapabilities = new PeerCapabilityRegistry();
   // How one capability probe is made (see CapabilityProber). A method reference rather than a lambda reading
   // arcadeServer, which is a blank final the constructor has not assigned yet at this point.
@@ -4569,28 +4580,32 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   // @VisibleForTesting - the invalidation below is asserted through this method, not through the field it clears
   void startCapabilityMonitor() {
-    if (capabilityMonitorExecutor != null)
-      return;
-    // A fresh term says nothing about what the peers can decode - a build does not change because an election
-    // happened - but the advertisements were observed under the previous leadership and their timestamps are
-    // what the TTL is measured against, so they are re-asked immediately rather than inherited silently. Until
-    // #7301 only the log-throttle shadow was cleared and the advertisements themselves were inherited, so a node
-    // that led again believed the previous term's answers - and could write an optional wire-format section on
-    // them - for the length of one refresh round.
-    peerCapabilities.clear();
-    capabilityMonitorExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
-      final Thread t = new Thread(r, "arcadedb-raft-capability-monitor");
-      t.setDaemon(true);
-      return t;
-    });
-    capabilityMonitorExecutor.scheduleWithFixedDelay(this::refreshPeerCapabilities, 0,
-        PeerCapabilityRegistry.REFRESH_PERIOD_MS, TimeUnit.MILLISECONDS);
+    synchronized (capabilityMonitorLock) {
+      if (capabilityMonitorExecutor != null)
+        return;
+      // A fresh term says nothing about what the peers can decode - a build does not change because an election
+      // happened - but the advertisements were observed under the previous leadership and their timestamps are
+      // what the TTL is measured against, so they are re-asked immediately rather than inherited silently. Until
+      // #7301 only the log-throttle shadow was cleared and the advertisements themselves were inherited, so a
+      // node that led again believed the previous term's answers - and could write an optional wire-format
+      // section on them - for the length of one refresh round.
+      peerCapabilities.clear();
+      capabilityMonitorExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
+        final Thread t = new Thread(r, "arcadedb-raft-capability-monitor");
+        t.setDaemon(true);
+        return t;
+      });
+      capabilityMonitorExecutor.scheduleWithFixedDelay(this::refreshPeerCapabilities, 0,
+          PeerCapabilityRegistry.REFRESH_PERIOD_MS, TimeUnit.MILLISECONDS);
+    }
   }
 
   /** Whether the capability refresh is running, so a test can pin that a role change does not end it (#7549). */
   // @VisibleForTesting
   boolean isCapabilityMonitorRunning() {
-    return capabilityMonitorExecutor != null;
+    synchronized (capabilityMonitorLock) {
+      return capabilityMonitorExecutor != null;
+    }
   }
 
   /**
@@ -4603,9 +4618,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   // @VisibleForTesting
   void stopCapabilityMonitor() {
-    if (capabilityMonitorExecutor != null) {
-      capabilityMonitorExecutor.shutdownNow();
-      capabilityMonitorExecutor = null;
+    synchronized (capabilityMonitorLock) {
+      if (capabilityMonitorExecutor != null) {
+        capabilityMonitorExecutor.shutdownNow();
+        capabilityMonitorExecutor = null;
+      }
     }
   }
 

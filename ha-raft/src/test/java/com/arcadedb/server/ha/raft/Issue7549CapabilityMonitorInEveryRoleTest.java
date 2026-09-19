@@ -21,10 +21,13 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -124,6 +127,69 @@ class Issue7549CapabilityMonitorInEveryRoleTest {
         .as("a follower can say WHY a peer is unknown, not merely omit the row")
         .isNotNull()
         .contains("connection refused");
+  }
+
+  /**
+   * Two callers can start the monitor at once now, and only one executor may result (review of PR #7941).
+   * <p>
+   * Since the monitor is started from {@code start()} as well as from {@code startLagMonitor}, a node that wins
+   * an election immediately - {@code raftServer.start()} does not wait for one, so a single-node bootstrap
+   * always does - reaches both from different threads. The guard was a plain check-then-act on a non-volatile
+   * field, so both could see null, both create a {@link java.util.concurrent.ScheduledExecutorService}, and the
+   * second assignment orphan the first: a daemon thread and its 5-second probe schedule that
+   * {@code stopCapabilityMonitor} can no longer reach.
+   * <p>
+   * Counted in live threads rather than in the field, because the field is exactly what a lost executor is no
+   * longer reachable through - the leak is invisible to any assertion made on it.
+   */
+  @Test
+  void concurrentStartsCreateExactlyOneMonitor() throws Exception {
+    final RaftHAServer raft = newDetachedServer();
+    raft.setCapabilityProber((peerId, http, https, token) -> {
+      throw new IOException("no answer");
+    });
+
+    final int starters = 8;
+    final CountDownLatch go = new CountDownLatch(1);
+    final CountDownLatch done = new CountDownLatch(starters);
+    for (int i = 0; i < starters; i++) {
+      final Thread starter = new Thread(() -> {
+        try {
+          go.await();
+          raft.startCapabilityMonitor();
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        } finally {
+          done.countDown();
+        }
+      }, "issue7549-starter-" + i);
+      starter.setDaemon(true);
+      starter.start();
+    }
+
+    try {
+      go.countDown();
+      assertThat(done.await(30, TimeUnit.SECONDS)).as("every starter finished").isTrue();
+
+      assertThat(liveCapabilityMonitorThreads())
+          .as("eight concurrent starts must leave one monitor, not eight")
+          .isEqualTo(1);
+    } finally {
+      raft.stopCapabilityMonitor();
+    }
+
+    // The one that was created is also the one that can be stopped, which is the half a leaked executor fails.
+    Awaitility.await().atMost(10, TimeUnit.SECONDS)
+        .untilAsserted(() -> assertThat(liveCapabilityMonitorThreads())
+            .as("and stopping it leaves none behind").isZero());
+  }
+
+  /** How many capability-monitor threads this JVM currently has, by the name the factory gives them. */
+  private static long liveCapabilityMonitorThreads() {
+    return Thread.getAllStackTraces().keySet().stream()
+        .filter(Thread::isAlive)
+        .filter(t -> "arcadedb-raft-capability-monitor".equals(t.getName()))
+        .count();
   }
 
   private static RaftHAServer newDetachedServer() {
