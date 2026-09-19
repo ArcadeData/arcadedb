@@ -1210,8 +1210,30 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       if (record instanceof MutableDocument)
         transaction.registerNewRecord(record);
 
-      if (record instanceof MutableDocument doc)
-        indexer.createDocument(doc, doc.getType(), bucket);
+      if (record instanceof MutableDocument doc) {
+        // THE CREATE IS ATOMIC WITHIN THE TRANSACTION (issue #7467). Everything above has already written the
+        // record: the body is in the bucket's page, the identity is assigned, the bucket delta is incremented and
+        // the transaction's record cache holds it - and only NOW does indexer.createDocument run the unique
+        // check. A DuplicatedKeyException from it used to leave all of that in the transaction, so a caller that
+        // tallies the refusal and carries on - the /ws insert session, the gRPC insert stream, an HTTP batch, a
+        // SQL script with its own error handling - committed a record that exists in the bucket, is counted by
+        // count(*), is NOT in the unique index that was supposed to forbid it, and was acknowledged to the
+        // client as not written. Three views of the system, and no single one of them reveals the problem.
+        //
+        // The undo covers every exception rather than the duplicate alone: anything raised past
+        // bucket.createRecord leaves exactly the same residue, and enumerating them would leave the next one out.
+        final TransactionIndexContext indexChanges = transaction.getIndexChanges();
+        indexChanges.armRecordUndo();
+        try {
+          indexer.createDocument(doc, doc.getType(), bucket);
+        } catch (final RuntimeException e) {
+          indexChanges.undoRecordChanges();
+          undoRecordCreation(record, bucket, transaction);
+          throw e;
+        } finally {
+          indexChanges.disarmRecordUndo();
+        }
+      }
 
       ((RecordInternal) record).unsetDirty();
 
@@ -1230,6 +1252,37 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           wrappedDatabaseInstance.rollback();
       }
     }
+  }
+
+  /**
+   * Takes the record body back out of the transaction after the indexing of a freshly created record refused it
+   * (issue #7467). The mirror image of the five statements {@code createRecordNoLock} runs between
+   * {@code bucket.createRecord} and the indexer, undone in the reverse order, plus the identity reset that makes
+   * the same object cleanly re-insertable - which is what {@link TransactionContext#rollback} does for the whole
+   * transaction and what a caller retrying the row after fixing it needs here.
+   * <p>
+   * An implicit transaction rolls back anyway, so this changes nothing for one; the case it exists for is a
+   * caller inside its OWN transaction that intends to keep going.
+   * <p>
+   * The physical free is best-effort and logged rather than thrown: the caller is already unwinding one failure
+   * and replacing its exception with a second one would hide the reason the record was refused. A free that
+   * could not run leaves a record with no index entry - which is what this method exists to prevent - so it is
+   * reported at WARNING with the RID, not swallowed.
+   */
+  private void undoRecordCreation(final Record record, final LocalBucket bucket, final TransactionContext transaction) {
+    final RID rid = record.getIdentity();
+    try {
+      bucket.deleteRecord(rid, false);
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Cannot take back record %s after its indexing refused it: the record body stays in the transaction and "
+              + "no index entry points at it. %s", rid, e.getMessage());
+    }
+
+    transaction.updateBucketRecordDelta(bucket.getFileId(), -1);
+    transaction.removeRecordFromCache(rid);
+    transaction.unregisterNewRecord(record);
+    ((RecordInternal) record).setIdentity(null);
   }
 
   @Override

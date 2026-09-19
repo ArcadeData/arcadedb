@@ -414,6 +414,24 @@ public class TransactionContext implements Transaction {
     newRecords.add(record);
   }
 
+  /**
+   * Takes back the registration of a record whose creation is being undone, because the indexing that followed it
+   * refused it (issue #7467). Without this the retracted record would still be walked by {@link #rollback()},
+   * which is harmless in itself but keeps a reference to an object the transaction no longer has anything to do
+   * with, for as long as the transaction lives.
+   * <p>
+   * Reference comparison, not {@code equals}: two brand-new documents of the same type carrying the same
+   * properties compare equal, and only one of them is being retracted. Searched from the END, where the record
+   * just registered is, so the case this exists for costs one comparison.
+   */
+  public void unregisterNewRecord(final Record record) {
+    for (int i = newRecords.size() - 1; i >= 0; i--)
+      if (newRecords.get(i) == record) {
+        newRecords.remove(i);
+        return;
+      }
+  }
+
   public void updateRecordInCache(final Record record) {
     if (database.isReadYourWrites()) {
       final RID rid = record.getIdentity();
