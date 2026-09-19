@@ -19,7 +19,7 @@
 package com.arcadedb.index.vector;
 
 import com.arcadedb.database.RID;
-import com.arcadedb.index.IndexReplayUndo;
+import com.arcadedb.index.IndexReplayConclusion;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -32,6 +32,16 @@ import java.util.List;
  * This is a RECORD, not behaviour: {@link LSMVectorIndex#undoReplay(VectorIndexReplayUndo)} owns the reversal,
  * because reversing it needs the index's write lock and its private fields. The journal is filled in by the three
  * replay entry points ({@code put}, {@code putBatch} and {@code remove}) as they go.
+ * <p>
+ * <b>Why this index publishes eagerly.</b> It is the EAGER half of {@link IndexReplayConclusion} - it writes during
+ * the replay and takes it back on abort, so it leaves {@code publishIndexReplay()} at its default no-op. Deferring
+ * the way {@code LSMSparseVectorIndex} does (issue #7933) is not open to it: the replay allocates vector ids and
+ * writes them ONTO the transaction's own index pages, so the allocation has to be decided while those pages are
+ * being written, not after. The eager shape is workable here because everything it publishes stays reachable: the
+ * in-memory state is reversible field by field, and the one way it can be republished from under the journal - a
+ * concurrent compaction or rebuild - is detected by the {@link #locationsAtReplay} identity compare below. The
+ * sparse memtable has no such handle: once a flush has sealed it into a {@code .sparseseg} file, the posting is on
+ * disk and no in-memory compensation can reach it.
  * <p>
  * <b>Why it is recorded rather than derived.</b> Issue #7931 suggested rebuilding the compensation set from the
  * transaction's own queued index operations. That is not enough: a queued REMOVE carries only a RID and a dummy
@@ -53,7 +63,7 @@ import java.util.List;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class VectorIndexReplayUndo implements IndexReplayUndo {
+class VectorIndexReplayUndo implements IndexReplayConclusion {
   private final LSMVectorIndex index;
 
   // Primitive arrays rather than lists of boxes: a bulk load replays thousands of operations per transaction, and
