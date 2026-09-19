@@ -24,12 +24,19 @@ package com.arcadedb.exception;
  * what separates it from its parent {@link DatabaseNotAvailableException}, raised for a database that exists but
  * is closed, dropped mid-request or held back by an unfinished snapshot install.
  * <p>
- * It is a subtype rather than a sibling so every caller that already answers "not there" for the parent - the
- * HTTP handler's 404 among them - keeps answering it, while a caller that has a finer answer for a name that was
- * never right (a Bolt client is told {@code Neo.ClientError.Database.DatabaseNotFound} rather than the generic
- * database error a Neo4j driver logs as an internal server fault) can ask for the narrower type. Before it
- * existed the condition was a bare {@link DatabaseOperationException} whose only distinguishing feature was the
- * wording of its message, so no protocol could answer it without matching on prose (issue #7874).
+ * It is a subtype rather than a sibling so that a caller which has a finer answer for a name that was never
+ * right can ask for the narrower type - a Bolt client is told {@code Neo.ClientError.Database.DatabaseNotFound}
+ * rather than the generic database error a Neo4j driver logs as an internal server fault - while every caller
+ * that only knows the parent goes on matching. Before it existed the condition was a bare
+ * {@link DatabaseOperationException} whose only distinguishing feature was the wording of its message, so no
+ * protocol could answer it without matching on prose (issue #7874).
+ * <p>
+ * One answer does change, deliberately: this throw now reaches {@code AbstractServerHttpHandler}'s
+ * {@link DatabaseNotAvailableException} arm and is answered HTTP {@code 404} where it used to fall through to
+ * the generic {@code 500}. That is the accurate status - the caller named a database this server does not have,
+ * which is not a server fault - and it is the same verdict the handler already gave for the closed and dropped
+ * cases. The HTTP paths that resolve a database with {@code allowLoad=false} are untouched: they never reached
+ * this throw, raising {@link DatabaseNotAvailableException} itself and answering 404 already (PR #7939 review).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

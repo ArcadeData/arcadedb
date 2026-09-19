@@ -820,6 +820,13 @@ function expandNodePrompt(rid) {
 
   $("#executeSpinner").show();
 
+  // The picker opens only once BOTH directions have answered, so a request that never resolves would leave the
+  // spinner up and the picker unopened, with nothing said. A hung socket has no answer of its own to wait for,
+  // and jQuery sets no timeout by default; the ceiling is generous because the request is an aggregate over a
+  // supernode's edges, and a timeout lands in the .fail arm below, which reports it and opens the picker on
+  // whichever direction did answer (PR #7939 review).
+  const COUNT_TIMEOUT_MS = 120000;
+
   ["out", "in"].forEach(function (direction) {
     jQuery
       .ajax({
@@ -832,6 +839,7 @@ function expandNodePrompt(rid) {
           // element in them to expand into a graph document, and the flat array is what the counts are.
           serializer: "record",
         }),
+        timeout: COUNT_TIMEOUT_MS,
         beforeSend: function (xhr) {
           xhr.setRequestHeader("Authorization", globalCredentials);
         },
@@ -839,11 +847,17 @@ function expandNodePrompt(rid) {
       .done(function (data) {
         counts[direction] = parseEdgeTypeCounts(data);
       })
-      .fail(function (jqXHR) {
+      .fail(function (jqXHR, textStatus) {
         // One direction failing must not strand the picker: report it and carry on with the other, which is
         // still a usable answer.
         counts[direction] = [];
-        globalNotify("Error", escapeHtml(jqXHR.responseText), "danger");
+        globalNotify(
+          "Error",
+          textStatus === "timeout"
+            ? "Counting the " + direction + "going relationships timed out"
+            : escapeHtml(jqXHR.responseText),
+          "danger"
+        );
       })
       .always(function () {
         if (counts.out === null || counts.in === null) return;

@@ -158,6 +158,17 @@ test("the counts are found whichever serializer answered", () => {
   );
 });
 
+// The picker opens only once BOTH directions have answered, so a request that never resolves would leave the
+// spinner up and nothing said. jQuery sets no timeout of its own.
+test("neither count request can hang the picker open forever", () => {
+  const prompt = extractFn("expandNodePrompt");
+
+  assert.match(prompt, /timeout: COUNT_TIMEOUT_MS/, "the count request needs a ceiling of its own");
+  assert.match(prompt, /const COUNT_TIMEOUT_MS = \d+;/);
+  assert.match(prompt, /textStatus === "timeout"/, "a timeout has no responseText to render");
+  assert.match(prompt, /counts\[direction\] = \[\];/, "a failed direction still has to let the picker open");
+});
+
 test("the count query asks for the serializer whose shape is the counts", () => {
   const prompt = extractFn("expandNodePrompt");
   assert.match(prompt, /serializer: "record"/, "an aggregate has no element to expand into a graph document");
