@@ -107,7 +107,13 @@ public final class ShowCommandTail {
       rowsParameter = rowsParameter + "_";
     effectiveParameters.put(rowsParameter, asMaps(fields, rows));
 
-    final Rewrite rewrite = rewrite(query, tail, fields, rowsParameter);
+    // Same reasoning for the UNWIND variable the rows are bound to: a tail that happens to name it would silently
+    // read the synthetic binding instead of failing on an unknown variable.
+    String rowVariable = ROW_VARIABLE;
+    while (mentions(tail, rowVariable))
+      rowVariable = rowVariable + "_";
+
+    final Rewrite rewrite = rewrite(query, tail, fields, rowsParameter, rowVariable);
 
     final List<List<Object>> filtered = new ArrayList<>();
     List<String> rowFields = null;
@@ -140,13 +146,13 @@ public final class ShowCommandTail {
   }
 
   private static Rewrite rewrite(final String query, final List<Token> tail, final List<String> fields,
-      final String rowsParameter) {
+      final String rowsParameter, final String rowVariable) {
     final StringBuilder rewritten = new StringBuilder(query.length() + 64);
-    rewritten.append("UNWIND $").append(rowsParameter).append(" AS ").append(ROW_VARIABLE).append(" WITH ");
+    rewritten.append("UNWIND $").append(rowsParameter).append(" AS ").append(rowVariable).append(" WITH ");
 
     final StringJoiner bindings = new StringJoiner(", ");
     for (final String field : fields)
-      bindings.add(ROW_VARIABLE + ".`" + field + "` AS `" + field + "`");
+      bindings.add(rowVariable + ".`" + field + "` AS `" + field + "`");
     rewritten.append(bindings);
 
     final Token first = tail.getFirst();
@@ -286,6 +292,14 @@ public final class ShowCommandTail {
       case Cypher25Lexer.RPAREN, Cypher25Lexer.RBRACKET, Cypher25Lexer.RCURLY -> depth - 1;
       default -> depth;
     };
+  }
+
+  /** Whether the tail names this identifier anywhere, asked of the tokens so a string literal does not count. */
+  private static boolean mentions(final List<Token> tokens, final String identifier) {
+    for (final Token token : tokens)
+      if (identifier.equals(token.getText()))
+        return true;
+    return false;
   }
 
   /** The source text the tokens span, taken from the query so whitespace, case and quoting are as written. */

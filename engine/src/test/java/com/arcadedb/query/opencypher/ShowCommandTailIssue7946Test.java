@@ -186,6 +186,23 @@ class ShowCommandTailIssue7946Test {
   }
 
   /**
+   * The rows reach the rewritten query as a parameter bound to a synthetic variable, and neither name may be one
+   * the caller is already using: the parameter would be shadowed, and the variable would silently resolve to the
+   * synthetic binding instead of failing as an unknown variable.
+   */
+  @Test
+  void theSyntheticParameterAndVariableGiveWayToTheCallersOwn() {
+    final ShowCommandTail.Table byParameter = ShowCommandTail.apply(database, "SHOW DATABASES WHERE name = $__showRows",
+        FIELDS, ROWS, Map.of("__showRows", "beer"));
+    assertThat(byParameter.rows()).hasSize(1);
+    assertThat(byParameter.rows().getFirst().getFirst()).isEqualTo("beer");
+
+    // A tail naming the row variable must not see the synthetic binding. Unbound, it evaluates to null, so the
+    // predicate holds for no row at all - where a tail that reached the rows would have matched every one of them.
+    assertThat(apply("SHOW DATABASES WHERE __showRow IS NOT NULL", Map.of()).rows()).isEmpty();
+  }
+
+  /**
    * A tail that cannot be parsed is a client error, and reaches the client as one instead of being swallowed
    * along with the filtering it asked for.
    */
