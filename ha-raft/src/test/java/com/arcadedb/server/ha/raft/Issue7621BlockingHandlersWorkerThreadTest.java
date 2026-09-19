@@ -76,16 +76,19 @@ class Issue7621BlockingHandlersWorkerThreadTest {
 
   /**
    * What a route is allowed to do with the IO thread. Expressed as the OBSERVABLE answer for two concrete
-   * requests rather than as "declares the override", so a handler whose answer depends on the request - the one
-   * shape the previous, reflection-only check could not describe at all - has a verdict of its own.
+   * requests rather than as "declares the override", which is what lets it describe a handler whose answer
+   * depends on the request - a shape the previous, reflection-only check could not represent at all.
+   * <p>
+   * No route currently needs that shape: {@code /api/v1/cluster} did, and lost it when the review of PR #7953
+   * found that its supposedly cheap path reaches the filesystem after all. The two-request form is kept anyway,
+   * because it is what would CATCH the next handler that answers differently per request - collapsing it back to
+   * a single boolean would re-create the blind spot rather than record that it is currently empty.
    */
   private enum Dispatch {
     /** Reads in-memory state and answers. Must NOT pay a worker handoff on a request that is already cheap. */
     NEVER(false, false),
     /** Every request blocks, so every request is dispatched. */
-    ALWAYS(true, true),
-    /** Only the opt-in {@code ?presence=true} peer fan-out blocks; the cheap auto-poll does not (issue #7861). */
-    ONLY_WITH_PRESENCE(false, true);
+    ALWAYS(true, true);
 
     private final boolean onAPlainRequest;
     private final boolean onAPresenceRequest;
@@ -107,9 +110,11 @@ class Issue7621BlockingHandlersWorkerThreadTest {
    * classification that goes stale (CodeRabbit on PR #7953).
    */
   private static final Map<String, Dispatch> EXPECTED_BY_ROUTE = new LinkedHashMap<>() {{
-    // Reads in-memory Raft state; ClusterAlerts passes allowLoad=false so not even a closed database is opened.
-    // The fan-out behind '?presence=true' is one bootstrap-state RPC per peer at 5s each, and that one dispatches.
-    put("/api/v1/cluster", Dispatch.ONLY_WITH_PRESENCE);
+    // The '?presence=true' fan-out is one bootstrap-state RPC per peer at 5s each. The ordinary poll looks cheap
+    // and is not: it stats a directory per bootstrap-unreconciled database, and getBootstrapBaseline lazily reads
+    // .raft/bootstrap-baselines off disk on first use. This was ONLY_WITH_PRESENCE until the review of PR #7953
+    // pointed out that the "no disk" premise had stopped being true (issues #7861, #7902).
+    put("/api/v1/cluster", Dispatch.ALWAYS);
     // Raw Undertow handler, not an AbstractServerHttpHandler: it streams a database snapshot and dispatches itself.
     put("/api/v1/ha/snapshot/", Dispatch.ALWAYS);
     put("/api/v1/cluster/peer", Dispatch.ALWAYS);        // Raft membership change: submit and wait
@@ -177,11 +182,12 @@ class Issue7621BlockingHandlersWorkerThreadTest {
   @Test
   void theTwoHandlersOfIssue7861DispatchExactlyWhenTheyBlock() {
     final GetClusterHandler status = new GetClusterHandler(null, null);
-    assertThat(dispatches(status, new HttpServerExchange(null)))
-        .as("the cheap auto-poll reads in-memory state: it must keep the IO-thread fast path")
-        .isFalse();
     assertThat(dispatches(status, presenceRequest()))
         .as("the presence fan-out is one 5s-bounded RPC per peer, so worst case it holds its thread for peers x 5s")
+        .isTrue();
+    assertThat(dispatches(status, new HttpServerExchange(null)))
+        .as("and the ordinary poll too: it stats a directory per unreconciled database and can force the lazy read "
+            + "of .raft/bootstrap-baselines, neither of which may happen on a selector")
         .isTrue();
 
     assertThat(dispatches(new PostBootstrapStateHandler(null, null), new HttpServerExchange(null)))
