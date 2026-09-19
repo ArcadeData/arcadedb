@@ -406,6 +406,61 @@ class Issue7782CsvRaggedRowTest {
   }
 
   /**
+   * The same refusal on the DOCUMENT route. {@code checkAnalysisFoundUsableRows()} is called from all three load
+   * paths, and the edge test above only proves the edge one fires - this pins the document one, where the old
+   * behaviour was the quietest of the three: no message at all, and one property-less document written per row.
+   */
+  @Test
+  void aDocumentSourceWhoseEveryRowIsRefusedSaysSo() throws Exception {
+    // Header of two columns, every data row carrying three.
+    withImport("7782-all-ragged-docs", "a,b\n1,2,3\n4,5,6\n", true, (importer, db) -> {
+      assertThatThrownBy(importer::load)
+          .isInstanceOf(ImportException.class)
+          .hasMessageContaining("No usable row found in the")
+          .hasMessageContaining("every row the analysis read was refused");
+
+      assertThat(db.countType("Doc", true))
+          .as("and nothing was written, where property-less documents used to be")
+          .isEqualTo(0);
+      return null;
+    });
+  }
+
+  /** And the VERTEX route, whose old message blamed a typeIdProperty the header does declare. */
+  @Test
+  void aVertexSourceWhoseEveryRowIsRefusedSaysSo() throws Exception {
+    final String databasePath = "target/databases/test-import-7782-all-ragged-vertices";
+    final File source = new File("target/importer-7782-all-ragged-vertices.csv");
+    Files.writeString(source.toPath(), "id,name\n1,Jay,extra\n2,Kim,extra\n", StandardCharsets.UTF_8);
+
+    final DatabaseFactory factory = new DatabaseFactory(databasePath);
+    if (factory.exists())
+      factory.open().drop();
+    FileUtils.deleteRecursively(new File(databasePath));
+
+    final Database db = factory.create();
+    try {
+      final Importer importer = new Importer(db, null);
+      importer.settings.vertices = source.getAbsolutePath();
+      importer.settings.typeIdProperty = "id";
+      importer.settings.onRowError = "skip";
+
+      assertThatThrownBy(importer::load)
+          .isInstanceOf(ImportException.class)
+          .hasMessageContaining("No usable row found in the")
+          .satisfies(e -> assertThat(e.getMessage())
+              .as("'id' is declared by the header, so the refusal must not blame it")
+              .doesNotContain("Property Id"));
+    } finally {
+      while (db.isTransactionActive())
+        db.rollback();
+      db.drop();
+      FileUtils.deleteRecursively(new File(databasePath));
+      source.delete();
+    }
+  }
+
+  /**
    * {@code getAverageRowLength()} is the one reader of {@code analyzedRows}, and a ragged row the analysis refuses
    * never reaches {@code setRowSize()} - so an entity can now exist having measured no row at all. Division by zero
    * there would reach {@code loadEdges()}' {@code expectedEdges} estimate as an {@code ArithmeticException} instead
