@@ -222,7 +222,7 @@ class Issue7782CsvRaggedRowTest {
    * A source the analysis derived no entity from - a header-only file here - reached {@code entity.getProperties()}
    * in {@code loadDocuments()}' include-list branch and threw {@code NullPointerException}, while the very same
    * source imported fine under the default {@code -documentPropertiesInclude '*'}, which had the null check the
-   * other branch lacked (claude-review).
+   * other branch lacked.
    */
   @Test
   void aSourceWithNoDataRowDoesNotFailOnAnIncludeList() throws Exception {
@@ -262,7 +262,7 @@ class Issue7782CsvRaggedRowTest {
    * {@code -parsingLimitEntries} bounds the edge loop even when every row it is reading is being refused for its
    * shape. The refusal used to {@code continue} straight past the cap check at the bottom of the loop, so a run of
    * oversized rows parsed on indefinitely - and it put edges out of step with documents and vertices, where a row
-   * that failed falls through to that same check (CodeRabbit review).
+   * that failed falls through to that same check.
    */
   @Test
   void theEntryLimitStillBoundsALoopThatIsRefusingEveryEdgeRow() throws Exception {
@@ -317,7 +317,7 @@ class Issue7782CsvRaggedRowTest {
   /**
    * A short VERTEX row whose missing column is the {@code typeIdProperty} itself takes {@code loadVertices()}' own
    * "Property Id ... cannot be found on current record" guard and never reaches the record-building block, so
-   * reporting the short row from inside that block missed exactly the rows the guard skipped (CodeRabbit review).
+   * reporting the short row from inside that block missed exactly the rows the guard skipped.
    */
   @Test
   void aShortVertexRowMissingTheIdColumnIsStillCounted() throws Exception {
@@ -356,9 +356,9 @@ class Issue7782CsvRaggedRowTest {
 
   /**
    * The end-to-end half of the "entity that measured no row" case, driven through {@code Importer.load()} rather
-   * than the {@code AnalyzedEntity} accessor, so the caller/callee contract is exercised and not just the accessor
-   * (each reviewer predicted an {@code ArithmeticException} out of {@code loadEdges()}' {@code expectedEdges}
-   * estimate).
+   * than the {@code AnalyzedEntity} accessor, so the caller/callee contract is exercised and not just the accessor.
+   * The obvious prediction is an {@code ArithmeticException} out of {@code loadEdges()}' {@code expectedEdges}
+   * estimate; that is not what happens.
    * <p>
    * That is not what happens, and the real outcome is worse in a quieter way: the {@code -edgeFromField} lookup runs
    * BEFORE the estimate and fails first, so the operator was told to "Specify -edgeFromField &lt;from-field-name&gt;"

@@ -208,7 +208,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       // entity.getProperties() in the include-list branch and threw NullPointerException, while the same source with
       // the default -documentPropertiesInclude '*' imported fine. loadVertices()/loadEdges() answer this with an
       // early return naming the type; documents cannot, because an empty property list is a legitimate outcome here
-      // (claude-review, issue #7782).
+      // (issue #7782).
       final List<AnalyzedProperty> properties = new ArrayList<>();
       if (entity != null) {
         if (!"*".equalsIgnoreCase(settings.documentPropertiesInclude)) {
@@ -232,7 +232,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       // -1 WHEN THE ANALYSIS DERIVED NO ENTITY, WHICH DISABLES THE ARITY GATE BELOW FOR THIS SOURCE. SAFE ONLY
       // BECAUSE THE SAME CONDITION LEAVES 'properties' EMPTY (SEE ABOVE), SO NOTHING INDEXES INTO row[] AND THERE IS
       // NO RAGGEDNESS TO CATCH - THE TWO READ AS INDEPENDENT CONDITIONS BUT ARE NOT. A FUTURE CHANGE THAT POPULATES
-      // 'properties' FROM ANYTHING OTHER THAN 'entity' HAS TO GIVE THIS ONE A HEADER WIDTH TOO (claude-review, #7782).
+      // 'properties' FROM ANYTHING OTHER THAN 'entity' HAS TO GIVE THIS ONE A HEADER WIDTH TOO (issue #7782).
       final int headerColumns = headerColumnsOf(entity);
 
       // In "abort" mode, rows accumulate here instead of directly in context.createdDocuments, merged in below only
@@ -372,9 +372,14 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
   /**
    * Records a row that carries FEWER columns than the header declares. Not an error: the missing trailing columns are
-   * absent values, and every property past the row's end is simply left unset - which is what the callers of this
-   * method do, instead of letting {@code row[prop.getIndex()]} throw {@code ArrayIndexOutOfBoundsException} the way
-   * they used to (issue #7782).
+   * absent values, and a property past the row's end is simply not set - which is what the callers of this method do,
+   * instead of letting {@code row[prop.getIndex()]} throw {@code ArrayIndexOutOfBoundsException} the way they used to
+   * (issue #7782).
+   * <p>
+   * One caller does more than that, which is why the message this logs names only the arity: when the column a vertex
+   * row is missing is the {@code typeIdProperty} itself, {@code loadVertices()}' own guard drops the whole row a few
+   * lines further down and says so separately. This still counts it - the row IS ragged, and leaving it out of the
+   * total was the gap that guard's {@code continue} used to open - but it must not claim the row was imported.
    * <p>
    * Deliberately NOT symmetric with {@link #checkRowIsNotLongerThanHeader}: a short row was already importable
    * whenever the analysis had not created a property for the trailing column (a header column no row fills creates
@@ -392,10 +397,15 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     // a counter of this FORMAT INSTANCE, which SourceDiscovery creates one of per source, rather than on
     // context.warnings - that one is import-wide, so an import loading a vertices file and then an edges file would
     // have logged one visible WARNING for the whole run and left the second source's first short row at FINE. Same
-    // scope as the analysis-side throttle, which is a local in analyze() (claude-review, issue #7782).
+    // scope as the analysis-side throttle, which is a local in analyze() (issue #7782).
+    // The message states the ARITY and stops there, because what happens to the row differs by call site and this
+    // method is called from all three: documents and edges import it from the columns it does supply, and so does a
+    // vertex row - unless the column it is missing is the typeIdProperty, in which case loadVertices()' own guard
+    // drops the row entirely a few lines further down and logs that separately. Saying "the missing trailing
+    // column(s) are left unset" here asserted the first outcome for every row, including the ones nothing was left
+    // unset ON because no record was created at all (issue #7782).
     LogManager.instance().log(this, shortRowsReported++ == 0 ? Level.WARNING : Level.FINE,
-        "Row at line %d has %d column(s) while the header has %d: the missing trailing column(s) are left unset", null, line,
-        columns, headerColumns);
+        "Row at line %d has %d column(s) while the header has %d", null, line, columns, headerColumns);
   }
 
   /**
@@ -613,7 +623,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
         // BEFORE THE MISSING-ID GUARD BELOW, NOT INSIDE THE try: WHEN typeIdProperty IS A TRAILING HEADER COLUMN A
         // SHORT ROW TAKES THAT GUARD'S 'continue' AND WOULD NEVER REACH THE REPORT, SO THE ONE RAGGED-ROW NUMBER THE
-        // OPERATOR IS SHOWN WOULD MISS EXACTLY THE ROWS THE GUARD SKIPPED (CodeRabbit review, issue #7782)
+        // OPERATOR IS SHOWN WOULD MISS EXACTLY THE ROWS THE GUARD SKIPPED (issue #7782)
         reportShortRow(line, row.length, headerColumns, context);
 
         if (idIndex >= 0 && idIndex >= row.length) {
@@ -841,7 +851,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           // AN else RATHER THAN A continue, SO THIS ROW STILL REACHES THE -parsingLimitEntries CHECK AT THE BOTTOM OF
           // THE LOOP. A continue HERE WOULD LET A RUN OF OVERSIZED ROWS PARSE PAST THAT CAP INDEFINITELY, AND IT
           // WOULD ALSO PUT EDGES OUT OF STEP WITH loadDocuments()/loadVertices(), WHERE A ROW THAT FAILED FALLS
-          // THROUGH TO THE SAME CHECK RATHER THAN JUMPING OVER IT (CodeRabbit review, issue #7782).
+          // THROUGH TO THE SAME CHECK RATHER THAN JUMPING OVER IT (issue #7782).
           if (headerColumns > 0 && row.length > headerColumns) {
             LogManager.instance().log(this, Level.WARNING,
                 "Error on importing edge at line %d, skipping it (reason: it has %d column(s) while the header has %d)", null,
