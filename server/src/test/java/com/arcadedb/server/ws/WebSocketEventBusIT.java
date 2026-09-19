@@ -125,7 +125,10 @@ class WebSocketEventBusIT extends BaseGraphServerTest {
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
         final var result = new JSONObject(client.send(buildActionMessage("subscribe", "invalid")));
         assertThat(result.get("result")).isEqualTo("error");
-        assertThat(result.get("exception")).isEqualTo("com.arcadedb.exception.DatabaseOperationException");
+        // The narrower type since issue #7874: a name that does not exist is reported as such rather than as
+        // the generic DatabaseOperationException it used to be indistinguishable from. It is a SUBTYPE, so the
+        // expectation is tightened rather than relaxed - a client keyed on the parent still matches.
+        assertThat(result.get("exception")).isEqualTo("com.arcadedb.exception.DatabaseNotFoundException");
       }
     }, "invalidDatabaseReturnsError");
   }
