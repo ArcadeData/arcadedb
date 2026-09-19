@@ -236,6 +236,20 @@ test("a re-expansion cannot add an element that is already on the canvas", () =>
   );
 });
 
+// The builder reads a non-positive limit as "no ceiling", which is exactly what the three unfiltered radial
+// commands need. A 0 typed into a field labelled "max elements" means the opposite, so the form refuses it
+// rather than the builder reinterpreting it and breaking the other callers.
+test("a zero typed into the max-elements field is refused, not read as unlimited", () => {
+  const modal = extractFn("showExpandNodeModal");
+
+  assert.match(modal, /if \(!\(limit > 0\)\) \{/, "the form is where a typed 0 has to be caught");
+  const guard = modal.slice(modal.indexOf("if (!(limit > 0)) {"));
+  assert.match(guard.slice(0, 200), /return;/, "and it must not fall through into the expansion");
+
+  // The builder's own contract is unchanged: the legacy commands pass no limit and must stay unbounded.
+  assert.ok(!neighborExpansionCommand("out", "#12:0", [], 0).command.includes("limit"));
+});
+
 test("the radial menu actually offers the picker, and loadNodeNeighbors uses the builder", () => {
   // A helper nothing calls is the same bug as no helper at all.
   assert.match(src, /expandNodePrompt\(ele\.data\("id"\)\)/, "the node radial menu must carry the new command");
