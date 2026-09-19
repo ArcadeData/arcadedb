@@ -993,14 +993,24 @@ public class ServerControlPlane {
    * secret removed. The stored document happens to hold no plaintext today, but a listing built by
    * subtraction is one added field away from disclosing one, and this list is the thing an operator
    * reads.
+   * <p>
+   * {@code expired} is derived here rather than stored, and it is not decoration (review of PR #7941).
+   * Since issue #7601 an expired token is refused at every read but left in the document until the next token
+   * change retires it - a cluster that mints and revokes nothing keeps it indefinitely - so a listing that
+   * showed only a past {@code expiresAt} would put a dead token in the same shape as a live one and leave the
+   * reader to do the date arithmetic. Saying it outright is what keeps "this token still works" answerable from
+   * the list an operator actually reads.
    */
   public JSONArray listApiTokens() {
     final JSONArray result = new JSONArray();
+    final long now = System.currentTimeMillis();
     for (final JSONObject token : server.getSecurity().getApiTokenConfiguration().listTokens()) {
       final JSONObject entry = new JSONObject();
+      final long expiresAt = token.getLong("expiresAt", 0);
       entry.put("name", token.getString("name"));
       entry.put("database", token.getString("database"));
-      entry.put("expiresAt", token.getLong("expiresAt", 0));
+      entry.put("expiresAt", expiresAt);
+      entry.put("expired", expiresAt > 0 && expiresAt < now);
       entry.put("createdAt", token.getLong("createdAt", 0));
       entry.put("permissions", token.getJSONObject("permissions"));
       entry.put("tokenHash", token.getString("tokenHash"));

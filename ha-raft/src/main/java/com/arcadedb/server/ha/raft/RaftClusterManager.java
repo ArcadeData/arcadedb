@@ -464,9 +464,26 @@ class RaftClusterManager {
     // (a couple of seconds) instead of by the shared client's RetryLimited(60, 1s) - which is what made the
     // deadline below unobservable for a whole minute at a time (issue #7561). Null on a harness that never
     // started a Raft server, and then the shared client is the only one there is.
-    final RaftClient dedicated = raftHAServer.newMembershipClient();
+    //
+    // Built inside the try so a failure to build it is reported as the ConfigurationException every other
+    // failure of this method is (review of PR #7941): a caller catching that type must not have an unwrapped
+    // runtime exception come out of one path and not the others.
+    final RaftClient dedicated;
+    try {
+      dedicated = raftHAServer.newMembershipClient();
+    } catch (final RuntimeException e) {
+      throw new ConfigurationException("Failed to " + operationDesc
+          + ": the Raft client for the membership change could not be built: " + describe(e), e);
+    }
+
     try {
       final RaftClient client = dedicated != null ? dedicated : raftHAServer.getClient();
+      if (client == null)
+        // Both null means this node has no Raft client at all, which is a node whose Raft server has not
+        // started. Said out loud rather than left to NPE out of client.admin() two frames down.
+        throw new ConfigurationException("Failed to " + operationDesc
+            + ": this node has no Raft client, so its Raft server has not started yet. Retry once the node has"
+            + " joined the cluster.");
       setConfigurationWithRetry(client, argsSupplier, operationDesc, hint);
     } finally {
       if (dedicated != null)
