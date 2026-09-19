@@ -92,15 +92,22 @@ The same issue moved decode failures off the node-halt path: a `RaftLogEntryDeco
 
 The first answer was a setting - `arcadedb.ha.schemaDelta`, off by default, with "upgrade every node first, then turn it on" in its javadoc. That is an operator instruction enforced by nothing, which is #7219.
 
-**Do not add another one.** Since #7219 a node publishes what it can decode at `POST /api/v1/cluster/capabilities`, the leader polls every peer in its Raft configuration every `PeerCapabilityRegistry.REFRESH_PERIOD_MS`, and an optional section is written only when every peer has answered that it understands it. To add a section:
+**Do not add another one.** Since #7219 a node publishes what it can decode at `POST /api/v1/cluster/capabilities`, every node polls every peer in its Raft configuration every `PeerCapabilityRegistry.REFRESH_PERIOD_MS` (the leader alone until #7549 moved it onto every role), and an optional section is written only when every peer has answered that it understands it. To add a section:
 
 1. add a token to `PeerCapabilities` (permanent spelling - renaming one makes every older peer read as incapable, which is safe but silently turns the feature off cluster-wide) and put it in `PeerCapabilities.LOCAL`;
 2. gate the *emission* on the capability - but **pick the accessor by asking who can WRITE the section, not by
-   what happens on a "no"**. `RaftHAServer.peersMissingCapability` reads a registry the background monitor fills
-   on the LEADER alone, so it is the right accessor only for a section none but the leader ever emits, which is
-   what `RaftReplicatedDatabase.schemaDeltaEnabled()` is. A section any node may emit reads
+   what happens on a "no"**. `RaftHAServer.peersMissingCapability` reads the registry the background monitor
+   fills, and is the right accessor for a section none but the leader ever emits - which is what
+   `RaftReplicatedDatabase.schemaDeltaEnabled()` is. A section any node may emit reads
    `RaftHAServer.peersMissingCapabilityNow`, which consults that cache first and runs one bounded synchronous
-   round when it is not already a full "yes";
+   round when it is not already a full "yes".
+   **The rule survived #7549 but its reason changed, so do not re-derive it from the old one.** Until then the
+   monitor ran on the leader alone, so a follower's registry was empty by construction and the cached accessor
+   was simply wrong there. Now every node fills its own, and a follower's answer is as good as a leader's once
+   its first round has landed - but "once its first round has landed" is the whole of what is left: a node that
+   has just started has an empty registry and would read every peer as incapable. So the accessor is still
+   picked by who can WRITE the section, and the ask-now variant still exists, for a window rather than for a
+   role;
 3. leave decoding unconditional, so the upgrade stays a one-way ratchet - every node reads the section before any node writes one.
 
 Step 2 is where #7559 came from, and it is worth being precise about why, because the obvious reading of the
@@ -144,12 +151,14 @@ needs a token. That is the mechanism, not a reminder.
 
 Two things that are specific to a refusal and do not apply to a withheld section:
 
-- **It must not read a stale cache.** The background capability monitor runs on the LEADER only, because #7219's
-  only consumer was leader-side. A refusal is not: the group and API-token REST routes do not forward, so
-  `ServerSecurity.saveGroupClusterWide` runs on whichever node the client hit and submits through a Raft client
-  that routes to the leader. `peersMissingCapability` alone would therefore refuse every group change ever made on
-  a FOLLOWER, on a healthy single-version cluster. Gate on **`peersMissingCapabilityNow`**, which reads the cache
-  first and runs one synchronous round only when that is not already a full "yes".
+- **It must not read a cache that has not been filled yet.** The background capability monitor ran on the LEADER
+  only until #7549, because #7219's only consumer was leader-side. A refusal is not: the group and API-token REST
+  routes do not forward, so `ServerSecurity.saveGroupClusterWide` runs on whichever node the client hit and
+  submits through a Raft client that routes to the leader. `peersMissingCapability` alone therefore refused every
+  group change ever made on a FOLLOWER, on a healthy single-version cluster - which is #7559. #7549 has since put
+  the monitor on every node, so that is now a cold-start window rather than a permanent property of the role, and
+  the remedy is unchanged: gate on **`peersMissingCapabilityNow`**, which reads the cache first and runs one
+  synchronous round only when that is not already a full "yes".
 - **Strictness costs availability, so it needs an escape hatch.** "Every unknown is a no" turns an unreachable node
   into a refusal, and for `SECURITY_API_TOKENS_ENTRY` that includes a REVOCATION during an incident.
   `arcadedb.ha.securityEntryCapabilityGate` (default true) is how an operator who knows the unreachable node

@@ -44,14 +44,15 @@ package com.arcadedb.server.ha.raft;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class LocalCommitNotAppliedException extends RuntimeException {
-  private final String databaseName;
-
-  public LocalCommitNotAppliedException(final String message, final String databaseName, final Throwable cause) {
+  /**
+   * No {@code databaseName} field, unlike {@link RaftLogEntryDecodeException} (review of PR #7941). That one
+   * carries it because {@code applyTransaction} catches the type at a point where the envelope is all it has;
+   * this one is thrown from inside {@code applyWithRetry}'s lambda, which already has the database name and
+   * hands it to {@code handleUnexpectedApplyError} itself. A second copy would be a field nothing reads, free to
+   * drift from the one that decides the quarantine. The name is in the message, where a reader of the log wants
+   * it.
+   */
+  public LocalCommitNotAppliedException(final String message, final Throwable cause) {
     super(message, cause);
-    this.databaseName = databaseName;
-  }
-
-  public String getDatabaseName() {
-    return databaseName;
   }
 }
