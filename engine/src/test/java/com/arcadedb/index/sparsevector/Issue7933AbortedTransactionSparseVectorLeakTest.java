@@ -249,6 +249,44 @@ class Issue7933AbortedTransactionSparseVectorLeakTest {
     });
   }
 
+  /**
+   * {@code kill()} drops the registration instead of concluding it, and a LATER {@code reset()} of the same context
+   * must therefore publish nothing. That asymmetry with {@code rollback()} is deliberate - {@code kill()}'s only
+   * caller is a crash simulation, and a crash reverses nothing in memory - but the context outlives the kill where
+   * the index instances do not, so it is the one place the drop has to be exact.
+   * <p>
+   * Pins the mechanism on the sparse index because its state is observable: an eagerly-published LSM_VECTOR replay
+   * is dropped by the same line, and is unobservable afterwards for precisely the reason the drop is safe - the
+   * simulation closes the schema, discarding the index instance that held it.
+   */
+  @Test
+  void aKilledTransactionPublishesNothingWhenItsContextIsLaterReset() throws Exception {
+    withDatabase(db -> {
+      final RID  target = ridOf(db, 8);
+      final long postingsBefore = totalPostings(db);
+
+      db.begin();
+      target.asDocument(true).modify().set("tokens", dims(11)).set("weights", weights(11)).save();
+
+      final TransactionContext tx = ((DatabaseInternal) db).getTransaction();
+      // Phase 1 is what registers the buffer: before it, there is nothing to drop.
+      assertThat(tx.commit1stPhase(true)).isNotNull();
+      assertThat(totalPostings(db))
+          .as("the replay defers, so nothing is in the memtable yet")
+          .isEqualTo(postingsBefore);
+
+      tx.kill();
+
+      // The reuse the drop exists for. reset() is the publish route every non-rollback conclusion takes, so if the
+      // kill had left the registration behind, this is where a killed transaction's postings would surface.
+      tx.reset();
+
+      assertThat(totalPostings(db))
+          .as("a killed transaction is abandoned, so a later reset() of its reused context must publish nothing")
+          .isEqualTo(postingsBefore);
+    });
+  }
+
   // ---------- harness ----------
 
   @FunctionalInterface
