@@ -174,6 +174,21 @@ test("neither count request can hang the picker open forever", () => {
   assert.match(prompt, /counts\[direction\] = \[\];/, "a failed direction still has to let the picker open");
 });
 
+// A failed direction and an empty one both leave an empty array, but they mean opposite things: "unknown"
+// and "none". If BOTH fail, opening the picker on its empty state tells the operator the node has no
+// connections, directly contradicting the two error toasts that just fired.
+test("two failed count requests do not open a picker claiming the node has no connections", () => {
+  const prompt = extractFn("expandNodePrompt");
+
+  assert.match(prompt, /const failed = \{ out: false, in: false \};/, "failure has to be tracked separately");
+  assert.match(prompt, /failed\[direction\] = true;/);
+  assert.match(prompt, /if \(failed\.out && failed\.in\) return;/);
+
+  // One direction failing must still open the picker: the other's answer is usable on its own.
+  const guard = prompt.slice(prompt.indexOf("if (failed.out && failed.in) return;"));
+  assert.match(guard, /showExpandNodeModal\(safeRid, counts\.out, counts\.in\);/);
+});
+
 test("the count query asks for the serializer whose shape is the counts", () => {
   const prompt = extractFn("expandNodePrompt");
   assert.match(prompt, /serializer: "record"/, "an aggregate has no element to expand into a graph document");
