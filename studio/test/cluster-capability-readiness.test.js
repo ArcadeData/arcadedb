@@ -243,6 +243,14 @@ test("the security page gates the two create controls and routes their 409s", ()
       /clusterCapabilityRefusal/,
       fn + " must render the 409 as an explanation rather than a bare toast"
     );
+    // The refusal IS new information about the cluster - a peer fell behind since the last poll - so all four
+    // have to refresh the gate, not just the two that did. Asserted per function rather than in aggregate
+    // because the asymmetry is exactly what slipped through the first time (PR #7939 review).
+    assert.match(
+      extractFn(securitySrc, fn),
+      /refreshSecurityClusterReadiness\(\)/,
+      fn + " must bring the gate up to date with what the 409 just revealed"
+    );
   }
 
   assert.match(extractFn(securitySrc, "initSecurity"), /refreshSecurityClusterReadiness/,
