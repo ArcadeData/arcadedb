@@ -1,4 +1,12 @@
 // Security panel state
+//
+// Note on securityClusterStatus below: it starts null and its first refresh is asynchronous, so between the
+// panel opening and GET /api/v1/cluster answering, the gate treats the cluster as ready and Create stays
+// enabled. That window is deliberate and not a bug to be "fixed" into a loading spinner: an unknown answer
+// gates nothing ANYWHERE in this feature - a follower, a standalone server and a not-yet-loaded status are
+// one case - and the leader's own 409, rendered by clusterCapabilityRefusal(), is the authority that cannot
+// be raced. Blocking the form on a status that may never arrive would disable Create on every standalone
+// server (PR #7939 review).
 var securityInitialized = false;
 var usersLoaded = false;
 var usersDataTable = null;

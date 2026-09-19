@@ -156,6 +156,23 @@ test("a follower does not claim the cluster is unready just because it did not a
   assert.deepEqual(clusterSecurityCapabilityGaps(data), []);
 });
 
+// This renderer runs on every cluster poll, so an entry it cannot read must not take the page with it: the
+// throw would blank the node cards and the banner, hiding the very readiness they exist to show.
+test("a malformed peer row is skipped rather than blanking the cluster page", () => {
+  const data = readyCluster();
+  data.peers = [data.peers[0], null, undefined, "arcadedb9", 42, { id: "arcadedb2" }];
+
+  const readiness = clusterCapabilityReadiness(data, GROUPS);
+
+  assert.equal(readiness.ready, false, "the one real peer that lacks the capability is still reported");
+  assert.deepEqual(
+    readiness.missing.map((m) => m.id),
+    ["arcadedb2"],
+    "and only it: a row that is not an object cannot be judged"
+  );
+  assert.doesNotThrow(() => securityCapabilityBanner(clusterSecurityCapabilityGaps(data)[0]));
+});
+
 test("an unclustered server, an empty payload and a missing payload all say nothing", () => {
   for (const data of [null, undefined, {}, { peers: [] }, { isLeader: true, peers: [] }]) {
     assert.deepEqual(clusterSecurityCapabilityGaps(data), [], JSON.stringify(data));

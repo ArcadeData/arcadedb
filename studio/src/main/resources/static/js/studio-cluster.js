@@ -115,6 +115,10 @@ function clusterCapabilityReadiness(data, capability) {
   readiness.determinable = true;
   for (var i = 0; i < peers.length; i++) {
     var peer = peers[i];
+    // A row that is not an object cannot be judged, and must not take the whole cluster page down with it:
+    // this renderer runs on every poll, so one malformed entry would blank the node cards AND the banner -
+    // hiding the very readiness it exists to show (PR #7939 review).
+    if (peer == null || typeof peer !== "object") continue;
     var advertised = Array.isArray(peer.capabilities) ? peer.capabilities : null;
     if (advertised !== null && advertised.indexOf(capability) >= 0) continue;
 
@@ -202,6 +206,7 @@ function renderClusterCapabilityReadiness(data) {
  * printing "unknown" against every other peer there would read as a fault rather than as "this node does not ask".
  */
 function peerCapabilitiesLine(peer, data) {
+  if (peer == null || typeof peer !== "object") return "";
   var advertised = Array.isArray(peer.capabilities) ? peer.capabilities : null;
 
   if (advertised !== null) {
