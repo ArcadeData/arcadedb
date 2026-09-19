@@ -424,16 +424,6 @@ public class TransactionContext implements Transaction {
   }
 
   /**
-   * Takes back the registration of a record whose creation is being undone, because the indexing that followed it
-   * refused it (issue #7467). Without this the retracted record would still be walked by {@link #rollback()},
-   * which is harmless in itself but keeps a reference to an object the transaction no longer has anything to do
-   * with, for as long as the transaction lives.
-   * <p>
-   * Reference comparison, not {@code equals}: two brand-new documents of the same type carrying the same
-   * properties compare equal, and only one of them is being retracted. Searched from the END, where the record
-   * just registered is, so the case this exists for costs one comparison.
-   */
-  /**
    * Refuses this transaction's future {@link #commit()}, because something has left it in a state that must not
    * be published (issue #7467, CodeRabbit on PR #7936). The transaction stays ACTIVE and usable for reading and
    * for rolling back - a direct rollback from here would tear it down underneath a caller that owns it and may
@@ -459,6 +449,16 @@ public class TransactionContext implements Transaction {
     return rollbackOnlyReason;
   }
 
+  /**
+   * Takes back the registration of a record whose creation is being undone, because the indexing that followed it
+   * refused it (issue #7467). Without this the retracted record would still be walked by {@link #rollback()},
+   * which is harmless in itself but keeps a reference to an object the transaction no longer has anything to do
+   * with, for as long as the transaction lives.
+   * <p>
+   * Reference comparison, not {@code equals}: two brand-new documents of the same type carrying the same
+   * properties compare equal, and only one of them is being retracted. Searched from the END, where the record
+   * just registered is, so the case this exists for costs one comparison.
+   */
   public void unregisterNewRecord(final Record record) {
     for (int i = newRecords.size() - 1; i >= 0; i--)
       if (newRecords.get(i) == record) {
