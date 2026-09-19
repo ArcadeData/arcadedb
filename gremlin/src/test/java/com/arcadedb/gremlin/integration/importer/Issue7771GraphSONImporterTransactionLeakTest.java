@@ -129,6 +129,10 @@ class Issue7771GraphSONImporterTransactionLeakTest {
       assertThat(db.countType("NotAVertex", true))
           .as("the caller's own record is what their commit made durable - it used to be lost")
           .isEqualTo(1);
+      assertThat(db.countType("Person", true))
+          .as("and the import's partial rows rode along in it, because they are in THAT transaction now - the swap "
+              + "reported in the issue was these two counts the other way round")
+          .isEqualTo(2);
     } finally {
       cleanUp(db, databasePath, source);
     }

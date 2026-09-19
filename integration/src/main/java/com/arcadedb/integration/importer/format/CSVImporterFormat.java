@@ -141,6 +141,13 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     return "\\t".equals(delimiter) ? "\t" : delimiter;
   }
 
+  /**
+   * How many short rows this format instance has already reported, so only the first logs at WARNING (see
+   * {@link #reportShortRow}). Per instance, which is per source: {@code SourceDiscovery} builds a fresh format for
+   * each of an import's documents/vertices/edges files.
+   */
+  private long shortRowsReported = 0;
+
   private static final Object[] NO_PARAMS = new Object[] {};
   public static final  int      _32MB     = 32 * 1024 * 1024;
 
@@ -194,7 +201,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       beginRowTransaction(database, transactionActiveOnEntry, ownsTransaction);
 
       final AnalyzedEntity entity = sourceSchema.getSchema().getEntity(settings.documentTypeName);
-      checkAnalysisFoundUsableRows(entity, AnalyzedEntity.EntityType.DOCUMENT);
+      checkAnalysisFoundUsableRows(entity, entityType);
 
       final List<AnalyzedProperty> properties = new ArrayList<>();
       if (!"*".equalsIgnoreCase(settings.documentPropertiesInclude)) {
@@ -367,9 +374,14 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     if (headerColumns <= 0 || columns >= headerColumns)
       return;
 
-    // WARNING for the first one only: a systematically ragged file would otherwise log a line per row.
-    final long previous = context.warnings.getAndIncrement();
-    LogManager.instance().log(this, previous == 0 ? Level.WARNING : Level.FINE,
+    context.warnings.incrementAndGet();
+
+    // WARNING for the first one only: a systematically ragged file would otherwise log a line per row. Throttled on
+    // a counter of this FORMAT INSTANCE, which SourceDiscovery creates one of per source, rather than on
+    // context.warnings - that one is import-wide, so an import loading a vertices file and then an edges file would
+    // have logged one visible WARNING for the whole run and left the second source's first short row at FINE. Same
+    // scope as the analysis-side throttle, which is a local in analyze() (claude-review, issue #7782).
+    LogManager.instance().log(this, shortRowsReported++ == 0 ? Level.WARNING : Level.FINE,
         "Row at line %d has %d column(s) while the header has %d: the missing trailing column(s) are left unset", null, line,
         columns, headerColumns);
   }
