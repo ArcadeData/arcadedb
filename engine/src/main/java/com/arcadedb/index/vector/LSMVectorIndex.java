@@ -6781,6 +6781,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // unsafe, so it deliberately isn't taken under the read lock below.
       // The overlay's rows count toward the addressable candidates too: without them a search inside a transaction
       // that wrote the only rows there are would clamp k to zero and return nothing.
+      //
+      // Added, not netted: the rows the overlay supersedes are still counted by vectorIndex().size() and by the
+      // buffer, so a transaction that rewrites rows makes this an over-estimate. That is deliberate and matches
+      // what the clamp is for - it bounds an eager allocation, and the issue #5924 hazard it closes is a k near
+      // Integer.MAX_VALUE, not a k one larger than the live count. Subtracting would cost a pass over the
+      // superseded set on every search to tighten an allocation by a handful of entries, and an under-estimate
+      // here would drop rows the caller asked for.
       k = Math.min(k, Math.max(vectorIndex().size(), 0) + deltaVectors.size() + pendingCount(overlay));
 
       boolean readLockHeld = false;

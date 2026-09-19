@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.Pair;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -274,6 +275,56 @@ class Issue7378VectorSearchReadsOwnWritesTest extends TestHelper {
         .isEqualTo(inTx);
     assertThat(inTx).as("and the row the second rewrite aimed at the query must lead either way")
         .isNotEmpty().first().isEqualTo("doc0");
+  }
+
+  /**
+   * The reason {@code TransactionIndexContext.getIndexKeys(IndexInternal)} exists, driven rather than argued.
+   * <p>
+   * An {@link LSMVectorIndex} is named after the component file it holds, and a compaction swaps that file in and
+   * renames the index (issue #6105). Entries are queued on the transaction under the name the index answered to
+   * when the lane was opened, so a search that looked its own lane up by {@code getName()} would miss it entirely
+   * after a rename - and would miss it silently, which is the defect #7378 is about, reintroduced through the
+   * back door. Resolving the lane by index identity is what closes that, and this is the test that reaches it:
+   * without the identity fallback the search below returns the committed answer and the assertion fails.
+   * <p>
+   * The compaction runs on another thread because it refuses to run inside a transaction - which is also exactly
+   * where production runs it, on the async executor after a commit. The shape is the read-side twin of
+   * {@code Issue6105WriteAfterCompactionTest.aWriteQueuedBeforeACompactionOnAnotherThreadIsStillIndexed}.
+   */
+  @Test
+  @Tag("slow")
+  void aSearchFindsItsOwnPendingRowAfterACompactionRenamedTheIndex() throws Exception {
+    seedAndBuildGraph();
+    final LSMVectorIndex index = vectorIndex();
+    final String nameWhenQueued = index.getName();
+
+    database.begin();
+    try {
+      insertPendingRow();
+
+      final Throwable[] failure = new Throwable[1];
+      final Thread compactor = new Thread(() -> {
+        try {
+          database.command("sql", "COMPACT INDEX `" + nameWhenQueued + "`");
+        } catch (final Throwable t) {
+          failure[0] = t;
+        }
+      }, "issue7378-compactor");
+      compactor.start();
+      compactor.join(120_000);
+
+      assertThat(compactor.isAlive()).as("the compaction must have finished").isFalse();
+      assertThat(failure[0]).as("the compaction must not have failed").isNull();
+      assertThat(index.getName())
+          .as("the fixture is only a regression test once the compaction really renamed the index")
+          .isNotEqualTo(nameWhenQueued);
+
+      assertThat(idsOf(index.findNeighborsFromVector(PENDING_DIRECTION, 5)))
+          .as("the lane was opened under the pre-compaction name, so only an identity lookup still finds it")
+          .isNotEmpty().first().isEqualTo("created-in-tx");
+    } finally {
+      database.rollback();
+    }
   }
 
   /** A rolled back transaction leaves nothing behind: the overlay lives on the transaction, not on the index. */
