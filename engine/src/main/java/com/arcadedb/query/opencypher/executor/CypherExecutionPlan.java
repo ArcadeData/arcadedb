@@ -28,6 +28,7 @@ import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.function.cypher.CypherFunctionHelper;
 import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.opencypher.ast.AllReduceExpression;
 import com.arcadedb.query.opencypher.ast.ArithmeticExpression;
@@ -6423,15 +6424,20 @@ public class CypherExecutionPlan {
     if (anchorIdx != 0 && anchorIdx != hopCount)
       return null;
 
-    final RID anchorRid = boundVertexRid(db, correlation.boundValue(seededName));
+    final Object bound = boundElement(correlation.boundValue(seededName));
+    final RID anchorRid = boundVertexRid(db, bound);
     if (anchorRid == null)
       return null;
+    // The bound vertex itself when the row holds one that reads its own edge lists, so the seeded walk does not load
+    // it again. A GAVVertex is left out on purpose: it is not a VertexInternal, and it answers adjacency from
+    // whichever provider produced it, which may hold only part of the graph (issue #5757).
+    final VertexInternal anchorVertex = bound instanceof VertexInternal vertex ? vertex : null;
 
     if (anchorIdx == 0)
-      return new PropagateChainOp(nodeLabels, edgeTypes, directions, -1, -1, anchorRid);
+      return new PropagateChainOp(nodeLabels, edgeTypes, directions, -1, -1, anchorRid, anchorVertex);
 
     return new PropagateChainOp(reversed(nodeLabels), reversed(edgeTypes), reversedDirections(directions), -1, -1,
-        anchorRid);
+        anchorRid, anchorVertex);
   }
 
   /**
@@ -6441,10 +6447,7 @@ public class CypherExecutionPlan {
    * Rather than teach the operator to answer 0 for those, they are left to the ordinary pipeline, which is the only
    * thing here that knows what each of them means - and which is what answered them before this existed.
    */
-  private static RID boundVertexRid(final Database db, final Object value) {
-    Object bound = value;
-    if (bound instanceof Result result)
-      bound = result.getElement().orElse(null);
+  private static RID boundVertexRid(final Database db, final Object bound) {
     if (!(bound instanceof Identifiable identifiable))
       return null;
 
@@ -6452,6 +6455,11 @@ public class CypherExecutionPlan {
     if (rid == null)
       return null;
     return db.getSchema().getTypeByBucketId(rid.getBucketId()) instanceof VertexType ? rid : null;
+  }
+
+  /** What a bound name holds: a row carries its element inside a {@link Result}. */
+  private static Object boundElement(final Object value) {
+    return value instanceof Result result ? result.getElement().orElse(null) : value;
   }
 
   private static String[] reversed(final String[] values) {
