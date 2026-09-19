@@ -310,9 +310,15 @@ class Issue7519BootstrapWindowGateTest {
     assertThat(inFlightAfterTheInnerInstallReturned.get())
         .as("the inner install releasing its holder must not deregister the outer one, which is still running")
         .containsExactly(DB_NAME);
-    assertThat(sm.getBootstrapInstallsInFlight())
-        .as("and once both holders are gone the entry is removed rather than left behind at zero")
-        .isEmpty();
+    // Awaited, not asserted outright (review of PR #7964): BOTH installs schedule their retry on the real
+    // single-threaded lifecycleExecutor, and each holder is released inside retryBootstrapInstall's finally, which
+    // runs only once that queued task does. Asserting synchronously here races the executor and would flake on a
+    // loaded box - the same shape as the pre-existing flake in Issue7298BootstrapReplaySkipMissingDatabaseTest
+    // (#7969), which is worth not reproducing in a test written to prove this gate is sound.
+    await().atMost(Duration.ofSeconds(30))
+        .untilAsserted(() -> assertThat(sm.getBootstrapInstallsInFlight())
+            .as("and once both holders are gone the entry is removed rather than left behind at zero")
+            .isEmpty());
   }
 
   /** No bootstrap has happened at all: nothing to report, and nothing allocated on the readiness-probe path. */
