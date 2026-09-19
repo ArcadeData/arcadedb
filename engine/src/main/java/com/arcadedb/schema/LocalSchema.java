@@ -2696,6 +2696,11 @@ public class LocalSchema implements Schema {
     if (root.has("materializedViews")) {
       final JSONObject mvJSON = root.getJSONObject("materializedViews");
       for (final String viewName : mvJSON.keySet()) {
+        // What was installed under this name before the restore touched it, so a replacement that fails halfway
+        // can be undone rather than left as the registered view. Null on the replace path, where the sweep above
+        // has already emptied the map.
+        final MaterializedViewImpl replaced = materializedViews.get(viewName);
+
         try {
           final JSONObject viewDef = mvJSON.getJSONObject(viewName);
           final MaterializedViewImpl view = MaterializedViewImpl.fromJSON(database, viewDef);
@@ -2707,12 +2712,7 @@ public class LocalSchema implements Schema {
 
           materializedViews.put(viewName, view);
 
-          // Re-register listeners for INCREMENTAL views
-          if (view.getRefreshMode() == MaterializedViewRefreshMode.INCREMENTAL)
-            MaterializedViewBuilder.registerListeners(this, view, view.getSourceTypeNames());
-
-          if (view.getRefreshMode() == MaterializedViewRefreshMode.PERIODIC)
-            getMaterializedViewScheduler().schedule(database, view);
+          installMaterializedViewRefresh(view);
 
           // Crash recovery: if status is BUILDING, it was interrupted
           if (MaterializedViewStatus.BUILDING.name().equals(view.getStatus()))
@@ -2721,6 +2721,26 @@ public class LocalSchema implements Schema {
           ++failures;
           LogManager.instance().log(this, Level.SEVERE, "Error loading materialized view '%s': %s", e, viewName,
               e.getMessage() != null ? e.getMessage() : e.toString());
+
+          // UNDONE, not left half-installed. The failure can come from registering the listeners themselves -
+          // MaterializedViewBuilder.registerListeners walks the source types and raises on the first one the
+          // target does not have, after the earlier ones are already registered - and by then the view this one
+          // replaced has had its own resources taken down. Logging and moving on would leave the name mapped to a
+          // view that is refreshed by nothing, which reads as a working view and is not one.
+          unregisterMaterializedViewRefresh(viewName);
+
+          if (replaced != null) {
+            materializedViews.put(viewName, replaced);
+            try {
+              installMaterializedViewRefresh(replaced);
+            } catch (final Exception restoreFailure) {
+              LogManager.instance().log(this, Level.SEVERE,
+                  "Could not reinstate the materialized view '%s' the failed restore replaced: it stays registered "
+                      + "but is no longer refreshed, and a REFRESH MATERIALIZED VIEW reinstalls it", restoreFailure,
+                  viewName);
+            }
+          } else
+            materializedViews.remove(viewName);
         }
       }
     }
@@ -2808,6 +2828,19 @@ public class LocalSchema implements Schema {
    * definition replacing this one names the same type, so dropping it here would delete the data the restore is
    * about to adopt. A view of that name that is not registered is a no-op.
    */
+  /**
+   * Installs the refresh resources a registered materialized view needs: an INCREMENTAL view's listeners on its
+   * source types, a PERIODIC view's scheduled task. The counterpart of {@link #unregisterMaterializedViewRefresh},
+   * and the view must already be in {@code materializedViews} so that one can find it again to take them down.
+   */
+  private void installMaterializedViewRefresh(final MaterializedViewImpl view) {
+    if (view.getRefreshMode() == MaterializedViewRefreshMode.INCREMENTAL)
+      MaterializedViewBuilder.registerListeners(this, view, view.getSourceTypeNames());
+
+    if (view.getRefreshMode() == MaterializedViewRefreshMode.PERIODIC)
+      getMaterializedViewScheduler().schedule(database, view);
+  }
+
   private void unregisterMaterializedViewRefresh(final String viewName) {
     final MaterializedViewImpl previous = materializedViews.get(viewName);
     if (previous == null)
