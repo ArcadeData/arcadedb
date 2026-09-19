@@ -40,6 +40,7 @@ import org.junit.jupiter.api.TestInfo;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -262,14 +263,15 @@ class Issue7933AbortedTransactionSparseVectorLeakTest {
         populate(db);
         test.run(db);
       } finally {
-        if (db.isOpen())
-          try {
-            db.drop();
-          } catch (final Exception dropRefused) {
-            // A database fenced for recovery refuses the operations drop() needs; closing it is all that is left,
-            // and the files go with the temporary directory in tearDown(). Only the fence test can reach this.
+        // Gated on the CONDITION, not on catching whatever drop() throws: a fenced database refuses the operations
+        // drop() needs, so the fence test can only close and leave the files to tearDown() - but a drop that fails
+        // in any of the other tests is a leaked database, and swallowing it here would hide exactly that.
+        if (db.isOpen()) {
+          if (((DatabaseInternal) db).getEmbedded() instanceof LocalDatabase local && local.isFencedForRecovery())
             db.close();
-          }
+          else
+            db.drop();
+        }
       }
     }
   }
@@ -338,7 +340,7 @@ class Issue7933AbortedTransactionSparseVectorLeakTest {
 
   private static float[] unitWeights(final int id) {
     final float[] w = new float[dims(id).length];
-    java.util.Arrays.fill(w, 1.0f);
+    Arrays.fill(w, 1.0f);
     return w;
   }
 
