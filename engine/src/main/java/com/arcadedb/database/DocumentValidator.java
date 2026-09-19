@@ -84,6 +84,36 @@ public class DocumentValidator {
   }
 
   /**
+   * The kinds of existence constraint a property can carry, i.e. the ones that are about the property being there
+   * at all rather than about the value it holds.
+   */
+  enum ExistenceConstraint {
+    MANDATORY, NOT_NULL
+  }
+
+  /**
+   * The existence constraint the document fails to satisfy on this property, or null when it satisfies both.
+   * <p>
+   * The single definition of that rule. It has two callers who must agree on it exactly: the write path below,
+   * which refuses (or defers) the write, and {@link DeferredExistenceChecks}, which asks the same question again of
+   * the same record once the statement that deferred it has finished. Written twice, a later constraint kind added
+   * to one would be silently invisible to the other - which is the drift this method exists to make impossible.
+   * Only the rule is shared; each caller phrases its own error, because the two are raised at different moments and
+   * say different things about the record.
+   * <p>
+   * Takes a {@link Document} rather than a {@link MutableDocument} because the end-of-statement caller re-reads the
+   * record and holds the immutable form; nothing in the rule needs more than {@code has()} and {@code get()}.
+   */
+  static ExistenceConstraint unmetExistenceConstraint(final Document document, final Property p) {
+    final String name = p.getName();
+    if (p.isMandatory() && !document.has(name))
+      return ExistenceConstraint.MANDATORY;
+    if (p.isNotNull() && document.has(name) && document.get(name) == null)
+      return ExistenceConstraint.NOT_NULL;
+    return null;
+  }
+
+  /**
    * @return true when an existence constraint the document does not satisfy has been deferred to the end of the
    * statement instead of being raised here - see {@link DeferredExistenceChecks}
    */
@@ -91,24 +121,20 @@ public class DocumentValidator {
       throws ValidationException {
     boolean deferred = false;
 
-    if (p.isMandatory() && !document.has(p.getName())) {
+    final ExistenceConstraint unmetExistence = unmetExistenceConstraint(document, p);
+    if (unmetExistence != null) {
       if (DeferredExistenceChecks.defer(document))
         deferred = true;
-      else
+      else if (unmetExistence == ExistenceConstraint.MANDATORY)
         throwValidationException(document.getType(), p, "is mandatory, but not found on record: " + document);
+      else
+        // NULLITY
+        throwValidationException(document.getType(), p, "cannot be null, record: " + document);
     }
 
     final Object fieldValue = document.get(p.getName());
 
-    if (fieldValue == null) {
-      if (p.isNotNull() && document.has(p.getName())) {
-        // NULLITY
-        if (DeferredExistenceChecks.defer(document))
-          deferred = true;
-        else
-          throwValidationException(document.getType(), p, "cannot be null, record: " + document);
-      }
-    } else {
+    if (fieldValue != null) {
       if (p.getRegexp() != null)
         // REGEXP - bounded against catastrophic backtracking (issue #5886): this runs on every insert/update of
         // a validated property, reachable through any write path (REST, any wire protocol) with no query

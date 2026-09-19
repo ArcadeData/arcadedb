@@ -215,6 +215,51 @@ class CypherExistenceConstraintWithSetIssue7945Test {
   }
 
   /**
+   * A whole path is one provisional region - the vertices and the relationship between them - so a statement that
+   * completes only one side must not leave the other half of a freshly created path behind. Deleting the vertex
+   * goes through the ordinary delete, which detaches its edges, so what survives is a consistent graph rather than
+   * a dangling relationship.
+   */
+  @Test
+  void aPathWhoseVertexIsNeverCompletedLeavesNoHalfOfItBehind() {
+    database.command("cypher", "CREATE CONSTRAINT rel_since_exists IF NOT EXISTS FOR ()-[r:KNOWS]-() REQUIRE r.since IS NOT NULL")
+        .close();
+
+    // The relationship is completed by the SET, the vertices never are.
+    assertThatThrownBy(() -> database.command("cypher",
+        "CREATE (a:Record {id: 'p1'})-[r:KNOWS]->(b:Record {id: 'p2'}) SET r.since = 2020"))
+        .isInstanceOf(CommandExecutionException.class)
+        .rootCause().isInstanceOf(ValidationException.class)
+        .hasMessageContaining("orgId");
+
+    assertThat(countRecords()).isZero();
+    try (final ResultSet rs = database.query("cypher", "MATCH ()-[r:KNOWS]->() RETURN count(r) AS c")) {
+      assertThat(rs.next().<Number>getProperty("c").longValue()).isZero();
+    }
+  }
+
+  /**
+   * The mirror image: the vertices are completed and the relationship is not, so only the relationship is taken
+   * back and the two nodes stay.
+   */
+  @Test
+  void aPathWhoseRelationshipIsNeverCompletedKeepsTheCompletedVertices() {
+    database.command("cypher", "CREATE CONSTRAINT rel_since_exists IF NOT EXISTS FOR ()-[r:KNOWS]-() REQUIRE r.since IS NOT NULL")
+        .close();
+
+    assertThatThrownBy(() -> database.command("cypher",
+        "CREATE (a:Record {id: 'p3'})-[r:KNOWS]->(b:Record {id: 'p4'}) SET a.orgId = 'o', b.orgId = 'o'"))
+        .isInstanceOf(CommandExecutionException.class)
+        .rootCause().isInstanceOf(ValidationException.class)
+        .hasMessageContaining("since");
+
+    assertThat(countRecords()).isEqualTo(2);
+    try (final ResultSet rs = database.query("cypher", "MATCH ()-[r:KNOWS]->() RETURN count(r) AS c")) {
+      assertThat(rs.next().<Number>getProperty("c").longValue()).isZero();
+    }
+  }
+
+  /**
    * A bulk upsert: every row creates a provisional record that the SET a few steps later completes. Pinned because
    * the pending set is swept rather than grown, so this shape must not depend on how many rows it carries.
    */
