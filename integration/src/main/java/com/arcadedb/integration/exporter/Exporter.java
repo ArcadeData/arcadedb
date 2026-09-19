@@ -242,7 +242,8 @@ public class Exporter {
       return clazz.getConstructor(DatabaseInternal.class, ExporterSettings.class, ExporterContext.class, ConsoleLogger.class)
           .newInstance(database, settings, context, logger);
     } catch (final InstantiationException | IllegalAccessException | InvocationTargetException | NoSuchMethodException |
-                   ClassNotFoundException e) {
+                   ClassNotFoundException | ClassCastException e) {
+      // ClassCastException too - see SourceDiscovery.gremlinFormatImporter() for why the unchecked cast needs it.
       throw new ExportException(
           "Cannot export in '" + format + "' format: its exporter is provided by the optional arcadedb-gremlin module, "
               + "which is not available on this classpath", e);

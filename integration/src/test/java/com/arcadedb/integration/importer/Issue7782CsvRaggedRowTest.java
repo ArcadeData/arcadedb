@@ -478,6 +478,92 @@ class Issue7782CsvRaggedRowTest {
     assertThat(entity.getAverageRowLength()).isGreaterThan(0);
   }
 
+  /**
+   * The vertex route's long-row half, which documents and edges both had and vertices did not, even though
+   * {@code loadVertices()} calls the same gate.
+   */
+  @Test
+  void aVertexRowWithMoreColumnsThanTheHeaderAbortsWithADiagnosableMessage() throws Exception {
+    final String databasePath = "target/databases/test-import-7782-long-vertex";
+    final File source = new File("target/importer-7782-long-vertex.csv");
+    // Row 2 (0-based) carries a third value the header has no name for; the others are well formed.
+    Files.writeString(source.toPath(), "id,name\n1,Jay\n2,Kim,extra\n3,Lee\n", StandardCharsets.UTF_8);
+
+    final DatabaseFactory factory = new DatabaseFactory(databasePath);
+    if (factory.exists())
+      factory.open().drop();
+    FileUtils.deleteRecursively(new File(databasePath));
+
+    final Database db = factory.create();
+    try {
+      final Importer importer = new Importer(db, null);
+      importer.settings.vertices = source.getAbsolutePath();
+      importer.settings.typeIdProperty = "id";
+
+      assertThatThrownBy(importer::load)
+          .as("the ragged vertex row aborts by default, naming the line and both counts")
+          .isInstanceOf(ImportException.class)
+          .hasMessageContaining("line 2")
+          .hasMessageContaining("has 3 column(s)")
+          .hasMessageContaining("header has 2");
+    } finally {
+      while (db.isTransactionActive())
+        db.rollback();
+      db.drop();
+      FileUtils.deleteRecursively(new File(databasePath));
+      source.delete();
+    }
+  }
+
+  /**
+   * The footgun in {@code checkAnalysisFoundUsableRows()}: {@code -analysisLimitEntries} bounds the ANALYSIS and not
+   * the load, so a sampled head that is entirely ragged refuses a source whose remaining rows are well formed. That
+   * refusal is still the right outcome - with no property derived, the load pass would otherwise write one
+   * property-less record per row - but it has to say that the WINDOW is what it saw, or the operator goes looking
+   * for ragged rows that are not there.
+   */
+  @Test
+  void aRaggedSampleWindowRefusesAndNamesTheAnalysisLimit() throws Exception {
+    final String databasePath = "target/databases/test-import-7782-window";
+    final File source = new File("target/importer-7782-window.csv");
+    final StringBuilder csv = new StringBuilder("a,b\n1,2,extra\n3,4,extra\n");
+    for (int i = 0; i < 3; i++)
+      csv.append(i).append(',').append(i + 100).append('\n');
+    Files.writeString(source.toPath(), csv.toString(), StandardCharsets.UTF_8);
+
+    final DatabaseFactory factory = new DatabaseFactory(databasePath);
+    if (factory.exists())
+      factory.open().drop();
+    FileUtils.deleteRecursively(new File(databasePath));
+
+    final Database db = factory.create();
+    try {
+      db.command("sql", "CREATE DOCUMENT TYPE Doc");
+
+      final Importer importer = new Importer(db, "file://" + source.getAbsolutePath());
+      importer.settings.documentTypeName = "Doc";
+      importer.settings.onRowError = "skip";
+      // The window covers the two ragged rows and nothing else; three well-formed rows follow it.
+      importer.settings.analysisLimitEntries = 2;
+
+      assertThatThrownBy(importer::load)
+          .isInstanceOf(ImportException.class)
+          .hasMessageContaining("No usable row found in the")
+          .as("and it names the window, which is the operator's actual fix here")
+          .hasMessageContaining("-analysisLimitEntries 2");
+
+      assertThat(db.countType("Doc", true))
+          .as("nothing was written - this used to be one property-less document per row")
+          .isEqualTo(0);
+    } finally {
+      while (db.isTransactionActive())
+        db.rollback();
+      db.drop();
+      FileUtils.deleteRecursively(new File(databasePath));
+      source.delete();
+    }
+  }
+
   private interface Body {
     Void run(Importer importer, Database db) throws Exception;
   }

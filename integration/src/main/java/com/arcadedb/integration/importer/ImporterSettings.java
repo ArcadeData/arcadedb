@@ -124,6 +124,15 @@ public class ImporterSettings {
    * {@link #newExclusiveTransactionRequiredException()}) rather than silently committing/discarding whatever the
    * caller had pending.
    */
+  /**
+   * One case this does NOT rescue, because it is not a row failure: a source the analysis derived no property at all
+   * from, every row it read having been refused for its column count. {@code CSVImporterFormat}'s
+   * {@code checkAnalysisFoundUsableRows()} refuses that outright whatever this setting says - under {@code skip} the
+   * alternative is an import that completes having produced nothing. Worth knowing alongside
+   * {@code -analysisLimitEntries}/{@code -analysisLimitBytes}, which bound the ANALYSIS and not the load: a sampled
+   * head that is entirely ragged refuses the whole source even when the rest of it is well formed, and the refusal
+   * says so (issue #7782).
+   */
   public boolean isSkipOnRowError() {
     return "skip".equalsIgnoreCase(onRowError);
   }
