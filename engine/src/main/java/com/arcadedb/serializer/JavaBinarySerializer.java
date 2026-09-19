@@ -26,7 +26,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
@@ -88,20 +88,26 @@ public class JavaBinarySerializer {
     out.write(staged.toByteArray());
 
     // SPECIAL OPERATION FOR VERTICES AND EDGES
-    if (document instanceof Vertex) {
-      final RID outRID = ((MutableVertex) document).getOutEdgesHeadChunk();
+    //
+    // #7908: narrowed to the INTERFACES that declare the four accessors below, not to the MUTABLE classes. Both
+    // arms used to cast to MutableVertex/MutableEdge, so every graph record the engine hands back from a scan, a
+    // query or lookupByRID - an ImmutableVertex/ImmutableEdge/ImmutableLightEdge - died with a ClassCastException
+    // inside writeObject, while the identical document path worked. The narrowing bought nothing: the head-chunk
+    // pointers are declared on VertexInternal and the endpoints on Edge itself.
+    if (document instanceof VertexInternal vertex) {
+      final RID outRID = vertex.getOutEdgesHeadChunk();
       out.writeInt(outRID != null ? outRID.getBucketId() : -1);
       out.writeLong(outRID != null ? outRID.getPosition() : -1);
 
-      final RID inRID = ((MutableVertex) document).getInEdgesHeadChunk();
+      final RID inRID = vertex.getInEdgesHeadChunk();
       out.writeInt(inRID != null ? inRID.getBucketId() : -1);
       out.writeLong(inRID != null ? inRID.getPosition() : -1);
-    } else if (document instanceof Edge) {
-      final RID outRID = ((MutableEdge) document).getOut();
+    } else if (document instanceof Edge edge) {
+      final RID outRID = edge.getOut();
       out.writeInt(outRID != null ? outRID.getBucketId() : -1);
       out.writeLong(outRID != null ? outRID.getPosition() : -1);
 
-      final RID inRID = ((MutableEdge) document).getIn();
+      final RID inRID = edge.getIn();
       out.writeInt(inRID != null ? inRID.getBucketId() : -1);
       out.writeLong(inRID != null ? inRID.getPosition() : -1);
     }
@@ -137,22 +143,25 @@ public class JavaBinarySerializer {
     }
     mutable.fromMap(properties);
 
-    // SPECIAL OPERATION FOR VERTICES AND EDGES
-    if (document instanceof Vertex) {
+    // SPECIAL OPERATION FOR VERTICES AND EDGES - the same two arms writeExternal uses, so the two halves agree on
+    // which records carry the trailing endpoint block. The target is a MutableDocument (rejected above otherwise),
+    // so a Vertex here is always a MutableVertex and an Edge always a MutableEdge; pattern-matched rather than cast
+    // so the pairing is checked by the compiler instead of by a cast that can only fail at runtime (#7908).
+    if (document instanceof MutableVertex vertex) {
       // Edge-chain head chunks are internal pointers; bare RID is sufficient since they never leak to user code as identities.
       final RID outRID = new RID(in.readInt(), in.readLong());
-      ((MutableVertex) document).setOutEdgesHeadChunk(outRID.isValid() ? outRID : null);
+      vertex.setOutEdgesHeadChunk(outRID.isValid() ? outRID : null);
 
       final RID inRID = new RID(in.readInt(), in.readLong());
-      ((MutableVertex) document).setInEdgesHeadChunk(inRID.isValid() ? inRID : null);
+      vertex.setInEdgesHeadChunk(inRID.isValid() ? inRID : null);
 
-    } else if (document instanceof Edge) {
+    } else if (document instanceof MutableEdge edge) {
       // Edge endpoints are user-facing via edge.getOut()/getIn(): bind to the database so asVertex() works across threads.
       final RID outRID = db.newRID(in.readInt(), in.readLong());
-      ((MutableEdge) document).setOut(outRID.isValid() ? outRID : null);
+      edge.setOut(outRID.isValid() ? outRID : null);
 
       final RID inRID = db.newRID(in.readInt(), in.readLong());
-      ((MutableEdge) document).setIn(inRID.isValid() ? inRID : null);
+      edge.setIn(inRID.isValid() ? inRID : null);
     }
   }
 }

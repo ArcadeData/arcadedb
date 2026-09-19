@@ -21,8 +21,12 @@ package com.arcadedb.database.async;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityDatabaseUser;
+
+import java.util.logging.Level;
 
 public class DatabaseAsyncTransaction implements DatabaseAsyncTask {
   public final Database.TransactionScope tx;
@@ -107,8 +111,17 @@ public class DatabaseAsyncTransaction implements DatabaseAsyncTask {
     }
 
     for (int retry = 0; retry < retries + 1; ++retry) {
+      // Declared OUTSIDE the try so the catch can read them; sampled just after begin(), so they refer to the
+      // transaction this attempt's block actually runs in. See the guard in the catch below (#7916).
+      TransactionContext txAtStart = null;
+      long commitCountAtStart = 0;
+
       try {
         database.begin();
+
+        txAtStart = database.getTransactionIfExists();
+        commitCountAtStart = txAtStart != null ? txAtStart.getCommitCount() : 0;
+
         tx.execute();
         database.commit();
 
@@ -125,6 +138,21 @@ public class DatabaseAsyncTransaction implements DatabaseAsyncTask {
         lastException = e;
         if (database.isTransactionActive())
           database.rollback();
+
+        // #7916: the same guard LocalDatabase.transaction takes, and for the same reason - this loop is the
+        // precedent commitBatch()'s javadoc cites for the async retry contract. A statement with an explicit batch
+        // boundary (UPDATE/DELETE/MOVE VERTEX ... BATCH n) publishes everything up to the last boundary and
+        // re-begins, so the rollback above took back only the remainder and a replay would apply the durable half
+        // twice. Breaking out here hands the conflict to onErrorCallback and the caller through the tail below,
+        // exactly as an exhausted retry budget does.
+        if (TransactionContext.isPartiallyCommitted(txAtStart, commitCountAtStart)) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Async transaction on database '%s' committed part of its work before failing (a statement with a BATCH "
+                  + "boundary): NOT retrying, because replaying it would apply the already durable half a second "
+                  + "time. Propagating the conflict to the caller",
+              null, database.getName());
+          break;
+        }
 
       } catch (final Exception e) {
         if (database.getTransaction().isActive())

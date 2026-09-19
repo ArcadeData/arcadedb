@@ -1753,11 +1753,19 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     for (int retry = 0; retry < attempts; ++retry) {
       boolean createdNewTx = true;
 
+      // Declared OUTSIDE the try so the catch can read them; sampled just after begin(), so they refer to the
+      // transaction this attempt's block actually runs in. See the guard in the catch below (#7916).
+      TransactionContext txAtStart = null;
+      long commitCountAtStart = 0;
+
       try {
         if (joinCurrentTx && wrappedDatabaseInstance.isTransactionActive())
           createdNewTx = false;
         else
           wrappedDatabaseInstance.begin();
+
+        txAtStart = wrappedDatabaseInstance.getTransactionIfExists();
+        commitCountAtStart = txAtStart != null ? txAtStart.getCommitCount() : 0;
 
         txBlock.execute();
 
@@ -1787,6 +1795,20 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
         if (error != null)
           error.call(e);
+
+        // #7916: a block that already published part of its work cannot be re-run - the rollback above could not
+        // take that part back, and a second pass would apply it twice and then report clean success. The commit
+        // came from a statement with an explicit batch boundary (UPDATE/DELETE/MOVE VERTEX ... BATCH n), which
+        // re-begins straight after, so isTransactionActive() alone cannot see it. The conflict goes to the
+        // caller, who is the only one who knows how to compensate for the half that stands.
+        if (TransactionContext.isPartiallyCommitted(txAtStart, commitCountAtStart)) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Transaction block on database '%s' committed part of its work before failing (a statement with a BATCH "
+                  + "boundary): NOT retrying, because replaying it would apply the already durable half a second "
+                  + "time. Propagating %s to the caller",
+              null, name, e.getClass().getSimpleName());
+          throw e;
+        }
 
         if (e instanceof DuplicatedKeyException) {
           // #4959: a genuine duplicate is deterministic and fails identically on every attempt. Only a
