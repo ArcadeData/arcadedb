@@ -108,15 +108,17 @@ class Issue7909RefusedStartDoesNotRaiseTheFrameBudgetIT extends BaseGraphServerT
   }
 
   /**
-   * The reason the in-flight-{@code start} half of the answer exists at all, and the case a budget keyed only on
-   * a registered session would lose (claude-review on PR #7936). The client pipelines its first {@code chunk}
-   * behind {@code start} without waiting for {@code started}, so the chunk's size is decided on the I/O thread
-   * while the start is still on a worker - or has only just finished. Both orderings must grant the budget: the
-   * grant is taken before the frame is queued and released only once the session is registered, so there is no
-   * instant between them at which the connection is charged the control budget.
+   * A client that pipelines its first {@code chunk} behind {@code start}, without waiting for {@code started},
+   * is served - which is the behaviour an operator cares about and the reason the budget has two halves at all.
+   * <p>
+   * It does NOT, on its own, prove the in-flight-{@code start} half: over a real socket the worker may have
+   * registered the session before the chunk's size is decided, in which case the session half admits the frame
+   * (CodeRabbit on PR #7936). That half is pinned deterministically, by holding the worker, in
+   * {@code Issue7909InFlightStartHoldsTheFrameBudgetTest}. Kept here because the end-to-end path is worth
+   * exercising whichever half answers.
    */
   @Test
-  void aChunkPipelinedBehindAStartIsAlreadyOnTheInsertBudget() throws Throwable {
+  void aChunkPipelinedBehindAStartIsServed() throws Throwable {
     try (final var client = new WebSocketClientHelper(wsUrl(), "root", DEFAULT_PASSWORD_FOR_TESTS)) {
       final String sessionId = "pipelined-7909";
       final JSONObject options = personOptions();
