@@ -775,7 +775,61 @@ const mergeCases = async () => {
   check("and is reported as failed", r.audit.includes("failed=1"), true);
 };
 
+// --------------------------------------------------------------------------------------------
+// The loader itself
+// --------------------------------------------------------------------------------------------
+
+// `require(`${GITHUB_WORKSPACE}/.github/scripts/<x>.js`)` makes Node walk UP from the script
+// looking for the nearest package.json, to decide whether the file is CommonJS or ESM. During a
+// run something writes an unparseable package.json into the workspace root, and the walk reaches
+// it: run 35468967053 failed with ERR_INVALID_PACKAGE_CONFIG before a line of our code ran, and
+// the classifier applied no labels to issue #7952.
+//
+// The package.json beside the scripts stops the walk one directory short. It declares what these
+// files already are and installs nothing. These cases fail if it is removed or made invalid,
+// because the next person to see it will not know why it is there.
+const loaderCases = () => {
+  console.log("module loading");
+
+  const manifest = path.join(SCRIPTS, "package.json");
+  check("a manifest sits beside the scripts", fs.existsSync(manifest), true);
+
+  let parsed = null;
+  try {
+    parsed = JSON.parse(fs.readFileSync(manifest, "utf8"));
+  } catch (err) {
+    parsed = null;
+  }
+  check("and it parses", parsed !== null, true);
+  check("and it pins CommonJS", parsed?.type, "commonjs");
+  check("and it is private, so no license or audit scan adopts it", parsed?.private, true);
+  check("and it declares no dependencies", parsed?.dependencies, undefined);
+
+  // The guard is only worth having if it survives a broken manifest above it, which is the
+  // situation on the runner.
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "issue-workflow-loader-"));
+  fs.writeFileSync(path.join(sandbox, "package.json"), "this is not JSON");
+  const scripts = path.join(sandbox, ".github", "scripts");
+  fs.mkdirSync(scripts, { recursive: true });
+  for (const f of fs.readdirSync(SCRIPTS))
+    if (f.endsWith(".js") || f === "package.json")
+      fs.copyFileSync(path.join(SCRIPTS, f), path.join(scripts, f));
+
+  for (const entry of ["issue-classify-apply.js", "issue-collect-related.js", "issue-merge-related.js"]) {
+    let loaded = false;
+    try {
+      require(path.join(scripts, entry));
+      loaded = true;
+    } catch (err) {
+      loaded = err.message;
+    }
+    check(`${entry} loads under an unparseable parent manifest`, loaded, true);
+  }
+  fs.rmSync(sandbox, { recursive: true, force: true });
+};
+
 (async () => {
+  loaderCases();
   await classifyCases();
   await collectCases();
   await mergeCases();
