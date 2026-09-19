@@ -41,6 +41,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.TimeZone;
 import java.util.logging.Level;
@@ -244,7 +245,8 @@ public class RemoteSchema implements Schema {
   @Override
   public TypeIndex createTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName,
       final String... propertyNames) {
-    final String propList = Arrays.stream(propertyNames).map(Identifier::quote).collect(Collectors.joining(","));
+    final String propList = Arrays.stream(propertyNames).map(RemoteSchema::quoteIndexProperty)
+        .collect(Collectors.joining(","));
     remoteDatabase.command("sql", "create index on " + Identifier.quote(typeName) +//
         "(" + propList + ") " +//
         (unique ? "UNIQUE" : "NOTUNIQUE") +//
@@ -252,10 +254,36 @@ public class RemoteSchema implements Schema {
     return null;
   }
 
+  /**
+   * The trailing words {@link com.arcadedb.schema.TypeIndexBuilder} reads as a MODIFIER on a MAP or LIST property
+   * rather than as part of its name.
+   */
+  private static final List<String> INDEX_PROPERTY_MODIFIERS = List.of(" by key", " by value", " by item");
+
+  /**
+   * The SQL spelling of one entry of a {@code propertyNames} array: the name escaped, and the modifier - if the
+   * entry carries one - left as the keywords the grammar expects after it.
+   * <p>
+   * An entry is not always a bare name. {@code TypeIndexBuilder} strips a trailing {@code " by key"} /
+   * {@code " by value"} / {@code " by item"} and indexes the map or list accordingly, and {@code indexProperty} in
+   * the grammar spells that as {@code name BY KEY} rather than as part of the identifier. Quoting the WHOLE entry -
+   * which is what #7914's first pass did, having replaced a join that quoted nothing at all - asked for an index on
+   * a property literally called {@code myMap by key} instead (PR #7942 review).
+   */
+  private static String quoteIndexProperty(final String propertyName) {
+    for (final String modifier : INDEX_PROPERTY_MODIFIERS)
+      if (propertyName.endsWith(modifier))
+        return Identifier.quote(propertyName.substring(0, propertyName.length() - modifier.length()))
+            + modifier.toUpperCase(Locale.ROOT);
+
+    return Identifier.quote(propertyName);
+  }
+
   @Override
   public TypeIndex getOrCreateTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName,
       final String... propertyNames) {
-    final String propList = Arrays.stream(propertyNames).map(Identifier::quote).collect(Collectors.joining(","));
+    final String propList = Arrays.stream(propertyNames).map(RemoteSchema::quoteIndexProperty)
+        .collect(Collectors.joining(","));
     remoteDatabase.command("sql", "create index if not exists on " + Identifier.quote(typeName) +//
         "(" + propList + ") " +//
         (unique ? "UNIQUE" : "NOTUNIQUE") +//
