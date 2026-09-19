@@ -32,6 +32,7 @@ import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 public class CreateGraphAnalyticalViewStatement extends DDLStatement {
@@ -143,7 +144,7 @@ public class CreateGraphAnalyticalViewStatement extends DDLStatement {
   private GraphAnalyticalView.UpdateMode resolveUpdateMode() {
     if (updateModeStr != null) {
       try {
-        return GraphAnalyticalView.UpdateMode.valueOf(updateModeStr.toUpperCase());
+        return GraphAnalyticalView.UpdateMode.valueOf(updateModeStr.toUpperCase(Locale.ROOT));
       } catch (final IllegalArgumentException e) {
         throw new CommandExecutionException(
             "Unknown update mode: '" + updateModeStr + "'. Valid values: OFF, SYNCHRONOUS, ASYNCHRONOUS");

@@ -26,6 +26,7 @@ import com.arcadedb.query.sql.parser.FromItem;
 import com.arcadedb.query.sql.parser.SelectStatement;
 import com.arcadedb.query.sql.parser.Statement;
 
+import java.util.Locale;
 import java.util.logging.Level;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -124,7 +125,7 @@ public class ContinuousAggregateBuilder {
       throw new SchemaException("Bucket alias must not contain backtick characters: '" + bucketAlias + "'");
 
     // Validate GROUP BY is present
-    if (!query.toUpperCase().contains("GROUP BY"))
+    if (!query.toUpperCase(Locale.ROOT).contains("GROUP BY"))
       throw new SchemaException("Continuous aggregate query must include a GROUP BY clause");
 
     // Validate query structure: buildFilteredQuery uses string manipulation so it cannot
@@ -173,7 +174,7 @@ public class ContinuousAggregateBuilder {
   }
 
   private static void validateQueryStructure(final String query) {
-    final String upper = query.toUpperCase().trim();
+    final String upper = query.toUpperCase(Locale.ROOT).trim();
     // Reject CTEs (WITH ... AS)
     if (upper.startsWith("WITH "))
       throw new SchemaException("""
@@ -220,7 +221,7 @@ public class ContinuousAggregateBuilder {
       throw new IllegalArgumentException("Invalid interval: '" + interval + "'");
 
     final long value = Long.parseLong(interval.substring(0, unitStart));
-    final String unit = interval.substring(unitStart).trim().toLowerCase();
+    final String unit = interval.substring(unitStart).trim().toLowerCase(Locale.ROOT);
 
     return switch (unit) {
       case "s" -> value * 1000L;

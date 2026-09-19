@@ -27,6 +27,7 @@ import com.arcadedb.graph.IterableGraph;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 
@@ -283,10 +284,12 @@ public class RemoteVertex {
   }
 
   public boolean isConnectedTo(final Identifiable toVertex, final Vertex.DIRECTION direction, final String edgeType) {
+    // The edge type is BOUND rather than interpolated into the string literal: a type name carrying a quote used to
+    // end the literal early and have its remainder parsed as more SQL (issue #7914).
     final String query =
-        "select from ( select " + direction.toString().toLowerCase(Locale.ENGLISH) + "('" + edgeType + "') as vertices from "
+        "select from ( select " + direction.toString().toLowerCase(Locale.ENGLISH) + "(:edgeType) as vertices from "
             + vertex.getIdentity() + " ) where vertices contains " + toVertex.getIdentity();
-    final ResultSet resultSet = remoteDatabase.query("sql", query);
+    final ResultSet resultSet = remoteDatabase.query("sql", query, Map.of("edgeType", edgeType));
     return resultSet.hasNext();
   }
 
@@ -294,9 +297,9 @@ public class RemoteVertex {
     final StringBuilder command = new StringBuilder("move vertex ").append(vertex.getIdentity()).append(" to");
 
     if (targetType != null)
-      command.append(" TYPE:`").append(targetType).append("`");
+      command.append(" TYPE:").append(Identifier.quote(targetType));
     if (targetBucket != null)
-      command.append(" `").append(targetBucket).append("`");
+      command.append(' ').append(Identifier.quote(targetBucket));
 
     final ResultSet resultSet = remoteDatabase.command("sql", command.toString());
 
@@ -325,13 +328,11 @@ public class RemoteVertex {
     } else
       bucketName = null;
 
-    StringBuilder query = new StringBuilder("create edge" + (edgeType != null ? " `" + edgeType + "`" : ""));
+    final StringBuilder query = new StringBuilder("create edge").append(
+        edgeType != null ? " " + Identifier.quote(edgeType) : "");
 
-    if (bucketName != null) {
-      query.append(" bucket `");
-      query.append(bucketName);
-      query.append("`");
-    }
+    if (bucketName != null)
+      query.append(" bucket ").append(Identifier.quote(bucketName));
 
     query.append(" from " + vertex.getIdentity() + " to " + toVertex.getIdentity());
 
@@ -364,9 +365,8 @@ public class RemoteVertex {
         if (i > 0)
           query.append(", ");
 
-        query.append("`");
-        query.append(propName);
-        query.append("` = ");
+        query.append(Identifier.quote(propName));
+        query.append(" = ");
         query.append(paramName);
 
         params.put(paramName, propValue);

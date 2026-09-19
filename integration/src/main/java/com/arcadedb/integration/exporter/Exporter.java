@@ -128,10 +128,13 @@ public class Exporter {
     } catch (final Exception e) {
       throw new ExportException("Error on writing to '" + settings.file + "'", e);
     } finally {
-      if (database != null) {
-        stopExporting();
-        closeDatabase();
-      }
+      // stopExporting() cancels the progress Timer, whose thread is NOT a daemon, so it has to run whenever
+      // startExporting() ran - which is unconditionally. Gating it behind "the database was opened" left the
+      // timer alive on exactly the path where the database could NOT be opened, and a live non-daemon thread
+      // keeps the JVM up: the CLI reported the failure and then hung forever (issue #7903). closeDatabase() is
+      // the one that needs the null check, and it makes it itself.
+      stopExporting();
+      closeDatabase();
     }
   }
 
@@ -161,10 +164,11 @@ public class Exporter {
 
     final DatabaseFactory factory = new DatabaseFactory(settings.databaseURL);
 
-    if (!factory.exists()) {
-      LogManager.instance().log(this, Level.SEVERE, "Database '%s' not found", null, settings.databaseURL);
-      return;
-    }
+    // Throws rather than logging and returning: returning here left `database` null, the export ran on it anyway,
+    // and the first thing the format did with it raised a NullPointerException naming neither the database nor the
+    // reason (issue #7903). Same shape as Backup.openDatabase().
+    if (!factory.exists())
+      throw new ExportException("Database '%s' not found".formatted(settings.databaseURL));
 
     logger.logLine(0, "Opening database '%s'...", settings.databaseURL);
     database = (DatabaseInternal) factory.open();

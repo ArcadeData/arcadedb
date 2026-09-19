@@ -31,6 +31,7 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.*;
 import com.arcadedb.serializer.json.JSONObject;
 
@@ -113,26 +114,26 @@ public class RemoteSchema implements Schema {
 
   @Override
   public void dropBucket(final String bucketName) {
-    remoteDatabase.command("sql", "drop bucket `" + bucketName + "`");
+    remoteDatabase.command("sql", "drop bucket " + Identifier.quote(bucketName));
   }
 
   @Override
   public void dropType(final String typeName) {
-    remoteDatabase.command("sql", "drop type `" + typeName + "`");
+    remoteDatabase.command("sql", "drop type " + Identifier.quote(typeName));
     invalidateSchema();
   }
 
   @Override
   public void dropIndex(final String indexName) {
-    remoteDatabase.command("sql", "drop index `" + indexName + "`");
+    remoteDatabase.command("sql", "drop index " + Identifier.quote(indexName));
   }
 
   // TRIGGER MANAGEMENT
 
   @Override
   public boolean existsTrigger(final String triggerName) {
-    final ResultSet result = remoteDatabase.command("sql",
-        "select from schema:triggers where name = '" + triggerName + "'");
+    final ResultSet result = remoteDatabase.command("sql", "select from schema:triggers where name = :name",
+        Map.of("name", triggerName));
     return result.hasNext();
   }
 
@@ -158,7 +159,7 @@ public class RemoteSchema implements Schema {
 
   @Override
   public void dropTrigger(final String triggerName) {
-    remoteDatabase.command("sql", "drop trigger `" + triggerName + "`");
+    remoteDatabase.command("sql", "drop trigger " + Identifier.quote(triggerName));
   }
 
   @Override
@@ -188,7 +189,7 @@ public class RemoteSchema implements Schema {
 
   @Override
   public void dropMaterializedView(final String viewName) {
-    remoteDatabase.command("sql", "DROP MATERIALIZED VIEW `" + viewName + "`");
+    remoteDatabase.command("sql", "DROP MATERIALIZED VIEW " + Identifier.quote(viewName));
   }
 
   @Override
@@ -225,7 +226,7 @@ public class RemoteSchema implements Schema {
 
   @Override
   public void dropContinuousAggregate(final String name) {
-    remoteDatabase.command("sql", "DROP CONTINUOUS AGGREGATE `" + name + "`");
+    remoteDatabase.command("sql", "DROP CONTINUOUS AGGREGATE " + Identifier.quote(name));
   }
 
   @Override
@@ -236,16 +237,16 @@ public class RemoteSchema implements Schema {
 
   @Override
   public Bucket createBucket(final String bucketName) {
-    final ResultSet result = remoteDatabase.command("sql", "create bucket `" + bucketName + "`");
+    final ResultSet result = remoteDatabase.command("sql", "create bucket " + Identifier.quote(bucketName));
     return new RemoteBucket(result.next().getProperty("bucketName"));
   }
 
   @Override
   public TypeIndex createTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName,
       final String... propertyNames) {
-    final String propList = Arrays.stream(propertyNames).collect(Collectors.joining(","));
-    remoteDatabase.command("sql", "create index on `" + typeName +//
-        "`(" + propList + ") " +//
+    final String propList = Arrays.stream(propertyNames).map(Identifier::quote).collect(Collectors.joining(","));
+    remoteDatabase.command("sql", "create index on " + Identifier.quote(typeName) +//
+        "(" + propList + ") " +//
         (unique ? "UNIQUE" : "NOTUNIQUE") +//
         " ENGINE " + indexType.name());
     return null;
@@ -254,9 +255,9 @@ public class RemoteSchema implements Schema {
   @Override
   public TypeIndex getOrCreateTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName,
       final String... propertyNames) {
-    final String propList = Arrays.stream(propertyNames).collect(Collectors.joining(","));
-    remoteDatabase.command("sql", "create index if not exists on `" + typeName +//
-        "`(" + propList + ") " +//
+    final String propList = Arrays.stream(propertyNames).map(Identifier::quote).collect(Collectors.joining(","));
+    remoteDatabase.command("sql", "create index if not exists on " + Identifier.quote(typeName) +//
+        "(" + propList + ") " +//
         (unique ? "UNIQUE" : "NOTUNIQUE") +//
         " ENGINE " + indexType.name());
     return null;
@@ -264,7 +265,7 @@ public class RemoteSchema implements Schema {
 
   @Override
   public DocumentType createDocumentType(final String typeName) {
-    final ResultSet result = remoteDatabase.command("sql", "create document type `" + typeName + "`");
+    final ResultSet result = remoteDatabase.command("sql", "create document type " + Identifier.quote(typeName));
     if (result.hasNext())
       return reload().getType(typeName);
     throw new SchemaException("Error on creating document type '" + typeName + "'");
@@ -272,7 +273,7 @@ public class RemoteSchema implements Schema {
 
   @Override
   public DocumentType createDocumentType(final String typeName, final int buckets) {
-    final ResultSet result = remoteDatabase.command("sql", "create document type `" + typeName + "` buckets " + buckets);
+    final ResultSet result = remoteDatabase.command("sql", "create document type " + Identifier.quote(typeName) + " buckets " + buckets);
     if (result.hasNext())
       return reload().getType(typeName);
     throw new SchemaException("Error on creating document type '" + typeName + "'");
@@ -288,19 +289,19 @@ public class RemoteSchema implements Schema {
   // ClassCastException from inside the client.
   @Override
   public DocumentType getOrCreateDocumentType(final String typeName) {
-    remoteDatabase.command("sql", "create document type `" + typeName + "` if not exists");
+    remoteDatabase.command("sql", "create document type " + Identifier.quote(typeName) + " if not exists");
     return reload().getType(typeName);
   }
 
   @Override
   public DocumentType getOrCreateDocumentType(final String typeName, final int buckets) {
-    remoteDatabase.command("sql", "create document type `" + typeName + "` if not exists buckets " + buckets);
+    remoteDatabase.command("sql", "create document type " + Identifier.quote(typeName) + " if not exists buckets " + buckets);
     return reload().getType(typeName);
   }
 
   @Override
   public VertexType createVertexType(final String typeName) {
-    final ResultSet result = remoteDatabase.command("sql", "create vertex type `" + typeName + "`");
+    final ResultSet result = remoteDatabase.command("sql", "create vertex type " + Identifier.quote(typeName));
     if (result.hasNext())
       return asKind(reload().getType(typeName), VertexType.class, "vertex");
     throw new SchemaException("Error on creating vertex type '" + typeName + "'");
@@ -308,19 +309,19 @@ public class RemoteSchema implements Schema {
 
   @Override
   public VertexType getOrCreateVertexType(String typeName, int buckets) {
-    remoteDatabase.command("sql", "create vertex type `" + typeName + "` if not exists buckets " + buckets);
+    remoteDatabase.command("sql", "create vertex type " + Identifier.quote(typeName) + " if not exists buckets " + buckets);
     return asKind(reload().getType(typeName), VertexType.class, "vertex");
   }
 
   @Override
   public VertexType getOrCreateVertexType(final String typeName) {
-    remoteDatabase.command("sql", "create vertex type `" + typeName + "` if not exists");
+    remoteDatabase.command("sql", "create vertex type " + Identifier.quote(typeName) + " if not exists");
     return asKind(reload().getType(typeName), VertexType.class, "vertex");
   }
 
   @Override
   public VertexType createVertexType(String typeName, int buckets) {
-    final ResultSet result = remoteDatabase.command("sql", "create vertex type `" + typeName + "` buckets " + buckets);
+    final ResultSet result = remoteDatabase.command("sql", "create vertex type " + Identifier.quote(typeName) + " buckets " + buckets);
     if (result.hasNext())
       return asKind(reload().getType(typeName), VertexType.class, "vertex");
     throw new SchemaException("Error on creating vertex type '" + typeName + "'");
@@ -328,7 +329,7 @@ public class RemoteSchema implements Schema {
 
   @Override
   public EdgeType createEdgeType(final String typeName) {
-    final ResultSet result = remoteDatabase.command("sql", "create edge type `" + typeName + "`");
+    final ResultSet result = remoteDatabase.command("sql", "create edge type " + Identifier.quote(typeName));
     if (result.hasNext())
       return asKind(reload().getType(typeName), EdgeType.class, "edge");
     throw new SchemaException("Error on creating edge type '" + typeName + "'");
@@ -336,13 +337,13 @@ public class RemoteSchema implements Schema {
 
   @Override
   public EdgeType getOrCreateEdgeType(String typeName) {
-    remoteDatabase.command("sql", "create edge type `" + typeName + "` if not exists");
+    remoteDatabase.command("sql", "create edge type " + Identifier.quote(typeName) + " if not exists");
     return asKind(reload().getType(typeName), EdgeType.class, "edge");
   }
 
   @Override
   public EdgeType createEdgeType(String typeName, int buckets) {
-    final ResultSet result = remoteDatabase.command("sql", "create edge type `" + typeName + "` buckets " + buckets);
+    final ResultSet result = remoteDatabase.command("sql", "create edge type " + Identifier.quote(typeName) + " buckets " + buckets);
     if (result.hasNext())
       return asKind(reload().getType(typeName), EdgeType.class, "edge");
     throw new SchemaException("Error on creating edge type '" + typeName + "'");
@@ -350,7 +351,7 @@ public class RemoteSchema implements Schema {
 
   @Override
   public EdgeType getOrCreateEdgeType(final String typeName, final int buckets) {
-    remoteDatabase.command("sql", "create edge type `" + typeName + "` if not exists buckets " + buckets);
+    remoteDatabase.command("sql", "create edge type " + Identifier.quote(typeName) + " if not exists buckets " + buckets);
     return asKind(reload().getType(typeName), EdgeType.class, "edge");
   }
 

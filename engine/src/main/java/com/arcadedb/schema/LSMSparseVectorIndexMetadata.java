@@ -22,6 +22,7 @@ import com.arcadedb.index.IndexException;
 import com.arcadedb.index.sparsevector.SegmentFormat.WeightQuantization;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -72,7 +73,7 @@ public class LSMSparseVectorIndexMetadata extends IndexMetadata {
     if (metadata.has("typeName"))
       super.fromJSON(metadata);
     this.dimensions = metadata.getInt("dimensions", 0);
-    this.modifier = metadata.getString("modifier", MODIFIER_NONE).toUpperCase();
+    this.modifier = metadata.getString("modifier", MODIFIER_NONE).toUpperCase(Locale.ROOT);
     this.weightQuantization = parseWeightQuantization(
         metadata.getString("weightQuantization", DEFAULT_WEIGHT_QUANTIZATION.name()));
   }
@@ -130,7 +131,7 @@ public class LSMSparseVectorIndexMetadata extends IndexMetadata {
    * Sets the scoring modifier: {@link #MODIFIER_NONE} (default) or {@link #MODIFIER_IDF}, case-insensitive.
    */
   public void setModifier(final String modifier) {
-    final String normalized = modifier == null ? MODIFIER_NONE : modifier.toUpperCase();
+    final String normalized = modifier == null ? MODIFIER_NONE : modifier.toUpperCase(Locale.ROOT);
     if (!MODIFIER_NONE.equals(normalized) && !MODIFIER_IDF.equals(normalized))
       throw new IndexException("Invalid sparse vector index modifier: " + modifier + ". Supported values: NONE, IDF");
     this.modifier = normalized;
@@ -144,7 +145,7 @@ public class LSMSparseVectorIndexMetadata extends IndexMetadata {
   public static WeightQuantization parseWeightQuantization(final String value) {
     if (value == null)
       return DEFAULT_WEIGHT_QUANTIZATION;
-    final String normalized = value.trim().toUpperCase();
+    final String normalized = value.trim().toUpperCase(Locale.ROOT);
     try {
       return WeightQuantization.valueOf(normalized);
     } catch (final IllegalArgumentException e) {

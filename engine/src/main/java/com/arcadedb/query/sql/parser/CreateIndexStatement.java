@@ -36,6 +36,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.IndexBuilder;
+import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.TypeFullTextIndexBuilder;
 import com.arcadedb.schema.TypeGeoIndexBuilder;
@@ -48,6 +49,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -98,7 +100,7 @@ public class CreateIndexStatement extends DDLStatement {
     if (type == null)
       throw new CommandSQLParsingException(
           "Index type is required (UNIQUE | NOTUNIQUE | FULL_TEXT | LSM_VECTOR | LSM_SPARSE_VECTOR | GEOSPATIAL | UNIQUE_HASH | NOTUNIQUE_HASH)");
-    final String typeAsString = type.getStringValue().toUpperCase();
+    final String typeAsString = type.getStringValue().toUpperCase(Locale.ROOT);
     switch (typeAsString) {
     case "FULL_TEXT" -> {
     }
@@ -357,10 +359,12 @@ public class CreateIndexStatement extends DDLStatement {
     // default. Pinning it to the LSM default here forced that value on HASH too, which cannot address a 256KB page (#5713).
     builder.withNullStrategy(nullStrategy);
 
-    // Pass collation settings (e.g., CI for case-insensitive)
+    // Pass collation settings (e.g., CI for case-insensitive). The keyword is normalised and validated by the
+    // builder, on IndexMetadata.normalizeCollation - upper-casing it here with the DEFAULT locale turned
+    // `COLLATE ci` into "Cİ" on a Turkish-locale server and persisted that into the schema (issue #7900).
     final List<String> collations = new ArrayList<>();
     for (final Property prop : propertyList)
-      collations.add(prop.collate != null ? prop.collate.getStringValue().toUpperCase() : "DEFAULT");
+      collations.add(prop.collate != null ? prop.collate.getStringValue() : IndexMetadata.COLLATION_DEFAULT);
     builder.withCollations(collations);
     builder.withCallback((document, totalIndexed) -> {
       total.incrementAndGet();

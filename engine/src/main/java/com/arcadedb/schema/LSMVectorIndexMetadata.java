@@ -25,6 +25,7 @@ import com.arcadedb.index.vector.VectorQuantizationType;
 import com.arcadedb.serializer.json.JSONObject;
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 
+import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -248,7 +249,7 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
    */
   public void setSimilarity(final String similarity) {
     try {
-      this.similarityFunction = VectorSimilarityFunction.valueOf(similarity.toUpperCase());
+      this.similarityFunction = VectorSimilarityFunction.valueOf(similarity.toUpperCase(Locale.ROOT));
     } catch (final IllegalArgumentException e) {
       throw new IndexException(
           "Invalid similarity function: " + similarity + ". Supported values: COSINE, DOT_PRODUCT, EUCLIDEAN");
@@ -292,7 +293,7 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
    */
   public void setQuantization(final String quantization) {
     try {
-      this.quantizationType = VectorQuantizationType.valueOf(quantization.toUpperCase());
+      this.quantizationType = VectorQuantizationType.valueOf(quantization.toUpperCase(Locale.ROOT));
     } catch (final IllegalArgumentException e) {
       throw new IndexException("Invalid quantization type: " + quantization + ". Supported values: NONE, INT8, BINARY, PRODUCT");
     }

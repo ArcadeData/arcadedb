@@ -36,6 +36,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
@@ -789,8 +790,23 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     }
   }
 
+  /**
+   * Every collation reaching an index is normalised and validated here - see
+   * {@link IndexMetadata#normalizeCollation} for what used to get through and why it could not be repaired
+   * afterwards (issue #7900). Both the SQL {@code COLLATE} clause and a programmatic caller land on this method,
+   * so this is the one place the rule has to hold.
+   */
   public TypeIndexBuilder withCollations(final List<String> collations) {
-    metadata.collations = collations;
+    if (collations == null) {
+      metadata.collations = null;
+      return this;
+    }
+
+    final List<String> normalized = new ArrayList<>(collations.size());
+    for (final String collation : collations)
+      normalized.add(IndexMetadata.normalizeCollation(collation));
+
+    metadata.collations = normalized;
     return this;
   }
 

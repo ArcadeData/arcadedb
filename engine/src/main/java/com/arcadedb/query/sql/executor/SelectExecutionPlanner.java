@@ -107,6 +107,7 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -641,7 +642,7 @@ public class SelectExecutionPlanner {
     if (functionCall == null)
       return null;
 
-    final String functionName = functionCall.getName().getStringValue().toLowerCase();
+    final String functionName = functionCall.getName().getStringValue().toLowerCase(Locale.ROOT);
     final boolean isMax;
     if ("max".equals(functionName))
       isMax = true;
@@ -1629,7 +1630,7 @@ public class SelectExecutionPlanner {
   }
 
   private void handleSchemaAsTarget(final SelectExecutionPlan plan, final SchemaIdentifier metadata, final CommandContext context) {
-    switch (metadata.getName().toLowerCase()) {
+    switch (metadata.getName().toLowerCase(Locale.ROOT)) {
     case "types" -> plan.chain(new FetchFromSchemaTypesStep(context));
     case "indexes" -> plan.chain(new FetchFromSchemaIndexesStep(context));
     case "database" -> plan.chain(new FetchFromSchemaDatabaseStep(context));
@@ -1641,7 +1642,7 @@ public class SelectExecutionPlanner {
     case "stats" -> plan.chain(new FetchFromSchemaStatsStep(context));
     case "dictionary" -> plan.chain(new FetchFromSchemaDictionaryStep(context));
     default -> {
-      final String name = metadata.getName().toLowerCase();
+      final String name = metadata.getName().toLowerCase(Locale.ROOT);
       if (name.startsWith("bucket:"))
         plan.chain(new FetchFromSchemaBucketDetailStep(metadata.getName().substring("bucket:".length()), context));
       else if (name.startsWith("index:"))
@@ -3222,7 +3223,7 @@ public class SelectExecutionPlanner {
         intervalStr = (String) intervalVal;
       } else {
         // Must be an aggregate function
-        final String aggFuncName = funcName.toLowerCase();
+        final String aggFuncName = funcName.toLowerCase(Locale.ROOT);
         final AggregationType aggType = switch (aggFuncName) {
           case "avg" -> AggregationType.AVG;
           case "max" -> AggregationType.MAX;
