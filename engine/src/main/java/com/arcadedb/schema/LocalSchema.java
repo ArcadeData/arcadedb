@@ -2686,13 +2686,23 @@ public class LocalSchema implements Schema {
       }
     }
 
-    // Load extensions (module-specific configuration)
+    // Load extensions (module-specific configuration). Under its own try like the four members above, and not
+    // because a malformed entry is expected - ArcadeDB's own exporter is the only writer - but because the
+    // alternative on the import path is an uncaught throw AFTER every type and every record has already landed,
+    // which is the "abort everything over one bad member" outcome this whole method is shaped to avoid.
     if (replaceExisting)
       extensions.clear();
     if (root.has("extensions")) {
       final JSONObject extJSON = root.getJSONObject("extensions");
-      for (final String extName : extJSON.keySet())
-        extensions.put(extName, extJSON.getJSONObject(extName));
+      for (final String extName : extJSON.keySet()) {
+        try {
+          extensions.put(extName, extJSON.getJSONObject(extName));
+        } catch (final Exception e) {
+          ++failures;
+          LogManager.instance().log(this, Level.SEVERE, "Error loading extension '%s': %s", e, extName,
+              e.getMessage() != null ? e.getMessage() : e.toString());
+        }
+      }
     }
 
     return failures;

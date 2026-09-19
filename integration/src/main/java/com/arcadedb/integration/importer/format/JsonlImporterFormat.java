@@ -44,7 +44,6 @@ import com.arcadedb.integration.importer.ImporterSettings;
 import com.arcadedb.integration.importer.Parser;
 import com.arcadedb.integration.importer.SourceSchema;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalEdgeType;
 import com.arcadedb.schema.LocalSchema;
@@ -537,13 +536,24 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
     schema.saveConfiguration();
 
-    int libraries = 0;
-    for (final FunctionLibraryDefinition ignored : schema.getFunctionLibraries())
-      ++libraries;
-
+    // Counted off the EXPORT rather than off the target's schema: the target's own counts include whatever predated
+    // the import - a function library registered programmatically from native Java code is in every database's
+    // schema and was never part of any export - so reporting them would credit the restore with members it did not
+    // bring. What this line answers is "what did the file carry", with the failures the call above reported.
     logger.logLine(2, " - Restored schema members: %d trigger(s), %d materialized view(s), %d continuous "
-            + "aggregate(s), %d function library(ies)", schema.getTriggers().length, schema.getMaterializedViews().length,
-        schema.getContinuousAggregates().length, libraries);
+            + "aggregate(s), %d function library(ies), %d extension(s)%s",
+        exportedMemberCount("triggers"), exportedMemberCount("materializedViews"),
+        exportedMemberCount("continuousAggregates"), exportedMemberCount("functions"), exportedMemberCount("extensions"),
+        failures > 0 ? " - " + failures + " could not be restored" : "");
+  }
+
+  /**
+   * How many entries the export's schema object carries under {@code member}, or zero when it carries the key with
+   * nothing in it - which is what {@code LocalSchema.toJSON()} writes for a database that has none.
+   */
+  private int exportedMemberCount(final String member) {
+    final JSONObject entries = importedSchema.getJSONObject(member, null);
+    return entries != null ? entries.length() : 0;
   }
 
   /**
