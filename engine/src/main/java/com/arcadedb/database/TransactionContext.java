@@ -249,7 +249,7 @@ public class TransactionContext implements Transaction {
    * Why this transaction can no longer be published, or {@code null} while it still can. See
    * {@link #setRollbackOnly}.
    */
-  private       String                               rollbackOnlyReason          = null;
+  private       String                               rollbackOnlyReason    = null;
   // KEEPS TRACK OF MODIFIED RECORD IN TX. AT 1ST PHASE COMMIT TIME THE RECORD ARE SERIALIZED AND INDEXES UPDATED. THIS DEFERRING IMPROVES SPEED ESPECIALLY
   // WITH GRAPHS WHERE EDGES ARE CREATED AND CHUNKS ARE UPDATED MULTIPLE TIMES IN THE SAME TX
   // TODO: OPTIMIZE modifiedRecordsCache STRUCTURE, MAYBE JOIN IT WITH UPDATED RECORDS?
