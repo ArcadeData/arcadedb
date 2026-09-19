@@ -322,7 +322,10 @@ public class DeferredExistenceChecks {
     }
 
     throw new ValidationException(
-        "A record created by this statement was left incomplete: " + violations + ". The record has been removed");
+        (incomplete.size() == 1 ?
+            "A record created by this statement was left incomplete: " :
+            incomplete.size() + " records created by this statement were left incomplete: ") + violations
+            + (incomplete.size() == 1 ? ". The record has been removed" : ". They have been removed"));
   }
 
   /**
