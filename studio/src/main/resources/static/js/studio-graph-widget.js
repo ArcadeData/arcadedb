@@ -826,6 +826,10 @@ function expandNodePrompt(rid) {
 
   const database = getCurrentDatabase();
   const counts = { out: null, in: null };
+  // Told apart from "answered, and the answer was no edges": both end up as an empty array, and the picker's
+  // empty state says "this node has no connections", which contradicts the error toast that just fired. What
+  // a failed direction means is that the connections are UNKNOWN, not that there are none (PR #7939 review).
+  const failed = { out: false, in: false };
 
   $("#executeSpinner").show();
 
@@ -860,6 +864,7 @@ function expandNodePrompt(rid) {
         // One direction failing must not strand the picker: report it and carry on with the other, which is
         // still a usable answer.
         counts[direction] = [];
+        failed[direction] = true;
         globalNotify(
           "Error",
           textStatus === "timeout"
@@ -871,6 +876,9 @@ function expandNodePrompt(rid) {
       .always(function () {
         if (counts.out === null || counts.in === null) return;
         $("#executeSpinner").hide();
+        // Nothing was learned in either direction. The two toasts have already said why; a picker reporting
+        // "no connections" on top of them would be the one statement that is not true.
+        if (failed.out && failed.in) return;
         showExpandNodeModal(safeRid, counts.out, counts.in);
       });
   });
