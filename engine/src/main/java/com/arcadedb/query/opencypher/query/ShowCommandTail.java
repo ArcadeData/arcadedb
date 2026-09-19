@@ -182,7 +182,12 @@ public final class ShowCommandTail {
    * The names the projection produces, in order, or null when it is a bare {@code *} - whose columns are whatever
    * is in scope, which only the engine can say.
    */
-  private static List<String> projectedNames(final String query, final List<Token> items, final List<String> fields) {
+  private static List<String> projectedNames(final String query, List<Token> items, final List<String> fields) {
+    // DISTINCT belongs to the clause, not to the item after it: RETURN DISTINCT name projects a column called
+    // name, not one called "DISTINCT name".
+    if (!items.isEmpty() && items.getFirst().getType() == Cypher25Lexer.DISTINCT)
+      items = items.subList(1, items.size());
+
     if (items.isEmpty())
       return fields;
     if (items.size() == 1 && items.getFirst().getType() == Cypher25Lexer.TIMES)
@@ -260,11 +265,17 @@ public final class ShowCommandTail {
     if (indexOfTopLevel(tokens, Cypher25Lexer.UNION, 0) >= 0)
       return null;
 
+    // A statement-terminating semicolon is punctuation, not part of the tail: left in, it would be spliced into
+    // the middle of the rewritten query, right before the RETURN this appends.
+    int end = tokens.size();
+    if (end > 0 && tokens.get(end - 1).getType() == Cypher25Lexer.SEMICOLON)
+      end--;
+
     int depth = 0;
-    for (int i = 0; i < tokens.size(); i++) {
+    for (int i = 0; i < end; i++) {
       final Token token = tokens.get(i);
       if (depth == 0 && (token.getType() == Cypher25Lexer.YIELD || token.getType() == Cypher25Lexer.WHERE))
-        return tokens.subList(i, tokens.size());
+        return tokens.subList(i, end);
       depth = nextDepth(depth, token);
     }
     return null;

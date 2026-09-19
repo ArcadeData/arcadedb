@@ -203,6 +203,36 @@ class ShowCommandTailIssue7946Test {
   }
 
   /**
+   * A terminating semicolon is punctuation. Clients send it (the issue report's own repro does), and left in the
+   * tail it would be spliced into the middle of the rewritten query, right before its RETURN.
+   */
+  @Test
+  void aTerminatingSemicolonIsNotPartOfTheTail() {
+    final ShowCommandTail.Table table = apply("SHOW DATABASES WHERE name = $dbName;", Map.of("dbName", "beer"));
+
+    assertThat(table.fields()).isEqualTo(FIELDS);
+    assertThat(table.rows()).hasSize(1);
+    assertThat(table.rows().getFirst().getFirst()).isEqualTo("beer");
+
+    assertThat(apply("SHOW DATABASES YIELD name ORDER BY name;", Map.of()).rows()).hasSize(3);
+  }
+
+  /**
+   * DISTINCT belongs to the clause, not to the item after it, so the column it projects is still called name.
+   */
+  @Test
+  void aDistinctProjectionKeepsTheItemName() {
+    assertThat(apply("SHOW DATABASES YIELD type RETURN DISTINCT type", Map.of()).fields()).containsExactly("type");
+
+    // With no row to ask, the column list is the one derived from the query text - which is where DISTINCT would
+    // otherwise have been read as part of the name.
+    final ShowCommandTail.Table empty = apply("SHOW DATABASES YIELD name WHERE name = 'nope' RETURN DISTINCT name",
+        Map.of());
+    assertThat(empty.rows()).isEmpty();
+    assertThat(empty.fields()).containsExactly("name");
+  }
+
+  /**
    * A tail that cannot be parsed is a client error, and reaches the client as one instead of being swallowed
    * along with the filtering it asked for.
    */
