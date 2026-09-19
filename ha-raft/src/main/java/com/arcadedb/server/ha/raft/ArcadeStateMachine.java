@@ -4128,14 +4128,6 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
-   * Whether {@code dbName}'s directory is on disk at all, which is the question {@code existsDatabase} does not
-   * answer: it reports registry membership, so a closed-but-present database and one that was deleted look the
-   * same to it. Only the second is safe to reinstall over.
-   * <p>
-   * A path that cannot be resolved answers {@code true} - "present" is the conservative answer here, because it
-   * is the one that leaves the local files alone.
-   */
-  /**
    * Whether this node holds a copy of {@code dbName} at all: registered in the server, OR merely closed with its
    * directory still on disk. The question two separate decisions turn on (review on PR #7953), so it is named
    * once rather than spelled out at each - inverted, which is how it is actually written at both.
@@ -4148,11 +4140,26 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * Neither can use {@code existsDatabase} alone: that answers "is it in the registry", so a database an operator
    * deliberately left closed would read as gone, and both decisions would then act against files that are
    * perfectly good.
+   * <p>
+   * An unwired {@code server} answers {@code true}, and it has to. "Present" is the conservative answer for both
+   * callers - it is the one that leaves local files alone and recommends nothing - which is the same doctrine
+   * {@link #databaseDirectoryExists} follows for a path it cannot resolve. Answering {@code false} there would
+   * make a state machine with no server throw out of the leader short-circuit and report every marked database as
+   * missing; both call sites spelled this check out with a leading {@code server != null} for exactly that reason,
+   * and folding them into this helper is what made the null case easy to invert by accident.
    */
   private boolean isDatabasePresentLocally(final String dbName) {
-    return server != null && (server.existsDatabase(dbName) || databaseDirectoryExists(dbName));
+    return server == null || server.existsDatabase(dbName) || databaseDirectoryExists(dbName);
   }
 
+  /**
+   * Whether {@code dbName}'s directory is on disk at all, which is the question {@code existsDatabase} does not
+   * answer: it reports registry membership, so a closed-but-present database and one that was deleted look the
+   * same to it. Only the second is safe to reinstall over.
+   * <p>
+   * A path that cannot be resolved answers {@code true} - "present" is the conservative answer here, because it
+   * is the one that leaves the local files alone.
+   */
   private boolean databaseDirectoryExists(final String dbName) {
     try {
       final String path = SnapshotInstaller.resolveDatabasePath(server, dbName);

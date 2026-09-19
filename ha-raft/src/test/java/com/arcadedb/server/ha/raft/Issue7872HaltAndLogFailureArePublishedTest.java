@@ -79,7 +79,7 @@ class Issue7872HaltAndLogFailureArePublishedTest {
   void aHaltedStateMachineRaisesAnAlertNamingWhatTrippedIt() {
     final JSONArray alerts = new JSONArray();
     ClusterAlerts.addCriticalHaltAlert(
-        new ArcadeStateMachine.CriticalHalt(4711L, "unknown Raft log entry type", 1_700_000_000_000L), alerts);
+        new ArcadeStateMachine.CriticalHalt(4711L, "unknown Raft log entry type", 1_700_000_000_000L), true, alerts);
 
     final JSONObject halt = alertWithId(alerts, "halted-after-critical-error");
     assertThat(halt).as("the condition the #7136 invariant promised would be visible here").isNotNull();
@@ -96,7 +96,7 @@ class Issue7872HaltAndLogFailureArePublishedTest {
   @Test
   void anApplyingStateMachineRaisesNoHaltAlert() {
     final JSONArray alerts = new JSONArray();
-    ClusterAlerts.addCriticalHaltAlert(null, alerts);
+    ClusterAlerts.addCriticalHaltAlert(null, true, alerts);
     assertThat(alerts).isEmpty();
   }
 
@@ -111,7 +111,7 @@ class Issue7872HaltAndLogFailureArePublishedTest {
     final JSONArray alerts = new JSONArray();
     ClusterAlerts.addRaftLogFailureAlert(
         new ArcadeStateMachine.RaftLogFailure(99L, "java.io.IOException: No space left on device", 1_700_000_000_001L),
-        alerts);
+        true, alerts);
 
     final JSONObject failure = alertWithId(alerts, "raft-log-writer-failed");
     assertThat(failure).isNotNull();
@@ -124,7 +124,7 @@ class Issue7872HaltAndLogFailureArePublishedTest {
   @Test
   void aHealthyLogWriterRaisesNoAlert() {
     final JSONArray alerts = new JSONArray();
-    ClusterAlerts.addRaftLogFailureAlert(null, alerts);
+    ClusterAlerts.addRaftLogFailureAlert(null, true, alerts);
     assertThat(alerts).isEmpty();
   }
 
@@ -157,7 +157,8 @@ class Issue7872HaltAndLogFailureArePublishedTest {
     when(server.getDatabaseNames()).thenReturn(Set.of());
 
     // A caller authorized on no database at all: the strictest filter the endpoint can build.
-    final JSONArray alerts = ClusterAlerts.scan(server, null, List.of(), Set.of(), null, null, null, true);
+    final JSONArray alerts = ClusterAlerts.scan(server, null, List.of(), Set.of(), null, null, null,
+        new ClusterAlerts.NodeStatus(null, null, true, false));
 
     assertThat(alertWithId(alerts, "crash-loop-escalated"))
         .as("whether this node's HA layer has given up is not a per-tenant fact")
@@ -190,7 +191,7 @@ class Issue7872HaltAndLogFailureArePublishedTest {
     assertThat(halt.getNullable()).as("null is how a healthy node reports it").isTrue();
     assertThat(halt.getProperties().keySet()).containsExactlyInAnyOrderElementsOf(
         ((JSONObject) GetClusterHandler.buildCriticalHalt(
-            new ArcadeStateMachine.CriticalHalt(1L, "boom", 2L))).keySet());
+            new ArcadeStateMachine.CriticalHalt(1L, "boom", 2L), true)).keySet());
     assertThat(halt.getRequired())
         .as("built in one expression, so a halt that is reported is reported whole")
         .containsExactlyInAnyOrderElementsOf(halt.getProperties().keySet());
@@ -199,7 +200,7 @@ class Issue7872HaltAndLogFailureArePublishedTest {
     assertThat(logFailure.getNullable()).isTrue();
     assertThat(logFailure.getProperties().keySet()).containsExactlyInAnyOrderElementsOf(
         ((JSONObject) GetClusterHandler.buildRaftLogFailure(
-            new ArcadeStateMachine.RaftLogFailure(1L, "boom", 2L))).keySet());
+            new ArcadeStateMachine.RaftLogFailure(1L, "boom", 2L), true)).keySet());
     assertThat(logFailure.getRequired())
         .containsExactlyInAnyOrderElementsOf(logFailure.getProperties().keySet());
   }
@@ -207,7 +208,60 @@ class Issue7872HaltAndLogFailureArePublishedTest {
   /** A healthy node writes an explicit null for both, so a client can tell "healthy" from "not reported". */
   @Test
   void aHealthyNodeWritesAnExplicitNullForBoth() {
-    assertThat(GetClusterHandler.buildCriticalHalt(null)).isEqualTo(JSONObject.NULL);
-    assertThat(GetClusterHandler.buildRaftLogFailure(null)).isEqualTo(JSONObject.NULL);
+    assertThat(GetClusterHandler.buildCriticalHalt(null, true)).isEqualTo(JSONObject.NULL);
+    assertThat(GetClusterHandler.buildRaftLogFailure(null, true)).isEqualTo(JSONObject.NULL);
+  }
+
+  /**
+   * A non-root caller learns the CONDITION but not the raw text behind it (review on PR #7953).
+   * <p>
+   * Neither string is composed by this node: the log failure carries Ratis's own cause, which routinely names the
+   * Raft storage path, and the halt carries an arbitrary {@code Throwable.toString()} from the apply, which can
+   * name the database that was being applied. {@code GET /api/v1/cluster} is not root-gated outside its
+   * {@code ?presence=true} branch, so publishing either unreduced would hand a tenant a filesystem path, or
+   * another tenant's database name - exactly what the {@code visible()} machinery on this endpoint exists to
+   * prevent.
+   * <p>
+   * What is NOT reduced is the index, the timestamp and the fact that the field is non-null. That is the half the
+   * #7136 invariant owes every caller and the only half a tenant can act on; a field that went absent instead
+   * would read as "this build does not report it".
+   */
+  @Test
+  void aNonRootCallerSeesTheConditionButNotTheRawExceptionText() {
+    final JSONObject halt = (JSONObject) GetClusterHandler.buildCriticalHalt(
+        new ArcadeStateMachine.CriticalHalt(4711L, "NPE applying an entry for database 'other-tenant'", 7L), false);
+    assertThat(halt.getString("reason")).isEqualTo(GetClusterHandler.REDACTED_REASON);
+    assertThat(halt.getString("reason")).doesNotContain("other-tenant");
+    assertThat(halt.getLong("index")).as("the index is not sensitive and is what a client correlates on")
+        .isEqualTo(4711L);
+    assertThat(halt.getLong("timestamp")).isEqualTo(7L);
+
+    final JSONObject failure = (JSONObject) GetClusterHandler.buildRaftLogFailure(
+        new ArcadeStateMachine.RaftLogFailure(99L, "java.io.IOException: No space left: /srv/data/.raft", 8L), false);
+    assertThat(failure.getString("cause")).isEqualTo(GetClusterHandler.REDACTED_REASON);
+    assertThat(failure.getString("cause")).doesNotContain("/srv/data");
+    assertThat(failure.getLong("index")).isEqualTo(99L);
+  }
+
+  /** And the alerts built from the same pair are reduced identically - they carry the text in their details. */
+  @Test
+  void theAlertsAreReducedForANonRootCallerToo() {
+    final JSONArray alerts = new JSONArray();
+    ClusterAlerts.addCriticalHaltAlert(
+        new ArcadeStateMachine.CriticalHalt(4711L, "NPE applying an entry for database 'other-tenant'", 7L), false,
+        alerts);
+    ClusterAlerts.addRaftLogFailureAlert(
+        new ArcadeStateMachine.RaftLogFailure(99L, "java.io.IOException: No space left: /srv/data/.raft", 8L), false,
+        alerts);
+
+    final JSONObject halt = alertWithId(alerts, "halted-after-critical-error");
+    assertThat(halt).as("the alert still fires: the condition is not the secret").isNotNull();
+    assertThat(halt.getJSONObject("details").getString("reason")).isEqualTo(GetClusterHandler.REDACTED_REASON);
+    assertThat(halt.toString()).as("and the text must not survive anywhere else in the payload, message included")
+        .doesNotContain("other-tenant");
+
+    final JSONObject failure = alertWithId(alerts, "raft-log-writer-failed");
+    assertThat(failure.getJSONObject("details").getString("cause")).isEqualTo(GetClusterHandler.REDACTED_REASON);
+    assertThat(failure.toString()).doesNotContain("/srv/data");
   }
 }

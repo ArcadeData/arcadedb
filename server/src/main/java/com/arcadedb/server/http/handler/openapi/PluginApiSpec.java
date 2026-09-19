@@ -619,7 +619,9 @@ public class PluginApiSpec implements OpenApiContributor {
         "The Raft index being applied when the halt tripped, or -1 when the entry carried none"));
     schema.addProperty("reason", SpecBuilders.string(
         "One line naming what could not be applied. 'unknown Raft log entry type' means a newer peer is writing a "
-            + "format this build cannot read, and the answer is to upgrade this node; anything else is a bug"));
+            + "format this build cannot read, and the answer is to upgrade this node; anything else is a bug. Raw "
+            + "exception text, so it is shown to the root user only: another caller reads a placeholder here while "
+            + "still getting 'index' and 'timestamp'"));
     schema.addProperty("timestamp", SpecBuilders.integer("When it tripped, as epoch milliseconds"));
     schema.setNullable(true);
     // Recorded in one step, so a halt that is reported is reported whole.
@@ -639,7 +641,10 @@ public class PluginApiSpec implements OpenApiContributor {
         health monitor restarts the writer in place.""");
     schema.addProperty("index", SpecBuilders.integer(
         "The Raft index of the entry whose write failed, or -1 when the failure was on a log segment"));
-    schema.addProperty("cause", SpecBuilders.string("The failure Ratis reported, as its own text"));
+    schema.addProperty("cause", SpecBuilders.string(
+        "The failure Ratis reported, as its own text, which routinely names the Raft storage path - so it is shown "
+            + "to the root user only: another caller reads a placeholder here while still getting 'index' and "
+            + "'timestamp'"));
     schema.addProperty("timestamp", SpecBuilders.integer("When it was first reported, as epoch milliseconds"));
     schema.setNullable(true);
     // Recorded in one step, so a failure that is reported is reported whole.
