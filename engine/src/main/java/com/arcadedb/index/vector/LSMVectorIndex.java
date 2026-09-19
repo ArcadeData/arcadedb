@@ -7608,6 +7608,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private ScoredCandidateCursor scoreDeltaCandidates(final VectorFloat<?> queryVectorFloat, final Set<RID> allowedRIDs,
       final List<DeltaVectorEntry> deltaSnapshot) {
+    // No overlay parameter here on purpose: `deltaSnapshot` is already the merged view. The grouped search takes it
+    // once, at the top of findNeighborsFromVectorGrouped, and hands the same list to every plan and to the
+    // GroupedSearchState that indexes back into it by position - so the calling transaction's own pending rows
+    // arrive here as ordinary entries (issue #7378), carrying PENDING_VECTOR_ID, which is what the isTombstoned()
+    // guard below is for.
     final int buffered = deltaSnapshot.size();
     if (buffered == 0)
       return null;

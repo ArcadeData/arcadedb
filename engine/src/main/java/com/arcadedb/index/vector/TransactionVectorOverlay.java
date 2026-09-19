@@ -22,6 +22,9 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.database.TransactionIndexContext;
+import com.arcadedb.database.TransactionIndexContext.ComparableKey;
+import com.arcadedb.database.TransactionIndexContext.IndexKey;
+import com.arcadedb.database.TransactionIndexContext.IndexKey.IndexKeyOperation;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.vector.LSMVectorIndex.DeltaVectorEntry;
 import io.github.jbellis.jvector.vector.types.VectorFloat;
@@ -117,8 +120,7 @@ final class TransactionVectorOverlay {
     if (changes == null)
       return null;
 
-    final TreeMap<TransactionIndexContext.ComparableKey,
-        Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey>> lane = changes.getIndexKeys(index);
+    final TreeMap<ComparableKey, Map<IndexKey, IndexKey>> lane = changes.getIndexKeys(index);
     if (lane == null || lane.isEmpty())
       return null;
 
@@ -127,12 +129,12 @@ final class TransactionVectorOverlay {
     LinkedHashMap<RID, DeltaVectorEntry> pending = null;
     Set<RID> superseded = null;
 
-    for (final Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey> bucket : lane.values()) {
-      for (final TransactionIndexContext.IndexKey entry : bucket.values()) {
+    for (final Map<IndexKey, IndexKey> bucket : lane.values()) {
+      for (final IndexKey entry : bucket.values()) {
         if (entry == null || entry.rid == null)
           continue;
 
-        if (entry.operation == TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE) {
+        if (entry.operation == IndexKeyOperation.REMOVE) {
           if (superseded == null)
             superseded = new HashSet<>();
           superseded.add(entry.rid);
