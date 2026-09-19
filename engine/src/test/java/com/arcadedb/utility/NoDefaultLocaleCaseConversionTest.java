@@ -152,7 +152,10 @@ class NoDefaultLocaleCaseConversionTest {
     assertThat(offendersIn("Fixture.java", "  /* a note */ final String k = keyword.toUpperCase();")).hasSize(1);
 
     // an escaped quote does not end the literal, so what follows is still code
-    assertThat(offendersIn("Fixture.java", "  final String k = q(\"a\\\\\"b\").toUpperCase();")).hasSize(1);
+    assertThat(offendersIn("Fixture.java", "  final String k = q(\"a\\\"b\").toUpperCase();")).hasSize(1);
+
+    // the banned call NAMED inside a string literal folds nothing, so it is not an offender
+    assertThat(offendersIn("Fixture.java", "  final String hint = \"pass a Locale to .toUpperCase()\";")).isEmpty();
   }
 
   /**
@@ -161,13 +164,13 @@ class NoDefaultLocaleCaseConversionTest {
    * guard that flagged its own documentation would be turned off rather than obeyed.
    */
   private static List<String> offendersIn(final String fileName, final String text) {
-    final boolean[] inComment = commentMask(text);
+    final boolean[] isCode = codeMask(text);
 
     final List<String> offenders = new ArrayList<>();
     final Matcher matcher = NO_ARG_CASE_CONVERSION.matcher(text);
 
     while (matcher.find()) {
-      if (inComment[matcher.start()])
+      if (!isCode[matcher.start()])
         continue;
 
       final int lineStart = text.lastIndexOf('\n', matcher.start()) + 1;
@@ -178,8 +181,8 @@ class NoDefaultLocaleCaseConversionTest {
   }
 
   /**
-   * For each character of {@code text}, whether it sits inside a comment - one pass over the whole file,
-   * tracking string literals, char literals, {@code //} comments and {@code /* *}{@code /} blocks.
+   * For each character of {@code text}, whether it is CODE rather than the inside of a comment or of a string or
+   * char literal - one pass over the whole file.
    * <p>
    * It reads the file rather than the line because the three heuristics this replaced each had a hole, and the
    * two directions are not equally cheap. Asking whether the LINE starts with {@code //} flagged a comment
@@ -189,9 +192,14 @@ class NoDefaultLocaleCaseConversionTest {
    * has to puzzle out - while the second is a false NEGATIVE, which is the one outcome this class exists to
    * prevent. Tracking the real lexical state costs a dozen lines and has none of the three holes (PR #7942
    * review).
+   * <p>
+   * String literals are excluded for the same reason comments are: a source line MENTIONING the banned call - a
+   * message telling the reader to pass a Locale, say - names it inside a literal, and flagging that would fail
+   * the build over text that folds nothing. It does not weaken the rule, because the offender in
+   * {@code uri("http://x").toUpperCase()} is the call AFTER the literal closes, which is still code.
    */
-  private static boolean[] commentMask(final String text) {
-    final boolean[] inComment = new boolean[text.length()];
+  private static boolean[] codeMask(final String text) {
+    final boolean[] isCode = new boolean[text.length()];
 
     boolean inString = false;
     boolean inChar = false;
@@ -200,7 +208,7 @@ class NoDefaultLocaleCaseConversionTest {
 
     for (int i = 0; i < text.length(); i++) {
       final char c = text.charAt(i);
-      inComment[i] = inLineComment || inBlockComment;
+      isCode[i] = !inString && !inChar && !inLineComment && !inBlockComment;
 
       if (inLineComment) {
         if (c == '\n')
@@ -210,7 +218,7 @@ class NoDefaultLocaleCaseConversionTest {
 
       if (inBlockComment) {
         if (c == '*' && i + 1 < text.length() && text.charAt(i + 1) == '/') {
-          inComment[++i] = true;
+          isCode[++i] = false;
           inBlockComment = false;
         }
         continue;
@@ -218,7 +226,8 @@ class NoDefaultLocaleCaseConversionTest {
 
       if ((inString || inChar) && c == '\\') {
         // an escape consumes the next character, so a literal \" does not end the literal
-        ++i;
+        if (i + 1 < text.length())
+          isCode[++i] = false;
         continue;
       }
       if (c == '"' && !inChar)
@@ -231,13 +240,13 @@ class NoDefaultLocaleCaseConversionTest {
       else if (c == '/' && !inString && !inChar && i + 1 < text.length()) {
         if (text.charAt(i + 1) == '/') {
           inLineComment = true;
-          inComment[i] = true;
+          isCode[i] = false;
         } else if (text.charAt(i + 1) == '*') {
           inBlockComment = true;
-          inComment[i] = true;
+          isCode[i] = false;
         }
       }
     }
-    return inComment;
+    return isCode;
   }
 }

@@ -68,7 +68,13 @@ class Issue7472EveryGrpcFailureIsConcealableTest {
    * {@code toStatusRuntimeException}, so a call that omits the decision leaks exactly the same way.
    */
   private static final List<String> MAPPER_CALLS = List.of("GrpcErrorMapper.toStatusRuntimeException(",
-      "GrpcErrorMapper.toStatusException(");
+      "GrpcErrorMapper.toStatusException(",
+      // concealableDescription takes the decision as its last argument and RETURNS THE THROWABLE'S MESSAGE when it
+      // is false, so a direct call passing a literal false leaks exactly what #7472 is about - and it slipped
+      // through both other scans, because SAFE_DESCRIPTIONS strips this call whole before looking for a raw
+      // message (PR #7942 review). Listing it here makes it state a decision like any other mapper entry point:
+      // concealErrors() and a threaded `conceal` parameter pass, a literal false does not.
+      "GrpcErrorMapper.concealableDescription(");
   /**
    * ANY receiver's {@code .getMessage()}.
    * <p>
@@ -322,15 +328,32 @@ class Issue7472EveryGrpcFailureIsConcealableTest {
         .as("the InsertError scan no longer flags a raw exception message on the protobuf channel")
         .hasSize(1);
 
+    assertThat(mapperCallsWithoutADecision("Fixture.java",
+        "    return GrpcErrorMapper.concealableDescription(this, op, e, false);"))
+        .as("a concealment decision hard-coded to false is a decision to LEAK, and the scan must say so")
+        .hasSize(1);
+
     // ...and each of them accepts the SAFE spelling of the same statement, or the rule is simply "refuse
     // everything", which fails the build on correct code and gets deleted rather than obeyed.
     assertThat(mapperCallsWithoutADecision("Fixture.java",
         "    throw GrpcErrorMapper.toStatusRuntimeException(dup, \"insert\", concealErrors());")).isEmpty();
+    assertThat(mapperCallsWithoutADecision("Fixture.java",
+        "    return GrpcErrorMapper.concealableDescription(this, op, e, concealErrors());")).isEmpty();
     assertThat(directStatusesCarryingARawMessage("Fixture.java",
         "    return GrpcErrorMapper.statusCodeFor(retryEx).toStatus().withDescription(concealable(op, retryEx)).asException();"))
         .isEmpty();
     assertThat(insertErrorsCarryingARawMessage("Fixture.java",
         "        c.err(c.received - 1, \"CONFLICT\", insertErrorMessage(retryDup), \"\");")).isEmpty();
+
+    // an unbalanced parenthesis INSIDE the safe call's own string argument must not swallow what follows it,
+    // or the raw message after it disappears from the text the rule is applied to
+    assertThat(insertErrorsCarryingARawMessage("Fixture.java",
+        "        c.err(0, \"CONFLICT\", insertErrorMessage(dup) + \"a (partial\" + retryEx.getMessage(), \"\");"))
+        .hasSize(1);
+
+    // ...and a .getMessage() that is only MENTIONED in a string or a comment is not a call site
+    assertThat(insertErrorsCarryingARawMessage("Fixture.java",
+        "        c.err(0, \"CONFLICT\", insertErrorMessage(dup), \"use e.getMessage() instead\");")).isEmpty();
   }
 
   /** A mapper call that does not state whether to conceal. */
@@ -396,8 +419,12 @@ class Issue7472EveryGrpcFailureIsConcealableTest {
     for (final String safeCall : safeCalls)
       remaining = withoutCallsTo(remaining, safeCall);
 
+    final boolean[] isCode = codeMask(remaining);
     final Matcher matcher = ANY_GET_MESSAGE.matcher(remaining);
     while (matcher.find()) {
+      if (!isCode[matcher.start()])
+        continue;
+
       final String before = remaining.substring(0, matcher.start());
       if (NOT_A_THROWABLE.stream().noneMatch(before::endsWith))
         return true;
@@ -410,14 +437,24 @@ class Issue7472EveryGrpcFailureIsConcealableTest {
    * call was handed is not mistaken for what the statement puts on the wire.
    */
   private static String withoutCallsTo(final String text, final String call) {
+    final boolean[] isCode = codeMask(text);
+
     final StringBuilder result = new StringBuilder(text.length());
     int from = 0;
     for (int at = text.indexOf(call); at > -1; at = text.indexOf(call, from)) {
+      if (!isCode[at]) {
+        // the call NAME itself sits in a string or a comment, so it is not a call
+        result.append(text, from, at + call.length());
+        from = at + call.length();
+        continue;
+      }
       result.append(text, from, at);
 
       int depth = 0;
       int i = at + call.length() - 1;
       for (; i < text.length(); i++) {
+        if (!isCode[i])
+          continue;
         if (text.charAt(i) == '(')
           ++depth;
         else if (text.charAt(i) == ')' && --depth == 0)
@@ -426,6 +463,65 @@ class Issue7472EveryGrpcFailureIsConcealableTest {
       from = i < text.length() ? i + 1 : text.length();
     }
     return result.append(text.substring(from)).toString();
+  }
+
+  /**
+   * For each character, whether it is CODE rather than the inside of a string literal, a char literal or a comment.
+   * <p>
+   * {@link #withoutCallsTo} balances parentheses to find where a safe call's arguments end, and a {@code (} inside
+   * {@code insertErrorMessage("a (partial" + e)} would otherwise make it swallow past the real end of the call -
+   * taking a following raw {@code .getMessage()} out of the text with it and hiding a leak from
+   * {@link #carriesARawMessage} (PR #7942 review). Counting only code parentheses removes that gap, and the same
+   * mask stops a {@code .getMessage()} written inside a string or comment from being read as a call site.
+   */
+  private static boolean[] codeMask(final String text) {
+    final boolean[] isCode = new boolean[text.length()];
+
+    boolean inString = false;
+    boolean inChar = false;
+    boolean inLineComment = false;
+    boolean inBlockComment = false;
+
+    for (int i = 0; i < text.length(); i++) {
+      final char c = text.charAt(i);
+      isCode[i] = !inString && !inChar && !inLineComment && !inBlockComment;
+
+      if (inLineComment) {
+        if (c == '\n')
+          inLineComment = false;
+        continue;
+      }
+      if (inBlockComment) {
+        if (c == '*' && i + 1 < text.length() && text.charAt(i + 1) == '/') {
+          isCode[++i] = false;
+          inBlockComment = false;
+        }
+        continue;
+      }
+      if ((inString || inChar) && c == '\\') {
+        // an escape consumes the next character, so a literal \" does not end the literal
+        if (i + 1 < text.length())
+          isCode[++i] = false;
+        continue;
+      }
+      if (c == '"' && !inChar)
+        inString = !inString;
+      else if (c == '\'' && !inString)
+        inChar = !inChar;
+      else if (c == '\n')
+        // an unterminated literal cannot span a line; resynchronise rather than mis-read the rest of the text
+        inString = inChar = false;
+      else if (c == '/' && !inString && !inChar && i + 1 < text.length()) {
+        if (text.charAt(i + 1) == '/') {
+          inLineComment = true;
+          isCode[i] = false;
+        } else if (text.charAt(i + 1) == '*') {
+          inBlockComment = true;
+          isCode[i] = false;
+        }
+      }
+    }
+    return isCode;
   }
 
   /**
