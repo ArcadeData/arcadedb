@@ -200,6 +200,9 @@ class ShowCommandTailIssue7946Test {
     // A tail naming the row variable must not see the synthetic binding. Unbound, it evaluates to null, so the
     // predicate holds for no row at all - where a tail that reached the rows would have matched every one of them.
     assertThat(apply("SHOW DATABASES WHERE __showRow IS NOT NULL", Map.of()).rows()).isEmpty();
+
+    // Backticks quote the same name, so a collision written that way counts as one too.
+    assertThat(apply("SHOW DATABASES WHERE `__showRow` IS NOT NULL", Map.of()).rows()).isEmpty();
   }
 
   /**

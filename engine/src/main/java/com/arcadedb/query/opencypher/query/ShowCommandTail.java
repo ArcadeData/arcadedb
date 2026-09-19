@@ -305,10 +305,14 @@ public final class ShowCommandTail {
     };
   }
 
-  /** Whether the tail names this identifier anywhere, asked of the tokens so a string literal does not count. */
+  /**
+   * Whether the tail names this identifier anywhere, asked of the tokens so a string literal does not count. The
+   * backticks come off first: {@code `__showRow`} names the same variable as {@code __showRow}, and a collision
+   * written that way has to count as one.
+   */
   private static boolean mentions(final List<Token> tokens, final String identifier) {
     for (final Token token : tokens)
-      if (identifier.equals(token.getText()))
+      if (identifier.equals(ParserUtils.stripBackticks(token.getText())))
         return true;
     return false;
   }
