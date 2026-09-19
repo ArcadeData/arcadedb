@@ -90,8 +90,19 @@ final class SparseVectorReplayBuffer implements IndexReplayConclusion {
     this.engine = engine;
   }
 
-  /** Records one posting the commit is holding back. A {@code remove} keeps no weight: the engine's delete primitive takes none. */
+  /**
+   * Records one posting the commit is holding back. A {@code remove} keeps no weight: the engine's delete primitive
+   * takes none.
+   * <p>
+   * The guard is a tripwire, not a supported case: a posting arriving after the conclusion belongs to a transaction
+   * whose buffer has already been published or dropped, so it would be silently lost. Named here rather than left
+   * to the {@link NullPointerException} the released arrays would raise, because the name is what tells the next
+   * reader which invariant broke.
+   */
   void record(final int dim, final RID rid, final float weight, final boolean isRemove) {
+    if (concluded)
+      throw new IllegalStateException(
+          "a sparse vector posting was replayed after its transaction had already concluded; it would be lost");
     if (size == dims.length) {
       dims = Arrays.copyOf(dims, size * 2);
       rids = Arrays.copyOf(rids, size * 2);
@@ -138,9 +149,7 @@ final class SparseVectorReplayBuffer implements IndexReplayConclusion {
 
   /**
    * Frees the arrays at the conclusion. Nulling them rather than only resetting the size is what keeps a
-   * transaction's RIDs from being held alive by a context that is pooled and reused - and a {@link #record} that
-   * somehow arrived after the conclusion fails loudly here instead of being silently dropped into a buffer nobody
-   * will ever publish.
+   * transaction's RIDs from being held alive by a context that is pooled and reused.
    */
   private void release() {
     dims = null;
