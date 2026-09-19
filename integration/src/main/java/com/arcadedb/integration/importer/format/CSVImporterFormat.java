@@ -194,6 +194,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       beginRowTransaction(database, transactionActiveOnEntry, ownsTransaction);
 
       final AnalyzedEntity entity = sourceSchema.getSchema().getEntity(settings.documentTypeName);
+      checkAnalysisFoundUsableRows(entity, AnalyzedEntity.EntityType.DOCUMENT);
 
       final List<AnalyzedProperty> properties = new ArrayList<>();
       if (!"*".equalsIgnoreCase(settings.documentPropertiesInclude)) {
@@ -373,6 +374,27 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         columns, headerColumns);
   }
 
+  /**
+   * Refuses a source the analysis could derive nothing from, before anything downstream blames the wrong thing.
+   * <p>
+   * An entity exists only once the analysis has read a DATA row ({@code getOrCreateEntity} is called from that branch
+   * alone), and every accepted row contributes at least one property - so an entity with no property at all means
+   * every row it saw was refused for its shape. That became possible only with the ragged-row gate (issue #7782);
+   * before it, such a row aborted the analysis outright.
+   * <p>
+   * Worth its own message because each of the three load paths misreports it otherwise, and all three point away from
+   * the source: {@code loadEdges()} throws "Specify -edgeFromField &lt;from-field-name&gt;" at an operator who
+   * specified it correctly, {@code loadVertices()} throws "Property Id 'T.p' is null" about a property the header
+   * does declare, and {@code loadDocuments()} says nothing at all and writes one empty document per row. Misdirection
+   * of exactly the kind #7782, #7781 and #7771 are all about.
+   */
+  private static void checkAnalysisFoundUsableRows(final AnalyzedEntity entity, final AnalyzedEntity.EntityType entityType) {
+    if (entity != null && entity.getProperties().isEmpty())
+      throw new ImportException("No usable row found in the " + entityType.name().toLowerCase(Locale.ENGLISH)
+          + " source: every row the analysis read was refused because its column count did not match the header's (see the"
+          + " WARNING lines above), so no property could be derived from it");
+  }
+
   /** How many columns the analysis measured this source's rows against, or -1 when it recorded no header. */
   private static int headerColumnsOf(final AnalyzedEntity entity) {
     return entity != null ? entity.getHeaderColumns() : -1;
@@ -461,6 +483,8 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       LogManager.instance().log(this, Level.INFO, "Vertex type '%s' not defined", null, settings.vertexTypeName);
       return;
     }
+
+    checkAnalysisFoundUsableRows(entity, AnalyzedEntity.EntityType.VERTEX);
 
     int idIndex = -1;
     if (settings.typeIdProperty != null) {
@@ -676,6 +700,8 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       LogManager.instance().log(this, Level.INFO, "Edge type '%s' not defined", null, settings.edgeTypeName);
       return;
     }
+
+    checkAnalysisFoundUsableRows(entity, AnalyzedEntity.EntityType.EDGE);
 
     final AnalyzedProperty from = entity.getProperty(settings.edgeFromField);
     if (from == null)
