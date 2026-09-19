@@ -28,6 +28,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -368,7 +369,7 @@ final class RaftPeerAddressResolver {
         final int colon = pair.indexOf(':');
         if (colon < 0)
           throw new ServerException("Invalid field '" + pair + "' in peer address '" + entry + "': expected key:value");
-        final String key = pair.substring(0, colon).trim().toLowerCase();
+        final String key = pair.substring(0, colon).trim().toLowerCase(Locale.ROOT);
         final String value = pair.substring(colon + 1).trim();
         if (seen.put(key, value) != null)
           throw new ServerException("Duplicate key '" + key + "' in peer address '" + entry + "'");

@@ -413,7 +413,7 @@ public class GraphQLSchema {
     }
 
     if (statement == null)
-      throw new CommandParsingException(language.toUpperCase() + " directive has no `statement` argument");
+      throw new CommandParsingException(language.toUpperCase(Locale.ROOT) + " directive has no `statement` argument");
 
     final ResultSet resultSet = arguments != null ? database.query(language, statement, arguments) : database.query(language, statement);
 

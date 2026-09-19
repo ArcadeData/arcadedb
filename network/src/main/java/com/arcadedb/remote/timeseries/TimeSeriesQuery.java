@@ -23,6 +23,7 @@ import com.arcadedb.engine.timeseries.AggregationType;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -62,7 +63,7 @@ public class TimeSeriesQuery {
 
     /** The output name this aggregate will carry, resolving the default when no alias was stated. */
     public String resolvedAlias() {
-      return alias == null || alias.isBlank() ? field + "_" + type.name().toLowerCase() : alias;
+      return alias == null || alias.isBlank() ? field + "_" + type.name().toLowerCase(Locale.ROOT) : alias;
     }
   }
 

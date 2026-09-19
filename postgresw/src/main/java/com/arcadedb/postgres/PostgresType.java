@@ -242,7 +242,7 @@ public enum PostgresType {
   private static Boolean parseBooleanText(final String value) {
     if (value == null)
       throw new PostgresProtocolException("Cannot parse null BOOLEAN text value");
-    return switch (value.toLowerCase()) {
+    return switch (value.toLowerCase(Locale.ROOT)) {
       case "t", "true", "1", "y", "yes", "on" -> Boolean.TRUE;
       case "f", "false", "0", "n", "no", "off" -> Boolean.FALSE;
       default -> throw new PostgresProtocolException("Cannot parse BOOLEAN text value: " + value);

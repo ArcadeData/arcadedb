@@ -21,6 +21,7 @@ package com.arcadedb.server.backup;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.BitSet;
+import java.util.Locale;
 
 /**
  * Lightweight CRON expression parser supporting the standard 6-field format:
@@ -149,7 +150,7 @@ public class CronScheduleParser {
   private int parseValue(final String value, final int min, final int max, final String[] names) {
     int result = -1;
     if (names != null) {
-      final String upper = value.toUpperCase();
+      final String upper = value.toUpperCase(Locale.ROOT);
       for (int i = 0; i < names.length; i++)
         if (names[i].equals(upper)) {
           result = i + min;

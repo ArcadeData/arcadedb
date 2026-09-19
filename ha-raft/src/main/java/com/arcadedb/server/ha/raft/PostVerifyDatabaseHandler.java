@@ -35,6 +35,7 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 import org.apache.ratis.protocol.RaftPeer;
 
+import java.util.Locale;
 import javax.net.ssl.HttpsURLConnection;
 import java.io.File;
 import java.io.FileInputStream;
@@ -551,7 +552,7 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
 
   private static String categorizeFile(final String fileName) {
     if (fileName == null) return "unknown";
-    final String lower = fileName.toLowerCase();
+    final String lower = fileName.toLowerCase(Locale.ROOT);
     // Ahead of the "index" arm: a sealed store IS a block index over compacted samples, and a name like
     // "cpu_index_shard_0.ts.sealed" would otherwise be reported to an operator as an index file (issue #7338).
     if (lower.endsWith(TimeSeriesSealedStore.FILE_EXTENSION))

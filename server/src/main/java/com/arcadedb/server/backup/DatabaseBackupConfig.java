@@ -21,6 +21,7 @@ package com.arcadedb.server.backup;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.time.LocalTime;
+import java.util.Locale;
 
 /**
  * Configuration for a specific database backup, can override server-level defaults.
@@ -256,7 +257,7 @@ public class DatabaseBackupConfig {
       final ScheduleConfig config = new ScheduleConfig();
 
       if (json.has("type"))
-        config.type = Type.valueOf(json.getString("type").toUpperCase());
+        config.type = Type.valueOf(json.getString("type").toUpperCase(Locale.ROOT));
 
       if (json.has("frequencyMinutes"))
         config.frequencyMinutes = json.getInt("frequencyMinutes");
@@ -353,7 +354,7 @@ public class DatabaseBackupConfig {
      */
     public JSONObject toJSON() {
       final JSONObject json = new JSONObject();
-      json.put("type", type.name().toLowerCase());
+      json.put("type", type.name().toLowerCase(Locale.ROOT));
 
       if (type == Type.FREQUENCY)
         json.put("frequencyMinutes", frequencyMinutes);

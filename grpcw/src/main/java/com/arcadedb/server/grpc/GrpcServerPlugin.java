@@ -44,6 +44,7 @@ import io.micrometer.core.instrument.Metrics;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
@@ -119,7 +120,7 @@ public class GrpcServerPlugin implements ServerPlugin {
       return;
     }
 
-    String mode = getConfigString(config, CONFIG_MODE, "standard").toLowerCase();
+    String mode = getConfigString(config, CONFIG_MODE, "standard").toLowerCase(Locale.ROOT);
 
     try {
       switch (mode) {

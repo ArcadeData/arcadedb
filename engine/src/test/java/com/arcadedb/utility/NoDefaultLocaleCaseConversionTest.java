@@ -26,6 +26,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -33,7 +35,7 @@ import java.util.stream.Stream;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Bans the no-argument {@code String.toUpperCase()} / {@code toLowerCase()} from the engine's production sources.
+ * Bans the no-argument {@code String.toUpperCase()} / {@code toLowerCase()} from EVERY module's production sources.
  * <p>
  * They fold with the JVM DEFAULT locale, and in the Turkish, Azeri and Lithuanian locales {@code 'i'} upper-cases
  * to the dotted {@code 'İ'} (U+0130) rather than to {@code 'I'}. Every internal use of these methods in this code
@@ -50,37 +52,74 @@ import static org.assertj.core.api.Assertions.assertThat;
  * The fix at any site this flags is one argument: {@code toUpperCase(Locale.ROOT)}. If a site genuinely wants the
  * user's locale - formatting text for a human to read - it says so with {@code Locale.getDefault()}, which is
  * explicit and passes.
+ * <p>
+ * It scans the WHOLE repository rather than only this module, because the hazard is not engine-specific and the
+ * wire protocols are where it bites hardest: a Postgres or Bolt keyword scan, an HTTP header name folded for
+ * lookup, and {@code DatabaseBackupConfig}'s {@code Type.valueOf(json.getString("type").toUpperCase())} were all
+ * live instances of the same defect, found by widening this scan after #7900's engine-only sweep (PR #7942 review).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class NoDefaultLocaleCaseConversionTest {
 
-  private static final Path MAIN_SOURCES = Path.of("src", "main", "java", "com", "arcadedb");
+  /** Modules that must be among those found, or the root was resolved wrongly and the scan is vacuous. */
+  private static final List<String> EXPECTED_MODULES = List.of("engine", "network", "server", "grpcw", "postgresw");
 
   /** {@code .toUpperCase()} / {@code .toLowerCase()} with an EMPTY argument list, whatever the receiver. */
   private static final Pattern NO_ARG_CASE_CONVERSION = Pattern.compile("\\.to(?:Upper|Lower)Case\\s*\\(\\s*\\)");
 
   @Test
   void noProductionSourceFoldsCaseWithTheDefaultLocale() throws IOException {
-    assertThat(MAIN_SOURCES).as("the module's own sources, relative to the module directory Surefire runs in")
-        .isDirectory();
+    final Path root = repositoryRoot();
 
     final List<String> offenders = new ArrayList<>();
+    final Set<String> modules = new TreeSet<>();
     int scanned = 0;
 
-    try (final Stream<Path> sources = Files.walk(MAIN_SOURCES)) {
-      for (final Path source : sources.filter(p -> p.toString().endsWith(".java")).toList()) {
-        ++scanned;
-        offenders.addAll(offendersIn(source.toString(), Files.readString(source, StandardCharsets.UTF_8)));
+    for (final Path moduleSources : productionSourceRoots(root)) {
+      modules.add(root.relativize(moduleSources).getName(0).toString());
+      try (final Stream<Path> sources = Files.walk(moduleSources)) {
+        for (final Path source : sources.filter(p -> p.toString().endsWith(".java")).toList()) {
+          ++scanned;
+          offenders.addAll(offendersIn(root.relativize(source).toString(),
+              Files.readString(source, StandardCharsets.UTF_8)));
+        }
       }
     }
 
     assertThat(scanned).as("the scan found no sources at all, so it is asserting about nothing").isPositive();
+    assertThat(modules)
+        .as("the repository root resolved to %s, where these modules are missing - the scan would silently cover "
+            + "less than it claims", root)
+        .containsAll(EXPECTED_MODULES);
     assertThat(offenders)
         .as("the no-argument toUpperCase()/toLowerCase() folds with the JVM default locale, which turns 'i' into "
-            + "'İ' on a Turkish, Azeri or Lithuanian server and silently breaks keyword matching - pass "
+            + "'\u0130' on a Turkish, Azeri or Lithuanian server and silently breaks keyword matching - pass "
             + "Locale.ROOT (or Locale.getDefault() if the text really is for a human to read)")
         .isEmpty();
+  }
+
+  /**
+   * The repository root, walked up from the module directory Surefire runs in. Verified by the module assertion
+   * above rather than trusted: a wrong root is the one way this whole class goes quietly vacuous.
+   */
+  private static Path repositoryRoot() {
+    for (Path candidate = Path.of("").toAbsolutePath(); candidate != null; candidate = candidate.getParent())
+      if (Files.isDirectory(candidate.resolve("engine").resolve("src").resolve("main").resolve("java")))
+        return candidate;
+
+    throw new IllegalStateException("cannot locate the repository root from " + Path.of("").toAbsolutePath());
+  }
+
+  /** Every module's {@code src/main/java/com/arcadedb}, one level below the root. */
+  private static List<Path> productionSourceRoots(final Path root) throws IOException {
+    try (final Stream<Path> modules = Files.list(root)) {
+      return modules.filter(Files::isDirectory)
+          .map(m -> m.resolve("src").resolve("main").resolve("java").resolve("com").resolve("arcadedb"))
+          .filter(Files::isDirectory)
+          .sorted()
+          .toList();
+    }
   }
 
   /**

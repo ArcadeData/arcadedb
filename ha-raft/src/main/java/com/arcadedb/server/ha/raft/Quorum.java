@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.exception.ConfigurationException;
+import java.util.Locale;
 
 /**
  * Quorum modes supported for Raft HA replication.
@@ -28,7 +29,7 @@ public enum Quorum {
   ALL;
 
   public static Quorum parse(final String value) {
-    return switch (value.toLowerCase()) {
+    return switch (value.toLowerCase(Locale.ROOT)) {
       case "majority" -> MAJORITY;
       case "all" -> ALL;
       default -> throw new ConfigurationException(

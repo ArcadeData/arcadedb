@@ -24,6 +24,7 @@ import com.arcadedb.log.LogManager;
 
 import io.micrometer.core.instrument.Metrics;
 
+import java.util.Locale;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -111,7 +112,7 @@ public class PreAuthConnectionGate {
 
     if (!permits.tryAcquire()) {
       refused.incrementAndGet();
-      Metrics.counter(protocol.toLowerCase() + ".connection.refused").increment();
+      Metrics.counter(protocol.toLowerCase(Locale.ROOT) + ".connection.refused").increment();
       return null;
     }
 

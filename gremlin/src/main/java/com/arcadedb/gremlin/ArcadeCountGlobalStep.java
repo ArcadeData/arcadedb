@@ -30,6 +30,7 @@ import org.apache.tinkerpop.gremlin.structure.Element;
 import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.apache.tinkerpop.gremlin.structure.util.StringFactory;
 
+import java.util.Locale;
 import java.util.NoSuchElementException;
 
 /**
@@ -94,7 +95,7 @@ public final class ArcadeCountGlobalStep<S extends Element> extends AbstractStep
   }
 
   public String toString() {
-    return StringFactory.stepString(this, this.elementClass.getSimpleName().toLowerCase());
+    return StringFactory.stepString(this, this.elementClass.getSimpleName().toLowerCase(Locale.ROOT));
   }
 
   public int hashCode() {

@@ -40,6 +40,7 @@ import io.undertow.server.HttpServerExchange;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.logging.Level;
 
 /**
@@ -269,7 +270,7 @@ public class PostTimeSeriesQueryHandler extends DatabaseAbstractHandler {
         final String fieldName = TimeSeriesHandlerUtils.requireString(req, "field", reqPath + ".field");
         final AggregationType aggType = TimeSeriesHandlerUtils.resolveAggregationType(req, i);
         final String alias = TimeSeriesHandlerUtils.optString(req, "alias",
-            fieldName + "_" + aggType.name().toLowerCase(), reqPath + ".alias");
+            fieldName + "_" + aggType.name().toLowerCase(Locale.ROOT), reqPath + ".alias");
 
         // The shared helper, as the Grafana handler and the gRPC aggregation path already use: this was the last
         // site outside the gateway still hand-rolling the lookup, and therefore the last place the full-schema vs

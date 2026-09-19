@@ -259,7 +259,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   }
 
   private String extractTarget(String command, String keyword) {
-    final int pos = command.toLowerCase().indexOf(keyword);
+    final int pos = command.toLowerCase(Locale.ROOT).indexOf(keyword);
     if (pos == -1)
       return "";
 
