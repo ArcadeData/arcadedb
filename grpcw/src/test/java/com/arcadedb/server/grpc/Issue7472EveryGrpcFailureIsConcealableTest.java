@@ -29,6 +29,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.MatchResult;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
@@ -69,11 +70,47 @@ class Issue7472EveryGrpcFailureIsConcealableTest {
   private static final List<String> MAPPER_CALLS = List.of("GrpcErrorMapper.toStatusRuntimeException(",
       "GrpcErrorMapper.toStatusException(");
   /**
-   * A description interpolating a THROWABLE's own message - {@code e.getMessage()}, {@code cause.getMessage()}.
-   * Not {@code request.getX()}, which is the caller's own input echoed back.
+   * ANY receiver's {@code .getMessage()}.
+   * <p>
+   * This used to be an allow-list of six variable spellings - {@code \\b(e|ex|t|cause|error|throwable)} - and that
+   * is a rule an allow-list cannot express. The defect the two scans below were WRITTEN for lived in
+   * {@code catch (DuplicatedKeyException dup)}, {@code catch (DuplicatedKeyException retryDup)} and
+   * {@code catch (Exception retryEx)}; none of {@code dup}, {@code retryDup}, {@code retryEx} is in that list, so
+   * the guard would have caught 2 of the 6 sites it exists for and walked past the four that leaked the index name
+   * and the offending KEY VALUE. The next site is as likely as not to be written {@code catch (ValidationException
+   * ve)} (issue #7911).
+   * <p>
+   * So the question is asked the other way round, and the whole rule is in the two SAFE_* lists below: a statement
+   * is judged by whether its free text comes out of the ONE call that conceals and logs, with that call's own
+   * arguments taken out of the picture first. "Spot anything that is not the safe call" is exact where "spot every
+   * unsafe spelling" can only ever be a list someone has to remember to extend.
+   * <p>
+   * Every {@code .getMessage()} in this module today is a throwable's. If a protobuf message ever grows a
+   * {@code message} FIELD, its getter goes in {@link #NOT_A_THROWABLE} rather than this pattern going back to
+   * guessing from the receiver's name.
    */
-  private static final Pattern MESSAGE_OF_A_THROWABLE =
-      Pattern.compile("\\b(e|ex|t|cause|error|throwable)\\.getMessage\\(\\)");
+  private static final Pattern ANY_GET_MESSAGE = Pattern.compile("\\.getMessage\\s*\\(\\s*\\)");
+
+  /**
+   * Receivers whose {@code getMessage()} is NOT a throwable's - the caller's own input echoed back, which is safe
+   * and which {@link #ANY_GET_MESSAGE} would otherwise flag. Empty today: this module has no protobuf message with
+   * a {@code message} field. It exists so that adding one is a one-line, reviewed exception instead of a reason to
+   * loosen the pattern.
+   */
+  private static final List<String> NOT_A_THROWABLE = List.of();
+
+  /**
+   * The one call an {@code InsertError}'s free text may come from. {@code insertErrorMessage(...)} conceals in
+   * production and writes the log entry the concealed text promises.
+   */
+  private static final String SAFE_INSERT_ERROR_MESSAGE = "insertErrorMessage(";
+
+  /**
+   * The calls a directly-built catch-all {@code Status}'s description may come from. {@code concealable(...)} is
+   * the service-side helper; {@code GrpcErrorMapper.concealableDescription(...)} is what it delegates to, which a
+   * static helper with no instance to ask calls itself.
+   */
+  private static final List<String> SAFE_DESCRIPTIONS = List.of("concealable(", "GrpcErrorMapper.concealableDescription(");
 
   /**
    * The shapes that mean "this service does not know what this failure is": the classification of last resort, and
@@ -112,9 +149,8 @@ class Issue7472EveryGrpcFailureIsConcealableTest {
         if (source.getFileName().toString().equals("GrpcErrorMapper.java"))
           continue;
 
-        for (final String statement : statementsCalling(Files.readString(source, StandardCharsets.UTF_8)))
-          if (DECISIONS.stream().noneMatch(statement::contains))
-            offenders.add(source.getFileName() + ": " + statement.strip());
+        offenders.addAll(mapperCallsWithoutADecision(source.getFileName().toString(),
+            Files.readString(source, StandardCharsets.UTF_8)));
       }
     }
 
@@ -139,12 +175,8 @@ class Issue7472EveryGrpcFailureIsConcealableTest {
 
     try (final Stream<Path> sources = Files.walk(MAIN_SOURCES)) {
       for (final Path source : sources.filter(p -> p.toString().endsWith(".java")).toList())
-        for (final String statement : statementsMatching(Files.readString(source, StandardCharsets.UTF_8),
-            ".withDescription("))
-          if (MESSAGE_OF_A_THROWABLE.matcher(statement).find()
-              && CATCH_ALL_SHAPES.stream().anyMatch(statement::contains)
-              && DECISIONS.stream().noneMatch(statement::contains))
-            offenders.add(source.getFileName() + ": " + statement.strip().replaceAll("\\s+", " "));
+        offenders.addAll(directStatusesCarryingARawMessage(source.getFileName().toString(),
+            Files.readString(source, StandardCharsets.UTF_8)));
     }
 
     assertThat(offenders)
@@ -168,20 +200,9 @@ class Issue7472EveryGrpcFailureIsConcealableTest {
     final List<String> offenders = new ArrayList<>();
 
     try (final Stream<Path> sources = Files.walk(MAIN_SOURCES)) {
-      for (final Path source : sources.filter(p -> p.toString().endsWith(".java")).toList()) {
-        final String text = Files.readString(source, StandardCharsets.UTF_8);
-        for (int at = text.indexOf("CONCEALED_DESCRIPTION"); at > -1;
-            at = text.indexOf("CONCEALED_DESCRIPTION", at + 1)) {
-          // The declaration itself, and Javadoc mentions of it, are not uses.
-          final int lineStart = text.lastIndexOf('\n', at) + 1;
-          final String line = text.substring(lineStart, text.indexOf('\n', at) < 0 ? text.length() : text.indexOf('\n', at));
-          if (line.strip().startsWith("*") || line.contains("static final String CONCEALED_DESCRIPTION"))
-            continue;
-
-          if (!enclosingMethod(text, at).contains("logConcealed("))
-            offenders.add(source.getFileName() + ": " + line.strip());
-        }
-      }
+      for (final Path source : sources.filter(p -> p.toString().endsWith(".java")).toList())
+        offenders.addAll(concealmentsWithoutALogEntry(source.getFileName().toString(),
+            Files.readString(source, StandardCharsets.UTF_8)));
     }
 
     assertThat(offenders)
@@ -222,10 +243,8 @@ class Issue7472EveryGrpcFailureIsConcealableTest {
 
     try (final Stream<Path> sources = Files.walk(MAIN_SOURCES)) {
       for (final Path source : sources.filter(p -> p.toString().endsWith(".java")).toList())
-        for (final String token : List.of("InsertError.newBuilder(", ".err("))
-          for (final String statement : statementsMatching(Files.readString(source, StandardCharsets.UTF_8), token))
-            if (MESSAGE_OF_A_THROWABLE.matcher(statement).find())
-              offenders.add(source.getFileName() + ": " + statement.strip().replaceAll("\\s+", " "));
+        offenders.addAll(insertErrorsCarryingARawMessage(source.getFileName().toString(),
+            Files.readString(source, StandardCharsets.UTF_8)));
     }
 
     assertThat(offenders)
@@ -235,12 +254,16 @@ class Issue7472EveryGrpcFailureIsConcealableTest {
   }
 
   /**
-   * Guards the guards: EVERY scan above has to actually find the constructs it judges, or a rename, a reformat or a
-   * wrong source root turns it green by finding nothing at all - which is the vacuous pass this class exists to
-   * avoid, and the specific fragility a source-level test carries (PR #7755 review).
+   * Guards the guards, half one: every scan has to actually FIND the constructs it judges, or a rename, a reformat
+   * or a wrong source root turns it green by finding nothing at all - which is the vacuous pass this class exists
+   * to avoid, and the specific fragility a source-level test carries (PR #7755 review).
    * <p>
    * One assertion per scan, each naming what it expects to exist, so the failure says which scan went blind rather
    * than only that something did.
+   * <p>
+   * Finding statements is NOT enough on its own, which is what {@link #everyScanFlagsAKnownBadStatement} adds: the
+   * InsertError scan found 13 statements - "not blind" by this measure - while its judgement recognised none of
+   * the four spellings that actually leaked (issue #7911).
    */
   @Test
   void everyScanFindsTheConstructsItJudges() throws IOException {
@@ -265,6 +288,144 @@ class Issue7472EveryGrpcFailureIsConcealableTest {
     found.forEach((what, count) -> assertThat(count)
         .as("the scan for %s found nothing, so it is asserting about nothing - has the construct been renamed?", what)
         .isPositive());
+  }
+
+  /**
+   * Guards the guards, half two: every scan's JUDGEMENT still fires.
+   * <p>
+   * One known-bad fixture per scan, each written in a spelling the previous version of this class did NOT
+   * recognise, so a rule that stops recognising anything fails loudly instead of passing quietly on a clean tree.
+   * The receiver names used here - dup, retryEx, retryDup - are the ones from the leak the guard was written for
+   * and could not see.
+   */
+  @Test
+  void everyScanFlagsAKnownBadStatement() {
+    assertThat(mapperCallsWithoutADecision("Fixture.java",
+        "    throw GrpcErrorMapper.toStatusRuntimeException(dup, \"insert\");"))
+        .as("the mapper-call scan no longer flags a call that states no concealment decision")
+        .hasSize(1);
+
+    assertThat(directStatusesCarryingARawMessage("Fixture.java",
+        "    return GrpcErrorMapper.statusCodeFor(retryEx).toStatus().withDescription(retryEx.getMessage()).asException();"))
+        .as("the direct-status scan no longer flags a catch-all status built from a throwable's own message")
+        .hasSize(1);
+
+    assertThat(concealmentsWithoutALogEntry("Fixture.java",
+        "  private String describe(final Throwable dup) {\n"
+            + "    return GrpcErrorMapper.CONCEALED_DESCRIPTION;\n"
+            + "  }\n"))
+        .as("the conceal-must-log scan no longer flags a method that conceals without logging")
+        .hasSize(1);
+
+    assertThat(insertErrorsCarryingARawMessage("Fixture.java",
+        "        c.err(c.received - 1, \"CONFLICT\", retryDup.getMessage(), \"\");"))
+        .as("the InsertError scan no longer flags a raw exception message on the protobuf channel")
+        .hasSize(1);
+
+    // ...and each of them accepts the SAFE spelling of the same statement, or the rule is simply "refuse
+    // everything", which fails the build on correct code and gets deleted rather than obeyed.
+    assertThat(mapperCallsWithoutADecision("Fixture.java",
+        "    throw GrpcErrorMapper.toStatusRuntimeException(dup, \"insert\", concealErrors());")).isEmpty();
+    assertThat(directStatusesCarryingARawMessage("Fixture.java",
+        "    return GrpcErrorMapper.statusCodeFor(retryEx).toStatus().withDescription(concealable(op, retryEx)).asException();"))
+        .isEmpty();
+    assertThat(insertErrorsCarryingARawMessage("Fixture.java",
+        "        c.err(c.received - 1, \"CONFLICT\", insertErrorMessage(retryDup), \"\");")).isEmpty();
+  }
+
+  /** A mapper call that does not state whether to conceal. */
+  private static List<String> mapperCallsWithoutADecision(final String fileName, final String text) {
+    final List<String> offenders = new ArrayList<>();
+    for (final String statement : statementsCalling(text))
+      if (DECISIONS.stream().noneMatch(statement::contains))
+        offenders.add(fileName + ": " + statement.strip());
+    return offenders;
+  }
+
+  /**
+   * A catch-all {@code Status} built DIRECTLY whose description carries a throwable's own message from anywhere
+   * other than {@link #SAFE_DESCRIPTIONS}. The safe calls' own arguments are removed before looking, so
+   * {@code concealable("op", e)} is judged on what is left rather than on what it was handed.
+   */
+  private static List<String> directStatusesCarryingARawMessage(final String fileName, final String text) {
+    final List<String> offenders = new ArrayList<>();
+    for (final String statement : statementsMatching(text, ".withDescription("))
+      if (CATCH_ALL_SHAPES.stream().anyMatch(statement::contains) && carriesARawMessage(statement, SAFE_DESCRIPTIONS))
+        offenders.add(fileName + ": " + statement.strip().replaceAll("\\s+", " "));
+    return offenders;
+  }
+
+  /** A method that uses {@code CONCEALED_DESCRIPTION} without calling {@code logConcealed}. */
+  private static List<String> concealmentsWithoutALogEntry(final String fileName, final String text) {
+    final List<String> offenders = new ArrayList<>();
+    for (int at = text.indexOf("CONCEALED_DESCRIPTION"); at > -1; at = text.indexOf("CONCEALED_DESCRIPTION", at + 1)) {
+      // The declaration itself, and Javadoc mentions of it, are not uses.
+      final int lineStart = text.lastIndexOf('\n', at) + 1;
+      final String line = text.substring(lineStart, text.indexOf('\n', at) < 0 ? text.length() : text.indexOf('\n', at));
+      if (line.strip().startsWith("*") || line.contains("static final String CONCEALED_DESCRIPTION"))
+        continue;
+
+      if (!enclosingMethod(text, at).contains("logConcealed("))
+        offenders.add(fileName + ": " + line.strip());
+    }
+    return offenders;
+  }
+
+  /**
+   * An {@code InsertError} row whose free text comes from anywhere other than
+   * {@link #SAFE_INSERT_ERROR_MESSAGE}.
+   */
+  private static List<String> insertErrorsCarryingARawMessage(final String fileName, final String text) {
+    final List<String> offenders = new ArrayList<>();
+    for (final String token : List.of("InsertError.newBuilder(", ".err("))
+      for (final String statement : statementsMatching(text, token))
+        if (carriesARawMessage(statement, List.of(SAFE_INSERT_ERROR_MESSAGE)))
+          offenders.add(fileName + ": " + statement.strip().replaceAll("\\s+", " "));
+    return offenders;
+  }
+
+  /**
+   * Whether {@code statement} reads a throwable's own message anywhere OTHER than inside one of {@code safeCalls}.
+   * <p>
+   * That is the inversion issue #7911 asked for: the arguments of the one call that conceals and logs are taken
+   * out first, and anything still reading {@code .getMessage()} in what remains is on the wire raw - whatever the
+   * variable happens to be called.
+   */
+  private static boolean carriesARawMessage(final String statement, final List<String> safeCalls) {
+    String remaining = statement;
+    for (final String safeCall : safeCalls)
+      remaining = withoutCallsTo(remaining, safeCall);
+
+    final Matcher matcher = ANY_GET_MESSAGE.matcher(remaining);
+    while (matcher.find()) {
+      final String before = remaining.substring(0, matcher.start());
+      if (NOT_A_THROWABLE.stream().noneMatch(before::endsWith))
+        return true;
+    }
+    return false;
+  }
+
+  /**
+   * {@code text} with every {@code call(...)} occurrence and its BALANCED argument list removed, so what the safe
+   * call was handed is not mistaken for what the statement puts on the wire.
+   */
+  private static String withoutCallsTo(final String text, final String call) {
+    final StringBuilder result = new StringBuilder(text.length());
+    int from = 0;
+    for (int at = text.indexOf(call); at > -1; at = text.indexOf(call, from)) {
+      result.append(text, from, at);
+
+      int depth = 0;
+      int i = at + call.length() - 1;
+      for (; i < text.length(); i++) {
+        if (text.charAt(i) == '(')
+          ++depth;
+        else if (text.charAt(i) == ')' && --depth == 0)
+          break;
+      }
+      from = i < text.length() ? i + 1 : text.length();
+    }
+    return result.append(text.substring(from)).toString();
   }
 
   /**

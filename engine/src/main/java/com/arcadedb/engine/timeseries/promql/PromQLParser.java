@@ -34,6 +34,7 @@ import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.VectorSelector;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -198,7 +199,7 @@ public class PromQLParser {
     if (ident.isEmpty())
       throw new IllegalArgumentException("Expected expression at position " + lexer.pos);
 
-    final String lower = ident.toLowerCase();
+    final String lower = ident.toLowerCase(Locale.ROOT);
 
     // Aggregation operator
     if (AGG_OPS.contains(lower))
@@ -223,7 +224,7 @@ public class PromQLParser {
   }
 
   private PromQLExpr parseAggregation(final String opName) {
-    final AggOp op = AggOp.valueOf(opName.toUpperCase());
+    final AggOp op = AggOp.valueOf(opName.toUpperCase(Locale.ROOT));
 
     lexer.skipWhitespace();
     List<String> groupLabels = List.of();

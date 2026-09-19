@@ -30,6 +30,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.util.Locale;
 import java.util.Map;
 
 public class AlterGraphAnalyticalViewStatement extends DDLStatement {
@@ -67,7 +68,7 @@ public class AlterGraphAnalyticalViewStatement extends DDLStatement {
     GraphAnalyticalView.UpdateMode newMode = null;
     if (updateModeStr != null) {
       try {
-        newMode = GraphAnalyticalView.UpdateMode.valueOf(updateModeStr.toUpperCase());
+        newMode = GraphAnalyticalView.UpdateMode.valueOf(updateModeStr.toUpperCase(Locale.ROOT));
       } catch (final IllegalArgumentException e) {
         throw new CommandExecutionException(
             "Unknown update mode: '" + updateModeStr + "'. Valid values: OFF, SYNCHRONOUS, ASYNCHRONOUS");
@@ -98,7 +99,7 @@ public class AlterGraphAnalyticalViewStatement extends DDLStatement {
     builder.append("ALTER GRAPH ANALYTICAL VIEW ");
     name.toString(params, builder);
     if (updateModeStr != null)
-      builder.append(" UPDATE MODE ").append(updateModeStr.toUpperCase());
+      builder.append(" UPDATE MODE ").append(updateModeStr.toUpperCase(Locale.ROOT));
     if (compactionThreshold >= 0)
       builder.append(" COMPACTION THRESHOLD ").append(compactionThreshold);
   }

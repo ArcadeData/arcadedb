@@ -223,7 +223,7 @@ public class MethodCall extends SimpleNode {
     if (calculatedIsGraph != null)
       return calculatedIsGraph;
 
-    final String methodNameLC = methodName.getStringValue().toLowerCase();
+    final String methodNameLC = methodName.getStringValue().toLowerCase(Locale.ROOT);
 
     for (final String graphMethod : bidirectionalMethods.keySet()) {
       if (graphMethod.equals(methodNameLC)) {

@@ -35,6 +35,7 @@ import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -180,7 +181,7 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
       if (i > 0)
         sb.append(", ");
       final MultiColumnAggregationRequest req = requests.get(i);
-      sb.append(req.type().name().toLowerCase()).append("(col").append(req.columnIndex()).append(")");
+      sb.append(req.type().name().toLowerCase(Locale.ROOT)).append("(col").append(req.columnIndex()).append(")");
     }
     if (context.isProfiling()) {
       sb.append("\n").append(spaces).append("    (").append(getCostFormatted()).append(", ").append(getRowCountFormatted()).append(")");

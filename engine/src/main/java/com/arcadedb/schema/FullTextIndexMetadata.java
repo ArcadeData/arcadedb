@@ -22,6 +22,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.CollectionUtils;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -504,7 +505,7 @@ public class FullTextIndexMetadata extends IndexMetadata {
     if (defaultOperator == null || (!"OR".equalsIgnoreCase(defaultOperator.trim()) && !"AND".equalsIgnoreCase(
         defaultOperator.trim())))
       throw new IllegalArgumentException("Full-text defaultOperator must be AND or OR, got: " + defaultOperator);
-    this.defaultOperator = defaultOperator.trim().toUpperCase();
+    this.defaultOperator = defaultOperator.trim().toUpperCase(Locale.ROOT);
   }
 
   /**
@@ -532,7 +533,7 @@ public class FullTextIndexMetadata extends IndexMetadata {
   public void setSimilarity(final String similarity) {
     if (similarity == null)
       throw new IllegalArgumentException("Full-text similarity cannot be null. Valid values: " + String.join(", ", SIMILARITIES));
-    final String upper = similarity.toUpperCase();
+    final String upper = similarity.toUpperCase(Locale.ROOT);
     if (!SIMILARITIES.contains(upper))
       throw new IllegalArgumentException(
           "Unknown full-text similarity '" + similarity + "'. Valid values: " + String.join(", ", SIMILARITIES));

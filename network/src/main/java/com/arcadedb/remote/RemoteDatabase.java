@@ -41,6 +41,7 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinarySerializer;
@@ -592,11 +593,15 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
   @Override
   public Iterator<Record> iterateType(final String typeName, final boolean polymorphic) {
-    String query = "select from `" + typeName + "`";
-    if (!polymorphic)
-      query += " where @type = '" + typeName + "'";
+    // Both halves escaped: the name reaches the server as an IDENTIFIER in the target and as a string PARAMETER in
+    // the filter, so a name carrying a back-tick or a quote is the name the caller asked for rather than a
+    // different one or a parse error (issue #7914).
+    final String query = "select from " + Identifier.quote(typeName)
+        + (polymorphic ? "" : " where @type = :typeName");
 
-    final ResultSet resultSet = query("sql", query);
+    final ResultSet resultSet = polymorphic ?
+        query("sql", query) :
+        query("sql", query, Map.of("typeName", typeName));
     return new Iterator<>() {
       @Override
       public boolean hasNext() {
@@ -612,7 +617,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
   @Override
   public Iterator<Record> iterateBucket(final String bucketName) {
-    final ResultSet resultSet = query("sql", "select from bucket:`" + bucketName + "`");
+    final ResultSet resultSet = query("sql", "select from bucket:" + Identifier.quote(bucketName));
     return new Iterator<>() {
       @Override
       public boolean hasNext() {
