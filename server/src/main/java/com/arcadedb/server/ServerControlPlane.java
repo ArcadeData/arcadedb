@@ -1010,7 +1010,7 @@ public class ServerControlPlane {
       entry.put("name", token.getString("name"));
       entry.put("database", token.getString("database"));
       entry.put("expiresAt", expiresAt);
-      entry.put("expired", expiresAt > 0 && expiresAt < now);
+      entry.put("expired", ApiTokenConfiguration.isExpired(token, now));
       entry.put("createdAt", token.getLong("createdAt", 0));
       entry.put("permissions", token.getJSONObject("permissions"));
       entry.put("tokenHash", token.getString("tokenHash"));

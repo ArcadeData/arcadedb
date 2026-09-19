@@ -506,8 +506,13 @@ public class ApiTokenConfiguration {
     return tokenJson;
   }
 
-  /** Whether {@code tokenJson} carries an expiry that has passed at {@code now}. A zero or absent one never has. */
-  private static boolean isExpired(final JSONObject tokenJson, final long now) {
+  /**
+   * Whether {@code tokenJson} carries an expiry that has passed at {@code now}. A zero or absent one never has.
+   * <p>
+   * Public because the expiry rule has two readers and must not come to mean two things: this class refuses and
+   * retires on it, and {@code ServerControlPlane.listApiTokens} reports it (review of PR #7941).
+   */
+  public static boolean isExpired(final JSONObject tokenJson, final long now) {
     final long expiresAt = tokenJson.getLong("expiresAt", 0);
     return expiresAt > 0 && expiresAt < now;
   }
