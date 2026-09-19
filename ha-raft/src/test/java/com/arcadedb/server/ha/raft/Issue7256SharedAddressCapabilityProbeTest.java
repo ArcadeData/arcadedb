@@ -261,8 +261,8 @@ class Issue7256SharedAddressCapabilityProbeTest {
 
   /**
    * Every unknown has a reason, including the one no failed probe produced. An advertisement that simply ages out
-   * means the leader stopped ASKING - a node that lost leadership and regained it has a window of exactly that
-   * shape, because {@code stopCapabilityMonitor} ends the refresh while the answers it took stay in the registry.
+   * means this node stopped ASKING while keeping what it had - the shape {@code stopCapabilityMonitor} leaves
+   * behind, since it ends the refresh while the answers it took stay in the registry.
    */
   @Test
   void everyKindOfUnknownReportsWhichKindItIs() {

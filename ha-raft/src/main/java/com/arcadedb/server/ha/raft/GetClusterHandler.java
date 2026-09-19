@@ -186,18 +186,23 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
       // vote. Naming that state in the role keeps a consumer that only reads roles from mistaking it for one.
       peerJson.put("role", peerIsLeader ? "LEADER" : inConfiguration ? "FOLLOWER" : ROLE_NOT_IN_CONFIGURATION);
 
-      // Only the leader polls for capabilities, so only the leader has an answer to report about ANOTHER peer; a
-      // follower simply omits the field rather than reporting an empty set that would read as "this peer can decode
-      // nothing".
+      // Every node polls for capabilities since issue #7549, so every node can report what each peer advertises.
+      // It used to be the leader alone - #7219's only consumer was the leader-side schema-delta decision - and
+      // the cost of that was borne by the question an operator actually asks this endpoint: "is this cluster
+      // ready for a rolling-upgrade-gated operation". That question had to find the leader before it could be
+      // answered at all, on an endpoint neither the client nor a load balancer routes to the leader. A peer with
+      // no fresh answer still omits the field rather than reporting an empty set, which would read as "this peer
+      // can decode nothing".
       final PeerCapabilityRegistry.Advertisement advertisement =
           raftHAServer.getPeerCapabilityRegistry().freshAdvertisementOf(peerId);
       final boolean published = putPeerCapabilities(peerJson, peerId, localPeerId.toString(), advertisement,
           raftHAServer.getAdvertisedCapabilities());
-      if (!published && isLeader) {
+      if (!published) {
         // An absent capabilities field reads the same whether this peer runs a build that predates the route or
         // was never asked because its address identifies no single peer - and the remedies are nothing alike, the
-        // second being "declare each node's 'http' port" (#6202) rather than "finish the upgrade". Written only on
-        // the leader, the only node that asks, and only when it has a reason to give (issue #7256).
+        // second being "declare each node's 'http' port" (#6202) rather than "finish the upgrade". Written
+        // whenever this node has a reason to give (issues #7256, #7549); unknownReasonOf answers null when it has
+        // none, which is what a node that has not finished its first round has.
         final String unknownReason = raftHAServer.getPeerCapabilityRegistry().unknownReasonOf(peerId);
         if (unknownReason != null)
           peerJson.put("capabilitiesUnknownReason", unknownReason);

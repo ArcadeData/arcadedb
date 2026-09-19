@@ -135,16 +135,20 @@ class Issue7301PeerCapabilityReportingTest {
   // ---------------------------------------------------------------------------------------------------------
 
   /**
-   * A node that led, lost leadership and leads again used to believe the answers it took under the previous term
-   * until its first refresh round completed - the window in which an optional wire-format section could be
-   * written to a peer whose capabilities had not been re-confirmed.
+   * Starting the refresh drops whatever was believed while nobody was asking: an answer taken before the monitor
+   * stopped must not be acted on until a round has re-confirmed it, because that is the one window in which an
+   * optional wire-format section could be written to a peer whose build has since gone backwards.
+   * <p>
+   * Since issue #7549 the monitor runs in every role and is started once, at server start, so this is a
+   * start-of-life invalidation rather than the per-leadership-term one #7301 introduced - and on a node whose
+   * monitor never stopped, {@code startCapabilityMonitor} returns at its guard and keeps the warm registry.
    * <p>
    * The seeded entry is the LOCAL peer's, deliberately: the refresh round skips this node and
    * {@code retainOnly} keeps it (it is a configured peer), so nothing the background round does can remove it.
    * Only the invalidation can, which is what makes the assertion below say what it claims.
    */
   @Test
-  void acquiringLeadershipDropsThePreviousTermsAdvertisements() {
+  void startingTheCapabilityMonitorDropsWhatWasBelievedWhileNobodyWasAsking() {
     final RaftHAServer raft = newDetachedServer();
     // Nothing answers: the round this starts can only ever forget, never record.
     raft.setCapabilityProber((peerId, http, https, token) -> {
@@ -158,7 +162,7 @@ class Issue7301PeerCapabilityReportingTest {
     raft.startCapabilityMonitor();
     try {
       assertThat(registry.freshAdvertisementOf(raft.getLocalPeerId().toString()))
-          .as("an answer taken under a previous term is not inherited by the new one")
+          .as("an answer taken while the monitor was not running is not inherited by the round that starts it")
           .isNull();
     } finally {
       raft.stopCapabilityMonitor();

@@ -35,10 +35,10 @@ import static org.mockito.Mockito.when;
  * Issue #7559: the compare-and-set of issue #7509 engaged only when the mutation happened to be submitted on the
  * leader, because the answer it was gated on came from a registry only a leader fills.
  * <p>
- * {@code RaftHAServer.startCapabilityMonitor} runs on gaining leadership and stops on losing it, and what it
- * recorded is deliberately left to age out (#7301). That is the right shape for #7219's consumer - only the leader
+ * {@code RaftHAServer.startCapabilityMonitor} used to run on gaining leadership and stop on losing it, and what it
+ * recorded was deliberately left to age out (#7301). That is the right shape for #7219's consumer - only the leader
  * writes a schema delta - but a security entry is not a schema delta: <b>any node can submit one</b>. On a follower
- * the registry is empty, and on a recently demoted leader it is stale, so
+ * the registry was empty, and on a recently demoted leader it was stale, so
  * {@code peersMissingCapability(SECURITY_PRECONDITION)} named peers that are in fact perfectly capable, the
  * precondition was withheld, and the mutation replicated unconditionally - the pre-#7509 behaviour, announced by
  * nothing louder than a throttled INFO line.
@@ -55,7 +55,8 @@ import static org.mockito.Mockito.when;
  * The decision now reads {@link RaftHAServer#peersMissingCapabilityNow} - the ask-now variant #7511 already added
  * for exactly this reason - instead of the cached, leader-only {@link RaftHAServer#peersMissingCapability}. The
  * cached answer is still consulted first inside it, so a warm leader pays nothing; a follower pays one bounded
- * probe round on an operation that is rare by construction.
+ * probe round on an operation that is rare by construction. (Issue #7549 has since moved the monitor onto every
+ * node, so the follower's cached answer is normally warm too and the round below is only the cold-start case.)
  *
  * <h2>What these tests pin</h2>
  *

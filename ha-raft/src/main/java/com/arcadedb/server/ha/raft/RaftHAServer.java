@@ -1155,6 +1155,18 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         divergedFollowerRecovery, divergedFollowerMaxReformats, crashLoopRestartThreshold);
     this.healthMonitor.start();
 
+    // Peer capabilities are refreshed on EVERY node, not only the leader (issue #7549). #7219 introduced the
+    // monitor for a leader-side consumer - the schema-delta decision - and started it from startLagMonitor(),
+    // so a follower's registry was empty by construction. Two consumers have since arrived that are not
+    // leader-side: the security compare-and-set gate of #7511, which runs wherever the client landed because
+    // the group and API-token routes do not forward, and GET /api/v1/cluster, which an operator polls to ask
+    // whether a rolling upgrade is complete. Both had to work around the emptiness - the gate by paying one
+    // synchronous probe round under the ServerSecurity monitor, the status document by simply omitting the
+    // rows - and an operator could not answer "is this cluster ready for a group change" without first finding
+    // the leader. A probe is a read-only peer-to-peer GET and configuredPeers() is available in every role, so
+    // there was never anything leader-shaped about the asking itself.
+    startCapabilityMonitor();
+
     // Periodic snapshot/log-purge trigger (issue #5345). Started on every node, not only the leader:
     // Ratis purges each server's own log against that server's own snapshot index, so a follower whose
     // snapshot index never advances fills its volume even while the leader stays healthy.
@@ -1729,7 +1741,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       logCompactionScheduler = null;
     }
     stopLagMonitor();
-    // After stopLagMonitor(), which ends the capability refresh: nothing asks for the client past this point, and
+    // The capability refresh runs in every role since issue #7549, so shutdown is the only thing that ends it;
+    // it used to come along with stopLagMonitor() because it only ever ran on a leader.
+    stopCapabilityMonitor();
+    // After stopCapabilityMonitor(): nothing asks for the client past this point, and
     // an HttpClient left behind holds a connection pool and a selector thread for the life of the JVM - which in
     // the HA suites outlives many server start/stop cycles (PR #7314 review).
     //
@@ -4524,21 +4539,33 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   /**
    * Stops the periodic lag monitoring task. Called when this node loses leadership.
+   * <p>
+   * Deliberately does NOT stop the capability monitor any more (issue #7549): it runs in every role, so that a
+   * follower can answer what its peers advertise without the cluster having to locate a leader first. Losing
+   * leadership ends the lag sampling, which really is the leader's view of its followers; it does not end a
+   * read-only question every node can ask.
    */
   void stopLagMonitor() {
     if (lagMonitorExecutor != null) {
       lagMonitorExecutor.shutdownNow();
       lagMonitorExecutor = null;
     }
-    stopCapabilityMonitor();
   }
 
   /**
-   * Starts the leader-side peer-capability refresh (issue #7219).
+   * Starts the peer-capability refresh (issue #7219), which since issue #7549 runs on every node rather than only
+   * on the leader - see {@code start()} for why, and {@link #stopLagMonitor} for what stopped stopping it.
    * <p>
    * The first round runs with NO initial delay, because until it lands every peer reads as incapable and the
    * leader ships whole schema documents: correct, but it is the state the whole mechanism exists to leave, and a
    * leader that has just been elected is precisely when a burst of DDL tends to arrive.
+   * <p>
+   * Idempotent, and that is what keeps the invalidation below honest now that the monitor is normally already
+   * running by the time leadership is acquired: {@code startLagMonitor} still calls this, and on a node whose
+   * monitor never stopped it returns at the guard without clearing anything. There is nothing to invalidate
+   * there - no window in which nobody was asking, which is the window #7301's clear exists to close - so the
+   * warm registry is kept and a new leader can write a schema delta on its first DDL instead of waiting out a
+   * refresh period.
    */
   // @VisibleForTesting - the invalidation below is asserted through this method, not through the field it clears
   void startCapabilityMonitor() {
@@ -4560,12 +4587,19 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         PeerCapabilityRegistry.REFRESH_PERIOD_MS, TimeUnit.MILLISECONDS);
   }
 
+  /** Whether the capability refresh is running, so a test can pin that a role change does not end it (#7549). */
+  // @VisibleForTesting
+  boolean isCapabilityMonitorRunning() {
+    return capabilityMonitorExecutor != null;
+  }
+
   /**
-   * Stops the peer-capability refresh. Called when this node loses leadership.
+   * Stops the peer-capability refresh. Called on shutdown - and, since issue #7549, only on shutdown: losing
+   * leadership no longer ends it, because every role has a consumer for what it records.
    * <p>
    * The advertisements are deliberately left in place rather than dropped here: they age out on their own, and
    * {@code unknownReasonOf} has a sentence for exactly that window. Whatever survives it is cleared the moment
-   * this node leads again, which is where the invalidation belongs (issue #7301).
+   * the monitor is started again, which is where the invalidation belongs (issue #7301).
    */
   // @VisibleForTesting
   void stopCapabilityMonitor() {
@@ -4817,9 +4851,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * The peers that have NOT proved they can decode {@code capability}, asking them NOW when the cached answer
    * does not already cover every one of them (issue #7511).
    * <p>
-   * {@link #peersMissingCapability} alone is not enough for a caller that REFUSES on a "no". The background
-   * capability monitor runs on the leader only ({@link #startCapabilityMonitor}, called from
-   * {@link #startLagMonitor}), because #7219's only consumer was the leader-side schema-delta decision. The
+   * {@link #peersMissingCapability} alone was not enough for a caller that REFUSES on a "no", because the
+   * background capability monitor used to run on the leader only - #7219's only consumer was the leader-side
+   * schema-delta decision. Since issue #7549 it runs in every role, so on a node that has been up for one
+   * refresh period the cached answer below is already the full one and nothing is dialled here; what remains is
+   * the window before a freshly started node's first round lands, and the round below is what covers it. The
    * consumer this exists for is not leader-side: the group and API-token REST routes do not forward, so
    * {@code ServerSecurity.saveGroupClusterWide} and friends run on whichever node the client or load balancer
    * picked, and submit through a Raft client that routes to the leader. On a FOLLOWER the registry is empty by
