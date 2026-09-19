@@ -59,6 +59,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
+import java.util.regex.Pattern;
 
 /**
  * On {@code -onRowError skip}, {@code loadDocuments}/{@code loadVertices} reuse whatever transaction is already
@@ -83,8 +84,56 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     this.delimiter = delimiter;
   }
 
+  /**
+   * The delimiter in force for this call, refusing the one value neither pass below can express.
+   * <p>
+   * The single resolution point both {@link #analyze} and {@link #createCSVParser} read, and the only place the
+   * value is checked: {@code -delimiter ""} used to reach {@code analyze()}'s {@code delimiter.charAt(0)} and come
+   * back as a {@code StringIndexOutOfBoundsException} out of the middle of the analysis, naming neither the option
+   * nor the value (issue #7867).
+   */
   private String delimiterFor(final ImporterSettings settings) {
-    return delimiter != null ? delimiter : settings.getValue("delimiter", ",");
+    final String resolved = delimiter != null ? delimiter : settings.getValue("delimiter", ",");
+    if (resolved != null && resolved.isEmpty())
+      throw new IllegalArgumentException("The CSV delimiter is set to an empty value: a field separator is at least "
+          + "one character, such as \",\" or \";\". Set it with -delimiter (or WITH delimiter = '...')");
+    return resolved;
+  }
+
+  /**
+   * Configures {@code parserSettings} with the delimiter in force, the ONE way, so the schema analysis and the row
+   * load cannot split the same file into different columns.
+   * <p>
+   * {@link #analyze} used to truncate the value to {@code delimiter.charAt(0)} while {@link #createCSVParser} handed
+   * univocity the whole {@code String}, so a separator longer than one character - {@code ";;"} - was analysed with
+   * one column split and loaded with another: the inferred property types belonged to different columns than the
+   * values that landed in them, silently (issue #7867).
+   * <p>
+   * {@code detectFormatAutomatically} is kept for a single-character separator, where it is what discovers the
+   * quote and quote-escape characters, and is skipped for a longer one: it takes {@code char...} and has no
+   * multi-character form, so offering it a truncated candidate is the very truncation this method exists to remove.
+   */
+  private static void applyDelimiter(final CsvParserSettings parserSettings, final String delimiter,
+      final boolean detectFormat) {
+    if (delimiter == null)
+      return;
+    parserSettings.setDelimiterDetectionEnabled(false);
+    if (detectFormat && delimiter.length() == 1)
+      parserSettings.detectFormatAutomatically(delimiter.charAt(0));
+    parserSettings.getFormat().setDelimiter(delimiter);
+  }
+
+  /**
+   * The separator a supplied {@code -documentsHeader} / {@code -verticesHeader} / {@code -edgesHeader} is split on:
+   * the delimiter in force, with the two tab spellings resolved to a real tab.
+   * <p>
+   * It was a hardcoded comma, which is the same disagreement as the one above on the header row: a header supplied
+   * for a {@code ';'}-delimited source came back as ONE field named {@code "id;name"}, and the analysis then threw
+   * {@code IndexOutOfBoundsException} out of {@code fieldNames.get(i)} on the second column (issue #7867). Nothing
+   * that worked changes: for the comma this is the comma.
+   */
+  private static String headerSeparator(final String delimiter) {
+    return "\\t".equals(delimiter) ? "\t" : delimiter;
   }
 
   private static final Object[] NO_PARAMS = new Object[] {};
@@ -945,10 +994,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     } else {
       parserSettings = csvParserSettings = new CsvParserSettings();
       csvParserSettings.setDelimiterDetectionEnabled(false);
-      if (delimiter != null) {
-        csvParserSettings.detectFormatAutomatically(delimiter.charAt(0));
-        csvParserSettings.getFormat().setDelimiter(delimiter.charAt(0));
-      }
+      applyDelimiter(csvParserSettings, delimiter, true);
     }
 
     parserSettings.setReadInputOnSeparateThread(false);
@@ -988,7 +1034,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       if (delimiter == null)
         fieldNames.add(header);
       else {
-        final String[] headerColumns = header.split(",");
+        final String[] headerColumns = header.split(Pattern.quote(headerSeparator(delimiter)));
         fieldNames.addAll(Arrays.asList(headerColumns));
       }
       LogManager.instance().log(this, Level.INFO, "Parsing with custom header: %s", null, fieldNames);
@@ -1050,7 +1096,10 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       return new TsvParser(tsvParserSettings);
     } else {
       final CsvParserSettings csvParserSettings = new CsvParserSettings();
-      csvParserSettings.getFormat().setDelimiter(delimiter);
+      // The same helper analyze() uses, so the two passes cannot split one file into different columns (#7867).
+      // No format auto-detection here: this pass never had it, and turning it on would change which quote character
+      // a source already importing today is read with.
+      applyDelimiter(csvParserSettings, delimiter, false);
       csvParserSettings.setMaxColumns(settings.getIntValue("maxProperties", csvParserSettings.getMaxColumns()));
       csvParserSettings.setMaxCharsPerColumn(settings.getIntValue("maxPropertySize", csvParserSettings.getMaxCharsPerColumn()));
       return new CsvParser(csvParserSettings);

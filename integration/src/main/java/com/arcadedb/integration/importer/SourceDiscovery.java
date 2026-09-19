@@ -266,6 +266,26 @@ public class SourceDiscovery {
     return userDelimiter;
   }
 
+  /**
+   * The vertex property an RDF source keys its subject and object IRIs by: the user's own
+   * {@code -typeIdProperty} / {@code WITH typeIdProperty = ...} when there is one, {@code "id"} otherwise.
+   * <p>
+   * The sibling of {@link #resolveDelimiter} one line up, and it used to be the unguarded half of the pair: the
+   * detection arm assigned {@code settings.typeIdProperty = "id"} unconditionally, so recognising N-Triples silently
+   * discarded an explicit choice that names a real schema artefact - the property, its index and the
+   * {@code newEdgeByKeys} lookup all follow it - and did so without the INFO line the discarded delimiter gets
+   * (issue #7891).
+   */
+  static String resolveTypeIdProperty(final String userTypeIdProperty) {
+    if (userTypeIdProperty == null)
+      return RDFImporterFormat.DEFAULT_TYPE_ID_PROPERTY;
+    if (!RDFImporterFormat.DEFAULT_TYPE_ID_PROPERTY.equals(userTypeIdProperty))
+      LogManager.instance().log(SourceDiscovery.class, Level.INFO,
+          "RDF default key property '%s' discarded: using the typeIdProperty '%s' explicitly set by the user",
+          RDFImporterFormat.DEFAULT_TYPE_ID_PROPERTY, userTypeIdProperty);
+    return userTypeIdProperty;
+  }
+
   private FormatImporter analyzeSourceContent(final Parser parser, final AnalyzedEntity.EntityType entityType,
       final ImporterSettings settings,
       final ConsoleLogger logger) throws IOException {
@@ -796,12 +816,15 @@ public class SourceDiscovery {
       // THE SEPARATOR IS TAKEN FROM BETWEEN THE SUBJECT AND THE PREDICATE AND HANDED TO THE FORMAT, WHICH INHERITS
       // CSVImporterFormat'S PARSER CONSTRUCTION AND WOULD OTHERWISE FALL BACK TO A COMMA (ISSUE #7315). PER-FORMAT
       // AND NOT THROUGH settings.options, WHICH ONE IMPORT SHARES ACROSS ITS DOCUMENTS, VERTICES AND EDGES FILES -
-      // WRITING IT THERE IS WHAT LEAKED IT INTO THE NEXT CSV ENTITY (ISSUE #6946)
+      // WRITING IT THERE IS WHAT LEAKED IT INTO THE NEXT CSV ENTITY (ISSUE #6946).
+      // THE KEY PROPERTY TRAVELS THE SAME WAY AND FOR BOTH OF THE SAME REASONS: settings.typeIdProperty = "id" USED
+      // TO BE ASSIGNED HERE UNCONDITIONALLY, WHICH DISCARDED AN EXPLICIT -typeIdProperty AND THEN OUTLIVED THE RDF
+      // SOURCE IT HAD BEEN DECIDED FOR, DRIVING THE PROPERTY AND UNIQUE-INDEX AUTO-CREATION OF THE NEXT ENTITY
+      // (ISSUE #7891)
       final char separator = nTriplesSeparator(line);
-      if (separator != 0) {
-        settings.typeIdProperty = "id";
-        return new RDFImporterFormat(resolveDelimiter(userDelimiter, separator));
-      }
+      if (separator != 0)
+        return new RDFImporterFormat(resolveDelimiter(userDelimiter, separator),
+            resolveTypeIdProperty(settings.typeIdProperty));
 
       // A LINE THAT OPENS WITH TWO IRI TERMS AND IS STILL NOT A TRIPLE IS AN RDF FILE THIS METHOD CANNOT PLACE.
       // SAYING SO HERE IS THE ONLY PLACE IT CAN BE SAID: THE CSV FALLBACK BELOW REPORTS A NumberFormatException

@@ -44,8 +44,10 @@ import com.arcadedb.integration.importer.ImporterSettings;
 import com.arcadedb.integration.importer.Parser;
 import com.arcadedb.integration.importer.SourceSchema;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalEdgeType;
+import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.schema.Property;
@@ -123,6 +125,20 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
    */
   private int timeSeriesSamplesSinceCommit;
 
+  /**
+   * The exported schema object, kept from the {@code "schema"} line so the schema-level members - triggers,
+   * materialized views, continuous aggregates, function libraries and extensions - can be restored once the RECORDS
+   * are in (issue #7886).
+   * <p>
+   * After the records, not with the types, and that ordering is the point. A trigger restored first fires on every
+   * record the import then loads, re-applying by hand what the source database had already applied and written into
+   * the very export being restored. A materialized view or continuous aggregate restored first is maintained
+   * incrementally against rows that are arriving for the second time, on top of the backing type the export
+   * restores as an ordinary type with its own rows. Both members are definitions the restore reinstates, not work
+   * it repeats.
+   */
+  private JSONObject importedSchema;
+
   @Override
   public void load(SourceSchema sourceSchema,
       EntityType entityType,
@@ -161,6 +177,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       ridIndex = new CompressedRID2RIDIndex(database, 1000, 1000);
       pendingLinkReconciliation.clear();
       timeSeriesSamplesSinceCommit = 0;
+      importedSchema = null;
 
       if (!database.isTransactionActive())
         database.begin();
@@ -236,6 +253,10 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       // references when their owning record was loaded (see the field comment on pendingLinkReconciliation).
       // Every RID mapping is known by now, so this is the only point where they can be reliably fixed up.
       reconcileUnresolvedLinks(database, context, skipOnRowError, ownsTransaction);
+
+      // LAST, after every record has landed and every forward link has been reconciled - see the field comment on
+      // importedSchema for why these five members cannot be restored alongside the types (issue #7886).
+      restoreSchemaMembers(database, context);
     } catch (ImportException e) {
       // A per-record failure in default "abort" mode must fail the whole import loudly (issue #6468): rolling
       // back the in-flight batch here - instead of committing it below - is what keeps a partial import from
@@ -262,6 +283,8 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       JSONObject importedSchema) {
 
     logger.logLine(2, "Loading schema... ");
+    // Kept for the post-record pass that restores the schema-level members (issue #7886).
+    this.importedSchema = importedSchema;
     var databaseSchema = database.getSchema();
     var importedSettings = importedSchema.getJSONObject("settings");
     databaseSchema.setDateFormat(importedSettings.getString("dateFormat"));
@@ -473,6 +496,54 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     // final report
     databaseSchema.getTypes()
         .forEach(type -> logger.logLine(2, " - Created type %s: %s", type.getName(), type.toJSON()));
+  }
+
+  /**
+   * Restores the schema members that live beside {@code "types"} in the export: triggers, materialized views,
+   * continuous aggregates, {@code DEFINE FUNCTION} libraries and module extensions (issue #7886).
+   * <p>
+   * The exporter writes {@code LocalSchema.toJSON()} verbatim, so the file has carried all five all along. The
+   * import read {@code settings} and {@code types} out of it and silently dropped the rest: a restored database
+   * came back with no triggers, no views, no aggregates and no functions, reporting success and zero warnings.
+   * <p>
+   * The work itself is {@link LocalSchema#restoreSchemaMembersFromJSON}, the same method the schema-file loader
+   * uses, so a member added there is restored here too rather than having to be remembered twice. Merging rather
+   * than replacing: an import INTO a database that already has views of its own must not drop them because the
+   * export carried none.
+   * <p>
+   * Type-level {@code externalBuckets} is deliberately NOT restored, and that is not the same omission: it maps the
+   * SOURCE database's bucket names to the source's own paired {@code _ext} files, which the target does not have.
+   * The target derives its own map from the property flag - {@code createProperty(name, json)} calls
+   * {@code setExternal(true)}, which creates the paired bucket - so copying the source's would overwrite a correct
+   * map with names from another database.
+   */
+  private void restoreSchemaMembers(final DatabaseInternal database, final ImporterContext context) {
+    if (importedSchema == null)
+      // No "schema" line in this source: nothing was exported to restore.
+      return;
+
+    final LocalSchema schema = database.getSchema().getEmbedded();
+
+    final int failures = schema.restoreSchemaMembersFromJSON(importedSchema, false);
+    if (failures > 0) {
+      // Warnings and not errors, and counted rather than thrown: by this point every type and every record is in,
+      // and refusing the whole restore over one trigger whose type the target already had under another name is
+      // the trade #7032 already declined for the bucket-selection strategy.
+      context.warnings.addAndGet(failures);
+      LogManager.instance().log(this, Level.WARNING,
+          "%d schema member(s) of the export could not be restored: see the entries logged above. The types and the "
+              + "records are unaffected", null, failures);
+    }
+
+    schema.saveConfiguration();
+
+    int libraries = 0;
+    for (final FunctionLibraryDefinition ignored : schema.getFunctionLibraries())
+      ++libraries;
+
+    logger.logLine(2, " - Restored schema members: %d trigger(s), %d materialized view(s), %d continuous "
+            + "aggregate(s), %d function library(ies)", schema.getTriggers().length, schema.getMaterializedViews().length,
+        schema.getContinuousAggregates().length, libraries);
   }
 
   /**

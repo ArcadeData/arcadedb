@@ -2522,103 +2522,10 @@ public class LocalSchema implements Schema {
       if (saveConfiguration)
         saveConfiguration();
 
-      // LOAD TRIGGERS
-      if (root.has("triggers")) {
-        final JSONObject triggersJSON = root.getJSONObject("triggers");
-        for (final String triggerName : triggersJSON.keySet()) {
-          final JSONObject triggerJSON = triggersJSON.getJSONObject(triggerName);
-          try {
-            final Trigger trigger = TriggerImpl.fromJSON(triggerJSON);
-            triggers.put(trigger.getName(), trigger);
-
-            // Re-register trigger listeners after loading
-            if (existsType(trigger.getTypeName())) {
-              registerTriggerListener(trigger);
-            } else {
-              LogManager.instance().log(this, Level.WARNING,
-                  "Cannot register trigger '%s' because type '%s' does not exist",
-                  null, triggerName, trigger.getTypeName());
-            }
-          } catch (final Exception e) {
-            LogManager.instance().log(this, Level.SEVERE,
-                "Error loading trigger '%s': %s", e, triggerName, e.getMessage());
-          }
-        }
-      }
-
-      // Load materialized views
-      // Always clear and re-populate from the schema file to keep in sync
-      materializedViews.clear();
-      if (root.has("materializedViews")) {
-        final JSONObject mvJSON = root.getJSONObject("materializedViews");
-        for (final String viewName : mvJSON.keySet()) {
-          final JSONObject viewDef = mvJSON.getJSONObject(viewName);
-          final MaterializedViewImpl view = MaterializedViewImpl.fromJSON(database, viewDef);
-          materializedViews.put(viewName, view);
-
-          // Re-register listeners for INCREMENTAL views
-          if (view.getRefreshMode() == MaterializedViewRefreshMode.INCREMENTAL)
-            MaterializedViewBuilder.registerListeners(this, view, view.getSourceTypeNames());
-
-          if (view.getRefreshMode() == MaterializedViewRefreshMode.PERIODIC)
-            getMaterializedViewScheduler().schedule(database, view);
-
-          // Crash recovery: if status is BUILDING, it was interrupted
-          if (MaterializedViewStatus.BUILDING.name().equals(view.getStatus()))
-            view.setStatus(MaterializedViewStatus.STALE);
-        }
-      }
-
-      // Load continuous aggregates
-      continuousAggregates.clear();
-      if (root.has("continuousAggregates")) {
-        final JSONObject caJSON = root.getJSONObject("continuousAggregates");
-        for (final String caName : caJSON.keySet()) {
-          final JSONObject caDef = caJSON.getJSONObject(caName);
-          final ContinuousAggregateImpl ca = ContinuousAggregateImpl.fromJSON(database, caDef);
-          continuousAggregates.put(caName, ca);
-
-          // Crash recovery: if status is BUILDING, it was interrupted
-          if (MaterializedViewStatus.BUILDING.name().equals(ca.getStatus()))
-            ca.setStatus(MaterializedViewStatus.STALE);
-        }
-      }
-
-      // Load user-defined function libraries (DEFINE FUNCTION, issue #5121). Only persistable libraries (js/sql/cypher)
-      // are stored, so drop any previously loaded persistable library and rebuild from the schema file, while keeping
-      // libraries registered programmatically from native Java code (getLanguage() == null).
-      functionLibraries.values().removeIf(l -> l.getLanguage() != null);
-      if (root.has("functions")) {
-        final JSONObject functionsJSON = root.getJSONObject("functions");
-        for (final String libraryName : functionsJSON.keySet()) {
-          try {
-            final JSONObject libraryJSON = functionsJSON.getJSONObject(libraryName);
-            final String language = libraryJSON.getString("language");
-            final FunctionLibraryDefinition library = FunctionLibraryFactory.createLibrary(database, libraryName, language);
-
-            final JSONObject funcsJSON = libraryJSON.getJSONObject("functions");
-            for (final String funcName : funcsJSON.keySet()) {
-              final JSONObject funcJSON = funcsJSON.getJSONObject(funcName);
-              final String[] params = funcJSON.getJSONArray("parameters").toListOfStrings().toArray(new String[0]);
-              library.registerFunction(FunctionLibraryFactory.createFunction(database, language, funcName,
-                  funcJSON.getString("code"), params));
-            }
-
-            functionLibraries.put(libraryName, library);
-          } catch (final Exception e) {
-            LogManager.instance().log(this, Level.SEVERE, "Error loading function library '%s': %s", e, libraryName,
-                e.getMessage());
-          }
-        }
-      }
-
-      // Load extensions (module-specific configuration)
-      extensions.clear();
-      if (root.has("extensions")) {
-        final JSONObject extJSON = root.getJSONObject("extensions");
-        for (final String extName : extJSON.keySet())
-          extensions.put(extName, extJSON.getJSONObject(extName));
-      }
+      // The five members that live beside "types" in the schema object: triggers, materialized views, continuous
+      // aggregates, function libraries and extensions. Restored through the same method any other reader of a
+      // schema object uses, so a second reader cannot come back with a subset of them (issue #7886).
+      restoreSchemaMembersFromJSON(root, true);
 
       // Restore compaction file-migration map so WAL recovery can redirect or safely skip
       // pages that reference old (pre-compaction) file IDs.
@@ -2641,6 +2548,154 @@ public class LocalSchema implements Schema {
       rebuildBucketTypeMap();
       readStatisticsFile();
     }
+  }
+
+  /**
+   * Restores the schema-level members a schema object carries beside {@code "types"}: triggers, materialized views,
+   * continuous aggregates, user-defined function libraries and module extensions.
+   * <p>
+   * Extracted so that every reader of a {@link #toJSON()} object restores the same set. It was inline in the
+   * schema-file loader and nowhere else, so the JSONL importer - which reads the very object the JSONL exporter
+   * writes - read only {@code settings} and {@code types} out of it: a database restored from a JSONL export came
+   * back with no triggers, no materialized views, no continuous aggregates, no {@code DEFINE FUNCTION} libraries and
+   * no extension configuration, with no warning and an import that reported success (issue #7886).
+   * <p>
+   * Every member is restored under its own {@code try}: one that cannot be recreated is logged and counted, and the
+   * rest still land. Aborting is the wrong trade in both callers - on open it would reset a schema over one bad
+   * trigger, and on import it would discard a restore that has already rebuilt every type.
+   * <p>
+   * The caller MUST have registered the types first: a trigger binds to a type by name, and a materialized view to
+   * its backing type and its sources.
+   *
+   * @param root             the schema object, as written by {@link #toJSON()}. Members it does not carry are left
+   *                         alone (or cleared, see below); none of the five is mandatory.
+   * @param replaceExisting  true to clear what is registered before repopulating, which is what re-reading the
+   *                         schema file means; false to merge, which is what restoring INTO a database means - an
+   *                         import must not drop the target's own views because the export carried none.
+   *
+   * @return how many members could not be restored, for a caller that reports warnings
+   */
+  public synchronized int restoreSchemaMembersFromJSON(final JSONObject root, final boolean replaceExisting) {
+    int failures = 0;
+
+    // LOAD TRIGGERS
+    if (root.has("triggers")) {
+      final JSONObject triggersJSON = root.getJSONObject("triggers");
+      for (final String triggerName : triggersJSON.keySet()) {
+        final JSONObject triggerJSON = triggersJSON.getJSONObject(triggerName);
+        try {
+          final Trigger trigger = TriggerImpl.fromJSON(triggerJSON);
+          triggers.put(trigger.getName(), trigger);
+
+          // Re-register trigger listeners after loading
+          if (existsType(trigger.getTypeName())) {
+            registerTriggerListener(trigger);
+          } else {
+            ++failures;
+            LogManager.instance().log(this, Level.WARNING,
+                "Cannot register trigger '%s' because type '%s' does not exist",
+                null, triggerName, trigger.getTypeName());
+          }
+        } catch (final Exception e) {
+          ++failures;
+          LogManager.instance().log(this, Level.SEVERE,
+              "Error loading trigger '%s': %s", e, triggerName, e.getMessage());
+        }
+      }
+    }
+
+    // Load materialized views
+    // On a schema-file read, always clear and re-populate to keep in sync
+    if (replaceExisting)
+      materializedViews.clear();
+    if (root.has("materializedViews")) {
+      final JSONObject mvJSON = root.getJSONObject("materializedViews");
+      for (final String viewName : mvJSON.keySet()) {
+        try {
+          final JSONObject viewDef = mvJSON.getJSONObject(viewName);
+          final MaterializedViewImpl view = MaterializedViewImpl.fromJSON(database, viewDef);
+          materializedViews.put(viewName, view);
+
+          // Re-register listeners for INCREMENTAL views
+          if (view.getRefreshMode() == MaterializedViewRefreshMode.INCREMENTAL)
+            MaterializedViewBuilder.registerListeners(this, view, view.getSourceTypeNames());
+
+          if (view.getRefreshMode() == MaterializedViewRefreshMode.PERIODIC)
+            getMaterializedViewScheduler().schedule(database, view);
+
+          // Crash recovery: if status is BUILDING, it was interrupted
+          if (MaterializedViewStatus.BUILDING.name().equals(view.getStatus()))
+            view.setStatus(MaterializedViewStatus.STALE);
+        } catch (final Exception e) {
+          ++failures;
+          LogManager.instance().log(this, Level.SEVERE, "Error loading materialized view '%s': %s", e, viewName,
+              e.getMessage() != null ? e.getMessage() : e.toString());
+        }
+      }
+    }
+
+    // Load continuous aggregates
+    if (replaceExisting)
+      continuousAggregates.clear();
+    if (root.has("continuousAggregates")) {
+      final JSONObject caJSON = root.getJSONObject("continuousAggregates");
+      for (final String caName : caJSON.keySet()) {
+        try {
+          final JSONObject caDef = caJSON.getJSONObject(caName);
+          final ContinuousAggregateImpl ca = ContinuousAggregateImpl.fromJSON(database, caDef);
+          continuousAggregates.put(caName, ca);
+
+          // Crash recovery: if status is BUILDING, it was interrupted
+          if (MaterializedViewStatus.BUILDING.name().equals(ca.getStatus()))
+            ca.setStatus(MaterializedViewStatus.STALE);
+        } catch (final Exception e) {
+          ++failures;
+          LogManager.instance().log(this, Level.SEVERE, "Error loading continuous aggregate '%s': %s", e, caName,
+              e.getMessage() != null ? e.getMessage() : e.toString());
+        }
+      }
+    }
+
+    // Load user-defined function libraries (DEFINE FUNCTION, issue #5121). Only persistable libraries (js/sql/cypher)
+    // are stored, so drop any previously loaded persistable library and rebuild from the schema file, while keeping
+    // libraries registered programmatically from native Java code (getLanguage() == null).
+    if (replaceExisting)
+      functionLibraries.values().removeIf(l -> l.getLanguage() != null);
+    if (root.has("functions")) {
+      final JSONObject functionsJSON = root.getJSONObject("functions");
+      for (final String libraryName : functionsJSON.keySet()) {
+        try {
+          final JSONObject libraryJSON = functionsJSON.getJSONObject(libraryName);
+          final String language = libraryJSON.getString("language");
+          final FunctionLibraryDefinition library = FunctionLibraryFactory.createLibrary(database, libraryName, language);
+
+          final JSONObject funcsJSON = libraryJSON.getJSONObject("functions");
+          for (final String funcName : funcsJSON.keySet()) {
+            final JSONObject funcJSON = funcsJSON.getJSONObject(funcName);
+            final String[] params = funcJSON.getJSONArray("parameters").toListOfStrings().toArray(new String[0]);
+            library.registerFunction(FunctionLibraryFactory.createFunction(database, language, funcName,
+                funcJSON.getString("code"), params));
+          }
+
+          functionLibraries.put(libraryName, library);
+        } catch (final Exception e) {
+          ++failures;
+          LogManager.instance().log(this, Level.SEVERE, "Error loading function library '%s': %s", e, libraryName,
+              e.getMessage());
+        }
+      }
+    }
+
+    // Load extensions (module-specific configuration)
+    if (replaceExisting)
+      extensions.clear();
+    if (root.has("extensions")) {
+      final JSONObject extJSON = root.getJSONObject("extensions");
+      for (final String extName : extJSON.keySet())
+        extensions.put(extName, extJSON.getJSONObject(extName));
+    }
+
+    return failures;
   }
 
   public synchronized void saveConfiguration() {
