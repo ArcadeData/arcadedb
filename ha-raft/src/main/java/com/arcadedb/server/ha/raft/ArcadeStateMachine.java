@@ -2424,7 +2424,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
             + entryIndex + " could neither be published from the prepared transaction nor reconciled from the"
             + " replicated payload, so this node does not hold an entry the cluster committed: "
             + (publishFailure == null ? "no error detail" : publishFailure.getMessage()),
-        decoded.databaseName(), publishFailure);
+        publishFailure);
     if (reconcileFailure != null)
       notApplied.addSuppressed(reconcileFailure);
     return notApplied;
