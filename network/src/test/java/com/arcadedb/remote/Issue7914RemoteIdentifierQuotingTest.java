@@ -242,6 +242,29 @@ class Issue7914RemoteIdentifierQuotingTest {
   }
 
   /**
+   * A {@code propertyNames} entry can carry a trailing {@code " by key"} / {@code " by value"} / {@code " by item"}
+   * that {@code TypeIndexBuilder} reads as a MODIFIER on a MAP or LIST property. Quoting the whole entry - the
+   * first shape this fix took - asked for an index on a property literally so named (PR #7942 review).
+   */
+  @Test
+  void createTypeIndexKeepsTheByKeyModifierOutOfTheQuotedName() {
+    final RemoteDatabase db = mock(RemoteDatabase.class);
+    new RemoteSchema(db).createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "T", "my`map by key", "plain");
+
+    final CreateIndexStatement statement = (CreateIndexStatement) parse(commandSent(db));
+    assertThat(statement.propertyList).hasSize(2);
+
+    final CreateIndexStatement.Property byKey = statement.propertyList.getFirst();
+    assertThat(byKey.name.getStringValue())
+        .as("the modifier must not end up inside the property NAME")
+        .isEqualTo("my`map");
+    assertThat(byKey.byKey).as("...and must still be read as the BY KEY modifier").isTrue();
+
+    assertThat(statement.propertyList.get(1).name.getStringValue()).isEqualTo("plain");
+    assertThat(statement.propertyList.get(1).byKey).isFalse();
+  }
+
+  /**
    * {@code getTypeByBucketName} interpolated the bucket name into a string LITERAL. A back-tick sweep does not see
    * that shape, which is how it survived the first pass over this class (PR #7942 review).
    */
