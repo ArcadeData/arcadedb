@@ -34,6 +34,15 @@ public class AnalyzedEntity {
   private final long                          maxValueSampling;
   private       long                          totalRowLength = 0;
   private       long                          analyzedRows   = 0;
+  /**
+   * How many columns the source's header declares, or {@code -1} when the source has no notion of one.
+   * <p>
+   * Recorded by the analysis so the LOAD pass can measure a row against the same number the analysis measured it
+   * against, instead of rediscovering it from the properties it happened to create - which is not the same number:
+   * a property only exists once some row supplied a value at its index, so a header column no row ever fills leaves
+   * no trace in {@link #properties} at all (issue #7782).
+   */
+  private       int                           headerColumns  = -1;
 
   public AnalyzedEntity(final String name, final EntityType type, final long maxValueSampling) {
     this.name = name;
@@ -60,8 +69,28 @@ public class AnalyzedEntity {
     property.setLastContent(content);
   }
 
+  /** See {@link #headerColumns}. Ignores a non-positive count: "no header" stays "no header". */
+  public void setHeaderColumns(final int headerColumns) {
+    if (headerColumns > 0)
+      this.headerColumns = headerColumns;
+  }
+
+  public int getHeaderColumns() {
+    return headerColumns;
+  }
+
+  /**
+   * The mean length of the rows the analysis measured, or {@code 0} when it measured none.
+   * <p>
+   * The zero case is not hypothetical any more: {@link #setRowSize} is what increments {@code analyzedRows}, and a
+   * ragged row the analysis refuses never reaches it, so an entity can exist with no measured row at all (issue
+   * #7782). This used to divide by {@code analyzedRows} unguarded, and its one caller - the {@code expectedEdges}
+   * batch estimate in {@code CSVImporterFormat.loadEdges()} - would have taken an {@code ArithmeticException} in
+   * place of the row-shape diagnosis it was on its way to report. Zero flows into that caller's existing
+   * {@code expectedEdges <= 0} fallback, which is exactly the "no idea how big this source is" answer.
+   */
   public int getAverageRowLength() {
-    return (int) (totalRowLength / analyzedRows);
+    return analyzedRows > 0 ? (int) (totalRowLength / analyzedRows) : 0;
   }
 
   public void setRowSize(final String[] row) {
