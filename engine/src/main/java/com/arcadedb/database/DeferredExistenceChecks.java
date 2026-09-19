@@ -239,6 +239,14 @@ public class DeferredExistenceChecks {
     if (scope == null || !scope.active)
       return false;
 
+    // An embedded document has no identity of its own and never will: it is part of the record that holds it, not
+    // a record. It is validated from inside its owner's validate(), which for a pattern element runs inside the
+    // pattern-create region, so without this it would be deferred like any other identity-less document - and then
+    // never resolved, never completed and never checked, which is a constraint silently dropped rather than
+    // deferred. Nothing a later clause does could complete it either, since there is no RID to address it by.
+    if (document instanceof EmbeddedDocument)
+      return false;
+
     final RID rid = document.getIdentity();
     if (rid == null) {
       // A creation: provisional from here until the statement ends, but only when it is a pattern clause writing
@@ -419,6 +427,11 @@ public class DeferredExistenceChecks {
   }
 
   private void register(final MutableDocument document) {
+    // One document, one registration: validate() walks the properties, so a record missing two mandatory ones
+    // defers twice in a row for the same instance.
+    if (!unresolved.isEmpty() && unresolved.getLast() == document)
+      return;
+
     resolve();
     if (pending.size() >= sweepAt) {
       sweep();
