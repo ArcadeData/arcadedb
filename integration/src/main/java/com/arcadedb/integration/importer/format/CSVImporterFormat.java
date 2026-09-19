@@ -229,6 +229,10 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
       LogManager.instance().log(this, Level.INFO, "Importing the following document properties: %s", null, properties);
 
+      // -1 WHEN THE ANALYSIS DERIVED NO ENTITY, WHICH DISABLES THE ARITY GATE BELOW FOR THIS SOURCE. SAFE ONLY
+      // BECAUSE THE SAME CONDITION LEAVES 'properties' EMPTY (SEE ABOVE), SO NOTHING INDEXES INTO row[] AND THERE IS
+      // NO RAGGEDNESS TO CATCH - THE TWO READ AS INDEPENDENT CONDITIONS BUT ARE NOT. A FUTURE CHANGE THAT POPULATES
+      // 'properties' FROM ANYTHING OTHER THAN 'entity' HAS TO GIVE THIS ONE A HEADER WIDTH TOO (claude-review, #7782).
       final int headerColumns = headerColumnsOf(entity);
 
       // In "abort" mode, rows accumulate here instead of directly in context.createdDocuments, merged in below only
