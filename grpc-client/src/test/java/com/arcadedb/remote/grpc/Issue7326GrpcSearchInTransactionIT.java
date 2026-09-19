@@ -332,14 +332,20 @@ public class Issue7326GrpcSearchInTransactionIT extends BaseGraphServerTest {
 
   /**
    * The other half of the parity claim, for the record the transaction created rather than the one it updated.
-   * Neither protocol finds it through the dense vector index and both find it through the full-text index, so
-   * what the two surfaces expose is the same index behaviour rather than a difference introduced by the wire.
-   * If the vector index ever starts resolving uncommitted rows, this test fails on both halves at once and says
-   * which claim to revisit.
+   * <p>
+   * This test used to pin the opposite answer on the vector half - neither protocol found the new row - and said
+   * so explicitly: "if the vector index ever starts resolving uncommitted rows, this test fails on both halves at
+   * once and says which claim to revisit". Issue #7378 is that change. {@code LSMVectorIndex} now merges the
+   * calling transaction's queued entries into its search the way {@code LSMTreeIndex.get()} always has, so both
+   * protocols find the new row through both indexes.
+   * <p>
+   * What the test is for has not moved: it is the parity claim, that the two surfaces expose the same index
+   * behaviour rather than a difference introduced by the wire. Both halves are still asserted against the same
+   * gRPC answer, and the vector half now carries the read-your-own-writes contract as well.
    */
   @Test
   void httpAndGrpcAgreeOnARecordCreatedInsideTheTransaction() {
-    final int grpcVectorHits;
+    final List<String> grpcVectorHits;
     final List<String> grpcFullTextHits;
     database.begin();
     try {
@@ -349,7 +355,7 @@ public class Issue7326GrpcSearchInTransactionIT extends BaseGraphServerTest {
           .setIndexName(DENSE_INDEX)
           .addAllQueryVector(List.of(1.0f, 0.0f, 0.0f))
           .setK(10)
-          .build()).getResultsList()).size();
+          .build()).getResultsList());
       grpcFullTextHits = names(database.fullTextSearch(FullTextSearchRequest.newBuilder()
           .setIndexName(TEXT_INDEX)
           .setQueryText("zulu")
@@ -360,6 +366,9 @@ public class Issue7326GrpcSearchInTransactionIT extends BaseGraphServerTest {
     }
 
     assertThat(grpcFullTextHits).containsExactly("created-in-tx");
+    assertThat(grpcVectorHits)
+        .as("issue #7378: the query vector IS the new row's embedding, so it ranks first once it is a candidate")
+        .isNotEmpty().first().isEqualTo("created-in-tx");
 
     try (final RemoteDatabase http = new RemoteDatabase("localhost", getServer(0).getHttpServer().getPort(),
         getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS)) {
@@ -371,9 +380,8 @@ public class Issue7326GrpcSearchInTransactionIT extends BaseGraphServerTest {
             .put("indexName", DENSE_INDEX)
             .put("queryVector", new JSONArray(List.of(1.0, 0.0, 0.0)))
             .put("k", 10))))
-            .as("the dense index scan must miss the new row on HTTP exactly as it does on gRPC")
-            .hasSize(grpcVectorHits)
-            .doesNotContain("created-in-tx");
+            .as("the dense index scan must find the new row on HTTP exactly as it does on gRPC")
+            .isEqualTo(grpcVectorHits);
         assertThat(httpNames(http.fullTextSearch(new JSONObject()
             .put("indexName", TEXT_INDEX)
             .put("queryText", "zulu")

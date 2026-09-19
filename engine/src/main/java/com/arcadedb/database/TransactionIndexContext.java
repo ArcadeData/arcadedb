@@ -714,6 +714,34 @@ public class TransactionIndexContext {
   }
 
   /**
+   * Looks a lane up by the index that OWNS it, rather than by the name that index currently answers to (issue
+   * #7378).
+   * <p>
+   * {@link #getIndexKeys(String)} is correct for every caller that never renames itself, which is what its own
+   * javadoc and {@link #getTotalEntriesByIndex}'s record. {@code LSMVectorIndex} does rename itself - a compaction
+   * publishes the compacted component under a new name and calls {@code LocalSchema.indexRenamed} - so it is the
+   * one read-your-own-writes caller for which the name captured when the lane was opened and the name asked for
+   * here can differ, which is issue #6105's shape applied to the read side. Resolving by identity closes it: a
+   * lane belongs to the index object that opened it whatever that index ends up being called.
+   * <p>
+   * The name lookup is tried first and answers every ordinary call, so the scan below is reached only by an index
+   * that really did rename itself mid-transaction, and walks one entry per index touched by the transaction.
+   *
+   * @return the lane, or {@code null} when this transaction has queued nothing for {@code index}
+   */
+  public TreeMap<ComparableKey, Map<IndexKey, IndexKey>> getIndexKeys(final IndexInternal index) {
+    final TreeMap<ComparableKey, Map<IndexKey, IndexKey>> byCurrentName = indexEntries.get(index.getName());
+    if (byCurrentName != null)
+      return byCurrentName;
+
+    for (final Map.Entry<String, IndexInternal> lane : indexPerLane.entrySet())
+      if (lane.getValue() == index)
+        return indexEntries.get(lane.getKey());
+
+    return null;
+  }
+
+  /**
    * Called at commit time in the middle of the lock to avoid concurrent insertion of the same key.
    */
   private void checkUniqueIndexKeys(final Index index, final IndexKey key, final RID deleted) {
