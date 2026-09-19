@@ -20,6 +20,8 @@ package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.DeferredExistenceChecks;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
@@ -293,8 +295,19 @@ public class CreateStep extends AbstractExecutionStep {
 
   /**
    * Creates a complete path (vertices and edges).
+   * <p>
+   * Everything written here is a pattern element, so an existence constraint one of them does not satisfy yet is
+   * the statement's business until the statement ends - a {@code SET} of the same statement may be what supplies
+   * the property (issue #7945). See {@link DeferredExistenceChecks#patternCreate}.
    */
   private void createPath(final PathPattern pathPattern, final ResultInternal result) {
+    try (final DeferredExistenceChecks.PatternCreate ignored = DeferredExistenceChecks.patternCreate(
+        (DatabaseInternal) context.getDatabase())) {
+      createPathElements(pathPattern, result);
+    }
+  }
+
+  private void createPathElements(final PathPattern pathPattern, final ResultInternal result) {
     if (pathPattern.isSingleNode()) {
       // Simple node creation: CREATE (n:Person {name: 'Alice'})
       final NodePattern nodePattern = pathPattern.getFirstNode();

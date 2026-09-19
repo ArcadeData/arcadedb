@@ -19,6 +19,8 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.DeferredExistenceChecks;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
@@ -1276,6 +1278,15 @@ public class MergeStep extends AbstractExecutionStep {
    * @return created vertex
    */
   private Vertex createVertex(final NodePattern nodePattern, final Result result) {
+    // A pattern element: an existence constraint it does not satisfy yet belongs to the end of the statement, since
+    // the SET of a MERGE ... SET upsert is what supplies the property (issue #7945).
+    try (final DeferredExistenceChecks.PatternCreate ignored = DeferredExistenceChecks.patternCreate(
+        (DatabaseInternal) context.getDatabase())) {
+      return createPatternVertex(nodePattern, result);
+    }
+  }
+
+  private Vertex createPatternVertex(final NodePattern nodePattern, final Result result) {
     // No label written: land in the reserved sentinel directly, bypassing ensureCompositeType - see
     // CreateStep.createVertex for why (issue #6395 review).
     final String typeName;
@@ -1316,6 +1327,14 @@ public class MergeStep extends AbstractExecutionStep {
    * @return created edge
    */
   private Edge createEdge(final Vertex fromVertex, final Vertex toVertex, final RelationshipPattern relPattern,
+                          final Result result) {
+    try (final DeferredExistenceChecks.PatternCreate ignored = DeferredExistenceChecks.patternCreate(
+        (DatabaseInternal) context.getDatabase())) {
+      return createPatternEdge(fromVertex, toVertex, relPattern, result);
+    }
+  }
+
+  private Edge createPatternEdge(final Vertex fromVertex, final Vertex toVertex, final RelationshipPattern relPattern,
                           final Result result) {
     final String type = relPattern.hasTypes() ? relPattern.getFirstType() : "EDGE";
 
