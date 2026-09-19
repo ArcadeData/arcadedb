@@ -98,6 +98,14 @@ class LSMVectorIndexMetrics {
   // non-zero value means some other index has been holding a permit for at least that timeout - almost always a
   // rebuild that is stuck rather than slow - and concurrent builds were unbounded for as long as it lasted.
   private final AtomicLong searchRebuildsWithoutPermit = new AtomicLong(0);
+  // Searches whose from-scratch build was small enough to be exempt from the JVM-wide rebuild permit, but which had
+  // to take one anyway because the aggregate of small builds ALREADY in flight had spent the process-wide budget
+  // (issue #7930). The exemption is a per-build test - a thousand vectors cannot threaten the heap - and says
+  // nothing about how many such builds run at once, which is what this bounds: a database of hundreds of small
+  // vector indexes reopening together used to start hundreds of concurrent builds. A steady non-zero value means
+  // exactly that shape of database, and persisting the graphs (REBUILD INDEX before the restart) removes the builds
+  // entirely; a raised maxConcurrentRebuilds widens both the permit and this budget together.
+  private final AtomicLong smallRebuildsOverBudget = new AtomicLong(0);
   // Times a stale persisted graph (more live vectors than it covers, no deletions) was reused as a prefix instead
   // of being discarded for a synchronous full rebuild on the calling search thread (issue #6655). Each one traded
   // a blocking rebuild sized to the whole index for an immediate answer plus a background rebuild; the gap
@@ -174,6 +182,10 @@ class LSMVectorIndexMetrics {
 
   void incrementSearchRebuildsWithoutPermit() {
     searchRebuildsWithoutPermit.incrementAndGet();
+  }
+
+  void incrementSmallRebuildsOverBudget() {
+    smallRebuildsOverBudget.incrementAndGet();
   }
 
   void incrementStalePrefixGraphReuses() {
@@ -298,6 +310,7 @@ class LSMVectorIndexMetrics {
     stats.put("rebuildsDeferredForMemory", rebuildsDeferredForMemory.get());
     stats.put("searchRebuildsQueuedForPermit", searchRebuildsQueuedForPermit.get());
     stats.put("searchRebuildsWithoutPermit", searchRebuildsWithoutPermit.get());
+    stats.put("smallRebuildsOverBudget", smallRebuildsOverBudget.get());
     stats.put("stalePrefixGraphReuses", stalePrefixGraphReuses.get());
     stats.put("graphReusesWithTombstonedNodes", graphReusesWithTombstonedNodes.get());
     stats.put("compactionCount", compactionCount.get());
@@ -326,6 +339,7 @@ class LSMVectorIndexMetrics {
     rebuildsDeferredForMemory.set(0);
     searchRebuildsQueuedForPermit.set(0);
     searchRebuildsWithoutPermit.set(0);
+    smallRebuildsOverBudget.set(0);
     stalePrefixGraphReuses.set(0);
     graphReusesWithTombstonedNodes.set(0);
     compactionCount.set(0);
