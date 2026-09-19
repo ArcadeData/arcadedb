@@ -186,10 +186,57 @@
     </modules>
 
     <build>
+        <!-- Resource filtering is on so a handful of text resources can interpolate build properties
+             (engine's arcadedb.properties, Studio's index.html). Filtering copies a file through a Reader,
+             which destroys a binary, so the binary types are carved out into their own UNFILTERED resource
+             entry rather than relying only on the maven-resources-plugin's nonFilteredFileExtensions below.
+
+             Both are kept on purpose, because they are read by different tools. Maven honours the plugin
+             setting, and with it alone the released artifacts have always been correct. An IDE that copies
+             resources itself - IntelliJ does, for its own build output - honours <filtering> from the model
+             but NOT the plugin's nonFilteredFileExtensions, so it text-filtered the Studio webfonts into
+             garbage: fa-solid-900.woff2 arrived as 215,949 bytes instead of 119,488, the browser refused it
+             with "Invalid font data", and every icon in Studio rendered as an empty box. Expressing the
+             carve-out here, in the resource definition itself, is what makes every consumer of this POM get
+             it right. Keep the two lists identical. -->
         <resources>
             <resource>
                 <directory>${basedir}/src/main/resources</directory>
                 <filtering>true</filtering>
+                <excludes>
+                    <exclude>**/*.bmp</exclude>
+                    <exclude>**/*.eot</exclude>
+                    <exclude>**/*.gif</exclude>
+                    <exclude>**/*.ico</exclude>
+                    <exclude>**/*.jpeg</exclude>
+                    <exclude>**/*.jpg</exclude>
+                    <exclude>**/*.otf</exclude>
+                    <exclude>**/*.png</exclude>
+                    <exclude>**/*.svg</exclude>
+                    <exclude>**/*.swf</exclude>
+                    <exclude>**/*.ttf</exclude>
+                    <exclude>**/*.woff</exclude>
+                    <exclude>**/*.woff2</exclude>
+                </excludes>
+            </resource>
+            <resource>
+                <directory>${basedir}/src/main/resources</directory>
+                <filtering>false</filtering>
+                <includes>
+                    <include>**/*.bmp</include>
+                    <include>**/*.eot</include>
+                    <include>**/*.gif</include>
+                    <include>**/*.ico</include>
+                    <include>**/*.jpeg</include>
+                    <include>**/*.jpg</include>
+                    <include>**/*.otf</include>
+                    <include>**/*.png</include>
+                    <include>**/*.svg</include>
+                    <include>**/*.swf</include>
+                    <include>**/*.ttf</include>
+                    <include>**/*.woff</include>
+                    <include>**/*.woff2</include>
+                </includes>
             </resource>
         </resources>
         <plugins>
@@ -198,7 +245,11 @@
                 <artifactId>maven-resources-plugin</artifactId>
                 <version>${maven-resources-plugin.version}</version>
                 <configuration>
-                    <nonFilteredFileExtensions>jpg,jpeg,gif,bmp,png,svg,ttf,woff,woff2,swf</nonFilteredFileExtensions>
+                    <!-- Kept in step with the <resources> carve-out above; 'ico' and the two remaining font
+                         types were missing here, which left Studio's favicon and any .eot/.otf asset copied
+                         through the filter. Maven's text copy happens to be lossless for them today, so the
+                         released artifacts are unaffected - but the safety of a binary must not rest on that. -->
+                    <nonFilteredFileExtensions>bmp,eot,gif,ico,jpeg,jpg,otf,png,svg,swf,ttf,woff,woff2</nonFilteredFileExtensions>
                     <propertiesEncoding>${project.build.sourceEncoding}</propertiesEncoding>
                 </configuration>
             </plugin>
