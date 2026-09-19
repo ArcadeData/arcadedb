@@ -1220,13 +1220,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // count(*), is NOT in the unique index that was supposed to forbid it, and was acknowledged to the
         // client as not written. Three views of the system, and no single one of them reveals the problem.
         //
-        // The undo covers every exception rather than the duplicate alone: anything raised past
-        // bucket.createRecord leaves exactly the same residue, and enumerating them would leave the next one out.
+        // The undo covers every unchecked throwable rather than the duplicate alone - an Error included, since
+        // nothing about a Lucene analyzer running out of stack makes the half-written record less corrupting:
+        // anything raised past bucket.createRecord leaves exactly the same residue, and enumerating the types
+        // would leave the next one out. Both arms rethrow, so nothing is swallowed (claude-review on PR #7936).
         final TransactionIndexContext indexChanges = transaction.getIndexChanges();
         indexChanges.armRecordUndo();
         try {
           indexer.createDocument(doc, doc.getType(), bucket);
-        } catch (final RuntimeException e) {
+        } catch (final RuntimeException | Error e) {
           indexChanges.undoRecordChanges();
           undoRecordWrite(record, bucket, transaction, e);
           throw e;
@@ -1276,10 +1278,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * its place, because {@code cause} is the reason the record was refused and that is what the caller is
    * reporting. A direct rollback from here is not an option: this method does not own the transaction.
    *
-   * @param cause the exception the indexer raised, which is about to be rethrown by the caller
+   * @param cause the throwable the indexer raised, which is about to be rethrown by the caller
    */
   private void undoRecordWrite(final Record record, final LocalBucket bucket, final TransactionContext transaction,
-      final RuntimeException cause) {
+      final Throwable cause) {
     final RID rid = record.getIdentity();
     try {
       bucket.deleteRecord(rid, false);
@@ -1427,7 +1429,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       indexChanges.armRecordUndo();
       try {
         indexer.createDocument(doc, doc.getType(), bucket);
-      } catch (final RuntimeException e) {
+      } catch (final RuntimeException | Error e) {
         indexChanges.undoRecordChanges();
         undoRecordWrite(record, bucket, transaction, e);
         throw e;
