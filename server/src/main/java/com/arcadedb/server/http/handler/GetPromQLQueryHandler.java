@@ -42,29 +42,28 @@ import io.undertow.server.HttpServerExchange;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class GetPromQLQueryHandler extends DatabaseAbstractHandler {
+public class GetPromQLQueryHandler extends AbstractObservabilityHandler {
 
   public GetPromQLQueryHandler(final HttpServer httpServer) {
     super(httpServer);
   }
 
   /**
-   * A read: an auto-commit wrapper would only add a commit with nothing to commit, so an unresolvable session
-   * id degrades to a session-less read rather than being refused - see
-   * {@link DatabaseAbstractHandler#rejectsUnresolvableSession()}.
+   * Evaluates a PromQL expression over the samples it selects, so never on an Undertow IO thread (issue #7722).
+   * <p>
+   * A weaker case than the two discovery endpoints - the bound here is the expression's own range rather than
+   * the whole series - but the same decision: the read is a scan whose size the server does not know before
+   * doing it, and blocking an IO thread on one starves the unrelated connections sharing it. The dispatch costs
+   * a hand-off on a path whose answer takes a scan anyway.
+   * <p>
+   * Answered handler-wide, which SUPERSEDES the per-request override issue #7681 gave this handler. That one
+   * dispatched only a request naming a session, deliberately leaving the session-less case as it was - and the
+   * session-less case is the one Grafana and Prometheus exercise, since neither ever sends
+   * {@code arcadedb-session-id}. Both reasons to leave the IO thread still hold; this is the wider of the two.
    */
   @Override
-  protected boolean requiresTransaction() {
-    return false;
-  }
-
-  /**
-   * A session-less read is answered on the IO thread, which is what this handler has always done. A request
-   * that names a session is not: see {@link DatabaseAbstractHandler#carriesSessionId}.
-   */
-  @Override
-  protected boolean mustExecuteOnWorkerThread(final HttpServerExchange exchange) {
-    return carriesSessionId(exchange);
+  protected boolean mustExecuteOnWorkerThread() {
+    return true;
   }
 
   @Override

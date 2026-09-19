@@ -78,6 +78,18 @@ public class PostPrometheusReadHandler extends AbstractBinaryHttpHandler {
     return false;
   }
 
+  /**
+   * Answered here rather than inherited from {@link AbstractObservabilityHandler}, which this handler cannot
+   * extend because its binary body already spends its one superclass (issue #7859). The reason is that class's:
+   * a remote-read never writes into the caller's transaction, so the 413 it raises when the answer would exceed
+   * {@code arcadedb.server.maxResultRows} must not destroy a transaction the client opened with {@code /begin}
+   * and still believes it owns.
+   */
+  @Override
+  protected boolean participatesInSessionTransaction() {
+    return false;
+  }
+
   @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
       final Database db, final JSONObject payload) throws Exception {

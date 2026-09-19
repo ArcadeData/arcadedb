@@ -42,7 +42,7 @@ import io.undertow.server.HttpServerExchange;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class GetPromQLQueryRangeHandler extends DatabaseAbstractHandler {
+public class GetPromQLQueryRangeHandler extends AbstractObservabilityHandler {
   // Widest epoch second accepted for start/end. 1e12s is year 33658, ~1600x beyond any real series, and
   // keeps start/end (and therefore their difference in milliseconds) far inside the 64-bit range.
   static final double MAX_TIMESTAMP_SECONDS = 1e12;
@@ -52,22 +52,16 @@ public class GetPromQLQueryRangeHandler extends DatabaseAbstractHandler {
   }
 
   /**
-   * A read: an auto-commit wrapper would only add a commit with nothing to commit, so an unresolvable session
-   * id degrades to a session-less read rather than being refused - see
-   * {@link DatabaseAbstractHandler#rejectsUnresolvableSession()}.
+   * Evaluates a PromQL expression at every step of a range, so never on an Undertow IO thread (issue #7722),
+   * for the reason {@code GetPromQLQueryHandler} gives at its own override - with strictly more work to do,
+   * since the expression is evaluated once per step rather than once.
+   * <p>
+   * Handler-wide, superseding the per-request override of issue #7681 for the reason given there: the
+   * session-less request is the one Grafana and Prometheus actually send.
    */
   @Override
-  protected boolean requiresTransaction() {
-    return false;
-  }
-
-  /**
-   * A session-less read is answered on the IO thread, which is what this handler has always done. A request
-   * that names a session is not: see {@link DatabaseAbstractHandler#carriesSessionId}.
-   */
-  @Override
-  protected boolean mustExecuteOnWorkerThread(final HttpServerExchange exchange) {
-    return carriesSessionId(exchange);
+  protected boolean mustExecuteOnWorkerThread() {
+    return true;
   }
 
   @Override
