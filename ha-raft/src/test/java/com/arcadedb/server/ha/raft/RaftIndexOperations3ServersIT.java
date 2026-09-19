@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
@@ -183,14 +184,50 @@ class RaftIndexOperations3ServersIT extends BaseRaftHATest {
 
       final Index byId = database.getSchema().getIndexByName(TYPE_NAME + "[id]");
       for (final Long id : ids)
-        assertThat(byId.get(new Object[] { id }).hasNext())
-            .as("id %d must be findable through the index on server %d", id, serverIndex).isTrue();
+        assertIndexResolvesTo(byId, id, "id", id, serverIndex);
 
       final Index byUuid = database.getSchema().getIndexByName(TYPE_NAME + "[uuid]");
       for (final String uuid : uuids)
-        assertThat(byUuid.get(new Object[] { uuid }).hasNext())
-            .as("uuid %s must be findable through the index on server %d", uuid, serverIndex).isTrue();
+        assertIndexResolvesTo(byUuid, uuid, "uuid", uuid, serverIndex);
     });
+  }
+
+  /**
+   * One index lookup, checked all the way to the record. {@code hasNext()} alone only proves the key returns SOME
+   * RID, so a rebuilt index that mapped a key to a foreign record would satisfy it - and the entry counts above
+   * would still balance, because the number of entries would be right and only their targets wrong (CodeRabbit on
+   * PR #7953).
+   * <p>
+   * The second {@code hasNext()} is the other half: both indexes are declared UNIQUE, so a key that resolves to
+   * more than one record is a rebuild that double-inserted rather than replaced.
+   * <p>
+   * The cursor is closed rather than abandoned, as {@link com.arcadedb.database.Cursor} asks - 3000 of these run
+   * per server pass.
+   */
+  private static void assertIndexResolvesTo(final Index index, final Object key, final String property,
+      final Object expected, final int serverIndex) {
+    try (final IndexCursor cursor = index.get(new Object[] { key })) {
+      assertThat(cursor.hasNext())
+          .as("%s %s must be findable through the index on server %d", property, key, serverIndex).isTrue();
+      assertThat(normalized(cursor.next().asDocument().get(property)))
+          .as("%s %s must resolve to the record that carries it on server %d", property, key, serverIndex)
+          .isEqualTo(normalized(expected));
+      assertThat(cursor.hasNext())
+          .as("the index on '%s' is UNIQUE, so %s must map to exactly one record on server %d", property, key,
+              serverIndex)
+          .isFalse();
+    }
+  }
+
+  /**
+   * Numbers compared by VALUE, not by box type. {@code createIndexLater} declares {@code id} as {@code Long}
+   * AFTER inserting the records, so those records keep the {@code Integer} the insert wrote and an
+   * {@code isEqualTo} against a {@code Long} key fails on the type while the value is right - which is what this
+   * assertion caught the first time it ran. That the index still finds them across the two numeric types is the
+   * engine behaving correctly, not something this test should pin as equal-by-class.
+   */
+  private static Object normalized(final Object value) {
+    return value instanceof Number number ? number.longValue() : value;
   }
 
   /**
