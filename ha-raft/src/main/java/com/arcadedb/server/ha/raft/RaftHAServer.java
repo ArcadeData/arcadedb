@@ -3367,12 +3367,19 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * The per-call retry policy of the membership-change client (issues #7539, #7561).
    * <p>
    * Short on purpose, and short is safe here because it does not bound the operation - {@code RaftClusterManager}
-   * has its own deadline and its own backoff around it. What it bounds is how long ONE
-   * {@code admin().setConfiguration()} call can sit inside the Ratis client before control comes back, and
-   * therefore how often the operator's budget is looked at. The shared {@link #raftClient} carries
-   * {@code RetryLimited(60, 1s)}, which is right for a data write waiting out an election and wrong for an admin
-   * call whose caller is an HTTP worker thread: it made the 90 s budget observable once a minute, so a change
-   * that could not commit cost about 150 s.
+   * has its own deadline and its own backoff around it. What it bounds is how many times ONE
+   * {@code admin().setConfiguration()} call re-issues before control comes back, and therefore how often the
+   * operator's budget is looked at. The shared {@link #raftClient} carries {@code RetryLimited(60, 1s)}, which
+   * is right for a data write waiting out an election and wrong for an admin call whose caller is an HTTP
+   * worker thread: it made the 90 s budget observable once a minute, so a change that could not commit cost
+   * about 150 s.
+   * <p>
+   * <b>Three attempts is not "three seconds".</b> The sleep is 500 ms, but each attempt is also bounded by
+   * {@link #CLIENT_REQUEST_TIMEOUT_MS}, so a call whose RPC hangs at the transport can take about 31 s before
+   * it comes back - and the common shape, a synchronous rejection, comes back in milliseconds. The budget check
+   * in {@code RaftClusterManager.canAttemptAgain} sizes itself on the OBSERVED attempt duration rather than on
+   * either figure, which is why it stays correct across that spread; the numbers matter for an operator sizing
+   * {@code arcadedb.ha.membershipChangeTimeout}, not for the loop.
    * <p>
    * {@code KubernetesAutoJoin.PROBE_RETRY_POLICY} is the same reasoning applied to the auto-join probe
    * (issue #5973), and the numbers are deliberately of the same order.
