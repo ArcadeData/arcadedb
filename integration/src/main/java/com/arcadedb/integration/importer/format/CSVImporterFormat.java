@@ -203,20 +203,28 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       final AnalyzedEntity entity = sourceSchema.getSchema().getEntity(settings.documentTypeName);
       checkAnalysisFoundUsableRows(entity, entityType);
 
+      // The null check covers BOTH branches below, where it used to guard only the second: a source the analysis
+      // derived no entity from - a header-only file, or one whose every row was refused - reached
+      // entity.getProperties() in the include-list branch and threw NullPointerException, while the same source with
+      // the default -documentPropertiesInclude '*' imported fine. loadVertices()/loadEdges() answer this with an
+      // early return naming the type; documents cannot, because an empty property list is a legitimate outcome here
+      // (claude-review, issue #7782).
       final List<AnalyzedProperty> properties = new ArrayList<>();
-      if (!"*".equalsIgnoreCase(settings.documentPropertiesInclude)) {
-        final String[] includes = settings.documentPropertiesInclude.split(",");
+      if (entity != null) {
+        if (!"*".equalsIgnoreCase(settings.documentPropertiesInclude)) {
+          final String[] includes = settings.documentPropertiesInclude.split(",");
 
-        final Set<String> propertiesSet = new HashSet<>(Arrays.asList(includes));
+          final Set<String> propertiesSet = new HashSet<>(Arrays.asList(includes));
 
-        for (final AnalyzedProperty p : entity.getProperties()) {
-          if (propertiesSet.contains(p.getName())) {
-            properties.add(p);
+          for (final AnalyzedProperty p : entity.getProperties()) {
+            if (propertiesSet.contains(p.getName())) {
+              properties.add(p);
+            }
           }
+        } else {
+          // INCLUDE ALL THE PROPERTIES
+          properties.addAll(entity.getProperties());
         }
-      } else if (entity != null) {
-        // INCLUDE ALL THE PROPERTIES
-        properties.addAll(entity.getProperties());
       }
 
       LogManager.instance().log(this, Level.INFO, "Importing the following document properties: %s", null, properties);
