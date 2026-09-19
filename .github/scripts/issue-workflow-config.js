@@ -7,6 +7,10 @@
 
 // The three triage levels, owned and created on demand by classify-issue.yml. Every other label
 // it applies must already exist in the repository.
+//
+// ORDERED MOST SEVERE FIRST, and `highestSeverity` below depends on that: when related issues of
+// different levels are folded into one umbrella, the umbrella has to carry the gravity of the
+// worst of them, or consolidating a critical with two minors would quietly downgrade it.
 const SEVERITY_LEVELS = [
   {
     name: "severity:critical",
@@ -28,10 +32,28 @@ const SEVERITY_LEVELS = [
 // Owned by the sponsor job; the classifier may never apply it.
 const RESERVED_LABEL = "high_priority";
 
-// The level whose issues merge-minor-issues.yml consolidates, and the label that marks the
-// umbrella it consolidates them into.
-const MINOR_LABEL = "severity:minor";
+// The label that marks an umbrella issue.
 const UMBRELLA_LABEL = "parent-issue";
+
+const SEVERITY_BY_NAME = new Map(SEVERITY_LEVELS.map((l) => [l.name.toLowerCase(), l]));
+
+/**
+ * The severity carried by a set of label names, or null when none of them is a triage level.
+ * An untriaged issue has no gravity to compare, which is why merge-related-issues.yml leaves
+ * it alone rather than guessing one.
+ */
+const severityOf = (names) => {
+  for (const level of SEVERITY_LEVELS)
+    if (names.some((n) => n.toLowerCase() === level.name)) return level.name;
+  return null;
+};
+
+/** The worst of several severities, for the umbrella that replaces them. */
+const highestSeverity = (severities) => {
+  for (const level of SEVERITY_LEVELS)
+    if (severities.includes(level.name)) return level.name;
+  return null;
+};
 
 // Everything that is a kind, a state, an ecosystem or a severity rather than a component of the
 // product. A denylist rather than an allowlist: new module labels get added far more often than
@@ -52,14 +74,33 @@ const BODY_LIMIT = 1500;
 const MAX_GROUPS_PER_RUN = 5;
 const MAX_MEMBERS_PER_GROUP = 10;
 
-// Written by issue-collect-minor.js, read by the model step and by issue-merge-minor.js. The
-// name is repeated in merge-minor-issues.yml, where it pins the model's one allowed Read.
-const PAYLOAD_FILE = "minor-candidates.json";
+// Written by issue-collect-related.js, read by the model step and by issue-merge-related.js.
+// The name is repeated in merge-related-issues.yml, where it pins the model's one allowed Read.
+const PAYLOAD_FILE = "related-candidates.json";
+
+/**
+ * Flattens untrusted text for a log line. `core.info` writes straight to stdout, and GitHub
+ * Actions reads any line that STARTS with `::` as a workflow command, so text that came from an
+ * issue - a title, a body, or a model's reply after reading one - is collapsed to a single line
+ * with control characters stripped, `::` defused and a hard length cap. Both are needed: the
+ * collapse removes the ability to start a line at all, and defusing `::` keeps it harmless even
+ * if it is ever logged somewhere that does not prefix it.
+ */
+const logSafe = (text, max) =>
+  (text ?? "")
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/::/g, ":")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, max) || "-";
 
 module.exports = {
+  logSafe,
   SEVERITY_LEVELS,
+  SEVERITY_BY_NAME,
+  severityOf,
+  highestSeverity,
   RESERVED_LABEL,
-  MINOR_LABEL,
   UMBRELLA_LABEL,
   NON_MODULE_LABELS,
   MAX_MODULES_PER_RUN,

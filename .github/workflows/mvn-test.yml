@@ -75,8 +75,8 @@ jobs:
         run: ./.github/scripts/tests/test-ci-scripts.sh
       # The issue-automation scripts act on what a model returned after reading untrusted issue
       # text, so their guards - the label and candidate whitelists, the single-level rule, the
-      # re-verification before closing an issue - fail silently: nothing breaks, they just stop
-      # refusing what they were written to refuse.
+      # severity the umbrella inherits, the re-verification before closing an issue - fail
+      # silently: nothing breaks, they just stop refusing what they were written to refuse.
       - name: Check issue workflow scripts
         run: ./.github/scripts/tests/test-issue-workflow-scripts.js
       - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
