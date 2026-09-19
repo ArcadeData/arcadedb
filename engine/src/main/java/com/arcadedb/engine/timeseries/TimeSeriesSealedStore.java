@@ -492,7 +492,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    */
   public boolean forEachRow(final long fromTs, final long toTs, final int[] columnIndices, final TagFilter tagFilter,
       final AggregationMetrics metrics, final TimeSeriesRowVisitor visitor) throws IOException {
-    return forEachRow(snapshotBlockDirectory(), fromTs, toTs, columnIndices, tagFilter, metrics, visitor);
+    return forEachRow(snapshotBlockDirectory(fromTs, toTs), fromTs, toTs, columnIndices, tagFilter, metrics, visitor);
   }
 
   /**
@@ -504,15 +504,21 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * snapshot in, and a compaction landing between the two would otherwise seal the bucket's rows into blocks this
    * walk would then hand over a second time.
    */
-  boolean forEachRow(final List<BlockEntry> directorySnapshot, final long fromTs, final long toTs,
+  boolean forEachRow(final BlockDirectorySnapshot directorySnapshot, final long fromTs, final long toTs,
       final int[] columnIndices, final TagFilter tagFilter, final AggregationMetrics metrics,
       final TimeSeriesRowVisitor visitor) throws IOException {
     return walkBlocks(directorySnapshot, fromTs, toTs, columnIndices, tagFilter, metrics, visitor, false);
   }
 
   /**
-   * A copy of the block directory as it stands, for a walk that reads the blocks one at a time instead of holding
-   * one lock over all of them (issue #7897).
+   * The directory entries of the blocks that can hold a row in {@code [fromTs, toTs]}, copied out, for a walk that
+   * reads those blocks one at a time instead of holding one lock over all of them (issue #7897).
+   * <p>
+   * Bounded by the RANGE and not by the store, because the copy is per call and a point query against a long-lived
+   * shard should not pay for its whole history: the two binary searches that find the slice run here, under the
+   * lock, against the live list, so what comes back is the run of blocks {@link #walkBlocks} was going to look at
+   * anyway (code review on PR #7970). An unbounded range - which is what an {@code EXPORT DATABASE} asks for -
+   * copies everything, as it must.
    * <p>
    * The entries are shared rather than copied. The fields the walk reads OUTSIDE the lock - the timestamps, the
    * sample count and {@code tagDistinctValues} - are all assigned before the entry is published into
@@ -523,20 +529,57 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * <p>
    * The snapshot is a list of blocks to TRY, not a promise they are all still there: {@link #walkBlocks}
    * re-resolves each one against the live directory before reading it.
-   * <p>
-   * The copy is per CALL rather than per block, and it copies references, not blocks: one per
-   * {@code MAX_BLOCK_SIZE} samples the shard has sealed, against the block decode the same walk is about to do
-   * for each of them. A shard holding a billion samples has on the order of 15k entries here - roughly 120 KB of
-   * references, allocated once for a walk that is about to decompress 15k blocks - so it is not a copy the walk
-   * can feel. What it buys is that no reader has to hold the directory lock while the caller works.
    */
-  List<BlockEntry> snapshotBlockDirectory() {
+  BlockDirectorySnapshot snapshotBlockDirectory(final long fromTs, final long toTs) {
     directoryLock.readLock().lock();
     try {
-      return new ArrayList<>(blockDirectory);
+      final int dirSize = blockDirectory.size();
+      if (dirSize == 0)
+        return BlockDirectorySnapshot.EMPTY;
+
+      // First block whose maxTimestamp >= fromTs. Everything before it ends before the range begins.
+      int lo = 0, hi = dirSize;
+      while (lo < hi) {
+        final int mid = (lo + hi) >>> 1;
+        if (blockDirectory.get(mid).maxTimestamp < fromTs)
+          lo = mid + 1;
+        else
+          hi = mid;
+      }
+      final int first = lo;
+
+      // First block whose minTimestamp > toTs. The directory is ordered by minTimestamp, so everything from there
+      // on starts after the range ends.
+      lo = first;
+      hi = dirSize;
+      while (lo < hi) {
+        final int mid = (lo + hi) >>> 1;
+        if (blockDirectory.get(mid).minTimestamp <= toTs)
+          lo = mid + 1;
+        else
+          hi = mid;
+      }
+      final int end = lo;
+
+      if (first >= end)
+        return BlockDirectorySnapshot.EMPTY;
+
+      return new BlockDirectorySnapshot(new ArrayList<>(blockDirectory.subList(first, end)), first);
     } finally {
       directoryLock.readLock().unlock();
     }
+  }
+
+  /**
+   * A run of directory entries copied out of {@code blockDirectory}, together with the index the run STARTED at
+   * (issue #7897, narrowed to the range on PR #7970).
+   * <p>
+   * {@code firstIndex} is what lets {@link #resolveLiveBlock} try reference identity at the entry's own position
+   * in the live directory before falling back to a search: without it the slice's own indices would name the
+   * wrong blocks.
+   */
+  record BlockDirectorySnapshot(List<BlockEntry> blocks, int firstIndex) {
+    static final BlockDirectorySnapshot EMPTY = new BlockDirectorySnapshot(List.of(), 0);
   }
 
   /**
@@ -569,23 +612,24 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    */
   public boolean forEachTagCombination(final long fromTs, final long toTs, final int[] columnIndices,
       final AggregationMetrics metrics, final TimeSeriesRowVisitor visitor) throws IOException {
-    return forEachTagCombination(snapshotBlockDirectory(), fromTs, toTs, columnIndices, metrics, visitor);
+    return forEachTagCombination(snapshotBlockDirectory(fromTs, toTs), fromTs, toTs, columnIndices, metrics, visitor);
   }
 
   /**
    * {@link #forEachTagCombination(long, long, int[], AggregationMetrics, TimeSeriesRowVisitor)} over a directory
    * snapshot the caller already took, for the reason
-   * {@link #forEachRow(List, long, long, int[], TagFilter, AggregationMetrics, TimeSeriesRowVisitor)} gives.
+   * {@link #forEachRow(BlockDirectorySnapshot, long, long, int[], TagFilter, AggregationMetrics, TimeSeriesRowVisitor)} gives.
    */
-  boolean forEachTagCombination(final List<BlockEntry> directorySnapshot, final long fromTs, final long toTs,
+  boolean forEachTagCombination(final BlockDirectorySnapshot directorySnapshot, final long fromTs, final long toTs,
       final int[] columnIndices, final AggregationMetrics metrics, final TimeSeriesRowVisitor visitor)
       throws IOException {
     return walkBlocks(directorySnapshot, fromTs, toTs, columnIndices, null, metrics, visitor, true);
   }
 
   /**
-   * The block walk both {@link #forEachRow} and {@link #forEachTagCombination} are: one binary search into the
-   * snapshot, one early termination, and one read lock PER BLOCK over that block's file I/O.
+   * The block walk both {@link #forEachRow} and {@link #forEachTagCombination} are: one pass over the snapshot's
+   * blocks - which {@link #snapshotBlockDirectory} has already clipped to the range - one early termination, and
+   * one read lock PER BLOCK over that block's file I/O.
    * {@code combinationsOnly} decides only whether a block that can be answered from its directory entry is read
    * anyway.
    * <p>
@@ -598,11 +642,15 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * does, and it re-resolves the entry through {@link #resolveLiveBlock} first, because between two blocks the
    * file may have been swapped under it.
    */
-  private boolean walkBlocks(final List<BlockEntry> directorySnapshot, final long fromTs, final long toTs,
+  private boolean walkBlocks(final BlockDirectorySnapshot directorySnapshot, final long fromTs, final long toTs,
       final int[] columnIndices, final TagFilter tagFilter, final AggregationMetrics metrics,
       final TimeSeriesRowVisitor visitor, final boolean combinationsOnly) throws IOException {
+    final List<BlockEntry> snapshot = directorySnapshot.blocks();
+    final int dirSize = snapshot.size();
+    if (dirSize == 0)
+      return true;
+
     final int tsColIdx = findTimestampColumnIndex();
-    final int dirSize = directorySnapshot.size();
     // See scanRange: a condition on a column outside the projection is applied, not silently refused (#7733).
     final TagProjection projection = TagProjection.of(columnIndices, tagFilter);
 
@@ -619,24 +667,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       combinationWidth = columnIndices.length;
     }
 
-    // Binary search: find first block whose maxTimestamp >= fromTs
-    int startBlockIdx = 0;
-    if (dirSize > 0) {
-      int lo = 0, hi = dirSize - 1;
-      while (lo < hi) {
-        final int mid = (lo + hi) >>> 1;
-        if (directorySnapshot.get(mid).maxTimestamp < fromTs)
-          lo = mid + 1;
-        else
-          hi = mid;
-      }
-      startBlockIdx = lo;
-    }
+    // No binary search here any more: the snapshot IS the run of blocks the range can reach, clipped by the two
+    // searches snapshotBlockDirectory ran under the lock. The two bound tests below are kept because a block at
+    // either end of that run can still be out of range on the OTHER bound.
+    for (int blockIdx = 0; blockIdx < dirSize; blockIdx++) {
+      final BlockEntry entry = snapshot.get(blockIdx);
 
-    for (int blockIdx = startBlockIdx; blockIdx < dirSize; blockIdx++) {
-      final BlockEntry entry = directorySnapshot.get(blockIdx);
-
-      // Early termination: blocks are sorted, so if minTs > toTs all remaining are past range
+      // Blocks are sorted, so if minTs > toTs all remaining are past range
       if (entry.minTimestamp > toTs)
         break;
 
@@ -675,7 +712,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       int end = 0;
       directoryLock.readLock().lock();
       try {
-        final BlockEntry live = resolveLiveBlock(entry, blockIdx);
+        final BlockEntry live = resolveLiveBlock(entry, directorySnapshot.firstIndex() + blockIdx);
         // A null live entry means the block was truncated or downsampled away while this walk was between two
         // blocks: the rows it held are no longer in the store, so there is nothing to hand over and nothing to
         // read through a stale offset.

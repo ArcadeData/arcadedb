@@ -503,11 +503,11 @@ public class TimeSeriesShard implements AutoCloseable {
    */
   public boolean forEachRow(final long fromTs, final long toTs, final int[] columnIndices, final TagFilter tagFilter,
       final AggregationMetrics metrics, final TimeSeriesRowVisitor visitor) throws IOException {
-    final List<TimeSeriesSealedStore.BlockEntry> sealedBlocks;
+    final TimeSeriesSealedStore.BlockDirectorySnapshot sealedBlocks;
     final List<Object[]> mutableRows;
     compactionLock.readLock().lock();
     try {
-      sealedBlocks = sealedStore.snapshotBlockDirectory();
+      sealedBlocks = sealedStore.snapshotBlockDirectory(fromTs, toTs);
       // Filtered by the bucket, on the page: see scanRange (issue #7733).
       mutableRows = mutableBucket.scanRange(fromTs, toTs, columnIndices, tagFilter, null);
     } finally {
@@ -543,11 +543,11 @@ public class TimeSeriesShard implements AutoCloseable {
       final AggregationMetrics metrics, final TimeSeriesRowVisitor visitor) throws IOException {
     // One window for both layers, then the visit with nothing held - see forEachRow for why each half is the way
     // it is (issue #7897).
-    final List<TimeSeriesSealedStore.BlockEntry> sealedBlocks;
+    final TimeSeriesSealedStore.BlockDirectorySnapshot sealedBlocks;
     final List<Object[]> mutableRows;
     compactionLock.readLock().lock();
     try {
-      sealedBlocks = sealedStore.snapshotBlockDirectory();
+      sealedBlocks = sealedStore.snapshotBlockDirectory(fromTs, toTs);
       mutableRows = mutableBucket.scanRange(fromTs, toTs, columnIndices);
     } finally {
       compactionLock.readLock().unlock();
