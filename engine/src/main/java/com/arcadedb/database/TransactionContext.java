@@ -1619,7 +1619,14 @@ public class TransactionContext implements Transaction {
     releaseInsertSlotReservations();
     // #7933: dropped, neither undone nor published. A kill abandons this transaction's pages without a rollback, so
     // its index replay has no conclusion to apply either - and leaving the registration behind would have the next
-    // reset() of this reused context publish a buffer belonging to a transaction that was killed.
+    // reset() of this REUSED context publish a buffer belonging to a transaction that was killed.
+    //
+    // #7934 review: the asymmetry with rollback() - which undoes - is deliberate, not an oversight. The only caller
+    // is LocalDatabase.kill(), a CRASH SIMULATION, and a crash reverses nothing in memory: it takes the process with
+    // it. What makes that faithful here rather than merely cheap is that the simulation discards the schema and with
+    // it every index instance, so an eagerly-published replay (LSMVectorIndex's) dies with the object that holds it
+    // and is re-read from disk on the reopen. This context is the one thing that DOES outlive the kill, which is
+    // exactly what the drop is for.
     indexReplayConclusion = null;
     modifiedPages = null;
     newPages = null;

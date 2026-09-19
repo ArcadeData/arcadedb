@@ -502,6 +502,9 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     // updateRecordNoLock, which re-runs DocumentIndexer and lands right here, with the status no longer BEGUN - and
     // that is BEFORE the page versions are validated, so applying straight through would leak exactly what the
     // deferral below exists to prevent. This path is what a conflicted vector REWRITE travels.
+    // record() carries a tripwire for a posting arriving after its transaction concluded. Should it ever fire, it
+    // surfaces from inside commit1stPhase() - here, or through indexChanges.commit() below - not from wherever the
+    // conclusion ran, which is where a reader would go looking first.
     final SparseVectorReplayBuffer buffer = replayBuffer();
     if (buffer != null) {
       buffer.record(dim, rid, weight, !add);
@@ -530,6 +533,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    * marker reaching {@link #put} outside a commit must still land somewhere rather than be silently dropped.
    */
   private void applyReplayPosting(final SparsePostingReplayKey key, final boolean add) {
+    // See the note in queueOrApply on where record()'s tripwire surfaces if it ever fires.
     final SparseVectorReplayBuffer buffer = replayBuffer();
     if (buffer != null) {
       buffer.record(key.dim(), key.rid(), key.weight(), !add);
@@ -546,12 +550,10 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    * This transaction's deferred-posting buffer, created and registered on first use, or null when no transaction is
    * replaying - in which case the caller applies straight through.
    * <p>
-   * Gated on {@link TransactionContext.STATUS#COMMIT_1ST_PHASE} rather than merely on a transaction being present -
-   * the same test {@code LSMVectorIndex.replayableTransaction()} makes for the same reason. That is the status
-   * {@code commit1stPhase()} sets before it drains the deferred record writes and then {@code indexChanges.commit()},
-   * so it covers both routes into this buffer, and it is what tells a write that a conclusion is about to be applied
-   * to apart from one issued in an ordinary open transaction, which would be buffered against a conclusion that is
-   * not coming.
+   * Gated on the commit being IN FLIGHT rather than merely on a transaction being present: that is what tells a
+   * write which a conclusion is about to be applied to apart from one issued in an ordinary open transaction, whose
+   * posting would be buffered against a conclusion that is not coming. {@code LSMVectorIndex.replayableTransaction()}
+   * makes the same test for the same reason.
    * <p>
    * {@code getTransactionIfExists()} rather than {@code getTransaction()}: the latter THROWS
    * {@code TransactionException} on a thread with no database context rather than answering null, which would make
@@ -561,7 +563,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    */
   private SparseVectorReplayBuffer replayBuffer() {
     final TransactionContext tx = underlyingIndex.getMutableIndex().getDatabase().getTransactionIfExists();
-    if (tx == null || tx.getStatus() != TransactionContext.STATUS.COMMIT_1ST_PHASE)
+    if (tx == null || !isCommitInFlight(tx.getStatus()))
       return null;
 
     final IndexReplayConclusion registered = tx.getIndexReplayConclusion(this);
@@ -575,6 +577,21 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     // memtable to be bounded by some later transaction's commit.
     tx.addAfterCommitCallbackIfAbsent(afterCommitFlushKey, engine::maybeFlush);
     return created;
+  }
+
+  /**
+   * Whether a commit is under way on {@code status}, and so will conclude and apply that conclusion to this index.
+   * <p>
+   * Only {@code COMMIT_1ST_PHASE} is reachable today: both routes into the buffer run there, and nothing in
+   * {@code commit2ndPhase()}/{@code publishCommittedPages()} writes to an index. The 2nd phase is admitted anyway
+   * because the cost of being wrong is asymmetric (#7934 review): a status this test does not recognise falls
+   * through to the direct-apply branch, which publishes into the shared memtable ahead of the conclusion and is
+   * precisely the defect issue #7933 fixes, while a status it recognises too eagerly merely defers a write to the
+   * end of the very commit that issued it. So the question asked is "is a commit in flight", not "is this the one
+   * phase that writes indexes today".
+   */
+  private static boolean isCommitInFlight(final TransactionContext.STATUS status) {
+    return status == TransactionContext.STATUS.COMMIT_1ST_PHASE || status == TransactionContext.STATUS.COMMIT_2ND_PHASE;
   }
 
   // --------------------------- pure delegation below ---------------------------
