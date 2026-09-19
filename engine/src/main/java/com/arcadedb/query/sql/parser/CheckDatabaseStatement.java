@@ -168,7 +168,10 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
       for (int i = 0; iterator.hasNext(); i++) {
         if (i > 0)
           builder.append(",");
-        builder.append(iterator.next().getStringValue());
+        // The element renders ITSELF, exactly as the RECORD loop below does: getStringValue() hands back the plain
+        // name with the back-ticks stripped, so a quoted `My Type` re-rendered as `CHECK DATABASE TYPE My Type`,
+        // which no longer parses, and a quoted reserved word such as `Order` re-rendered bare (#7913).
+        iterator.next().toString(params, builder);
       }
     }
 
@@ -178,7 +181,7 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
       for (int i = 0; iterator.hasNext(); i++) {
         if (i > 0)
           builder.append(",");
-        builder.append(iterator.next().getValue());
+        iterator.next().toString(params, builder);
       }
     }
 

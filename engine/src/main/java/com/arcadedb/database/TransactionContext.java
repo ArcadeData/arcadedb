@@ -361,6 +361,45 @@ public class TransactionContext implements Transaction {
     return commitCount;
   }
 
+  /**
+   * Whether a block that ran with {@code txAtStart} open, at commit count {@code commitCountAtStart}, has already
+   * published part of its work - which makes it UNSAFE TO RE-RUN (issue #7916).
+   * <p>
+   * The two retry loops that re-execute a whole block after a conflict ({@code LocalDatabase.transaction} and
+   * {@code DatabaseAsyncTransaction.executeTransaction}) roll back and start again. A rollback can only take back
+   * what is still buffered, and a statement with an EXPLICIT batch boundary - {@code UPDATE}, {@code DELETE} or
+   * {@code MOVE VERTEX} with {@code BATCH n} - calls {@code db.commit(); db.begin();} in the MIDDLE of the
+   * caller's transaction, so everything up to the last boundary is already durable. It also leaves a transaction
+   * open behind it, so on return the database looks exactly as it did going in and neither loop can tell from
+   * {@code isTransactionActive()} that anything happened. Re-running the block then applies that durable half a
+   * SECOND time and reports clean success.
+   * <p>
+   * {@code TRUNCATE TYPE} and {@code REBUILD TYPE} batch too, but both already suppress it while a caller
+   * transaction is active (issue #6220), so they join the caller's unit and a rollback really does take their
+   * work back. {@code BATCH n} deliberately does not suppress it: the clause IS the caller asking for
+   * intermediate commits, and honouring it is the point of writing it - which is why the answer here is to
+   * refuse the REPLAY rather than to refuse the combination.
+   * <p>
+   * {@link #getCommitCount()} is what tells them: {@code LocalDatabase.begin()} reuses this same context object
+   * for the next transaction and the counter is never reset, so a value that moved across the block means exactly
+   * "a commit was published under you". A rollback deliberately does not move it, so this cannot answer true for
+   * a block that only ever failed.
+   * <p>
+   * Asked of the SAMPLED context, never of whatever is on the thread's transaction stack now: an internal commit
+   * inside a NESTED transaction pops that context and the following {@code begin()} pushes a fresh one, so "is
+   * the current context still the one I started with" answers yes for a plain rollback and no for a nesting
+   * change that published nothing. The counter on the sampled object answers the question actually being asked,
+   * at every nesting depth, and a context is never reused once popped.
+   *
+   * @param txAtStart          the transaction context that was open when the block started, or {@code null} if none
+   * @param commitCountAtStart {@code txAtStart.getCommitCount()} sampled at that moment
+   *
+   * @return {@code true} when part of the block is already durable and the block must NOT be re-run
+   */
+  public static boolean isPartiallyCommitted(final TransactionContext txAtStart, final long commitCountAtStart) {
+    return txAtStart != null && txAtStart.getCommitCount() != commitCountAtStart;
+  }
+
   public LocalTransactionExplicitLock lock() {
     if (explicitLock == null)
       explicitLock = new LocalTransactionExplicitLock(this);

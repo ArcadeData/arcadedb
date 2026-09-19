@@ -81,13 +81,22 @@ public class BucketIdentifier extends SimpleNode {
     return copy;
   }
 
+  /**
+   * Renders the SQL spelling of this bucket reference, which has to REPARSE: the name goes through
+   * {@link Identifier#toString(Map, StringBuilder)} so a back-tick quoted one keeps its back-ticks, rather than
+   * through {@link #getValue()}, which hands back the bare name and rendered {@code `my bucket`} as
+   * {@code my bucket} (#7913). {@code getValue()} stays what the EXECUTORS ask - they want the bare name to look
+   * the bucket up with - and this stays what the renderers ask.
+   */
   @Override
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (inputParam != null) {
       builder.append("bucket:");
       inputParam.toString(params, builder);
+    } else if (bucketId != null) {
+      bucketId.toString(params, builder);
     } else {
-      builder.append(getValue());
+      bucketName.toString(params, builder);
     }
   }
 

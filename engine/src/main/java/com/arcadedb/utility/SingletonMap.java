@@ -99,9 +99,22 @@ public class SingletonMap<K, V> extends AbstractMap<K, V> {
     return entrySet;
   }
 
+  /**
+   * Null-safe, and it has to be: {@link AbstractMap#hashCode()} - the contract this class is standing in for -
+   * sums {@code (key==null?0:key.hashCode()) ^ (value==null?0:value.hashCode())} over the entries, so a bare
+   * {@code key.hashCode() ^ value.hashCode()} both breaks the contract and throws a {@link NullPointerException}
+   * on the very entry the contract defines (issue #7907). The override is kept rather than deleted because the
+   * inherited one allocates an iterator and an entry to visit a single pair; what it may not do is disagree with
+   * it, so the two null guards below are the whole point of the method.
+   * <p>
+   * Reachable from ordinary Cypher: a map literal of arity 1 evaluates to this class, and {@code DISTINCT},
+   * {@code collect(DISTINCT ...)}, {@code count(DISTINCT ...)} and a map used as a grouping key all hash it -
+   * so {@code RETURN DISTINCT {city: n.city}} over a node without a {@code city} died here, while the same query
+   * with a second map entry (a {@code LinkedHashMap}, the general path) succeeded.
+   */
   @Override
   public int hashCode() {
-    return key.hashCode() ^ value.hashCode();
+    return (key == null ? 0 : key.hashCode()) ^ (value == null ? 0 : value.hashCode());
   }
 
   @Override
