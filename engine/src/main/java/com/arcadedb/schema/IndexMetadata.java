@@ -346,6 +346,11 @@ public class IndexMetadata {
    * <p>
    * {@code Locale.ROOT} fixes the first half. Refusing a keyword this engine does not implement fixes the second,
    * and covers every other way a wrong one can arrive - a typo included - instead of only the locale one.
+   * <p>
+   * {@link #fromJSON} deliberately does NOT come through here. It is the load-from-disk path, and an index built
+   * before this fix can carry the corrupted {@code "Cİ"} on disk: validating there would turn a database that
+   * opens today - silently case-sensitive, but open - into one that refuses to. Such an index stays wrong until
+   * it is rebuilt, which is what the issue records; the chokepoint's job is to stop a NEW one being written.
    */
   public static String normalizeCollation(final String collation) {
     if (collation == null)
