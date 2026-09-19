@@ -94,8 +94,12 @@
     <div class="tab-pane fade" id="tab-security-groups" role="tabpanel">
       <div class="d-flex justify-content-between align-items-center mb-3">
         <span class="text-muted small">Manage security groups that define per-type CRUD permissions and database-level access.</span>
-        <button class="btn btn-sm btn-success" onclick="showCreateGroupForm()"><i class="fa fa-plus"></i> Create Group</button>
+        <button class="btn btn-sm btn-success" id="btnCreateGroup" onclick="showCreateGroupForm()"><i class="fa fa-plus"></i> Create Group</button>
       </div>
+
+      <!-- Cluster readiness for a replicated group change (issues #7511, #7538, #7548). Populated by JS and
+           empty - so invisible - unless a peer has not finished its rolling upgrade. -->
+      <div id="groupsCapabilityGate"></div>
 
       <div class="mb-3">
         <label for="groupDatabaseFilter" class="form-label small text-muted">Database:</label>
@@ -121,6 +125,9 @@
               <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
+              <!-- Cluster readiness, repeated inside the modal: Edit Group is reachable from the table even
+                   while Create Group is disabled, and an edit is replicated by the same entry (#7538, #7548). -->
+              <div id="groupModalCapabilityGate"></div>
               <div class="row mb-3">
                 <div class="col-md-4">
                   <label for="groupDatabase" class="form-label">Database</label>
@@ -195,8 +202,11 @@
     <div class="tab-pane fade" id="tab-security-tokens" role="tabpanel">
       <div class="d-flex justify-content-between align-items-center mb-3">
         <span class="text-muted small">Manage long-lived API tokens for programmatic access (MCP, REST API integrations).</span>
-        <button class="btn btn-sm btn-success" onclick="showCreateTokenForm()"><i class="fa fa-plus"></i> Create Token</button>
+        <button class="btn btn-sm btn-success" id="btnCreateToken" onclick="showCreateTokenForm()"><i class="fa fa-plus"></i> Create Token</button>
       </div>
+
+      <!-- Same gate as the Groups tab: a mint AND a revocation both travel as a security-api-tokens-entry. -->
+      <div id="tokensCapabilityGate"></div>
 
       <div class="row">
         <div class="col-12">

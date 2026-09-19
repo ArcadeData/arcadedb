@@ -20,6 +20,16 @@ function updateCluster(callback) {
 }
 
 function renderClusterData(data) {
+  // One chokepoint for the shape of the peer list, before anything reads it. Every consumer below - the
+  // local-peer scan three lines down, renderNodeCards, renderPeerManagement, the leadership picker reading
+  // clusterLastData later - dereferences a row directly, so a single null entry would throw here and blank
+  // the whole page on a poll that runs every few seconds. Filtered once rather than guarded in each of them:
+  // a guard added per consumer is a guard the next consumer forgets (PR #7939 review).
+  if (data && Array.isArray(data.peers))
+    data.peers = data.peers.filter(function (peer) {
+      return peer != null && typeof peer === "object";
+    });
+
   clusterLastData = data;
 
   // Header
@@ -59,6 +69,10 @@ function renderClusterData(data) {
   // section hides itself when the cluster reports no active alerts.
   renderClusterAlerts(data);
 
+  // Whether a security-group or API-token change would be refused right now because a peer has not finished
+  // its rolling upgrade (issues #7538, #7548). Hides itself when every peer has advertised what it needs to.
+  renderClusterCapabilityReadiness(data);
+
   // Node cards
   renderNodeCards(data);
 
@@ -80,6 +94,161 @@ function renderClusterData(data) {
 
   // Update metrics summary
   updateMetricsSummary(data);
+}
+
+// The capabilities a peer has to advertise before the leader may replicate a security change, and the
+// operator-facing name of what each one gates (issues #7511, #7538, #7548). An entry TYPE has no fallback: a
+// peer that cannot decode it HALTS rather than skip a committed entry, so the leader refuses the whole change
+// with a 409 while any peer is silent. Listed here, in the one file that reads the cluster payload, so the
+// Cluster page and the Security page answer "is the cluster ready?" from the same table.
+var CLUSTER_SECURITY_CAPABILITIES = [
+  { capability: "security-groups-entry", what: "group changes" },
+  { capability: "security-api-tokens-entry", what: "API-token changes (minting AND revoking)" },
+];
+
+/**
+ * Whether every peer in the cluster status payload advertises `capability`.
+ *
+ * Returns { capability, determinable, ready, missing: [{ id, reason }] }.
+ *
+ * `determinable` is the field that stops this being a lie on a follower. Only the LEADER probes its peers, so a
+ * follower's payload carries a `capabilities` array for itself and for nobody else - an absent field there means
+ * "this node did not ask", not "that peer cannot decode it". Reporting that as "not ready" would put a red banner
+ * on every follower of a perfectly healthy cluster, so an indeterminable answer is reported as ready and says so.
+ */
+function clusterCapabilityReadiness(data, capability) {
+  var readiness = { capability: capability, determinable: false, ready: true, missing: [] };
+
+  var peers = data && data.peers ? data.peers : [];
+  if (peers.length === 0 || data.isLeader !== true) return readiness;
+
+  readiness.determinable = true;
+  for (var i = 0; i < peers.length; i++) {
+    var peer = peers[i];
+    // Kept even though renderClusterData() now filters the list: the Security page calls this with its OWN
+    // GET /api/v1/cluster payload, which never passes through that renderer, and a throw there would take
+    // the group and API-token forms down instead of gating them.
+    if (peer == null || typeof peer !== "object") continue;
+    var advertised = Array.isArray(peer.capabilities) ? peer.capabilities : null;
+    if (advertised !== null && advertised.indexOf(capability) >= 0) continue;
+
+    readiness.missing.push({
+      id: peer.id,
+      reason: peer.capabilitiesUnknownReason
+        ? peer.capabilitiesUnknownReason
+        : advertised !== null
+          ? "answers the capability probe but does not advertise '" + capability + "', so it runs a build that predates it"
+          : "has not answered the capability probe, so it is either unreachable or runs a build that predates the probe",
+    });
+  }
+
+  readiness.ready = readiness.missing.length === 0;
+  return readiness;
+}
+
+/**
+ * Every security capability that is not ready, as one array. Used by the banner here and, through
+ * clusterLastData, by the Security page's gate.
+ */
+function clusterSecurityCapabilityGaps(data) {
+  var gaps = [];
+  for (var i = 0; i < CLUSTER_SECURITY_CAPABILITIES.length; i++) {
+    var entry = CLUSTER_SECURITY_CAPABILITIES[i];
+    var readiness = clusterCapabilityReadiness(data, entry.capability);
+    if (readiness.determinable && !readiness.ready) {
+      readiness.what = entry.what;
+      gaps.push(readiness);
+    }
+  }
+  return gaps;
+}
+
+// Renders the banner that says the cluster is not ready for a security change, BEFORE the operator attempts one
+// (issues #7538, #7548). The refusal itself is correct and already names the peer, but it arrives halfway
+// through an administrative task, usually in a change window - so a rolling upgrade that is not finished has to
+// be visible where the operator already looks. Hidden entirely when every capability is advertised, so a healthy
+// cluster and a single-node server look exactly as they did.
+function renderClusterCapabilityReadiness(data) {
+  var row = $("#clusterCapabilityRow");
+  var container = $("#clusterCapabilityReadiness");
+  if (container.length === 0) return; // Older cluster.html without the section; degrade silently.
+
+  container.empty();
+
+  var gaps = clusterSecurityCapabilityGaps(data);
+  if (gaps.length === 0) {
+    row.hide();
+    return;
+  }
+
+  for (var i = 0; i < gaps.length; i++) {
+    var gap = gaps[i];
+    var peerList = "";
+    for (var p = 0; p < gap.missing.length; p++) {
+      peerList +=
+        '<li><b>' + escapeHtml(gap.missing[p].id) + "</b>: " + escapeHtml(gap.missing[p].reason) + "</li>";
+    }
+
+    container.append(
+      '<div class="alert alert-warning py-2 px-3 mb-2" style="font-size:0.82rem;">' +
+        '<div><i class="fas fa-exclamation-triangle" style="margin-right:6px;"></i>' +
+        "<b>" +
+        escapeHtml(gap.what) +
+        " are refused right now.</b> The leader will not replicate a <code>" +
+        escapeHtml(gap.capability) +
+        "</code> entry while any peer cannot decode it, because such a peer halts rather than skip it.</div>" +
+        '<ul class="mb-1 mt-1">' +
+        peerList +
+        "</ul>" +
+        "<div>Finish the rolling upgrade - or restore contact with those peers - and the change succeeds unchanged, " +
+        "with no sequencing by hand.</div>" +
+        "</div>"
+    );
+  }
+
+  row.show();
+}
+
+/**
+ * The capabilities line on a node card: what this peer advertises, or why nothing is known about it.
+ *
+ * Rendered only when there is something to say. A follower does not probe, so it can answer for itself alone;
+ * printing "unknown" against every other peer there would read as a fault rather than as "this node does not ask".
+ */
+function peerCapabilitiesLine(peer, data) {
+  if (peer == null || typeof peer !== "object") return "";
+  var advertised = Array.isArray(peer.capabilities) ? peer.capabilities : null;
+
+  if (advertised !== null) {
+    var badges = "";
+    for (var i = 0; i < advertised.length; i++)
+      badges +=
+        '<span class="badge bg-secondary" style="font-size:0.6rem; margin-right:3px;">' +
+        escapeHtml(advertised[i]) +
+        "</span>";
+    if (advertised.length === 0)
+      badges = '<span style="color:orange;">none - this build decodes no negotiated entry</span>';
+
+    var version = peer.version ? ' <span style="color:var(--text-secondary);">(' + escapeHtml(peer.version) + ")</span>" : "";
+    return (
+      '<div style="font-size:0.72rem; color:var(--text-secondary); margin-top:4px;">' +
+      '<i class="fas fa-puzzle-piece" style="margin-right:4px;"></i>' +
+      badges +
+      version +
+      "</div>"
+    );
+  }
+
+  // Only the leader asks, so only the leader can report that it asked and got nothing back.
+  if (data.isLeader !== true) return "";
+
+  var reason = peer.capabilitiesUnknownReason || "no answer to the capability probe yet";
+  return (
+    '<div style="font-size:0.72rem; color:orange; margin-top:4px;">' +
+    '<i class="fas fa-puzzle-piece" style="margin-right:4px;"></i>capabilities unknown: ' +
+    escapeHtml(reason) +
+    "</div>"
+  );
 }
 
 // Renders the cluster health alerts returned by GET /api/v1/cluster ("alerts" array). Each alert is
@@ -572,6 +741,7 @@ function renderNodeCards(data) {
       + '</div>'
       + addressWarning
       + lagLine
+      + peerCapabilitiesLine(peer, data)
       + '</div></div></div>';
 
     container.append(card);

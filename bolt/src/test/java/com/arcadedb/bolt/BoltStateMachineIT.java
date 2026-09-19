@@ -20,18 +20,10 @@ package com.arcadedb.bolt;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.bolt.message.BoltMessage;
-import com.arcadedb.bolt.packstream.PackStreamReader;
-import com.arcadedb.bolt.packstream.PackStreamWriter;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.DataInputStream;
-import java.io.IOException;
-import java.io.OutputStream;
-import java.net.Socket;
-import java.nio.ByteBuffer;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -55,8 +47,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 public class BoltStateMachineIT extends BaseGraphServerTest {
 
-  private static final int BOLT_PORT = 7687;
-
   @Override
   public void setTestConfiguration() {
     super.setTestConfiguration();
@@ -71,170 +61,37 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
   }
 
   /**
-   * A connection already past the BOLT handshake and LOGON, exposing the chunked message pair.
-   */
-  private static final class BoltConnection implements AutoCloseable {
-    private final Socket             socket;
-    private final BoltChunkedOutput  out;
-    private final BoltChunkedInput   in;
-
-    BoltConnection(final String database) throws IOException {
-      socket = new Socket("localhost", BOLT_PORT);
-
-      final OutputStream rawOut = socket.getOutputStream();
-      final ByteBuffer handshake = ByteBuffer.allocate(20);
-      handshake.put((byte) 0x60).put((byte) 0x60).put((byte) 0xB0).put((byte) 0x17);
-      handshake.putInt(0x00000405); // v5.4
-      handshake.putInt(0x00000404); // v4.4
-      handshake.putInt(0x00000003); // v3.0
-      handshake.putInt(0x00000000);
-      handshake.flip();
-      rawOut.write(handshake.array());
-      rawOut.flush();
-
-      final DataInputStream rawIn = new DataInputStream(socket.getInputStream());
-      final byte[] negotiated = new byte[4];
-      rawIn.readFully(negotiated);
-      assertThat(negotiated[3]).as("the deferred-auth path needs Bolt 5.x").isEqualTo((byte) 5);
-
-      out = new BoltChunkedOutput(rawOut);
-      in = new BoltChunkedInput(socket.getInputStream());
-
-      sendMap(BoltMessage.HELLO,
-          Map.of("user_agent", "bolt-state-machine-it/1.0", "routing", Map.of("db", database)));
-      assertThat(readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
-
-      logon();
-    }
-
-    void logon() throws IOException {
-      sendMap(BoltMessage.LOGON,
-          Map.of("scheme", "basic", "principal", "root", "credentials", DEFAULT_PASSWORD_FOR_TESTS));
-      assertThat(readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
-    }
-
-    /** Writes a request whose single field is a map (HELLO, LOGON, BEGIN, PULL, DISCARD). */
-    void sendMap(final byte signature, final Map<String, Object> field) throws IOException {
-      final PackStreamWriter writer = new PackStreamWriter();
-      writer.writeStructureHeader(signature, 1);
-      writer.writeMap(field);
-      out.writeMessage(writer.toByteArray());
-    }
-
-    /** Writes a request with no fields at all (COMMIT, ROLLBACK, RESET, LOGOFF, GOODBYE). */
-    void sendNoFields(final byte signature) throws IOException {
-      final PackStreamWriter writer = new PackStreamWriter();
-      writer.writeStructureHeader(signature, 0);
-      out.writeMessage(writer.toByteArray());
-    }
-
-    void begin(final String database) throws IOException {
-      sendMap(BoltMessage.BEGIN, Map.of("db", database));
-      assertThat(readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
-    }
-
-    void run(final String query) throws IOException {
-      run(query, Map.of());
-    }
-
-    void run(final String query, final Map<String, Object> extra) throws IOException {
-      final PackStreamWriter writer = new PackStreamWriter();
-      writer.writeStructureHeader(BoltMessage.RUN, 3);
-      writer.writeString(query);
-      writer.writeMap(Map.of());
-      writer.writeMap(extra);
-      out.writeMessage(writer.toByteArray());
-    }
-
-    void pull(final long n, final long qid) throws IOException {
-      sendMap(BoltMessage.PULL, streamSelector(n, qid));
-    }
-
-    void discard(final long n, final long qid) throws IOException {
-      sendMap(BoltMessage.DISCARD, streamSelector(n, qid));
-    }
-
-    private static Map<String, Object> streamSelector(final long n, final long qid) {
-      final Map<String, Object> extra = new LinkedHashMap<>();
-      extra.put("n", n);
-      extra.put("qid", qid);
-      return extra;
-    }
-
-    /**
-     * Reads RECORDs until the summary message (SUCCESS / FAILURE / IGNORED) that closes the exchange.
-     */
-    Summary readSummary() throws IOException {
-      final List<Object> records = new ArrayList<>();
-      while (true) {
-        final byte[] response = in.readMessage();
-        final byte signature = response[1];
-        if (signature == BoltMessage.RECORD) {
-          records.add(decodeSingleField(response));
-          continue;
-        }
-        // IGNORED is a zero-field structure, so there is no field to decode - reading one would EOF and bury the
-        // real assertion under an IOException.
-        if (signature == BoltMessage.IGNORED)
-          return new Summary(signature, Map.of(), records);
-        return new Summary(signature, asMetadata(decodeSingleField(response)), records);
-      }
-    }
-
-    /** SUCCESS/FAILURE/RECORD are all single-field structures: skip the two header bytes, read the field. */
-    private Object decodeSingleField(final byte[] response) throws IOException {
-      final PackStreamReader reader = new PackStreamReader(response);
-      reader.readRawByte();
-      reader.readRawByte();
-      return reader.readValue();
-    }
-
-    @SuppressWarnings("unchecked")
-    private Map<String, Object> asMetadata(final Object value) {
-      return value instanceof Map ? (Map<String, Object>) value : Map.of();
-    }
-
-    @Override
-    public void close() throws IOException {
-      socket.close();
-    }
-  }
-
-  private record Summary(byte signature, Map<String, Object> metadata, List<Object> records) {
-  }
-
-  /**
    * Issue #6804: two result streams open at once inside one explicit transaction, each pulled by its own qid.
    * Before the fix the second RUN answered {@code "RUN not expected in state: TX_STREAMING"}.
    */
   @Test
   @SuppressWarnings("unchecked")
   void secondRunInsideATransactionOpensASecondStream() throws Exception {
-    try (final BoltConnection bolt = new BoltConnection(getDatabaseName())) {
+    try (final BoltWireConnection bolt = new BoltWireConnection(getDatabaseName())) {
       bolt.begin(getDatabaseName());
 
       bolt.run("UNWIND [1, 2, 3] AS x RETURN x");
-      final Summary firstRun = bolt.readSummary();
+      final BoltWireConnection.Summary firstRun = bolt.readSummary();
       assertThat(firstRun.signature()).isEqualTo(BoltMessage.SUCCESS);
       assertThat(firstRun.metadata()).containsEntry("qid", 0L);
 
       // Pull a single row, leaving the stream open: this is the state a driver configured with a small fetch
       // size is in when the application issues its next query.
       bolt.pull(1, -1);
-      final Summary firstPull = bolt.readSummary();
+      final BoltWireConnection.Summary firstPull = bolt.readSummary();
       assertThat(firstPull.signature()).isEqualTo(BoltMessage.SUCCESS);
       assertThat(firstPull.records()).hasSize(1);
       assertThat(firstPull.metadata()).containsEntry("has_more", true);
 
       // The second RUN, the one that used to fail the session.
       bolt.run("RETURN 42 AS answer");
-      final Summary secondRun = bolt.readSummary();
+      final BoltWireConnection.Summary secondRun = bolt.readSummary();
       assertThat(secondRun.signature()).as("RUN must be accepted in TX_STREAMING").isEqualTo(BoltMessage.SUCCESS);
       assertThat(secondRun.metadata()).containsEntry("qid", 1L);
 
       // Drain the second stream by its qid; the first one is untouched and the session stays in TX_STREAMING.
       bolt.pull(-1, 1);
-      final Summary secondPull = bolt.readSummary();
+      final BoltWireConnection.Summary secondPull = bolt.readSummary();
       assertThat(secondPull.signature()).isEqualTo(BoltMessage.SUCCESS);
       assertThat(secondPull.records()).hasSize(1);
       assertThat(((List<Object>) secondPull.records().get(0)).get(0)).isEqualTo(42L);
@@ -242,7 +99,7 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
 
       // Then finish the first stream, which still owes rows 2 and 3.
       bolt.pull(-1, 0);
-      final Summary rest = bolt.readSummary();
+      final BoltWireConnection.Summary rest = bolt.readSummary();
       assertThat(rest.signature()).isEqualTo(BoltMessage.SUCCESS);
       assertThat(rest.records()).hasSize(2);
       assertThat(rest.metadata()).containsEntry("has_more", false);
@@ -258,7 +115,7 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
    */
   @Test
   void discardByQidClosesOnlyTheNamedStream() throws Exception {
-    try (final BoltConnection bolt = new BoltConnection(getDatabaseName())) {
+    try (final BoltWireConnection bolt = new BoltWireConnection(getDatabaseName())) {
       bolt.begin(getDatabaseName());
 
       bolt.run("UNWIND [1, 2, 3] AS x RETURN x");
@@ -270,13 +127,13 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
       assertThat(bolt.readSummary().metadata()).containsEntry("qid", 1L);
 
       bolt.discard(-1, 0);
-      final Summary discard = bolt.readSummary();
+      final BoltWireConnection.Summary discard = bolt.readSummary();
       assertThat(discard.signature()).isEqualTo(BoltMessage.SUCCESS);
       assertThat(discard.metadata()).containsEntry("has_more", false);
 
       // Stream 1 is still open and still complete.
       bolt.pull(-1, 1);
-      final Summary remaining = bolt.readSummary();
+      final BoltWireConnection.Summary remaining = bolt.readSummary();
       assertThat(remaining.signature()).isEqualTo(BoltMessage.SUCCESS);
       assertThat(remaining.records()).hasSize(2);
 
@@ -287,14 +144,14 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
 
   @Test
   void pullNamingAnUnknownQidFailsInsteadOfHittingAnotherStream() throws Exception {
-    try (final BoltConnection bolt = new BoltConnection(getDatabaseName())) {
+    try (final BoltWireConnection bolt = new BoltWireConnection(getDatabaseName())) {
       bolt.begin(getDatabaseName());
 
       bolt.run("UNWIND [1, 2, 3] AS x RETURN x");
       assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
 
       bolt.pull(-1, 99);
-      final Summary failure = bolt.readSummary();
+      final BoltWireConnection.Summary failure = bolt.readSummary();
       assertThat(failure.signature()).isEqualTo(BoltMessage.FAILURE);
       assertThat(String.valueOf(failure.metadata().get("message"))).contains("qid 99");
     }
@@ -308,7 +165,7 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
   void openingMoreStreamsThanTheLimitAllowsIsRejected() throws Exception {
     final int previousLimit = GlobalConfiguration.BOLT_MAX_OPEN_STREAMS.getValueAsInteger();
     GlobalConfiguration.BOLT_MAX_OPEN_STREAMS.setValue(2);
-    try (final BoltConnection bolt = new BoltConnection(getDatabaseName())) {
+    try (final BoltWireConnection bolt = new BoltWireConnection(getDatabaseName())) {
       bolt.begin(getDatabaseName());
 
       // Two streams, each left with rows outstanding so neither is released.
@@ -320,7 +177,7 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
       }
 
       bolt.run("RETURN 1 AS one");
-      final Summary rejected = bolt.readSummary();
+      final BoltWireConnection.Summary rejected = bolt.readSummary();
       assertThat(rejected.signature()).isEqualTo(BoltMessage.FAILURE);
       assertThat(String.valueOf(rejected.metadata().get("message"))).contains("Too many result streams open");
     } finally {
@@ -336,7 +193,7 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
   void anOpenStreamLimitBelowOneStillAllowsASingleStream() throws Exception {
     final int previousLimit = GlobalConfiguration.BOLT_MAX_OPEN_STREAMS.getValueAsInteger();
     GlobalConfiguration.BOLT_MAX_OPEN_STREAMS.setValue(0);
-    try (final BoltConnection bolt = new BoltConnection(getDatabaseName())) {
+    try (final BoltWireConnection bolt = new BoltWireConnection(getDatabaseName())) {
       bolt.begin(getDatabaseName());
 
       bolt.run("UNWIND [1, 2, 3] AS x RETURN x");
@@ -345,7 +202,7 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
       assertThat(bolt.readSummary().metadata()).containsEntry("has_more", true);
 
       bolt.run("RETURN 1 AS one");
-      final Summary rejected = bolt.readSummary();
+      final BoltWireConnection.Summary rejected = bolt.readSummary();
       assertThat(rejected.signature()).isEqualTo(BoltMessage.FAILURE);
       assertThat(String.valueOf(rejected.metadata().get("message"))).contains("max 1");
     } finally {
@@ -359,14 +216,14 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
    */
   @Test
   void pullWithAQidInAutoCommitStillReachesTheOnlyStream() throws Exception {
-    try (final BoltConnection bolt = new BoltConnection(getDatabaseName())) {
+    try (final BoltWireConnection bolt = new BoltWireConnection(getDatabaseName())) {
       bolt.run("RETURN 1 AS one");
       assertThat(bolt.readSummary().metadata()).as("an auto-commit RUN publishes no qid").doesNotContainKey("qid");
 
       // A qid that matches nothing: honouring it would answer "No active result set for qid 99" for the one
       // stream this connection plainly has open.
       bolt.pull(-1, 99);
-      final Summary summary = bolt.readSummary();
+      final BoltWireConnection.Summary summary = bolt.readSummary();
       assertThat(summary.signature()).isEqualTo(BoltMessage.SUCCESS);
       assertThat(summary.records()).hasSize(1);
     }
@@ -378,14 +235,14 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
    */
   @Test
   void aMalformedNegativeQidDoesNotFallBackToTheCurrentStream() throws Exception {
-    try (final BoltConnection bolt = new BoltConnection(getDatabaseName())) {
+    try (final BoltWireConnection bolt = new BoltWireConnection(getDatabaseName())) {
       bolt.begin(getDatabaseName());
 
       bolt.run("UNWIND [1, 2, 3] AS x RETURN x");
       assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
 
       bolt.pull(-1, -2);
-      final Summary rejected = bolt.readSummary();
+      final BoltWireConnection.Summary rejected = bolt.readSummary();
       assertThat(rejected.signature()).isEqualTo(BoltMessage.FAILURE);
       assertThat(String.valueOf(rejected.metadata().get("message"))).contains("qid -2");
     }
@@ -393,14 +250,14 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
 
   @Test
   void aMalformedNegativeQidOnDiscardIsRejectedToo() throws Exception {
-    try (final BoltConnection bolt = new BoltConnection(getDatabaseName())) {
+    try (final BoltWireConnection bolt = new BoltWireConnection(getDatabaseName())) {
       bolt.begin(getDatabaseName());
 
       bolt.run("UNWIND [1, 2, 3] AS x RETURN x");
       assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
 
       bolt.discard(-1, -2);
-      final Summary rejected = bolt.readSummary();
+      final BoltWireConnection.Summary rejected = bolt.readSummary();
       assertThat(rejected.signature()).isEqualTo(BoltMessage.FAILURE);
       assertThat(String.valueOf(rejected.metadata().get("message"))).contains("qid -2");
     }
@@ -412,14 +269,14 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
    */
   @Test
   void runIsStillRejectedInAutoCommitStreaming() throws Exception {
-    try (final BoltConnection bolt = new BoltConnection(getDatabaseName())) {
+    try (final BoltWireConnection bolt = new BoltWireConnection(getDatabaseName())) {
       bolt.run("UNWIND [1, 2, 3] AS x RETURN x");
       assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
       bolt.pull(1, -1);
       assertThat(bolt.readSummary().metadata()).containsEntry("has_more", true);
 
       bolt.run("RETURN 1 AS one");
-      final Summary rejected = bolt.readSummary();
+      final BoltWireConnection.Summary rejected = bolt.readSummary();
       assertThat(rejected.signature()).isEqualTo(BoltMessage.FAILURE);
       assertThat(String.valueOf(rejected.metadata().get("message"))).contains("STREAMING");
     }
@@ -431,7 +288,7 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
    */
   @Test
   void logoffIsRejectedWhileAStreamAndATransactionAreOpen() throws Exception {
-    try (final BoltConnection bolt = new BoltConnection(getDatabaseName())) {
+    try (final BoltWireConnection bolt = new BoltWireConnection(getDatabaseName())) {
       bolt.begin(getDatabaseName());
 
       bolt.run("CREATE (n:Issue6803Logoff {value: 1}) RETURN n");
@@ -439,12 +296,12 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
 
       // n=0 consumes nothing, so the row stays buffered and the session stays in TX_STREAMING.
       bolt.pull(0, -1);
-      final Summary pull = bolt.readSummary();
+      final BoltWireConnection.Summary pull = bolt.readSummary();
       assertThat(pull.signature()).isEqualTo(BoltMessage.SUCCESS);
       assertThat(pull.metadata()).containsEntry("has_more", true);
 
       bolt.sendNoFields(BoltMessage.LOGOFF);
-      final Summary logoff = bolt.readSummary();
+      final BoltWireConnection.Summary logoff = bolt.readSummary();
       assertThat(logoff.signature()).as("LOGOFF is valid only from READY").isEqualTo(BoltMessage.FAILURE);
       assertThat(String.valueOf(logoff.metadata().get("message"))).contains("TX_STREAMING");
 
@@ -455,7 +312,7 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
       bolt.run("MATCH (n:Issue6803Logoff) RETURN n");
       assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
       bolt.pull(-1, -1);
-      final Summary check = bolt.readSummary();
+      final BoltWireConnection.Summary check = bolt.readSummary();
       assertThat(check.signature()).isEqualTo(BoltMessage.SUCCESS);
       assertThat(check.records()).as("the transaction the rejected LOGOFF left behind must have been rolled back")
           .isEmpty();
@@ -469,7 +326,7 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
    */
   @Test
   void runCannotSwitchDatabaseInsideAnOpenTransaction() throws Exception {
-    try (final BoltConnection bolt = new BoltConnection(getDatabaseName())) {
+    try (final BoltWireConnection bolt = new BoltWireConnection(getDatabaseName())) {
       bolt.begin(getDatabaseName());
 
       bolt.run("CREATE (n:Issue6804DbSwitch {value: 1}) RETURN n");
@@ -478,7 +335,7 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
       assertThat(bolt.readSummary().metadata()).containsEntry("has_more", true);
 
       bolt.run("RETURN 1 AS one", Map.of("db", "a-database-that-does-not-exist"));
-      final Summary rejected = bolt.readSummary();
+      final BoltWireConnection.Summary rejected = bolt.readSummary();
       assertThat(rejected.signature()).isEqualTo(BoltMessage.FAILURE);
       assertThat(String.valueOf(rejected.metadata().get("message"))).contains("Cannot switch database");
 
@@ -489,7 +346,7 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
       bolt.run("MATCH (n:Issue6804DbSwitch) RETURN n");
       assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
       bolt.pull(-1, -1);
-      final Summary check = bolt.readSummary();
+      final BoltWireConnection.Summary check = bolt.readSummary();
       assertThat(check.signature()).isEqualTo(BoltMessage.SUCCESS);
       assertThat(check.records()).as("the transaction must have been rolled back, not stranded").isEmpty();
     }
@@ -501,7 +358,7 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
    */
   @Test
   void logoffFromReadyStillSucceedsAndAllowsReAuthentication() throws Exception {
-    try (final BoltConnection bolt = new BoltConnection(getDatabaseName())) {
+    try (final BoltWireConnection bolt = new BoltWireConnection(getDatabaseName())) {
       bolt.sendNoFields(BoltMessage.LOGOFF);
       assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
 
@@ -510,7 +367,7 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
       bolt.run("RETURN 7 AS seven");
       assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
       bolt.pull(-1, -1);
-      final Summary summary = bolt.readSummary();
+      final BoltWireConnection.Summary summary = bolt.readSummary();
       assertThat(summary.signature()).isEqualTo(BoltMessage.SUCCESS);
       assertThat(summary.records()).hasSize(1);
     }

@@ -44,6 +44,9 @@ import com.arcadedb.exception.CauseChain;
 import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.exception.DatabaseIsClosedException;
+import com.arcadedb.exception.DatabaseNotAvailableException;
+import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.InvalidPropertyTypeException;
 import com.arcadedb.exception.NeedRetryException;
@@ -1096,7 +1099,11 @@ public class BoltNetworkExecutor extends Thread {
         LogManager.instance().log(this, Level.WARNING, "Failed to rollback after BEGIN error", rollbackError);
       }
       final String errorMsg = e.getMessage() != null ? e.getMessage() : "Transaction error";
-      sendFailure(BoltException.TRANSACTION_ERROR, errorMsg);
+      // Through the classifier, exactly as handleCommit does, with TRANSACTION_ERROR kept as the unclassified
+      // fallback: opening a transaction can fail on an MVCC conflict, a lock timeout, a deadline or a security
+      // refusal, and hand-coding TransactionNotFound for all of them told a driver's retry predicate that a
+      // retryable conflict was a permanent client error (issue #7915).
+      sendFailure(classifyExecutionError(e, BoltErrorCodes.TRANSACTION_ERROR), errorMsg);
       state = State.FAILED;
     }
   }
@@ -1163,7 +1170,10 @@ public class BoltNetworkExecutor extends Thread {
 
     } catch (final Exception e) {
       final String message = e.getMessage() != null ? e.getMessage() : "Rollback error";
-      sendFailure(BoltException.TRANSACTION_ERROR, message);
+      // The third of the three transaction handlers, routed through the one classifier for the same reason the
+      // other two are (issue #7915): closeAllStreams() and rollback() both raise engine exceptions, and a
+      // timeout or a security refusal reported as TransactionNotFound is a diagnosis the caller cannot act on.
+      sendFailure(classifyExecutionError(e, BoltErrorCodes.TRANSACTION_ERROR), message);
       state = State.FAILED;
     }
   }
@@ -1293,7 +1303,10 @@ public class BoltNetworkExecutor extends Thread {
         // If no default configured, use the first available database
         final Collection<String> databases = server.getDatabaseNames();
         if (databases.isEmpty()) {
-          sendFailure(BoltException.DATABASE_ERROR, "No database available");
+          // Not a bad name - the caller named nothing - but a server with no database to fall back on, which is
+          // also the state of a server still opening them. Transient, so the same connection succeeds once one
+          // is there, rather than the generic DatabaseError that reads as "this server is broken" (issue #7874).
+          sendFailure(BoltErrorCodes.DATABASE_UNAVAILABLE_ERROR, "No database available on this server");
           state = State.FAILED;
           return false;
         }
@@ -1303,8 +1316,22 @@ public class BoltNetworkExecutor extends Thread {
 
     try {
       database = server.getDatabase(targetName);
-      if (database == null || !database.isOpen()) {
-        sendFailure(BoltException.DATABASE_ERROR, "Database not found: " + targetName);
+      if (database == null) {
+        // Defensive, and knowingly so: the server resolves a missing name by THROWING - the catch below
+        // classifies it - rather than by answering null, so this is the message a client is least likely to
+        // see. It stays because the alternative to a null check here is an NPE on the isOpen() below, caught
+        // by that same catch and reported as a generic database error: a worse answer for a condition that
+        // would only arise if getDatabase()'s contract changed (PR #7939 review).
+        sendFailure(BoltErrorCodes.DATABASE_NOT_FOUND_ERROR, "Database not found: " + targetName);
+        state = State.FAILED;
+        return false;
+      }
+      if (!database.isOpen()) {
+        // Told apart from the arm above on purpose: a handle that exists but is closed is a database this server
+        // HAS, so the name is right and the condition clears itself - the opposite advice to the one a client
+        // acts on for DatabaseNotFound (issue #7874).
+        database = null;
+        sendFailure(BoltErrorCodes.DATABASE_UNAVAILABLE_ERROR, "Database not available: " + targetName);
         state = State.FAILED;
         return false;
       }
@@ -1316,11 +1343,50 @@ public class BoltNetworkExecutor extends Thread {
       }
       return true;
     } catch (final Exception e) {
+      // The database handle is dropped before the failure is reported: getDatabase() assigns the field before the
+      // security/context work below it can throw, and leaving a half-initialised handle behind would let the next
+      // request on this connection take ensureDatabase()'s already-open fast path.
+      database = null;
       final String message = e.getMessage() != null ? e.getMessage() : "Unknown error";
-      sendFailure(BoltException.DATABASE_ERROR, "Cannot open database: " + targetName + " - " + message);
+      sendFailure(classifyDatabaseSelectionError(e), "Cannot open database: " + targetName + " - " + message);
       state = State.FAILED;
       return false;
     }
+  }
+
+  /**
+   * Classify a failure to SELECT a database - the first thing RUN and BEGIN do, and so the first failure a Neo4j
+   * driver meets - into a Bolt status code.
+   * <p>
+   * Kept apart from {@link #classifyExecutionError} because the question is a different one. That method asks
+   * what went wrong while running a statement against a database that is already open; this one asks whether the
+   * caller named a database this server does not have, named one it cannot serve right now, or is not allowed to
+   * reach the one they named. All three used to answer {@code Neo.DatabaseError.General.UnknownError}, so a typo
+   * in the {@code database} connection parameter - the most common Bolt misconfiguration there is - arrived at
+   * the driver as an unexplained server fault it could not tell from a broken database (issue #7874).
+   * <p>
+   * The order of the arms is the answer's specificity, not the exception hierarchy's shape:
+   * {@link DatabaseNotFoundException} extends {@link DatabaseNotAvailableException}, so the permanent verdict has
+   * to be asked for first or it would be reported as the transient one and retried forever. Anything else is
+   * handed to {@link #classifyExecutionError} with {@code DATABASE_ERROR} as the fallback, which is what turns a
+   * permission denial into {@code Forbidden} instead of hiding it behind a generic open failure - and leaves a
+   * genuine open failure (corruption, an I/O error) as the {@code DatabaseError} it really is.
+   */
+  static String classifyDatabaseSelectionError(final Throwable error) {
+    if (CauseChain.contains(error, DatabaseNotFoundException.class))
+      return BoltErrorCodes.DATABASE_NOT_FOUND_ERROR;
+    // Present but not serveable: closed, dropped under a resolved handle, or a directory an interrupted HA
+    // snapshot install left mid-swap. Each clears itself without the caller changing anything.
+    if (CauseChain.contains(error, DatabaseNotAvailableException.class)
+        || CauseChain.contains(error, DatabaseIsClosedException.class))
+      return BoltErrorCodes.DATABASE_UNAVAILABLE_ERROR;
+    // ServerSecurityException does not extend java.lang.SecurityException, so ErrorCategory - which lives in the
+    // engine and cannot see the server's type - never classifies it. Asked here rather than added there: this is
+    // the one path on which that server-side refusal reaches a Bolt client, and reporting it as a database fault
+    // is the same wrong diagnosis with a worse consequence, since it reads as "retry against another node".
+    if (CauseChain.contains(error, ServerSecurityException.class))
+      return BoltErrorCodes.FORBIDDEN_ERROR;
+    return classifyExecutionError(error, BoltErrorCodes.DATABASE_ERROR);
   }
 
   /**
