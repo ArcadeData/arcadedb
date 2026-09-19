@@ -65,7 +65,10 @@ import java.util.logging.Level;
  * <p>
  * Scopes nest: only the outermost {@link #open} returns a scope, so a nested plan (a {@code CALL} subquery, a
  * {@code FOREACH} body, a UNION branch) contributes its provisional records to the enclosing statement's scope and
- * never checks or closes it.
+ * never checks or closes it. That nesting is thread-bound, being keyed on {@link DatabaseContext}: it holds because
+ * a nested plan runs on the thread of the statement that drove it, as every openCypher plan does today. A nested
+ * plan moved onto another thread would find no scope and validate eagerly - the pre-#7945 behaviour, not a
+ * corruption - so this is a load-bearing assumption worth re-checking before any of these steps is parallelised.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -90,12 +93,6 @@ public class DeferredExistenceChecks {
    */
   private static final AtomicInteger ARMED_SCOPES = new AtomicInteger();
 
-  /** The end of a {@link #patternCreate} region. */
-  public interface PatternCreate extends AutoCloseable {
-    @Override
-    void close();
-  }
-
   private final DatabaseInternal database;
 
   /**
@@ -116,6 +113,12 @@ public class DeferredExistenceChecks {
 
   /** Handed to every {@link #patternCreate} caller, so entering a pattern region allocates nothing. */
   private final PatternCreate patternCreateToken = () -> patternCreateDepth--;
+
+  /** The end of a {@link #patternCreate} region. */
+  public interface PatternCreate extends AutoCloseable {
+    @Override
+    void close();
+  }
 
   private DeferredExistenceChecks(final DatabaseInternal database) {
     this.database = database;
@@ -312,20 +315,22 @@ public class DeferredExistenceChecks {
   }
 
   /**
-   * The first existence constraint the record does not satisfy, or {@code null} when it satisfies all of them.
-   * Mirrors the {@code MANDATORY}/{@code NOTNULL} arms of
-   * {@link DocumentValidator#validateField(MutableDocument, Property, long)} - the rules live there, this asks them
-   * of a record that is no longer a {@link MutableDocument}.
+   * The first existence constraint the record does not satisfy, phrased for the end of the statement, or
+   * {@code null} when it satisfies all of them. The rule itself is
+   * {@link DocumentValidator#unmetExistenceConstraint}, shared with the write path so the question asked here is
+   * the same one that was deferred there.
    */
   private static String firstUnmetExistenceConstraint(final Document record) {
     final DocumentType type = record.getType();
     for (final Property property : type.getPolymorphicProperties()) {
-      final String name = property.getName();
-      if (property.isMandatory() && !record.has(name))
-        return "property '" + type.getName() + "." + name + "' is mandatory, but was never set (record " + record
-            .getIdentity() + ")";
-      if (property.isNotNull() && record.has(name) && record.get(name) == null)
-        return "property '" + type.getName() + "." + name + "' cannot be null (record " + record.getIdentity() + ")";
+      final DocumentValidator.ExistenceConstraint unmet = DocumentValidator.unmetExistenceConstraint(record, property);
+      if (unmet == null)
+        continue;
+
+      final String property_ = "property '" + type.getName() + "." + property.getName() + "'";
+      return unmet == DocumentValidator.ExistenceConstraint.MANDATORY ?
+          property_ + " is mandatory, but was never set (record " + record.getIdentity() + ")" :
+          property_ + " cannot be null (record " + record.getIdentity() + ")";
     }
     return null;
   }
