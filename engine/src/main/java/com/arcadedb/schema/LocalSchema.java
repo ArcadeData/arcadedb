@@ -2565,10 +2565,15 @@ public class LocalSchema implements Schema {
     /**
      * A file handed to the engine from outside - a JSONL export being restored. Merges, and a member that is
      * arbitrary host code has to earn the same permission creating it by hand would need: a {@code JAVASCRIPT} or
-     * {@code JAVA} trigger fires with the engine's privileges, so {@link #createTrigger} gates it on
-     * {@code UPDATE_SECURITY} rather than {@code UPDATE_SCHEMA} (GHSA-38pf-6hp2-pxww). An import is reachable with
-     * {@code UPDATE_SCHEMA}, so restoring such a trigger without that gate would hand the escalation back through
-     * a file (found in review of PR #7943).
+     * {@code JAVA} trigger fires with the engine's privileges, so {@code createTrigger} gates it on
+     * {@code UPDATE_SECURITY} rather than {@code UPDATE_SCHEMA} (GHSA-38pf-6hp2-pxww), and a {@code js} function
+     * library is host code a later {@code SELECT} can invoke, which {@code DefineFunctionStatement} gates the same
+     * way (GHSA-vwjc-v7x7-cm6g). Restoring either from a file without that gate would hand the escalation back
+     * through the file (found in review of PR #7943).
+     * <p>
+     * Defence in depth rather than the only gate: {@code IMPORT DATABASE} itself already requires
+     * {@code UPDATE_SECURITY}. The check belongs here too, at the layer that actually installs the code, because
+     * that is the layer every route into a restore passes through.
      */
     IMPORTED_FILE
   }
@@ -2778,6 +2783,26 @@ public class LocalSchema implements Schema {
         try {
           final JSONObject libraryJSON = functionsJSON.getJSONObject(libraryName);
           final String language = libraryJSON.getString("language");
+
+          // THE SIBLING OF THE TRIGGER GATE ABOVE, AND THE SAME RULE. DefineFunctionStatement requires
+          // UPDATE_SECURITY on top of UPDATE_SCHEMA for LANGUAGE js, because a polyglot function is arbitrary host
+          // code a later SELECT can invoke (GHSA-vwjc-v7x7-cm6g, over the scripting gate GHSA-48qw introduced).
+          // A library arriving in a file is the same code by another route, so it earns the same permission.
+          // SQL and Cypher libraries are declarative and keep the schema-level protection, exactly as that
+          // statement treats them.
+          if (source == SchemaMemberSource.IMPORTED_FILE && "js".equalsIgnoreCase(language)) {
+            try {
+              database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SECURITY);
+            } catch (final SecurityException e) {
+              ++failures;
+              LogManager.instance().log(this, Level.SEVERE,
+                  "Refused function library '%s' from the imported schema: a '%s' function is host code a query can "
+                      + "invoke, so installing one requires security-admin (UPDATE_SECURITY) and not merely "
+                      + "UPDATE_SCHEMA. Everything else in the import is unaffected", null, libraryName, language);
+              continue;
+            }
+          }
+
           final FunctionLibraryDefinition library = FunctionLibraryFactory.createLibrary(database, libraryName, language);
 
           final JSONObject funcsJSON = libraryJSON.getJSONObject("functions");
