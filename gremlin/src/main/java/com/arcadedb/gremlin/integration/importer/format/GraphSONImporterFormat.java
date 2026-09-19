@@ -95,7 +95,15 @@ public class GraphSONImporterFormat extends CSVImporterFormat {
       // Use custom import that handles non-RID IDs
       importWithIdMapping(lines, database, context);
     } else {
-      // Use standard TinkerPop import for RID-format IDs
+      // Use standard TinkerPop import for RID-format IDs.
+      //
+      // No ownership guard here, unlike importWithIdMapping() above, and not an oversight: this branch never pushes a
+      // transaction level of its own. ArcadeGraphTransaction#doOpen() does call database.begin(), but
+      // AbstractThreadLocalTransaction only calls it when isOpen() is false, and ArcadeGraphTransaction#isOpen()
+      // reads database.isTransactionActive() - the database's own live state, not a flag of its own. So an already
+      // active transaction is JOINED rather than nested under, and #7771's mechanism (a level nobody pops, which the
+      // caller's next commit() then commits in place of their own) cannot arise. Same reason GraphMLImporterFormat,
+      // which takes this route for every file, needed nothing.
       // Convert the lines back to an InputStream
       final String content = String.join("\n", lines);
       try (final InputStream is = new ByteArrayInputStream(content.getBytes(StandardCharsets.UTF_8))) {
