@@ -76,6 +76,13 @@ public class CSVImporterFormat extends AbstractImporterFormat {
    */
   private final String delimiter;
 
+  /**
+   * How many short rows this format instance has already reported, so only the first logs at WARNING (see
+   * {@link #reportShortRow}). Per instance, which is per source: {@code SourceDiscovery} builds a fresh format for
+   * each of an import's documents/vertices/edges files.
+   */
+  private long shortRowsReported = 0;
+
   public CSVImporterFormat() {
     this(null);
   }
@@ -140,13 +147,6 @@ public class CSVImporterFormat extends AbstractImporterFormat {
   private static String headerSeparator(final String delimiter) {
     return "\\t".equals(delimiter) ? "\t" : delimiter;
   }
-
-  /**
-   * How many short rows this format instance has already reported, so only the first logs at WARNING (see
-   * {@link #reportShortRow}). Per instance, which is per source: {@code SourceDiscovery} builds a fresh format for
-   * each of an import's documents/vertices/edges files.
-   */
-  private long shortRowsReported = 0;
 
   private static final Object[] NO_PARAMS = new Object[] {};
   public static final  int      _32MB     = 32 * 1024 * 1024;
