@@ -259,6 +259,73 @@ class Issue7897ScanDoesNotHoldTheCompactionLockTest extends TestHelper {
   }
 
   /**
+   * The third directory-rewriting writer, and the one the other two tests leave unexercised against a walk in
+   * flight: downsampling REPLACES blocks rather than dropping them, so the rows a snapshot entry names may still
+   * be in the store under a different sample count - which is precisely the shape {@code resolveLiveBlock}'s
+   * identity does NOT match, and has to decline rather than read at the old offsets (code review on PR #7970).
+   */
+  @Test
+  @Timeout(180)
+  void aDownsamplingPassDuringTheScanReplacesBlocksAndTheWalkSurvivesIt() throws Exception {
+    database.command("sql",
+        "CREATE TIMESERIES TYPE Coarse TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE) SHARDS 1");
+    final TimeSeriesEngine coarse = ((LocalTimeSeriesType) database.getSchema().getType("Coarse")).getEngine();
+
+    final int blocks = 6;
+    final int perBlock = 500;
+    final List<Long> originals = new ArrayList<>();
+    for (int b = 0; b < blocks; b++) {
+      final long[] timestamps = new long[perBlock];
+      final Object[] hosts = new Object[perBlock];
+      final Object[] values = new Object[perBlock];
+      for (int i = 0; i < perBlock; i++) {
+        timestamps[i] = BASE_TS + ((long) b * perBlock + i) * 1_000L;
+        hosts[i] = "host_" + (i % 4);
+        values[i] = (double) i;
+        originals.add(timestamps[i]);
+      }
+      coarse.appendBatch(timestamps, new Object[][] { hosts, values });
+      coarse.compactAll();
+    }
+
+    final long newest = BASE_TS + ((long) blocks * perBlock - 1) * 1_000L;
+    // Everything older than the last block's worth of samples is folded to one point per minute.
+    final List<DownsamplingTier> tiers = List.of(new DownsamplingTier((long) perBlock * 1_000L, 60_000L));
+
+    final List<Long> seen = new ArrayList<>();
+    final AtomicBoolean downsampledOnce = new AtomicBoolean();
+    final AtomicReference<Throwable> downsampleFailure = new AtomicReference<>();
+
+    coarse.forEachRow(Long.MIN_VALUE, Long.MAX_VALUE, null, null, null, row -> {
+      seen.add((Long) row[0]);
+      if (downsampledOnce.compareAndSet(false, true)) {
+        final Thread downsampler = new Thread(() -> {
+          try {
+            coarse.applyDownsampling(tiers, newest);
+          } catch (final Throwable t) {
+            downsampleFailure.set(t);
+          }
+        }, "issue7897-downsample");
+        downsampler.start();
+        try {
+          downsampler.join(TimeUnit.SECONDS.toMillis(60));
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      }
+      return true;
+    });
+
+    assertThat(downsampleFailure.get()).isNull();
+    // The walk must come back with real samples, not with whatever a stale offset into a rewritten file decodes
+    // to. A downsampled block is declined by resolveLiveBlock, so its rows are absent rather than wrong - which
+    // is the contract, and the reason this asserts a SUBSET and not equality.
+    assertThat(seen).as("no timestamp the store never held").isSubsetOf(originals);
+    assertThat(new HashSet<>(seen)).as("and none of them twice").hasSize(seen.size());
+    assertThat(seen).as("the walk still produced the rows it read before the rewrite landed").isNotEmpty();
+  }
+
+  /**
    * The other half of releasing the locks: the walk no longer sees one frozen shard, so it has to be shown that a
    * compaction landing in the middle of it neither drops a row into the gap between the two layers nor hands one
    * over from both.

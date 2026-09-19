@@ -481,8 +481,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * directory, same early termination, same per-row tag filtering.
    * <p>
    * <b>The visitor runs with no lock held</b>, one block behind the read: each block's COLUMNS are decoded under
-   * the directory read lock, the lock is released, and only then are the rows built from them and handed over. That is what bounds what a
-   * writer waits for - a compaction swap, a truncate, a downsample replacing the file - at one block's decode
+   * the directory read lock, the lock is released, and only then are the rows built from them and handed over.
+   * That is what bounds what a writer waits for - a compaction swap, a truncate, a downsample replacing the file - at one block's decode
    * instead of at the caller's total work. It used to be the other way round, and an {@code EXPORT DATABASE}
    * writing a gzip chunk per {@code TIMESERIES_CHUNK_SIZE} rows therefore held this lock across its own file I/O
    * for the whole export (issue #7897). The residency is unchanged: one block, which is what the decode
@@ -523,6 +523,12 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * <p>
    * The snapshot is a list of blocks to TRY, not a promise they are all still there: {@link #walkBlocks}
    * re-resolves each one against the live directory before reading it.
+   * <p>
+   * The copy is per CALL rather than per block, and it copies references, not blocks: one per
+   * {@code MAX_BLOCK_SIZE} samples the shard has sealed, against the block decode the same walk is about to do
+   * for each of them. A shard holding a billion samples has on the order of 15k entries here - roughly 120 KB of
+   * references, allocated once for a walk that is about to decompress 15k blocks - so it is not a copy the walk
+   * can feel. What it buys is that no reader has to hold the directory lock while the caller works.
    */
   List<BlockEntry> snapshotBlockDirectory() {
     directoryLock.readLock().lock();
@@ -725,15 +731,22 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * <p>
    * A snapshot entry carries file offsets, and a walk that releases the directory lock between blocks may find
    * those offsets belong to a file that has since been replaced - by a compaction swap, by a truncate, by a
-   * downsample. Reference identity at the same index settles the ordinary case in one comparison, because nothing
-   * rewrites the directory in place: every such path builds new entries for the whole of it.
+   * downsample. Reference identity at the same index settles the case where nothing happened, in one comparison,
+   * which is the common one: most walks meet no writer at all.
    * <p>
-   * When it has been rewritten, the same block is looked up by the identity a rewrite PRESERVES - a retained block
-   * is written out verbatim with its timestamps and its sample count intact ({@code writeTempCompactionFile}), and
-   * only its offsets move. The lookup is a binary search on {@code minTimestamp}, which the directory is ordered
-   * by, followed by the run of entries sharing it. A block that answers to none of them was not retained: a
-   * truncate dropped it or a downsample replaced it with a coarser one, and either way the rows this walk was
-   * about to read are no longer the rows the store holds.
+   * <b>It is not the case this method exists for.</b> Every directory-rewriting path replaces the WHOLE list with
+   * fresh entries - {@code commitTempCompactionFile} does {@code blockDirectory.clear()} followed by
+   * {@code addAll(newBlockDirectory)}, on every {@code compact()}, for blocks it merely copied verbatim as much as
+   * for the ones it built. So the race this fix is about, a walk crossing a compaction, is exactly the race in
+   * which the identity check fails for every remaining block and the search below answers all of them.
+   * <p>
+   * That search is by the identity a rewrite PRESERVES - a retained block is written out verbatim with its
+   * timestamps and its sample count intact ({@code writeTempCompactionFile}, {@code truncateBefore},
+   * {@code downsampleBlocks}' retained arm) and only its offsets move. It is a binary search on
+   * {@code minTimestamp}, which the directory is ordered by, followed by the run of entries sharing it - so it
+   * costs O(log n) per block, not O(n). A block that answers to none of them was not retained: a truncate dropped
+   * it or a downsample replaced it with a coarser one, and either way the rows this walk was about to read are no
+   * longer the rows the store holds.
    *
    * @param hintIdx the index the block occupied in the snapshot, which is still its index unless the directory was
    *                rewritten
