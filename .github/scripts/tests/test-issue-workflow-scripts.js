@@ -49,12 +49,22 @@ const recorder = () => {
   const log = [];
   // core.summary is chainable and writes to the job summary file; record it instead.
   const summary = {
-    addHeading: () => summary,
-    addTable: (rows) => {
-      log.push(`::summary table rows=${rows.length}`);
+    addHeading: (h) => {
+      log.push(`::summary heading ${h}`);
       return summary;
     },
-    addRaw: () => summary,
+    addTable: (rows) => {
+      log.push(`::summary table ${JSON.stringify(rows.slice(1))}`);
+      return summary;
+    },
+    addRaw: (t) => {
+      log.push(`::summary raw ${t}`);
+      return summary;
+    },
+    addCodeBlock: (t) => {
+      log.push(`::summary code ${t}`);
+      return summary;
+    },
     write: async () => {
       log.push("::summary write");
       return summary;
@@ -72,7 +82,11 @@ const recorder = () => {
 };
 
 const context = { repo: { owner: "ArcadeData", repo: "arcadedb" } };
-const auditOf = (log) => log.filter((l) => !l.startsWith("WARN ") && !l.startsWith("::output"));
+// The audit is the run LOG only. Summary and output lines are recorded in the same array, so
+// they are excluded here: a case that means to assert on a log line must not be satisfied by
+// the same text having reached the job summary instead.
+const auditOf = (log) =>
+  log.filter((l) => !l.startsWith("WARN ") && !l.startsWith("::"));
 const outputOf = (log, name) => {
   const hit = log.find((l) => l.startsWith(`::output ${name}=`));
   return hit === undefined ? undefined : hit.slice(`::output ${name}=`.length);
@@ -291,6 +305,18 @@ const collectCases = async () => {
     issue(3),
   ]);
   check("collects every severity", r.pools, [["timeseries", [1, 2, 3]]]);
+  // The run page must not describe a run narrower than the one that happened: this workflow
+  // covers every level, so neither the heading nor the table may say "minor".
+  check(
+    "the summary does not claim to be minor-only",
+    r.log.some((l) => l.startsWith("::summary") && /minor-issue/i.test(l)),
+    false
+  );
+  check(
+    "and breaks the candidates down by level",
+    r.log.some((l) => l.includes("::summary table") && l.includes("1 critical, 1 major, 1 minor")),
+    true
+  );
   check("and records each one's level", r.severities, [
     "severity:critical",
     "severity:major",
@@ -610,6 +636,22 @@ const mergeCases = async () => {
     true
   );
   check("and does not warn", r.log.some((l) => l.startsWith("WARN ")), false);
+
+  // Why it declined is the only thing a declining run produces, and the action writes the
+  // reply to the execution file and nowhere else.
+  r = await runMerge(
+    "#1 and #2 are the same fix but #3 is a different component.\nGROUPS: none"
+  );
+  check(
+    "a decline carries its reasoning",
+    r.audit.includes("#3 is a different component"),
+    true
+  );
+  check(
+    "and puts it on the run page",
+    r.log.some((l) => l.startsWith("::summary code ")),
+    true
+  );
 
   r = await runMerge("Sorry, I could not open the file.");
   check("an unparseable reply writes nothing", r.created, []);

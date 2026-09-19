@@ -85,11 +85,18 @@ module.exports = async ({ github, context, core }) => {
     // `\b` rather than end-of-line: "GROUPS: none (nothing coheres here)" is still a decline,
     // and warning about it would train the reader to ignore the warning that matters.
     if (/^\s*GROUPS:\s*none\b/im.test(text)) {
-      audit("groups=0, action=declined_no_group_qualifies");
+      // A decline is the common outcome, so its REASONING is the most valuable thing the run
+      // produces: it is the only evidence of what the model made of the candidates, and the
+      // action writes it to the execution file and nowhere else.
+      const why = logSafe(text, 600);
+      audit(`groups=0, action=declined_no_group_qualifies, reason="${why}"`);
       core.summary
-        .addHeading("Minor-issue consolidation: nothing merged", 3)
-        .addRaw("The model read the candidates and found no set that one umbrella issue would ")
-        .addRaw("faithfully replace. Every candidate was left untouched.");
+        .addHeading("Issue consolidation: nothing merged", 3)
+        .addRaw(
+          "The model read the candidates and found no set that one umbrella issue would " +
+            "faithfully replace. Every candidate was left untouched. It reported:"
+        )
+        .addCodeBlock(why);
       await core.summary.write();
       return;
     }
@@ -323,7 +330,7 @@ module.exports = async ({ github, context, core }) => {
   }
 
   if (merged.length > 0) {
-    core.summary.addHeading("Minor-issue consolidation", 3).addTable([
+    core.summary.addHeading("Issue consolidation", 3).addTable([
       [
         { data: "Umbrella", header: true },
         { data: "Module", header: true },
