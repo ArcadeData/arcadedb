@@ -15,6 +15,7 @@
 const fs = require("fs");
 const {
   logSafe,
+  SEVERITY_LEVELS,
   severityOf,
   UMBRELLA_LABEL,
   NON_MODULE_LABELS,
@@ -223,14 +224,28 @@ module.exports = async ({ github, context, core }) => {
     `action=sent_to_model`
   );
 
+  // The summary is what a reader sees on the run page, so it names the levels it considered:
+  // this workflow covers every triage level, and a heading that says otherwise is the run
+  // claiming to have done something narrower than it did.
+  const bySeverity = (candidates) => {
+    const counts = SEVERITY_LEVELS.map(
+      (l) => [l.name, candidates.filter((c) => c.severity === l.name).length]
+    ).filter(([, n]) => n > 0);
+    return counts.map(([n, c]) => `${c} ${n.replace("severity:", "")}`).join(", ");
+  };
   core.summary
-    .addHeading("Minor-issue consolidation: candidates", 3)
+    .addHeading("Issue consolidation: candidates", 3)
     .addTable([
       [
         { data: "Module", header: true },
         { data: "Issues", header: true },
+        { data: "Severity", header: true },
       ],
-      ...modules.map((m) => [m.module, m.candidates.map((c) => `#${c.number}`).join(", ")]),
+      ...modules.map((m) => [
+        m.module,
+        m.candidates.map((c) => `#${c.number}`).join(", "),
+        bySeverity(m.candidates),
+      ]),
     ]);
   await core.summary.write();
 };
