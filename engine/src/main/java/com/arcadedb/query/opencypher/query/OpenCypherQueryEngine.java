@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.DeferredExistenceChecks;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParameterMissingException;
@@ -61,6 +62,7 @@ import com.arcadedb.index.Index;
 
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -81,6 +83,9 @@ public class OpenCypherQueryEngine implements QueryEngine {
   private static final DefaultSQLFunctionFactory SQL_FUNCTION_FACTORY = DefaultSQLFunctionFactory.getInstance();
   private static final CypherFunctionFactory CYPHER_FUNCTION_FACTORY = new CypherFunctionFactory(SQL_FUNCTION_FACTORY);
   private static final ExpressionEvaluator EXPRESSION_EVALUATOR = new ExpressionEvaluator(CYPHER_FUNCTION_FACTORY);
+
+  /** Columns of {@code SHOW USERS} and {@code SHOW CURRENT USER}. */
+  private static final List<String> USER_COLUMNS = List.of("user", "databases");
 
   private final DatabaseInternal database;
 
@@ -264,7 +269,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
       // Admin statements (user management) are executed directly against the security manager
       if (statement instanceof CypherAdminStatement)
-        return executeAdmin((CypherAdminStatement) statement);
+        return executeAdmin((CypherAdminStatement) statement, actualQuery, effectiveParameters);
 
       // Transaction control statements (START TRANSACTION/COMMIT/ROLLBACK) are executed directly
       // against the database transaction API, bypassing the planner's auto-commit pipeline.
@@ -390,9 +395,31 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
     if (explain)
       return plan.explain();
-    if (profile)
-      return plan.profile();
-    return plan.execute(null, timeExecution);
+
+    // A read-only statement writes nothing, so there is no half-written record for the scope to hold and no reason
+    // to pay for one. A write statement is drained to completion inside plan.profile()/plan.execute(), so the line
+    // after the call is the end of the statement and the moment Neo4j - and now we - enforce existence constraints
+    // (issue #7945). A nested plan (CALL subquery, FOREACH body, UNION branch) joins this scope rather than opening
+    // one of its own, so the whole statement is covered by this single pair.
+    if (statement.isReadOnly())
+      return profile ? plan.profile() : plan.execute(null, timeExecution);
+
+    final DeferredExistenceChecks deferredChecks = DeferredExistenceChecks.open(execDb);
+    try {
+      final ResultSet result = profile ? plan.profile() : plan.execute(null, timeExecution);
+      if (deferredChecks != null && !deferredChecks.isEmpty())
+        deferredChecks.check();
+      return result;
+    } catch (final RuntimeException | Error e) {
+      // A statement that fails for any other reason leaves nothing provisional behind either: the records it
+      // created and never completed are taken back without a second exception hiding this one.
+      if (deferredChecks != null)
+        deferredChecks.discard();
+      throw e;
+    } finally {
+      if (deferredChecks != null)
+        deferredChecks.close();
+    }
   }
 
   /**
@@ -678,7 +705,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
   /**
    * Executes an admin statement (user management) directly against the security manager.
    */
-  private ResultSet executeAdmin(final CypherAdminStatement admin) {
+  private ResultSet executeAdmin(final CypherAdminStatement admin, final String query,
+      final Map<String, Object> parameters) {
     final SecurityManager security = database.getSecurity();
     if (security == null)
       throw new CommandExecutionException("User management commands require server mode");
@@ -691,26 +719,20 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
     switch (admin.getKind()) {
     case SHOW_USERS: {
-      final Set<String> userNames = security.getUsers();
-      for (final String userName : userNames) {
+      final List<List<Object>> rows = new ArrayList<>();
+      for (final String userName : security.getUsers()) {
         final Map<String, Object> info = security.getUserInfo(userName);
-        final ResultInternal result = new ResultInternal();
-        result.setProperty("user", userName);
-        result.setProperty("databases", info != null ? info.get("databases") : Set.of());
-        resultSet.add(result);
+        rows.add(Arrays.asList(userName, info != null ? info.get("databases") : Set.of()));
       }
+      addShowRows(resultSet, USER_COLUMNS, rows, query, parameters);
       break;
     }
     case SHOW_CURRENT_USER: {
       final String currentUser = database.getCurrentUserName();
-      final ResultInternal result = new ResultInternal();
-      result.setProperty("user", currentUser != null ? currentUser : "");
-      if (currentUser != null) {
-        final Map<String, Object> info = security.getUserInfo(currentUser);
-        result.setProperty("databases", info != null ? info.get("databases") : Set.of());
-      } else
-        result.setProperty("databases", Set.of());
-      resultSet.add(result);
+      final Map<String, Object> info = currentUser != null ? security.getUserInfo(currentUser) : null;
+      addShowRows(resultSet, USER_COLUMNS,
+          List.of(Arrays.asList(currentUser != null ? currentUser : "", info != null ? info.get("databases") : Set.of())),
+          query, parameters);
       break;
     }
     case CREATE_USER: {
@@ -738,6 +760,27 @@ public class OpenCypherQueryEngine implements QueryEngine {
     }
 
     return resultSet;
+  }
+
+  /**
+   * Adds the rows of a {@code SHOW} command to its result set, with the command's own {@code YIELD}/{@code WHERE}
+   * tail applied to them.
+   * <p>
+   * These commands are answered from the security manager rather than from a query plan, so the tail - which the
+   * grammar accepts on every {@code SHOW} - had nothing applying it and was silently dropped, the same gap issue
+   * #7946 reports for {@code SHOW DATABASES} on the Bolt wire. It is applied here by {@link ShowCommandTail}, so a
+   * predicate means the same thing on either.
+   */
+  private void addShowRows(final InternalResultSet resultSet, final List<String> columns, final List<List<Object>> rows,
+      final String query, final Map<String, Object> parameters) {
+    final ShowCommandTail.Table table = ShowCommandTail.apply(database, query, columns, rows, parameters);
+
+    for (final List<Object> row : table.rows()) {
+      final ResultInternal result = new ResultInternal();
+      for (int i = 0; i < table.fields().size(); i++)
+        result.setProperty(table.fields().get(i), i < row.size() ? row.get(i) : null);
+      resultSet.add(result);
+    }
   }
 
   /**
