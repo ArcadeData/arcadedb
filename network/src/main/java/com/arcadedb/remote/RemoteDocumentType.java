@@ -194,7 +194,7 @@ public class RemoteDocumentType implements DocumentType {
 
   @Override
   public Property createProperty(final String propertyName, final Type propertyType, final String ofType) {
-    remoteDatabase.command("sql", "create property " + qualified(propertyName) + " " + propertyType.name() + " of " + ofType);
+    remoteDatabase.command("sql", "create property " + qualified(propertyName) + " " + propertyType.name() + " of " + Identifier.quote(ofType));
     remoteDatabase.getSchema().reload();
     return getProperty(propertyName);
   }
@@ -209,7 +209,7 @@ public class RemoteDocumentType implements DocumentType {
   @Override
   public Property getOrCreateProperty(final String propertyName, final String propertyType, final String ofType) {
     remoteDatabase.command("sql",
-        "create property " + qualified(propertyName) + " if not exists " + propertyType + " of " + ofType);
+        "create property " + qualified(propertyName) + " if not exists " + propertyType + " of " + Identifier.quote(ofType));
     remoteDatabase.getSchema().reload();
     return getProperty(propertyName);
   }
@@ -232,7 +232,7 @@ public class RemoteDocumentType implements DocumentType {
   @Override
   public Property getOrCreateProperty(final String propertyName, final Type propertyType, final String ofType) {
     remoteDatabase.command("sql",
-        "create property " + qualified(propertyName) + " if not exists " + propertyType.name() + " of " + ofType);
+        "create property " + qualified(propertyName) + " if not exists " + propertyType.name() + " of " + Identifier.quote(ofType));
     remoteDatabase.getSchema().reload();
     return getProperty(propertyName);
   }

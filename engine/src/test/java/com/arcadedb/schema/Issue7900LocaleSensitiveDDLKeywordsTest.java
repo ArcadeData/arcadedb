@@ -160,6 +160,26 @@ class Issue7900LocaleSensitiveDDLKeywordsTest extends TestHelper {
         .hasMessageContaining("nosuch");
   }
 
+  /**
+   * The refusal has to happen before the {@code IF NOT EXISTS} guard can return. Validating only on the creation
+   * path let {@code CREATE INDEX IF NOT EXISTS ON T (p COLLATE nosuch)} answer SUCCESS once the index existed, so
+   * a migration naming a collation this engine does not implement read as applied (PR #7942 review).
+   */
+  @Test
+  void anUnknownCollationIsRefusedEvenWhenTheIndexAlreadyExists() {
+    database.command("sql", "create document type ExistingIdx");
+    database.command("sql", "create property ExistingIdx.n STRING");
+    database.command("sql", "create index on ExistingIdx (n) unique");
+
+    // the guard really is the one that would return: the same statement with a VALID collation is a no-op
+    database.command("sql", "create index if not exists on ExistingIdx (n collate ci) unique");
+
+    assertThatThrownBy(
+        () -> database.command("sql", "create index if not exists on ExistingIdx (n collate nosuch) unique"))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("nosuch");
+  }
+
   @Test
   void normalizeCollationFoldsWithTheRootLocale() {
     assertThat(IndexMetadata.normalizeCollation("ci")).isEqualTo(IndexMetadata.COLLATION_CI);

@@ -274,6 +274,29 @@ public class CreateIndexStatement extends DDLStatement {
     } else
       throw new CommandSQLParsingException("Index type '" + typeAsString + "' is not supported");
 
+    // Collation settings (e.g., CI for case-insensitive), normalised and validated by IndexMetadata.
+    //
+    // Read BEFORE the existsIndex guard below, because that guard RETURNS on an IF NOT EXISTS whose index is
+    // already there: validating only on the creation path let `CREATE INDEX IF NOT EXISTS ON T (p COLLATE nosuch)`
+    // answer success for a statement naming a collation this engine does not implement, which is how a malformed
+    // migration reads as applied (PR #7942 review). The keyword is part of the statement, so it is wrong whether or
+    // not the index it asks for happens to exist.
+    //
+    // Upper-casing it here with the DEFAULT locale is what turned `COLLATE ci` into "Cİ" on a Turkish-locale server
+    // and persisted that into the schema (issue #7900) - hence the shared chokepoint rather than a fold at the call
+    // site.
+    final List<String> collations = new ArrayList<>();
+    try {
+      for (final Property prop : propertyList)
+        collations.add(IndexMetadata.normalizeCollation(
+            prop.collate != null ? prop.collate.getStringValue() : IndexMetadata.COLLATION_DEFAULT));
+    } catch (final IllegalArgumentException e) {
+      // Same treatment the METADATA clause gets below, and for the same reason: the collation keyword comes from
+      // the statement, so one this engine cannot read is a client mistake and must answer 400 with a parsing error
+      // rather than escaping as a bare IllegalArgumentException.
+      throw new CommandSQLParsingException("Invalid COLLATE in CREATE INDEX: " + e.getMessage(), e);
+    }
+
     if (database.getSchema().existsIndex(name.getValue())) {
       if (ifNotExists) {
         // The name this matched on is derived from the indexed property set alone, so it says nothing about what the
@@ -359,20 +382,8 @@ public class CreateIndexStatement extends DDLStatement {
     // default. Pinning it to the LSM default here forced that value on HASH too, which cannot address a 256KB page (#5713).
     builder.withNullStrategy(nullStrategy);
 
-    // Pass collation settings (e.g., CI for case-insensitive). The keyword is normalised and validated by the
-    // builder, on IndexMetadata.normalizeCollation - upper-casing it here with the DEFAULT locale turned
-    // `COLLATE ci` into "Cİ" on a Turkish-locale server and persisted that into the schema (issue #7900).
-    final List<String> collations = new ArrayList<>();
-    for (final Property prop : propertyList)
-      collations.add(prop.collate != null ? prop.collate.getStringValue() : IndexMetadata.COLLATION_DEFAULT);
-    try {
-      builder.withCollations(collations);
-    } catch (final IllegalArgumentException e) {
-      // Same treatment the METADATA clause gets a few lines down, and for the same reason: the collation keyword
-      // comes from the statement, so one this engine does not implement is a client mistake and must answer 400
-      // with a parsing error rather than escaping as a bare IllegalArgumentException (PR #7942 review).
-      throw new CommandSQLParsingException("Invalid COLLATE in CREATE INDEX: " + e.getMessage(), e);
-    }
+    // Already normalised and validated above, before the existsIndex guard could return.
+    builder.withCollations(collations);
     builder.withCallback((document, totalIndexed) -> {
       total.incrementAndGet();
       // Progress goes to the log, not to stdout: this runs inside the server process, where a dot written to
