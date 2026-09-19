@@ -71,24 +71,34 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
   }
 
   /**
-   * Per REQUEST, not per handler (issue #7861). Only {@code ?presence=true} blocks: it issues one synchronous
-   * bootstrap-state RPC per peer, each bounded by {@link #PRESENCE_QUERY_TIMEOUT_MS}, so worst case it holds its
-   * thread for {@code peers x 5s}. On an Undertow IO thread that is a shared selector, and everything multiplexed
-   * onto it - the kubelet readiness and liveness probes among them - waits behind the fan-out.
+   * Every request, not just the expensive one (issues #7861, #7902).
    * <p>
-   * The far commoner request, the cheap auto-poll Studio's HA panel runs, reads in-memory Raft state and never
-   * opens a database ({@code ClusterAlerts} passes {@code allowLoad=false}), so it keeps the IO-thread fast path
-   * rather than paying a worker handoff on every tick. That is why this is the per-exchange overload and not the
-   * handler-wide {@code mustExecuteOnWorkerThread()} the sibling admin handlers declare: for them every request
-   * blocks, for this one exactly the opt-in query parameter does.
+   * The opt-in {@code ?presence=true} fan-out is the obvious blocker: one synchronous bootstrap-state RPC per
+   * peer, each bounded by {@link #PRESENCE_QUERY_TIMEOUT_MS}, so worst case it holds its thread for
+   * {@code peers x 5s}. On an Undertow IO thread - a shared selector - everything multiplexed onto it waits behind
+   * that, the kubelet readiness and liveness probes included.
    * <p>
-   * Decided from the query parameter alone, before authorization: a non-root caller asking for the matrix is
-   * refused by {@code checkRootUser} either way, and refusing it one thread handoff later costs nothing next to
-   * deciding the dispatch from state this method cannot see.
+   * This was written as a per-REQUEST override on the argument that the ordinary status poll touches no disk, so
+   * the cheap auto-poll Studio's HA panel runs could keep the IO-thread fast path. That argument does not hold,
+   * and the review of PR #7953 is what established it:
+   * <ul>
+   *   <li>{@code ClusterAlerts} classifies the bootstrap-unreconciled set by whether each marked database is
+   *       still here, which stats a directory per marked database (issue #7902);</li>
+   *   <li>and the per-database rows above call {@code getBootstrapBaseline}, which lazily reads
+   *       {@code .raft/bootstrap-baselines} off disk the first time anything asks - so even before #7902 the
+   *       "no disk" premise was only true after that first read.</li>
+   * </ul>
+   * Both are cheap and both are rare, but neither is bounded by anything this handler controls, and the node most
+   * likely to have marked databases is the node whose storage is misbehaving - the worst possible moment to park
+   * a selector. A conditional dispatch would have to encode which of the callees below can reach a file, which is
+   * exactly the kind of premise that goes stale silently; it already did, under this very method.
+   * <p>
+   * The cost of being unconditional is one worker handoff per poll, on a route polled every few seconds by a
+   * dashboard. That is what nearly every other route in the server already pays.
    */
   @Override
-  protected boolean mustExecuteOnWorkerThread(final HttpServerExchange exchange) {
-    return isPresenceRequested(exchange);
+  protected boolean mustExecuteOnWorkerThread() {
+    return true;
   }
 
   @Override
@@ -481,8 +491,8 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
    * missing:[...]}]}}. A peer that cannot be reached is reported in {@code unreachable} and omitted from the
    * present/missing accounting so a transient blip is not mistaken for a dropped database.
    * <p>
-   * The fan-out is sequential on an Undertow worker thread - which {@link #mustExecuteOnWorkerThread(HttpServerExchange)}
-   * is what makes true, request by request (issue #7861) - with a short per-peer timeout
+   * The fan-out is sequential on an Undertow worker thread - which {@link #mustExecuteOnWorkerThread()}
+   * is what makes true (issue #7861) - with a short per-peer timeout
    * ({@link #PRESENCE_QUERY_TIMEOUT_MS}), so worst-case latency is {@code peers x 5s}. This is acceptable because
    * it is opt-in ({@code ?presence=true}) and leader-only, not part of the cheap auto-poll; a parallel fan-out
    * would bound it for very large clusters. If parallelized later, honor the CLAUDE.md concurrency rule - do not
