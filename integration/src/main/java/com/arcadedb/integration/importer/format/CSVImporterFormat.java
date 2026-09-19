@@ -587,6 +587,11 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           continue;
         }
 
+        // BEFORE THE MISSING-ID GUARD BELOW, NOT INSIDE THE try: WHEN typeIdProperty IS A TRAILING HEADER COLUMN A
+        // SHORT ROW TAKES THAT GUARD'S 'continue' AND WOULD NEVER REACH THE REPORT, SO THE ONE RAGGED-ROW NUMBER THE
+        // OPERATOR IS SHOWN WOULD MISS EXACTLY THE ROWS THE GUARD SKIPPED (CodeRabbit review, issue #7782)
+        reportShortRow(line, row.length, headerColumns, context);
+
         if (idIndex >= 0 && idIndex >= row.length) {
           LogManager.instance()
               .log(this, Level.INFO, "Property Id is configured on property %d but cannot be found on current record. Skip it",
@@ -595,9 +600,9 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         }
 
         try {
-          // SEE loadDocuments(): ONE ARITY GATE, APPLIED INSIDE THE PER-ROW try SO -onRowError GOVERNS IT
+          // SEE loadDocuments(): ONE ARITY GATE, APPLIED INSIDE THE PER-ROW try SO -onRowError GOVERNS IT. THE SHORT
+          // DIRECTION IS REPORTED ABOVE INSTEAD - IT IS NOT A ROW ERROR AND HAS A GUARD OF ITS OWN TO GET PAST.
           checkRowIsNotLongerThanHeader(line, row.length, headerColumns);
-          reportShortRow(line, row.length, headerColumns, context);
 
           final MutableVertex v = database.newVertex(settings.vertexTypeName);
           if (idIndex >= 0)
@@ -716,7 +721,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     // ANALYSIS MEASURED NO ROW, WHICH A FILE WHOSE ROWS WERE ALL REFUSED FOR THEIR SHAPE PRODUCES (ISSUE #7782), AND
     // THIS IS INTEGER DIVISION - totalSize IS A long, SO A ZERO DIVISOR THROWS ArithmeticException RATHER THAN
     // YIELDING AN INFINITY THE GUARD BELOW COULD CATCH. LEAVING expectedEdges AT 0 HANDS THE ANSWER TO THAT SAME
-    // GUARD, WHICH IS ALREADY THE "NO IDEA HOW BIG THIS SOURCE IS" BRANCH (CodeRabbit REVIEW ON PR #7948).
+    // GUARD, WHICH IS ALREADY THE "NO IDEA HOW BIG THIS SOURCE IS" BRANCH (ISSUE #7782).
     final int averageRowLength = entity.getAverageRowLength();
     if (expectedEdges <= 0 && averageRowLength > 0)
       expectedEdges = (int) (sourceSchema.getSource().totalSize / averageRowLength);
@@ -818,7 +823,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
           // AND THE SHORT DIRECTION, COUNTED THE SAME WAY loadDocuments()/loadVertices() COUNT IT: createEdgeFromRow()
           // BELOW IMPORTS SUCH A ROW FROM THE COLUMNS IT DOES SUPPLY, SO WITHOUT THIS THE ONE RAGGED-ROW NUMBER THE
-          // OPERATOR IS SHOWN WOULD COUNT DOCUMENTS AND VERTICES BUT NOT EDGES (CodeRabbit REVIEW ON PR #7948).
+          // OPERATOR IS SHOWN WOULD COUNT DOCUMENTS AND VERTICES BUT NOT EDGES (ISSUE #7782).
           reportShortRow(line, row.length, headerColumns, context);
 
           try {
@@ -1222,7 +1227,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
             // WARNING FOR THE FIRST ONE ONLY, THEN FINE - THE SAME THROTTLE reportShortRow() USES, SO A
             // SYSTEMATICALLY RAGGED FILE DOES NOT LOG A LINE PER ROW IN ONE DIRECTION WHILE THE MIRROR CASE IS
-            // THROTTLED IN THE OTHER (claude-review ON PR #7948)
+            // THROTTLED IN THE OTHER (ISSUE #7782)
             LogManager.instance().log(this, raggedRowsSkippedInAnalysis++ == 0 ? Level.WARNING : Level.FINE,
                 "Error on analyzing row at line %d, skipping it (reason: it has %d column(s) while the header has %d)", null,
                 line, row.length, fieldNames.size());
