@@ -8159,9 +8159,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
     return tx != null ? (VectorIndexReplayUndo) tx.getIndexReplayConclusion(this) : null;
   }
 
-  /** The transaction whose replay is running and can still abort, or null. See {@link #openReplayUndo()}. */
+  /**
+   * The transaction whose replay is running and can still abort, or null. See {@link #openReplayUndo()}.
+   * <p>
+   * {@code getTransactionIfExists()} rather than {@code getTransaction()}: the latter THROWS
+   * {@code TransactionException} on a thread with no database context rather than answering null, so the null
+   * branch below would never be reached and this would raise on a caller that legitimately has no transaction -
+   * a background compaction or flush worker, say - instead of answering "not a replay" (#7934 review).
+   */
   private TransactionContext replayableTransaction() {
-    final TransactionContext tx = getDatabase().getTransaction();
+    final TransactionContext tx = getDatabase().getTransactionIfExists();
     return tx != null && tx.getStatus() == TransactionContext.STATUS.COMMIT_1ST_PHASE ? tx : null;
   }
 

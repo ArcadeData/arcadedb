@@ -486,7 +486,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    * {@code LocalDatabase.closeInternal}) regardless of the memtable size.
    */
   private void queueOrApply(final boolean add, final int dim, final RID rid, final float weight) {
-    final TransactionContext tx = underlyingIndex.getMutableIndex().getDatabase().getTransaction();
+    final TransactionContext tx = underlyingIndex.getMutableIndex().getDatabase().getTransactionIfExists();
     if (tx != null && tx.getStatus() == TransactionContext.STATUS.BEGUN) {
       tx.addIndexOperation(this,
           add ? TransactionIndexContext.IndexKey.IndexKeyOperation.ADD
@@ -552,9 +552,15 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    * so it covers both routes into this buffer, and it is what tells a write that a conclusion is about to be applied
    * to apart from one issued in an ordinary open transaction, which would be buffered against a conclusion that is
    * not coming.
+   * <p>
+   * {@code getTransactionIfExists()} rather than {@code getTransaction()}: the latter THROWS
+   * {@code TransactionException} on a thread with no database context rather than answering null, which would make
+   * the null branch dead code and raise on a caller that legitimately has no transaction instead of letting it
+   * write straight through (#7934 review). Same correction applied to {@link #queueOrApply}, whose own null check
+   * had been dead for the same reason since it was written.
    */
   private SparseVectorReplayBuffer replayBuffer() {
-    final TransactionContext tx = underlyingIndex.getMutableIndex().getDatabase().getTransaction();
+    final TransactionContext tx = underlyingIndex.getMutableIndex().getDatabase().getTransactionIfExists();
     if (tx == null || tx.getStatus() != TransactionContext.STATUS.COMMIT_1ST_PHASE)
       return null;
 
