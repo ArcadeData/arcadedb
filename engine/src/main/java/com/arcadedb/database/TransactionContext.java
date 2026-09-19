@@ -233,7 +233,7 @@ public class TransactionContext implements Transaction {
    * code, and a changed value means that code published this transaction - which is exactly what a statement that
    * commits mid-execution ({@code BatchStep}'s {@code BATCH n}, {@code TRUNCATE TYPE}, {@code REBUILD INDEX}) does.
    * <p>
-   * Counts COMMITS, deliberately not begins (claude-review on PR #7850). A begin counter would also move for a
+   * Counts COMMITS, deliberately not begins (code review on PR #7850). A begin counter would also move for a
    * rollback followed by a fresh begin inside one statement, and the two mean opposite things to the async batch:
    * after a commit the buffered writes are durable and must be dropped silently, after a rollback they are gone and
    * their submitters must be told. Keyed on the commit, the rollback case simply does not match and keeps the

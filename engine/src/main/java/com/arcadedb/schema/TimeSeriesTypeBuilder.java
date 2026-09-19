@@ -264,7 +264,7 @@ public class TimeSeriesTypeBuilder {
         // A SECOND timestamp column has no expression - the grammar has one TIMESTAMP clause because the type has
         // one column - so it is refused here rather than dropped from the rendering. Unreachable through toSQL(),
         // which runs validate() first, and guarded locally anyway so that the statement this renders cannot depend
-        // on the caller having run that check (claude review on PR #7757). timestampDefinition being null is the
+        // on the caller having run that check (code review on PR #7757). timestampDefinition being null is the
         // one case that is not a duplicate: the builder names a timestamp column no ColumnDefinition matches, the
         // clause was rendered from the name above, and this column is a leftover the type never referenced.
         if (timestampDefinition != null)
@@ -361,7 +361,7 @@ public class TimeSeriesTypeBuilder {
    * would take {@code EXPLAIN} and the statement cache with it.
    * <p>
    * Public and shared so the DAYS/HOURS/MINUTES/SECONDS table exists once: two copies would have to be kept in step
-   * by hand if a unit were ever added (claude review on PR #7721).
+   * by hand if a unit were ever added (code review on PR #7721).
    */
   public static String renderSQLDuration(final long millis) {
     for (int i = 0; i < SQL_UNIT_MS.length; i++)
@@ -410,7 +410,7 @@ public class TimeSeriesTypeBuilder {
     // the embedded create() hands the value straight to LocalTimeSeriesType, so the SAME builder body would
     // produce a type whose getRetentionMs() is the caller's negative number embedded and 0 remotely. Neither is
     // what the caller asked for, and the difference contradicts the one-body-of-builder-code contract this
-    // builder exists for. Zero keeps its meaning of "no policy" (claude/CodeRabbit review on PR #7692).
+    // builder exists for. Zero keeps its meaning of "no policy" (code review on PR #7692).
     if (retentionMs < 0)
       throw new SchemaException("TimeSeries retention cannot be negative, was " + retentionMs + "ms");
     if (compactionBucketIntervalMs < 0)

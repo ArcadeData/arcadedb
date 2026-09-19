@@ -806,7 +806,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       // Unchanged, for the reason RemoteHttpComponent.httpCommand gives at its own generic clause: manageException
       // reconstructs the server's exception type, and SecurityException and NoSuchElementException are neither
       // RemoteException nor ArcadeDBException. Catching only those two supertypes buried a denied vector search as
-      // a generic RemoteException, so a caller could not tell authorization from transport (claude-review).
+      // a generic RemoteException, so a caller could not tell authorization from transport (code review).
       throw e;
     } catch (final Exception e) {
       throw new RemoteException("Error on executing vector " + operation, e);

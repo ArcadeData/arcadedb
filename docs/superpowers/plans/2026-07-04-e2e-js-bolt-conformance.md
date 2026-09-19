@@ -20,7 +20,6 @@
 - **License header:** every source file starts with the Apache-2.0 header block used by `js-bolt-e2e.test.js` (copy it verbatim).
 - **No `System.out`/stray `console.log`** except the intentional diagnostic in the two-writer race helper (mirrors the Python suite).
 - **Do not add Claude as an author** in file content.
-- **Commit trailer** on every commit: `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
 
 ---
 
@@ -223,9 +222,7 @@ Expected: no output (unmodified).
 
 ```bash
 git add e2e-js/src/js-bolt-conformance.test.js
-git commit -m "test(#4888): e2e-js bolt conformance fixture + connection scenarios
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "test(#4888): e2e-js bolt conformance fixture + connection scenarios"
 ```
 
 ---
@@ -289,9 +286,7 @@ Expected: PASS (3 passing). If AUTH-003's no-auth form connects instead of rejec
 
 ```bash
 git add e2e-js/src/js-bolt-conformance.test.js
-git commit -m "test(#4888): auth conformance scenarios (AUTH-001..003)
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "test(#4888): auth conformance scenarios (AUTH-001..003)"
 ```
 
 ---
@@ -433,9 +428,7 @@ Expected: PASS (5 passing). TX-005 is timing-sensitive; if it flakes, confirm th
 
 ```bash
 git add e2e-js/src/js-bolt-conformance.test.js
-git commit -m "test(#4888): transaction conformance scenarios (TX-001..005)
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "test(#4888): transaction conformance scenarios (TX-001..005)"
 ```
 
 ---
@@ -526,9 +519,7 @@ Expected: PASS (3 passing).
 
 ```bash
 git add e2e-js/src/js-bolt-conformance.test.js
-git commit -m "test(#4888): causal-consistency + multi-database scenarios
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "test(#4888): causal-consistency + multi-database scenarios"
 ```
 
 ---
@@ -627,9 +618,7 @@ Expected: PASS (4 passing - RESULT-004 passes *because* its body fails as the ga
 
 ```bash
 git add e2e-js/src/js-bolt-conformance.test.js
-git commit -m "test(#4888): result-handling scenarios incl. RESULT-004 known gap
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "test(#4888): result-handling scenarios incl. RESULT-004 known gap"
 ```
 
 ---
@@ -741,9 +730,7 @@ Expected: PASS (6 passing; TYPE-003 green because its body fails as predicted). 
 
 ```bash
 git add e2e-js/src/js-bolt-conformance.test.js
-git commit -m "test(#4888): type round-trip A (TYPE-001..006) incl. TYPE-003 gap
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "test(#4888): type round-trip A (TYPE-001..006) incl. TYPE-003 gap"
 ```
 
 ---
@@ -858,9 +845,7 @@ Expected: PASS (6 passing; TYPE-011/012 green because their bodies fail as predi
 
 ```bash
 git add e2e-js/src/js-bolt-conformance.test.js
-git commit -m "test(#4888): type round-trip B (TYPE-007..012) incl. Duration/Point gaps
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "test(#4888): type round-trip B (TYPE-007..012) incl. Duration/Point gaps"
 ```
 
 ---
@@ -930,9 +915,7 @@ Expected: PASS (3 pass + 1 skip; ERR-002 green because body fails as predicted).
 
 ```bash
 git add e2e-js/src/js-bolt-conformance.test.js
-git commit -m "test(#4888): error conformance scenarios (ERR-001..004)
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "test(#4888): error conformance scenarios (ERR-001..004)"
 ```
 
 ---
@@ -1003,9 +986,7 @@ Expected: PASS (3 passing; PROTO-002 green because `protocolVersion` is 4.x, so 
 
 ```bash
 git add e2e-js/src/js-bolt-conformance.test.js
-git commit -m "test(#4888): protocol conformance scenarios (PROTO-001..003)
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "test(#4888): protocol conformance scenarios (PROTO-001..003)"
 ```
 
 ---
@@ -1158,9 +1139,7 @@ Expected: PASS (2 passing) when `keytool` is available. If `GenericContainer.fro
 
 ```bash
 git add e2e-js/src/js-bolt-conformance.test.js
-git commit -m "test(#4888): TLS conformance scenarios (CONN-002, CONN-005)
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "test(#4888): TLS conformance scenarios (CONN-002, CONN-005)"
 ```
 
 ---
@@ -1234,9 +1213,7 @@ Expected: all suites green; `js-bolt-e2e.test.js` unchanged and passing; `report
 
 ```bash
 git add e2e-js/README.md
-git commit -m "docs(#4888): e2e-js README with driver band + known-gap summary
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "docs(#4888): e2e-js README with driver band + known-gap summary"
 ```
 
 ---

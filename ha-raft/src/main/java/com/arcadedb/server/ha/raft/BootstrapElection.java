@@ -634,7 +634,7 @@ class BootstrapElection {
       // which is exactly what ProbeResult.FATAL means. Reported as retryable it kept the peer in `pending`,
       // and collectRemoteStatesWithRetry re-probed it every probeRetryBackoffMs until HA_BOOTSTRAP_TIMEOUT_MS
       // (default 120 s) ran out before reaching the same conclusion it could have reached on the first
-      // attempt (claude-review on PR #7838). FATAL drops the peer now; it still lands in assumedEmptyOut, so
+      // attempt (code review on PR #7838). FATAL drops the peer now; it still lands in assumedEmptyOut, so
       // the SEVERE line that names the peers whose state the election had to assume is unchanged.
       return CompletableFuture.completedFuture(
           ProbeOutcome.fatal("no HTTPS client could be built from the cluster truststore"));

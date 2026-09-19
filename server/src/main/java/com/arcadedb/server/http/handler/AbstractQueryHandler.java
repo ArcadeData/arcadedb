@@ -379,7 +379,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       // statedLimit, not effectiveLimit: the buffered path reports the cap the caller stated and refuses outright
       // (413) when the ceiling actually cut the result, which the branch above answers in band. Reporting the
       // ceiling here made the two encodings disagree about the same untruncated query - 'SELECT ... LIMIT 1000000'
-      // returning five rows said 1000000 buffered and the ceiling streamed (claude-review).
+      // returning five rows said 1000000 buffered and the ceiling streamed (code review).
       stream.writeStats(statedLimit, returned, truncated);
       return new SerializationOutcome(returned, truncated);
     }

@@ -201,7 +201,7 @@ class Issue7834SingleSecuritySeederTest {
   /**
    * The reason a caller gives is the one the run reports under. It used to be hardcoded to an admission's
    * phrasing, which the issue #7833 catch-up - the one caller with no concurrent membership seed to fold into,
-   * so the one whose string actually reaches the log - then reported itself as (claude-review on PR #7854).
+   * so the one whose string actually reaches the log - then reported itself as (code review on PR #7854).
    */
   @Test
   void theCallersOwnReasonIsWhatTheRunIsScheduledUnder() {

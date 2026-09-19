@@ -330,7 +330,7 @@ public class SnapshotHttpHandler implements HttpHandler {
       // CLOSED TWICE ON THE WINDOW PATH, DELIBERATELY: serveSnapshotZip releases the pause the moment the last
       // sealed byte is read, and this is the safety net for every other way out - a throw, a client disconnect,
       // the frozen-files path that never releases early. TimeSeriesCompactionPause.close() is idempotent, so the
-      // second close is a no-op rather than an unlock of a lock this thread no longer holds (claude-review on
+      // second close is a no-op rather than an unlock of a lock this thread no longer holds (code review on
       // PR #7474).
       try (pause) {
         streamThroughPointInTimeImage(db, databaseName, pause,
@@ -412,7 +412,7 @@ public class SnapshotHttpHandler implements HttpHandler {
         // ordering neither the t0 barrier nor the compaction pause provides.
         //
         // A LISTING THAT FAILS HERE - AND ONLY HERE, ON THIS BRANCH - LEAVES THE HANDLER BY A DIFFERENT DOOR FROM
-        // EVERY OTHER FAILURE ON IT (claude-review on PR #7708). listSealedStoresOrFail throws a
+        // EVERY OTHER FAILURE ON IT (code review on PR #7708). listSealedStoresOrFail throws a
         // DatabaseOperationException, which is not a PageSnapshotException, so it is not caught below and does not
         // fall back - the fallback lists the same directory and would fail the same way - and it never reaches
         // serveSnapshotZip's swallow, because that code never runs. It propagates out of handleRequest, which
@@ -438,7 +438,7 @@ public class SnapshotHttpHandler implements HttpHandler {
             // A WINDOW THAT NEVER REACHES A STREAMER IS NEVER CLOSED BY ONE: the finally below only covers the
             // image this block returns. SUPPRESSED RATHER THAN REPLACED - a close that fails on the way out must
             // not become the exception the operator reads, because the one that got us here is the one that says
-            // what went wrong (claude-review on PR #7708)
+            // what went wrong (code review on PR #7708)
             try {
               window.close();
             } catch (final RuntimeException closeFailure) {
@@ -809,7 +809,7 @@ public class SnapshotHttpHandler implements HttpHandler {
 
   /**
    * The sealed-store listing this handler uses, which refuses to answer "this database has none" for a directory
-   * it could not read (claude-review on PR #7708).
+   * it could not read (code review on PR #7708).
    * <p>
    * {@link TimeSeriesSealedStore#listSealedFiles(File)} maps an unreadable directory to an EMPTY array, which is
    * the right answer for a caller that only wants to iterate whatever is there. For this one it is the very
@@ -871,7 +871,7 @@ public class SnapshotHttpHandler implements HttpHandler {
         // ONLY FileNotFoundException, WHICH IS THE ONLY "GONE" THIS CALL CAN RAISE: addFileToZip reaches the file
         // through Files.isSymbolicLink, which answers false rather than throwing on an I/O error, and then
         // FileInputStream. A NoSuchFileException arm here would read as a second way for a store to vanish and
-        // there is none (claude-review on PR #7708). Any other IOException - a real disk error - already fails
+        // there is none (code review on PR #7708). Any other IOException - a real disk error - already fails
         // the ship, just without this sentence
         throw new FileNotFoundException("TimeSeries sealed store '" + sealedFile.getName()
             + "' went away after the snapshot's point in time: the archive would declare its type without its data ("

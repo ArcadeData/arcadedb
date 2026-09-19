@@ -83,7 +83,7 @@ public final class ClusterSecuritySeedQuery {
    * Floor for the wait between those attempts, for a configuration that names no election timeout.
    * <p>
    * The wait itself is derived from {@code arcadedb.ha.electionTimeoutMax} rather than fixed
-   * (claude-review on PR #7854). A fixed 500ms gave the whole retry ~1.5s, while that timeout defaults to
+   * (code review on PR #7854). A fixed 500ms gave the whole retry ~1.5s, while that timeout defaults to
    * <b>10 seconds</b>: an election that took as long as the cluster is configured to allow would outlast the
    * retry, and the admitting node would then report a failed seed to an operator for an admission whose seed
    * was about to succeed. Since issue #7521 that report is a 503 with a {@code failedSeeds} array, so a
@@ -101,7 +101,7 @@ public final class ClusterSecuritySeedQuery {
    * ({@code RaftHAServer.forwardHttpClient}, {@code PostBatchHandler}, {@code RaftReplicatedDatabase}). This
    * class is a stateless utility, so it rebuilt one per attempt - and each build starts a selector thread that
    * nothing closes, on a path that runs on every node restart and every snapshot install
-   * (claude-review on PR #7854, the leak PR #7650 fixed at those three sites).
+   * (code review on PR #7854, the leak PR #7650 fixed at those three sites).
    * <p>
    * A static with a fixed connect timeout, the shape {@code LeaderDatabaseQuery} uses for the same reason: the
    * timeout is a property of a built client and cannot follow configuration afterwards, and this dial is an
@@ -188,7 +188,7 @@ public final class ClusterSecuritySeedQuery {
         backOff(notLeaderBackoffMs(server.getConfiguration()));
       } catch (final IOException e) {
         // A refused connection, a reset, a timeout: the leader address was resolvable a moment ago and the
-        // condition may clear before the next attempt (claude-review on PR #7854). The seed this replaced ran
+        // condition may clear before the next attempt (code review on PR #7854). The seed this replaced ran
         // through a RaftClient with a retry policy of its own, so failing an admission on the first blip would
         // be a step back from what #7521 established - a transient failure must not read as a failed seed.
         //
@@ -273,7 +273,7 @@ public final class ClusterSecuritySeedQuery {
    * The documents the leader reported as not committed.
    * <p>
    * Package-private so the answers this has to tell apart can be pinned without a live leader to produce them
-   * (claude-review on PR #7854).
+   * (code review on PR #7854).
    * <p>
    * A 503 carrying a {@code failedSeeds} array is the seed's own partial failure and is returned as such, so
    * the caller reports the same list whether it ran the seed itself or asked for it. Every other non-2xx is an
@@ -306,7 +306,7 @@ public final class ClusterSecuritySeedQuery {
       for (int i = 0; i < failed.length(); i++)
         names.add(String.valueOf(failed.get(i)));
       // An EMPTY list on a 503 deliberately falls through to the throw below rather than being returned
-      // (claude-review on PR #7854). The route answers 503 with names when it knows which documents failed and
+      // (code review on PR #7854). The route answers 503 with names when it knows which documents failed and
       // with an `error` when it does not; a 503 naming nothing is neither, and returning it as "no failures"
       // would tell an admitting node that everything committed. Absent and empty are the same answer here -
       // "this response does not say what failed" - and both have to be raised.

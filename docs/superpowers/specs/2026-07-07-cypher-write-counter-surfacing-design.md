@@ -116,7 +116,7 @@ Add an optional `QueryUpdateStats stats = <next free field number>;` to `Execute
 
 ## Rollout
 
-Single PR on branch `feat/5015-cypher-write-counter-surfacing`. TDD: failing tests first per component, then implementation, compile and run affected engine/server/grpcw/bolt tests until green. After the PR is opened, run the code-review response loop (Claude + Gemini) for at least four rounds, answering each via the `receiving-code-review` skill.
+Single PR on branch `feat/5015-cypher-write-counter-surfacing`. TDD: failing tests first per component, then implementation, compile and run affected engine/server/grpcw/bolt tests until green. After the PR is opened, run the code-review response loop for at least four rounds, answering each via the `receiving-code-review` skill.
 
 ## Open risks
 

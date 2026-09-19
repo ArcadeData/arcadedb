@@ -626,7 +626,7 @@ public final class TimeSeriesGateway {
    * {@code toString()} means something - a string, a number, a boolean, an enum, a temporal - and silently
    * corrupts for anything whose does not. A {@code byte[]} is the sharp case: it has no {@code toString()}
    * override, so it would be stored as {@code [B@6bc7c054}, a different meaningless value on every run
-   * (claude-review on PR #7323). Iterables and maps are refused with it: their text form is stable but is not
+   * (code review on PR #7323). Iterables and maps are refused with it: their text form is stable but is not
    * a tag value anyone means.
    * <p>
    * {@link Iterable} rather than {@link Collection} because the HTTP {@code tags} object hands over JSON types

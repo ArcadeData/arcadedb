@@ -74,7 +74,7 @@ public record LeaderDial(String address, boolean https, HttpClient client, Strin
    * deliberate, matching {@code LeaderCommandForwarder.Transport}'s own clamp: 0 must not become a back door
    * to the unbounded behaviour {@link #newConnectTimeoutBoundedClient} and the response deadlines in
    * {@code RaftReplicatedDatabase}/{@code PostBatchHandler} (issues #7526/#7527/#7542/#7543) exist to remove.
-   * Public and shared from here rather than one copy per site (claude-review finding on PR #7650), since
+   * Public and shared from here rather than one copy per site (code review finding on PR #7650), since
    * {@link #newConnectTimeoutBoundedClient} is already the shared home for the connect-timeout half of the
    * same reasoning.
    */

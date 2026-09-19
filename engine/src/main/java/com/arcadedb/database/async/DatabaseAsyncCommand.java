@@ -142,7 +142,7 @@ public class DatabaseAsyncCommand implements DatabaseAsyncTask {
             LogManager.instance().log(this, Level.WARNING, "Error on rolling back active transaction", re);
           }
         }
-        // #7615 (claude-review): unconditional on isTransactionActive(), matching
+        // #7615 (code review): unconditional on isTransactionActive(), matching
         // commitBatch()/closeTransactionBoundaryIfDurabilityPolicyChanged() - guarded only by !idempotent
         // (an idempotent query's own failure is unrelated to the shared batch, nothing to abandon), not
         // nested in the rollback branch above, so a hypothetical failure that already left the transaction

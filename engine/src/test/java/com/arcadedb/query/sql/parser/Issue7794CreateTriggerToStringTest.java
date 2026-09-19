@@ -70,7 +70,7 @@ class Issue7794CreateTriggerToStringTest extends AbstractParserTest {
   }
 
   /**
-   * claude-review follow-up: {@code actionCodeQuoted} is only populated by the parser. A statement built any other
+   * Code review follow-up: {@code actionCodeQuoted} is only populated by the parser. A statement built any other
    * way (setting {@code actionCode} directly) must still quote it on render rather than emit the bare word "null".
    */
   @Test
@@ -87,7 +87,7 @@ class Issue7794CreateTriggerToStringTest extends AbstractParserTest {
   }
 
   /**
-   * claude-review follow-up (second round): the fallback quoting escaped only the quote character and the
+   * Code review follow-up (second round): the fallback quoting escaped only the quote character and the
    * backslash, but the grammar's STRING_LITERAL rule also forbids a raw CR/LF inside the literal body - they must
    * be written as the {@code \r}/{@code \n} escape sequences. A multi-line actionCode (realistic for a JAVASCRIPT/
    * JAVA trigger body) must still reparse.

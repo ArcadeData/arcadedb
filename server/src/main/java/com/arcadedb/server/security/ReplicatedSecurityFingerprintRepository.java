@@ -51,7 +51,7 @@ import java.util.logging.Level;
  * <b>Why it is on disk rather than a flag in memory.</b> An in-memory flag is reset by every restart, so a node
  * that had long since converged would go back to "cannot judge" on each start and install the next entry
  * unconditionally - reopening the identical bypass on a far more common trigger (a routine restart or a rolling
- * upgrade) than the never-seeded cluster the flag exists for (claude-review on PR #7748). The stored fingerprint
+ * upgrade) than the never-seeded cluster the flag exists for (code review on PR #7748). The stored fingerprint
  * survives the restart, and the document it describes is the one {@code applyReplicated*} wrote to disk in the
  * same breath, so the answer after a restart is the same answer as before it.
  * <p>
@@ -89,7 +89,7 @@ import java.util.logging.Level;
  * and reissue the security change, which records every fingerprint again.
  * <p>
  * <b>The first upgrade to a version carrying this file is the same one-entry window, by construction</b>
- * (claude-review on PR #7748). This file is new, so an already-converged cluster comes up with nothing recorded on
+ * (code review on PR #7748). This file is new, so an already-converged cluster comes up with nothing recorded on
  * any node, and the first security entry after the upgrade installs without the compare-and-set of issue #7509 -
  * once per document kind. It is uniform (every node is in the same state, so none refuses what another installs)
  * and it is self-closing (that entry records the fingerprint everywhere), but for that one entry a concurrent
@@ -108,7 +108,7 @@ public class ReplicatedSecurityFingerprintRepository {
   // Holds the write and the update of {@link #persisted} together, so those two never disagree about what is on
   // disk no matter how many threads reach save(). It does NOT make record()'s check-then-write atomic: that rests
   // on the single-writer invariant documented on record(), and the cost of breaking it is named there
-  // (claude-review on PR #7817).
+  // (code review on PR #7817).
   private final        Object              saveLock  = new Object();
   // Read once at construction and written through on every update, so the common path - one lookup per applied
   // security entry - touches no filesystem.
@@ -140,7 +140,7 @@ public class ReplicatedSecurityFingerprintRepository {
    * the document's own write, which already fsyncs.
    * <p>
    * <b>The check-then-put-then-write is not atomic, and does not need to be, because this runs on ONE thread</b>
-   * (claude-review on PR #7748). Every production caller is an {@code applyReplicated*} inside
+   * (code review on PR #7748). Every production caller is an {@code applyReplicated*} inside
    * {@code ArcadeStateMachine}'s {@code applySecurity*Entry}, reachable only from the Raft apply callback, which
    * Ratis serializes per division. A future caller that reaches the single-argument {@code applyReplicated*}
    * overloads from anywhere else would break that, so it is written here rather than left to be inferred: the
@@ -235,7 +235,7 @@ public class ReplicatedSecurityFingerprintRepository {
         channel.force(true);
       }
 
-      // Owner-only before publishing, the same as every other file in this directory (claude-review on PR
+      // Owner-only before publishing, the same as every other file in this directory (code review on PR
       // #7748). What is stored is a digest of a document rather than credential material, but an attacker
       // who can read it can confirm a candidate copy of the security document - an exfiltrated backup, say -
       // against what this node has installed, and a convention that holds for three files in a directory
@@ -301,7 +301,7 @@ public class ReplicatedSecurityFingerprintRepository {
 
     // Distinguished because the two states read the same to an operator otherwise: a write that failed with a
     // record already on disk leaves a file that had to be unlinked, while the first failed write on a fresh node
-    // never had one, and reporting the second as a removal describes a file that never existed (claude-review on
+    // never had one, and reporting the second as a removal describes a file that never existed (code review on
     // PR #7817).
     final String markerState = removed ?
         String.format("'%s' has been REMOVED rather than left naming a document this node has moved past", FILE_NAME) :

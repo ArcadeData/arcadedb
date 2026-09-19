@@ -70,7 +70,7 @@ class Issue7563ShutdownTargetAndFallbackNoticeTest {
    * A peer is named {@code host_raftPort} and nobody types that, so the name an operator gives is matched
    * against the START of the peer id and of the declared address rather than against the whole of either. The
    * peer that IS {@code arcadedb-1} is selected, and {@code arcadedb-10} - which the old {@code contains} rule
-   * matched just as happily - is not (claude-review on PR #7854).
+   * matched just as happily - is not (code review on PR #7854).
    */
   @Test
   void aNameIsMatchedAsAWholeNameRatherThanAsAnySubstring() {

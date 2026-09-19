@@ -476,7 +476,7 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
     final File directory = new File(db.getDatabasePath());
     // listSealedFiles turns an unreadable directory into an EMPTY array, which reads exactly like "this database
     // has no sealed store" - and the difference decides whether this answer covers them. The ...OrNull variant
-    // keeps that distinction while still listing the directory ONCE (claude-review on PR #7474).
+    // keeps that distinction while still listing the directory ONCE (code review on PR #7474).
     final File[] sealedFiles = TimeSeriesSealedStore.listSealedFilesOrNull(directory);
     if (sealedFiles == null) {
       LogManager.instance().log(PostVerifyDatabaseHandler.class, Level.WARNING,

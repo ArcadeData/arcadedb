@@ -127,7 +127,7 @@ final class TrustedHttpClientCache {
    * for a peer that is not accepting connections. The probe's PLAIN-HTTP sibling, {@code PeerCapabilityQuery.HTTP},
    * is a JVM-wide static built before any server exists and keeps its own 5s - so an operator who lowers the
    * setting speeds up the probe on a TLS cluster and not on a plaintext one. The setting's description says so
-   * rather than this being left for a reader to discover (claude-review on PR #7747).
+   * rather than this being left for a reader to discover (code review on PR #7747).
    */
   static Duration connectTimeoutOf(final ContextConfiguration configuration) {
     return Duration.ofMillis(Math.max(configuration.getValueAsLong(GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT),

@@ -202,7 +202,7 @@ public class WebSocketInsertSessionManager {
     // it would find the claim in byChannel, clear it, and find nothing in `sessions` to roll back, because the
     // session was not registered yet. The close fires once per connection, so the session it missed would then be
     // orphaned until the idle sweep - the very symptom this guard exists to prevent, on a window of microseconds
-    // rather than of an arbitrarily delayed frame (claude-review on PR #7855).
+    // rather than of an arbitrarily delayed frame (code review on PR #7855).
     //
     // Re-reading the claim under the same per-key critical section is what closes it. The session is in `sessions`
     // and has begun by now, so the two orderings are genuinely exhaustive: a close AFTER this point finds the

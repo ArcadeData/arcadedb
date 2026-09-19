@@ -77,7 +77,7 @@ public class FileUtils {
    * Decided ONCE, from the platform itself, rather than latched the first time an open happens to fail. Inferring
    * it from a failure would let ONE uncooperative directory - a network mount, a directory with unusual
    * permissions - turn off the fsync for every other database in the JVM, silently dropping the machine-crash
-   * guarantee everywhere on the evidence of a single call (claude-review on PR #7855). A non-Windows file store
+   * guarantee everywhere on the evidence of a single call (code review on PR #7855). A non-Windows file store
    * that still refuses simply pays one exception per publish and is logged; that cost is local to it.
    */
   private static final boolean       NO_DIRECTORY_SYNC_ON_THIS_PLATFORM =
@@ -664,7 +664,7 @@ public class FileUtils {
       // IOException covers both the open ("access is denied" on a file store that will not present a directory as a
       // channel) and the force itself; UnsupportedOperationException is a provider refusing the open outright.
       // Narrow on purpose: an unexpected RuntimeException from a custom FileSystemProvider is a fault worth
-      // surfacing, not something to absorb into a FINE log (claude-review on PR #7855).
+      // surfacing, not something to absorb into a FINE log (code review on PR #7855).
       reportNoDirectorySync(dir);
       return false;
     }

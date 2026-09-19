@@ -33,7 +33,7 @@ import java.net.http.HttpRequest;
  * handler authenticates, so the POST was answered 401 while the operator was told the peer had stopped. There
  * were six other dials spelling the pair out correctly at the time, which is what made the wrong one hard to
  * see. A dial that calls this cannot get it wrong, and a new dial that does not call it is visible in review
- * (claude-review on PR #7854).
+ * (code review on PR #7854).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

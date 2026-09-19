@@ -2919,7 +2919,7 @@ public class SelectExecutionPlanner {
     // evaluates the right-hand side of a tag equality at PLANNING time against a null record, and a cap is an
     // optimisation that must never be the reason a query that used to run now fails. Reachability here is
     // narrower - this method needs an explicit ORDER BY <ts> DESC - but the exposure is the same shared helper,
-    // and an asymmetric guard between two methods calling it reads as an oversight (claude-review on PR #7720).
+    // and an asymmetric guard between two methods calling it reads as an oversight (code review on PR #7720).
     try {
       if (!isTimeSeriesWhereFullyPushedDown(tsType, info, context))
         return 0;
@@ -2967,7 +2967,7 @@ public class SelectExecutionPlanner {
     // The DISTINCT/GROUP BY/aggregate trio is checked again inside isTimeSeriesTimestampOrderByAsc, and the
     // overlap is deliberate rather than dead: a query with no ORDER BY at all never reaches that method, so
     // without this line the three would go unchecked on exactly the shape - a bare LIMIT n - this method was
-    // added to serve (claude-review on PR #7720).
+    // added to serve (code review on PR #7720).
     if (info.distinct || info.groupBy != null || info.aggregateProjection != null)
       return 0;
 

@@ -55,7 +55,7 @@ public class DatabaseAsyncTransaction implements DatabaseAsyncTask {
 
   @Override
   public boolean writesToSharedBatch() {
-    // #7615 (claude-review): functionally unreachable either way - executeTransaction() always leaves the
+    // #7615 (code review): functionally unreachable either way - executeTransaction() always leaves the
     // transaction inactive before returning (its own commit succeeded, or the final rollback on exhausted
     // retries), so executeTask()'s own !isTransactionActive() branch always wins first and this task is
     // never classified via writesToSharedBatch() at all. Made explicit rather than left incidental: this

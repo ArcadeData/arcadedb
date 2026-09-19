@@ -29,7 +29,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * What {@link PostSecuritySeedHandler} makes of the request body, before any Raft entry is submitted
- * (claude-review on PR #7854).
+ * (code review on PR #7854).
  * <p>
  * Two decisions live there and neither is reached by the integration tests, which send well-formed requests
  * from the production client: whether the caller's digests mean "already in step", and what a garbled
@@ -136,7 +136,7 @@ class PostSecuritySeedHandlerRequestTest {
    * {@code AbstractServerHttpHandler} hands a null payload for an absent or blank body, and the handler reads
    * the request for every decision it makes. An empty POST is a well-formed request for the whole document set
    * - no reason, no fingerprints, no catchUp - so it is answered rather than refused, and certainly not with
-   * the NPE that reached the caller as a 500 (claude-review on PR #7854).
+   * the NPE that reached the caller as a 500 (code review on PR #7854).
    */
   @Test
   void anEmptyRequestBodyIsAWellFormedRequestForEverything() {

@@ -413,7 +413,7 @@ public class Issue7306HttpStreamingQueryIT extends BaseGraphServerTest {
    * record, so it conflicts with nothing, but it writes a whole archive to the server filesystem. Gating streaming
    * on idempotency alone let it through, where a retry of the auto-commit wrapper would re-run the whole backup
    * and stream into an exchange already closed. The gate reads the statement's declared operation types instead,
-   * so this is refused for the same reason an UPDATE is (issue #7306, claude-review).
+   * so this is refused for the same reason an UPDATE is (issue #7306, code review).
    */
   @Test
   void backupDatabaseIsRefusedOnTheStreamingEncodingThoughItIsIdempotent() throws Exception {
@@ -426,7 +426,7 @@ public class Issue7306HttpStreamingQueryIT extends BaseGraphServerTest {
   /**
    * The buffered encoding reports the cap the caller stated, refusing outright only when the ceiling actually cut
    * the result. The stream used to report the post-ceiling value instead, so the same untruncated query described
-   * itself differently depending on how it was asked for (claude-review).
+   * itself differently depending on how it was asked for (code review).
    */
   @Test
   void theTrailerReportsTheStatedLimitAsTheBufferedEncodingDoes() throws Exception {

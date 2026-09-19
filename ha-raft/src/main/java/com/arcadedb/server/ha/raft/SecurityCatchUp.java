@@ -100,7 +100,7 @@ final class SecurityCatchUp implements AutoCloseable {
    * How long the once-per-start request spreads itself over, chosen per node.
    * <p>
    * A full-cluster restart elects one leader and every follower observes it at once, so without this they all
-   * dial within milliseconds of each other (claude-review on PR #7854). Each request is cheap - a bounded poll
+   * dial within milliseconds of each other (code review on PR #7854). Each request is cheap - a bounded poll
    * and three string comparisons - so the burst is unlikely to matter at the cluster sizes this targets, but
    * the leader is also the node everything else is waiting on at exactly that moment, and spreading the
    * arrivals costs nothing. Same reflex as {@code KubernetesAutoJoin}'s own join jitter.
@@ -209,7 +209,7 @@ final class SecurityCatchUp implements AutoCloseable {
         // of them.
         Thread.sleep(ThreadLocalRandom.current().nextLong(START_JITTER_MS));
         // The module's own notify-based wait rather than a poll loop of this class's invention
-        // (claude-review on PR #7854): it is woken by notifyApplied on every path that advances the index,
+        // (code review on PR #7854): it is woken by notifyApplied on every path that advances the index,
         // including the snapshot install, and it already knows about the stale-snapshot floor of issue #6111.
         // Best-effort by contract, which is what this caller wants - a request made slightly early costs a
         // comparison against documents that were about to arrive.
@@ -230,7 +230,7 @@ final class SecurityCatchUp implements AutoCloseable {
         // relies on is that its state came from the same replicated entries everyone else applied - which holds
         // unless it was restored out of band (a hand-edited or backup-restored config directory).
         //
-        // So it is said out loud rather than skipped silently (claude-review on PR #7854): an operator who DID
+        // So it is said out loud rather than skipped silently (code review on PR #7854): an operator who DID
         // restore that directory by hand has one line in the log naming the node whose copy the cluster is now
         // about to converge on.
         LogManager.instance().log(this, Level.INFO,

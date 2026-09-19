@@ -51,7 +51,7 @@ public class CoreApiSpec implements OpenApiContributor {
   // was raised. GET /query degrades, and so do /begin, /commit and /rollback, whose degrade is what makes an
   // idempotent retry of a commit work. Documented on all of them, because a client generated from this contract
   // would otherwise not know to look for the one signal that says an answer came from OUTSIDE the transaction it
-  // named (claude-review on PR #7730). The operations that REFUSE a stale id instead - POST /query and
+  // named (code review on PR #7730). The operations that REFUSE a stale id instead - POST /query and
   // /command, whose requiresTransaction() is true - never send it, and do not name it here.
   // The paragraph itself lives in SpecBuilders, next to the other four, because issue #7681 needs it on ten
   // Grafana and Prometheus operations too.
@@ -1292,7 +1292,7 @@ public class CoreApiSpec implements OpenApiContributor {
     // Every batch failure reports what it had attempted - that is the whole point of this shape - so the four
     // below plus the three accounting numbers are unconditional.
     //
-    // 'exception' is NOT among them, and that is the correction claude-review caught on PR #7749: it is
+    // 'exception' is NOT among them, and that is the correction the code review caught on PR #7749: it is
     // unconditional on the 400, but this schema is bound to the 408 as well, and two of the three paths that
     // answer 408 have no exception to name - a body that simply ended before its announced length, and a
     // malformed record that turned out to be a cut upload rather than a bad line. partialPayloadResponse writes

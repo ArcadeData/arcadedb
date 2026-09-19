@@ -34,7 +34,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * The fail-open branches of {@link ReplicatedSecurityFingerprintRepository}, which
- * {@code Issue7693FirstReplicatedSecurityEntryTest} exercises only on the happy path (claude-review on PR #7748).
+ * {@code Issue7693FirstReplicatedSecurityEntryTest} exercises only on the happy path (code review on PR #7748).
  * <p>
  * Both of them are log-and-swallow, so nothing downstream would notice if they stopped behaving: a load that
  * threw would take the server down over a marker file, and a save that threw would fail a committed security
@@ -136,7 +136,7 @@ class ReplicatedSecurityFingerprintRepositoryTest {
   /**
    * The file lands in the same configuration directory as {@code server-users.jsonl} and the API-token document,
    * both of which are published owner-only on purpose. A convention that holds for three files in a directory and
-   * not the fourth is one nobody can rely on (claude-review on PR #7748).
+   * not the fourth is one nobody can rely on (code review on PR #7748).
    */
   @Test
   void theFileIsPublishedOwnerOnly() throws IOException {

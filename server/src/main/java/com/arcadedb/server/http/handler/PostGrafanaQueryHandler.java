@@ -103,7 +103,7 @@ public class PostGrafanaQueryHandler extends DatabaseAbstractHandler {
     try {
       // 'targets' first, so that a request which is malformed in more than one way is told about the member the
       // whole endpoint is built around before it is told about a range bound. That is also the order the handler
-      // used to check in (claude-review on PR #7680).
+      // used to check in (code review on PR #7680).
       targets = TimeSeriesHandlerUtils.requireArray(payload, "targets", "targets");
       fromTs = TimeSeriesHandlerUtils.optLong(payload, "from", Long.MIN_VALUE, "from");
       toTs = TimeSeriesHandlerUtils.optLong(payload, "to", Long.MAX_VALUE, "to");
@@ -185,7 +185,7 @@ public class PostGrafanaQueryHandler extends DatabaseAbstractHandler {
     // folds a 403 into a frame: the denial reaches the handler mapper and answers 403 for the request.
     final TimeSeriesEngine engine = tsType.getEngine(SecurityDatabaseUser.ACCESS.READ_RECORD);
     if (engine == null)
-      // Distinct from "not a TimeSeries type" (issue #6356 follow-up, claude-review on PR #6779): this type IS
+      // Distinct from "not a TimeSeries type" (issue #6356 follow-up, code review on PR #6779): this type IS
       // one, its storage just failed to load - the old shared message sent an operator chasing the wrong cause.
       return buildErrorFrame(
           "TimeSeries type '" + typeName + "' has no storage engine available: " + tsType.getEngineUnavailableReason());

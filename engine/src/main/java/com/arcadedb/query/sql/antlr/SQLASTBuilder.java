@@ -6724,7 +6724,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     for (final SQLParser.TsTypeMemberContext memberCtx : bodyCtx.tsTypeMember()) {
       if (memberCtx.TIMESTAMP() != null) {
         // Through visit(), not getText(): the raw token text of a back-quoted name carries its quotes and its
-        // escapes, so the message would name a column the user did not write (claude review on PR #7757).
+        // escapes, so the message would name a column the user did not write (code review on PR #7757).
         final Identifier timestamp = (Identifier) visit(memberCtx.identifier());
         if (timestampSeen)
           // The single-TIMESTAMP rule is the TYPE's, and the builder enforces it for every path; saying so here
@@ -6739,7 +6739,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         if (memberCtx.tsPrecision() != null)
           // Locale.ENGLISH, not the default locale: the four precision names all contain an 'i', and under a
           // Turkish default locale the no-arg toUpperCase maps it to a dotted capital that matches none of them
-          // (claude review on PR #7721).
+          // (code review on PR #7721).
           stmt.precision = memberCtx.tsPrecision().getText().toUpperCase(Locale.ENGLISH);
         // The member-level tsCodecClause is the TIMESTAMP column's: the tag and field ones are nested inside
         // tsTagColumnDef/tsFieldColumnDef and so are not children of this context.

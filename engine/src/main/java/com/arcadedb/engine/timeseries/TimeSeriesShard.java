@@ -203,7 +203,7 @@ public class TimeSeriesShard implements AutoCloseable {
     // Its own transaction, tracked, for the reason the two blocks above track theirs: a failed commit() has
     // already popped it, and a shard is commonly constructed from inside a caller's transaction - the comment on
     // initHeaderPage says so - which is the transaction a bare isTransactionActive() would have rolled back
-    // (issue #7732, claude-review on PR #7747).
+    // (issue #7732, code review on PR #7747).
     final OwnTransaction recovery = OwnTransaction.begin(database);
     try {
       if (mutableBucket.isCompactionInProgress()) {

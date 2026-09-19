@@ -544,7 +544,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       final TagProjection projection = TagProjection.of(columnIndices, tagFilter);
 
       // Loop-invariant for the whole walk, so built once rather than per block: a projection does not vary from
-      // block to block, and neither does the timestamp column (claude-review on PR #7730). Named apart from the
+      // block to block, and neither does the timestamp column (code review on PR #7730). Named apart from the
       // TagProjection above because they answer different questions: this one is the membership test the
       // combinations fast path reads a DECLARATION through, and never widens - #7710's walk takes no filter.
       BitSet combinationColumns = null;
@@ -762,7 +762,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * one column's declared set (issue #7660), and {@link #declaredSingleCombination}, which reads a whole
    * single-valued combination off the entry (issue #7710). They arrived on separate branches with a byte-identical
    * copy each; widening this predicate to another codec or type in only one of them would silently reintroduce
-   * exactly the class of defect both issues are about (claude-review on PR #7730).
+   * exactly the class of defect both issues are about (code review on PR #7730).
    */
   private static boolean declaredDistinctValuesAreExact(final ColumnDefinition column) {
     return column.getRole() == ColumnDefinition.ColumnRole.TAG && column.getDataType() == Type.STRING
@@ -2869,7 +2869,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
   /**
    * {@link #listSealedFiles(File)} without the empty-array fallback, so a caller that cares can tell a directory
-   * it could NOT list apart from one holding no sealed store (claude-review on PR #7474).
+   * it could NOT list apart from one holding no sealed store (code review on PR #7474).
    * <p>
    * The two are the same answer to {@code listSealedFiles} and must not be to a checksum or a backup: answering
    * "this database has no sealed store" for a directory that could not be read produces a file set that is
@@ -3025,7 +3025,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    *
    * @param projection the projected NON-timestamp column indices, as the set {@link #walkBlocks} built ONCE for
    *                   the whole walk - it does not vary per block, and neither does {@code tsColIdx}, in a method
-   *                   whose entire purpose is to do no per-block work (claude-review on PR #7730). {@code null}
+   *                   whose entire purpose is to do no per-block work (code review on PR #7730). {@code null}
    *                   means every column, which is never answerable from the declaration because a value column
    *                   has none
    * @param width      how many columns {@code projection} selects, i.e. the row's width minus the timestamp
@@ -3052,7 +3052,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
       // Read inside the loop, not before it: a type with NO tag columns declares nothing, and its blocks carry a
       // null here - yet such a block holds exactly one (empty) combination and needs no read at all. Checking the
-      // array up front turned the simplest case of all into a full decompression (claude-review on PR #7730).
+      // array up front turned the simplest case of all into a full decompression (code review on PR #7730).
       if (entry.tagDistinctValues == null || c >= entry.tagDistinctValues.length
           || !declaredDistinctValuesAreExact(columns.get(c)))
         return null;

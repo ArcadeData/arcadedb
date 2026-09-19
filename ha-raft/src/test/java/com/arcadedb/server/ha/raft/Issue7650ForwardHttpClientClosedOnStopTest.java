@@ -32,7 +32,7 @@ import static org.mockito.Mockito.when;
 
 /**
  * Regression test for a review finding on PR #7650: {@code RaftHAServer.forwardHttpClient} - the client every
- * {@code RaftReplicatedDatabase} this server wraps a database with now shares (issue: claude-review finding on
+ * {@code RaftReplicatedDatabase} this server wraps a database with now shares (issue: code review finding on
  * the same PR, "one client per node, not one per database") - was built in the constructor but never closed in
  * {@link RaftHAServer#stop()}, unlike its two siblings {@code capabilityHttpsClients}/{@code forwardHttpsClients},
  * which {@code stop()} already closes with an explicit "an unclosed HttpClient holds a connection pool and a

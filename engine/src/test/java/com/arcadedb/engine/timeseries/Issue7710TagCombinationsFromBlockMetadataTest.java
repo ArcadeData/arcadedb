@@ -190,7 +190,7 @@ class Issue7710TagCombinationsFromBlockMetadataTest extends TestHelper {
    * from its {@code sampleCount} and {@code minTimestamp} alone. {@code GetPromQLSeriesHandler} spells that
    * projection out by name, so it is not a corner case nobody reaches; and a block with no TAG column declares
    * no distinct values at all, which is why the declaration has to be consulted per projected column rather than
-   * required up front (claude-review on PR #7730).
+   * required up front (code review on PR #7730).
    */
   @Test
   void answersAMetricWithNoTagColumnsWithoutReadingABlock() throws Exception {
@@ -231,7 +231,7 @@ class Issue7710TagCombinationsFromBlockMetadataTest extends TestHelper {
    * The MIXED block: one projected tag single-valued, the other not. The fast path needs EVERY projected column
    * to declare exactly one value, and the two extremes - all single, all multiple - do not exercise the
    * short-circuit between them. A block like this is consistent with two combinations and with four, so it has
-   * to be read (claude-review on PR #7730).
+   * to be read (code review on PR #7730).
    */
   @Test
   void readsABlockWhereOnlyOneOfTheProjectedTagsIsSingleValued() throws Exception {

@@ -167,7 +167,7 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
               // Only NaN, not every non-finite: an infinity IS a value in SQL arithmetic, and the JSON layer
               // folds it in only because JSON cannot write one. Asked of TimeSeriesNaN rather than spelled out
               // here, so the two SQL boundaries cannot drift apart from the storage layer's own definition of
-              // absence (claude-review on PR #7747). A non-floating Number can never be NaN, so the widened
+              // absence (code review on PR #7747). A non-floating Number can never be NaN, so the widened
               // instanceof costs nothing but covers Float without a second arm.
               if (value instanceof Number n && TimeSeriesNaN.isAbsent(n.doubleValue()))
                 value = null;

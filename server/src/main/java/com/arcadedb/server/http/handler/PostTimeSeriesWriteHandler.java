@@ -118,7 +118,7 @@ public class PostTimeSeriesWriteHandler extends DatabaseAbstractHandler {
    * {@code IllegalArgumentException} {@code LineProtocolParser.readFieldValue} raises is caught by
    * {@code parseLine}, which returns null and has {@code parse} log-and-skip the line, so a malformed body
    * answers 204 rather than 400. Named here because the wrong rationale in a comment outlives the right one in
-   * an issue (claude-review on PR #7748).
+   * an issue (code review on PR #7748).
    */
   @Override
   protected boolean participatesInSessionTransaction() {

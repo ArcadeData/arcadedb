@@ -5136,7 +5136,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * the behaviour the {@code Set.add()} this replaced already had. A quarantined database goes on failing - every
    * later committed entry for it hits the same wall - so the last cause would be noise from a database that is
    * already waiting for a resync, while the first is the one that describes what went wrong. The map is cleared
-   * when the resync lands, so the next quarantine records afresh (claude-review on PR #7747).
+   * when the resync lands, so the next quarantine records afresh (code review on PR #7747).
    */
   // @VisibleForTesting
   void markStateDiverged(final String dbName, final DivergenceCause cause) {
@@ -5241,7 +5241,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     /**
      * The quarantined databases, sorted so a status poll payload is stable between ticks on an unchanged node.
      * <p>
-     * DERIVED from {@link #divergenceCauses} rather than carried beside it (claude-review on PR #7747): the two
+     * DERIVED from {@link #divergenceCauses} rather than carried beside it (code review on PR #7747): the two
      * were the same set spelled twice, and a future caller updating one and not the other would have published a
      * name with no cause or a cause with no name. Computed per call, which costs an allocation only on a node
      * that is actually holding something back - the same trade {@link #getLocalResyncState} makes.

@@ -776,7 +776,7 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
    * <p>
    * <b>Reads {@code getRaftGroup().getPeers()} directly</b>, rather than through one of the reconciled-membership
    * accessors this module steers "which peers exist" questions toward, and that is the right source here
-   * (claude-review on PR #7854). Those accessors answer "who counts as a replica" - who to replicate to, who to
+   * (code review on PR #7854). Those accessors answer "who counts as a replica" - who to replicate to, who to
    * wait for a quorum from - and filter accordingly. This question is different: an operator typed a name, and
    * the only useful answer is the peer that name DECLARES, including one that a configuration change has not
    * finished committing.
@@ -809,7 +809,7 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
    * The name has to be a <b>whole name</b>, not any substring. A plain {@code contains} was the previous rule
    * and it shuts down the wrong node: in a cluster of {@code arcadedb-10} and {@code arcadedb-2},
    * {@code shutdown arcadedb-1} is a substring of exactly ONE peer, so the ambiguity guard sees nothing to
-   * refuse and stops {@code arcadedb-10} (claude-review on PR #7854). The ambiguity guard only ever covered
+   * refuse and stops {@code arcadedb-10} (code review on PR #7854). The ambiguity guard only ever covered
    * the case where the mistake happens to hit two peers at once; this covers the case where it hits one.
    * <p>
    * "Whole name" means the candidate either IS the name, or continues past it with a character that ends a

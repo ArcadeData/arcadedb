@@ -29,7 +29,7 @@ It remains a latent footgun: any future serialization path that calls
 would emit a header/body mismatch on a 5.x connection and corrupt the stream. The
 accessors cannot be made version-correct because they are no-arg interface methods
 with no access to the negotiated version (only `writeTo()` has it, via the writer).
-Raised repeatedly by Claude and Gemini reviews on PR #5059; deferred out of that PR
+Raised repeatedly by the automated reviews on PR #5059; deferred out of that PR
 because it is a serialization-layer refactor, not a protocol-negotiation change.
 
 ## Scope verification (done up front against the code)

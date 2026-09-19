@@ -120,7 +120,7 @@ class Issue7563PlaintextPeerDialSchemeTest {
 
   /**
    * The branch itself: an HTTPS probe with no client to send it on answers {@code FATAL}, not
-   * {@code RETRYABLE} (claude-review on PR #7838), and - the other half of the security property - it answers
+   * {@code RETRYABLE} (code review on PR #7838), and - the other half of the security property - it answers
    * rather than quietly falling back to the plain listener.
    * <p>
    * Driven through {@code queryPeer}, which is where the decision is made. The no-client branch answers

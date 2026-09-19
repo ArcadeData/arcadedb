@@ -134,7 +134,7 @@ class Issue7711DownsampleNonDictionaryTagTest extends TestHelper {
 
   /**
    * Why {@code decodeColumn}'s new {@code default} arm is unreachable rather than merely believed to be
-   * (claude-review on PR #7730). It throws for a codec it cannot decode, which would turn a previously-silent
+   * (code review on PR #7730). It throws for a codec it cannot decode, which would turn a previously-silent
    * corruption into a hard failure on a background maintenance path - so it matters that no sealed block can
    * carry such a column in the first place.
    * <p>

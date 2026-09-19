@@ -162,7 +162,7 @@ the affected engine tests; full e2e verification runs in CI (needs the branch-bu
 - Commits split by component for reviewability: (1) Duration+Point, (2) Path, (3) semantic errors,
   (4) conformance/spec + suite flips.
 - One PR closing #4997/#4998/#4999 and ticking those boxes on #4890.
-- Review loop: Claude + Gemini, >= 4 cycles, each answered via `/receiving-code-review`.
+- Review loop: the automated reviewers, >= 4 cycles, each answered via `/receiving-code-review`.
 
 ## Out of scope
 

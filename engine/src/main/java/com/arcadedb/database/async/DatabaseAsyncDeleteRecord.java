@@ -64,7 +64,7 @@ public class DatabaseAsyncDeleteRecord implements DatabaseAsyncTask {
           LogManager.instance().log(this, Level.WARNING, "Error on rolling back active transaction", re);
         }
       }
-      // #7615 (claude-review): unconditional, matching commitBatch()/closeTransactionBoundaryIfDurabilityPolicyChanged()
+      // #7615 (code review): unconditional, matching commitBatch()/closeTransactionBoundaryIfDurabilityPolicyChanged()
       // - not nested in the isTransactionActive() branch above, so a hypothetical failure that already left the
       // transaction inactive before this catch runs (not via the rollback() right above) still notifies every
       // sibling command buffered earlier in this same batch, each of which already fired its own onComplete and

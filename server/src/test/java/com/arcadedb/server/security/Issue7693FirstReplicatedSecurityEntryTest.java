@@ -159,7 +159,7 @@ class Issue7693FirstReplicatedSecurityEntryTest {
   }
 
   /**
-   * The restart case, raised by claude-review on PR #7748. An in-memory "this node has converged" flag is reset by
+   * The restart case, raised by the code review on PR #7748. An in-memory "this node has converged" flag is reset by
    * every restart, so a node that had long since converged would go back to "cannot judge" on each start and
    * install the very next entry unconditionally - the identical bypass, on a far more common trigger (a routine
    * restart, a rolling upgrade) than the never-seeded cluster the rule exists for. What is recorded is therefore
