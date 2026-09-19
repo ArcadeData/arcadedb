@@ -526,7 +526,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     checkDatabaseIsOpen();
     stats.countBucket.incrementAndGet();
     return ((Number) ((ResultSet) databaseCommand("query", "sql",
-        "select count(*) as count from bucket:" + Identifier.quote(bucketName), null, false,
+        "select count(*) as count from " + bucketTarget(bucketName), null, false,
         (connection, response) -> createResultSet(response))).nextIfAvailable().getProperty("count")).longValue();
   }
 
@@ -619,9 +619,22 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     };
   }
 
+  /**
+   * The SQL spelling of a bucket as a query TARGET, with the name escaped.
+   * <p>
+   * Not {@code bucket:} + a quoted name: the grammar's bucket target in a FROM position is the single lexer token
+   * {@code BUCKET_IDENTIFIER: BUCKET COLON IDENTIFIER}, and that {@code IDENTIFIER} is the BARE form - back-ticks
+   * there are a parse error, which is how #7914's first pass turned a working {@code countBucket} into one that
+   * counted nothing (PR #7942 review). The single-element bucket LIST is the form that does take an
+   * {@code identifier}, quoted ones included, and it addresses the same one bucket.
+   */
+  private static String bucketTarget(final String bucketName) {
+    return "bucket:[" + Identifier.quote(bucketName) + "]";
+  }
+
   @Override
   public Iterator<Record> iterateBucket(final String bucketName) {
-    final ResultSet resultSet = query("sql", "select from bucket:" + Identifier.quote(bucketName));
+    final ResultSet resultSet = query("sql", "select from " + bucketTarget(bucketName));
     return new Iterator<>() {
       @Override
       public boolean hasNext() {

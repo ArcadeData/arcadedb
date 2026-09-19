@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
@@ -26,6 +27,7 @@ import java.util.Map;
 import java.util.stream.StreamSupport;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #7914 made {@code RemoteVertex.isConnectedTo} BIND its edge type instead of interpolating it into the
@@ -129,6 +131,30 @@ class Issue7914BoundEdgeTypeArgumentTest extends TestHelper {
         .as("two bound type names must filter exactly as the two literals did")
         .isEqualTo(viaLiterals)
         .isEqualTo(2);
+  }
+
+  /**
+   * The shape {@code countBucket}/{@code iterateBucket} send. A bucket target in a FROM position is the single
+   * lexer token {@code BUCKET_IDENTIFIER: BUCKET COLON IDENTIFIER}, whose identifier is the BARE form, so
+   * {@code bucket:`name`} is a PARSE ERROR - which is how #7914's first pass turned a working countBucket into one
+   * that counted nothing. The single-element bucket LIST takes a quoted identifier and addresses the same bucket
+   * (PR #7942 review).
+   */
+  @Test
+  void aQuotedBucketTargetCountsTheSameBucketAsTheBareOne() {
+    database.command("sql", "create document type Bkt");
+    database.transaction(() -> database.command("sql", "insert into Bkt set n = 1"));
+
+    final String bucket = database.getSchema().getType("Bkt").getBuckets(false).getFirst().getName();
+
+    final long bare = count("select count(*) as count from bucket:" + bucket, Map.of());
+    final long quotedList = count("select count(*) as count from bucket:[`" + bucket + "`]", Map.of());
+
+    assertThat(quotedList).as("the escaped form must address the same bucket").isEqualTo(bare).isEqualTo(1);
+
+    // and the shape that looked like the obvious escaping does not parse at all
+    assertThatThrownBy(() -> database.query("sql", "select count(*) as count from bucket:`" + bucket + "`"))
+        .isInstanceOf(CommandSQLParsingException.class);
   }
 
   private long count(final String sql, final Map<String, Object> params) {
