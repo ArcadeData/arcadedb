@@ -242,6 +242,48 @@ class CypherExistenceConstraintWithSetIssue7945Test {
   }
 
   /**
+   * The same partial completion through MERGE rather than CREATE. It is worth its own test because the two are
+   * structured differently: CreateStep opens one pattern-create region around the whole path, while MergeStep
+   * opens one per vertex and one per relationship. The depth is only ever asked "greater than zero?" at the
+   * moment an element is written, so both shapes must answer the same way.
+   */
+  @Test
+  void aMergedPathWhoseElementsAreNeverCompletedLeavesNothingBehind() {
+    database.command("cypher", "CREATE CONSTRAINT rel_since_exists IF NOT EXISTS FOR ()-[r:KNOWS]-() REQUIRE r.since IS NOT NULL")
+        .close();
+
+    assertThatThrownBy(() -> database.command("cypher",
+        "MERGE (a:Record {id: 'm1'})-[r:KNOWS]->(b:Record {id: 'm2'})"))
+        .isInstanceOf(CommandExecutionException.class)
+        .rootCause().isInstanceOf(ValidationException.class);
+
+    assertThat(countRecords()).isZero();
+    try (final ResultSet rs = database.query("cypher", "MATCH ()-[r:KNOWS]->() RETURN count(r) AS c")) {
+      assertThat(rs.next().<Number>getProperty("c").longValue()).isZero();
+    }
+  }
+
+  /**
+   * A MERGE path whose vertices are completed but whose relationship is not: only the relationship is taken back.
+   */
+  @Test
+  void aMergedPathKeepsTheCompletedVerticesWhenTheRelationshipIsNot() {
+    database.command("cypher", "CREATE CONSTRAINT rel_since_exists IF NOT EXISTS FOR ()-[r:KNOWS]-() REQUIRE r.since IS NOT NULL")
+        .close();
+
+    assertThatThrownBy(() -> database.command("cypher",
+        "MERGE (a:Record {id: 'm3'})-[r:KNOWS]->(b:Record {id: 'm4'}) SET a.orgId = 'o', b.orgId = 'o'"))
+        .isInstanceOf(CommandExecutionException.class)
+        .rootCause().isInstanceOf(ValidationException.class)
+        .hasMessageContaining("since");
+
+    assertThat(countRecords()).isEqualTo(2);
+    try (final ResultSet rs = database.query("cypher", "MATCH ()-[r:KNOWS]->() RETURN count(r) AS c")) {
+      assertThat(rs.next().<Number>getProperty("c").longValue()).isZero();
+    }
+  }
+
+  /**
    * The mirror image: the vertices are completed and the relationship is not, so only the relationship is taken
    * back and the two nodes stay.
    */
