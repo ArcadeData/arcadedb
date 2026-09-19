@@ -213,6 +213,8 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
       LogManager.instance().log(this, Level.INFO, "Importing the following document properties: %s", null, properties);
 
+      final int headerColumns = headerColumnsOf(entity);
+
       // In "abort" mode, rows accumulate here instead of directly in context.createdDocuments, merged in below only
       // once the whole file has parsed without a mid-loop failure. On failure this is deliberate even when
       // ownsTransaction is false: rows saved before the failing one are left staged, uncommitted, in the caller's
@@ -239,9 +241,18 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         }
 
         try {
+          // THE SAME ARITY GATE THE ANALYSIS PASS APPLIES, INSIDE THE PER-ROW try SO -onRowError GOVERNS IT HERE TOO
+          checkRowIsNotLongerThanHeader(line, row.length, headerColumns);
+          reportShortRow(line, row.length, headerColumns, context);
+
           final MutableDocument document = database.newDocument(settings.documentTypeName);
 
           for (final AnalyzedProperty prop : properties) {
+            // A ROW SHORTER THAN THE HEADER DOES NOT SET THE TRAILING PROPERTIES - IT USED TO THROW
+            // ArrayIndexOutOfBoundsException HERE INSTEAD (ISSUE #7782)
+            if (prop.getIndex() >= row.length)
+              continue;
+
             final String value = row[prop.getIndex()];
             if (value != null && !value.isEmpty())
               document.set(prop.getName(), value);
@@ -315,6 +326,56 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     } catch (final RuntimeException e) {
       LogManager.instance().log(this, Level.FINE, "Error stopping the CSV/TSV parser during cleanup", e);
     }
+  }
+
+  /**
+   * Refuses a row that carries MORE columns than the header declares, which is a row error like any other and
+   * therefore obeys {@code -onRowError}.
+   * <p>
+   * It did not. The analysis pass indexed {@code fieldNames} by the row's own length and threw
+   * {@code IndexOutOfBoundsException} out of {@code fieldNames.get(i)}, from a loop with no per-row handling at all -
+   * {@code -onRowError skip} is implemented in the LOAD pass and never reached this one, so the documented way to
+   * tolerate a bad row could not help and the whole import aborted on the first oversized row whatever the policy
+   * said (issue #7782). Raised from one place used by both passes, so the two cannot disagree about the same row.
+   * <p>
+   * The extra values are genuinely unimportable - there is no field name to store them under - so the choice is
+   * between refusing the row and dropping data silently, and the message has to carry what the raw
+   * {@code IndexOutOfBoundsException} did not: the line, and both column counts.
+   */
+  private static void checkRowIsNotLongerThanHeader(final long line, final int columns, final int headerColumns) {
+    if (headerColumns > 0 && columns > headerColumns)
+      throw new ImportException(
+          "Row at line " + line + " has " + columns + " column(s) while the header has " + headerColumns
+              + ": the extra value(s) have no field name to be stored under (use -onRowError skip to skip such rows"
+              + " and continue)");
+  }
+
+  /**
+   * Records a row that carries FEWER columns than the header declares. Not an error: the missing trailing columns are
+   * absent values, and every property past the row's end is simply left unset - which is what the callers of this
+   * method do, instead of letting {@code row[prop.getIndex()]} throw {@code ArrayIndexOutOfBoundsException} the way
+   * they used to (issue #7782).
+   * <p>
+   * Deliberately NOT symmetric with {@link #checkRowIsNotLongerThanHeader}: a short row was already importable
+   * whenever the analysis had not created a property for the trailing column (a header column no row fills creates
+   * none), so refusing it would break imports that work today, while tolerating one can only turn an abort into a
+   * completed import. It is still counted and named, so "my file has a ragged row" reaches the operator in the
+   * import result ({@code warnings}) rather than only in a log nobody reads.
+   */
+  private void reportShortRow(final long line, final int columns, final int headerColumns, final ImporterContext context) {
+    if (headerColumns <= 0 || columns >= headerColumns)
+      return;
+
+    // WARNING for the first one only: a systematically ragged file would otherwise log a line per row.
+    final long previous = context.warnings.getAndIncrement();
+    LogManager.instance().log(this, previous == 0 ? Level.WARNING : Level.FINE,
+        "Row at line %d has %d column(s) while the header has %d: the missing trailing column(s) are left unset", null, line,
+        columns, headerColumns);
+  }
+
+  /** How many columns the analysis measured this source's rows against, or -1 when it recorded no header. */
+  private static int headerColumnsOf(final AnalyzedEntity entity) {
+    return entity != null ? entity.getHeaderColumns() : -1;
   }
 
   /**
@@ -486,6 +547,8 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
       LogManager.instance().log(this, Level.INFO, "Importing the following vertex properties: %s", null, properties);
 
+      final int headerColumns = headerColumnsOf(entity);
+
       String[] row;
       for (long line = 0; (row = csvParser.parseNext()) != null; ++line) {
         context.parsed.incrementAndGet();
@@ -508,11 +571,18 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         }
 
         try {
+          // SEE loadDocuments(): ONE ARITY GATE, APPLIED INSIDE THE PER-ROW try SO -onRowError GOVERNS IT
+          checkRowIsNotLongerThanHeader(line, row.length, headerColumns);
+          reportShortRow(line, row.length, headerColumns, context);
+
           final MutableVertex v = database.newVertex(settings.vertexTypeName);
           if (idIndex >= 0)
             v.set(settings.typeIdProperty, row[idIndex]);
           for (int p = 0; p < properties.size(); ++p) {
             final AnalyzedProperty prop = properties.get(p);
+            if (prop.getIndex() >= row.length)
+              continue;
+
             final String value = row[prop.getIndex()];
             if (value != null && !value.isEmpty())
               v.set(prop.getName(), value);
@@ -804,11 +874,23 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
     final Object[] params;
     if (row.length > 2) {
-      params = new Object[properties.size() * 2];
-      for (int i = 0; i < properties.size(); ++i) {
+      // ONLY THE PROPERTIES THIS ROW ACTUALLY SUPPLIES A COLUMN FOR: A ROW SHORTER THAN THE HEADER THREW
+      // ArrayIndexOutOfBoundsException OUT OF row[property.getIndex()] BELOW, WHICH THE EDGE LOOP'S skip-and-log
+      // CANNOT TURN INTO A COUNTED SKIP BECAUSE IT NEVER SAW IT AS AN UNRESOLVED REFERENCE (ISSUE #7782)
+      int supplied = 0;
+      for (int i = 0; i < properties.size(); ++i)
+        if (properties.get(i).getIndex() < row.length)
+          ++supplied;
+
+      params = supplied > 0 ? new Object[supplied * 2] : NO_PARAMS;
+      for (int i = 0, p = 0; i < properties.size(); ++i) {
         final AnalyzedProperty property = properties.get(i);
-        params[i * 2] = property.getName();
-        params[i * 2 + 1] = row[property.getIndex()];
+        if (property.getIndex() >= row.length)
+          continue;
+
+        params[p * 2] = property.getName();
+        params[p * 2 + 1] = row[property.getIndex()];
+        ++p;
       }
     } else {
       params = NO_PARAMS;
@@ -1067,6 +1149,22 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         } else {
           // DATA LINE
           final AnalyzedEntity entity = analyzedSchema.getOrCreateEntity(entityName, entityType);
+
+          // RECORDED BEFORE THE ARITY CHECK BELOW, SO THE LOAD PASS MEASURES ROWS AGAINST THE SAME NUMBER EVEN WHEN
+          // EVERY ROW IN THE FILE IS RAGGED AND NONE OF THEM CONTRIBUTES A PROPERTY (ISSUE #7782)
+          entity.setHeaderColumns(fieldNames.size());
+
+          if (!fieldNames.isEmpty() && row.length > fieldNames.size()) {
+            // THROWS UNLESS THE POLICY SAYS TO SKIP - THE SAME REFUSAL, WORDED THE SAME WAY, THAT THE LOAD PASS
+            // RAISES FOR THIS ROW
+            if (!settings.isSkipOnRowError())
+              checkRowIsNotLongerThanHeader(line, row.length, fieldNames.size());
+
+            LogManager.instance().log(this, Level.WARNING,
+                "Error on analyzing row at line %d, skipping it (reason: it has %d column(s) while the header has %d)", null,
+                line, row.length, fieldNames.size());
+            continue;
+          }
 
           entity.setRowSize(row);
           for (int i = 0; i < row.length; ++i) {
