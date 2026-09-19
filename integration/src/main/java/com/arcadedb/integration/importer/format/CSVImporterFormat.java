@@ -813,41 +813,45 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           // ALL (SEE THE catch BELOW AND THE ONE-TIME NOTICE ABOVE), AND MAKING RAGGEDNESS THE ONE EXCEPTION WOULD
           // CONTRADICT THE NOTICE THIS METHOD PRINTS. COUNTED IN errors AND NOT IN skippedEdges, WHICH MEANS
           // "from/to DID NOT RESOLVE" AND IS REPORTED UNDER THAT NAME (#7488).
+          //
+          // AN else RATHER THAN A continue, SO THIS ROW STILL REACHES THE -parsingLimitEntries CHECK AT THE BOTTOM OF
+          // THE LOOP. A continue HERE WOULD LET A RUN OF OVERSIZED ROWS PARSE PAST THAT CAP INDEFINITELY, AND IT
+          // WOULD ALSO PUT EDGES OUT OF STEP WITH loadDocuments()/loadVertices(), WHERE A ROW THAT FAILED FALLS
+          // THROUGH TO THE SAME CHECK RATHER THAN JUMPING OVER IT (CodeRabbit review, issue #7782).
           if (headerColumns > 0 && row.length > headerColumns) {
             LogManager.instance().log(this, Level.WARNING,
                 "Error on importing edge at line %d, skipping it (reason: it has %d column(s) while the header has %d)", null,
                 line, row.length, headerColumns);
             context.errors.incrementAndGet();
-            continue;
-          }
+          } else {
+            // AND THE SHORT DIRECTION, COUNTED THE SAME WAY loadDocuments()/loadVertices() COUNT IT:
+            // createEdgeFromRow() BELOW IMPORTS SUCH A ROW FROM THE COLUMNS IT DOES SUPPLY, SO WITHOUT THIS THE ONE
+            // RAGGED-ROW NUMBER THE OPERATOR IS SHOWN WOULD COUNT DOCUMENTS AND VERTICES BUT NOT EDGES (ISSUE #7782).
+            reportShortRow(line, row.length, headerColumns, context);
 
-          // AND THE SHORT DIRECTION, COUNTED THE SAME WAY loadDocuments()/loadVertices() COUNT IT: createEdgeFromRow()
-          // BELOW IMPORTS SUCH A ROW FROM THE COLUMNS IT DOES SUPPLY, SO WITHOUT THIS THE ONE RAGGED-ROW NUMBER THE
-          // OPERATOR IS SHOWN WOULD COUNT DOCUMENTS AND VERTICES BUT NOT EDGES (ISSUE #7782).
-          reportShortRow(line, row.length, headerColumns, context);
+            try {
+              createEdgeFromRow(database, row, properties, from, to, context, settings);
+              txCount++;
+            } catch (final Exception e) {
+              // Unlike loadDocuments/loadVertices, edge rows are always skipped-and-logged regardless of -onRowError:
+              // a "bad" edge row here is typically just an unresolved from/to vertex reference, expected during graph
+              // imports rather than a data-corruption case.
+              LogManager.instance().log(this, Level.SEVERE, "Error on parsing line %d", e, line);
+            }
 
-          try {
-            createEdgeFromRow(database, row, properties, from, to, context, settings);
-            txCount++;
-          } catch (final Exception e) {
-            // Unlike loadDocuments/loadVertices, edge rows are always skipped-and-logged regardless of -onRowError:
-            // a "bad" edge row here is typically just an unresolved from/to vertex reference, expected during graph
-            // imports rather than a data-corruption case.
-            LogManager.instance().log(this, Level.SEVERE, "Error on parsing line %d", e, line);
-          }
-
-          // Deliberately outside the per-row catch above: a commit failure is not a row error. Caught there it
-          // would be logged under a "parsing line N" message, and the loop would carry on with no transaction
-          // active - LocalDatabase#commit() pops in its own finally and the begin() below never runs - turning
-          // one failure into one more for every remaining row. Left to escape, it reaches the finally below,
-          // which corrects the counter and lets the real cause propagate.
-          if (txCount >= settings.commitEvery) {
-            txOpen = false;
-            database.commit();
-            committedEdges = context.createdEdges.get();
-            database.begin();
-            txOpen = true;
-            txCount = 0;
+            // Deliberately outside the per-row catch above: a commit failure is not a row error. Caught there it
+            // would be logged under a "parsing line N" message, and the loop would carry on with no transaction
+            // active - LocalDatabase#commit() pops in its own finally and the begin() below never runs - turning
+            // one failure into one more for every remaining row. Left to escape, it reaches the finally below,
+            // which corrects the counter and lets the real cause propagate.
+            if (txCount >= settings.commitEvery) {
+              txOpen = false;
+              database.commit();
+              committedEdges = context.createdEdges.get();
+              database.begin();
+              txOpen = true;
+              txCount = 0;
+            }
           }
 
           // SAME CAP AND SAME '>=' AS XMLImporterFormat.load() (ISSUE #7341): context.parsed IS INCREMENTED ONCE PER
