@@ -35,6 +35,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -80,6 +81,41 @@ class OpenCypherUserManagementIT extends BaseGraphServerTest {
       }
     }
     assertThat(foundRoot).isTrue();
+  }
+
+  /**
+   * The {@code WHERE} every {@code SHOW} command's grammar accepts used to be parsed and then dropped, so the
+   * command answered with every row whatever the filter said - issue #7946, reported for {@code SHOW DATABASES}
+   * over Bolt and equally true here.
+   */
+  @Test
+  void showUsersHonoursItsWhereClause() {
+    final Database database = getServerDatabase(0, getDatabaseName());
+
+    try (final ResultSet matching = database.command("opencypher", "SHOW USERS WHERE user = $name",
+        Map.of("name", "root"))) {
+      final List<Result> results = new ArrayList<>();
+      while (matching.hasNext())
+        results.add(matching.next());
+
+      assertThat(results).hasSize(1);
+      assertThat(results.getFirst().<String>getProperty("user")).isEqualTo("root");
+    }
+
+    try (final ResultSet none = database.command("opencypher", "SHOW USERS WHERE user = 'nobody_here'")) {
+      assertThat(none.hasNext()).isFalse();
+    }
+  }
+
+  @Test
+  void showUsersHonoursItsYieldClause() {
+    final Database database = getServerDatabase(0, getDatabaseName());
+
+    try (final ResultSet resultSet = database.command("opencypher", "SHOW USERS YIELD user WHERE user = 'root'")) {
+      assertThat(resultSet.hasNext()).isTrue();
+      final Result result = resultSet.next();
+      assertThat(result.getPropertyNames()).containsExactly("user");
+    }
   }
 
   @Test

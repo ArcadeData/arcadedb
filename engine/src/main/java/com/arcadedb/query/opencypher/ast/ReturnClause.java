@@ -188,6 +188,13 @@ public class ReturnClause {
     public String getOutputName() {
       if (alias != null)
         return alias;
+      // A bare variable projects a column named after the variable, which is not always the text that wrote it:
+      // backticks are quoting, not part of the name, so RETURN `my col` names the column "my col" the way Neo4j
+      // does. Taking the source text here instead named it "`my col`", which no consumer can ask for by name
+      // (issue #7946, found on the rewritten SHOW ... WHERE query, whose columns must be backticked because a
+      // SHOW command has columns called `default` and `access`).
+      if (expression instanceof VariableExpression variable)
+        return variable.getVariableName();
       if (originalText != null)
         return originalText;
       return expression.getText();
