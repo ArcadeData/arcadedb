@@ -63,6 +63,15 @@ import java.util.logging.Level;
  * cannot be updated afterwards either, so it would be stuck in the database with no way to repair it through the
  * normal write paths.
  * <p>
+ * What this costs, stated plainly: a provisional record is committed by the write step that created it - the
+ * openCypher pipeline auto-commits per step - so between that commit and the end of the statement a concurrent
+ * reader can observe a record that does not satisfy its own type's existence constraints, which eager validation
+ * made structurally impossible. And because the bookkeeping is this in-memory scope and nothing else, a crash or a
+ * killed connection between the creation and {@link #check()} leaves the provisional record behind for good, with
+ * no durable trace that would let anything find it later. Both follow from the per-step auto-commit model rather
+ * than from the deferral itself - that model already leaves the earlier clauses of a failed statement committed -
+ * but the deferral widens the window from "a valid record" to "a record that is not valid yet".
+ * <p>
  * Scopes nest: only the outermost {@link #open} returns a scope, so a nested plan (a {@code CALL} subquery, a
  * {@code FOREACH} body, a UNION branch) contributes its provisional records to the enclosing statement's scope and
  * never checks or closes it. That nesting is thread-bound, being keyed on {@link DatabaseContext}: it holds because
@@ -105,6 +114,18 @@ public class DeferredExistenceChecks {
   /** Provisional records by RID, in creation order so the failure reports them in the order they were written. */
   private final Set<RID> pending = new LinkedHashSet<>();
 
+  /**
+   * The size {@link #pending} has to reach before the next {@link #sweep()}. It starts at {@link #SWEEP_THRESHOLD}
+   * and is set to twice whatever survives a sweep, so a statement whose records never complete - the "forgot the
+   * SET" mistake, where a sweep frees nothing - sweeps at 1000, 2000, 4000 rows rather than on every registration
+   * past the first thousand. Without the doubling that case costs a full re-read of the pending set per row, which
+   * is quadratic in the number of rows written; with it the total sweep work stays linear.
+   */
+  private int sweepAt = SWEEP_THRESHOLD;
+
+  /** False between {@link #close()} and the next {@link #open}, so a stale reference cannot defer anything. */
+  private boolean active = false;
+
   /** True while this scope is counted in {@link #ARMED_SCOPES}, so it is counted in and out exactly once. */
   private boolean armed = false;
 
@@ -127,14 +148,26 @@ public class DeferredExistenceChecks {
   /**
    * Opens a scope for the statement about to run on this thread, or returns {@code null} when one is already open -
    * in which case the caller is a nested plan and must neither check nor close it.
+   * <p>
+   * The scope is created once per thread and database and then reused, rather than allocated per statement: it is
+   * opened for every openCypher write statement, whether or not the database defines a single existence constraint,
+   * so an allocation here would be one more object per write on a path whose whole point is not to cost anything.
+   * What a reused scope carries between statements is two empty collections.
    */
   public static DeferredExistenceChecks open(final DatabaseInternal database) {
     final DatabaseContext.DatabaseContextTL context = contextOf(database);
-    if (context == null || context.getDeferredExistenceChecks() != null)
+    if (context == null)
       return null;
 
-    final DeferredExistenceChecks scope = new DeferredExistenceChecks(database);
-    context.setDeferredExistenceChecks(scope);
+    DeferredExistenceChecks scope = context.getDeferredExistenceChecks();
+    if (scope == null) {
+      scope = new DeferredExistenceChecks(database);
+      context.setDeferredExistenceChecks(scope);
+    } else if (scope.active)
+      // A nested plan: it contributes to the statement's scope and neither checks nor closes it.
+      return null;
+
+    scope.active = true;
     return scope;
   }
 
@@ -148,10 +181,11 @@ public class DeferredExistenceChecks {
    * reason must not leave the relaxation in place for whatever runs next on this thread.
    */
   public void close() {
-    final DatabaseContext.DatabaseContextTL context = contextOf(database);
-    if (context != null && context.getDeferredExistenceChecks() == this)
-      context.setDeferredExistenceChecks(null);
-
+    active = false;
+    unresolved.clear();
+    pending.clear();
+    patternCreateDepth = 0;
+    sweepAt = SWEEP_THRESHOLD;
     disarm();
   }
 
@@ -174,7 +208,7 @@ public class DeferredExistenceChecks {
       return null;
 
     final DeferredExistenceChecks scope = context.getDeferredExistenceChecks();
-    if (scope == null)
+    if (scope == null || !scope.active)
       return null;
 
     scope.patternCreateDepth++;
@@ -197,7 +231,7 @@ public class DeferredExistenceChecks {
       return false;
 
     final DeferredExistenceChecks scope = context.getDeferredExistenceChecks();
-    if (scope == null)
+    if (scope == null || !scope.active)
       return false;
 
     final RID rid = document.getIdentity();
@@ -234,7 +268,7 @@ public class DeferredExistenceChecks {
       return;
 
     final DeferredExistenceChecks scope = context.getDeferredExistenceChecks();
-    if (scope != null) {
+    if (scope != null && scope.active) {
       // Resolved first: a record completed by the very next write after its creation - the common
       // MERGE ... SET shape - is still waiting for its RID to be picked up, and forgetting it here rather than at
       // the next sweep is what keeps the pending set at the size of the write pipeline's window instead of the
@@ -346,26 +380,49 @@ public class DeferredExistenceChecks {
    * about to see is the more useful of the two.
    */
   private void deleteProvisionalRecords(final List<RID> rids) {
-    for (final RID rid : rids) {
-      try {
-        database.transaction(() -> {
-          final Record record = database.lookupByRID(rid, false);
-          if (record != null)
-            database.deleteRecord(record);
-        }, true);
-      } catch (final RecordNotFoundException e) {
-        // Already gone - rolled back with the transaction that created it, or deleted by the statement itself.
-      } catch (final Exception e) {
-        LogManager.instance().log(this, Level.WARNING,
-            "Could not remove the incomplete record %s left by a statement that failed its existence constraints", e, rid);
-      }
+    if (rids.isEmpty())
+      return;
+
+    // One transaction for the whole set rather than one per record: a statement that wrote thousands of records it
+    // never completed would otherwise pay thousands of commits on its way out.
+    try {
+      database.transaction(() -> {
+        for (final RID rid : rids)
+          deleteProvisionalRecord(rid);
+      }, true);
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.FINE,
+          "Could not remove in one transaction the incomplete records left by a statement that failed its existence "
+              + "constraints, retrying one by one", e);
+
+      // One undeletable record must not keep the rest alive, so the fallback is per record and best effort.
+      for (final RID rid : rids)
+        try {
+          database.transaction(() -> deleteProvisionalRecord(rid), true);
+        } catch (final Exception single) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Could not remove the incomplete record %s left by a statement that failed its existence constraints",
+              single, rid);
+        }
+    }
+  }
+
+  private void deleteProvisionalRecord(final RID rid) {
+    try {
+      final Record record = database.lookupByRID(rid, false);
+      if (record != null)
+        database.deleteRecord(record);
+    } catch (final RecordNotFoundException e) {
+      // Already gone - rolled back with the transaction that created it, or deleted by the statement itself.
     }
   }
 
   private void register(final MutableDocument document) {
     resolve();
-    if (pending.size() >= SWEEP_THRESHOLD)
+    if (pending.size() >= sweepAt) {
       sweep();
+      sweepAt = Math.max(SWEEP_THRESHOLD, pending.size() * 2);
+    }
     unresolved.add(document);
 
     if (!armed) {

@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.query;
 
 import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.query.opencypher.grammar.Cypher25Lexer;
+import com.arcadedb.query.opencypher.parser.ParserUtils;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.antlr.v4.runtime.CharStreams;
@@ -93,24 +94,36 @@ public final class ShowCommandTail {
     if (tail == null)
       return new Table(fields, rows);
 
-    final Rewrite rewrite = rewrite(query, tail, fields);
 
+    // The rows travel as a parameter, under a name the client cannot already have bound: putting it in last would
+    // silently shadow a client parameter of the same name, and while __showRows is not a name anyone is likely to
+    // choose, "unlikely" is not a reason to let one query quietly answer with another query's data.
     final Map<String, Object> effectiveParameters = new LinkedHashMap<>();
     if (parameters != null)
       effectiveParameters.putAll(parameters);
-    effectiveParameters.put(ROWS_PARAMETER, asMaps(fields, rows));
+
+    String rowsParameter = ROWS_PARAMETER;
+    while (effectiveParameters.containsKey(rowsParameter))
+      rowsParameter = rowsParameter + "_";
+    effectiveParameters.put(rowsParameter, asMaps(fields, rows));
+
+    final Rewrite rewrite = rewrite(query, tail, fields, rowsParameter);
 
     final List<List<Object>> filtered = new ArrayList<>();
+    List<String> rowFields = null;
     List<String> outFields = rewrite.projected();
 
     try (final ResultSet resultSet = database.query("opencypher", rewrite.query(), effectiveParameters)) {
       while (resultSet.hasNext()) {
         final Result row = resultSet.next();
 
-        // RETURN * / YIELD * do not name their columns, so the first row is what says which they are - and in
-        // which order. An empty result then keeps the SHOW command's own column list, which is the same set.
-        if (outFields == null)
-          outFields = new ArrayList<>(row.getPropertyNames());
+        // The row itself is what says which columns the projection produced, and in which order. Asked of the row
+        // rather than re-derived from the query text so this cannot answer with a name the engine did not project
+        // - which would read back as null for every row. The statically derived list is the fallback for an empty
+        // result, where there is no row to ask and the column list still has to be reported.
+        if (rowFields == null)
+          rowFields = new ArrayList<>(row.getPropertyNames());
+        outFields = rowFields;
 
         final List<Object> values = new ArrayList<>(outFields.size());
         for (final String field : outFields)
@@ -126,9 +139,10 @@ public final class ShowCommandTail {
   private record Rewrite(String query, List<String> projected) {
   }
 
-  private static Rewrite rewrite(final String query, final List<Token> tail, final List<String> fields) {
+  private static Rewrite rewrite(final String query, final List<Token> tail, final List<String> fields,
+      final String rowsParameter) {
     final StringBuilder rewritten = new StringBuilder(query.length() + 64);
-    rewritten.append("UNWIND $").append(ROWS_PARAMETER).append(" AS ").append(ROW_VARIABLE).append(" WITH ");
+    rewritten.append("UNWIND $").append(rowsParameter).append(" AS ").append(ROW_VARIABLE).append(" WITH ");
 
     final StringJoiner bindings = new StringJoiner(", ");
     for (final String field : fields)
@@ -196,13 +210,8 @@ public final class ShowCommandTail {
     }
 
     if (aliasAt >= 0 && aliasAt < item.size() - 1)
-      return unquoted(textOf(query, item.subList(aliasAt + 1, item.size())).trim());
-    return unquoted(textOf(query, item).trim());
-  }
-
-  private static String unquoted(final String name) {
-    return name.length() > 1 && name.charAt(0) == '`' && name.charAt(name.length() - 1) == '`' ?
-        name.substring(1, name.length() - 1).replace("``", "`") : name;
+      return ParserUtils.stripBackticks(textOf(query, item.subList(aliasAt + 1, item.size())).trim());
+    return ParserUtils.stripBackticks(textOf(query, item).trim());
   }
 
   /** The projection items of a clause, i.e. everything before its ORDER BY / SKIP / LIMIT / WHERE. */

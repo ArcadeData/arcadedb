@@ -79,6 +79,13 @@ public class DocumentValidator {
     validateField(document, p, TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(document.getDatabase())));
   }
 
+  /**
+   * Validates one field, discarding whether the check was deferred - see {@link DeferredExistenceChecks}. That is
+   * correct for a caller validating a whole document field by field, which is what {@link #validate} does and the
+   * reason this overload exists. A caller validating a single field in isolation, in the middle of an openCypher
+   * write statement, would register the record as provisional without anything ever reporting it complete again,
+   * leaving it to be taken back at the end of the statement; no caller does that today.
+   */
   public static void validateField(final MutableDocument document, final Property p, final long regexDeadline) throws ValidationException {
     validateFieldInternal(document, p, regexDeadline);
   }
