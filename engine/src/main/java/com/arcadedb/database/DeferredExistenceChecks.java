@@ -90,6 +90,12 @@ public class DeferredExistenceChecks {
    */
   private static final AtomicInteger ARMED_SCOPES = new AtomicInteger();
 
+  /** The end of a {@link #patternCreate} region. */
+  public interface PatternCreate extends AutoCloseable {
+    @Override
+    void close();
+  }
+
   private final DatabaseInternal database;
 
   /**
@@ -107,6 +113,9 @@ public class DeferredExistenceChecks {
 
   /** Nesting depth of {@link #patternCreate}: greater than zero while a pattern clause is writing its elements. */
   private int patternCreateDepth = 0;
+
+  /** Handed to every {@link #patternCreate} caller, so entering a pattern region allocates nothing. */
+  private final PatternCreate patternCreateToken = () -> patternCreateDepth--;
 
   private DeferredExistenceChecks(final DatabaseInternal database) {
     this.database = database;
@@ -168,14 +177,6 @@ public class DeferredExistenceChecks {
     scope.patternCreateDepth++;
     return scope.patternCreateToken;
   }
-
-  /** The end of a {@link #patternCreate} region. */
-  public interface PatternCreate extends AutoCloseable {
-    @Override
-    void close();
-  }
-
-  private final PatternCreate patternCreateToken = () -> patternCreateDepth--;
 
   /**
    * Asks the scope open on this thread, if any, to take responsibility for an existence constraint the document
