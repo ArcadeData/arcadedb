@@ -25,19 +25,32 @@ import com.arcadedb.server.http.handler.DeleteGroupHandler;
 import com.arcadedb.server.http.handler.PostCommitHandler;
 import io.undertow.server.HttpHandler;
 import io.undertow.server.HttpServerExchange;
+import io.undertow.server.ServerConnection;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
+import org.xnio.OptionMap;
+import org.xnio.Xnio;
+import org.xnio.XnioIoThread;
+import org.xnio.XnioWorker;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * Regression test for issue #7621: a handler whose {@code execute()} can block on a Raft round-trip, a retried
@@ -88,8 +101,10 @@ class Issue7621BlockingHandlersWorkerThreadTest {
    * fails when this map and that method disagree in either direction, so adding a route means classifying it.
    * <p>
    * {@code SnapshotHttpHandler} is not an {@link AbstractServerHttpHandler} - it is a raw Undertow handler that
-   * does its own dispatching - so it is classified here and skipped by the per-handler assertion, rather than
-   * left out of the map where it would read as an unclassified route.
+   * does its own dispatching - so it is classified here and skipped by the per-handler assertion below, which can
+   * only ask an {@code AbstractServerHttpHandler} for its verdict. It gets its own assertion instead, in
+   * {@link #theRawSnapshotHandlerHandsItsWorkToAWorkerThread()}: a classification nothing checks is a
+   * classification that goes stale (CodeRabbit on PR #7953).
    */
   private static final Map<String, Dispatch> EXPECTED_BY_ROUTE = new LinkedHashMap<>() {{
     // Reads in-memory Raft state; ClusterAlerts passes allowLoad=false so not even a closed database is opened.
@@ -188,6 +203,68 @@ class Issue7621BlockingHandlersWorkerThreadTest {
                 handlerClass.getSimpleName(), AbstractServerHttpHandler.class.getSimpleName())
             .isTrue())
         .toArray(Executable[]::new));
+  }
+
+  /**
+   * The one route whose handler is a raw Undertow {@link HttpHandler} rather than an
+   * {@link AbstractServerHttpHandler}, so the sweep above can classify it but not interrogate it.
+   * {@code SnapshotHttpHandler} streams a whole database, which is the longest-running thing this module serves,
+   * and it keeps itself off the IO thread with its own {@code isInIoThread()} check instead of the shared
+   * {@code mustExecuteOnWorkerThread} plumbing. Nothing asserted that, so deleting the check would have left
+   * blocking snapshot work on an Undertow selector with this test still green.
+   * <p>
+   * Driven on a REAL Xnio IO thread, because that is the only way {@code exchange.isInIoThread()} answers true -
+   * it compares the connection's IO thread against {@code Thread.currentThread()}, so a mocked thread cannot
+   * satisfy it. The connection's worker is a recorder rather than the real one: what is being asserted is that
+   * the handler HANDS the work over, and actually running the snapshot is neither needed nor wanted here.
+   * <p>
+   * The assertion is on the hand-off and not on {@code isDispatched()}: with a worker available Undertow's
+   * {@code dispatch} submits immediately rather than latching the flag, as the flag's value here shows.
+   */
+  @Test
+  void theRawSnapshotHandlerHandsItsWorkToAWorkerThread() throws Exception {
+    final XnioWorker ioProvider = Xnio.getInstance().createWorker(OptionMap.EMPTY);
+    try {
+      final AtomicInteger handedToWorker = new AtomicInteger();
+      final AtomicReference<Throwable> failure = new AtomicReference<>();
+      final CountDownLatch done = new CountDownLatch(1);
+
+      ioProvider.getIoThread().execute(() -> {
+        try {
+          final XnioWorker recorder = mock(XnioWorker.class);
+          doAnswer(invocation -> {
+            handedToWorker.incrementAndGet();
+            return null;
+          }).when(recorder).execute(any(Runnable.class));
+
+          final ServerConnection connection = mock(ServerConnection.class);
+          when(connection.getIoThread()).thenReturn((XnioIoThread) Thread.currentThread());
+          when(connection.getWorker()).thenReturn(recorder);
+
+          final HttpServerExchange exchange = new HttpServerExchange(connection);
+          assertThat(exchange.isInIoThread())
+              .as("the fixture has to put the handler on a real IO thread, or it proves nothing").isTrue();
+
+          // A null HttpServer is safe precisely BECAUSE the work is handed off: were the dispatch removed, the
+          // handler would run its own body here and fail on it, which is the same verdict by a different route.
+          new SnapshotHttpHandler(null).handleRequest(exchange);
+        } catch (final Throwable t) {
+          failure.set(t);
+        } finally {
+          done.countDown();
+        }
+      });
+
+      assertThat(done.await(30, TimeUnit.SECONDS)).as("the IO-thread task must run").isTrue();
+      if (failure.get() != null)
+        throw new AssertionError("SnapshotHttpHandler did the work on the IO thread instead of handing it off",
+            failure.get());
+      assertThat(handedToWorker.get())
+          .as("a snapshot stream must leave the Undertow selector free for every other connection on it")
+          .isEqualTo(1);
+    } finally {
+      ioProvider.shutdownNow();
+    }
   }
 
   /** An exchange carrying the query parameter that turns the status poll into a peer fan-out. */
