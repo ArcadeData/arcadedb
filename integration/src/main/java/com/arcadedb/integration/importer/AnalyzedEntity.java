@@ -79,8 +79,18 @@ public class AnalyzedEntity {
     return headerColumns;
   }
 
+  /**
+   * The mean length of the rows the analysis measured, or {@code 0} when it measured none.
+   * <p>
+   * The zero case is not hypothetical any more: {@link #setRowSize} is what increments {@code analyzedRows}, and a
+   * ragged row the analysis refuses never reaches it, so an entity can exist with no measured row at all (issue
+   * #7782). This used to divide by {@code analyzedRows} unguarded, and its one caller - the {@code expectedEdges}
+   * batch estimate in {@code CSVImporterFormat.loadEdges()} - would have taken an {@code ArithmeticException} in
+   * place of the row-shape diagnosis it was on its way to report. Zero flows into that caller's existing
+   * {@code expectedEdges <= 0} fallback, which is exactly the "no idea how big this source is" answer.
+   */
   public int getAverageRowLength() {
-    return (int) (totalRowLength / analyzedRows);
+    return analyzedRows > 0 ? (int) (totalRowLength / analyzedRows) : 0;
   }
 
   public void setRowSize(final String[] row) {
