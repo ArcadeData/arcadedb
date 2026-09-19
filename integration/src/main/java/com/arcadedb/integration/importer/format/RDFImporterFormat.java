@@ -44,18 +44,37 @@ public class RDFImporterFormat extends CSVImporterFormat {
   private static final String LABEL_PROPERTY = "label";
 
   /**
-   * No delimiter, so the inherited {@code createCSVParser}/{@code analyze} fall back to the generic
-   * {@code delimiter} option and then to a comma.
+   * The key property an RDF source resolves its subject and object IRIs against when the caller named none. A
+   * DEFAULT, not an invariant: nothing on this path requires the literal {@code "id"} - whatever name is in force is
+   * used consistently for the vertex property, its index and the {@code newEdgeByKeys} lookup - so an explicit
+   * {@code -typeIdProperty} / {@code WITH typeIdProperty = ...} wins over it (issue #7891).
+   */
+  public static final String DEFAULT_TYPE_ID_PROPERTY = "id";
+
+  /**
+   * The key property this format resolves its IRIs against, or null when the format was built without one, in which
+   * case {@code settings.typeIdProperty} and then {@link #DEFAULT_TYPE_ID_PROPERTY} apply. Carried here rather than
+   * written back into {@code settings}, for the same reason the delimiter is: one {@code ImporterSettings} is shared
+   * by the documents, vertices and edges files of a single import, so a name settled for an RDF entity stood in for
+   * the next entity's - and drove the property and unique-index auto-creation in {@code AbstractImporter} and
+   * {@code CSVImporterFormat} for entities that were never RDF (issues #7891, #6946).
+   */
+  private final String typeIdProperty;
+
+  /**
+   * No delimiter and no key property, so the inherited {@code createCSVParser}/{@code analyze} fall back to the
+   * generic {@code delimiter} option and then to a comma, and {@link #load} falls back to
+   * {@code settings.typeIdProperty} and then to {@link #DEFAULT_TYPE_ID_PROPERTY}.
    * <p>
    * Nothing in production builds the format this way: {@link com.arcadedb.integration.importer.SourceDiscovery}
    * is the only place one is constructed, and it always hands over the separator it took from between the first
-   * statement's terms through {@link #RDFImporterFormat(String)}. This form exists for a caller that drives
+   * statement's terms through {@link #RDFImporterFormat(String, String)}. This form exists for a caller that drives
    * {@code load()} directly with settings already carrying the delimiter - the format's own tests - and for parity
    * with {@link CSVImporterFormat}'s own pair. A production caller reaching for it is a caller that has a detected
    * separator to pass and is dropping it (issue #7315).
    */
   public RDFImporterFormat() {
-    super();
+    this(null, null);
   }
 
   /**
@@ -67,13 +86,41 @@ public class RDFImporterFormat extends CSVImporterFormat {
    *                  comma, so the whole line arrived as a single column (issue #7315).
    */
   public RDFImporterFormat(final String delimiter) {
+    this(delimiter, null);
+  }
+
+  /**
+   * @param delimiter      see {@link #RDFImporterFormat(String)}.
+   * @param typeIdProperty the vertex property the subject and object IRIs are keyed by - the user's own when they set
+   *                       one, else {@link #DEFAULT_TYPE_ID_PROPERTY}. Null leaves the choice to {@code settings}
+   *                       (issue #7891).
+   */
+  public RDFImporterFormat(final String delimiter, final String typeIdProperty) {
     super(delimiter);
+    this.typeIdProperty = typeIdProperty;
+  }
+
+  /**
+   * The key property in force for this call: the one this format was built with, else the caller's
+   * {@code -typeIdProperty}, else {@link #DEFAULT_TYPE_ID_PROPERTY}. The same shape as
+   * {@code CSVImporterFormat.delimiterFor}, and for the same reason.
+   */
+  private String typeIdPropertyFor(final ImporterSettings settings) {
+    if (typeIdProperty != null)
+      return typeIdProperty;
+    return settings.typeIdProperty != null ? settings.typeIdProperty : DEFAULT_TYPE_ID_PROPERTY;
   }
 
   @Override
   public void load(final SourceSchema sourceSchema, final AnalyzedEntity.EntityType entityType, final Parser parser, final DatabaseInternal database,
       final ImporterContext context, final ImporterSettings settings) throws ImportException {
     final AbstractParser csvParser = createCSVParser(settings);
+
+    // THE VERTEX PROPERTY THE IRIs ARE KEYED BY, READ ONCE AND KEPT LOCAL. IT USED TO BE settings.typeIdProperty,
+    // WHICH CONTENT SNIFFING HAD OVERWRITTEN WITH "id" THE MOMENT IT RECOGNISED N-TRIPLES - SO AN EXPLICIT
+    // -typeIdProperty / WITH typeIdProperty = ... WAS SILENTLY DISCARDED, AND THE OVERWRITE OUTLIVED THE RDF SOURCE
+    // IT WAS DECIDED FOR (ISSUE #7891).
+    final String typeIdProperty = typeIdPropertyFor(settings);
 
     // THE OPTION THAT GOVERNS THIS ROUTE, NOT ALWAYS -edgesSkipEntries. AN RDF SOURCE REACHES load() ON ANY OF THE
     // FOUR ROUTES Importer.load() DISPATCHES - -url, -documents, -vertices AND -edges - AND THIS READ
@@ -156,10 +203,10 @@ public class RDFImporterFormat extends CSVImporterFormat {
 
         // CREATE AN EDGE
         database.newEdgeByKeys(settings.vertexTypeName,
-            new String[] { settings.typeIdProperty },
+            new String[] { typeIdProperty },
             new Object[] { v1Id },
             settings.vertexTypeName,
-            new String[] { settings.typeIdProperty },
+            new String[] { typeIdProperty },
             new Object[] { v2Id }, true,
             settings.edgeTypeName,
             true,
