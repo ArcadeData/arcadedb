@@ -293,9 +293,12 @@ class PostServerCommandHandlerIT extends BaseGraphServerTest {
     HttpResponse<String> response = executeServerCommand("INVALID COMMAND");
     assertThat(response.statusCode()).isEqualTo(400);
 
-    // Test opening non-existent database
+    // Test opening non-existent database. 404, not the 500 this asserted before issue #7874: the caller named
+    // a database this server does not have, which is the caller's error and not a server fault - and it is the
+    // same status the handler already gave for a database that is closed or dropped. What makes it reachable is
+    // DatabaseNotFoundException being a DatabaseNotAvailableException, which the handler's 404 arm matches.
     response = executeServerCommand("OPEN DATABASE nonexistent");
-    assertThat(response.statusCode()).isEqualTo(500);
+    assertThat(response.statusCode()).isEqualTo(404);
   }
 
   /**
