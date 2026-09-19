@@ -1409,7 +1409,7 @@ public class PostgresNetworkExecutor extends Thread {
 
     // Not parsable as an ArcadeDB SELECT: fall back to the textual FROM-target extraction
     // Patterns: "SELECT FROM TypeName", "SELECT * FROM TypeName", "SELECT ... FROM TypeName"
-    final String upperQuery = query.toUpperCase();
+    final String upperQuery = query.toUpperCase(Locale.ROOT);
     final int fromIndex = upperQuery.indexOf(" FROM ");
     if (fromIndex < 0) {
       return null;
@@ -1420,7 +1420,7 @@ public class PostgresNetworkExecutor extends Thread {
     // Extract type name (ends at WHERE, LIMIT, ORDER, or end of string)
     String typeName = afterFrom;
     for (String terminator : new String[]{" WHERE ", " LIMIT ", " ORDER ", " GROUP ", ";"}) {
-      final int idx = typeName.toUpperCase().indexOf(terminator);
+      final int idx = typeName.toUpperCase(Locale.ROOT).indexOf(terminator);
       if (idx > 0) {
         typeName = typeName.substring(0, idx);
       }
@@ -1428,7 +1428,7 @@ public class PostgresNetworkExecutor extends Thread {
     typeName = typeName.trim();
 
     // Skip schema: prefix if present
-    if (typeName.toLowerCase().startsWith("schema:")) {
+    if (typeName.toLowerCase(Locale.ROOT).startsWith("schema:")) {
       return null; // Schema queries have different structure
     }
 

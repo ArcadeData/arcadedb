@@ -41,6 +41,7 @@ import io.undertow.server.HttpServerExchange;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Grafana DataFrame query endpoint.
@@ -332,7 +333,7 @@ public class PostGrafanaQueryHandler extends AbstractObservabilityHandler {
         final String fieldName = TimeSeriesHandlerUtils.requireString(req, "field", reqPath + ".field");
         final AggregationType aggType = TimeSeriesHandlerUtils.resolveAggregationType(req, reqPath + ".type");
         final String alias = TimeSeriesHandlerUtils.optString(req, "alias",
-            fieldName + "_" + aggType.name().toLowerCase(), reqPath + ".alias");
+            fieldName + "_" + aggType.name().toLowerCase(Locale.ROOT), reqPath + ".alias");
 
         final int colIndex = TimeSeriesHandlerUtils.findColumnIndex(fieldName, columns);
         if (colIndex < 0)

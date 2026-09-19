@@ -117,6 +117,7 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -1314,7 +1315,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // Exclude ArcadeDB system fields during update
 
         props.forEach((k, v) -> {
-          String key = k.trim().toLowerCase();
+          String key = k.trim().toLowerCase(Locale.ROOT);
           if ("@rid".equals(key) || "@type".equals(key) || "@cat".equals(key)) {
             // Skip internal fields to prevent accidental overwrites
             LogManager.instance().log(this, Level.FINE, "Skipping internal field during update: %s", k);
@@ -1350,7 +1351,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // Exclude ArcadeDB system fields during update
 
         props.forEach((k, v) -> {
-          String key = k.trim().toLowerCase();
+          String key = k.trim().toLowerCase(Locale.ROOT);
           if ("@rid".equals(key) || "@type".equals(key) || "@cat".equals(key)) {
             // Skip internal fields to prevent accidental overwrites
             LogManager.instance().log(this, Level.FINE, "Skipping internal field during update: %s", k);
@@ -3715,7 +3716,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       // Same default alias as the HTTP endpoint, so the two protocols name the same computed column alike.
       final String alias = request.getAlias().isEmpty()
-          ? request.getField() + "_" + type.name().toLowerCase()
+          ? request.getField() + "_" + type.name().toLowerCase(Locale.ROOT)
           : request.getAlias();
       requests.add(new MultiColumnAggregationRequest(columnIndex, type, alias));
       aliases.add(alias);

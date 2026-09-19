@@ -67,6 +67,7 @@ import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.CollectionUtils;
 
+import java.util.Locale;
 import javax.net.ssl.SSLSocket;
 import java.io.ByteArrayInputStream;
 import java.io.EOFException;
@@ -842,7 +843,7 @@ public class BoltNetworkExecutor extends Thread {
       // was present here to choose between record-streaming (PROFILE) and plan-only (EXPLAIN)
       // and to pick the correct metadata key.
       final String trimmedQuery = query == null ? "" : query.trim();
-      final String upperQuery = trimmedQuery.toUpperCase();
+      final String upperQuery = trimmedQuery.toUpperCase(Locale.ROOT);
       final boolean explainMode = upperQuery.startsWith("EXPLAIN ");
       final boolean profileMode = !explainMode && upperQuery.startsWith("PROFILE ");
 
@@ -2082,7 +2083,7 @@ public class BoltNetworkExecutor extends Thread {
         } else {
           final int colon = l.indexOf(':');
           if (colon > 0)
-            headers.put(l.substring(0, colon).trim().toLowerCase(), l.substring(colon + 1).trim());
+            headers.put(l.substring(0, colon).trim().toLowerCase(Locale.ROOT), l.substring(colon + 1).trim());
         }
       } else if (b != '\r') {
         line.append((char) b);
