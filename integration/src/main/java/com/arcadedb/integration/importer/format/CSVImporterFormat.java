@@ -117,7 +117,6 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       final boolean detectFormat) {
     if (delimiter == null)
       return;
-    parserSettings.setDelimiterDetectionEnabled(false);
     if (detectFormat && delimiter.length() == 1)
       parserSettings.detectFormatAutomatically(delimiter.charAt(0));
     parserSettings.getFormat().setDelimiter(delimiter);
@@ -126,6 +125,12 @@ public class CSVImporterFormat extends AbstractImporterFormat {
   /**
    * The separator a supplied {@code -documentsHeader} / {@code -verticesHeader} / {@code -edgesHeader} is split on:
    * the delimiter in force, with the two tab spellings resolved to a real tab.
+   * <p>
+   * The two spellings are the convention {@link #analyze} and {@link #createCSVParser} already branch on to pick
+   * the TSV parser: a tab reaches the importer either as a real tab ({@code "\t"}, from a caller that built the
+   * settings in Java) or as the two characters a shell hands over unescaped ({@code "\\t"}, from {@code -delimiter
+   * \t}). The TSV branches never reach this method - their parser has no delimiter to split a header on - so the
+   * translation has to happen here.
    * <p>
    * It was a hardcoded comma, which is the same disagreement as the one above on the header row: a header supplied
    * for a {@code ';'}-delimited source came back as ONE field named {@code "id;name"}, and the analysis then threw
@@ -993,6 +998,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       parserSettings = tsvParserSettings = new TsvParserSettings();
     } else {
       parserSettings = csvParserSettings = new CsvParserSettings();
+      // Detection off for a source with no delimiter at all too, which applyDelimiter() below leaves untouched.
       csvParserSettings.setDelimiterDetectionEnabled(false);
       applyDelimiter(csvParserSettings, delimiter, true);
     }
