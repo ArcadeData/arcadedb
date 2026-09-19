@@ -1228,7 +1228,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           indexer.createDocument(doc, doc.getType(), bucket);
         } catch (final RuntimeException e) {
           indexChanges.undoRecordChanges();
-          undoRecordWrite(record, bucket, transaction);
+          undoRecordWrite(record, bucket, transaction, e);
           throw e;
         } finally {
           indexChanges.disarmRecordUndo();
@@ -1267,19 +1267,29 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * An implicit transaction rolls back anyway, so this changes nothing for one; the case it exists for is a
    * caller inside its OWN transaction that intends to keep going.
    * <p>
-   * The physical free is best-effort and logged rather than thrown: the caller is already unwinding one failure
-   * and replacing its exception with a second one would hide the reason the record was refused. A free that
-   * could not run leaves a record with no index entry - which is what this method exists to prevent - so it is
-   * reported at WARNING with the RID, not swallowed.
+   * <b>When the physical free itself fails</b> the transaction is marked rollback-only (CodeRabbit on PR #7936).
+   * Logging a warning and carrying on would have left the caller free to commit precisely the state this method
+   * exists to prevent - a body in the bucket whose index entries have just been taken away - so the answer is
+   * not "the compensation succeeded": {@link TransactionContext#setRollbackOnly} makes the later
+   * {@code commit()} fail instead, and the caller's own error handling reaches the rollback that discards the
+   * whole transaction. The failure is attached to {@code cause} as a suppressed exception rather than thrown in
+   * its place, because {@code cause} is the reason the record was refused and that is what the caller is
+   * reporting. A direct rollback from here is not an option: this method does not own the transaction.
+   *
+   * @param cause the exception the indexer raised, which is about to be rethrown by the caller
    */
-  private void undoRecordWrite(final Record record, final LocalBucket bucket, final TransactionContext transaction) {
+  private void undoRecordWrite(final Record record, final LocalBucket bucket, final TransactionContext transaction,
+      final RuntimeException cause) {
     final RID rid = record.getIdentity();
     try {
       bucket.deleteRecord(rid, false);
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING,
-          "Cannot take back record %s after its indexing refused it: the record body stays in the transaction and "
-              + "no index entry points at it. %s", rid, e.getMessage());
+      cause.addSuppressed(e);
+      transaction.setRollbackOnly(
+          "record " + rid + " could not be taken back after its indexing refused it (" + e.getMessage() + ")");
+      LogManager.instance().log(this, Level.SEVERE,
+          "Cannot take back record %s after its indexing refused it: the transaction is marked rollback-only, "
+              + "because committing it would publish a record no index entry points at. %s", rid, e.getMessage());
     }
 
     transaction.updateBucketRecordDelta(bucket.getFileId(), -1);
@@ -1419,7 +1429,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         indexer.createDocument(doc, doc.getType(), bucket);
       } catch (final RuntimeException e) {
         indexChanges.undoRecordChanges();
-        undoRecordWrite(record, bucket, transaction);
+        undoRecordWrite(record, bucket, transaction, e);
         throw e;
       } finally {
         indexChanges.disarmRecordUndo();
