@@ -20,8 +20,10 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.PageSnapshot;
+import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ArcadeDBServer;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -185,11 +187,7 @@ public final class SnapshotManager {
     final byte[] buffer = new byte[8192];
     for (final File file : files) {
       final String name = file.getName();
-      // Skip transient files that differ between nodes: WAL logs, schema backups, lock files,
-      // WAL files preserved as .corrupt evidence after an aborted recovery (#4958), and the scratch spill file of
-      // an open snapshot window (#6075), which is pure copy-on-write working state and never part of the database
-      if (name.endsWith(".wal") || name.endsWith(".prev.json") || name.endsWith(".lock") || name.endsWith(".corrupt")
-          || name.endsWith("." + PageSnapshot.SHADOW_FILE_EXT))
+      if (isNodeLocalScratchFileName(name))
         continue;
 
       final Integer snapshotFileId = snapshotFileIds.get(name);
@@ -213,5 +211,51 @@ public final class SnapshotManager {
     }
 
     return checksums;
+  }
+
+  /**
+   * True when {@code name} is node-local working state that lives in a database directory without being part of the
+   * database, so a checksum scan whose only purpose is to be compared with another node's must leave it out.
+   * <p>
+   * The first five entries are the long-standing ones: WAL logs, the {@code schema.prev.json} backup, the lock file,
+   * WAL files preserved as {@code .corrupt} evidence after an aborted recovery (#4958), and the copy-on-write scratch
+   * spill of an open snapshot window (#6075).
+   * <p>
+   * The rest are #7459. They are all published by an ATOMIC RENAME or consumed by one, which is what makes them the
+   * same defect: the scan either CRCs a file that no longer exists a moment later - so two nodes compared by
+   * {@code /api/v1/cluster/checksums} disagree over a file neither of them really has - or the
+   * {@code FileInputStream} below fails outright and the endpoint answers 500.
+   * <ul>
+   * <li>{@code .tmp} - the staging name of every atomic publisher that writes into a database directory. The
+   * producers found by grepping {@code '\.tmp"'} over {@code src/main/java} are {@code FileUtils.atomicWriteFile}
+   * and {@code atomicCopyFile} ({@code schema.json}, {@code schema.prev.json}, {@code configuration.json}, since
+   * #6114), {@code TransactionManager}, {@code TimeSeriesSealedStore} (seal, compaction, retention and
+   * downsampling), {@code LSMVectorIndexGraphManifest}, {@code LSMVectorIndexOrdinalMapFile} and
+   * {@code GraphAnalyticalViewCSRPersistence}. No file ArcadeDB keeps ends in {@code .tmp}: the component
+   * extensions are the {@code SUPPORTED_FILE_EXT} set in {@code LocalDatabase}, and the rest of the directory is
+   * {@code .json}, {@code .bin} and {@code .ts.sealed}.</li>
+   * <li>{@code .ts.sealed.incoming} - where {@code ArcadeStateMachine.repairEngineWithSealedBlob} and
+   * {@code TimeSeriesSealedStore.installSealedFileBytes} stage a sealed store shipped whole, before moving it into
+   * place. A crashed install leaves it on disk until the next open cleans it up.</li>
+   * <li>{@code .ts.sealed.parts} - where a sealed store too large for one Raft entry is reassembled slice by slice
+   * (#4416), so it is present for the whole of a multi-gigabyte transfer.</li>
+   * <li>{@code .snapshot-pending} - the marker saying this node has a half-installed snapshot. Its companions
+   * {@code .snapshot-new} and {@code .snapshot-backup} are directories, which the {@code File::isFile} listing
+   * above already excludes.</li>
+   * </ul>
+   * The last three exist only on a FOLLOWER, and only while it is catching up, which is the worst possible
+   * combination for a divergence detector: the node being interrogated is the one carrying a key the leader cannot
+   * have, and the endpoint reports that as a difference in the data.
+   */
+  private static boolean isNodeLocalScratchFileName(final String name) {
+    return name.endsWith(".wal")
+        || name.endsWith(".prev.json")
+        || name.endsWith(".lock")
+        || name.endsWith(".corrupt")
+        || name.endsWith("." + PageSnapshot.SHADOW_FILE_EXT)
+        || name.endsWith(".tmp")
+        || name.endsWith(TimeSeriesSealedStore.FILE_EXTENSION + ".incoming")
+        || name.endsWith(TimeSeriesSealedStore.FILE_EXTENSION + ArcadeStateMachine.SEALED_STAGING_SUFFIX)
+        || name.equals(ArcadeDBServer.SNAPSHOT_PENDING_FILE);
   }
 }
