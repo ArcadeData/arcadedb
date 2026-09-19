@@ -203,6 +203,39 @@ class Issue7561MembershipChangeBudgetTest {
     assertThat(RaftHAServer.MEMBERSHIP_RETRY_POLICY.toString()).contains("sleepTime=500ms");
   }
 
+  /**
+   * A node with no Raft client at all - its Raft server has not started - is refused in the same type every
+   * other failure of this method uses, rather than throwing an unwrapped {@code NullPointerException} out of
+   * {@code client.admin()} two frames down (review of PR #7941).
+   */
+  @Test
+  void aNodeWithNoRaftClientIsRefusedInASentence() {
+    final RaftHAServer server = mock(RaftHAServer.class);
+    when(server.getLivePeers()).thenReturn(List.of(peer("A"), peer("B"), peer("C")));
+
+    assertThatThrownBy(() -> new RaftClusterManager(server, 1_000L).addPeer("D", "localhost:2447"))
+        .isInstanceOf(ConfigurationException.class)
+        .hasMessageContaining("Failed to add peer D at localhost:2447")
+        .hasMessageContaining("Raft server has not started");
+  }
+
+  /**
+   * And a client that cannot be BUILT is reported the same way. The build happens before the retry loop, so it
+   * used to be the one failure of this method that did not arrive as a {@link ConfigurationException} - an
+   * inconsistency for any caller catching that type (review of PR #7941).
+   */
+  @Test
+  void aMembershipClientThatCannotBeBuiltIsReportedAsAConfigurationFailure() {
+    final RaftHAServer server = mock(RaftHAServer.class);
+    when(server.getLivePeers()).thenReturn(List.of(peer("A"), peer("B"), peer("C")));
+    when(server.newMembershipClient()).thenThrow(new IllegalStateException("no transport parameters"));
+
+    assertThatThrownBy(() -> new RaftClusterManager(server, 1_000L).addPeer("D", "localhost:2447"))
+        .isInstanceOf(ConfigurationException.class)
+        .hasMessageContaining("could not be built")
+        .hasMessageContaining("no transport parameters");
+  }
+
   private static RaftClientReply failedReply(final Throwable failure) {
     final RaftClientReply reply = mock(RaftClientReply.class);
     when(reply.isSuccess()).thenReturn(false);

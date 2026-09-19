@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -227,6 +228,47 @@ class Issue7601ApiTokenExpiryFingerprintTest {
   }
 
   /**
+   * The listing says an expired token is expired (review of PR #7941).
+   * <p>
+   * Since expiry no longer removes anything, an entry whose expiry has passed can sit in the document
+   * indefinitely on a cluster that mints and revokes nothing - so a listing carrying only a past
+   * {@code expiresAt} would put a dead token in the same shape as a live one. Derived at read time, and never
+   * written into the replicated document, which is the whole point of the fix above.
+   */
+  @Test
+  void theTokenListingMarksAnExpiredTokenAsExpired() {
+    final FixtureServer server = openServer();
+    final ServerSecurity node = server.getSecurity();
+    try {
+      final ApiTokenConfiguration tokens = node.getApiTokenConfiguration();
+      tokens.createToken("live", "mydb", 0, new JSONObject());
+      expireInPlace(tokens, "expired");
+
+      final JSONArray listing = new ServerControlPlane(server).listApiTokens();
+
+      boolean sawLive = false;
+      boolean sawExpired = false;
+      for (int i = 0; i < listing.length(); i++) {
+        final JSONObject entry = listing.getJSONObject(i);
+        if ("live".equals(entry.getString("name"))) {
+          assertThat(entry.getBoolean("expired")).as("a token with no expiry is not expired").isFalse();
+          sawLive = true;
+        } else if ("expired".equals(entry.getString("name"))) {
+          assertThat(entry.getBoolean("expired")).as("and one whose expiry has passed says so").isTrue();
+          sawExpired = true;
+        }
+      }
+      assertThat(sawLive && sawExpired).as("both tokens are listed; neither was pruned away").isTrue();
+
+      assertThat(node.getApiTokensJsonPayload())
+          .as("and nothing derived reached the replicated document, which only Raft may change")
+          .doesNotContain("\"expired\":");
+    } finally {
+      node.stopService();
+    }
+  }
+
+  /**
    * Installs {@code name}'s entry with an expiry already in the past, through {@link ApiTokenConfiguration#applyReplicated}
    * - the one writer that takes a document verbatim.
    * <p>
@@ -253,6 +295,10 @@ class Issue7601ApiTokenExpiryFingerprintTest {
   }
 
   private static ServerSecurity open() {
+    return openServer().getSecurity();
+  }
+
+  private static FixtureServer openServer() {
     final String configPath = ROOT_PATH + "/config";
     assertThat(new File(configPath).mkdirs()).isTrue();
 
@@ -262,7 +308,7 @@ class Issue7601ApiTokenExpiryFingerprintTest {
     final FixtureServer server = new FixtureServer(configuration);
     final ServerSecurity security = new ServerSecurity(server, configuration, configPath);
     server.setSecurity(security);
-    return security;
+    return server;
   }
 
   private static final class FixtureServer extends ArcadeDBServer {
