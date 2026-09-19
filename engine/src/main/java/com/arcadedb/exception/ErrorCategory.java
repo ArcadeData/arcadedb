@@ -18,6 +18,8 @@
  */
 package com.arcadedb.exception;
 
+import com.arcadedb.index.fulltext.FullTextQueryParseException;
+
 /**
  * The kind of failure a wire protocol has to report, decided once over ArcadeDB's exception hierarchy so every
  * protocol answers the question the same way. A module keeps only the table that turns a category into its own
@@ -74,7 +76,10 @@ public enum ErrorCategory {
   VALIDATION,
 
   /**
-   * The statement could not be parsed, or failed semantic validation.
+   * The statement could not be parsed, or failed semantic validation. Includes
+   * {@link FullTextQueryParseException}, the Lucene parser refusing the search expression a caller supplied: it
+   * extends {@code IndexException} and so would otherwise be a {@link #SERVER} fault on every wire, which is the
+   * defect issue #7393 reported on HTTP and #7862 found still open at four more call sites.
    */
   PARSING,
 
@@ -134,7 +139,8 @@ public enum ErrorCategory {
         || CauseChain.contains(error, InvalidPropertyTypeException.class) //
         || CauseChain.contains(error, IllegalArgumentException.class))
       return VALIDATION;
-    if (CauseChain.contains(error, CommandParsingException.class))
+    if (CauseChain.contains(error, CommandParsingException.class) //
+        || CauseChain.contains(error, FullTextQueryParseException.class))
       return PARSING;
     if (CauseChain.contains(error, TimeoutException.class))
       return TIMEOUT;

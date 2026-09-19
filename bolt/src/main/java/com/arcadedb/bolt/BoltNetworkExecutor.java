@@ -1992,6 +1992,12 @@ public class BoltNetworkExecutor extends Thread {
    * value". {@link CommandSemanticException} marks a statement that parsed correctly but violates a semantic
    * rule (e.g. an undefined variable), so it maps to Neo4j's SemanticError; every other
    * {@link CommandParsingException} is a genuine syntax error.
+   * <p>
+   * {@code null} is a legitimate argument and means syntax error. {@link ErrorCategory#PARSING} also covers the
+   * Lucene {@code FullTextQueryParseException} (issue #7862), which is NOT a {@link CommandParsingException}, so
+   * the {@code CauseChain.find} in {@link #classifyExecutionError} has nothing to refine the title with - and a
+   * search expression the parser refused is a syntax error from a driver's point of view, which is the answer
+   * that leaves.
    */
   static String classifyParsingError(final CommandParsingException error) {
     if (error instanceof CommandParameterMissingException)
