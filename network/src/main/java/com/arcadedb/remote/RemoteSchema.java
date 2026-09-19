@@ -782,7 +782,11 @@ public class RemoteSchema implements Schema {
   @Deprecated
   @Override
   public DocumentType getTypeByBucketName(final String bucketName) {
-    ResultSet resultSet = remoteDatabase.command("sql", "select from schema:types where buckets contains '" + bucketName + "'");
+    // Bound rather than interpolated into the string literal, like every other exists*/getBy* in this class: a
+    // bucket name carrying a quote used to end the literal early and have its remainder parsed as more SQL. The
+    // same defect as the back-tick sites #7914 fixed, with the other quote character (PR #7942 review).
+    final ResultSet resultSet = remoteDatabase.command("sql",
+        "select from schema:types where buckets contains :bucketName", Map.of("bucketName", bucketName));
 
     final Result result = resultSet.nextIfAvailable();
     return result != null ? remoteDatabase.getSchema().getType(result.getProperty("name")) : null;
