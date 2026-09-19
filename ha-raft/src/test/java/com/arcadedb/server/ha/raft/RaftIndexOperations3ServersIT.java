@@ -37,6 +37,29 @@ import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * Issue #7873: {@link #rebuildIndex()} and {@link #createIndexLater()} were {@code @Disabled} on an engine claim
+ * recorded only in the annotation string - "rebuild index triggers compaction which is not replicated via Raft -
+ * checkDatabasesAreIdentical fails in endTest" - with no issue behind it and no re-check since.
+ * <p>
+ * Both halves of that claim are false, and the second one measurably so.
+ * <p>
+ * Compaction output IS replicated: {@link Issue5517BloomFilterFullCompactionIT}, a 3-node test in this very
+ * package, asserts end to end that a full compaction ships the new file, that the followers drop the retired one,
+ * and that they then serve lookups out of replicated bloom filters they never built.
+ * <p>
+ * And {@code checkDatabasesAreIdentical()} does not fail here. The obvious fix was to suppress the shared
+ * comparator the way {@code Issue5517BloomFilterFullCompactionIT} has to - a compacted file name embeds a per-node
+ * {@code nanoTime}, so the comparator cannot pair bucket indexes by name afterwards - but running these two with
+ * the comparator left ON shows it is not needed: all four tests in this class pass with it. That test forces a
+ * FULL compaction by setting {@code INDEX_COMPACTION_FULL_SERIES}; the implicit compaction a {@code REBUILD INDEX}
+ * of {@value #TOTAL_RECORDS} records triggers does not produce a renamed compacted file, so there is nothing for
+ * the comparator to mispair. Suppressing it would have cost the cross-server check on all four tests to work
+ * around a problem these two do not have (review on PR #7953).
+ * <p>
+ * So the comparator stays, and the two re-enabled tests additionally assert what it cannot: that every key is
+ * findable THROUGH the rebuilt index on each of the three nodes, rather than only that the pages match.
+ */
 class RaftIndexOperations3ServersIT extends BaseRaftHATest {
 
   private static final int TOTAL_RECORDS = 500;
@@ -51,30 +74,6 @@ class RaftIndexOperations3ServersIT extends BaseRaftHATest {
   @Override
   protected void populateDatabase() {
   }
-
-  /**
-   * Issue #7873. {@code rebuildIndex()} and {@code createIndexLater()} below were {@code @Disabled} on an engine
-   * claim recorded only in the annotation string - "rebuild index triggers compaction which is not replicated via
-   * Raft" - with no issue behind it and no re-check since. {@link Issue5517BloomFilterFullCompactionIT}, a 3-node
-   * test in this very package, is a standing counter-example: it asserts end to end that a full index compaction
-   * IS replicated, that the followers drop the retired files, and that they then serve lookups out of the
-   * replicated bloom filters they never built.
-   * <p>
-   * What the two tests actually tripped over is what that test's own override says: a compacted file name embeds a
-   * per-node {@code nanoTime}, so the shared comparator cannot pair bucket indexes by name after a compaction and
-   * reports "Invalid position" - in {@code endTest}, not in either test body. That is a test-harness limitation,
-   * not an engine one, and the remedy already existed in the same directory.
-   * <p>
-   * So the comparison is replaced rather than skipped: the bodies assert what must hold after a rebuild on every
-   * one of the three servers - the record count, the index entry count, and that every key inserted is findable
-   * THROUGH the index on each node - none of which depends on byte-identical pages.
-   */
-  @Override
-  protected void checkDatabasesAreIdentical() {
-    // Compacted file names embed a per-node nanoTime, so the comparator cannot pair bucket indexes by name after
-    // the compaction a rebuild triggers. What must be equal is asserted in the test bodies.
-  }
-
 
   /**
    * Rebuilds both indexes, on all 3 servers, with the type and the indexes created BEFORE the data.
@@ -118,7 +117,6 @@ class RaftIndexOperations3ServersIT extends BaseRaftHATest {
     assertEveryServerServesTheWholeIndex(insertedIds, insertedUuids);
   }
 
-
   /**
    * The same rebuilds with the indexes created AFTER the data, which is the path that has to index the records
    * already on disk rather than only the ones a later insert adds.
@@ -159,9 +157,12 @@ class RaftIndexOperations3ServersIT extends BaseRaftHATest {
 
   /**
    * What must hold after a rebuild, on every one of the three servers, and what the {@code @Disabled} pair of
-   * issue #7873 never asserted: it checked only the {@code totalIndexed} figure each server's own REBUILD command
-   * reported, which is that server talking about the work it just did. None of it depends on byte-identical
-   * pages, which is what the shared comparator - the thing that actually failed - needs.
+   * issue #7873 never asserted: they checked only the {@code totalIndexed} figure each server's own REBUILD
+   * command reported, which is that server talking about the work it just did.
+   * <p>
+   * Additional to {@code checkDatabasesAreIdentical()}, not a replacement for it - see this class's javadoc for
+   * why the comparator can stay. It answers a question the comparator does not ask: the comparator establishes
+   * that the pages match, and this establishes that the rebuilt index can actually FIND the keys on every node.
    * <p>
    * The lookups go THROUGH the index rather than through a query the planner could answer with a type scan, which
    * is the difference between "the records are here" and "the index that was rebuilt can find them".
