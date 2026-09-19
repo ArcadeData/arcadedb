@@ -21,13 +21,13 @@ package com.arcadedb.database;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.StringJoiner;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -321,18 +321,23 @@ public class DeferredExistenceChecks {
    * the same one that was deferred there.
    */
   private static String firstUnmetExistenceConstraint(final Document record) {
-    final DocumentType type = record.getType();
-    for (final Property property : type.getPolymorphicProperties()) {
-      final DocumentValidator.ExistenceConstraint unmet = DocumentValidator.unmetExistenceConstraint(record, property);
-      if (unmet == null)
-        continue;
+    return record.getType().getPolymorphicProperties().stream()
+        .map(property -> describeUnmetExistenceConstraint(record, property))
+        .filter(Objects::nonNull)
+        .findFirst()
+        .orElse(null);
+  }
 
-      final String property_ = "property '" + type.getName() + "." + property.getName() + "'";
-      return unmet == DocumentValidator.ExistenceConstraint.MANDATORY ?
-          property_ + " is mandatory, but was never set (record " + record.getIdentity() + ")" :
-          property_ + " cannot be null (record " + record.getIdentity() + ")";
-    }
-    return null;
+  /** How one unsatisfied existence constraint reads at the end of the statement, or null when it is satisfied. */
+  private static String describeUnmetExistenceConstraint(final Document record, final Property property) {
+    final DocumentValidator.ExistenceConstraint unmet = DocumentValidator.unmetExistenceConstraint(record, property);
+    if (unmet == null)
+      return null;
+
+    final String named = "property '" + record.getType().getName() + "." + property.getName() + "'";
+    return unmet == DocumentValidator.ExistenceConstraint.MANDATORY ?
+        named + " is mandatory, but was never set (record " + record.getIdentity() + ")" :
+        named + " cannot be null (record " + record.getIdentity() + ")";
   }
 
   /**
