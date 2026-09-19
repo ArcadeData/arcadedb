@@ -1,6 +1,10 @@
-// Collects the `severity:minor` issues that are eligible to be folded into an umbrella issue,
-// for .github/workflows/merge-minor-issues.yml, and writes them out per module for the model
+// Collects the issues that are eligible to be folded into an umbrella issue, for
+// .github/workflows/merge-related-issues.yml, and writes them out per module for the model
 // step to read.
+//
+// Every triage level is in scope, because relatedness does not follow gravity: a critical and
+// two minors can be three faces of one fix. An issue with no level is not, since an untriaged
+// issue has no gravity to carry into the umbrella.
 //
 // Every filter here fails toward "leave the issue alone": being wrong in that direction costs a
 // consolidation that happens twelve hours later, while being wrong in the other closes somebody's
@@ -10,7 +14,7 @@
 
 const fs = require("fs");
 const {
-  MINOR_LABEL,
+  severityOf,
   UMBRELLA_LABEL,
   NON_MODULE_LABELS,
   MAX_MODULES_PER_RUN,
@@ -20,7 +24,6 @@ const {
 } = require("./issue-workflow-config.js");
 
 module.exports = async ({ github, context, core }) => {
-  const severityLabel = MINOR_LABEL.toLowerCase();
   const umbrellaLabel = UMBRELLA_LABEL.toLowerCase();
   const nonModule = new Set(NON_MODULE_LABELS.map((l) => l.toLowerCase()));
   const moduleFilter = (process.env.MODULE_FILTER || "").trim().toLowerCase();
@@ -28,7 +31,7 @@ module.exports = async ({ github, context, core }) => {
   const maxPerModule = MAX_CANDIDATES_PER_MODULE;
   const bodyLimit = BODY_LIMIT;
 
-  const audit = (msg) => core.info(`merge-minor: ${msg}`);
+  const audit = (msg) => core.info(`merge-related: ${msg}`);
   // A run that decides to do nothing is the common case, so it has to say WHY it decided that,
   // issue by issue. Counters alone cannot tell "nothing qualified" apart from "nothing ran".
   const reason = (label, numbers) =>
@@ -40,11 +43,10 @@ module.exports = async ({ github, context, core }) => {
       owner: context.repo.owner,
       repo: context.repo.repo,
       state: "open",
-      labels: MINOR_LABEL,
       per_page: 100,
     });
   } catch (err) {
-    core.warning(`merge-minor: listForRepo failed: ${err.message}`);
+    core.warning(`merge-related: listForRepo failed: ${err.message}`);
     core.setOutput("count", "0");
     return;
   }
@@ -54,6 +56,7 @@ module.exports = async ({ github, context, core }) => {
   const skippedBusy = [];
   const skippedUmbrella = [];
   const skippedNoModule = [];
+  const skippedUntriaged = [];
   for (const issue of issues) {
     if (issue.pull_request) continue;
     const names = issue.labels.map((l) => (typeof l === "string" ? l : l.name).toLowerCase());
@@ -68,9 +71,15 @@ module.exports = async ({ github, context, core }) => {
       skippedBusy.push(issue.number);
       continue;
     }
+    // No triage level means no gravity for the umbrella to inherit, so the issue is not a
+    // candidate until somebody has classified it.
+    const severity = severityOf(names);
+    if (severity === null) {
+      skippedUntriaged.push(issue.number);
+      continue;
+    }
     const modules = names.filter(
       (n) =>
-        n !== severityLabel &&
         !n.startsWith("severity:") &&
         !nonModule.has(n) &&
         (moduleFilter === "" || n === moduleFilter)
@@ -83,15 +92,16 @@ module.exports = async ({ github, context, core }) => {
     }
     const key = modules.sort()[0];
     if (!byModule.has(key)) byModule.set(key, []);
-    byModule.get(key).push(issue);
+    byModule.get(key).push({ issue, severity });
   }
 
   audit(
-    `open_minor=${issues.length}, module_filter=${moduleFilter || "-"}, ` +
+    `open_issues=${issues.length}, module_filter=${moduleFilter || "-"}, ` +
     `bucketed=${[...byModule.entries()].map(([m, l]) => `${m}:${l.length}`).join("|") || "-"}`
   );
   reason("skipped_umbrella", skippedUmbrella);
   reason("skipped_busy", skippedBusy);
+  reason("skipped_untriaged", skippedUntriaged);
   reason("skipped_no_module_label", skippedNoModule);
 
   // A module with a single candidate has nothing to merge with.
@@ -151,7 +161,7 @@ module.exports = async ({ github, context, core }) => {
       }
       return linked ? "open_pr" : null;
     } catch (err) {
-      core.warning(`merge-minor: timeline for #${number} failed: ${err.message}`);
+      core.warning(`merge-related: timeline for #${number} failed: ${err.message}`);
       return "errored";
     }
   };
@@ -164,7 +174,7 @@ module.exports = async ({ github, context, core }) => {
   const skippedSpokenFor = [];
   for (const [name, list] of ordered) {
     const candidates = [];
-    for (const issue of list.slice(0, maxPerModule)) {
+    for (const { issue, severity } of list.slice(0, maxPerModule)) {
       const why = await spokenFor(issue.number);
       if (why !== null) {
         skippedSpokenFor.push(`${issue.number}=${why}`);
@@ -173,6 +183,7 @@ module.exports = async ({ github, context, core }) => {
       candidates.push({
         number: issue.number,
         title: issue.title,
+        severity,
         labels: issue.labels.map((l) => (typeof l === "string" ? l : l.name)),
         body: truncate(issue.body),
       });
@@ -194,7 +205,7 @@ module.exports = async ({ github, context, core }) => {
   // The exact set handed to the model, so the next log line can be read against what it saw.
   for (const m of modules)
     for (const c of m.candidates)
-      audit(`candidate module=${m.module} #${c.number} ${c.title}`);
+      audit(`candidate module=${m.module} #${c.number} [${c.severity}] ${c.title}`);
 
   if (candidateCount === 0) {
     audit("candidates=0, action=nothing_to_group");

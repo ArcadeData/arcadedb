@@ -3,8 +3,8 @@
 // Self-test for the issue-automation scripts in .github/scripts:
 //
 //   issue-classify-apply.js   labels and triage level for a newly opened issue
-//   issue-collect-minor.js    which `severity:minor` issues may be consolidated
-//   issue-merge-minor.js      turning a proposed grouping into an umbrella issue
+//   issue-collect-related.js  which issues may be consolidated
+//   issue-merge-related.js    turning a proposed grouping into an umbrella issue
 //
 // All three act on what a model returned after reading untrusted issue text, and the guards
 // that keep that safe - the label whitelist, the candidate whitelist, the single-level rule,
@@ -187,7 +187,7 @@ const classifyCases = async () => {
 };
 
 // --------------------------------------------------------------------------------------------
-// issue-collect-minor.js
+// issue-collect-related.js
 // --------------------------------------------------------------------------------------------
 
 const issue = (number, o = {}) => ({
@@ -198,6 +198,11 @@ const issue = (number, o = {}) => ({
   labels: (o.labels ?? ["severity:minor", "timeseries"]).map((name) => ({ name })),
   pull_request: o.pull_request,
 });
+
+const severityOfPool = (pools, module, number) => {
+  const m = pools.find(([name]) => name === module);
+  return m === undefined ? undefined : m[1].includes(number);
+};
 
 const xref = (o) => ({ event: "cross-referenced", source: { issue: o } });
 const openPr = xref({ pull_request: {}, state: "open" });
@@ -223,8 +228,8 @@ const runCollect = async (list, timeline = {}, opts = {}) => {
     },
     rest: { issues: { listForRepo: "listForRepo", listEventsForTimeline: "timeline" } },
   };
-  delete require.cache[require.resolve(path.join(SCRIPTS, "issue-collect-minor.js"))];
-  await require(path.join(SCRIPTS, "issue-collect-minor.js"))({ github, context, core });
+  delete require.cache[require.resolve(path.join(SCRIPTS, "issue-collect-related.js"))];
+  await require(path.join(SCRIPTS, "issue-collect-related.js"))({ github, context, core });
   const payload = fs.existsSync(payloadFile)
     ? JSON.parse(fs.readFileSync(payloadFile, "utf8"))
     : { modules: [] };
@@ -232,11 +237,12 @@ const runCollect = async (list, timeline = {}, opts = {}) => {
     log,
     count: outputOf(log, "count"),
     pools: payload.modules.map((m) => [m.module, m.candidates.map((c) => c.number)]),
+    severities: payload.modules.flatMap((m) => m.candidates.map((c) => c.severity)),
   };
 };
 
 const collectCases = async () => {
-  console.log("issue-collect-minor.js");
+  console.log("issue-collect-related.js");
 
   let r = await runCollect([
     issue(1),
@@ -277,6 +283,32 @@ const collectCases = async () => {
     issue(3),
   ]);
   check("never collects an umbrella issue", r.pools, [["timeseries", [2, 3]]]);
+
+  // Every triage level is in scope now: relatedness does not follow gravity.
+  r = await runCollect([
+    issue(1, { labels: ["severity:critical", "timeseries"] }),
+    issue(2, { labels: ["severity:major", "timeseries"] }),
+    issue(3),
+  ]);
+  check("collects every severity", r.pools, [["timeseries", [1, 2, 3]]]);
+  check("and records each one's level", r.severities, [
+    "severity:critical",
+    "severity:major",
+    "severity:minor",
+  ]);
+
+  // No level means no gravity for the umbrella to inherit, so it is not a candidate.
+  r = await runCollect([
+    issue(1, { labels: ["timeseries"] }),
+    issue(2),
+    issue(3),
+  ]);
+  check("an untriaged issue is not a candidate", r.pools, [["timeseries", [2, 3]]]);
+  check(
+    "and is named in the log",
+    r.log.some((l) => l.includes("skipped_untriaged=#1")),
+    true
+  );
 
   r = await runCollect([issue(1), issue(2), issue(3)], { 1: [openPr] });
   check("skips an issue an open PR references", r.pools, [["timeseries", [2, 3]]]);
@@ -376,7 +408,7 @@ const collectCases = async () => {
 };
 
 // --------------------------------------------------------------------------------------------
-// issue-merge-minor.js
+// issue-merge-related.js
 // --------------------------------------------------------------------------------------------
 
 const POOL = {
@@ -410,16 +442,25 @@ const runMerge = async (reply, opts = {}) => {
   });
   const { log, core } = recorder();
   const state = opts.state ?? {};
+  const severity = opts.severity ?? {};
   const calls = { created: [], commented: [], closed: [] };
   const github = {
     paginate: async () =>
-      ["timeseries", "server", "severity:minor", "parent-issue"].map((name) => ({ name })),
+      [
+        "timeseries",
+        "server",
+        "severity:minor",
+        "severity:major",
+        "severity:critical",
+        "parent-issue",
+      ].map((name) => ({ name })),
     rest: {
       issues: {
         listLabelsForRepo: {},
         get: async ({ issue_number: n }) => ({
           data: Object.assign(
             { number: n, state: "open", assignees: [], labels: [{ name: "severity:minor" }] },
+            severity[n] === undefined ? {} : { labels: [{ name: severity[n] }] },
             state[n] ?? {}
           ),
         }),
@@ -442,13 +483,13 @@ const runMerge = async (reply, opts = {}) => {
       },
     },
   };
-  delete require.cache[require.resolve(path.join(SCRIPTS, "issue-merge-minor.js"))];
-  await require(path.join(SCRIPTS, "issue-merge-minor.js"))({ github, context, core });
+  delete require.cache[require.resolve(path.join(SCRIPTS, "issue-merge-related.js"))];
+  await require(path.join(SCRIPTS, "issue-merge-related.js"))({ github, context, core });
   return { ...calls, log, audit: auditOf(log).join(" ") };
 };
 
 const mergeCases = async () => {
-  console.log("issue-merge-minor.js");
+  console.log("issue-merge-related.js");
 
   let r = await runMerge(
     "reasoning...\nGROUP: timeseries | 1,2,3,4 | writer drops the column name\n" +
@@ -468,8 +509,16 @@ const mergeCases = async () => {
   // Nothing from an issue body may be echoed: the body is bare references only.
   check(
     "the body quotes nothing",
-    r.created[0].body.includes("- [ ] #1\n- [ ] #2\n- [ ] #3\n- [ ] #4"),
+    r.created[0].body.includes(
+      "- [ ] #1 (`severity:minor`)\n- [ ] #2 (`severity:minor`)\n" +
+        "- [ ] #3 (`severity:minor`)\n- [ ] #4 (`severity:minor`)"
+    ),
     true
+  );
+  check(
+    "and carries no issue title of its own",
+    r.created[0].body.includes("issue 1"),
+    false
   );
 
   r = await runMerge("GROUP: timeseries | 1,2,3 | anything", { dryRun: true });
@@ -573,6 +622,36 @@ const mergeCases = async () => {
 
   // Minutes pass while the model thinks, so every member is re-read immediately before it is
   // touched.
+  // Three issues, one critical: the umbrella that replaces them must not be less severe than
+  // the worst thing it now tracks.
+  r = await runMerge("GROUP: timeseries | 1,2,3 | mixed levels", {
+    severity: { 1: "severity:critical", 2: "severity:minor", 3: "severity:minor" },
+  });
+  check("the umbrella inherits the highest severity", r.created[0].labels, [
+    "timeseries",
+    "severity:critical",
+    "parent-issue",
+  ]);
+  check(
+    "and the body records each member's own level",
+    r.created[0].body.includes("- [ ] #1 (`severity:critical`)") &&
+      r.created[0].body.includes("- [ ] #2 (`severity:minor`)"),
+    true
+  );
+  check("and the audit line says which", r.audit.includes("severity=severity:critical"), true);
+
+  r = await runMerge("GROUP: timeseries | 1,2 | two majors", {
+    severity: { 1: "severity:major", 2: "severity:major" },
+  });
+  check("a uniform group keeps that level", r.created[0].labels[1], "severity:major");
+
+  // The critical is dropped at re-verification, so the umbrella must NOT claim its gravity.
+  r = await runMerge("GROUP: timeseries | 1,2,3 | critical drops out", {
+    severity: { 1: "severity:critical", 2: "severity:minor", 3: "severity:minor" },
+    state: { 1: { state: "closed" } },
+  });
+  check("a dropped member's severity is not inherited", r.created[0].labels[1], "severity:minor");
+
   r = await runMerge("GROUP: timeseries | 1,2,3 | three", { state: { 2: { state: "closed" } } });
   check("a member closed meanwhile drops out", r.closed, ["1:duplicate", "3:duplicate"]);
 
@@ -587,9 +666,9 @@ const mergeCases = async () => {
   check("a member picked up meanwhile drops out", r.closed, ["1:duplicate", "3:duplicate"]);
 
   r = await runMerge("GROUP: timeseries | 1,2,3 | three", {
-    state: { 2: { labels: [{ name: "severity:major" }] } },
+    state: { 2: { labels: [{ name: "bug" }] } },
   });
-  check("a member re-triaged meanwhile drops out", r.closed, ["1:duplicate", "3:duplicate"]);
+  check("a member left untriaged meanwhile drops out", r.closed, ["1:duplicate", "3:duplicate"]);
 
   // An umbrella must never be closed as a duplicate of another umbrella.
   r = await runMerge("GROUP: timeseries | 1,2,3 | three", {
