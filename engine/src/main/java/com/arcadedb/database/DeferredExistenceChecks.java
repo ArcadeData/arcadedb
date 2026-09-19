@@ -326,7 +326,20 @@ public class DeferredExistenceChecks {
    * statement that created it.
    */
   public void discard() {
-    deleteProvisionalRecords(takeIncomplete(new StringJoiner("; ")));
+    // Nothing thrown in here may leave this method. The caller is inside a catch block, on its way to rethrowing
+    // the failure the statement actually hit, and everything below touches a database that failure may just have
+    // left in a state where a read or a transaction raises something of its own: takeIncomplete() reads each
+    // pending record back, and the delete joins the current transaction. Letting one of those escape would replace
+    // the real cause with an unrelated one - the exact opposite of what this method is for.
+    try {
+      deleteProvisionalRecords(takeIncomplete(new StringJoiner("; ")));
+    } catch (final RuntimeException | Error e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Could not take back the incomplete records of a statement that failed for another reason", e);
+    } finally {
+      pending.clear();
+      disarm();
+    }
   }
 
   /**

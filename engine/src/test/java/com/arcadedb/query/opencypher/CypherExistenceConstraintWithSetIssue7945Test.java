@@ -452,6 +452,30 @@ class CypherExistenceConstraintWithSetIssue7945Test {
     assertThat(countRecords()).isZero();
   }
 
+  /**
+   * The same upsert under PROFILE, which takes a different branch of the engine
+   * ({@code plan.profile()} rather than {@code plan.execute()}). Both drain a write statement before returning,
+   * which is what the end-of-statement check rests on - and the profile path is the one that was converted from
+   * draining to streaming once before (#7330), so the combination is worth pinning rather than assuming.
+   */
+  @Test
+  void theDeferredCheckStillAppliesUnderProfile() {
+    try (final ResultSet rs = database.command("cypher",
+        "PROFILE MERGE (n:Record {id: $id}) SET n.orgId = $orgId RETURN n.orgId AS o",
+        Map.of("id", "prof-1", "orgId", "org-p"))) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<String>getProperty("o")).isEqualTo("org-p");
+    }
+    assertThat(countRecords()).isEqualTo(1);
+
+    // And a profiled statement that never completes its record still fails, and still leaves nothing behind.
+    assertThatThrownBy(() -> database.command("cypher", "PROFILE CREATE (n:Record {id: 'prof-2'})"))
+        .isInstanceOf(CommandExecutionException.class)
+        .rootCause().isInstanceOf(ValidationException.class);
+
+    assertThat(countRecords()).isEqualTo(1);
+  }
+
   private long countRecords() {
     try (final ResultSet rs = database.query("cypher", "MATCH (n:Record) RETURN count(n) AS c")) {
       return rs.next().<Number>getProperty("c").longValue();
