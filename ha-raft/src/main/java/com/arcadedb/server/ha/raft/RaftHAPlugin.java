@@ -343,10 +343,14 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
    * upgrading starts receiving them without a leader restart.
    * <p>
    * <b>Asked through {@link RaftHAServer#peersMissingCapabilityNow} and not the cached
-   * {@link RaftHAServer#peersMissingCapability}</b> (issue #7559). The background capability monitor runs on the
-   * LEADER only - {@code startCapabilityMonitor} is called from {@code startLagMonitor} on gaining leadership and
-   * stopped on losing it - because #7219's only consumer was the leader-side schema-delta decision, where the
-   * leader is the only writer. A security entry is not a schema delta: any node can submit one, and the entry
+   * {@link RaftHAServer#peersMissingCapability}</b> (issue #7559). The background capability monitor used to run
+   * on the LEADER only - {@code startCapabilityMonitor} was called from {@code startLagMonitor} on gaining
+   * leadership and stopped on losing it - because #7219's only consumer was the leader-side schema-delta
+   * decision, where the leader is the only writer. Issue #7549 has since moved it onto every node, started with
+   * the server and stopped only at shutdown, so a follower's cache is normally as warm as a leader's and the
+   * ask-now round below is the cold-start case rather than the ordinary one. It still has to be the ask-now
+   * variant: a node whose first round has not landed yet would otherwise read an empty cache and reach the wrong
+   * verdict. A security entry is not a schema delta: any node can submit one, and the entry
    * points that reach here on a FOLLOWER are precisely the ones that do NOT forward to the leader - the REST
    * group and API-token routes, and openCypher {@code CREATE USER} / {@code ALTER USER} / {@code DROP USER} over
    * Bolt or {@code /api/v1/command}, which arrive through {@code SecurityManager} and have no exchange to
