@@ -2261,12 +2261,21 @@ public class TransactionContext implements Transaction {
       // modified records are intentionally NOT reloaded: their in-memory content is exactly what the
       // cluster committed, so there is nothing to restore.
       reset();
-    else if (database.getEmbedded() instanceof LocalDatabase localDatabase && localDatabase.isFencedForRecovery())
+    else if (database.getEmbedded() instanceof LocalDatabase localDatabase && localDatabase.isFencedForRecovery()) {
       // A fence-REFUSED commit (this tx appended nothing; the fence came from an earlier failure) cannot
       // roll back its record state: rollback()'s record reload would hit the fence choke point itself and
       // replace the fence error with a confusing secondary failure. Release resources only - the database
       // is unusable until close/reopen anyway, so user-held record state is moot.
+      //
+      // #7934 review: the INDEX replay is the one thing that does have to come back, and the reason is in the
+      // first line of this comment - this transaction appended nothing, so unlike every other branch that
+      // reaches reset(), its changes are not durable and must not be published. This is the only piece of
+      // rollback() that is safe to run here: it is index-scoped, it never touches the dictionary or reloads a
+      // record, so it cannot reach the fence choke point that makes the rest of rollback() unusable. Running it
+      // is also what stops the reset() below from taking the publish branch.
+      undoIndexReplay();
       reset();
+    }
     else
       // #4940: the failure happened BEFORE anything durable exists. Restore user-held records exactly like
       // a phase-1 failure does: reload the modified records to their committed content and reset the
@@ -2355,9 +2364,14 @@ public class TransactionContext implements Transaction {
    * deferred has to be published now (issue #7933).
    * <p>
    * Called from {@link #reset()}, which is the single point every non-rolled-back conclusion reaches - the commit,
-   * and each of the failure regimes {@link #concludePhase2} routes through {@code reset()} precisely because their
-   * changes are durable regardless. {@code rollback()} cannot reach it: it runs {@link #undoIndexReplay()} first,
-   * which clears the registrations before its own {@code reset()} gets here.
+   * and the failure regimes {@link #concludePhase2} routes through {@code reset()} precisely because their changes
+   * are durable regardless: a failure past the WAL append that recovery will replay, and a local apply that failed
+   * after the cluster had already committed. {@code rollback()} cannot reach it: it runs
+   * {@link #undoIndexReplay()} first, which clears the registrations before its own {@code reset()} gets here.
+   * <p>
+   * The fence-REFUSED branch of {@code concludePhase2} is the one arm that reaches {@code reset()} without durable
+   * changes - it appended nothing - and it therefore runs {@link #undoIndexReplay()} itself before getting here.
+   * Durability, not the route taken, is what decides which of the two conclusions applies.
    * <p>
    * Runs BEFORE {@code reset()} releases the file locks, which is deliberately the SAME lock state the eager
    * replay it replaces ran in: a deferred publication must not be able to reach a lock ordering the eager one
