@@ -107,6 +107,37 @@ class Issue7909RefusedStartDoesNotRaiseTheFrameBudgetIT extends BaseGraphServerT
     }
   }
 
+  /**
+   * The reason the in-flight-{@code start} half of the answer exists at all, and the case a budget keyed only on
+   * a registered session would lose (claude-review on PR #7936). The client pipelines its first {@code chunk}
+   * behind {@code start} without waiting for {@code started}, so the chunk's size is decided on the I/O thread
+   * while the start is still on a worker - or has only just finished. Both orderings must grant the budget: the
+   * grant is taken before the frame is queued and released only once the session is registered, so there is no
+   * instant between them at which the connection is charged the control budget.
+   */
+  @Test
+  void aChunkPipelinedBehindAStartIsAlreadyOnTheInsertBudget() throws Throwable {
+    try (final var client = new WebSocketClientHelper(wsUrl(), "root", DEFAULT_PASSWORD_FOR_TESTS)) {
+      final String sessionId = "pipelined-7909";
+      final JSONObject options = personOptions();
+
+      // Neither send waits for its answer, so the chunk reaches the I/O thread while the start is still queued.
+      client.sendWithoutWaiting(new JSONObject().put("action", "start").put("database", getDatabaseName())
+          .put("sessionId", sessionId).put("options", options).toString());
+      client.sendWithoutWaiting(bigChunk(sessionId, 1));
+
+      final JSONObject started = new JSONObject(client.popMessage());
+      assertThat(started.getString("action", "")).isEqualTo("started");
+
+      final JSONObject ack = new JSONObject(client.popMessage());
+      assertThat(ack.getString("action", "")).as("the pipelined chunk must not have been refused for its size: %s", ack)
+          .isEqualTo("batchAck");
+      assertThat(ack.getLong("inserted", -1)).isEqualTo(1);
+
+      new JSONObject(client.send(control("rollback", sessionId)));
+    }
+  }
+
   // ---------------------------------------------------------------------------------------------------------
 
   private String wsUrl() {

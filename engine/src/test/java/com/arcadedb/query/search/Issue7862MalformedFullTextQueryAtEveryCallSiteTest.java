@@ -25,6 +25,9 @@ import com.arcadedb.index.fulltext.FullTextQueryParseException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
 
@@ -133,8 +136,8 @@ class Issue7862MalformedFullTextQueryAtEveryCallSiteTest extends TestHelper {
     assertThat(ErrorCategory.of(thrown)).as("query <%s>", malformed).isEqualTo(ErrorCategory.PARSING);
   }
 
-  private static java.util.List<Throwable> causeChainOf(final Throwable error) {
-    final java.util.List<Throwable> chain = new java.util.ArrayList<>();
+  private static List<Throwable> causeChainOf(final Throwable error) {
+    final List<Throwable> chain = new ArrayList<>();
     for (Throwable t = error; t != null && chain.size() < 32; t = t.getCause())
       chain.add(t);
     return chain;
