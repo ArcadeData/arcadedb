@@ -173,6 +173,24 @@ test("a malformed peer row is skipped rather than blanking the cluster page", ()
   assert.doesNotThrow(() => securityCapabilityBanner(clusterSecurityCapabilityGaps(data)[0]));
 });
 
+// The guard above protects the readiness calculation, which the Security page calls with its own payload.
+// The cluster PAGE has consumers that predate this PR and dereference a row directly - the local-peer scan,
+// renderNodeCards, renderPeerManagement - so the list is normalised once at the top of renderClusterData
+// rather than guarded in each of them: a guard added per consumer is a guard the next consumer forgets.
+test("the cluster page filters the peer list once, before anything reads it", () => {
+  const render = extractFn(clusterSrc, "renderClusterData");
+  const filterAt = render.indexOf("data.peers = data.peers.filter(");
+
+  assert.ok(filterAt > 0, "renderClusterData must normalise data.peers");
+  assert.ok(
+    filterAt < render.indexOf("clusterLastData = data;"),
+    "and do it before clusterLastData is published, since the leadership picker reads that later"
+  );
+  assert.ok(filterAt < render.indexOf("data.peers[p].id"), "and before the local-peer scan dereferences a row");
+  assert.ok(filterAt < render.indexOf("renderNodeCards(data)"));
+  assert.ok(filterAt < render.indexOf("renderPeerManagement(data)"));
+});
+
 test("an unclustered server, an empty payload and a missing payload all say nothing", () => {
   for (const data of [null, undefined, {}, { peers: [] }, { isLeader: true, peers: [] }]) {
     assert.deepEqual(clusterSecurityCapabilityGaps(data), [], JSON.stringify(data));

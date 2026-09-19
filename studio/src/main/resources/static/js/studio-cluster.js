@@ -20,6 +20,16 @@ function updateCluster(callback) {
 }
 
 function renderClusterData(data) {
+  // One chokepoint for the shape of the peer list, before anything reads it. Every consumer below - the
+  // local-peer scan three lines down, renderNodeCards, renderPeerManagement, the leadership picker reading
+  // clusterLastData later - dereferences a row directly, so a single null entry would throw here and blank
+  // the whole page on a poll that runs every few seconds. Filtered once rather than guarded in each of them:
+  // a guard added per consumer is a guard the next consumer forgets (PR #7939 review).
+  if (data && Array.isArray(data.peers))
+    data.peers = data.peers.filter(function (peer) {
+      return peer != null && typeof peer === "object";
+    });
+
   clusterLastData = data;
 
   // Header
@@ -115,9 +125,9 @@ function clusterCapabilityReadiness(data, capability) {
   readiness.determinable = true;
   for (var i = 0; i < peers.length; i++) {
     var peer = peers[i];
-    // A row that is not an object cannot be judged, and must not take the whole cluster page down with it:
-    // this renderer runs on every poll, so one malformed entry would blank the node cards AND the banner -
-    // hiding the very readiness it exists to show (PR #7939 review).
+    // Kept even though renderClusterData() now filters the list: the Security page calls this with its OWN
+    // GET /api/v1/cluster payload, which never passes through that renderer, and a throw there would take
+    // the group and API-token forms down instead of gating them.
     if (peer == null || typeof peer !== "object") continue;
     var advertised = Array.isArray(peer.capabilities) ? peer.capabilities : null;
     if (advertised !== null && advertised.indexOf(capability) >= 0) continue;
