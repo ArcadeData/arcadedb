@@ -568,6 +568,12 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   }
 
   @Override
+  public String getBootstrapWindowReason() {
+    final RaftHAServer s = raftHAServer;
+    return s != null ? s.getBootstrapWindowReason() : null;
+  }
+
+  @Override
   public String getClusterToken() {
     return raftHAServer != null ? raftHAServer.getClusterToken() : null;
   }

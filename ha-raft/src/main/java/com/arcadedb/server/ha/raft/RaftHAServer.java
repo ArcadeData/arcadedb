@@ -1534,6 +1534,18 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * Why the cluster's first-formation bootstrap makes this node unfit to serve clients, or {@code null} when it
+   * does not (issue #7519). Delegates to {@link ArcadeStateMachine#bootstrapWindowReason()}, which holds both
+   * halves of the window; see it for what the two conditions are and why each one takes the node out of the
+   * Service. Reached from {@code RaftHAPlugin.getBootstrapWindowReason()}, which is what the readiness probe
+   * consults.
+   */
+  public String getBootstrapWindowReason() {
+    final ArcadeStateMachine sm = stateMachine;
+    return sm != null ? sm.bootstrapWindowReason() : null;
+  }
+
+  /**
    * {@inheritDoc}
    * <p>
    * "Enough" is two log segments ({@code arcadedb.ha.logSegmentSize}): Ratis rolls the open segment and

@@ -347,6 +347,27 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   private final Set<String> bootstrapUnreconciledDatabases = ConcurrentHashMap.newKeySet();
 
+  /**
+   * Databases whose directory {@link #installFromLeaderForBootstrap} is replacing from the leader's snapshot
+   * right now (issue #7519).
+   * <p>
+   * The window it names is the one the bootstrap protocol opens on every peer that did not source the baseline:
+   * from the moment this node decides its copy is not the cluster's, until the leader's copy is on disk. For
+   * most of it the local copy is still OPEN and SERVING - {@code SnapshotInstaller.install} downloads before it
+   * touches the live files, deliberately, so a failed download costs no availability - and the node's own
+   * {@code snapshotInstallInProgress} 503 window covers only the file swap at the end of it, and only on HTTP.
+   * So a client reaching this node during the download is served from a copy the cluster has already decided
+   * against, on every protocol, with nothing anywhere on the request path saying so.
+   * <p>
+   * Registered by {@link #installFromLeaderForBootstrap} around the install and read by
+   * {@link #bootstrapWindowReason()}, which is what takes the node out of the Kubernetes Service for the
+   * duration. A {@code Set} rather than a counter: {@link SnapshotInstaller#install} logs a WARNING if two
+   * installs of the same database ever overlap, so a second registration for a name already present is a
+   * condition that is reported there rather than counted here, and the remove in this method's {@code finally}
+   * cannot then strand the name.
+   */
+  private final Set<String> bootstrapInstallsInFlight = ConcurrentHashMap.newKeySet();
+
   // Wall-clock of the last bootstrap-divergence verification submitted by verifyBootstrapDivergence();
   // 0 = none yet. Throttles the HealthMonitor-driven check, which ticks far more often than a probe of
   // the leader (which computes a SHA-256 over each database directory there) is worth paying for.
@@ -3704,6 +3725,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return;
     }
 
+    // The node is out of the Service from here until the install terminates, one way or the other (issue
+    // #7519). Registered BEFORE the install rather than inside it because the window this opens is the whole
+    // install - the download most of all, which is where the local copy is still open and serving the very
+    // bytes the cluster has decided against - and not the file swap at the end, which
+    // SnapshotInstaller.install already guards with the node-wide snapshotInstallInProgress 503 (HTTP only).
+    bootstrapInstallsInFlight.add(dbName);
     try {
       // Resolve the leader address on each retry: the bootstrap-mismatch entry is applied
       // during Raft log replay on startup, which can race ahead of leader election on this peer.
@@ -3720,7 +3747,77 @@ public class ArcadeStateMachine extends BaseStateMachine {
       clearBootstrapUnreconciled(dbName);
     } catch (final IOException e) {
       throw new RuntimeException("Failed to install snapshot for bootstrap-mismatched database '" + dbName + "'", e);
+    } finally {
+      // In a finally, and deliberately also on the failure path: a node that could not reinstall is not
+      // installing any more, and holding readiness on a condition nothing clears would wedge it out of the
+      // Service for good. What it holds then is a copy the cluster did not adopt, which is what the
+      // unreconciled mark records and what bootstrapWindowReason() reports in its own right.
+      bootstrapInstallsInFlight.remove(dbName);
     }
+  }
+
+  /**
+   * Databases this node is replacing from the leader's bootstrap snapshot right now, sorted for deterministic
+   * output (issue #7519). Package-private: the readiness gate reaches it through {@link #bootstrapWindowReason()}
+   * and the tests read it directly.
+   */
+  // @VisibleForTesting
+  List<String> getBootstrapInstallsInFlight() {
+    // The overwhelmingly common answer, and this is on the readiness-probe path: allocate nothing for it.
+    if (bootstrapInstallsInFlight.isEmpty())
+      return Collections.emptyList();
+    final List<String> names = new ArrayList<>(bootstrapInstallsInFlight);
+    Collections.sort(names);
+    return names;
+  }
+
+  /**
+   * Why this node must not be in the load balancer's pool because of the cluster's first-formation bootstrap, or
+   * {@code null} when it may be (issue #7519).
+   * <p>
+   * Two conditions, and they are the two halves of the same window:
+   * <ul>
+   *   <li><b>An install is in flight.</b> This node's copy of the database did not match the committed baseline
+   *       and is being replaced wholesale from the leader. The copy on disk is the one the cluster decided
+   *       against for as long as that takes, and it is open and serving on every protocol for the length of the
+   *       download - the node-wide {@code snapshotInstallInProgress} 503 covers only the swap at the end of it,
+   *       and only HTTP.</li>
+   *   <li><b>A copy was refused and never reconciled.</b> The "local is fresher, refuse to overwrite" branch
+   *       kept this node's own copy on purpose, and its file-id space is assigned by an independent history from
+   *       that point on (issue #6124). It is not a transient state - it survives restarts in
+   *       {@code .raft/bootstrap-baselines} - and until an operator or an automatic remedy replaces the copy,
+   *       everything this node serves for that database is data the cluster never adopted.</li>
+   * </ul>
+   * Both are recoverable, and both are cleared exactly where this node's copy is actually replaced by the
+   * cluster's, so a node that recovers rejoins the Service on its own. That is the same shape as
+   * {@link #getRaftLogFailure()}, the other terminal-until-remedied condition the readiness probe consults
+   * unconditionally.
+   * <p>
+   * <b>It counts the databases and does not name them.</b> {@code GET /api/v1/ready} is the one route that
+   * answers without authentication ({@code GetReadyHandler.isRequireAuthentication()} returns false), and this
+   * string is its response body, so a name here is a database name handed to anything that can reach the port.
+   * The authenticated {@code GET /api/v1/cluster} already publishes both sets by name through {@code
+   * ClusterAlerts}, filtered to the databases the caller may see, which is where a name belongs. The sibling
+   * gates make the same distinction without stating it: the log failure reports a log index and the
+   * security-convergence gate reports document kinds.
+   */
+  public String bootstrapWindowReason() {
+    final int installing = bootstrapInstallsInFlight.size();
+    if (installing > 0)
+      return "The cluster's first-formation bootstrap is replacing " + installing + " database(s) on this node from "
+          + "the leader's snapshot: what is on disk is the copy the cluster's committed baseline decided against, "
+          + "so this node must not serve it. GET /api/v1/cluster names them";
+
+    // Not getBootstrapUnreconciledDatabases(): that sorts a copy, and this runs on every readiness probe.
+    ensureBootstrapBaselinesLoaded();
+    final int unreconciled = bootstrapUnreconciledDatabases.size();
+    if (unreconciled > 0)
+      return unreconciled + " database(s) on this node hold a copy the cluster's committed bootstrap baseline did "
+          + "not adopt, and nothing has reconciled them since: their file ids are out of step with every other "
+          + "peer. GET /api/v1/cluster names them; POST /api/v1/cluster/resync/<database> on this node discards "
+          + "the local copy and adopts the leader's";
+
+    return null;
   }
 
   /**
