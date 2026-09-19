@@ -41,7 +41,11 @@ public class WebSocketConnectionHandler extends AbstractServerHttpHandler {
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
       final JSONObject payload) throws Exception {
     final var handler = new WebSocketProtocolHandshakeHandler((WebSocketConnectionCallback) (webSocketHttpExchange, channel) -> {
-      channel.getReceiveSetter().set(new WebSocketReceiveListener(this.httpServer, webSocketEventBus));
+      final var listener = new WebSocketReceiveListener(this.httpServer, webSocketEventBus);
+      // Bound to its channel before receives are resumed, so the very first frame's heap budget is already
+      // answerable rather than being guessed from the frame's own action string (issue #7909).
+      listener.attachTo(channel);
+      channel.getReceiveSetter().set(listener);
       channel.setAttribute(WebSocketEventBus.CHANNEL_ID, UUID.randomUUID());
       // Retain the authenticated identity so SUBSCRIBE can enforce per-database authorization.
       channel.setAttribute(WebSocketEventBus.USER, user);

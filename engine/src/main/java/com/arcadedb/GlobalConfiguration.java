@@ -1664,9 +1664,12 @@ public enum GlobalConfiguration {
       Maximum size in bytes of a single text frame accepted on a /ws connection that has started a duplex insert \
       session (issue #7403). A 'chunk' frame legitimately carries a whole batch of records, so it needs a larger \
       budget than 'wsMaxControlFrameSize'; an operator running a bulk loader raises this one deliberately. The \
-      larger budget is granted when the connection's 'start' frame is dispatched and dropped again when its \
-      'commit'/'rollback' is, so a connection that never opens an insert session is never charged more than \
-      'wsMaxControlFrameSize'. Raising it scales the worst case by more than itself: a connection may have up \
+      larger budget is granted while the connection HAS an insert session open, and while a 'start' frame of its \
+      own is still being applied; from the next frame after neither holds it is charged the control budget \
+      again, however the session ended - a 'commit' or 'rollback' frame, the idle sweep, the connection closing, \
+      or a 'start' the server refused (issue #7909). So a connection that never opens an insert session is never \
+      charged more than 'wsMaxControlFrameSize'. Raising it scales the worst case by more than itself: a \
+      connection may have up \
       to 64 frames waiting to be applied (WebSocketInsertProtocol.MAX_PENDING_FRAMES, which is not itself \
       configurable), so the per-connection buffering to budget for is this value times that queue depth. 0 or a \
       negative value restores the unbounded behaviour.""",

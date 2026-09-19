@@ -43,16 +43,12 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
   private final    WebSocketEventBus       webSocketEventBus;
   private final    WebSocketInsertProtocol insertProtocol;
   /**
-   * Whether this connection is currently entitled to the larger insert-frame budget (issue #7403). Raised when
-   * the connection's {@code start} frame is seen and dropped again when its {@code commit}/{@code rollback} is.
-   * <p>
-   * Read and written on the Undertow I/O thread only, which delivers the frames of one connection serially: the
-   * {@code start} frame is therefore fully handled before the next frame begins accumulating, so a client that
-   * pipelines {@code start} and its first {@code chunk} without waiting for {@code started} still gets the
-   * larger budget for that chunk. It is deliberately NOT keyed off a registered session, which is created
-   * asynchronously on a worker and would lose that race.
+   * The connection this listener serves, attached by {@code WebSocketConnectionHandler} before the channel is
+   * resumed, so {@link #getMaxTextBufferSize()} - a no-argument hook Undertow calls per message, before the
+   * message exists - has something to ask the insert protocol about (issue #7909). One listener is created per
+   * connection, so this never names two.
    */
-  private volatile boolean                insertFrameBudget;
+  private volatile WebSocketChannel       channel;
 
   public enum ACTION {UNKNOWN, SUBSCRIBE, UNSUBSCRIBE}
 
@@ -60,6 +56,14 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
     this.httpServer = httpServer;
     this.webSocketEventBus = webSocketEventBus;
     this.insertProtocol = httpServer.getInsertProtocol();
+  }
+
+  /**
+   * Binds this listener to the connection it serves. Called once, on the handshake callback, before receives are
+   * resumed - so the first frame's budget is already answerable. See {@link #channel}.
+   */
+  void attachTo(final WebSocketChannel channel) {
+    this.channel = channel;
   }
 
   /**
@@ -75,13 +79,15 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
    * <p>
    * Two budgets rather than one: the control frames of {@code /ws} are a few hundred bytes and have no reason
    * ever to be large, while a {@code chunk} frame carries a whole batch of records. A connection is charged the
-   * control budget until it dispatches a {@code start} frame, which is what makes the tight bound safe to keep
+   * control budget until it has an insert session open or a {@code start} frame in flight - the question
+   * {@code WebSocketInsertProtocol.hasInsertFrameBudget} answers, and the reason the tight bound is safe to keep
    * tight. Re-read per frame, so an operator raising the setting on a running server does not have to reconnect
-   * its loaders.
+   * its loaders, and so a connection whose session has ended is charged the control budget again from its very
+   * next frame (issue #7909).
    */
   @Override
   protected long getMaxTextBufferSize() {
-    final GlobalConfiguration setting = insertFrameBudget ?
+    final GlobalConfiguration setting = insertProtocol.hasInsertFrameBudget(channel) ?
         GlobalConfiguration.SERVER_WS_MAX_INSERT_FRAME_SIZE :
         GlobalConfiguration.SERVER_WS_MAX_CONTROL_FRAME_SIZE;
 
@@ -100,13 +106,10 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
       // commit taken here would stall every other connection this thread serves.
       final var insertAction = rawAction.toLowerCase(Locale.ENGLISH);
       if (WebSocketInsertProtocol.handles(insertAction)) {
-        // The frame-size budget follows the session's lifetime on the wire rather than on the worker: see
-        // getMaxTextBufferSize(). Raised before dispatch and dropped after it, both on this I/O thread.
-        if ("start".equals(insertAction))
-          insertFrameBudget = true;
+        // The frame-size budget is decided by the protocol, from the session registry and the count of 'start'
+        // frames still in flight, rather than raised and lowered from the action string here: see
+        // getMaxTextBufferSize() and WebSocketInsertProtocol.hasInsertFrameBudget (issue #7909).
         insertProtocol.dispatch(channel, insertAction, message);
-        if ("commit".equals(insertAction) || "rollback".equals(insertAction))
-          insertFrameBudget = false;
         return;
       }
 
