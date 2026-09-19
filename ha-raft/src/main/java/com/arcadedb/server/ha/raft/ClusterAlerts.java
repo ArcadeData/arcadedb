@@ -137,9 +137,27 @@ public class ClusterAlerts {
       final List<FollowerSample> followerSamples, final Set<String> visibleDatabases,
       final ClusterMembership membership, final String localPeerId,
       final LocalResyncState localResyncState) {
+    return scan(server, stateMachine, followerSamples, visibleDatabases, membership, localPeerId, localResyncState,
+        false);
+  }
+
+  /**
+   * Scan overload that also takes this node's crash-loop escalation (issue #7872), which lives on
+   * {@code RaftHAServer} rather than on the state machine and so cannot be read from here. {@code false} for a
+   * caller that has no HA server to ask, which is every caller outside the cluster status endpoint.
+   */
+  public static JSONArray scan(final ArcadeDBServer server, final ArcadeStateMachine stateMachine,
+      final List<FollowerSample> followerSamples, final Set<String> visibleDatabases,
+      final ClusterMembership membership, final String localPeerId,
+      final LocalResyncState localResyncState, final boolean crashLoopEscalated) {
     final JSONArray alerts = new JSONArray();
     checkSingleBucketTypes(server, alerts, visibleDatabases);
     if (stateMachine != null) {
+      // First, because they are the only conditions here from which this node does not recover by waiting: the
+      // state machine has stopped applying, or the log writer has been refusing every append since it failed. An
+      // operator reading a lagging-follower warning above them would be reading a symptom (issue #7872).
+      addCriticalHaltAlert(stateMachine.getCriticalHalt(), alerts);
+      addRaftLogFailureAlert(stateMachine.getRaftLogFailure(), alerts);
       checkLeaderMissingDatabases(stateMachine, alerts, visibleDatabases);
       checkFailedAcquireDatabases(stateMachine, alerts, visibleDatabases);
       checkBootstrapDivergedDatabases(stateMachine, alerts, visibleDatabases);
@@ -148,10 +166,100 @@ public class ClusterAlerts {
       // an operator is asking when they poll the node readiness has taken out of the Service.
       addLocalResyncAlert(localResyncState, visibleDatabases, alerts);
     }
+    addCrashLoopEscalatedAlert(crashLoopEscalated, alerts);
     addLaggingFollowerAlert(followerSamples, alerts);
     if (membership != null)
       addMembershipDivergenceAlert(membership.notInConfiguration(), membership.notInServerList(), localPeerId, alerts);
     return alerts;
+  }
+
+  /**
+   * Pure alert builder (package-private for unit testing): appends the critical-halt alert iff this node's
+   * replication state machine has halted (issue #7872).
+   * <p>
+   * Node-scoped, like the resync alert and for the same reason: a halted state machine applies nothing for any
+   * database, so there is no tenant for whom this is not true and no database name in the payload to scope.
+   * <p>
+   * The index and the reason are the payload because they are what decide the operator's next move. "Unknown
+   * entry type" during a rolling upgrade means this node is behind the cluster's write format and the answer is
+   * to finish the upgrade; anything else is a bug worth a report, with that index as the evidence.
+   */
+  static void addCriticalHaltAlert(final ArcadeStateMachine.CriticalHalt halt, final JSONArray alerts) {
+    if (halt == null)
+      return;
+
+    alerts.put(new JSONObject()
+        .put("id", "halted-after-critical-error")
+        .put("severity", SEVERITY_CRITICAL)
+        .put("title", "This node's replication state machine has halted")
+        .put("message", "A committed Raft entry could not be applied on this node " + halt.describe() + ". Every "
+            + "entry after it is refused outright, so this node's databases are frozen at that point and will not "
+            + "advance again in this process. An emergency stop was started when the halt tripped; the fact that "
+            + "this document is being served means it has not completed, so the node is still answering HTTP with a "
+            + "dead state machine. /api/v1/ready answers 503, and the rest of the cluster is unaffected - which is "
+            + "why the peer list and the leader fields here still look healthy.")
+        .put("recommendation", "Restart this node: the halt does not clear in place, and the entry replays on the "
+            + "next start. If the reason names an unknown entry type, a newer peer is writing a format this build "
+            + "cannot read - upgrade this node to the cluster's version first, or the restart halts again at the "
+            + "same index. Any other reason is a bug: report it with the index above and this node's log.")
+        .put("details", new JSONObject()
+            .put("index", halt.index())
+            .put("reason", halt.reason())
+            .put("timestamp", halt.timestamp())));
+  }
+
+  /**
+   * Pure alert builder (package-private for unit testing): appends the log-writer alert iff Ratis has marked this
+   * node's Raft log failed (issue #7872, publishing the #7037 signal the #7118 readiness gate already reads).
+   * <p>
+   * Unlike the halt above this one is recoverable in place - {@code HealthMonitor} restarts the log writer once
+   * the storage volume has room - so the recommendation is about the volume rather than about the process.
+   */
+  static void addRaftLogFailureAlert(final ArcadeStateMachine.RaftLogFailure failure, final JSONArray alerts) {
+    if (failure == null)
+      return;
+
+    alerts.put(new JSONObject()
+        .put("id", "raft-log-writer-failed")
+        .put("severity", SEVERITY_CRITICAL)
+        .put("title", "This node's replication log writer has failed")
+        .put("message", "Ratis has marked this node's Raft log failed " + failure.describe() + ", and rejects every "
+            + "append after it. The node can neither catch up nor become caught up: everything it serves is frozen "
+            + "at the moment the writer failed, which is why /api/v1/ready answers 503 and a Kubernetes Service has "
+            + "taken it out of rotation. The usual cause is a full or unwritable Raft storage volume.")
+        .put("recommendation", "Free space on the Raft storage volume (or fix its permissions). The health monitor "
+            + "restarts the log writer in place once it has room, and this clears by itself when that succeeds; the "
+            + "restart budget is bounded, so if it is exhausted the node stays out until it is restarted by hand.")
+        .put("details", new JSONObject()
+            .put("index", failure.index())
+            .put("cause", failure.cause())
+            .put("timestamp", failure.timestamp())));
+  }
+
+  /**
+   * Pure alert builder (package-private for unit testing): appends the crash-loop alert iff the health monitor
+   * has escalated and stopped restarting this node's Raft layer (issue #7622, published here by #7872).
+   * <p>
+   * The liveness counterpart of the two above: this is what {@code /api/v1/health} fails on, and the pod restart
+   * that follows is the documented way out. It is reported here because a deployment without a liveness probe -
+   * or one whose restart does not fix the underlying cause - otherwise has nothing to read but a SEVERE line.
+   */
+  static void addCrashLoopEscalatedAlert(final boolean escalated, final JSONArray alerts) {
+    if (!escalated)
+      return;
+
+    alerts.put(new JSONObject()
+        .put("id", "crash-loop-escalated")
+        .put("severity", SEVERITY_CRITICAL)
+        .put("title", "This node's HA layer has given up restarting itself")
+        .put("message", "The health monitor restarted this node's Raft layer repeatedly without it staying up, and "
+            + "has stopped trying. Nothing automatic is left: the node does not rejoin the cluster on its own, and "
+            + "/api/v1/health answers unhealthy so a Kubernetes liveness probe restarts the pod.")
+        .put("recommendation", "Restart this node, and read its log from the first restart in the loop rather than "
+            + "the last - the escalation reports the loop, not the fault that started it. A node that escalates "
+            + "again after the restart has a persistent local cause (storage, ports, clock) rather than a transient "
+            + "one.")
+        .put("details", new JSONObject().put("escalated", true)));
   }
 
   /**
@@ -471,10 +579,60 @@ public class ClusterAlerts {
    * only automatic consequence is a hard failure if a later replicated schema change happens to collide
    * with one of those ids (issue #6118). Surfaced as an alert so the divergence is discoverable before
    * that collision, rather than only in a SEVERE line emitted once at bootstrap.
+   * <p>
+   * The marked set carries a SECOND condition since issue #7298 - a database that was here, is not here now, and
+   * could not be pulled back - and it is the exact opposite of the one above. It gets its own alert, because the
+   * one above says the copies "are otherwise intact" and recommends copying this node's directory to every peer,
+   * which for a database this node does not have would overwrite every good copy in the cluster (issue #7902).
+   * The state machine does the split, from where the database is now rather than from why it was marked.
+   * <p>
+   * The visibility filter applies to the two halves differently, and that is the other half of #7902. For the
+   * kept copies it decides whether the alert fires at all: it is a statement about specific databases, and a
+   * caller authorized on none of them has nothing to read. For the missing ones it cannot, because the filter is
+   * built from {@code ArcadeDBServer.getDatabaseNames()} - the databases this node HAS - so a database that is
+   * missing is never in it, and filtering on it removed precisely the alert it exists to raise. Whether this node
+   * is serving a database the cluster has is a node-level fact, like {@code localResync.inProgress}, so the alert
+   * fires on the raw set and only its NAMES are reduced.
    */
   static void checkBootstrapDivergedDatabases(final ArcadeStateMachine stateMachine, final JSONArray alerts,
       final Set<String> visibleDatabases) {
-    addBootstrapDivergedAlert(visible(stateMachine.getBootstrapUnreconciledDatabases(), visibleDatabases), alerts);
+    final ArcadeStateMachine.BootstrapUnreconciled unreconciled =
+        stateMachine.getBootstrapUnreconciled(visibleDatabases);
+    addBootstrapDivergedAlert(unreconciled.keptLocalCopy(), alerts);
+    addBootstrapMissingAlert(unreconciled.missingLocally(), unreconciled.missingCount(), alerts);
+  }
+
+  /**
+   * Pure alert builder (package-private for unit testing): appends the missing-database alert iff this node is
+   * marked for at least one database it does not hold (issue #7902).
+   * <p>
+   * Driven by {@code missingCount}, the figure taken before the authorization filter, so the alert fires for a
+   * caller that may be told no name at all - {@code names} is then empty and the count is what they read. The
+   * same shape {@code addLocalResyncAlert} uses, for the same reason.
+   */
+  static void addBootstrapMissingAlert(final List<String> missing, final int missingCount, final JSONArray alerts) {
+    if (missingCount <= 0)
+      return;
+
+    final JSONArray names = new JSONArray();
+    if (missing != null)
+      for (final String name : missing)
+        names.put(name);
+
+    alerts.put(new JSONObject()
+        .put("id", "bootstrap-database-missing")
+        .put("severity", SEVERITY_CRITICAL)
+        .put("title", "This node is missing database(s) the cluster has")
+        .put("message", "This node applied the cluster's bootstrap baseline for " + missingCount + " database(s) in a "
+            + "previous session and does not have them now, and reinstalling them from the leader failed. Nothing "
+            + "else in the Raft log brings them back: a bootstrap-baselined database predates the cluster, so there "
+            + "is no follow-on install entry to replay. The node is a cluster member serving everything else while "
+            + "these are simply absent, and the condition does not clear by itself until an install succeeds.")
+        .put("recommendation", "Force the install on this node (POST /api/v1/cluster/resync/{database}) once a "
+            + "leader that holds the database is reachable. Do NOT copy this node's database directory to the other "
+            + "peers - it has no copy to give. If this node is itself the leader, transfer leadership first "
+            + "(POST /api/v1/cluster/leader): a node cannot install a database from itself.")
+        .put("details", new JSONObject().put("databases", names).put("count", missingCount)));
   }
 
   /** Pure alert builder (package-private for unit testing): appends the bootstrap-divergence alert iff {@code diverged} is non-empty. */

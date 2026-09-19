@@ -120,11 +120,16 @@ class PluginApiSpecTest {
     final Schema<?> schema = openAPI.getComponents().getSchemas().get("ClusterStatus");
     // 'localAppliedIndex', 'localCommitIndex', 'localReplicationLag' and 'localResync' are written by
     // GetClusterHandler on every answer and were declared nowhere until issue #7578's sweep read the handler.
+    // 'criticalHalt', 'raftLogFailure' and 'crashLoopEscalated' joined them with issue #7872: they are the
+    // readiness - and, for the last one, liveness - inputs the #7136 invariant promised were visible in this
+    // document and were not, so a node with a dead state machine read green here while '/api/v1/ready' was
+    // pinned at 503.
     assertThat(schema.getProperties().keySet()).containsExactlyInAnyOrder(
         "implementation", "clusterName", "localPeerId", "capabilities", "raftState", "isLeader", "leaderReady",
         "leaderId", "leaderHttpAddress", "electionCount", "lastElectionTime", "uptime",
         "localAppliedIndex", "localCommitIndex", "localReplicationLag",
-        "peers", "databases", "databasePresence", "alerts", "localResync");
+        "peers", "databases", "databasePresence", "alerts", "localResync",
+        "criticalHalt", "raftLogFailure", "crashLoopEscalated");
 
     // Pinned to the exact set (not .contains(...)): GetClusterHandler writes exactly these fields per peer, no
     // more, no fewer. 'capabilitiesUnknownReason' joined them with issue #7578's sweep - the leader writes it

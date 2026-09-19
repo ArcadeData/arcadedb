@@ -583,13 +583,67 @@ public class PluginApiSpec implements OpenApiContributor {
     // undeclared 'required' entry pointing the other way: a client generated from this contract could not read
     // the one field that says whether THIS node is serving traffic (issue #7577 sweep).
     schema.addProperty("localResync", localResyncSchema());
+    // The two remaining readiness inputs, plus the liveness one. #7136 wrote the invariant into localResync's
+    // description and delivered it for the resync inputs; these three were still reported nowhere, so a node
+    // whose state machine had halted - or whose log writer had failed - read green here while '/api/v1/ready'
+    // was pinned at 503 (issue #7872). Nullable objects rather than booleans, because what an operator does
+    // next is decided by the index and the reason, not by the fact that something is wrong.
+    schema.addProperty("criticalHalt", criticalHaltSchema());
+    schema.addProperty("raftLogFailure", raftLogFailureSchema());
+    schema.addProperty("crashLoopEscalated", SpecBuilders.bool("""
+        True once the health monitor has given up restarting this node's HA layer (issue #7622). The liveness \
+        counterpart of the two above: this is what makes '/api/v1/health' answer unhealthy."""));
     // 'databasePresence' is written only by a leader answering '?presence=true'; everything else above is on
-    // every answer, with 'leaderId' and 'leaderHttpAddress' carrying an explicit null rather than going absent
-    // (issue #7578).
+    // every answer, with 'leaderId', 'leaderHttpAddress', 'criticalHalt' and 'raftLogFailure' carrying an
+    // explicit null rather than going absent (issues #7578, #7872).
     schema.setRequired(List.of("implementation", "clusterName", "localPeerId", "capabilities", "raftState",
         "isLeader", "leaderReady", "leaderId", "leaderHttpAddress", "electionCount", "lastElectionTime",
         "uptime", "localAppliedIndex", "localCommitIndex", "localReplicationLag", "peers", "databases",
-        "localResync", "alerts"));
+        "localResync", "criticalHalt", "raftLogFailure", "crashLoopEscalated", "alerts"));
+    return schema;
+  }
+
+  /**
+   * The critical error that halted this node's replication state machine, or null (issue #7872).
+   * <p>
+   * Terminal and not recoverable in place: the halt trips an asynchronous server stop, and the recovery is that
+   * restart. It is published because that stop can fail, leaving a process up and answering HTTP with a state
+   * machine that applies nothing.
+   */
+  private Schema<?> criticalHaltSchema() {
+    final Schema<Object> schema = SpecBuilders.object("""
+        Why this node's replication state machine halted, or null while it is applying entries. Present on every \
+        answer. A non-null value means this node's databases are frozen at 'index' and will not advance again in \
+        this process: restart it.""");
+    schema.addProperty("index", SpecBuilders.integer(
+        "The Raft index being applied when the halt tripped, or -1 when the entry carried none"));
+    schema.addProperty("reason", SpecBuilders.string(
+        "One line naming what could not be applied. 'unknown Raft log entry type' means a newer peer is writing a "
+            + "format this build cannot read, and the answer is to upgrade this node; anything else is a bug"));
+    schema.addProperty("timestamp", SpecBuilders.integer("When it tripped, as epoch milliseconds"));
+    schema.setNullable(true);
+    // Recorded in one step, so a halt that is reported is reported whole.
+    schema.setRequired(List.of("index", "reason", "timestamp"));
+    return schema;
+  }
+
+  /**
+   * The persistent Raft log-write failure that has wedged this node, or null (issue #7872, publishing the #7037
+   * signal that issue #7118 already gates readiness on).
+   */
+  private Schema<?> raftLogFailureSchema() {
+    final Schema<Object> schema = SpecBuilders.object("""
+        The persistent Raft log-write failure wedging this node, or null while the log writer is healthy. Present \
+        on every answer. A non-null value means Ratis is rejecting every append, so the node can neither catch up \
+        nor become caught up; the usual cause is a full Raft storage volume, and it clears by itself once the \
+        health monitor restarts the writer in place.""");
+    schema.addProperty("index", SpecBuilders.integer(
+        "The Raft index of the entry whose write failed, or -1 when the failure was on a log segment"));
+    schema.addProperty("cause", SpecBuilders.string("The failure Ratis reported, as its own text"));
+    schema.addProperty("timestamp", SpecBuilders.integer("When it was first reported, as epoch milliseconds"));
+    schema.setNullable(true);
+    // Recorded in one step, so a failure that is reported is reported whole.
+    schema.setRequired(List.of("index", "cause", "timestamp"));
     return schema;
   }
 
@@ -627,16 +681,23 @@ public class PluginApiSpec implements OpenApiContributor {
 
   /**
    * This node's own resync / WAL-gap quarantine state (issue #7136). The invariant it exists to expose is that
-   * anything making {@code /api/v1/ready} answer 503 is visible here, so a client watching a rolling restart
-   * reads {@code inProgress} rather than polling the probe.
+   * anything making {@code /api/v1/ready} answer 503 is visible in this document, so a client watching a rolling
+   * restart reads the document rather than polling the probe.
+   * <p>
+   * This member carries the resync inputs of that invariant, which is all #7136 delivered. The two terminal ones
+   * are {@code criticalHalt} and {@code raftLogFailure} (issue #7872): a node in either state has
+   * {@code inProgress: false} here and is still pinned at 503, so a rule keyed on this member alone reads it as
+   * healthy and waits forever.
    */
   private Schema<?> localResyncSchema() {
     final Schema<Object> schema = SpecBuilders.object("""
         This node's resync state. Present on every answer. The database names it carries are reduced to the \
         ones the caller is authorized on, so a caller scoped to one database cannot learn another tenant's \
         database name from a status poll.""");
-    schema.addProperty("inProgress", SpecBuilders.bool(
-        "True while this node is not ready to serve traffic. The same answer '/api/v1/ready' gives"));
+    schema.addProperty("inProgress", SpecBuilders.bool("""
+        True while a resync is holding this node out of the ready set. NOT the whole answer '/api/v1/ready' \
+        gives: a node halted by a critical error or wedged by a log-write failure has this false and answers 503 \
+        anyway, so read it together with 'criticalHalt' and 'raftLogFailure' (issue #7872)."""));
     schema.addProperty("snapshotDownloadQueued", SpecBuilders.bool("A snapshot install is waiting to start"));
     schema.addProperty("snapshotDownloadInProgress", SpecBuilders.bool("A snapshot is being installed now"));
     schema.addProperty("divergedDatabases", SpecBuilders.arrayOf(SpecBuilders.string("Database name"),

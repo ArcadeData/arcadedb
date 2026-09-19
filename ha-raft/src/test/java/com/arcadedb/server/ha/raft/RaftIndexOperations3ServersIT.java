@@ -21,15 +21,17 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.TestServerHelper;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 import java.util.logging.Level;
 
@@ -39,6 +41,7 @@ class RaftIndexOperations3ServersIT extends BaseRaftHATest {
 
   private static final int TOTAL_RECORDS = 500;
   private static final int TX_CHUNK      = 100;
+  private static final String TYPE_NAME  = "RaftPerson";
 
   @Override
   protected int getServerCount() {
@@ -50,12 +53,32 @@ class RaftIndexOperations3ServersIT extends BaseRaftHATest {
   }
 
   /**
-   * Tests rebuild index on all 3 servers.
-   * Disabled because the SQL "rebuild index" command triggers implicit index compaction,
-   * which is not replicated via Raft log entries. This causes checkDatabasesAreIdentical()
-   * in endTest to fail with "Invalid position" errors when comparing compacted vs uncompacted pages.
+   * Issue #7873. {@code rebuildIndex()} and {@code createIndexLater()} below were {@code @Disabled} on an engine
+   * claim recorded only in the annotation string - "rebuild index triggers compaction which is not replicated via
+   * Raft" - with no issue behind it and no re-check since. {@link Issue5517BloomFilterFullCompactionIT}, a 3-node
+   * test in this very package, is a standing counter-example: it asserts end to end that a full index compaction
+   * IS replicated, that the followers drop the retired files, and that they then serve lookups out of the
+   * replicated bloom filters they never built.
+   * <p>
+   * What the two tests actually tripped over is what that test's own override says: a compacted file name embeds a
+   * per-node {@code nanoTime}, so the shared comparator cannot pair bucket indexes by name after a compaction and
+   * reports "Invalid position" - in {@code endTest}, not in either test body. That is a test-harness limitation,
+   * not an engine one, and the remedy already existed in the same directory.
+   * <p>
+   * So the comparison is replaced rather than skipped: the bodies assert what must hold after a rebuild on every
+   * one of the three servers - the record count, the index entry count, and that every key inserted is findable
+   * THROUGH the index on each node - none of which depends on byte-identical pages.
    */
-  @Disabled("rebuild index triggers compaction which is not replicated via Raft - checkDatabasesAreIdentical fails in endTest")
+  @Override
+  protected void checkDatabasesAreIdentical() {
+    // Compacted file names embed a per-node nanoTime, so the comparator cannot pair bucket indexes by name after
+    // the compaction a rebuild triggers. What must be equal is asserted in the test bodies.
+  }
+
+
+  /**
+   * Rebuilds both indexes, on all 3 servers, with the type and the indexes created BEFORE the data.
+   */
   @Test
   void rebuildIndex() throws Exception {
     final int leaderIndex = findLeaderIndex();
@@ -68,7 +91,9 @@ class RaftIndexOperations3ServersIT extends BaseRaftHATest {
     v.createProperty("uuid", String.class);
     database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "RaftPerson", "uuid");
 
-    database.transaction(() -> insertRecords(database));
+    final List<Long> insertedIds = new ArrayList<>(TOTAL_RECORDS);
+    final List<String> insertedUuids = new ArrayList<>(TOTAL_RECORDS);
+    database.transaction(() -> insertRecords(database, insertedIds, insertedUuids));
 
     testEachServer(serverIndex -> {
       LogManager.instance().log(this, Level.FINE, "Rebuild RaftPerson[id] on server %s",
@@ -89,15 +114,15 @@ class RaftIndexOperations3ServersIT extends BaseRaftHATest {
       assertThat(new JSONObject(response3).getJSONArray("result").getJSONObject(0).getLong("totalIndexed"))
           .isEqualTo((long) TOTAL_RECORDS * 2);
     });
+
+    assertEveryServerServesTheWholeIndex(insertedIds, insertedUuids);
   }
 
+
   /**
-   * Tests creating an index after data is already inserted.
-   * Disabled because the SQL "rebuild index" command triggers implicit index compaction,
-   * which is not replicated via Raft log entries. This causes checkDatabasesAreIdentical()
-   * in endTest to fail with "Invalid position" errors when comparing compacted vs uncompacted pages.
+   * The same rebuilds with the indexes created AFTER the data, which is the path that has to index the records
+   * already on disk rather than only the ones a later insert adds.
    */
-  @Disabled("rebuild index triggers compaction which is not replicated via Raft - checkDatabasesAreIdentical fails in endTest")
   @Test
   void createIndexLater() throws Exception {
     final int leaderIndex = findLeaderIndex();
@@ -106,7 +131,9 @@ class RaftIndexOperations3ServersIT extends BaseRaftHATest {
     final Database database = getServerDatabase(leaderIndex, getDatabaseName());
     final VertexType v = database.getSchema().buildVertexType().withName("RaftPerson").withTotalBuckets(3).create();
 
-    database.transaction(() -> insertRecords(database));
+    final List<Long> insertedIds = new ArrayList<>(TOTAL_RECORDS);
+    final List<String> insertedUuids = new ArrayList<>(TOTAL_RECORDS);
+    database.transaction(() -> insertRecords(database, insertedIds, insertedUuids));
 
     v.createProperty("id", Long.class);
     database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "RaftPerson", "id");
@@ -125,6 +152,43 @@ class RaftIndexOperations3ServersIT extends BaseRaftHATest {
       final String response3 = command(serverIndex, "rebuild index *");
       assertThat(new JSONObject(response3).getJSONArray("result").getJSONObject(0).getLong("totalIndexed"))
           .isEqualTo((long) TOTAL_RECORDS * 2);
+    });
+
+    assertEveryServerServesTheWholeIndex(insertedIds, insertedUuids);
+  }
+
+  /**
+   * What must hold after a rebuild, on every one of the three servers, and what the {@code @Disabled} pair of
+   * issue #7873 never asserted: it checked only the {@code totalIndexed} figure each server's own REBUILD command
+   * reported, which is that server talking about the work it just did. None of it depends on byte-identical
+   * pages, which is what the shared comparator - the thing that actually failed - needs.
+   * <p>
+   * The lookups go THROUGH the index rather than through a query the planner could answer with a type scan, which
+   * is the difference between "the records are here" and "the index that was rebuilt can find them".
+   */
+  private void assertEveryServerServesTheWholeIndex(final List<Long> ids, final List<String> uuids) throws Exception {
+    for (int i = 0; i < getServerCount(); i++)
+      waitForReplicationIsCompleted(i);
+
+    testEachServer(serverIndex -> {
+      final Database database = getServerDatabase(serverIndex, getDatabaseName());
+
+      assertThat(database.countType(TYPE_NAME, false))
+          .as("every record must be on server %d after the rebuild", serverIndex).isEqualTo(TOTAL_RECORDS);
+
+      for (final String indexName : new String[] { TYPE_NAME + "[id]", TYPE_NAME + "[uuid]" })
+        assertThat(database.getSchema().getIndexByName(indexName).countEntries())
+            .as("index %s must hold the whole type on server %d", indexName, serverIndex).isEqualTo(TOTAL_RECORDS);
+
+      final Index byId = database.getSchema().getIndexByName(TYPE_NAME + "[id]");
+      for (final Long id : ids)
+        assertThat(byId.get(new Object[] { id }).hasNext())
+            .as("id %d must be findable through the index on server %d", id, serverIndex).isTrue();
+
+      final Index byUuid = database.getSchema().getIndexByName(TYPE_NAME + "[uuid]");
+      for (final String uuid : uuids)
+        assertThat(byUuid.get(new Object[] { uuid }).hasNext())
+            .as("uuid %s must be findable through the index on server %d", uuid, serverIndex).isTrue();
     });
   }
 
@@ -206,8 +270,22 @@ class RaftIndexOperations3ServersIT extends BaseRaftHATest {
   }
 
   private void insertRecords(final Database database) {
+    insertRecords(database, null, null);
+  }
+
+  /**
+   * Inserts the records and, when given the two collectors, records the keys it actually wrote. The keys are
+   * collected rather than recomputed because one of the two is a random UUID: asserting against a regenerated one
+   * would assert nothing (issue #7873).
+   */
+  private void insertRecords(final Database database, final List<Long> ids, final List<String> uuids) {
     for (int i = 0; i < TOTAL_RECORDS; i++) {
-      database.newVertex("RaftPerson").set("id", i, "uuid", UUID.randomUUID().toString()).save();
+      final String uuid = UUID.randomUUID().toString();
+      database.newVertex(TYPE_NAME).set("id", i, "uuid", uuid).save();
+      if (ids != null) {
+        ids.add((long) i);
+        uuids.add(uuid);
+      }
       if (i % TX_CHUNK == 0) {
         database.commit();
         database.begin();
