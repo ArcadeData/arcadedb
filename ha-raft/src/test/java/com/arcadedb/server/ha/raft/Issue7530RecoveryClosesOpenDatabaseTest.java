@@ -426,12 +426,14 @@ class Issue7530RecoveryClosesOpenDatabaseTest {
     Files.writeString(snapshotNew.resolve(SnapshotInstaller.SNAPSHOT_COMPLETE_FILE), "");
     Files.createDirectories(dbDir.resolve(SnapshotInstaller.SNAPSHOT_BACKUP_DIR));
     Files.writeString(dbDir.resolve(SnapshotInstaller.SNAPSHOT_PENDING_FILE), "");
+    // Live still contains the originals: an explicit phase makes this distinguishable from a legacy phase-2 crash.
+    Files.writeString(dbDir.resolve(SnapshotInstaller.SNAPSHOT_SWAP_STATE_FILE), "BACKING_UP");
     return dbDir;
   }
 
   /**
    * A pending swap over synthetic files, for the assertions that are about the node-wide flag rather than about a
-   * database: no server registration is involved, so nothing has to be openable.
+   * database: no server registration is involved. A schema file satisfies the recovery completeness check.
    */
   private static Path stageSyntheticInterruptedSwap(final Path databasesDir) throws IOException {
     final Path dbDir = databasesDir.resolve(SYNTHETIC_DB);
@@ -442,6 +444,7 @@ class Issue7530RecoveryClosesOpenDatabaseTest {
     Files.createDirectories(snapshotBackup);
     Files.writeString(dbDir.resolve(SnapshotInstaller.SNAPSHOT_PENDING_FILE), "");
     Files.writeString(snapshotNew.resolve(SnapshotInstaller.SNAPSHOT_COMPLETE_FILE), "");
+    Files.writeString(snapshotNew.resolve("schema.json"), "{}");
     Files.writeString(snapshotNew.resolve("data.dat"), "new-snapshot-data");
     Files.writeString(snapshotBackup.resolve("data.dat"), "old-data");
     return dbDir;
