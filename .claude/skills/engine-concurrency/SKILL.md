@@ -115,3 +115,9 @@ assertion - which is how #6568 arrived, as a wedged `ParallelScanSafetyTest`.
 5. Wire the pool into `PoolMetrics` so the Studio "Executor Pools" card shows it.
 6. If using the JDK common ForkJoinPool is unavoidable in the short term, tag the call site with a `NOTE (concurrency)` comment pointing at this skill so the migration stays tracked.
 7. If the submitting thread then WAITS for what it submitted, wait with `GraphAlgorithms.awaitFutures` (or reclaim by hand) rather than `Future.get()`. See the #6568 section above - the caller-runs policy is not the guarantee.
+8. Parallelising openCypher PLAN steps specifically: read `com.arcadedb.database.DeferredExistenceChecks` first. Its
+   scope is keyed on `DatabaseContext`, so it holds because a nested plan (a `CALL` subquery, a `FOREACH` body, a
+   UNION branch) runs on the thread of the statement that drove it. Move one onto another thread and it finds no
+   scope and validates eagerly - the pre-#7945 behaviour, so a `MERGE ... SET` upsert against a `NOT NULL`
+   constraint starts failing again rather than corrupting anything. It fails silently in the sense that nothing
+   logs it; `CypherExistenceConstraintWithSetIssue7945Test` is what trips.

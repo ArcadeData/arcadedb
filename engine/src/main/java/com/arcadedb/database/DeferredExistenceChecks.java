@@ -68,7 +68,7 @@ import java.util.logging.Level;
  * reader can observe a record that does not satisfy its own type's existence constraints, which eager validation
  * made structurally impossible. And because the bookkeeping is this in-memory scope and nothing else, a crash or a
  * killed connection between the creation and {@link #check()} leaves the provisional record behind for good, with
- * no durable trace that would let anything find it later. Both follow from the per-step auto-commit model rather
+ * no durable trace that would let anything find it later (issue #7952 covers giving operators a way to find one). Both follow from the per-step auto-commit model rather
  * than from the deferral itself - that model already leaves the earlier clauses of a failed statement committed -
  * but the deferral widens the window from "a valid record" to "a record that is not valid yet".
  * <p>
