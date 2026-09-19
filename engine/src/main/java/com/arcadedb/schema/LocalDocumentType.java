@@ -228,6 +228,18 @@ public class LocalDocumentType implements DocumentType {
     return this;
   }
 
+  /**
+   * Renames the type, its buckets and its indexes.
+   * <p>
+   * The name-uniqueness check below is a fast, friendly refusal only; the AUTHORITATIVE one is the atomic
+   * {@code putIfAbsent} further down, next to the mutation it guards. A check up here on its own is a
+   * time-of-check to time-of-use hole - two concurrent renames onto the same target both pass it and the second
+   * silently overwrites the first's map entry (issue #7918) - and it cannot be closed by moving the whole method
+   * under {@link #recordFileChanges}: every bucket rename in the loop below waits for the WHOLE database's page
+   * flush queue to drain ({@link com.arcadedb.engine.PaginatedComponent#rename}), which is the long part this
+   * engine deliberately keeps outside every lock. So only the reservation takes the lock, and it is the map
+   * operations alone.
+   */
   public void rename(final String newName) {
     checkForSchemaMutation();
     if (schema.existsType(newName))
@@ -254,10 +266,22 @@ public class LocalDocumentType implements DocumentType {
         rekeyBucket(bucket, oldBucketName);
       }
 
-      name = newName;
+      // ATOMIC, and the only check that decides (#7918). Two things make it so: putIfAbsent on the
+      // ConcurrentHashMap, so the reservation cannot silently evict whoever already holds the name - a plain
+      // put() would leave two types answering to one - and the database WRITE LOCK around it, which is the lock
+      // TypeBuilder.createInternal does its own check-then-put under, so a concurrent CREATE TYPE either loses
+      // the name to us or is refused by it. Everything expensive stays outside: the bucket renames above each
+      // wait for the whole database's page flush queue to drain. Refusing here unwinds through the catch below,
+      // which puts the buckets renamed above back under their old names.
+      ((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance().executeInWriteLock(() -> {
+        if (schema.types.putIfAbsent(newName, this) != null)
+          throw new SchemaException("Type with name '" + newName + "' already exists");
 
-      schema.types.remove(oldName);
-      schema.types.put(newName, this);
+        name = newName;
+
+        schema.types.remove(oldName);
+        return null;
+      });
 
       // Registered before the call, not after: updateTypeName() walks the index's own per-bucket sub-indexes, so a
       // failure part way through leaves that index half renamed and it has to be rolled back too.
@@ -273,7 +297,9 @@ public class LocalDocumentType implements DocumentType {
     } catch (IOException | SchemaException e) {
       name = oldName;
       schema.types.put(oldName, this);
-      schema.types.remove(newName);
+      // Only OUR reservation goes: the two-argument remove() is what keeps a refusal from evicting the entry of
+      // the type that legitimately holds the name (#7918).
+      schema.types.remove(newName, this);
 
       boolean corrupted = false;
 
@@ -635,6 +661,21 @@ public class LocalDocumentType implements DocumentType {
 
   /**
    * Creates a new property with type `propertyType`.
+   * <p>
+   * Every check below, and the mutation itself, run inside the single {@link #recordFileChanges} callback, for the
+   * two reasons {@link #dropProperty} and {@link #renameProperty} spell out and this method used to violate (issue
+   * #7918) - the mirror image of #7672, walking UP the hierarchy instead of down. First,
+   * {@link #getPolymorphicPropertyNames()} recurses over the {@link #superTypes} list of this type and of every
+   * type above it, and those lists are plain {@link ArrayList}s structurally modified by {@code linkSuperType}/
+   * {@code unlinkSuperType} - which run inside {@code recordFileChanges} themselves, so only a walk that runs
+   * there too is serialised against them rather than racing a concurrent {@code CREATE TYPE ... EXTENDS} into a
+   * {@link java.util.ConcurrentModificationException}. Second, validating outside and mutating inside would let a
+   * concurrent {@code CREATE TYPE ... EXTENDS}, {@code ALTER TYPE ... SUPERTYPE} or {@code CREATE PROPERTY} on a
+   * super type land between the two, so both would validate against the pre-link picture and both apply, leaving
+   * the subtype shadowing a super type's property - exactly what the upward walk exists to prevent.
+   * <p>
+   * {@code checkForSchemaMutation()} stays outside: it refuses the mutation in the wrong context and takes no
+   * lock, so it is not part of what has to be serialised.
    *
    * @param propertyName Property name to remove
    * @param propertyType Property type as @{@link Type}
@@ -644,34 +685,41 @@ public class LocalDocumentType implements DocumentType {
   public LocalProperty createProperty(final String propertyName, final Type propertyType, final String ofType) {
     checkForSchemaMutation();
 
-    if (this instanceof LocalEdgeType edgeType && edgeType.isLightweight())
-      // A lightweight edge is a pair of pointers inside the two vertices: there is no record to hold a value, so a
-      // declared property could never be written. Rejecting it here keeps the contract structural rather than a
-      // convention nobody reads, and stops mandatory/default-valued properties from being declared on a type whose
-      // creation path can never satisfy them.
-      throw new SchemaException("Cannot create the property '" + propertyName + "' in type '" + name
-          + "' because the type is declared LIGHTWEIGHT and its edges cannot have properties");
+    return recordFileChanges(() -> {
+      if (this instanceof LocalEdgeType edgeType && edgeType.isLightweight())
+        // A lightweight edge is a pair of pointers inside the two vertices: there is no record to hold a value, so a
+        // declared property could never be written. Rejecting it here keeps the contract structural rather than a
+        // convention nobody reads, and stops mandatory/default-valued properties from being declared on a type whose
+        // creation path can never satisfy them.
+        throw new SchemaException("Cannot create the property '" + propertyName + "' in type '" + name
+            + "' because the type is declared LIGHTWEIGHT and its edges cannot have properties");
 
-    checkTimeSeriesColumnDeclared(propertyName);
+      checkTimeSeriesColumnDeclared(propertyName);
 
-    if (properties.containsKey(propertyName))
-      throw new SchemaException(
-          "Cannot create the property '" + propertyName + "' in type '" + name + "' because it already exists");
+      if (properties.containsKey(propertyName))
+        throw new SchemaException(
+            "Cannot create the property '" + propertyName + "' in type '" + name + "' because it already exists");
 
-    if (getPolymorphicPropertyNames().contains(propertyName))
-      throw new SchemaException("Cannot create the property '" + propertyName + "' in type '" + name
-          + "' because it was already defined in a super type");
+      if (getPolymorphicPropertyNames().contains(propertyName))
+        throw new SchemaException("Cannot create the property '" + propertyName + "' in type '" + name
+            + "' because it was already defined in a super type");
 
-    final LocalProperty property = new LocalProperty(this, propertyName, propertyType);
+      // The construction stays HERE, after the checks and inside the callback, although the constructor reaches
+      // Dictionary.getIdByName(name, true) - which, for a name the dictionary has not seen, opens and commits a
+      // transaction of its own, so the write lock is held across that commit and the schema save it triggers.
+      // Hoisting it out to shorten the hold would allocate a dictionary id for a create that is then REFUSED, and
+      // the dictionary is append-only: a loop of failing CREATE PROPERTY would grow it for names no type declares.
+      // A transaction inside recordFileChanges is established here anyway - TimeSeriesTypeBuilder opens one, and
+      // addSuperTypeInternal's index propagation commits several - and CREATE PROPERTY is rare DDL, so the longer
+      // hold is the cheaper of the two.
+      final LocalProperty property = new LocalProperty(this, propertyName, propertyType);
 
-    if (ofType != null)
-      property.setOfType(ofType);
+      if (ofType != null)
+        property.setOfType(ofType);
 
-    recordFileChanges(() -> {
       properties.put(propertyName, property);
-      return null;
+      return property;
     });
-    return property;
   }
 
   /**
@@ -2298,15 +2346,6 @@ public class LocalDocumentType implements DocumentType {
       // ALREADY PARENT
       return this;
 
-    // CHECK FOR CONFLICT WITH PROPERTIES NAMES
-    final Set<String> allProperties = getPropertyNames();
-    for (final String p : superType.getPolymorphicPropertyNames())
-      if (allProperties.contains(p)) {
-        LogManager.instance()
-            .log(this, Level.WARNING, "Property '" + p + "' is already defined in type '" + name + "' or one of the super types");
-        //throw new IllegalArgumentException("Property '" + p + "' is already defined in type '" + name + "' or any super types");
-      }
-
     // QUIESCED for the same reason TypeIndexBuilder and BucketIndexBuilder are (issue #6303, item 2), and taken HERE
     // rather than around the propagation itself: the barrier answers about the past, and a build needs the other half
     // too - that nothing WRITES during the scan - but recordFileChanges runs under the database WRITE LOCK, which is
@@ -2350,6 +2389,17 @@ public class LocalDocumentType implements DocumentType {
       // any earlier and a concurrent addSuperType/removeSuperType elsewhere in the hierarchy could structurally
       // modify a list this walk is iterating, straight into a ConcurrentModificationException.
       checkTimeSeriesHierarchy(superType);
+
+      // CHECK FOR CONFLICT WITH PROPERTIES NAMES. Here for the same reason checkTimeSeriesHierarchy is, and the
+      // reason it used to be outside the callback is that it only logs: getPolymorphicPropertyNames() recurses over
+      // the super type's (mutable) superTypes lists, which linkSuperType/unlinkSuperType structurally modify, so a
+      // walk outside the write lock can raise a ConcurrentModificationException out of an unrelated ALTER TYPE -
+      // a spurious failure of a call that was going to succeed (issue #7918, the same exposure createProperty had).
+      final Set<String> allProperties = getPropertyNames();
+      for (final String p : superType.getPolymorphicPropertyNames())
+        if (allProperties.contains(p))
+          LogManager.instance()
+              .log(this, Level.WARNING, "Property '" + p + "' is already defined in type '" + name + "' or one of the super types");
 
       linkSuperType(embeddedSuperType);
 
