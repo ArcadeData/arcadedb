@@ -340,6 +340,25 @@ const collectCases = async () => {
   r = await runCollect([issue(1), issue(2), issue(3)], { 1: [plainIssue] });
   check("an ordinary issue reference does not skip", r.pools, [["timeseries", [1, 2, 3]]]);
 
+  // An issue title is written by whoever opened the issue. It reaches the run log, so it gets
+  // the same flattening as the model's reply: a title carrying a newline and a `::` must not be
+  // able to start a line of its own and forge a workflow command.
+  r = await runCollect([
+    issue(1, { title: "legit\n::error::forged" }),
+    issue(2),
+    issue(3),
+  ]);
+  check(
+    "a title cannot forge a workflow command",
+    r.log.some((l) => l.includes("::error::")),
+    false
+  );
+  check(
+    "and is still logged, flattened",
+    r.log.some((l) => l.includes("#1 [severity:minor] legit :error:forged")),
+    true
+  );
+
   r = await runCollect([issue(1), issue(2), issue(3)], { 1: "error" });
   check("an unreadable timeline fails closed", r.pools, [["timeseries", [2, 3]]]);
   // Why an issue was left out has to be readable off the run log, issue by issue: a counter
@@ -400,11 +419,28 @@ const collectCases = async () => {
   r = await runCollect(many);
   check("the per-module cap holds", r.pools[0][1].length, 40);
 
-  const fourModules = ["timeseries", "server", "engine", "ha"].flatMap((m, mi) =>
-    [0, 1].map((i) => issue(mi * 10 + i + 1, { labels: ["severity:minor", m] }))
+  // Sizes deliberately unequal, so the case can tell the ranked order from the insertion order:
+  // the cap keeps the three biggest, and `ha`, the smallest, is the one left out.
+  // Smallest FIRST, so insertion order is the reverse of the ranked order and a case that
+  // reads the wrong one cannot pass by coincidence.
+  const fourModules = [
+    ["ha", 2],
+    ["engine", 3],
+    ["server", 4],
+    ["timeseries", 5],
+  ].flatMap(([m, n], mi) =>
+    Array.from({ length: n }, (_, i) => issue(mi * 10 + i + 1, { labels: ["severity:minor", m] }))
   );
   r = await runCollect(fourModules);
   check("at most three modules per run", r.pools.length, 3);
+  check("and it keeps the biggest", r.pools.map(([m]) => m), ["timeseries", "server", "engine"]);
+  // The module left out has to be named, or a run that quietly ignores a module looks the same
+  // as a run where that module had nothing.
+  check(
+    "and names the module left out",
+    r.log.some((l) => l.includes("modules_over_cap=ha:2") && l.includes("cap=3")),
+    true
+  );
 };
 
 // --------------------------------------------------------------------------------------------
@@ -564,6 +600,16 @@ const mergeCases = async () => {
     r.audit.includes("action=declined_no_group_qualifies"),
     true
   );
+
+  // A decline that carries a trailing clause is still a decline; warning about it would train
+  // the reader to ignore the warning that matters.
+  r = await runMerge("GROUPS: none (nothing in this module coheres)");
+  check(
+    "a decline with a trailing clause is still a decline",
+    r.audit.includes("action=declined_no_group_qualifies"),
+    true
+  );
+  check("and does not warn", r.log.some((l) => l.startsWith("WARN ")), false);
 
   r = await runMerge("Sorry, I could not open the file.");
   check("an unparseable reply writes nothing", r.created, []);

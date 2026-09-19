@@ -14,6 +14,7 @@
 
 const fs = require("fs");
 const {
+  logSafe,
   severityOf,
   UMBRELLA_LABEL,
   NON_MODULE_LABELS,
@@ -107,12 +108,15 @@ module.exports = async ({ github, context, core }) => {
   // A module with a single candidate has nothing to merge with.
   const eligible = [...byModule.entries()].filter(([, list]) => list.length >= 2);
   const tooSmall = [...byModule.entries()].filter(([, list]) => list.length < 2);
-  const ordered = eligible.sort((a, b) => b[1].length - a[1].length).slice(0, maxModules);
+  // Ranked once, then sliced twice: the audit line below reads the same order the run used,
+  // rather than depending on `sort` having mutated `eligible` in place first.
+  const ranked = [...eligible].sort((a, b) => b[1].length - a[1].length);
+  const ordered = ranked.slice(0, maxModules);
   if (tooSmall.length > 0)
     audit(`modules_with_one_candidate=${tooSmall.map(([m]) => m).join("|")}`);
   if (eligible.length > ordered.length)
     audit(
-      `modules_over_cap=${eligible.slice(maxModules).map(([m, l]) => `${m}:${l.length}`).join("|")}` +
+      `modules_over_cap=${ranked.slice(maxModules).map(([m, l]) => `${m}:${l.length}`).join("|")}` +
       `, cap=${maxModules}`
     );
 
@@ -205,7 +209,9 @@ module.exports = async ({ github, context, core }) => {
   // The exact set handed to the model, so the next log line can be read against what it saw.
   for (const m of modules)
     for (const c of m.candidates)
-      audit(`candidate module=${m.module} #${c.number} [${c.severity}] ${c.title}`);
+      audit(
+        `candidate module=${m.module} #${c.number} [${c.severity}] ${logSafe(c.title, 120)}`
+      );
 
   if (candidateCount === 0) {
     audit("candidates=0, action=nothing_to_group");

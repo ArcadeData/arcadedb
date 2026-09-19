@@ -78,7 +78,24 @@ const MAX_MEMBERS_PER_GROUP = 10;
 // The name is repeated in merge-related-issues.yml, where it pins the model's one allowed Read.
 const PAYLOAD_FILE = "related-candidates.json";
 
+/**
+ * Flattens untrusted text for a log line. `core.info` writes straight to stdout, and GitHub
+ * Actions reads any line that STARTS with `::` as a workflow command, so text that came from an
+ * issue - a title, a body, or a model's reply after reading one - is collapsed to a single line
+ * with control characters stripped, `::` defused and a hard length cap. Both are needed: the
+ * collapse removes the ability to start a line at all, and defusing `::` keeps it harmless even
+ * if it is ever logged somewhere that does not prefix it.
+ */
+const logSafe = (text, max) =>
+  (text ?? "")
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/::/g, ":")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, max) || "-";
+
 module.exports = {
+  logSafe,
   SEVERITY_LEVELS,
   SEVERITY_BY_NAME,
   severityOf,

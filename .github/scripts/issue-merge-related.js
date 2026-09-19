@@ -15,6 +15,7 @@
 
 const fs = require("fs");
 const {
+  logSafe,
   severityOf,
   highestSeverity,
   UMBRELLA_LABEL,
@@ -72,16 +73,6 @@ module.exports = async ({ github, context, core }) => {
     return;
   }
 
-  // The reply is untrusted text. Logged as one capped line with no line starts of its own, so
-  // it cannot forge a ::workflow command, and with `::` defused for the same reason.
-  const forLog = (s, max) =>
-    (s ?? "")
-      .replace(/[\u0000-\u001f\u007f]/g, " ")
-      .replace(/::/g, ":")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, max) || "-";
-
   audit(
     `model_result=${envelope?.subtype ?? "absent"}, is_error=${envelope?.is_error ?? "?"}, ` +
     `turns=${envelope?.num_turns ?? "?"}, reply_chars=${text.length}`
@@ -91,7 +82,9 @@ module.exports = async ({ github, context, core }) => {
   if (lines.length === 0) {
     // "It looked and found nothing" and "it never answered in the agreed shape" are different
     // events with different fixes, and the old single message could not tell them apart.
-    if (/^\s*GROUPS:\s*none\s*$/im.test(text)) {
+    // `\b` rather than end-of-line: "GROUPS: none (nothing coheres here)" is still a decline,
+    // and warning about it would train the reader to ignore the warning that matters.
+    if (/^\s*GROUPS:\s*none\b/im.test(text)) {
       audit("groups=0, action=declined_no_group_qualifies");
       core.summary
         .addHeading("Minor-issue consolidation: nothing merged", 3)
@@ -100,14 +93,14 @@ module.exports = async ({ github, context, core }) => {
       await core.summary.write();
       return;
     }
-    audit(`groups=0, action=no_decision, reply_tail="${forLog(text.slice(-400), 400)}"`);
+    audit(`groups=0, action=no_decision, reply_tail="${logSafe(text.slice(-400), 400)}"`);
     core.warning(
       "merge-related: the model's reply carried neither a GROUP: line nor `GROUPS: none`; " +
       "nothing was changed. See the reply_tail in the log."
     );
     return;
   }
-  for (const line of lines) audit(`proposed ${forLog(line, 200)}`);
+  for (const line of lines) audit(`proposed ${logSafe(line, 200)}`);
 
   // A title is the only untrusted text that reaches GitHub, so it is stripped of anything that
   // could mention a team, break out of the line, or run long. The umbrella BODY quotes nothing:
