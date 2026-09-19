@@ -789,6 +789,15 @@ function parseEdgeTypeCounts(data) {
   return rows;
 }
 
+/**
+ * The word an operator reads for a direction. One source for it, because the picker names a direction in three
+ * places - the row label, the timeout message, the tooltip - and a message built by concatenation produced
+ * "ingoing" where the table beside it said "incoming" (PR #7939 review).
+ */
+function directionLabel(direction) {
+  return direction === "in" ? "incoming" : "outgoing";
+}
+
 /** Groups the picker's checked rows back into one expansion per direction. */
 function groupSelectedEdgeTypes(selected) {
   const grouped = { out: [], in: [] };
@@ -854,7 +863,7 @@ function expandNodePrompt(rid) {
         globalNotify(
           "Error",
           textStatus === "timeout"
-            ? "Counting the " + direction + "going relationships timed out"
+            ? "Counting the " + directionLabel(direction) + " relationships timed out"
             : escapeHtml(jqXHR.responseText),
           "danger"
         );
@@ -891,8 +900,8 @@ function showExpandNodeModal(rid, outRows, inRows) {
     }
   }
 
-  appendRows("out", outRows, '<i class="fa fa-arrow-right"></i>', "outgoing");
-  appendRows("in", inRows, '<i class="fa fa-arrow-left"></i>', "incoming");
+  appendRows("out", outRows, '<i class="fa fa-arrow-right"></i>', directionLabel("out"));
+  appendRows("in", inRows, '<i class="fa fa-arrow-left"></i>', directionLabel("in"));
 
   const html =
     '<div class="text-muted small mb-2">' +
