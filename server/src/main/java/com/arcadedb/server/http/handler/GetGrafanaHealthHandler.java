@@ -39,21 +39,10 @@ import io.undertow.server.HttpServerExchange;
  * against a database that does not exist is refused BEFORE the session is resolved rather than after, which is
  * the same 404 it answered before.
  */
-public class GetGrafanaHealthHandler extends DatabaseAbstractHandler {
+public class GetGrafanaHealthHandler extends AbstractObservabilityHandler {
 
   public GetGrafanaHealthHandler(final HttpServer httpServer) {
     super(httpServer);
-  }
-
-  /**
-   * A health check reads nothing, so an auto-commit wrapper around it would only add a commit with nothing to
-   * commit. A consequence of that answer, shared with every other read on this prefix, is that an unresolvable
-   * session id degrades to a session-less check rather than being refused - see
-   * {@link DatabaseAbstractHandler#rejectsUnresolvableSession()}.
-   */
-  @Override
-  protected boolean requiresTransaction() {
-    return false;
   }
 
   /**

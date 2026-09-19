@@ -56,20 +56,10 @@ import java.util.Map;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class GetPromQLSeriesHandler extends DatabaseAbstractHandler {
+public class GetPromQLSeriesHandler extends AbstractObservabilityHandler {
 
   public GetPromQLSeriesHandler(final HttpServer httpServer) {
     super(httpServer);
-  }
-
-  /**
-   * A read: an auto-commit wrapper would only add a commit with nothing to commit, so an unresolvable session
-   * id degrades to a session-less read rather than being refused - see
-   * {@link DatabaseAbstractHandler#rejectsUnresolvableSession()}.
-   */
-  @Override
-  protected boolean requiresTransaction() {
-    return false;
   }
 
   /**

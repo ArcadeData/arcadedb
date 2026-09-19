@@ -42,23 +42,13 @@ import io.undertow.server.HttpServerExchange;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class GetPromQLQueryRangeHandler extends DatabaseAbstractHandler {
+public class GetPromQLQueryRangeHandler extends AbstractObservabilityHandler {
   // Widest epoch second accepted for start/end. 1e12s is year 33658, ~1600x beyond any real series, and
   // keeps start/end (and therefore their difference in milliseconds) far inside the 64-bit range.
   static final double MAX_TIMESTAMP_SECONDS = 1e12;
 
   public GetPromQLQueryRangeHandler(final HttpServer httpServer) {
     super(httpServer);
-  }
-
-  /**
-   * A read: an auto-commit wrapper would only add a commit with nothing to commit, so an unresolvable session
-   * id degrades to a session-less read rather than being refused - see
-   * {@link DatabaseAbstractHandler#rejectsUnresolvableSession()}.
-   */
-  @Override
-  protected boolean requiresTransaction() {
-    return false;
   }
 
   /**

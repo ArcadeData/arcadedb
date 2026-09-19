@@ -90,6 +90,21 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
     return true;
   }
 
+  /**
+   * False for the reason {@link PostTimeSeriesWriteHandler} answers false (issue #7859, extending #7734): the
+   * samples are appended through {@code TimeSeriesShard.appendSamples}' own begin/commit whatever the caller has
+   * open, so nothing this route does is part of the caller's transaction and nothing it refuses is evidence that
+   * the caller's transaction is unusable. Answered now rather than when this route grows its first pre-engine
+   * refusal, so it cannot acquire the exposure by accident the way the read routes did.
+   * <p>
+   * Inherited from {@link AbstractBinaryHttpHandler} rather than from {@link AbstractObservabilityHandler}, which
+   * this handler cannot extend: Java has one superclass to spend and the binary body already claims it.
+   */
+  @Override
+  protected boolean participatesInSessionTransaction() {
+    return false;
+  }
+
   @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
       final Database db, final JSONObject payload) throws Exception {
