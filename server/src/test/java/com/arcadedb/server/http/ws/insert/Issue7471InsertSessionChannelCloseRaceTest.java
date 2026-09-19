@@ -24,6 +24,9 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.websockets.core.WebSocketChannel;
 import org.junit.jupiter.api.Test;
 
+import java.lang.management.ManagementFactory;
+import java.lang.management.ThreadInfo;
+import java.lang.management.ThreadMXBean;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -142,7 +145,7 @@ public class Issue7471InsertSessionChannelCloseRaceTest extends BaseGraphServerT
         final Thread thread = new Thread(() -> manager.closeChannelSessions(channel, channelId), "issue7471-closer");
         closer.set(thread);
         thread.start();
-        awaitBlocked(thread);
+        awaitBlockedOnThisThread(thread);
       }
       return null;
     });
@@ -193,14 +196,42 @@ public class Issue7471InsertSessionChannelCloseRaceTest extends BaseGraphServerT
   }
 
   /** Waits until {@code thread} is parked on a monitor - the ConcurrentHashMap bin the claim is holding. */
-  private static void awaitBlocked(final Thread thread) throws InterruptedException {
-    final long deadline = System.currentTimeMillis() + 10_000;
+  /**
+   * Waits until {@code thread} is blocked on a monitor THIS thread owns, which is the only state that puts it next
+   * in line for the per-key critical section the caller is holding.
+   * <p>
+   * The owner check is the whole point, and the reason this used to be flaky on CI while passing locally (found
+   * while it was failing the {@code unit-tests} lane on main): a bare {@code getState() == BLOCKED} is also true
+   * of a thread blocked on a CLASS INITIALIZATION monitor, which is exactly where a freshly started thread sits on
+   * a cold JVM the first time it walks into {@code closeChannelSessions}. Accepting that let the caller release the
+   * key and race ahead of a closer that had not reached it yet, and the test then failed on the assertion rather
+   * than on the wait. {@code WAITING} was accepted for the same reason and is likewise not evidence of contention
+   * on our key.
+   * <p>
+   * {@code TERMINATED} stays accepted: a closer that already ran to completion cannot be waited for any longer,
+   * and the orderings the test asserts hold either way. The wait is bounded and FAILS rather than falling through,
+   * so a window that is never entered is reported as such instead of turning the assertion below into a coin flip.
+   */
+  private static void awaitBlockedOnThisThread(final Thread thread) throws InterruptedException {
+    final ThreadMXBean threads = ManagementFactory.getThreadMXBean();
+    final long owner = Thread.currentThread().threadId();
+
+    // A short wait EXPECTED TO SUCCEED long before the bound: generous on purpose, since a wider bound cannot turn
+    // a passing run red, and only a window that never opens at all reaches the failure below.
+    final long deadline = System.currentTimeMillis() + 30_000;
     while (System.currentTimeMillis() < deadline) {
-      final Thread.State state = thread.getState();
-      if (state == Thread.State.BLOCKED || state == Thread.State.WAITING || state == Thread.State.TERMINATED)
+      if (thread.getState() == Thread.State.TERMINATED)
         return;
+
+      final ThreadInfo info = threads.getThreadInfo(thread.threadId());
+      if (info != null && info.getThreadState() == Thread.State.BLOCKED && info.getLockOwnerId() == owner)
+        return;
+
       Thread.sleep(1);
     }
+
+    throw new AssertionError("the closer thread never blocked on the key this thread is holding, so the window "
+        + "this test drives was never entered (it was " + thread.getState() + ")");
   }
 
   /** A mocked channel whose attribute map is real, so the close marker behaves as it does on a live connection. */
