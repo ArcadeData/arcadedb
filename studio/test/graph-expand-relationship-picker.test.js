@@ -139,8 +139,29 @@ test("the picker rows are ordered biggest first, which is the row that matters",
 });
 
 test("a node with no edges, and a malformed answer, produce no rows rather than a broken picker", () => {
-  for (const data of [null, undefined, {}, { result: [] }, { result: [{ total: 7 }] }])
+  for (const data of [null, undefined, {}, { result: [] }, { result: [{ total: 7 }] }, { result: { records: [] } }])
     assert.deepEqual(parseEdgeTypeCounts(data), [], JSON.stringify(data));
+});
+
+// The shape the 'studio' serializer answers with. It is an OBJECT - {vertices, edges, records} - and puts a
+// non-element row in `records`, so a reader that knew only the flat-array shape found nothing and the picker
+// reported "no connections" for every node. The count query now asks for 'record', which IS the flat array,
+// and the parser reads both so the call site can change serializer without silently emptying the picker.
+test("the counts are found whichever serializer answered", () => {
+  const expected = [{ type: "Knows", total: 2 }];
+
+  assert.deepEqual(parseEdgeTypeCounts({ result: [{ type: "Knows", total: 2 }] }), expected, "'record'");
+  assert.deepEqual(
+    parseEdgeTypeCounts({ result: { vertices: [], edges: [], records: [{ type: "Knows", total: 2 }] } }),
+    expected,
+    "'studio'"
+  );
+});
+
+test("the count query asks for the serializer whose shape is the counts", () => {
+  const prompt = extractFn("expandNodePrompt");
+  assert.match(prompt, /serializer: "record"/, "an aggregate has no element to expand into a graph document");
+  assert.ok(!/serializer: "studio"/.test(prompt), "the studio serializer would bury the rows in result.records");
 });
 
 test("a non-numeric count is shown as zero rather than as NaN", () => {
@@ -158,6 +179,30 @@ test("the selection collapses into one expansion per direction", () => {
   assert.deepEqual(grouped.out, ["Knows", "Bought"], "one traversal per direction, duplicates collapsed");
   assert.deepEqual(grouped.in, ["Knows"]);
   assert.deepEqual(groupSelectedEdgeTypes([]), { out: [], in: [] });
+});
+
+// jQuery's .data() coerces a data-* attribute that looks like a literal, so an edge type genuinely named
+// "null", "true" or "42" would arrive as that value instead of as its name.
+test("the picker reads the edge type as an attribute, not through jQuery's type coercion", () => {
+  const modal = extractFn("showExpandNodeModal");
+  assert.match(modal, /attr\("data-type"\)/);
+  assert.ok(!/data\("type"\)/.test(modal), ".data() would turn the type named 'null' into null");
+});
+
+// Cytoscape throws on a second element with the same id, and the throw would escape before endBatch(). With
+// the picker, expanding one relationship type and then another from the same node is the ordinary way to use
+// it, so the two expansions share their endpoints by construction.
+test("a re-expansion cannot add an element that is already on the canvas", () => {
+  const load = extractFn("loadNodeNeighbors");
+  assert.match(load, /if \(globalRenderedVerticesRID\[vertex\.r\]\) continue;/, "a vertex already drawn");
+  assert.match(load, /globalCy\.getElementById\(edge\.r\)\.nonempty\(\)/, "an edge already drawn, self-loops too");
+
+  // And the skip must come first, or a node that is merely being re-expanded eats the ceiling.
+  assert.ok(
+    load.indexOf("if (globalRenderedVerticesRID[vertex.r]) continue;") <
+      load.indexOf("reachedMax = true"),
+    "the duplicate check has to precede the max-elements check"
+  );
 });
 
 test("the radial menu actually offers the picker, and loadNodeNeighbors uses the builder", () => {

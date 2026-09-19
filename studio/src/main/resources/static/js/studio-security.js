@@ -715,8 +715,12 @@ function createApiToken() {
       // The create modal is deliberately left open on every failure: the form still holds what was typed,
       // and for the 412 below the fix is to reopen Studio elsewhere, not to retype the permissions.
       var refusal = apiTokenTransportRefusal(jqXHR) || clusterCapabilityRefusal(jqXHR);
-      if (refusal) globalNotify(refusal.title, refusal.message, "danger");
-      else globalNotifyError(jqXHR.responseText);
+      if (refusal) {
+        globalNotify(refusal.title, refusal.message, "danger");
+        // The refusal IS new information about the cluster: it says a peer fell behind since the last poll, so
+        // the gate has to catch up with it rather than wait for the next tab reopen (PR #7939 review).
+        refreshSecurityClusterReadiness();
+      } else globalNotifyError(jqXHR.responseText);
     });
 }
 
@@ -780,8 +784,10 @@ function deleteApiToken(tokenHash) {
       // A revocation is replicated by the same entry a mint is, so the same gate refuses it - and a revocation
       // that silently did not happen is the more dangerous of the two.
       var refusal = clusterCapabilityRefusal(jqXHR);
-      if (refusal) globalNotify(refusal.title, refusal.message, "danger");
-      else globalNotifyError(jqXHR.responseText);
+      if (refusal) {
+        globalNotify(refusal.title, refusal.message, "danger");
+        refreshSecurityClusterReadiness();
+      } else globalNotifyError(jqXHR.responseText);
     });
 }
 

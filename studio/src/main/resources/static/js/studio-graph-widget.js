@@ -682,12 +682,19 @@ function loadNodeNeighbors(direction, rid, edgeTypes, limit) {
 
       let reachedMax = false;
       for (let i in data.result.vertices) {
+        let vertex = data.result.vertices[i];
+
+        // Already on the canvas. Cytoscape THROWS on a second element with the same id, and the throw would
+        // escape before endBatch(), leaving the graph wedged mid-batch. Overlapping expansions used to be an
+        // edge case; with the relationship picker, expanding one type and then another from the same node is
+        // the ordinary way to use it, so the two expansions share their endpoints by construction (#7939
+        // review). Checked before the ceiling so a re-expansion cannot be counted against it.
+        if (globalRenderedVerticesRID[vertex.r]) continue;
+
         if (Object.keys(globalRenderedVerticesRID).length >= globalGraphMaxResult) {
           reachedMax = true;
           break;
         }
-
-        let vertex = data.result.vertices[i];
 
         assignTypeColor(vertex.t);
         assignProperties(vertex);
@@ -709,6 +716,9 @@ function loadNodeNeighbors(direction, rid, edgeTypes, limit) {
         let edge = data.result.edges[i];
 
         if (!globalRenderedVerticesRID[edge.i] || !globalRenderedVerticesRID[edge.o]) continue;
+        // Same duplicate-id throw as the vertices above, and reached the same way: a self-loop, or a second
+        // expansion of a node whose edge is already drawn.
+        if (globalCy.getElementById(edge.r).nonempty()) continue;
 
         assignTypeColor(edge.t);
         assignProperties(edge);
@@ -761,7 +771,13 @@ function loadNodeNeighbors(direction, rid, edgeTypes, limit) {
  */
 function parseEdgeTypeCounts(data) {
   const rows = [];
-  const result = data && data.result ? data.result : [];
+  // Two shapes, because two serializers produce them. 'record' - what the count query asks for, it being an
+  // aggregate and not a graph - answers a flat array in `result`. The 'studio' serializer every other call on
+  // this page uses answers an OBJECT, {vertices, edges, records}, and puts a non-element row in `records`; a
+  // reader that knew only the array shape found nothing there and the picker reported "no connections" for
+  // every node (PR #7939 review). Both are read, so the parser survives the call site changing serializer.
+  const payload = data && data.result ? data.result : [];
+  const result = Array.isArray(payload) ? payload : Array.isArray(payload.records) ? payload.records : [];
   for (let i = 0; i < result.length; i++) {
     const type = result[i].type;
     if (type == null) continue;
@@ -812,7 +828,9 @@ function expandNodePrompt(rid) {
         data: JSON.stringify({
           language: "sql",
           command: edgeTypeCountsCommand(direction, safeRid),
-          serializer: "studio",
+          // 'record', not the 'studio' serializer the expansions use: these rows are an aggregate, with no
+          // element in them to expand into a graph document, and the flat array is what the counts are.
+          serializer: "record",
         }),
         beforeSend: function (xhr) {
           xhr.setRequestHeader("Authorization", globalCredentials);
@@ -882,7 +900,10 @@ function showExpandNodeModal(rid, outRows, inRows) {
   globalPrompt("Expand " + rid, html, "Expand", function () {
     const selected = [];
     $("#expandNodeTable input.expand-edge-type:checked").each(function () {
-      selected.push({ direction: $(this).data("direction"), type: $(this).data("type") });
+      // attr(), not data(): jQuery's data() coerces a data-* attribute that LOOKS like a literal, so an edge
+      // type genuinely named "null", "true" or "42" would arrive as the value rather than as its name and the
+      // expansion would ask for something that does not exist (PR #7939 review).
+      selected.push({ direction: $(this).attr("data-direction"), type: $(this).attr("data-type") });
     });
 
     if (selected.length === 0) {
