@@ -285,6 +285,7 @@ public class CreateIndexStatement extends DDLStatement {
     // Upper-casing it here with the DEFAULT locale is what turned `COLLATE ci` into "Cİ" on a Turkish-locale server
     // and persisted that into the schema (issue #7900) - hence the shared chokepoint rather than a fold at the call
     // site.
+    // Consumed by the builder.withCollations() call further down, once the guard below has been passed.
     final List<String> collations = new ArrayList<>();
     try {
       for (final Property prop : propertyList)
