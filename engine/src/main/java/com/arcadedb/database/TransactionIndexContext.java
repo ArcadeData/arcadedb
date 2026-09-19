@@ -66,6 +66,79 @@ public class TransactionIndexContext {
    */
   private final Map<String, IndexInternal>                                   indexPerLane     = new HashMap<>();
 
+  /**
+   * The journal of what one record's indexing added, so it can be taken back exactly (issue #7467).
+   * <p>
+   * {@code LocalDatabase.createRecordNoLock} writes the record body, assigns its identity and increments the
+   * bucket delta BEFORE {@code DocumentIndexer.createDocument} runs the unique check, so a
+   * {@link DuplicatedKeyException} raised there used to leave the record in the transaction with no index entry
+   * to find it by. Every caller that tallies the failure and carries on - the {@code /ws} insert session, the
+   * gRPC stream, an HTTP batch, a SQL script with its own error handling - then committed a record that the
+   * index denies and the acknowledgement denies. Undoing the record body is only half of the retraction: the
+   * indexes BEFORE the one that refused already hold an entry for it, and those have to go back too.
+   * <p>
+   * Reverse order, and restoring the DISPLACED entry rather than simply dropping ours, is what makes it exact: a
+   * unique index keys its per-key map on the key alone, so an {@code ADD} can overwrite an earlier {@code REMOVE}
+   * (a delete-then-reinsert of the same key in one transaction) and the {@code REPLACE}/{@code oldRid} that
+   * records it. Dropping ours would take the earlier operation with it and leave a stale index entry behind.
+   * <p>
+   * The list is REUSED across records - only its size is reset - so an insert-heavy workload allocates the
+   * holders once rather than once per record. Nothing is recorded while disarmed, which is every path but the one
+   * that is about to have to undo.
+   */
+  private final List<RecordUndoEntry>                                        recordUndo       = new ArrayList<>();
+  /** How many of {@link #recordUndo} belong to the record being indexed right now; -1 when disarmed. */
+  private       int                                                          recordUndoSize   = -1;
+
+  /**
+   * One journalled index-map mutation. Mutable and reused: {@link #recordUndo} hands the same holders back out
+   * for the next record rather than allocating a new one per index key.
+   */
+  private static final class RecordUndoEntry {
+    /** The append-only lane the entry was appended to, or {@code null} when this is an ordered-lane entry. */
+    private List<IndexKey>                                  lane;
+    /** The lane this entry belongs to, so an undo that empties the lane can drop it. */
+    private String                                          indexName;
+    /** Ordered lane: the per-index key map, the per-key value map, and what our put displaced from it. */
+    private TreeMap<ComparableKey, Map<IndexKey, IndexKey>> keys;
+    private ComparableKey                                   key;
+    private Map<IndexKey, IndexKey>                         values;
+    private IndexKey                                        added;
+    private IndexKey                                        displaced;
+
+    private void ordered(final String indexName, final TreeMap<ComparableKey, Map<IndexKey, IndexKey>> keys,
+        final ComparableKey key, final Map<IndexKey, IndexKey> values, final IndexKey added, final IndexKey displaced) {
+      this.lane = null;
+      this.indexName = indexName;
+      this.keys = keys;
+      this.key = key;
+      this.values = values;
+      this.added = added;
+      this.displaced = displaced;
+    }
+
+    private void appended(final String indexName, final List<IndexKey> lane) {
+      this.lane = lane;
+      this.indexName = indexName;
+      this.keys = null;
+      this.key = null;
+      this.values = null;
+      this.added = null;
+      this.displaced = null;
+    }
+
+    /** Drops the references the holder is keeping alive, so a reused journal pins nothing between records. */
+    private void clear() {
+      this.lane = null;
+      this.indexName = null;
+      this.keys = null;
+      this.key = null;
+      this.values = null;
+      this.added = null;
+      this.displaced = null;
+    }
+  }
+
   public static class IndexKey {
     public final boolean           unique;
     public final Object[]          keyValues;
@@ -482,6 +555,7 @@ public class TransactionIndexContext {
         indexPerLane.put(indexName, index);
       }
       lane.add(new IndexKey(false, operation, keysValues, rid));
+      journalAppend(indexName, lane);
       return;
     }
 
@@ -550,13 +624,88 @@ public class TransactionIndexContext {
       }
     }
 
-    values.put(v, v);
+    final IndexKey displaced = values.put(v, v);
+    journalPut(indexName, keys, k, values, v, displaced);
+  }
+
+  /**
+   * Starts journalling what the next {@code addIndexKeyLock} calls add, so {@link #undoRecordChanges()} can take
+   * them back. Always paired with {@link #disarmRecordUndo()} in a {@code finally}: see {@link #recordUndo}.
+   * <p>
+   * Not re-entrant, and does not need to be. The one caller indexes ONE record between the two calls, on the
+   * thread the transaction is bound to, and nothing it invokes indexes another.
+   */
+  public void armRecordUndo() {
+    recordUndoSize = 0;
+  }
+
+  /** Stops journalling and drops what was journalled. Idempotent. */
+  public void disarmRecordUndo() {
+    recordUndoSize = -1;
+  }
+
+  /**
+   * Takes back every index entry journalled since {@link #armRecordUndo()}, restoring the map to the state it was
+   * in - the displaced entries included - and leaving no empty lane behind, so {@code isEmpty()} and
+   * {@code addFilesToLock} answer as though the record had never been indexed.
+   */
+  public void undoRecordChanges() {
+    for (int i = recordUndoSize - 1; i >= 0; i--) {
+      final RecordUndoEntry undo = recordUndo.get(i);
+
+      if (undo.lane != null) {
+        // Append-only lane: our entry is the one we appended, and nothing was displaced to restore.
+        undo.lane.remove(undo.lane.size() - 1);
+        if (undo.lane.isEmpty()) {
+          unorderedEntries.remove(undo.indexName);
+          indexPerLane.remove(undo.indexName);
+        }
+        continue;
+      }
+
+      if (undo.displaced != null)
+        undo.values.put(undo.displaced, undo.displaced);
+      else {
+        undo.values.remove(undo.added);
+        if (undo.values.isEmpty()) {
+          undo.keys.remove(undo.key);
+          if (undo.keys.isEmpty()) {
+            indexEntries.remove(undo.indexName);
+            indexPerLane.remove(undo.indexName);
+          }
+        }
+      }
+    }
+    recordUndoSize = 0;
+  }
+
+  private void journalAppend(final String indexName, final List<IndexKey> lane) {
+    if (recordUndoSize >= 0)
+      nextUndoEntry().appended(indexName, lane);
+  }
+
+  private void journalPut(final String indexName, final TreeMap<ComparableKey, Map<IndexKey, IndexKey>> keys,
+      final ComparableKey key, final Map<IndexKey, IndexKey> values, final IndexKey added, final IndexKey displaced) {
+    if (recordUndoSize >= 0)
+      nextUndoEntry().ordered(indexName, keys, key, values, added, displaced);
+  }
+
+  /** The next holder of the reused journal, growing the list only the first time that depth is reached. */
+  private RecordUndoEntry nextUndoEntry() {
+    if (recordUndoSize == recordUndo.size())
+      recordUndo.add(new RecordUndoEntry());
+    return recordUndo.get(recordUndoSize++);
   }
 
   public void reset() {
     indexEntries.clear();
     unorderedEntries.clear();
     indexPerLane.clear();
+    // The holders stay - they are the reusable journal - but not the maps and keys they point at, which the
+    // three clears above have just made garbage.
+    for (int i = 0; i < recordUndo.size(); i++)
+      recordUndo.get(i).clear();
+    recordUndoSize = -1;
   }
 
   /** Looks a lane up by its KEY, with the same caveat as {@link #getTotalEntriesByIndex}. */

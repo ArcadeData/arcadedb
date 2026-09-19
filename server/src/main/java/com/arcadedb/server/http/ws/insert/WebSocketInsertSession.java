@@ -26,7 +26,6 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.LockTimeoutException;
-import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
@@ -351,7 +350,12 @@ public class WebSocketInsertSession {
         for (int i = 0; i < rows; i++) {
           final int row = i;
           try {
-            counts.absorb(inOwnTransaction(attempt -> applyRowCounting(records, row, attempt)));
+            // applyRow, not applyRowCounting: a row that fails must take its own transaction down with it rather
+            // than be tallied inside it and committed anyway (issue #7467). The row IS the transaction here, so
+            // letting the exception out is the whole retraction, whatever the failure was and whether or not the
+            // engine could undo it on its own. The tallies are identical either way - the two arms below record
+            // the same CONFLICT or DB_ERROR the swallowed catch did.
+            counts.absorb(inOwnTransaction(attempt -> applyRow(records.getJSONObject(row), row, attempt)));
           } catch (final DuplicatedKeyException e) {
             // The row's own commit hit a unique index the session named no key columns for. The row IS the
             // transaction here, so the mode can still answer per row: dropped under ignore, a CONFLICT
@@ -573,7 +577,22 @@ public class WebSocketInsertSession {
       applyRowCounting(records, i, counts);
   }
 
-  /** {@link #applyRow} with its outcome tallied: a row that cannot be applied is counted, never thrown. */
+  /**
+   * {@link #applyRow} with its outcome tallied: a row that cannot be applied is counted, never thrown, so the
+   * rest of the chunk still goes in.
+   * <p>
+   * <b>The invariant this rests on</b> (issue #7467): a row reported here as not written must not be in the
+   * transaction the chunk goes on to commit. That is not the caller's to arrange - the row's work is already in
+   * the shared transaction by the time the exception reaches this frame - it is the engine's, and
+   * {@code LocalDatabase.createRecordNoLock} keeps it: a create whose indexing refuses the record takes the
+   * record body, the bucket delta, the cache entry and the index entries added before the refusal back out
+   * before the exception leaves. Until it did, a duplicate key was tallied CONFLICT here and committed anyway,
+   * leaving a record that exists in the bucket, is absent from the unique index that was supposed to forbid it,
+   * and was acknowledged to the client as not written.
+   * <p>
+   * Only the modes that share ONE transaction across rows rely on that. {@code PER_ROW} calls {@link #applyRow}
+   * directly, so a failing row rolls its own transaction back and needs no engine guarantee at all.
+   */
   private void applyRowCounting(final JSONArray records, final int rowIndex, final ChunkCounts counts) {
     try {
       applyRow(records.getJSONObject(rowIndex), rowIndex, counts);
@@ -670,9 +689,12 @@ public class WebSocketInsertSession {
       final String from, final String to) {
     if (type instanceof EdgeType) {
       final Vertex fromVertex = database.lookupByRID(database.newRID(from), false).asVertex(false);
-      final MutableEdge edge = fromVertex.newEdge(typeName, database.newRID(to));
-      edge.set(properties);
-      edge.save();
+      // The properties go INTO the creation rather than into a save() after it (issue #7467). newEdge() sets
+      // them on the edge before its save() and links the two vertices' edge lists after, so a unique index that
+      // refuses one of them refuses the CREATE - which LocalDatabase now undoes whole. Created and then updated,
+      // the refusal arrived at the update, leaving a property-less edge already wired into both vertices and
+      // acknowledged to the client as not written.
+      fromVertex.newEdge(typeName, database.newRID(to), properties);
     } else if (type instanceof VertexType) {
       final MutableVertex vertex = database.newVertex(typeName);
       vertex.set(properties);
