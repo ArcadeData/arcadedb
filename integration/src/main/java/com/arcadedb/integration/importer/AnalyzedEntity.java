@@ -84,10 +84,16 @@ public class AnalyzedEntity {
    * <p>
    * The zero case is not hypothetical any more: {@link #setRowSize} is what increments {@code analyzedRows}, and a
    * ragged row the analysis refuses never reaches it, so an entity can exist with no measured row at all (issue
-   * #7782). This used to divide by {@code analyzedRows} unguarded, and its one caller - the {@code expectedEdges}
-   * batch estimate in {@code CSVImporterFormat.loadEdges()} - would have taken an {@code ArithmeticException} in
-   * place of the row-shape diagnosis it was on its way to report. Zero flows into that caller's existing
-   * {@code expectedEdges <= 0} fallback, which is exactly the "no idea how big this source is" answer.
+   * #7782). This used to divide by {@code analyzedRows} unguarded and would have thrown {@code ArithmeticException}
+   * in place of the row-shape diagnosis its caller was on its way to report.
+   * <p>
+   * Guarding here was NOT enough on its own, and the pairing is the part worth keeping straight. The one caller -
+   * the {@code expectedEdges} batch estimate in {@code CSVImporterFormat.loadEdges()} - divides a {@code long} by
+   * this {@code int}, so handing it a zero only moved the same {@code ArithmeticException} to the division at the
+   * call site. That caller therefore gates on a measured average of its own ({@code averageRowLength > 0}) and skips
+   * the division entirely, leaving its {@code expectedEdges} at zero for its own {@code expectedEdges <= 0} branch
+   * to answer - which is exactly the "no idea how big this source is" case. Change either side and the other stops
+   * making sense.
    */
   public int getAverageRowLength() {
     return analyzedRows > 0 ? (int) (totalRowLength / analyzedRows) : 0;
