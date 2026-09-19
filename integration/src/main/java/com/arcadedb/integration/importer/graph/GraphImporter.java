@@ -177,6 +177,14 @@ public class GraphImporter implements AutoCloseable {
     final Database database = new DatabaseFactory(dbPath).create();
 
     try {
+      // PARSED FIRST, EXECUTED LAST. THE COMMANDS THEMSELVES NEED THE IMPORTED DATA, SO THEY STILL RUN AFTER THE
+      // IMPORT - BUT A TYPO IN THE ENTRY THAT CARRIES ONE IS A CONFIGURATION MISTAKE, AND BEING TOLD ABOUT IT ONLY
+      // ONCE EVERY ROW HAS BEEN READ MEANT REPEATING THE WHOLE IMPORT TO FIND OUT WHETHER THERE IS A SECOND ONE
+      // (ISSUE #7864). AHEAD OF createSchemaFromConfig TOO, SO THE REFUSAL COSTS NOT EVEN THE TYPES IT WOULD
+      // OTHERWISE HAVE LEFT BEHIND. THE DATABASE DIRECTORY ITSELF IS ALREADY CREATED BY THEN - main() RECREATES IT
+      // BEFORE ANY OF THIS RUNS - SO WHAT A REFUSAL LEAVES ON DISK IS AN EMPTY DATABASE, NOT A HALF-BUILT SCHEMA
+      final List<PostImportCommand> postImportCommands = parsePostImportCommands(config);
+
       // Auto-create schema from the JSON config
       createSchemaFromConfig(database, config);
 
@@ -186,7 +194,7 @@ public class GraphImporter implements AutoCloseable {
       }
 
       // Execute post-import commands (e.g., CREATE GRAPH ANALYTICAL VIEW)
-      executePostImportCommands(database, config);
+      executePostImportCommands(database, postImportCommands);
     } finally {
       database.close();
     }
@@ -233,6 +241,43 @@ public class GraphImporter implements AutoCloseable {
   }
 
   /**
+   * One {@code postImportCommands} entry, already validated: the language it is written in and the statement to run.
+   *
+   * @param language the query language the command is written in
+   * @param command  the statement to execute after the import
+   */
+  public record PostImportCommand(String language, String command) {
+  }
+
+  /**
+   * The {@code postImportCommands} array, parsed and validated, in the order it is declared.
+   * <p>
+   * Both keys are read through {@link #required}, like every other mandatory key in this file: they used to be read
+   * with a bare {@code getString}, which answers a missing one with the {@code JSONException} naming the key and
+   * nothing else that #7302 removed everywhere else - and answered it AFTER the whole import had run, the most
+   * expensive moment in this file to be told only a key name (issue #7864). Parsing is separated from execution so
+   * {@code main} can do this part before the first row is read; the execution still needs the imported data and
+   * stays where it was.
+   */
+  public static List<PostImportCommand> parsePostImportCommands(final JSONObject config) {
+    if (!config.has("postImportCommands"))
+      return List.of();
+
+    final JSONArray commands = config.getJSONArray("postImportCommands");
+    final List<PostImportCommand> parsed = new ArrayList<>(commands.length());
+    for (int i = 0; i < commands.length(); i++) {
+      final JSONObject cmd = commands.getJSONObject(i);
+      // The entry is named by its position: an array carries no other handle on which of several entries is meant,
+      // and "a postImportCommands entry" alone leaves the reader counting.
+      final String where = "\"postImportCommands\" entry #" + (i + 1);
+      parsed.add(new PostImportCommand(
+          required(cmd, "language", where, "the query language the command is written in"),
+          required(cmd, "command", where, "the statement to execute after the import")));
+    }
+    return parsed;
+  }
+
+  /**
    * Executes post-import commands defined in the JSON config.
    * <p>
    * Format:
@@ -243,20 +288,25 @@ public class GraphImporter implements AutoCloseable {
    * </pre>
    */
   public static void executePostImportCommands(final Database database, final JSONObject config) {
-    if (!config.has("postImportCommands"))
+    executePostImportCommands(database, parsePostImportCommands(config));
+  }
+
+  /**
+   * Executes commands {@link #parsePostImportCommands} has already validated, and waits for any analytical view
+   * they started building.
+   */
+  public static void executePostImportCommands(final Database database, final List<PostImportCommand> commands) {
+    if (commands.isEmpty())
+      // Nothing declared: no command to run, and so no analytical view for the wait below to be waiting on.
       return;
 
-    final JSONArray commands = config.getJSONArray("postImportCommands");
-    for (int i = 0; i < commands.length(); i++) {
-      final JSONObject cmd = commands.getJSONObject(i);
-      final String language = cmd.getString("language");
-      final String command = cmd.getString("command");
-
-      LogManager.instance().log(GraphImporter.class, Level.INFO, "Executing post-import command [%s]: %s", language, command);
+    for (final PostImportCommand cmd : commands) {
+      LogManager.instance()
+          .log(GraphImporter.class, Level.INFO, "Executing post-import command [%s]: %s", cmd.language(), cmd.command());
       try {
-        database.command(language, command).close();
+        database.command(cmd.language(), cmd.command()).close();
       } catch (final Exception e) {
-        LogManager.instance().log(GraphImporter.class, Level.WARNING, "Post-import command failed: %s", e, command);
+        LogManager.instance().log(GraphImporter.class, Level.WARNING, "Post-import command failed: %s", e, cmd.command());
       }
     }
 

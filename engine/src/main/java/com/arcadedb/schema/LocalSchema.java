@@ -2522,103 +2522,10 @@ public class LocalSchema implements Schema {
       if (saveConfiguration)
         saveConfiguration();
 
-      // LOAD TRIGGERS
-      if (root.has("triggers")) {
-        final JSONObject triggersJSON = root.getJSONObject("triggers");
-        for (final String triggerName : triggersJSON.keySet()) {
-          final JSONObject triggerJSON = triggersJSON.getJSONObject(triggerName);
-          try {
-            final Trigger trigger = TriggerImpl.fromJSON(triggerJSON);
-            triggers.put(trigger.getName(), trigger);
-
-            // Re-register trigger listeners after loading
-            if (existsType(trigger.getTypeName())) {
-              registerTriggerListener(trigger);
-            } else {
-              LogManager.instance().log(this, Level.WARNING,
-                  "Cannot register trigger '%s' because type '%s' does not exist",
-                  null, triggerName, trigger.getTypeName());
-            }
-          } catch (final Exception e) {
-            LogManager.instance().log(this, Level.SEVERE,
-                "Error loading trigger '%s': %s", e, triggerName, e.getMessage());
-          }
-        }
-      }
-
-      // Load materialized views
-      // Always clear and re-populate from the schema file to keep in sync
-      materializedViews.clear();
-      if (root.has("materializedViews")) {
-        final JSONObject mvJSON = root.getJSONObject("materializedViews");
-        for (final String viewName : mvJSON.keySet()) {
-          final JSONObject viewDef = mvJSON.getJSONObject(viewName);
-          final MaterializedViewImpl view = MaterializedViewImpl.fromJSON(database, viewDef);
-          materializedViews.put(viewName, view);
-
-          // Re-register listeners for INCREMENTAL views
-          if (view.getRefreshMode() == MaterializedViewRefreshMode.INCREMENTAL)
-            MaterializedViewBuilder.registerListeners(this, view, view.getSourceTypeNames());
-
-          if (view.getRefreshMode() == MaterializedViewRefreshMode.PERIODIC)
-            getMaterializedViewScheduler().schedule(database, view);
-
-          // Crash recovery: if status is BUILDING, it was interrupted
-          if (MaterializedViewStatus.BUILDING.name().equals(view.getStatus()))
-            view.setStatus(MaterializedViewStatus.STALE);
-        }
-      }
-
-      // Load continuous aggregates
-      continuousAggregates.clear();
-      if (root.has("continuousAggregates")) {
-        final JSONObject caJSON = root.getJSONObject("continuousAggregates");
-        for (final String caName : caJSON.keySet()) {
-          final JSONObject caDef = caJSON.getJSONObject(caName);
-          final ContinuousAggregateImpl ca = ContinuousAggregateImpl.fromJSON(database, caDef);
-          continuousAggregates.put(caName, ca);
-
-          // Crash recovery: if status is BUILDING, it was interrupted
-          if (MaterializedViewStatus.BUILDING.name().equals(ca.getStatus()))
-            ca.setStatus(MaterializedViewStatus.STALE);
-        }
-      }
-
-      // Load user-defined function libraries (DEFINE FUNCTION, issue #5121). Only persistable libraries (js/sql/cypher)
-      // are stored, so drop any previously loaded persistable library and rebuild from the schema file, while keeping
-      // libraries registered programmatically from native Java code (getLanguage() == null).
-      functionLibraries.values().removeIf(l -> l.getLanguage() != null);
-      if (root.has("functions")) {
-        final JSONObject functionsJSON = root.getJSONObject("functions");
-        for (final String libraryName : functionsJSON.keySet()) {
-          try {
-            final JSONObject libraryJSON = functionsJSON.getJSONObject(libraryName);
-            final String language = libraryJSON.getString("language");
-            final FunctionLibraryDefinition library = FunctionLibraryFactory.createLibrary(database, libraryName, language);
-
-            final JSONObject funcsJSON = libraryJSON.getJSONObject("functions");
-            for (final String funcName : funcsJSON.keySet()) {
-              final JSONObject funcJSON = funcsJSON.getJSONObject(funcName);
-              final String[] params = funcJSON.getJSONArray("parameters").toListOfStrings().toArray(new String[0]);
-              library.registerFunction(FunctionLibraryFactory.createFunction(database, language, funcName,
-                  funcJSON.getString("code"), params));
-            }
-
-            functionLibraries.put(libraryName, library);
-          } catch (final Exception e) {
-            LogManager.instance().log(this, Level.SEVERE, "Error loading function library '%s': %s", e, libraryName,
-                e.getMessage());
-          }
-        }
-      }
-
-      // Load extensions (module-specific configuration)
-      extensions.clear();
-      if (root.has("extensions")) {
-        final JSONObject extJSON = root.getJSONObject("extensions");
-        for (final String extName : extJSON.keySet())
-          extensions.put(extName, extJSON.getJSONObject(extName));
-      }
+      // The five members that live beside "types" in the schema object: triggers, materialized views, continuous
+      // aggregates, function libraries and extensions. Restored through the same method any other reader of a
+      // schema object uses, so a second reader cannot come back with a subset of them (issue #7886).
+      restoreSchemaMembersFromJSON(root, SchemaMemberSource.SCHEMA_FILE);
 
       // Restore compaction file-migration map so WAL recovery can redirect or safely skip
       // pages that reference old (pre-compaction) file IDs.
@@ -2641,6 +2548,334 @@ public class LocalSchema implements Schema {
       rebuildBucketTypeMap();
       readStatisticsFile();
     }
+  }
+
+  /**
+   * Where a schema object handed to {@link #restoreSchemaMembersFromJSON} came from. One argument rather than two
+   * booleans, because the two decisions it settles - replace or merge, and trusted or not - are never independent:
+   * every combination other than these two is incoherent.
+   */
+  public enum SchemaMemberSource {
+    /**
+     * The database's own {@code schema.json}. Trusted: it records what this database already had installed, so
+     * nothing in it is an escalation, and refusing a member here would make the database unopenable. Replaces.
+     */
+    SCHEMA_FILE,
+
+    /**
+     * A file handed to the engine from outside - a JSONL export being restored. Merges, and a member that is
+     * arbitrary host code has to earn the same permission creating it by hand would need: a {@code JAVASCRIPT} or
+     * {@code JAVA} trigger fires with the engine's privileges, so {@code createTrigger} gates it on
+     * {@code UPDATE_SECURITY} rather than {@code UPDATE_SCHEMA} (GHSA-38pf-6hp2-pxww), and a {@code js} function
+     * library is host code a later {@code SELECT} can invoke, which {@code DefineFunctionStatement} gates the same
+     * way (GHSA-vwjc-v7x7-cm6g). Restoring either from a file without that gate would hand the escalation back
+     * through the file (found in review of PR #7943).
+     * <p>
+     * Defence in depth rather than the only gate: {@code IMPORT DATABASE} itself already requires
+     * {@code UPDATE_SECURITY}. The check belongs here too, at the layer that actually installs the code, because
+     * that is the layer every route into a restore passes through.
+     */
+    IMPORTED_FILE
+  }
+
+  /**
+   * Restores the schema-level members a schema object carries beside {@code "types"}: triggers, materialized views,
+   * continuous aggregates, user-defined function libraries and module extensions.
+   * <p>
+   * Extracted so that every reader of a {@link #toJSON()} object restores the same set. It was inline in the
+   * schema-file loader and nowhere else, so the JSONL importer - which reads the very object the JSONL exporter
+   * writes - read only {@code settings} and {@code types} out of it: a database restored from a JSONL export came
+   * back with no triggers, no materialized views, no continuous aggregates, no {@code DEFINE FUNCTION} libraries and
+   * no extension configuration, with no warning and an import that reported success (issue #7886).
+   * <p>
+   * Every member is restored under its own {@code try}: one that cannot be recreated is logged and counted, and the
+   * rest still land. Aborting is the wrong trade in both callers - on open it would reset a schema over one bad
+   * trigger, and on import it would discard a restore that has already rebuilt every type.
+   * <p>
+   * The caller MUST have registered the types first: a trigger binds to a type by name, and a materialized view to
+   * its backing type and its sources.
+   *
+   * @param root   the schema object, as written by {@link #toJSON()}. Members it does not carry are left alone (or
+   *               cleared, see {@link SchemaMemberSource}); none of the five is mandatory.
+   * @param source where that object came from, which settles both whether to replace or merge and whether the
+   *               members in it are privileged to install themselves. See {@link SchemaMemberSource}.
+   *
+   * @return how many members could not be restored, for a caller that reports warnings
+   */
+  public synchronized int restoreSchemaMembersFromJSON(final JSONObject root, final SchemaMemberSource source) {
+    // The schema file IS the database's own state: what it names is already installed, so re-reading it replaces
+    // rather than merges. An imported file is a second database's state arriving into a live one, which keeps
+    // whatever the export did not name.
+    final boolean replaceExisting = source == SchemaMemberSource.SCHEMA_FILE;
+
+    int failures = 0;
+
+    // LOAD TRIGGERS
+    // Dropped and repopulated on a schema-file read, the way the four members below already were. A bare
+    // triggers.clear() would NOT have been the equivalent and is why this was left out when the blocks sat inline:
+    // a trigger owns a listener adapter registered on its type's event registry, so forgetting the map entry
+    // without unregistering leaves the trigger FIRING while invisible to the schema. dropTrigger() pairs the two,
+    // and so does this. Without it a trigger deleted from schema.json by hand survived a reload, while the same
+    // edit to a materialized view or an extension took effect.
+    if (replaceExisting) {
+      for (final String triggerName : new ArrayList<>(triggers.keySet()))
+        unregisterTriggerListener(triggerName);
+      triggers.clear();
+    }
+    if (root.has("triggers")) {
+      final JSONObject triggersJSON = root.getJSONObject("triggers");
+      for (final String triggerName : triggersJSON.keySet()) {
+        final JSONObject triggerJSON = triggersJSON.getJSONObject(triggerName);
+        try {
+          final Trigger trigger = TriggerImpl.fromJSON(triggerJSON);
+
+          // ARBITRARY HOST CODE ARRIVING IN A FILE EARNS THE PERMISSION IT WOULD HAVE EARNED AT THE KEYBOARD.
+          // createTrigger() gates a JAVASCRIPT or JAVA trigger on UPDATE_SECURITY and not UPDATE_SCHEMA for the
+          // reason written there - the executor binds the real database into the script, so the trigger can mint a
+          // server admin (GHSA-38pf-6hp2-pxww). Running an import needs only UPDATE_SCHEMA, so restoring one of
+          // these without the gate would hand that escalation straight back through a JSONL file. Refused per
+          // trigger and counted, not thrown: the rest of the restore is legitimate and has already landed.
+          if (source == SchemaMemberSource.IMPORTED_FILE
+              && (trigger.getActionType() == Trigger.ActionType.JAVASCRIPT
+              || trigger.getActionType() == Trigger.ActionType.JAVA)) {
+            try {
+              database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SECURITY);
+            } catch (final SecurityException e) {
+              ++failures;
+              LogManager.instance().log(this, Level.SEVERE,
+                  "Refused trigger '%s' from the imported schema: a %s trigger runs with the engine's own "
+                      + "privileges, so installing one requires security-admin (UPDATE_SECURITY) and not merely "
+                      + "UPDATE_SCHEMA. Everything else in the import is unaffected", null, triggerName,
+                  trigger.getActionType());
+              continue;
+            }
+          }
+
+          // CHECKED BEFORE THE MAP IS TOUCHED. Putting first and warning after left an entry no listener backed,
+          // which saveConfiguration() then wrote to schema.json: the name stayed occupied, so createTrigger()
+          // refused a later valid definition of it, and on the merge path a live, correctly registered trigger of
+          // that name was replaced by one that could never fire.
+          if (!existsType(trigger.getTypeName())) {
+            ++failures;
+            LogManager.instance().log(this, Level.WARNING,
+                "Cannot register trigger '%s' because type '%s' does not exist",
+                null, triggerName, trigger.getTypeName());
+
+            // Recorded only when the name is free, which on the replace path it always is - the sweep above just
+            // emptied the map - so a trigger whose type is merely absent right now keeps its definition across the
+            // reload instead of being silently dropped from the schema on the next save.
+            if (!triggers.containsKey(trigger.getName()))
+              triggers.put(trigger.getName(), trigger);
+            continue;
+          }
+
+          // A trigger of this name already installed is being REPLACED by this one, not joined by it - the map
+          // holds one entry per name either way. The sweep above covers that on the replace path; on the MERGE
+          // path (an import into a database with a trigger of its own by that name) nothing did, and the put
+          // below would have left the previous adapter registered on ITS type's event registry with nothing
+          // pointing at it any more: firing on every matching record, unreachable even to dropTrigger(), which
+          // would only ever find the newer one. Redundant after the sweep and harmless there - the adapter is
+          // already gone, so this returns immediately.
+          unregisterTriggerListener(trigger.getName());
+
+          triggers.put(trigger.getName(), trigger);
+          registerTriggerListener(trigger);
+
+        } catch (final Exception e) {
+          ++failures;
+          LogManager.instance().log(this, Level.SEVERE,
+              "Error loading trigger '%s': %s", e, triggerName, e.getMessage());
+        }
+      }
+    }
+
+    // Load materialized views
+    // On a schema-file read, always clear and re-populate to keep in sync - taking the refresh resources of every
+    // view down first, for the reason the trigger sweep above does: an INCREMENTAL view holds listeners on its
+    // source types and a PERIODIC one holds a scheduled task, and neither goes away with the map entry.
+    if (replaceExisting) {
+      for (final String viewName : new ArrayList<>(materializedViews.keySet()))
+        unregisterMaterializedViewRefresh(viewName);
+      materializedViews.clear();
+    }
+    if (root.has("materializedViews")) {
+      final JSONObject mvJSON = root.getJSONObject("materializedViews");
+      for (final String viewName : mvJSON.keySet()) {
+        // What was installed under this name before the restore touched it, so a replacement that fails halfway
+        // can be undone rather than left as the registered view. Null on the replace path, where the sweep above
+        // has already emptied the map.
+        final MaterializedViewImpl replaced = materializedViews.get(viewName);
+
+        try {
+          final JSONObject viewDef = mvJSON.getJSONObject(viewName);
+          final MaterializedViewImpl view = MaterializedViewImpl.fromJSON(database, viewDef);
+
+          // Same replacement rule as the trigger above, and the same merge-path hole: a same-named view already
+          // installed has its own listeners and schedule, and the put below is the only thing that used to happen
+          // to it - leaving the old instance maintaining itself off records the new one is also maintaining.
+          unregisterMaterializedViewRefresh(viewName);
+
+          materializedViews.put(viewName, view);
+
+          installMaterializedViewRefresh(view);
+
+          // Crash recovery: if status is BUILDING, it was interrupted
+          if (MaterializedViewStatus.BUILDING.name().equals(view.getStatus()))
+            view.setStatus(MaterializedViewStatus.STALE);
+        } catch (final Exception e) {
+          ++failures;
+          LogManager.instance().log(this, Level.SEVERE, "Error loading materialized view '%s': %s", e, viewName,
+              e.getMessage() != null ? e.getMessage() : e.toString());
+
+          // UNDONE, not left half-installed. The failure can come from registering the listeners themselves -
+          // MaterializedViewBuilder.registerListeners walks the source types and raises on the first one the
+          // target does not have, after the earlier ones are already registered - and by then the view this one
+          // replaced has had its own resources taken down. Logging and moving on would leave the name mapped to a
+          // view that is refreshed by nothing, which reads as a working view and is not one.
+          unregisterMaterializedViewRefresh(viewName);
+
+          if (replaced != null) {
+            materializedViews.put(viewName, replaced);
+            try {
+              installMaterializedViewRefresh(replaced);
+            } catch (final Exception restoreFailure) {
+              LogManager.instance().log(this, Level.SEVERE,
+                  "Could not reinstate the materialized view '%s' the failed restore replaced: it stays registered "
+                      + "but is no longer refreshed, and a REFRESH MATERIALIZED VIEW reinstalls it", restoreFailure,
+                  viewName);
+            }
+          } else
+            materializedViews.remove(viewName);
+        }
+      }
+    }
+
+    // Load continuous aggregates
+    if (replaceExisting)
+      continuousAggregates.clear();
+    if (root.has("continuousAggregates")) {
+      final JSONObject caJSON = root.getJSONObject("continuousAggregates");
+      for (final String caName : caJSON.keySet()) {
+        try {
+          final JSONObject caDef = caJSON.getJSONObject(caName);
+          final ContinuousAggregateImpl ca = ContinuousAggregateImpl.fromJSON(database, caDef);
+          continuousAggregates.put(caName, ca);
+
+          // Crash recovery: if status is BUILDING, it was interrupted
+          if (MaterializedViewStatus.BUILDING.name().equals(ca.getStatus()))
+            ca.setStatus(MaterializedViewStatus.STALE);
+        } catch (final Exception e) {
+          ++failures;
+          LogManager.instance().log(this, Level.SEVERE, "Error loading continuous aggregate '%s': %s", e, caName,
+              e.getMessage() != null ? e.getMessage() : e.toString());
+        }
+      }
+    }
+
+    // Load user-defined function libraries (DEFINE FUNCTION, issue #5121). Only persistable libraries (js/sql/cypher)
+    // are stored, so drop any previously loaded persistable library and rebuild from the schema file, while keeping
+    // libraries registered programmatically from native Java code (getLanguage() == null).
+    if (replaceExisting)
+      functionLibraries.values().removeIf(l -> l.getLanguage() != null);
+    if (root.has("functions")) {
+      final JSONObject functionsJSON = root.getJSONObject("functions");
+      for (final String libraryName : functionsJSON.keySet()) {
+        try {
+          final JSONObject libraryJSON = functionsJSON.getJSONObject(libraryName);
+          final String language = libraryJSON.getString("language");
+
+          // THE SIBLING OF THE TRIGGER GATE ABOVE, AND THE SAME RULE. DefineFunctionStatement requires
+          // UPDATE_SECURITY on top of UPDATE_SCHEMA for LANGUAGE js, because a polyglot function is arbitrary host
+          // code a later SELECT can invoke (GHSA-vwjc-v7x7-cm6g, over the scripting gate GHSA-48qw introduced).
+          // A library arriving in a file is the same code by another route, so it earns the same permission.
+          // SQL and Cypher libraries are declarative and keep the schema-level protection, exactly as that
+          // statement treats them.
+          if (source == SchemaMemberSource.IMPORTED_FILE && "js".equalsIgnoreCase(language)) {
+            try {
+              database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SECURITY);
+            } catch (final SecurityException e) {
+              ++failures;
+              LogManager.instance().log(this, Level.SEVERE,
+                  "Refused function library '%s' from the imported schema: a '%s' function is host code a query can "
+                      + "invoke, so installing one requires security-admin (UPDATE_SECURITY) and not merely "
+                      + "UPDATE_SCHEMA. Everything else in the import is unaffected", null, libraryName, language);
+              continue;
+            }
+          }
+
+          final FunctionLibraryDefinition library = FunctionLibraryFactory.createLibrary(database, libraryName, language);
+
+          final JSONObject funcsJSON = libraryJSON.getJSONObject("functions");
+          for (final String funcName : funcsJSON.keySet()) {
+            final JSONObject funcJSON = funcsJSON.getJSONObject(funcName);
+            final String[] params = funcJSON.getJSONArray("parameters").toListOfStrings().toArray(new String[0]);
+            library.registerFunction(FunctionLibraryFactory.createFunction(database, language, funcName,
+                funcJSON.getString("code"), params));
+          }
+
+          functionLibraries.put(libraryName, library);
+        } catch (final Exception e) {
+          ++failures;
+          LogManager.instance().log(this, Level.SEVERE, "Error loading function library '%s': %s", e, libraryName,
+              e.getMessage());
+        }
+      }
+    }
+
+    // Load extensions (module-specific configuration). Under its own try like the four members above, and not
+    // because a malformed entry is expected - ArcadeDB's own exporter is the only writer - but because the
+    // alternative on the import path is an uncaught throw AFTER every type and every record has already landed,
+    // which is the "abort everything over one bad member" outcome this whole method is shaped to avoid.
+    if (replaceExisting)
+      extensions.clear();
+    if (root.has("extensions")) {
+      final JSONObject extJSON = root.getJSONObject("extensions");
+      for (final String extName : extJSON.keySet()) {
+        try {
+          extensions.put(extName, extJSON.getJSONObject(extName));
+        } catch (final Exception e) {
+          ++failures;
+          LogManager.instance().log(this, Level.SEVERE, "Error loading extension '%s': %s", e, extName,
+              e.getMessage() != null ? e.getMessage() : e.toString());
+        }
+      }
+    }
+
+    return failures;
+  }
+
+  /**
+   * Installs the refresh resources a registered materialized view needs: an INCREMENTAL view's listeners on its
+   * source types, a PERIODIC view's scheduled task. The counterpart of {@link #unregisterMaterializedViewRefresh},
+   * and the view must already be in {@code materializedViews} so that one can find it again to take them down.
+   */
+  private void installMaterializedViewRefresh(final MaterializedViewImpl view) {
+    if (view.getRefreshMode() == MaterializedViewRefreshMode.INCREMENTAL)
+      MaterializedViewBuilder.registerListeners(this, view, view.getSourceTypeNames());
+
+    if (view.getRefreshMode() == MaterializedViewRefreshMode.PERIODIC)
+      getMaterializedViewScheduler().schedule(database, view);
+  }
+
+  /**
+   * Takes down the refresh resources a registered materialized view owns - an INCREMENTAL view's listeners on its
+   * source types, a PERIODIC view's scheduled task - leaving the view itself in the map for the caller to replace or
+   * remove.
+   * <p>
+   * What {@link #dropMaterializedView} tears down, minus the backing type: that type holds the view's rows, and a
+   * definition replacing this one names the same type, so dropping it here would delete the data the restore is
+   * about to adopt. A view of that name that is not registered is a no-op.
+   */
+  private void unregisterMaterializedViewRefresh(final String viewName) {
+    final MaterializedViewImpl previous = materializedViews.get(viewName);
+    if (previous == null)
+      return;
+
+    if (materializedViewScheduler != null)
+      materializedViewScheduler.cancel(viewName);
+
+    if (previous.getRefreshMode() == MaterializedViewRefreshMode.INCREMENTAL)
+      MaterializedViewBuilder.unregisterListeners(this, previous);
   }
 
   public synchronized void saveConfiguration() {
