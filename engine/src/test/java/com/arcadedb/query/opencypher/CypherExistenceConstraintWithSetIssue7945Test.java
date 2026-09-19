@@ -20,9 +20,11 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.schema.Type;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.AfterEach;
@@ -370,6 +372,42 @@ class CypherExistenceConstraintWithSetIssue7945Test {
       assertThat(countRecords()).isEqualTo(1);
       assertThat(unconsumed.hasNext()).isTrue();
     }
+  }
+
+  /**
+   * A record can be provisional on one property and break a rule that is not deferrable at all on another. The
+   * value-shaped constraints (here a max) still fail at the write, and the provisional record the statement had
+   * already created is taken back on the way out - the discard path rather than the end-of-statement check.
+   */
+  @Test
+  void aProvisionalRecordIsTakenBackWhenANonDeferrableConstraintFails() {
+    database.getSchema().getType("Record").createProperty("score", Type.INTEGER).setMax("10");
+
+    assertThatThrownBy(() -> database.command("cypher", "CREATE (n:Record {id: 'r12'}) SET n.score = 99"))
+        .isInstanceOf(CommandExecutionException.class)
+        .rootCause().isInstanceOf(ValidationException.class)
+        .hasMessageContaining("score");
+
+    assertThat(countRecords()).isZero();
+  }
+
+  /**
+   * An embedded document has no identity and never will, so it can never be completed by a later clause and must
+   * not be deferred by one. Its owner being a pattern element is what would otherwise put its validation inside
+   * the pattern-create region.
+   */
+  @Test
+  void anEmbeddedDocumentStillValidatesEagerly() {
+    database.getSchema().createDocumentType("Tag").createProperty("label", Type.STRING).setMandatory(true);
+    database.getSchema().getType("Record").createProperty("tag", Type.EMBEDDED).setOfType("Tag");
+
+    assertThatThrownBy(() -> database.transaction(() -> {
+      final MutableDocument record = database.newVertex("Record").set("id", "r13").set("orgId", "org");
+      record.set("tag", record.newEmbeddedDocument("Tag", "tag"));
+      record.save();
+    })).isInstanceOf(ValidationException.class).hasMessageContaining("Tag.label");
+
+    assertThat(countRecords()).isZero();
   }
 
   private long countRecords() {
