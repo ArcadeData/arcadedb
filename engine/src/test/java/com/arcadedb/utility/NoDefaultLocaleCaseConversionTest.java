@@ -156,6 +156,20 @@ class NoDefaultLocaleCaseConversionTest {
 
     // the banned call NAMED inside a string literal folds nothing, so it is not an offender
     assertThat(offendersIn("Fixture.java", "  final String hint = \"pass a Locale to .toUpperCase()\";")).isEmpty();
+
+    // a TEXT BLOCK is a string across several lines: its content is not code...
+    assertThat(offendersIn("Fixture.java",
+        "  final String doc = \"\"\"\n      call keyword.toUpperCase() with a Locale\n      \"\"\";")).isEmpty();
+
+    // ...and the call CHAINED onto its closing delimiter is. This is the direction that matters: reading the
+    // block's newline as "the literal ended" left the closing delimiter re-opening one, and everything after it
+    // scored as string - so a real offender walked straight through the ban (PR #7942 review).
+    assertThat(offendersIn("Fixture.java",
+        "  final String k = \"\"\"\n      hello\n      \"\"\".toUpperCase();")).hasSize(1);
+
+    // code after a closed text block is judged normally again
+    assertThat(offendersIn("Fixture.java",
+        "  final String d = \"\"\"\n      x\n      \"\"\";\n  final String k = keyword.toUpperCase();")).hasSize(1);
   }
 
   /**
@@ -203,12 +217,13 @@ class NoDefaultLocaleCaseConversionTest {
 
     boolean inString = false;
     boolean inChar = false;
+    boolean inTextBlock = false;
     boolean inLineComment = false;
     boolean inBlockComment = false;
 
     for (int i = 0; i < text.length(); i++) {
       final char c = text.charAt(i);
-      isCode[i] = !inString && !inChar && !inLineComment && !inBlockComment;
+      isCode[i] = !inString && !inChar && !inTextBlock && !inLineComment && !inBlockComment;
 
       if (inLineComment) {
         if (c == '\n')
@@ -224,6 +239,22 @@ class NoDefaultLocaleCaseConversionTest {
         continue;
       }
 
+      if (inTextBlock) {
+        // a text block ends only at its closing delimiter; the newline resync below must not touch it
+        if (c == '"' && i + 2 < text.length() && text.charAt(i + 1) == '"' && text.charAt(i + 2) == '"') {
+          isCode[++i] = false;
+          isCode[++i] = false;
+          inTextBlock = false;
+        }
+        continue;
+      }
+      if (!inString && !inChar && c == '"' && i + 2 < text.length() && text.charAt(i + 1) == '"'
+          && text.charAt(i + 2) == '"') {
+        isCode[++i] = false;
+        isCode[++i] = false;
+        inTextBlock = true;
+        continue;
+      }
       if ((inString || inChar) && c == '\\') {
         // an escape consumes the next character, so a literal \" does not end the literal
         if (i + 1 < text.length())
