@@ -280,6 +280,32 @@ class CypherExistenceConstraintWithSetIssue7945Test {
   }
 
   /**
+   * The same bulk shape on {@code CREATE} rather than {@code MERGE}, which is the harder one: {@code CreateStep}
+   * batches (OPENCYPHER_BULK_CREATE_BATCH_SIZE defaults to 20,000) and runs every pattern creation of a batch
+   * before yielding a single row downstream, so all of these records are provisional at once, before any of them
+   * reaches the {@code SET} that completes it. The pending set therefore grows to the batch rather than to the
+   * pull window, which is exactly the case the sweep has to stay linear for.
+   */
+  @Test
+  void aBulkCreateThenSetCompletesEveryRow() {
+    final List<Map<String, Object>> rows = new ArrayList<>();
+    for (int i = 0; i < 3_000; i++)
+      rows.add(Map.of("id", "batch-" + i, "org", "org-" + i));
+
+    final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
+
+    database.command("cypher", "UNWIND $rows AS r CREATE (n:Record {id: r.id}) SET n.orgId = r.org",
+        Map.of("rows", rows)).close();
+
+    stopwatch.assertGaveUpWithin(60_000, "a linear end-of-statement sweep from a quadratic one");
+
+    assertThat(countRecords()).isEqualTo(rows.size());
+    try (final ResultSet rs = database.query("cypher", "MATCH (n:Record) WHERE n.orgId IS NULL RETURN count(n) AS c")) {
+      assertThat(rs.next().<Number>getProperty("c").longValue()).isZero();
+    }
+  }
+
+  /**
    * The mistake the deferral makes possible: a bulk write that never supplies the required property at all. Every
    * row stays provisional to the end, which is the one shape where the pending set grows instead of draining.
    * <p>
