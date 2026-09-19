@@ -205,6 +205,12 @@ public class LocalSchema implements Schema {
    * resolve its staged components first, so the schema rebuild resolves the components it has just built exactly as
    * it did when they went into the live maps directly. Every by-name accessor on this class goes through those two.
    */
+  // Concurrent rather than plain maps although only one thread at a time uses them: SUCCESSIVE loads run on
+  // different threads (a database open, then the Ratis apply thread on a follower), and nothing orders the clear
+  // beginStagedPublication() does against the clear the previous load's endStagedPublication() did - that write
+  // happens before `stagingThread = null`, which the next load never reads before clearing. A plain HashMap would
+  // make that a data race on the map's own internals for no gain: these maps are touched once per component of one
+  // load, which is not a path where the difference is measurable.
   private final       Map<String, IndexInternal>             stagedIndexMap                = new ConcurrentHashMap<>();
   private final       Map<String, LocalBucket>               stagedBucketMap               = new ConcurrentHashMap<>();
 
@@ -450,9 +456,22 @@ public class LocalSchema implements Schema {
    * {@code finally} so a load that throws leaves nothing staged behind.
    */
   private void beginStagedPublication() {
+    // ONE load at a time per schema, and the refusal is loud on purpose. Two loads sharing these maps would have the
+    // second clear the first one's staged components and take `stagingThread` from under it, so the first would
+    // commit nothing and the schema would come up missing whatever it had staged - silently, on a database that
+    // opened. Concurrent loads already corrupt each other through the `files.clear()` at the head of load(), so this
+    // is not a new restriction; it is the first place that says so out loud rather than leaving the next caller to
+    // find out from a schema that lost half its indexes.
+    final Thread current = Thread.currentThread();
+    final Thread other = stagingThread;
+    if (other != null)
+      throw new IllegalStateException(
+          "A schema load is already in flight on thread '" + other.getName() + "'"
+              + (other == current ? " (this one)" : "") + ": loads of the same schema cannot overlap");
+
     stagedIndexMap.clear();
     stagedBucketMap.clear();
-    stagingThread = Thread.currentThread();
+    stagingThread = current;
   }
 
   /**
@@ -1962,7 +1981,7 @@ public class LocalSchema implements Schema {
 
     try {
       final JSONObject json = new JSONObject();
-      for (final Map.Entry<String, LocalBucket> b : bucketMap.entrySet())
+      for (Map.Entry<String, LocalBucket> b : bucketMap.entrySet())
         json.put(b.getKey(), b.getValue().getStatistics());
 
       try (final FileWriter file = new FileWriter(new File(directory, STATISTICS_FILE_NAME))) {

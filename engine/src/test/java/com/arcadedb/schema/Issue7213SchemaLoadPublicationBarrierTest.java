@@ -40,6 +40,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for issue #7213.
@@ -124,6 +125,14 @@ class Issue7213SchemaLoadPublicationBarrierTest extends TestHelper {
       assertThat(schema.existsBucket(blockingBucketName))
           .as("the bucket lookup map publishes on the same barrier as the index one")
           .isFalse();
+      // getIndexes()/getBuckets() carry their own merge logic, so they get their own assertion rather than being
+      // assumed to follow existsIndex()/existsBucket().
+      assertThat(schema.getIndexes())
+          .as("the bulk index accessor must not expose the staged components either")
+          .isEmpty();
+      assertThat(schema.getBuckets())
+          .as("nor must the bulk bucket accessor")
+          .isEmpty();
     } finally {
       hook.release.countDown();
       loader.join(TimeUnit.MINUTES.toMillis(1));
@@ -222,6 +231,37 @@ class Issue7213SchemaLoadPublicationBarrierTest extends TestHelper {
   }
 
   /**
+   * The {@code finally} on both load paths is a guarantee, not an implementation detail: a load that dies inside the
+   * hook pass must leave the staging window closed, or the next load refuses to start and the database never comes
+   * back. Nothing else in the suite kills a load between {@code beginStagedPublication()} and its commit.
+   */
+  @Test
+  @Timeout(value = 2, unit = TimeUnit.MINUTES)
+  void aLoadThatThrowsInsideTheWindowLeavesNothingStaged() throws Exception {
+    final LocalSchema schema = schema();
+    final String blockingBucketName = firstBucketNameOf(schema);
+
+    final BlockingHook hook = installBlockingBucket(schema, blockingBucketName);
+    hook.failInsteadOfBlocking = true;
+    try {
+      assertThatThrownBy(() -> schema.load(ComponentFile.MODE.READ_WRITE, true))
+          .as("the fixture must actually break this load")
+          .isInstanceOf(IllegalStateException.class)
+          .hasMessageContaining("issue7213");
+    } finally {
+      restoreRealBuckets(schema);
+    }
+
+    // The window has to be closed, which a second load is the only honest way to observe: beginStagedPublication()
+    // refuses outright when one is still open.
+    schema.load(ComponentFile.MODE.READ_WRITE, true);
+
+    assertThat(schema.existsIndex(INDEX_NAME)).isTrue();
+    assertThat(schema.existsBucket(blockingBucketName)).isTrue();
+    assertThat(neighbors()).containsExactly("a");
+  }
+
+  /**
    * Registers a bucket factory handler that answers a blocking component for {@code bucketName} and the real
    * {@link LocalBucket} for every other bucket file, so only one component in the load stalls.
    */
@@ -241,6 +281,8 @@ class Issue7213SchemaLoadPublicationBarrierTest extends TestHelper {
     private final String         bucketName;
     private final CountDownLatch entered = new CountDownLatch(1);
     private final CountDownLatch release = new CountDownLatch(1);
+    /** Throw out of the schema hook instead of parking in it, for the load-dies-mid-window case. */
+    private volatile boolean     failInsteadOfBlocking;
 
     private BlockingHook(final String bucketName) {
       this.bucketName = bucketName;
@@ -275,6 +317,8 @@ class Issue7213SchemaLoadPublicationBarrierTest extends TestHelper {
     @Override
     public void onAfterSchemaLoad() {
       hook.entered.countDown();
+      if (hook.failInsteadOfBlocking)
+        throw new IllegalStateException("issue7213 deliberate failure inside the schema hook pass");
       try {
         hook.release.await(1, TimeUnit.MINUTES);
       } catch (final InterruptedException e) {
