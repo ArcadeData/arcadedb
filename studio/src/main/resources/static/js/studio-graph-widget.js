@@ -942,7 +942,17 @@ function showExpandNodeModal(rid, outRows, inRows) {
       return;
     }
 
+    // A non-positive ceiling means "no ceiling" to the command builder, which is what the three unfiltered
+    // radial commands rely on - but a 0 TYPED INTO A FIELD LABELLED "max elements" means the opposite, and
+    // silently expanding without a limit is the one reading the operator did not ask for. Refused here rather
+    // than reinterpreted in the builder, so the builder's contract stays what the other callers need
+    // (PR #7939 review).
     const limit = parseInt($("#expandNodeLimit").val(), 10);
+    if (!(limit > 0)) {
+      globalNotify("Expand", "Max elements must be at least 1", "info");
+      return;
+    }
+
     const grouped = groupSelectedEdgeTypes(selected);
 
     // One request per direction rather than one per type: outE('A','B') is a single traversal, and the graph

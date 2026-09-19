@@ -140,8 +140,22 @@ final class BoltHandlerProbe {
     return Enum.valueOf((Class<Enum>) stateEnum, name);
   }
 
+  /**
+   * Sets one of the executor's private fields.
+   * <p>
+   * Reflection is brittle to a rename by construction, so the failure is made to SAY so: a bare
+   * {@code NoSuchFieldException} deep in a test helper reads like the probe is broken, when what happened is
+   * that {@code BoltNetworkExecutor} was refactored and this file has to follow it (PR #7939 review).
+   */
   private static void set(final Object target, final String field, final Object value) throws Exception {
-    final java.lang.reflect.Field f = BoltNetworkExecutor.class.getDeclaredField(field);
+    final java.lang.reflect.Field f;
+    try {
+      f = BoltNetworkExecutor.class.getDeclaredField(field);
+    } catch (final NoSuchFieldException e) {
+      throw new NoSuchFieldException("BoltNetworkExecutor has no field '" + field + "' any more. This probe drives "
+          + "the private request handlers directly, so a rename there has to be mirrored here - update the field "
+          + "name rather than deleting the assertion it feeds");
+    }
     f.setAccessible(true);
     f.set(target, value);
   }
