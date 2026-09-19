@@ -245,6 +245,11 @@ public class TransactionContext implements Transaction {
   // Whether the 1st phase in progress ends by replaying the queued index operations - always true for an
   // originating commit. See isIndexChangesReplayed().
   private       boolean                              indexChangesReplayed  = true;
+  /**
+   * Why this transaction can no longer be published, or {@code null} while it still can. See
+   * {@link #setRollbackOnly}.
+   */
+  private       String                               rollbackOnlyReason          = null;
   // KEEPS TRACK OF MODIFIED RECORD IN TX. AT 1ST PHASE COMMIT TIME THE RECORD ARE SERIALIZED AND INDEXES UPDATED. THIS DEFERRING IMPROVES SPEED ESPECIALLY
   // WITH GRAPHS WHERE EDGES ARE CREATED AND CHUNKS ARE UPDATED MULTIPLE TIMES IN THE SAME TX
   // TODO: OPTIMIZE modifiedRecordsCache STRUCTURE, MAYBE JOIN IT WITH UPDATED RECORDS?
@@ -335,6 +340,10 @@ public class TransactionContext implements Transaction {
     if (status != STATUS.BEGUN)
       throw new TransactionException("Transaction already in commit phase");
 
+    if (rollbackOnlyReason != null)
+      throw new TransactionException("Transaction cannot be committed: " + rollbackOnlyReason
+          + ". Roll it back and retry");
+
     final TransactionPhase1 phase1 = commit1stPhase(true);
     if (phase1 != null) {
       commit2ndPhase(phase1);
@@ -424,6 +433,32 @@ public class TransactionContext implements Transaction {
    * properties compare equal, and only one of them is being retracted. Searched from the END, where the record
    * just registered is, so the case this exists for costs one comparison.
    */
+  /**
+   * Refuses this transaction's future {@link #commit()}, because something has left it in a state that must not
+   * be published (issue #7467, CodeRabbit on PR #7936). The transaction stays ACTIVE and usable for reading and
+   * for rolling back - a direct rollback from here would tear it down underneath a caller that owns it and may
+   * be part way through its own unwinding.
+   * <p>
+   * The one caller is {@code LocalDatabase.undoRecordWrite}, when the physical free of a record whose indexing
+   * refused it could not run: the body is then in the bucket and its index entries are gone, which is exactly
+   * the three-way disagreement the undo exists to prevent. A warning would leave the caller free to commit it;
+   * this makes the commit fail instead, and the caller's own error handling reach the rollback that does
+   * discard the whole thing.
+   * <p>
+   * The FIRST reason wins, so the message names what went wrong rather than what noticed it last. Cleared by
+   * {@link #reset()}, which every conclusion of a transaction routes through, so the context is reusable for the
+   * next {@code begin()}.
+   */
+  public void setRollbackOnly(final String reason) {
+    if (rollbackOnlyReason == null)
+      rollbackOnlyReason = reason;
+  }
+
+  /** Why {@link #commit()} will refuse this transaction, or {@code null} when it will not. */
+  public String getRollbackOnlyReason() {
+    return rollbackOnlyReason;
+  }
+
   public void unregisterNewRecord(final Record record) {
     for (int i = newRecords.size() - 1; i >= 0; i--)
       if (newRecords.get(i) == record) {
@@ -2378,6 +2413,8 @@ public class TransactionContext implements Transaction {
     remotelyCommitted = false;
     phase2WalAppended = false;
     status = STATUS.INACTIVE;
+    // The refusal belonged to the transaction that is ending here, not to the context, which begin() reuses.
+    rollbackOnlyReason = null;
 
     if (explicitLockedFiles != null) {
       database.getTransactionManager().unlockFilesInOrder(explicitLockedFiles, getRequester());

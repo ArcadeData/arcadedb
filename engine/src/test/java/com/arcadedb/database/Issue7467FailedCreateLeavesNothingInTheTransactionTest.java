@@ -20,6 +20,7 @@ package com.arcadedb.database;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
@@ -211,6 +212,46 @@ class Issue7467FailedCreateLeavesNothingInTheTransactionTest extends TestHelper 
     try (final ResultSet rs = database.query("sql", "SELECT FROM " + TYPE + " WHERE name = 'dup'")) {
       assertThat(rs.stream().count()).isEqualTo(1);
     }
+  }
+
+  /**
+   * What happens when the retraction itself cannot run (CodeRabbit on PR #7936). If the physical free of the
+   * refused record fails, the body stays in the bucket while its index entries have just been taken away -
+   * exactly the state the undo exists to prevent - so the transaction must not be committable afterwards. A
+   * warning alone would have left the caller free to publish it.
+   * <p>
+   * The refusal is asserted on the mechanism rather than on a forced disk failure: the alternative is a mock
+   * bucket, which would pin the shape of {@code undoRecordWrite}'s call rather than the property that matters,
+   * and the property is that a transaction told it cannot be published refuses its own commit and says why.
+   */
+  @Test
+  void aTransactionWhoseRetractionFailedCannotBeCommitted() {
+    database.begin();
+    try {
+      database.newDocument(TYPE).set("name", "in-flight").save();
+
+      final TransactionContext transaction = ((DatabaseInternal) database).getTransaction();
+      transaction.setRollbackOnly("record #1:0 could not be taken back after its indexing refused it");
+      // The first reason wins, so the message names what went wrong rather than what noticed last.
+      transaction.setRollbackOnly("something noticed later");
+
+      assertThatThrownBy(database::commit)
+          .isInstanceOf(TransactionException.class)
+          .hasMessageContaining("could not be taken back")
+          .hasMessageContaining("Roll it back");
+
+      // Still usable for the rollback the caller's error handling is about to reach, and not before.
+      assertThat(database.isTransactionActive()).isTrue();
+    } finally {
+      if (database.isTransactionActive())
+        database.rollback();
+    }
+
+    assertThat(database.countType(TYPE, false)).as("nothing of the refused transaction may be durable").isZero();
+
+    // The refusal belonged to that transaction, not to the context the next begin() reuses.
+    database.transaction(() -> database.newDocument(TYPE).set("name", "after").save());
+    assertThat(database.countType(TYPE, false)).isEqualTo(1);
   }
 
   /**
