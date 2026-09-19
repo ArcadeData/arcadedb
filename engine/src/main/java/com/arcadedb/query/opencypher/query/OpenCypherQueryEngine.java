@@ -412,7 +412,9 @@ public class OpenCypherQueryEngine implements QueryEngine {
       return result;
     } catch (final RuntimeException | Error e) {
       // A statement that fails for any other reason leaves nothing provisional behind either: the records it
-      // created and never completed are taken back without a second exception hiding this one.
+      // created and never completed are taken back without a second exception hiding this one. This also catches
+      // the ValidationException check() itself raises, which lands here having already emptied the pending set -
+      // so the discard below is a no-op then, not a second deletion of the records check() just removed.
       if (deferredChecks != null)
         deferredChecks.discard();
       throw e;
