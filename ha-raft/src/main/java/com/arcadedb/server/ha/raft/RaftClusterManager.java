@@ -61,11 +61,17 @@ class RaftClusterManager {
    *       another one that ran to t&#8776;150 s.</li>
    * </ul>
    * Both are closed: the membership change now runs on its own short-retry client
-   * ({@link RaftHAServer#newMembershipClient()}), so the deadline is looked at every couple of seconds instead
-   * of every minute, and {@link #setConfigurationWithRetry} refuses to START an attempt that the longest attempt
-   * so far says cannot finish inside what is left. The probe in {@code RaftHAServer.ensurePeerReachable}
-   * (issue #7514) still keeps the common mistake - naming a server that is not running - from reaching any of
-   * this at all.
+   * ({@link RaftHAServer#newMembershipClient()}), which caps one call at THREE attempts rather than sixty, and
+   * {@link #setConfigurationWithRetry} refuses to START an attempt that the longest attempt so far says cannot
+   * finish inside what is left. The probe in {@code RaftHAServer.ensurePeerReachable} (issue #7514) still keeps
+   * the common mistake - naming a server that is not running - from reaching any of this at all.
+   * <p>
+   * <b>What one attempt can cost, in the units an operator has to budget in.</b> The common failure here is a
+   * synchronous rejection, which comes back in milliseconds; the worst case is an RPC that hangs at the
+   * transport, and there the ceiling is three attempts of {@link RaftHAServer#CLIENT_REQUEST_TIMEOUT_MS} plus
+   * the two sleeps between them - about 31 seconds, not "a couple". So a budget set below that buys one attempt
+   * and the report, which is the right trade for a load-balancer idle timeout but is worth knowing rather than
+   * discovering.
    */
   static final long DEFAULT_SET_CONFIGURATION_BUDGET_MS = 90_000;
 
@@ -460,10 +466,10 @@ class RaftClusterManager {
    */
   private void setConfigurationWithRetry(final Supplier<SetConfigurationRequest.Arguments> argsSupplier,
       final String operationDesc, final String hint) {
-    // A client of this operation's own, so one setConfiguration call is bounded by MEMBERSHIP_RETRY_POLICY
-    // (a couple of seconds) instead of by the shared client's RetryLimited(60, 1s) - which is what made the
-    // deadline below unobservable for a whole minute at a time (issue #7561). Null on a harness that never
-    // started a Raft server, and then the shared client is the only one there is.
+    // A client of this operation's own, so one setConfiguration call is bounded by MEMBERSHIP_RETRY_POLICY -
+    // three attempts, so at worst three RPC timeouts - instead of by the shared client's RetryLimited(60, 1s),
+    // which is what made the deadline below unobservable for a whole minute at a time (issue #7561). Null on a
+    // harness that never started a Raft server, and then the shared client is the only one there is.
     //
     // Built inside the try so a failure to build it is reported as the ConfigurationException every other
     // failure of this method is (review of PR #7941): a caller catching that type must not have an unwrapped
