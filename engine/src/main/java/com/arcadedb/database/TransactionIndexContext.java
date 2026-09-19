@@ -724,8 +724,12 @@ public class TransactionIndexContext {
    * here can differ, which is issue #6105's shape applied to the read side. Resolving by identity closes it: a
    * lane belongs to the index object that opened it whatever that index ends up being called.
    * <p>
-   * The name lookup is tried first and answers every ordinary call, so the scan below is reached only by an index
-   * that really did rename itself mid-transaction, and walks one entry per index touched by the transaction.
+   * The name lookup answers every call that has a lane, so an index that has not renamed itself never pays for
+   * more than that. The fallback walk is reached in two cases and costs one entry per index this transaction has
+   * touched so far: an index that really did rename itself mid-transaction, and - the common one - an index this
+   * transaction has not written to at all, which walks the other indexes' lanes before answering {@code null}.
+   * That is O(distinct indexes touched), not O(1), and it is why this is not free for a search issued from a
+   * transaction that has written elsewhere.
    *
    * @return the lane, or {@code null} when this transaction has queued nothing for {@code index}
    */

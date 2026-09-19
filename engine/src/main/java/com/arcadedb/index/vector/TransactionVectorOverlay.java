@@ -71,11 +71,14 @@ import java.util.TreeMap;
  * scored on the vector the transaction wrote. That is also the order {@code commit()} applies them in: it replays
  * every {@code REMOVE} of the lane before any {@code ADD} of it, regardless of the order they were queued in.
  * <p>
- * <b>Cost.</b> {@link #open} returns {@code null} - no allocation at all - for a search on a thread holding no
- * transaction, one that has not written to this index, or one still in a status where nothing is queued. That is
- * every read-only query, which is the shape the hot path is tuned for. When there is something to resolve, the cost
- * is one pass over the entries this transaction queued for this index and one {@link VectorFloat} conversion per
- * pending row, both bounded by the transaction's own write set rather than by the size of the index.
+ * <b>Cost.</b> {@link #open} returns {@code null}, with no allocation at all, for a search on a thread holding no
+ * transaction, one still in a status where nothing is queued, or one that has not written to this index. The first
+ * two answer in O(1); the third costs the lane lookup described on
+ * {@code TransactionIndexContext.getIndexKeys(IndexInternal)}, which walks the lanes of the other indexes this
+ * transaction has touched before answering {@code null}. When there IS something to resolve, the cost is one pass
+ * over the entries this transaction queued for this index plus one {@link VectorFloat} conversion per pending row -
+ * bounded by the transaction's own write set rather than by the size of the index, but paid again on every search,
+ * with no amortization guard of the kind the committed-side delta scan has. See issue #7967.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -138,6 +141,12 @@ final class TransactionVectorOverlay {
 
         // ADD and REPLACE, the two operations commit() turns into a put. A REPLACE also retires the RID it
         // replaced, which commit() removes separately.
+        //
+        // REPLACE cannot actually reach a dense vector index today: TransactionIndexContext.addIndexKeyLock only
+        // promotes an ADD to a REPLACE under `index.isUnique()`, and LSMVectorIndex.isUnique() returns a
+        // hard-coded false. It is handled anyway because this method's contract is to model what commit() applies,
+        // and commit()'s vector branch reads `ADD || REPLACE` - so the two stay one rule rather than two that have
+        // to be kept in step.
         if (entry.oldRid != null) {
           if (superseded == null)
             superseded = new HashSet<>();

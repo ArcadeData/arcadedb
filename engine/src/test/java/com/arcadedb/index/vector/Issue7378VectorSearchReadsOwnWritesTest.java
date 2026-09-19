@@ -249,9 +249,14 @@ class Issue7378VectorSearchReadsOwnWritesTest extends TestHelper {
    * The same record's embedding rewritten twice before the search. Both rewrites queue their own {@code ADD}, and
    * {@code TransactionIndexContext.commit()} replays every one of them, so what the committed index ends up
    * holding for that RID is whatever those two adds make of it. The overlay is a model of that replay and must
-   * therefore give the same answer as the commit here too - which is the only claim this test makes. Whether the
-   * engine ought to collapse two adds of one RID into one vector is a separate question about the commit path,
-   * not about the overlay, and this test is what would notice if the two ever stopped agreeing.
+   * therefore give the same answer as the commit here too - which is the only claim this test makes.
+   * <p>
+   * It deliberately does not assert WHICH of the two rewrites survives. Both adds stay in the lane under their own
+   * {@code ComparableKey} - a queued {@code REMOVE} carries a placeholder zero vector, so it never coalesces with
+   * the add it retires - and the survivor is whichever the replay reaches last in that map's order, which is a
+   * hash of the vector rather than the order the statements ran in. That is a property of the commit path, it
+   * predates the overlay, and it is filed as #7971; the overlay reproduces it on purpose so the two agree. When
+   * #7971 is fixed this test is what will notice if only one of the two sides moves.
    */
   @Test
   void twoRewritesOfOneRowAgreeWithWhatTheCommitLeavesBehind() {
