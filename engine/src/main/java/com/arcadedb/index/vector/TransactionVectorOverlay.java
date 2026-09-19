@@ -207,6 +207,12 @@ final class TransactionVectorOverlay {
    * {@code committedDelta} with this transaction's view applied: its superseded rows dropped, its pending rows
    * appended. Returns the argument itself - no copy - when the overlay changes nothing about it, which is the case
    * whenever the transaction has only written rows the buffer never held.
+   * <p>
+   * <b>The result is read-only to the caller.</b> In the no-op cases it is the index's own {@code deltaVectors}
+   * snapshot or this overlay's {@code pending} list, not a defensive copy, so mutating it would corrupt the
+   * buffer every other search reads or this overlay's own rows. Every caller today only iterates it - the scans
+   * read entries, and {@code ScoredCandidateCursor}/{@code GroupedSearchState} index back into it by position -
+   * and a caller that needs to modify the merged view has to copy it first.
    */
   List<DeltaVectorEntry> augment(final List<DeltaVectorEntry> committedDelta) {
     if (committedDelta.isEmpty())
