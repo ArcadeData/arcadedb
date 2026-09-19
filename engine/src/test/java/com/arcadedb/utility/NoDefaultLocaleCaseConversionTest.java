@@ -167,6 +167,11 @@ class NoDefaultLocaleCaseConversionTest {
     assertThat(offendersIn("Fixture.java",
         "  final String k = \"\"\"\n      hello\n      \"\"\".toUpperCase();")).hasSize(1);
 
+    // an escaped triple quote inside a text block is CONTENT, not the closing delimiter: reading it as the close
+    // ends the block early and puts everything after it out of step
+    assertThat(offendersIn("Fixture.java",
+        "  final String s = \"\"\"\n      a \\\"\"\" b\n      \"\"\".toUpperCase();")).hasSize(1);
+
     // code after a closed text block is judged normally again
     assertThat(offendersIn("Fixture.java",
         "  final String d = \"\"\"\n      x\n      \"\"\";\n  final String k = keyword.toUpperCase();")).hasSize(1);
@@ -240,6 +245,12 @@ class NoDefaultLocaleCaseConversionTest {
       }
 
       if (inTextBlock) {
+        // an escape inside a text block consumes the next character, so the `\"""` the JLS prescribes for three
+        // literal quotes carries only TWO unescaped ones and does not close the block (PR #7942 review)
+        if (c == '\\' && i + 1 < text.length()) {
+          isCode[++i] = false;
+          continue;
+        }
         // a text block ends only at its closing delimiter; the newline resync below must not touch it
         if (c == '"' && i + 2 < text.length() && text.charAt(i + 1) == '"' && text.charAt(i + 2) == '"') {
           isCode[++i] = false;

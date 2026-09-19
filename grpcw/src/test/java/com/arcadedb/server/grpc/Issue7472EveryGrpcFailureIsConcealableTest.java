@@ -500,6 +500,12 @@ class Issue7472EveryGrpcFailureIsConcealableTest {
         continue;
       }
       if (inTextBlock) {
+        // an escape inside a text block consumes the next character, so the `\"""` the JLS prescribes for three
+        // literal quotes carries only TWO unescaped ones and does not close the block (PR #7942 review)
+        if (c == '\\' && i + 1 < text.length()) {
+          isCode[++i] = false;
+          continue;
+        }
         // a text block ends only at its closing delimiter; the newline resync below must not touch it
         if (c == '"' && i + 2 < text.length() && text.charAt(i + 1) == '"' && text.charAt(i + 2) == '"') {
           isCode[++i] = false;
