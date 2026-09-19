@@ -83,7 +83,7 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
   /**
    * The columns whose "no value" is something other than zero, which is the only work a FRESH row needs: a
    * new {@code long[]} is already zero everywhere else. Empty - the common all-integer schema - means a fresh
-   * row costs nothing at all, as it did before issue #7743 (claude-review on PR #7747).
+   * row costs nothing at all, as it did before issue #7743 (code review on PR #7747).
    */
   private final int[]              absentMarkerColumns;
   private       long[]             timestamps;
@@ -172,7 +172,7 @@ public class TimeSeriesBatch implements TimeSeriesRowSource {
       // "Already zero" is an invariant of this class, not just of the JVM: a fresh row is one at an index no
       // fill has reached, and every backing array it can live in is freshly ALLOCATED - by the constructor or by
       // grow(), which copies into a new array rather than reusing one. A growth path that ever recycled storage
-      // would have to fill these rows in full, like the stale branch above (claude-review on PR #7747).
+      // would have to fill these rows in full, like the stale branch above (code review on PR #7747).
       for (final int c : absentMarkerColumns)
         rawValues[c][row] = nullRaw[c];
     return row;

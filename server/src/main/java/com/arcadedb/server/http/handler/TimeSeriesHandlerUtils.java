@@ -249,7 +249,7 @@ final class TimeSeriesHandlerUtils {
    * than 19 - so the guard passes and the method goes on to materialise a 2^31-digit integer. The mirror image,
    * {@code "1E-2147483647"}, drives {@code setScale(0)} into {@code bigTenToThe(2147483647)}. Either is hundreds
    * of megabytes of allocation from a thirteen-byte request body, on an endpoint whose whole purpose here is
-   * input hardening (claude-review on PR #7730). The scale test and the {@code long} subtraction below run first
+   * input hardening (code review on PR #7730). The scale test and the {@code long} subtraction below run first
    * and answer both in constant time, so {@code longValueExact()} is only ever reached for a value of at most 19
    * integer digits.
    * <p>
@@ -269,7 +269,7 @@ final class TimeSeriesHandlerUtils {
     // On the RAW length, not the trimmed one: getBigDecimal parses the text as it arrived, and its parser
     // refuses whitespace outright, so a value that trimming would have brought under the cap is refused a moment
     // later anyway. Trimming here only made the guard look like it accepted something it does not
-    // (claude-review on PR #7730).
+    // (code review on PR #7730).
     if (received instanceof String text && text.length() > MAX_NUMERIC_TEXT_LENGTH)
       throw wrongType(path, "a number", received,
           new NumberFormatException("longer than " + MAX_NUMERIC_TEXT_LENGTH + " characters"));
@@ -540,12 +540,12 @@ final class TimeSeriesHandlerUtils {
    * Renders a failed {@link TimeSeriesGateway#resolveForRead} as the 400 the TimeSeries read endpoints answer
    * with. The three cases stay distinct: a type that IS a TimeSeries type whose storage failed to load used to
    * share the "is not a TimeSeries type" message, which sent an operator chasing the wrong cause (issue #6356
-   * follow-up, claude-review on PR #6779).
+   * follow-up, code review on PR #6779).
    * <p>
    * All three bodies are built with {@link JSONObject} rather than string concatenation, because all three embed
    * text the CALLER supplied - the type name it asked for, and for the unavailable case a file path - and a double
    * quote or a backslash in any of it would turn raw concatenation into a body no client can parse. The first two
-   * still concatenated after the third was fixed (claude-review on PR #7680).
+   * still concatenated after the third was fixed (code review on PR #7680).
    */
   static ExecutionResponse resolutionError(final String typeName, final TypeResolution resolved) {
     final String message = switch (resolved.failure()) {
@@ -597,7 +597,7 @@ final class TimeSeriesHandlerUtils {
      * that {@code queryAscending} reads as unlimited - the right answer by the wrong route, and one that reads
      * like a bug the first time anyone audits it. It is named instead, exactly as {@code PostTimeSeriesQueryHandler}
      * names it for the same arithmetic: such a ceiling IS unlimited in practice, because no {@code List} can hold
-     * that many rows (claude-review on PR #7720).
+     * that many rows (code review on PR #7720).
      * <p>
      * The off-by-one is what separates a complete response from a truncated one, so it is pinned rather than
      * merely argued: {@code Issue7663GrafanaPrometheusRowCeilingIT}'s

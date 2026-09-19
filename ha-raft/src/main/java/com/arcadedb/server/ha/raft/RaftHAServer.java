@@ -2042,7 +2042,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * Package-private, unlike its plain-HTTP twin: the only caller is the SSL cluster fixture patching in the
    * ports each node actually bound, and nothing outside this package reads either map today
    * ({@code grep -rn 'getHttpAddresses()'} finds no hit outside {@code com.arcadedb.server.ha.raft}), so there
-   * is no reason to widen the public surface for a second one (claude-review on PR #7838). Read an endpoint
+   * is no reason to widen the public surface for a second one (code review on PR #7838). Read an endpoint
    * through {@link #getPeerHttpsAddress} or {@link PeerDialAddress} instead, which apply the guards this raw
    * map has none of.
    */

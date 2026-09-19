@@ -973,11 +973,10 @@ git push -u origin feat/4892-bolt-compat-matrix-publish
 Then open the PR (via `gh` or the GitHub MCP) with:
 - Title: `docs(#4892): publish the Bolt driver compatibility matrix (page + badge)`
 - Body: what it adds (renderer, page, badge, README badge, nightly publish job), how it works (consumes #4891/#5115's `bolt-compat-matrix.json` + `spec.yaml`, fallback baseline), verification (unit tests in `bolt-conformance-spec.yml`, dry-run), `Closes #4892`, and a note that this completes epic #4882 Group D so **#4882 can be closed** by the maintainer.
-- End the PR body with the Claude Code generation footer (PR bodies only, not code commits).
 
 - [ ] **Step 4: Post-PR review loop**
 
-Run the review cycle at least four times: wait for Claude and Gemini reviews on the PR, then respond to each using the `superpowers:receiving-code-review` skill (verify each point technically before acting; do not perform agreement). Between cycles, keep the tracking doc lean (Symptom/Root cause/Fix/Tests/Impact) and never commit session tracking files to the repo root.
+Run the review cycle at least four times: wait for the automated reviews on the PR, then respond to each using the `superpowers:receiving-code-review` skill (verify each point technically before acting; do not perform agreement). Between cycles, keep the tracking doc lean (Symptom/Root cause/Fix/Tests/Impact) and never commit session tracking files to the repo root.
 
 ---
 

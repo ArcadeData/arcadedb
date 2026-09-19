@@ -115,7 +115,7 @@ class PostTimeSeriesWriteHandlerIT extends BaseGraphServerTest {
   }
 
   /**
-   * Regression for issue #6356's follow-up (claude-review on PR #6779): a TimeSeries type IS the right kind of
+   * Regression for issue #6356's follow-up (code review on PR #6779): a TimeSeries type IS the right kind of
    * type, it just failed to load its storage - conflating that with "wrong type" sent an operator debugging via
    * this endpoint chasing the wrong cause. Reuses the {@code flipByteAt} + close/reopen reproduction already
    * established at the engine level in {@code Issue6340TimeSeriesCheckDatabaseTest}, driven through the actual

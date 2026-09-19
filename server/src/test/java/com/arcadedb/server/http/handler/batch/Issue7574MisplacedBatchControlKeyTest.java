@@ -139,7 +139,7 @@ class Issue7574MisplacedBatchControlKeyTest {
    * A control key carrying a NON-STRING value. The empty-elision above tests {@code instanceof String}, so a
    * number or a boolean skips it and reaches the refusal - which is the behaviour we want and the branch a
    * later edit could most easily invert by loosening the test to "is falsy". Pinned because it is an easy case
-   * to get wrong and nothing else covers it (claude-review on PR #7749).
+   * to get wrong and nothing else covers it (code review on PR #7749).
    */
   @Test
   void jsonlRefusesAMisplacedControlKeyCarryingANumberOrABoolean() {

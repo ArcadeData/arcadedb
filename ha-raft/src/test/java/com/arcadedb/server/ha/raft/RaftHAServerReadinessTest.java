@@ -201,7 +201,7 @@ class RaftHAServerReadinessTest {
     assertThat(isReadyForTrafficState(true, true, true, 5000, 100, 0, false, true, true)).isTrue();
   }
 
-  // isEmptyLogInMultiPeerCluster: the boundary claude-review caught (PR #7605) - index 0 is
+  // isEmptyLogInMultiPeerCluster: the boundary the code review caught (PR #7605) - index 0 is
   // RaftLog.LEAST_VALID_LOG_INDEX (the leader's first real committed entry), not "empty". An earlier
   // revision used commitIndex <= 0, which none of the isReadyForTrafficState cases above could catch since
   // they all pass emptyLogInMultiPeerCluster pre-reduced rather than feeding a real commitIndex through the

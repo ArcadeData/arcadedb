@@ -66,9 +66,7 @@ git commit -m "fix(#5208): bump engine ANTLR runtime to 4.13.2
 
 Regenerates SQL/Cypher parsers to v4 ATN so the engine converges with the
 antlr-runtime 4.10+ pulled by Spring 6 / Hibernate 6, resolving the
-'Could not deserialize ATN with version 3' clash for embedded engine users.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+'Could not deserialize ATN with version 3' clash for embedded engine users."
 ```
 
 ---
@@ -147,9 +145,7 @@ git add gremlin/pom.xml
 git commit -m "fix(#5208): relocate ANTLR into a private package in the Gremlin shaded jar
 
 Keeps TinkerPop's precompiled 4.9.1 parser on its required v3 ATN runtime while
-letting the engine ship plain antlr 4.13.2, so both coexist on one classpath.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+letting the engine ship plain antlr 4.13.2, so both coexist on one classpath."
 ```
 
 ---
@@ -352,9 +348,7 @@ Expected: both `arcadedb-engine` and `arcadedb-gremlin-*-shaded.jar` on the clas
 
 ```bash
 git add pom.xml gremlin-it/pom.xml gremlin-it/src/test/java/com/arcadedb/gremlin/antlr/AntlrCoexistenceIT.java
-git commit -m "test(#5208): gremlin-it module proving engine 4.13.2 + gremlin 4.9.1 coexistence
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "test(#5208): gremlin-it module proving engine 4.13.2 + gremlin 4.9.1 coexistence"
 ```
 
 ---
@@ -499,9 +493,7 @@ git commit -m "test(#5208): run gremlin suite against the shaded jar in gremlin-
 
 Skips test execution in the gremlin module (test-jar still built) and executes the
 compiled tests in gremlin-it via dependenciesToScan, so engine 4.13.2 and gremlin's
-relocated 4.9.1 coexist during tests.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+relocated 4.9.1 coexist during tests."
 ```
 
 ---
@@ -542,9 +534,7 @@ Expected: `package/pom.xml` still references `arcadedb-gremlin` with `<classifie
 
 ```bash
 git add ATTRIBUTIONS.md NOTICE
-git commit -m "docs(#5208): note ANTLR 4.13.2 (engine) / 4.9.1 (shaded gremlin) attribution
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git commit -m "docs(#5208): note ANTLR 4.13.2 (engine) / 4.9.1 (shaded gremlin) attribution"
 ```
 
 ---

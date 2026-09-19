@@ -38,7 +38,7 @@ import java.util.List;
  * when they agree on a TOTAL ORDER over the resources, and they were originally written to agree by walking
  * {@code database.getSchema().getTypes()} in the order it happened to return.
  * <p>
- * That order is not a guarantee (claude-review on PR #7474). {@code LocalSchema.getTypes()} is built from a
+ * That order is not a guarantee (code review on PR #7474). {@code LocalSchema.getTypes()} is built from a
  * {@code ConcurrentHashMap}'s {@code values()}, whose iteration order is bucket order; a table resize - which a
  * {@code CREATE ... TYPE} can trigger at any moment - moves an entry to either bucket {@code i} or {@code i + n},
  * so two types already present can come back in the OPPOSITE relative order afterwards. Two snapshots taken

@@ -31,7 +31,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * decompressors emit columns in whatever order they were asked for them, so the positions to keep are computed
  * against that order and not against the caller's array. A scan test can only ever exercise the shapes its fixture
  * happens to produce - each of them widening by exactly one column - which is why this pins the shapes it cannot
- * (claude-review on PR #7747).
+ * (code review on PR #7747).
  *
  * @see <a href="https://github.com/ArcadeData/arcadedb/issues/7733">issue #7733</a>
  *

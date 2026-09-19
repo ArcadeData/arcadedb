@@ -209,7 +209,7 @@ class Issue7741AuditItemsTest {
    * And a node that is BOTH says each thing once. The message used to name the quarantine's cause and then offer
    * the read floor as an alternative - "A, or clamped at a read floor because a snapshot install did not bring it
    * up to date" - which for a quarantine caused BY an incomplete install described one event as two
-   * (claude-review on PR #7747).
+   * (code review on PR #7747).
    */
   @Test
   void aQuarantineAndAReadFloorAreEachSaidOnce() {

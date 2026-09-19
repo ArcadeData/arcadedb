@@ -83,7 +83,7 @@ class Issue7322LatestBoundedTest extends TestHelper {
   /**
    * An INDEPENDENT oracle: the exhaustive ascending scan, which is the implementation {@code latest} used
    * before #7322. Deliberately not {@code queryDescending(..., 1, ...)} - that is the expression under test,
-   * and comparing the two would assert that A equals A (claude-review on PR #7376). The two implementations
+   * and comparing the two would assert that A equals A (code review on PR #7376). The two implementations
    * agree on every selection whose newest timestamp is unique, which is what the callers below construct, so
    * this is a real cross-check between two different ways of finding the same row.
    * <p>

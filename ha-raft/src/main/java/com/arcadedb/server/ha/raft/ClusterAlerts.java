@@ -275,7 +275,7 @@ public class ClusterAlerts {
    * <p>
    * Only what is TRUE of this node, rather than the two possibilities joined by "or" that the message used to
    * list: a node quarantined on an incomplete snapshot install read as though it had two separate problems,
-   * because the read-floor clause describes that same install (claude-review on PR #7747).
+   * because the read-floor clause describes that same install (code review on PR #7747).
    */
   private static String staleDataReason(final LocalResyncState state) {
     final boolean quarantined = !state.divergenceCauses().isEmpty();

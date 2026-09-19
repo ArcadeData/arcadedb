@@ -95,7 +95,7 @@ public class PostSecuritySeedHandler extends AbstractServerHttpHandler {
   @Override
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
       final JSONObject payload) {
-    // Before checkRootUser, which dereferences the user (claude-review on PR #7854). A request that carries
+    // Before checkRootUser, which dereferences the user (code review on PR #7854). A request that carries
     // neither credentials nor the cluster-token pair arrives here with a null principal, and an NPE would
     // answer it 500 - this node is broken - for a request that is simply unauthenticated.
     if (user == null)
@@ -104,7 +104,7 @@ public class PostSecuritySeedHandler extends AbstractServerHttpHandler {
     checkRootUser(user);
 
     // AbstractServerHttpHandler hands a null payload for an absent or blank body, and everything below reads
-    // the request (claude-review on PR #7854). An empty POST is a well-formed request for the whole document
+    // the request (code review on PR #7854). An empty POST is a well-formed request for the whole document
     // set - no reason, no fingerprints - so it is answered rather than refused, and certainly not with the NPE
     // that would have reached the caller as a 500.
     final JSONObject request = payload != null ? payload : new JSONObject();
@@ -197,7 +197,7 @@ public class PostSecuritySeedHandler extends AbstractServerHttpHandler {
    * The {@code fingerprints} object of a request, or {@code null} when it names none.
    * <p>
    * {@code JSONObject.getJSONObject(name, default)} substitutes the default only for an ABSENT or null field; a
-   * field that is present and is not an object throws (claude-review on PR #7854). Turned into an
+   * field that is present and is not an object throws (code review on PR #7854). Turned into an
    * {@link IllegalArgumentException} here so the caller answers 400 - "your request is wrong" - rather than
    * letting it reach the exchange as a 500, which says this node is.
    * <p>

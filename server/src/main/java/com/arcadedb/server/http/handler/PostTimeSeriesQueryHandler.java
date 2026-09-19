@@ -273,12 +273,12 @@ public class PostTimeSeriesQueryHandler extends DatabaseAbstractHandler {
 
         // The shared helper, as the Grafana handler and the gRPC aggregation path already use: this was the last
         // site outside the gateway still hand-rolling the lookup, and therefore the last place the full-schema vs
-        // non-timestamp index conventions could be confused (claude-review on PR #7323).
+        // non-timestamp index conventions could be confused (code review on PR #7323).
         final int colIndex = TimeSeriesHandlerUtils.findColumnIndex(fieldName, columns);
 
         if (colIndex < 0)
           // JSONObject rather than concatenation: fieldName is caller text, and a double quote in it would turn a
-          // hand-built body into one no client can parse (claude-review on PR #7680).
+          // hand-built body into one no client can parse (code review on PR #7680).
           return TimeSeriesHandlerUtils.badRequest(
               new IllegalArgumentException("Field '" + fieldName + "' not found in type"));
 

@@ -1260,7 +1260,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * they all hold the same value - and it survives a restart, because it is on disk.</li>
    * </ul>
    * Neither is the document currently in force, and that is the point. Comparing against the LIVE document was the
-   * defect #7693 reports and, in its second form, what claude-review and CodeRabbit both caught on PR #7748:
+   * defect #7693 reports and, in its second form, what the code review and CodeRabbit both caught on PR #7748:
    * <ul>
    * <li>before the first replicated entry the live documents differ by construction - each node bootstraps its own
    * {@code root} with an independently salted password hash, so three nodes of a statically configured cluster (one

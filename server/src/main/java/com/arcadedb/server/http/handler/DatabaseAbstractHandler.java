@@ -344,7 +344,7 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
    * which THREAD the request is answered on and that one decides what the id RESOLVES to, so tightening one
    * without the other would answer a request on the IO thread and then block it on the session lock anyway, or
    * dispatch one that was never going to touch a session. A value that turns out not to resolve has by then
-   * cost a dispatch, which is the cheap half of the trade (claude-review on PR #7723).
+   * cost a dispatch, which is the cheap half of the trade (code review on PR #7723).
    */
   protected boolean carriesSessionId(final HttpServerExchange exchange) {
     final HeaderValues sessionId = exchange.getRequestHeaders().get(SESSION_ID_HEADER);
@@ -472,12 +472,12 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
    * value, so response splitting is not reachable - but a session id is a UUID, and anything that is not one is
    * a client that is already wrong, so nothing is lost by reducing what is echoed to the characters a UUID is
    * made of and a length no id exceeds. That also keeps an arbitrary caller-chosen string out of whatever reads
-   * these headers downstream, which is a log scraper as often as it is a client (claude-review on PR #7730).
+   * these headers downstream, which is a log scraper as often as it is a client (code review on PR #7730).
    */
   private static String sanitizedSessionId(final String sessionId) {
     // The common case by far is an id that needs nothing done to it - a UUID this server issued, echoed back by
     // a client whose session has since expired. Scanned first and returned UNCHANGED when it is already clean,
-    // so the ordinary degrade allocates nothing (claude-review on PR #7730).
+    // so the ordinary degrade allocates nothing (code review on PR #7730).
     final int length = sessionId.length();
     if (length <= MAX_ECHOED_SESSION_ID_LENGTH) {
       int i = 0;

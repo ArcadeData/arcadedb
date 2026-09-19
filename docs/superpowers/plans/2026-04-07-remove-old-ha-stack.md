@@ -124,9 +124,7 @@ git commit -m "feat(ha): create HAServerPlugin interface for HA abstraction
 
 Extract the public HA API (enums QUORUM, ELECTION_STATUS, SERVER_ROLE and
 key methods) into a stable interface in com.arcadedb.server. This will
-replace the concrete HAServer class as the return type of getHA().
-
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>"
+replace the concrete HAServer class as the return type of getHA()."
 ```
 
 ---
@@ -282,9 +280,7 @@ git add -A
 git commit -m "refactor(ha): move HAReplicatedDatabase to com.arcadedb.server package
 
 Relocate the shared interface out of the ha/ package (which will be
-deleted) into the server package. Update all consumer imports.
-
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>"
+deleted) into the server package. Update all consumer imports."
 ```
 
 ---
@@ -558,9 +554,7 @@ RaftHAPlugin now implements HAServerPlugin, providing all methods needed
 by server HTTP handlers, MCP tools, and test utilities. Added missing
 methods to RaftHAServer: getClusterName, getStats, getConfiguredServers,
 getLeaderName, getReplicaAddresses. Added shutdownRemoteServer (via HTTP)
-and disconnectCluster (closes Raft server).
-
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>"
+and disconnectCluster (closes Raft server)."
 ```
 
 ---
@@ -686,9 +680,7 @@ git commit -m "refactor(server): replace HAServer with HAServerPlugin in ArcadeD
 
 Change haServer field type and getHA() return type to HAServerPlugin.
 Add setHA() for plugin registration. Remove old HAServer construction
-and legacy ReplicatedDatabase wrapping - HA is now entirely plugin-driven.
-
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>"
+and legacy ReplicatedDatabase wrapping - HA is now entirely plugin-driven."
 ```
 
 ---
@@ -930,9 +922,7 @@ git commit -m "refactor(server): update HTTP handlers to use HAServerPlugin
 
 Replace HAServer, Leader2ReplicaNetworkExecutor, Replica2LeaderNetworkExecutor
 references with HAServerPlugin interface methods. Simplify remote shutdown,
-connect/disconnect cluster, and cluster status export.
-
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>"
+connect/disconnect cluster, and cluster status export."
 ```
 
 ---
@@ -1027,9 +1017,7 @@ git commit -m "refactor(server): update BackupTask, MCP tool, and PluginManager 
 
 Replace HAServer references with HAServerPlugin. Simplify PluginManager
 to auto-discover HA plugin whenever HA_ENABLED=true (no HA_IMPLEMENTATION
-check needed since Raft is the only implementation).
-
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>"
+check needed since Raft is the only implementation)."
 ```
 
 ---
@@ -1126,9 +1114,7 @@ git add test-utils/src/main/java/com/arcadedb/test/BaseGraphServerTest.java serv
 git commit -m "refactor(test): update test utilities to use HAServerPlugin
 
 Replace HAServer.SERVER_ROLE with HAServerPlugin.SERVER_ROLE.
-Remove HA_SERVER_ROLE config setting (Raft handles roles automatically).
-
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>"
+Remove HA_SERVER_ROLE config setting (Raft handles roles automatically)."
 ```
 
 ---
@@ -1195,9 +1181,7 @@ git commit -m "feat(ha): remove legacy HA implementation
 
 Delete 39 main classes and 27 test classes from the old custom HA stack
 in server/src/main/java/com/arcadedb/server/ha/. The Raft-based
-implementation in ha-raft/ is now the single HA stack.
-
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>"
+implementation in ha-raft/ is now the single HA stack."
 ```
 
 ---
@@ -1270,9 +1254,7 @@ HA_REPLICATION_INCOMING_PORTS from GlobalConfiguration. These were
 only used by the deleted legacy HA stack.
 
 Keep entries used by ha-raft (election timeouts, log segment size,
-append buffer) and network module (chunk max size, error retries, K8s).
-
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>"
+append buffer) and network module (chunk max size, error retries, K8s)."
 ```
 
 ---

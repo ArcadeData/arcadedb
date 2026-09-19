@@ -37,7 +37,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * What {@link ClusterSecuritySeedQuery} makes of each answer the leader can give (claude-review on PR #7854).
+ * What {@link ClusterSecuritySeedQuery} makes of each answer the leader can give (code review on PR #7854).
  * <p>
  * The dial itself is covered end-to-end over a real socket by {@code Issue7835HaTlsRemainingPeerDialsIT} and
  * {@code Issue7833SecurityCatchUpIT}, but both drive the happy path. What those cannot reach is the set of

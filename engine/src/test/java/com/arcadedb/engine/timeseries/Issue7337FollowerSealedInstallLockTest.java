@@ -251,7 +251,7 @@ class Issue7337FollowerSealedInstallLockTest extends TestHelper {
   }
 
   // ---------------------------------------------------------------------------------------------------------
-  // The total order both acquisitions rest on (claude-review on PR #7474).
+  // The total order both acquisitions rest on (code review on PR #7474).
   // ---------------------------------------------------------------------------------------------------------
 
   /**

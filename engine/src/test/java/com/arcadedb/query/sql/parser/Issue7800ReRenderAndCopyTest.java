@@ -102,7 +102,7 @@ class Issue7800ReRenderAndCopyTest extends AbstractParserTest {
   }
 
   /**
-   * claude-review follow-up (third round): {@code isRecognizedScheme} checked only the scheme prefix, not whether
+   * Code review follow-up (third round): {@code isRecognizedScheme} checked only the scheme prefix, not whether
    * the rest of the value could actually re-lex as the grammar's {@code FILE_URL} token ({@code URL_CHAR} excludes
    * space among other characters), so a directly-constructed {@code file://} URL containing a space would render
    * unquoted and fail to reparse.
@@ -116,7 +116,7 @@ class Issue7800ReRenderAndCopyTest extends AbstractParserTest {
   }
 
   /**
-   * claude-review follow-up (second round): the fallback quoting escaped only the quote character and the
+   * Code review follow-up (second round): the fallback quoting escaped only the quote character and the
    * backslash, but the grammar's STRING_LITERAL rule also forbids a raw CR/LF inside the literal body.
    */
   @Test
@@ -152,7 +152,7 @@ class Issue7800ReRenderAndCopyTest extends AbstractParserTest {
   /**
    * Item 3: TraverseStatement.copy() dropped skip. The grammar never exposes SKIP on TRAVERSE (only LIMIT does),
    * so this is set directly through the setter, exactly as the issue's own scope note says: latent, reachable only
-   * through the field/setter, not through SQL text. claude-review's third round also found that equals()/hashCode()
+   * through the field/setter, not through SQL text. The code review's third round also found that equals()/hashCode()
    * still omitted skip even after copy() was fixed to preserve it - the same "silently drop a field" class of bug
    * as DropIndexStatement.ifExists/UpdateStatement.returnCount above.
    */

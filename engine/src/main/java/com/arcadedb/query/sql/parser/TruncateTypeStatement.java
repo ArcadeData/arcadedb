@@ -169,14 +169,14 @@ public class TruncateTypeStatement extends DDLStatement {
       // lightweight; otherwise the record-backed ones keep the index-drop/rebuild path, and each lightweight one in
       // the same scope is cleared afterwards with a targeted DELETE FROM - the only way to reach edges that
       // allocate no record of their own (issue #7668).
-      // A LinkedHashSet, not a List (claude-review): ArcadeDB supports multiple inheritance, so a diamond
+      // A LinkedHashSet, not a List (code review): ArcadeDB supports multiple inheritance, so a diamond
       // hierarchy can reach the same lightweight type through two different parent branches, and de-duplicating
       // the collected names here is simpler than relying on a second DELETE FROM against an already-empty type
       // being harmless.
       final Set<String> lightweightTypeNames = new LinkedHashSet<>();
       final boolean hasRecordBackedTypeInScope = collectTruncationScope(typez, polymorphic, lightweightTypeNames);
       if (hasRecordBackedTypeInScope) {
-        // Two independently-committed operations in the non-transactional case, not one atomic unit (claude-review):
+        // Two independently-committed operations in the non-transactional case, not one atomic unit (code review):
         // truncateInOwnTransaction() commits its own drop/delete/rebuild transaction(s) before this method returns
         // to it, and truncateLightweightEdgeTypes() below opens and commits a separate one. If the second throws,
         // the type is left with its indexes already rebuilt but a lightweight subtype's edges still live - readable
@@ -189,7 +189,7 @@ public class TruncateTypeStatement extends DDLStatement {
           truncateInOwnTransaction(db, schema, typez);
       }
       // lightweightTypeNames covers the all-lightweight case too, not a separate List.of(typeName.toString())
-      // (claude-review): hasRecordBackedTypeInScope is false only when the whole scope is lightweight, so
+      // (code review): hasRecordBackedTypeInScope is false only when the whole scope is lightweight, so
       // collectTruncationScope already collected every entry that case needs, typeName's own quoted name included.
       // A descendant beyond the root here is a redundant no-op delete against an already-empty type, same as the
       // record-backed case above already tolerates, so one call covers both instead of two near-identical ones.
@@ -227,7 +227,7 @@ public class TruncateTypeStatement extends DDLStatement {
    * A lightweight entry can still have record-backed descendants of its own, and {@code DELETE FROM} being
    * unconditionally polymorphic means its statement here reaches those too - a SECOND time, since the
    * record-backed pass in {@link #executeDDL} already deleted them moments earlier through
-   * {@code truncateInOwnTransaction}/{@code truncateInCallerTransaction} (claude-review). That is a harmless
+   * {@code truncateInOwnTransaction}/{@code truncateInCallerTransaction} (code review). That is a harmless
    * no-op rather than a repeat of the #4352 tombstone hazard: this reach-through is a normal, index-maintained
    * {@code DELETE}, not the raw batched-delete-with-live-index this whole fix exists to avoid, and it is deleting
    * from an already-empty type.

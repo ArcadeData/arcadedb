@@ -66,7 +66,7 @@ class Issue7767HashIndexDecimalScaleTest extends TestHelper {
    * The upgrade consequence this fix carries, pinned rather than only described in the release note: an index
    * built on a type that already holds two scale-different spellings of one number is refused, because they ARE
    * one key. That is what "an existing UNIQUE_HASH index on a DECIMAL needs a rebuild, and the rebuild surfaces
-   * whatever duplicates the constraint had been letting through" means in practice (claude-review on PR #7855).
+   * whatever duplicates the constraint had been letting through" means in practice (code review on PR #7855).
    * <p>
    * NOT a regression test for the canonicalisation, and deliberately labelled so nobody later reads it as one: it
    * was checked against the unfixed {@code convertKeys} and passes there too, because the build-time duplicate

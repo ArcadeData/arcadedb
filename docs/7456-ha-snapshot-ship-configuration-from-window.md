@@ -170,7 +170,7 @@ https://github.com/ArcadeData/arcadedb/pull/7636
 
 ### Cycle 1 - `cae3035f`
 
-`claude` reviewed and found no functional bug and nothing blocking ("Solid, well-tested change with honest
+The code review found no functional bug and nothing blocking ("Solid, well-tested change with honest
 documentation of its residual risk surface"). CodeRabbit posted its "review in progress" placeholder and had
 still not produced a review 10 minutes later; it re-reviews on every push, so cycle 2 picks it up.
 
@@ -192,7 +192,7 @@ test guards behaviour on two rows that were already covered.
 
 ### Cycle 2 - `464a990c`
 
-`claude` reviewed again and raised nothing actionable: "I don't see functional bugs in the diff ... this is a
+The follow-up code review raised nothing actionable: "I don't see functional bugs in the diff ... this is a
 sign-off ask rather than a code issue". It confirmed the symlink asymmetry is now pinned by a test, that the
 manifest accounting stays correct on both branches, and that the latch-based lock tests match this repo's rule
 against wall-clock assertions. No changes applied, no new deferred items.

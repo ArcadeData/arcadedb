@@ -206,7 +206,7 @@ class Issue7668TruncateHeavyweightWithLightweightSubtypeTest extends TestHelper 
   }
 
   /**
-   * The {@code transactional == true} branch (claude-review): every other test in this class runs
+   * The {@code transactional == true} branch (code review): every other test in this class runs
    * {@code TRUNCATE TYPE ... POLYMORPHIC UNSAFE} with no transaction open, exercising only
    * {@code truncateInOwnTransaction()} joined with {@code truncateLightweightEdgeTypes(db, false, ...)}. Inside an
    * open transaction the statement instead joins it via {@code truncateInCallerTransaction()} and

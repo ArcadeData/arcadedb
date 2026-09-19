@@ -777,7 +777,7 @@ Expected: BUILD SUCCESS - no regression in the semantic validator path.
 git push -u origin feat/4890-bolt-type-fidelity
 ```
 
-Open a PR titled `feat(#4890): native Bolt Duration, Point, Path + semantic errors (#4997, #4998, #4999)`. Body: summarize the three components, list the flipped conformance cells (TYPE-003/011/012, ERR-002), state that full e2e verification runs in CI against the branch-built image, and note it partially closes #4890 and closes #4997/#4998/#4999. End with the Claude Code generated-with footer.
+Open a PR titled `feat(#4890): native Bolt Duration, Point, Path + semantic errors (#4997, #4998, #4999)`. Body: summarize the three components, list the flipped conformance cells (TYPE-003/011/012, ERR-002), state that full e2e verification runs in CI against the branch-built image, and note it partially closes #4890 and closes #4997/#4998/#4999.
 
 - [ ] **Step 4: Update tracking issue** - check the three child boxes and the "closes its scenario in spec.yaml" box on #4890.
 

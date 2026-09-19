@@ -1,6 +1,6 @@
 # Review notes - PR #7636, head `cae3035f`
 
-The `claude` review of `cae3035f` found no functional bug and nothing blocking. What follows is every item
+The code review of `cae3035f` found no functional bug and nothing blocking. What follows is every item
 it raised that was NOT applied, with the reason, plus the two it asked a human to sign off on.
 
 ## Applied in the follow-up commit (recorded here for completeness)

@@ -98,7 +98,7 @@ class RowBudgetTest {
   }
 
   /**
-   * The arithmetic edge claude-review found on PR #7720: {@code ceiling - used + 1} at a ceiling of
+   * The arithmetic edge the code review found on PR #7720: {@code ceiling - used + 1} at a ceiling of
    * {@link Integer#MAX_VALUE} would wrap to {@link Integer#MIN_VALUE}, which {@code queryAscending} reads as
    * unlimited - the right answer reached by an overflow. It is answered directly instead, and the budget still
    * counts: such a ceiling is unlimited in practice because no {@code List} can hold that many rows.

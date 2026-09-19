@@ -170,7 +170,7 @@ class Issue7743NullMeasurementIsAbsentTest extends TestHelper {
    * A DOUBLE column explicitly sealed with {@code DICTIONARY}, which is a supported pairing (issue #7689): the
    * codec stores the text form, so the null used to compact to {@code "0.0"} and now compacts to {@code "NaN"} -
    * which {@code ColumnDefinition.boxString} parses straight back to the marker. Fixed as a side effect rather
-   * than by its own code path, so it gets its own test (claude-review on PR #7747).
+   * than by its own code path, so it gets its own test (code review on PR #7747).
    */
   @Test
   void aDictionaryEncodedDoubleColumnCarriesTheMarkerToo() throws Exception {
@@ -222,7 +222,7 @@ class Issue7743NullMeasurementIsAbsentTest extends TestHelper {
 
   /**
    * At the SQL boundary "absent" is spelled {@code NULL} and nothing else - not NaN, which is the STORAGE
-   * spelling. Asserted strictly on purpose (claude-review on PR #7747): a helper that accepted either would let
+   * spelling. Asserted strictly on purpose (code review on PR #7747): a helper that accepted either would let
    * the marker leak into a result property without failing anything.
    */
   private static boolean isAbsent(final Object value) {
@@ -248,7 +248,7 @@ class Issue7743NullMeasurementIsAbsentTest extends TestHelper {
 
   /**
    * A pushed-down bucket that measured nothing answers {@code NULL}, the same word the generic aggregation and
-   * the raw-row projection answer - not the raw NaN marker (claude-review on PR #7747). A client that read NaN
+   * the raw-row projection answer - not the raw NaN marker (code review on PR #7747). A client that read NaN
    * from one plan and NULL from the other would be reading the PLAN rather than the data, which is the very
    * divergence this PR exists to remove.
    */

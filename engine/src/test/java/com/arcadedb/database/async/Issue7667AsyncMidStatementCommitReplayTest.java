@@ -182,7 +182,7 @@ class Issue7667AsyncMidStatementCommitReplayTest extends TestHelper {
   }
 
   /**
-   * The counterpart the detection must NOT match (claude-review on PR #7850): a task that ROLLS the shared batch
+   * The counterpart the detection must NOT match (code review on PR #7850): a task that ROLLS the shared batch
    * back mid-execution and begins another one has destroyed the buffered writes rather than published them, so
    * their submitters must still be told when the batch is abandoned. Keying the detection on the transaction's
    * commit count rather than on a begin counter is what keeps these two apart - a begin counter moves identically

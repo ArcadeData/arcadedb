@@ -68,7 +68,7 @@ public abstract class BaseRaftHASslTest extends BaseRaftHATest {
    * instance per {@code @Test} method, so an instance field would run {@code keytool} five times for a
    * five-method class, and a plain static field would hand the second suite in the JVM the first one's key
    * material - under the second suite's directory name, which is the confusing half. The key makes "once per
-   * class" true rather than merely intended (claude-review on PR #7838).
+   * class" true rather than merely intended (code review on PR #7838).
    * <p>
    * {@code RaftTestPki.create} deletes the directory's files before regenerating them, so two suites sharing
    * one key would race; sharing by key is what stops that as well.

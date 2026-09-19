@@ -26,7 +26,7 @@ import java.net.http.HttpRequest;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * The credential pair every peer-to-peer dial presents (claude-review on PR #7854).
+ * The credential pair every peer-to-peer dial presents (code review on PR #7854).
  * <p>
  * Issue #7837 was one dial spelling this out by hand and spelling it wrong, so the shape is worth pinning in
  * one place rather than once per dial: the two headers travel together or not at all, and a cluster with no

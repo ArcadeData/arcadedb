@@ -94,7 +94,7 @@ class Issue7465AtomicWriteDirectoryFsyncTest {
    * A path that cannot be forced is refused per call and says NOTHING about the rest of the JVM. Whether this
    * platform can fsync a directory at all is decided once from the platform itself, so one uncooperative
    * directory - a network mount, an unusual permission - cannot silently turn the guarantee off for every other
-   * database in the process (claude-review on PR #7855).
+   * database in the process (code review on PR #7855).
    */
   @Test
   void aPathThatCannotBeForcedIsRefusedWithoutDisablingTheFsyncForTheWholeJvm() throws Exception {

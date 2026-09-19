@@ -88,7 +88,7 @@ class MultiColumnAggregationResultTest {
    * {@code 0.0} for an unknown bucket in map mode, and for an unset {@code bucketUsed[idx]} in flat mode. Asserting
    * the bucket is really there is what makes the absent marker read afterwards evidence about the SEED that
    * {@code newInitializedValues()} laid down per request index, rather than about the bucket's existence
-   * (claude-review on PR #7662).
+   * (code review on PR #7662).
    */
   private static void assertBucketExists(final MultiColumnAggregationResult result) {
     assertThat(result.getBucketTimestamps())

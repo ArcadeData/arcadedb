@@ -109,7 +109,7 @@ class Issue7799LimitCountsDeliveredRowsTest {
   }
 
   /**
-   * claude-review follow-up: the wrapping {@code ResultSet} only forwarded {@code hasNext()}/{@code next()}/
+   * Code review follow-up: the wrapping {@code ResultSet} only forwarded {@code hasNext()}/{@code next()}/
    * {@code close()}, silently dropping whatever {@code getExecutionPlan()}/{@code getStatistics()} the upstream
    * batch carried - the same forwarding {@code TimeoutStep} already does for its own wrapper.
    */

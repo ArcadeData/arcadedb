@@ -271,7 +271,7 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
   }
 
   /**
-   * claude-review on PR #7680: the refusals that quote the caller's own text back at it have to stay PARSEABLE
+   * Code review on PR #7680: the refusals that quote the caller's own text back at it have to stay PARSEABLE
    * when that text contains a double quote. Two of them were still hand-built strings, so a type named
    * {@code we"ather} produced a body no client can read - which on an error path is worse than the error, because
    * the caller cannot even see what went wrong.
@@ -474,7 +474,7 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
   }
 
   /**
-   * Regression for issue #6356's follow-up (claude-review on PR #6779): a TimeSeries type whose engine failed to
+   * Regression for issue #6356's follow-up (code review on PR #6779): a TimeSeries type whose engine failed to
    * load must be told apart from "not a TimeSeries type" here too, on the query endpoint.
    */
   @Test
@@ -688,7 +688,7 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
   }
 
   /**
-   * Regression for issue #6356's follow-up (claude-review on PR #6779): a TimeSeries type whose engine failed to
+   * Regression for issue #6356's follow-up (code review on PR #6779): a TimeSeries type whose engine failed to
    * load must be told apart from "not a TimeSeries type" here too, on the latest-value endpoint.
    */
   @Test
