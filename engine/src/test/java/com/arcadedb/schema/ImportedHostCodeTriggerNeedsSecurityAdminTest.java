@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 
@@ -160,6 +161,79 @@ class ImportedHostCodeTriggerNeedsSecurityAdminTest {
       db.drop();
       FileUtils.deleteRecursively(new File(databasePath));
     }
+  }
+
+  /**
+   * The function-library sibling: {@code DefineFunctionStatement} gates {@code LANGUAGE js} on
+   * {@code UPDATE_SECURITY} for the same reason (GHSA-vwjc-v7x7-cm6g), so a {@code js} library arriving in an
+   * imported schema earns the same permission - it is the same host code by another route.
+   */
+  @Test
+  void aJavascriptFunctionLibraryInAnImportedSchemaIsRefusedWithoutSecurityAdmin() {
+    final String databasePath = DATABASE_PATH + "-js-function";
+    FileUtils.deleteRecursively(new File(databasePath));
+
+    final DatabaseFactory factory = new DatabaseFactory(databasePath).setSecurity(db -> {
+    });
+    final Database db = factory.create();
+    try {
+      final LocalSchema schema = db.getSchema().getEmbedded();
+
+      DatabaseContext.INSTANCE.getContext(db.getDatabasePath())
+          .setCurrentUser(userAllowing(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA));
+
+      final int failures = schema.restoreSchemaMembersFromJSON(
+          schemaDeclaringFunctionLibrary("evil", "js", "return 1;"),
+          LocalSchema.SchemaMemberSource.IMPORTED_FILE);
+
+      assertThat(failures).as("the refusal is reported to the caller").isEqualTo(1);
+      assertThat(schema.hasFunctionLibrary("evil"))
+          .as("a js library does not install itself on UPDATE_SCHEMA alone")
+          .isFalse();
+    } finally {
+      DatabaseContext.INSTANCE.getContext(db.getDatabasePath()).setCurrentUser(null);
+      db.drop();
+      FileUtils.deleteRecursively(new File(databasePath));
+    }
+  }
+
+  /** And a declarative SQL library, which is not host code, still restores. */
+  @Test
+  void anSqlFunctionLibraryInAnImportedSchemaStillRestoresOnUpdateSchema() {
+    final String databasePath = DATABASE_PATH + "-sql-function";
+    FileUtils.deleteRecursively(new File(databasePath));
+
+    final DatabaseFactory factory = new DatabaseFactory(databasePath).setSecurity(db -> {
+    });
+    final Database db = factory.create();
+    try {
+      final LocalSchema schema = db.getSchema().getEmbedded();
+
+      DatabaseContext.INSTANCE.getContext(db.getDatabasePath())
+          .setCurrentUser(userAllowing(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA));
+
+      assertThat(schema.restoreSchemaMembersFromJSON(
+          schemaDeclaringFunctionLibrary("plain", "sql", "SELECT 1"),
+          LocalSchema.SchemaMemberSource.IMPORTED_FILE))
+          .isZero();
+      assertThat(schema.hasFunctionLibrary("plain")).isTrue();
+    } finally {
+      DatabaseContext.INSTANCE.getContext(db.getDatabasePath()).setCurrentUser(null);
+      db.drop();
+      FileUtils.deleteRecursively(new File(databasePath));
+    }
+  }
+
+  private static JSONObject schemaDeclaringFunctionLibrary(final String libraryName, final String language,
+      final String code) {
+    return new JSONObject()
+        .put("functions", new JSONObject()
+            .put(libraryName, new JSONObject()
+                .put("language", language)
+                .put("functions", new JSONObject()
+                    .put("run", new JSONObject()
+                        .put("code", code)
+                        .put("parameters", new JSONArray())))));
   }
 
   /** A principal allowed exactly {@code allowed} on the database, and everything on every file. */
