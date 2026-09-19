@@ -23,6 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.engine.BackupDirectoryResolver;
 import com.arcadedb.engine.MaintenanceCoordinator;
 import com.arcadedb.engine.MaintenanceCoordinator.Operation;
 import com.arcadedb.engine.MaintenanceCoordinator.Reservation;
@@ -110,8 +111,13 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
         final Class<?> clazz = Class.forName("com.arcadedb.integration.backup.Backup");
         final Object backup = clazz.getConstructor(Database.class, String.class).newInstance(context.getDatabase(), targetUrl);
 
-        // ASSURE THE DIRECTORY CANNOT BE CHANGED
-        String backupDirectory = context.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_BACKUP_DIRECTORY);
+        // ASSURE THE DIRECTORY CANNOT BE CHANGED BY THE CALLER, AND THAT IT IS THE ONE DIRECTORY THIS SERVER
+        // KEEPS ITS BACKUPS IN (issue #7863). Reading arcadedb.server.backupDirectory directly is what put an
+        // archive written here out of reach of 'list backups', 'delete backup', 'restore backup' and retention
+        // pruning whenever config/backup.json named a different directory - the #7392 symptom on this entry
+        // point. With no server bound (embedded, or a RemoteDatabase) the global setting still decides.
+        String backupDirectory = BackupDirectoryResolver.resolveFor(context.getDatabase(),
+            context.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_BACKUP_DIRECTORY));
         LogManager.instance().log(this, Level.INFO,
             String.format("Backing up database '%s' to directory '%s'", context.getDatabase().getName(), backupDirectory));
         // EITHER SEPARATOR CONVENTION (ISSUE #7588)
