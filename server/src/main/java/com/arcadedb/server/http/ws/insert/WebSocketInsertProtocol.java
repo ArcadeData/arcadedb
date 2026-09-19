@@ -34,6 +34,7 @@ import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.UUID;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
 /**
@@ -98,9 +99,15 @@ public class WebSocketInsertProtocol {
    */
   private static final int    MAX_PENDING_FRAMES = 64;
   /** Channel attribute holding this connection's serial frame queue. */
-  private static final String FRAME_QUEUE = "arcadedb.ws.insert.frameQueue";
+  private static final String FRAME_QUEUE    = "arcadedb.ws.insert.frameQueue";
   /** Channel attribute recording that the connection-close hook is already registered. */
-  private static final String CLOSE_HOOK  = "arcadedb.ws.insert.closeHook";
+  private static final String CLOSE_HOOK     = "arcadedb.ws.insert.closeHook";
+  /**
+   * Channel attribute counting this connection's {@code start} frames that have been accepted for execution and
+   * have not resolved yet - into a session or into a refusal (issue #7909). See
+   * {@link #hasInsertFrameBudget(WebSocketChannel)}.
+   */
+  private static final String PENDING_STARTS = "arcadedb.ws.insert.pendingStarts";
 
   private final WebSocketInsertSessionManager sessionManager;
   private final ContextConfiguration          configuration;
@@ -134,11 +141,54 @@ public class WebSocketInsertProtocol {
 
     registerCloseHook(channel, channelId);
 
-    if (!frameQueue(channel).submit(() -> execute(channel, channelId, user, action, message)))
+    // Counted BEFORE the frame is queued, which is what holds the larger frame budget open across the gap
+    // between this I/O thread and the worker that applies the frame (issue #7909). Released by the worker the
+    // instant the start has resolved - see the 'start' arm of execute().
+    final boolean start = "start".equals(action);
+    if (start)
+      pendingStarts(channel).incrementAndGet();
+
+    if (!frameQueue(channel).submit(() -> execute(channel, channelId, user, action, message))) {
+      // Refused for a full queue: the frame will never reach a worker, so its grant is released here instead.
+      if (start)
+        pendingStarts(channel).decrementAndGet();
+
       send(channel, error("Too many frames in flight",
           "This connection already has " + MAX_PENDING_FRAMES + " frames waiting to be applied. Wait for the"
               + " acknowledgements of the frames already sent before sending more", message.getString("sessionId", null),
           null));
+    }
+  }
+
+  /**
+   * Whether {@code channel} is currently entitled to the larger insert-frame heap budget - {@code
+   * wsMaxInsertFrameSize} rather than {@code wsMaxControlFrameSize} (issue #7403), asked once per text frame by
+   * {@code WebSocketReceiveListener.getMaxTextBufferSize()}.
+   * <p>
+   * Two things earn it, and nothing else does: a session open on this connection, and a {@code start} frame
+   * accepted for execution whose outcome is not known yet. The second is what makes the first usable at all -
+   * {@code start} is applied on a worker, and a client is free to pipeline its first {@code chunk} behind it
+   * without waiting for {@code started}, so a budget keyed only on a registered session would lose that race.
+   * <p>
+   * The budget it replaces was a boolean raised from the frame's {@code action} string alone, before anything had
+   * looked at the frame (issue #7909). It therefore survived every way a {@code start} can be refused - an
+   * unknown database, a principal without access, a session id already taken, unparseable options, a dead
+   * external transaction, a full frame queue - and was lowered only by a later frame whose action was literally
+   * {@code commit} or {@code rollback}, so an idle sweep, a channel close or a failed {@code finish()} left it
+   * raised for the life of the connection. One refused {@code start} frame multiplied that connection's
+   * per-frame heap budget by 256 permanently, against documentation promising the opposite. Both halves of the
+   * answer here are read from state that IS the truth rather than tracked alongside it, so there is nothing left
+   * to leave stale.
+   */
+  public boolean hasInsertFrameBudget(final WebSocketChannel channel) {
+    if (channel == null)
+      return false;
+
+    final AtomicInteger starts = (AtomicInteger) channel.getAttribute(PENDING_STARTS);
+    if (starts != null && starts.get() > 0)
+      return true;
+
+    return sessionManager.hasSessionOnChannel((UUID) channel.getAttribute(WebSocketEventBus.CHANNEL_ID));
   }
 
   /**
@@ -164,9 +214,19 @@ public class WebSocketInsertProtocol {
     try {
       switch (action) {
       case "start" -> {
-        final WebSocketInsertSession session = sessionManager.start(user, channel, channelId,
-            message.getString("database", null), message.getString("sessionId", null),
-            message.getJSONObject("options", null), message.getString("transactionId", null));
+        final WebSocketInsertSession session;
+        try {
+          session = sessionManager.start(user, channel, channelId,
+              message.getString("database", null), message.getString("sessionId", null),
+              message.getJSONObject("options", null), message.getString("transactionId", null));
+        } finally {
+          // The frame-budget grant this start was given on the I/O thread is released HERE, the instant the
+          // outcome is known, and not after the answer is written (issue #7909). On success the session is
+          // already registered, so the budget passes from the grant to the session with no gap; on a refusal
+          // the budget is back down BEFORE the client is told, so a client that reacts to the error frame
+          // cannot slip a large one in behind a grant it never earned.
+          pendingStarts(channel).decrementAndGet();
+        }
 
         final JSONObject started = new JSONObject();
         started.put("result", "ok");
@@ -266,6 +326,20 @@ public class WebSocketInsertProtocol {
     channel.addCloseTask(ch -> onChannelClosed(ch, channelId));
   }
 
+  /**
+   * This connection's in-flight {@code start} counter, created on demand. Created on the I/O thread, which
+   * Undertow runs one frame at a time per connection, so no two threads can reach the creating branch for the
+   * same channel - the same argument {@link #frameQueue} relies on.
+   */
+  private static AtomicInteger pendingStarts(final WebSocketChannel channel) {
+    AtomicInteger starts = (AtomicInteger) channel.getAttribute(PENDING_STARTS);
+    if (starts == null) {
+      starts = new AtomicInteger();
+      channel.setAttribute(PENDING_STARTS, starts);
+    }
+    return starts;
+  }
+
   private static FrameQueue frameQueue(final WebSocketChannel channel) {
     FrameQueue queue = (FrameQueue) channel.getAttribute(FRAME_QUEUE);
     if (queue == null) {
@@ -312,6 +386,10 @@ public class WebSocketInsertProtocol {
           pending.clear();
           draining = false;
         }
+        // The dropped frames never run, so the finally that would release their frame-budget grant never runs
+        // either. Released here instead, or a connection whose worker pool went away would hold the larger
+        // budget for whatever life it has left (issue #7909).
+        pendingStarts(channel).set(0);
       }
       return true;
     }

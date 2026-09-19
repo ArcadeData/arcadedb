@@ -421,6 +421,20 @@ public class WebSocketInsertSessionManager {
     return sessions.size();
   }
 
+  /**
+   * Whether {@code channelId} currently holds an insert session (issue #7909).
+   * <p>
+   * The authority behind the larger {@code /ws} text-frame budget. Read rather than tracked, so the budget cannot
+   * drift from the truth: a session that ends any way at all - a {@code commit} or {@code rollback} frame, the
+   * idle sweep, the connection closing, server shutdown, a {@code start} that never produced one - is gone from
+   * {@link #byChannel} by the time it has ended, and every one of those paths clears the claim. The alternative,
+   * a flag raised and lowered by hand, is what granted a 256x heap budget for the life of a connection whose
+   * {@code start} frame the server had REFUSED.
+   */
+  public boolean hasSessionOnChannel(final UUID channelId) {
+    return channelId != null && byChannel.containsKey(channelId);
+  }
+
   private void unregister(final WebSocketInsertSession session) {
     sessions.remove(session.id, session);
     byChannel.remove(session.channelId, session.id);
