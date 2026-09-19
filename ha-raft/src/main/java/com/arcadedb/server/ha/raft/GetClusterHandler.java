@@ -319,11 +319,15 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     response.put("raftLogFailure", buildRaftLogFailure(stateMachine.getRaftLogFailure()));
     // The liveness counterpart (issue #7622): isCrashLoopEscalated() is what fails /api/v1/health, and it was
     // equally invisible here. Same reasoning, same scoping - none.
-    response.put("crashLoopEscalated", raftHAServer.isCrashLoopEscalated());
+    // Sampled ONCE and shared with the alert scan below, for the reason localResync is sampled once: two reads of
+    // a live flag can disagree, and the document would then carry crashLoopEscalated: false next to a
+    // crash-loop-escalated alert, or the reverse.
+    final boolean crashLoopEscalated = raftHAServer.isCrashLoopEscalated();
+    response.put("crashLoopEscalated", crashLoopEscalated);
 
     response.put("alerts",
         ClusterAlerts.scan(httpServer.getServer(), stateMachine, followerSamples, authorizedDatabases, membership,
-            localPeerId.toString(), localResync, raftHAServer.isCrashLoopEscalated()));
+            localPeerId.toString(), localResync, crashLoopEscalated));
 
     return new ExecutionResponse(200, response.toString());
   }
