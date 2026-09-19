@@ -521,6 +521,18 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       // No "schema" line in this source: nothing was exported to restore.
       return;
 
+    final int triggers = exportedMemberCount("triggers");
+    final int views = exportedMemberCount("materializedViews");
+    final int aggregates = exportedMemberCount("continuousAggregates");
+    final int libraries = exportedMemberCount("functions");
+    final int extensions = exportedMemberCount("extensions");
+
+    if (triggers + views + aggregates + libraries + extensions == 0)
+      // The export carries none of the five, which is the common case: an exporter writes the keys whether or not
+      // the database had anything under them. Returning here keeps a JSONL import that restores nothing from
+      // writing the schema configuration one more time than it used to.
+      return;
+
     final LocalSchema schema = database.getSchema().getEmbedded();
 
     final int failures = schema.restoreSchemaMembersFromJSON(importedSchema, false);
@@ -542,8 +554,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
     // bring. What this line answers is "what did the file carry", with the failures the call above reported.
     logger.logLine(2, " - Restored schema members: %d trigger(s), %d materialized view(s), %d continuous "
             + "aggregate(s), %d function library(ies), %d extension(s)%s",
-        exportedMemberCount("triggers"), exportedMemberCount("materializedViews"),
-        exportedMemberCount("continuousAggregates"), exportedMemberCount("functions"), exportedMemberCount("extensions"),
+        triggers, views, aggregates, libraries, extensions,
         failures > 0 ? " - " + failures + " could not be restored" : "");
   }
 
