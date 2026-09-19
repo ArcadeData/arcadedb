@@ -62,6 +62,7 @@ eval(extractFn("edgeTypeCountsCommand"));
 eval(extractFn("neighborExpansionCommand"));
 eval(extractFn("parseEdgeTypeCounts"));
 eval(extractFn("groupSelectedEdgeTypes"));
+eval(extractFn("directionLabel"));
 
 test("the unfiltered expansion is byte-for-byte the command that shipped before", () => {
   // The three existing radial commands must keep working exactly as they did: the picker is an addition, not a
@@ -166,6 +167,10 @@ test("neither count request can hang the picker open forever", () => {
   assert.match(prompt, /timeout: COUNT_TIMEOUT_MS/, "the count request needs a ceiling of its own");
   assert.match(prompt, /const COUNT_TIMEOUT_MS = \d+;/);
   assert.match(prompt, /textStatus === "timeout"/, "a timeout has no responseText to render");
+  // Built from the same label the table rows use: concatenating direction + "going" said "ingoing".
+  assert.match(prompt, /directionLabel\(direction\)/);
+  assert.equal(directionLabel("in"), "incoming");
+  assert.equal(directionLabel("out"), "outgoing");
   assert.match(prompt, /counts\[direction\] = \[\];/, "a failed direction still has to let the picker open");
 });
 
