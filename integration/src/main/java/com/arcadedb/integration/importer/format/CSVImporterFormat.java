@@ -733,6 +733,8 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
       LogManager.instance().log(this, Level.INFO, "Importing the following edge properties: %s", null, properties);
 
+      final int headerColumns = headerColumnsOf(entity);
+
       String[] row;
       // No ownsTransaction/callerTransactionActiveOnEntry guard needed here, unlike loadDocuments()/loadVertices():
       // database.begin() nests rather than reusing an already-active transaction (see LocalDatabase#begin()), so a
@@ -761,6 +763,24 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
           if (skipEntries > 0 && line < skipEntries) {
             ++skipped;
+            continue;
+          }
+
+          // THE SAME ARITY GATE loadDocuments()/loadVertices() APPLY, AND FOR THE SAME REASON: THE ANALYSIS REFUSES
+          // AN OVERSIZED ROW, SO MAKING AN EDGE OUT OF ITS FIRST COLUMNS HERE WOULD BE THE TWO PASSES DISAGREEING
+          // ABOUT ONE ROW - THE DIVERGENCE #7487 EXISTS TO PREVENT. REACHABLE WHENEVER THE ROW IS PAST THE
+          // ANALYSIS WINDOW (-analysisLimitEntries / -analysisLimitBytes BOUND THE ANALYSIS, NOT THE LOAD) AND
+          // UNDER -onRowError skip, WHERE THE ANALYSIS SKIPPED IT RATHER THAN THROWING.
+          //
+          // SKIPPED AND COUNTED RATHER THAN THROWN, WHICHEVER THE POLICY: EDGE ROWS DO NOT HONOUR -onRowError AT
+          // ALL (SEE THE catch BELOW AND THE ONE-TIME NOTICE ABOVE), AND MAKING RAGGEDNESS THE ONE EXCEPTION WOULD
+          // CONTRADICT THE NOTICE THIS METHOD PRINTS. COUNTED IN errors AND NOT IN skippedEdges, WHICH MEANS
+          // "from/to DID NOT RESOLVE" AND IS REPORTED UNDER THAT NAME (#7488).
+          if (headerColumns > 0 && row.length > headerColumns) {
+            LogManager.instance().log(this, Level.WARNING,
+                "Error on importing edge at line %d, skipping it (reason: it has %d column(s) while the header has %d)", null,
+                line, row.length, headerColumns);
+            context.errors.incrementAndGet();
             continue;
           }
 
@@ -1105,6 +1125,9 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
     final List<String> fieldNames = new ArrayList<>();
 
+    // How many oversized rows this analysis has already skipped, so only the first one logs at WARNING (see below).
+    long raggedRowsSkippedInAnalysis = 0;
+
     final String entityName = entityType == AnalyzedEntity.EntityType.VERTEX ?
         settings.vertexTypeName :
         entityType == AnalyzedEntity.EntityType.EDGE ? settings.edgeTypeName : settings.documentTypeName;
@@ -1160,7 +1183,10 @@ public class CSVImporterFormat extends AbstractImporterFormat {
             if (!settings.isSkipOnRowError())
               checkRowIsNotLongerThanHeader(line, row.length, fieldNames.size());
 
-            LogManager.instance().log(this, Level.WARNING,
+            // WARNING FOR THE FIRST ONE ONLY, THEN FINE - THE SAME THROTTLE reportShortRow() USES, SO A
+            // SYSTEMATICALLY RAGGED FILE DOES NOT LOG A LINE PER ROW IN ONE DIRECTION WHILE THE MIRROR CASE IS
+            // THROTTLED IN THE OTHER (claude-review ON PR #7948)
+            LogManager.instance().log(this, raggedRowsSkippedInAnalysis++ == 0 ? Level.WARNING : Level.FINE,
                 "Error on analyzing row at line %d, skipping it (reason: it has %d column(s) while the header has %d)", null,
                 line, row.length, fieldNames.size());
             continue;

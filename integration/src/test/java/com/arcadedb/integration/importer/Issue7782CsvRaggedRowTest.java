@@ -167,6 +167,72 @@ class Issue7782CsvRaggedRowTest {
     });
   }
 
+  /**
+   * The edge loop's half of the arity gate. Edges do not honour {@code -onRowError} at all, so an oversized edge row
+   * is skipped and counted whichever the policy - what it must NOT do is make an edge out of the row's first
+   * columns while the ANALYSIS refused that very row, which is the analysis/load divergence #7487 exists to
+   * prevent (CodeRabbit review on PR #7948).
+   */
+  @Test
+  void anOversizedEdgeRowIsSkippedRatherThanImportedFromItsFirstColumns() throws Exception {
+    final String databasePath = "target/databases/test-import-7782-long-edges";
+    final File vertices = new File("target/importer-7782-long-vertices.csv");
+    final File edges = new File("target/importer-7782-long-edges.csv");
+    Files.writeString(vertices.toPath(), "id,name\n1,Jay\n2,Kim\n", StandardCharsets.UTF_8);
+    // Row 2 carries a fourth value the header has no name for; rows 1 and 3 are well formed.
+    Files.writeString(edges.toPath(), "from,to,since\n1,2,2020\n2,1,2021,junk\n", StandardCharsets.UTF_8);
+
+    final DatabaseFactory factory = new DatabaseFactory(databasePath);
+    if (factory.exists())
+      factory.open().drop();
+    FileUtils.deleteRecursively(new File(databasePath));
+
+    final Database db = factory.create();
+    try {
+      final Importer importer = new Importer(db, null);
+      importer.settings.vertices = vertices.getAbsolutePath();
+      importer.settings.edges = edges.getAbsolutePath();
+      importer.settings.typeIdProperty = "id";
+      importer.settings.edgeFromField = "from";
+      importer.settings.edgeToField = "to";
+      // The analysis refuses the oversized row instead of aborting the whole import, so the load pass gets to run
+      // and can be asked what it did with the same row.
+      importer.settings.onRowError = "skip";
+
+      importer.load();
+
+      assertThat(db.countType("Node", true)).isEqualTo(2);
+      assertThat(db.countType("Relationship", true))
+          .as("only the well-formed edge row produced an edge")
+          .isEqualTo(1);
+    } finally {
+      while (db.isTransactionActive())
+        db.rollback();
+      db.drop();
+      FileUtils.deleteRecursively(new File(databasePath));
+      vertices.delete();
+      edges.delete();
+    }
+  }
+
+  /**
+   * {@code getAverageRowLength()} is the one reader of {@code analyzedRows}, and a ragged row the analysis refuses
+   * never reaches {@code setRowSize()} - so an entity can now exist having measured no row at all. Division by zero
+   * there would reach {@code loadEdges()}' {@code expectedEdges} estimate as an {@code ArithmeticException} instead
+   * of the row-shape diagnosis it was on its way to report (CodeRabbit review on PR #7948).
+   */
+  @Test
+  void anEntityThatMeasuredNoRowReportsNoAverageRowLength() {
+    final AnalyzedEntity entity = new AnalyzedEntity("Empty", AnalyzedEntity.EntityType.EDGE, 100);
+
+    assertThat(entity.getAverageRowLength())
+        .as("no measured row is an answer, not an ArithmeticException")
+        .isZero();
+
+    entity.setRowSize(new String[] { "ab", "cd" });
+    assertThat(entity.getAverageRowLength()).isGreaterThan(0);
+  }
+
   private interface Body {
     Void run(Importer importer, Database db) throws Exception;
   }
