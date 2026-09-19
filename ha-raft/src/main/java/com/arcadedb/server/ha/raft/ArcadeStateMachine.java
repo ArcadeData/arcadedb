@@ -3615,33 +3615,25 @@ public class ArcadeStateMachine extends BaseStateMachine {
    *                     already has registered, so the retry has to be this same targeted install again
    */
   private void installFromLeaderForBootstrapWithRetry(final String dbName, final boolean hadLocalCopy) {
+    // A holder for the WHOLE operation, the scheduled retry included, so the issue #7519 readiness gate does not
+    // lapse in the gap between a failed install and the retry that replaces the copy (CodeRabbit on PR #7964).
+    // The one installFromLeaderForBootstrap takes for itself is released by its own finally; this one outlives it.
+    //
+    // NOT the durable #6124 unreconciled mark, which an earlier revision of this fix borrowed for the same job
+    // (review of PR #7964). That set means "this node kept a copy FRESHER than the baseline and needs an operator
+    // to choose a side": ClusterAlerts raises it as CRITICAL, tells the operator their data diverged and
+    // recommends stopping the cluster and copying a directory to every peer. A first download that found no
+    // leader yet - the ordinary case at formation, since the entry is applied while election on this peer may
+    // still be settling - is none of those things and retries itself. Holding readiness must not also raise a
+    // false CRITICAL with a drastic remedy.
+    beginBootstrapInstall(dbName);
+    boolean retryOwnsTheHolder = false;
     try {
       installFromLeaderForBootstrap(dbName);
     } catch (final RuntimeException e) {
       LogManager.instance().log(this, Level.SEVERE,
           "Failed to install snapshot during bootstrap for database '%s': %s. Scheduling an async retry once a "
               + "leader is reachable.", dbName, e.getMessage());
-
-      // Recorded DURABLY here, not after the retry also fails (CodeRabbit on PR #7964). At this instant this node
-      // holds a copy that did NOT match the cluster's committed baseline and was NOT replaced, which is exactly
-      // what this mark means - and it is the only record that says so, because applyTransaction persists this
-      // database's applied index whatever happens here, so the entry reads as applied while the reinstall it
-      // ordered never happened. That is the same argument retryBootstrapInstall's own give-up already makes for
-      // the no-local-copy arm; the difference was that the OTHER arm hands the retry to triggerSnapshotDownload,
-      // which returns void and swallows its own failures, so nothing downstream could record it.
-      //
-      // It is also what keeps the issue #7519 readiness gate honest across the retry. The in-flight registration
-      // in installFromLeaderForBootstrap has already been released by its finally, and re-taking it for the
-      // duration of the scheduled retry would be weaker than this, not stronger: that set is in memory and per
-      // state-machine instance, so it does not survive the restartRatis that rebuilds one, while the condition
-      // being reported - a copy the committed baseline rejected is still on disk - does survive it, and this mark
-      // is persisted in .raft/bootstrap-baselines.
-      //
-      // Nothing has to remember to clear it: the targeted install clears it on success
-      // (installFromLeaderForBootstrap), the full resync clears every one of them on success
-      // (downloadAllDatabasesFrom -> clearAllBootstrapUnreconciled), and reconcileBootstrapDivergence re-verifies
-      // it against the leader on the HealthMonitor tick and clears it when the copies match.
-      markBootstrapUnreconciled(dbName);
 
       if (hadLocalCopy) {
         // Safety net: install rolls back + reopens on failure; reopen here if left deregistered for any reason.
@@ -3669,6 +3661,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // critical-error halt - the very outcome this handler exists to prevent.
       try {
         lifecycleExecutor.submit(() -> retryBootstrapInstall(dbName, hadLocalCopy));
+        // The retry now owns the holder and releases it in its own finally, whatever it decides to do.
+        retryOwnsTheHolder = true;
       } catch (final RejectedExecutionException ree) {
         // The remediation differs by branch, and naming the wrong one is the defect this whole change is about.
         // With a local copy the needsSnapshotDownload flag is set above, so the HealthMonitor backstop genuinely
@@ -3687,6 +3681,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
                   + "run POST /api/v1/cluster/resync/%s on this node once a leader is reachable.",
               null, dbName, dbName);
       }
+    } finally {
+      // Released here on every path the retry did NOT take ownership of: the install succeeded, or it failed and
+      // the executor was already shut down so nothing will retry. A holder nothing ever releases would wedge the
+      // node out of the Service for good, which is worse than the gap it would be covering.
+      if (!retryOwnsTheHolder)
+        endBootstrapInstall(dbName);
     }
   }
 
@@ -3695,6 +3695,18 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * {@code lifecycleExecutor}, where an escaping exception is only logged by the executor and helps nobody.
    */
   private void retryBootstrapInstall(final String dbName, final boolean hadLocalCopy) {
+    try {
+      retryBootstrapInstallHoldingTheGate(dbName, hadLocalCopy);
+    } finally {
+      // Releases the holder installFromLeaderForBootstrapWithRetry handed over when it scheduled this retry, so
+      // the node has been continuously out of the Service from the first install to the end of this one, however
+      // this one ended (issue #7519, CodeRabbit on PR #7964).
+      endBootstrapInstall(dbName);
+    }
+  }
+
+  /** The body of {@link #retryBootstrapInstall}, which owns the readiness holder around it. */
+  private void retryBootstrapInstallHoldingTheGate(final String dbName, final boolean hadLocalCopy) {
     if (hadLocalCopy) {
       if (needsSnapshotDownload.compareAndSet(true, false))
         triggerSnapshotDownload();
@@ -3787,8 +3799,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
-   * Adds one holder to {@code dbName}'s bootstrap-install depth (issue #7519). Paired with
-   * {@link #endBootstrapInstall} in a {@code finally} by its single caller.
+   * Adds one holder to {@code dbName}'s bootstrap-install depth (issue #7519). Two callers take one, and they
+   * nest: {@link #installFromLeaderForBootstrap} holds one for its own install, and
+   * {@link #installFromLeaderForBootstrapWithRetry} holds one for the whole operation including the retry it may
+   * schedule. Each pairs its own with {@link #endBootstrapInstall} in a {@code finally}, which is what the depth
+   * is for - with a set, the inner release would drop the name while the outer operation was still running.
    */
   private void beginBootstrapInstall(final String dbName) {
     bootstrapInstallsInFlight.merge(dbName, 1, Integer::sum);

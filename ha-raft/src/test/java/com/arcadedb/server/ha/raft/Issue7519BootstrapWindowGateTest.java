@@ -32,11 +32,13 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -155,34 +157,36 @@ class Issue7519BootstrapWindowGateTest {
   }
 
   /**
-   * A failed install hands over to a durable mark rather than to nothing. This is the path the gate leaks on if
-   * the handover is missing, and it is the LIKELY path during a real first formation: the bootstrap entry is
-   * applied while leader election on this peer may not have settled, so the very first download often has no
-   * leader to pull from.
+   * A failed install hands the readiness holder to the scheduled retry, and hands it to NOTHING ELSE. This is the
+   * likely path at a real first formation - the bootstrap entry is applied while leader election on this peer may
+   * still be settling, so the very first download often has no leader to pull from.
    * <p>
-   * The in-flight registration is released - the node is genuinely not installing any more, and holding readiness
-   * on a condition nothing clears would wedge it out of the Service for good. What replaces it is the
-   * unreconciled mark, which is persisted in {@code .raft/bootstrap-baselines}, so unlike the in-flight set it
-   * survives the {@code restartRatis} that rebuilds a state machine - and the condition it reports (a copy the
-   * committed baseline rejected is still on disk) survives a restart too.
+   * The half that is easy to get wrong is the second one. An earlier revision of this fix held readiness across
+   * the retry by setting the durable {@code bootstrapUnreconciled} mark, which is the issue #6124 set: it means
+   * "this node kept a copy FRESHER than the baseline and an operator must choose a side", and {@code
+   * ClusterAlerts} publishes it as a CRITICAL telling them to stop the cluster and copy a database directory to
+   * every peer. Raising that on an ordinary formation is a false alarm with a drastic remedy, so the holder is an
+   * in-flight depth and the mark is left to the branch that actually means it.
    */
   @Test
-  void aFailedBootstrapInstallHandsReadinessOverToTheDurableUnreconciledMark() {
+  void aFailedInstallHoldsReadinessThroughTheRetryWithoutRaisingTheCriticalDivergenceAlert() {
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     sm.setServer(stubbedServer(configuration()));
 
     assertThatNoException().isThrownBy(
         () -> sm.applyBootstrapFingerprintEntry(baselineOfAnotherCopy(Long.MAX_VALUE), 7L));
 
-    assertThat(sm.getBootstrapInstallsInFlight())
-        .as("the node is not installing any more, so it is not held out on that ground")
-        .isEmpty();
     assertThat(sm.getBootstrapUnreconciledDatabases())
-        .as("but the copy the committed baseline rejected is still on disk, and only this records that")
-        .containsExactly(DB_NAME);
-    assertThat(sm.bootstrapWindowReason())
-        .as("so the node stays out of the Service across the scheduled retry, not only during the install")
-        .isNotNull();
+        .as("an ordinary first-download failure is not the #6124 'kept a fresher copy' condition and must not "
+            + "raise its CRITICAL alert")
+        .isEmpty();
+
+    // The retry runs on the lifecycleExecutor, so the release is asynchronous: await it rather than race it.
+    // What must not happen is that it never comes - a holder nothing releases wedges the node out of the Service.
+    await().atMost(Duration.ofSeconds(30))
+        .untilAsserted(() -> assertThat(sm.getBootstrapInstallsInFlight())
+            .as("the retry releases the holder it was handed, whatever it decided to do")
+            .isEmpty());
   }
 
   /**
