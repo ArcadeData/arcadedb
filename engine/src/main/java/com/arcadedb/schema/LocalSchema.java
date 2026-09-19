@@ -2525,7 +2525,7 @@ public class LocalSchema implements Schema {
       // The five members that live beside "types" in the schema object: triggers, materialized views, continuous
       // aggregates, function libraries and extensions. Restored through the same method any other reader of a
       // schema object uses, so a second reader cannot come back with a subset of them (issue #7886).
-      restoreSchemaMembersFromJSON(root, true);
+      restoreSchemaMembersFromJSON(root, SchemaMemberSource.SCHEMA_FILE);
 
       // Restore compaction file-migration map so WAL recovery can redirect or safely skip
       // pages that reference old (pre-compaction) file IDs.
@@ -2551,6 +2551,29 @@ public class LocalSchema implements Schema {
   }
 
   /**
+   * Where a schema object handed to {@link #restoreSchemaMembersFromJSON} came from. One argument rather than two
+   * booleans, because the two decisions it settles - replace or merge, and trusted or not - are never independent:
+   * every combination other than these two is incoherent.
+   */
+  public enum SchemaMemberSource {
+    /**
+     * The database's own {@code schema.json}. Trusted: it records what this database already had installed, so
+     * nothing in it is an escalation, and refusing a member here would make the database unopenable. Replaces.
+     */
+    SCHEMA_FILE,
+
+    /**
+     * A file handed to the engine from outside - a JSONL export being restored. Merges, and a member that is
+     * arbitrary host code has to earn the same permission creating it by hand would need: a {@code JAVASCRIPT} or
+     * {@code JAVA} trigger fires with the engine's privileges, so {@link #createTrigger} gates it on
+     * {@code UPDATE_SECURITY} rather than {@code UPDATE_SCHEMA} (GHSA-38pf-6hp2-pxww). An import is reachable with
+     * {@code UPDATE_SCHEMA}, so restoring such a trigger without that gate would hand the escalation back through
+     * a file (found in review of PR #7943).
+     */
+    IMPORTED_FILE
+  }
+
+  /**
    * Restores the schema-level members a schema object carries beside {@code "types"}: triggers, materialized views,
    * continuous aggregates, user-defined function libraries and module extensions.
    * <p>
@@ -2567,15 +2590,19 @@ public class LocalSchema implements Schema {
    * The caller MUST have registered the types first: a trigger binds to a type by name, and a materialized view to
    * its backing type and its sources.
    *
-   * @param root             the schema object, as written by {@link #toJSON()}. Members it does not carry are left
-   *                         alone (or cleared, see below); none of the five is mandatory.
-   * @param replaceExisting  true to clear what is registered before repopulating, which is what re-reading the
-   *                         schema file means; false to merge, which is what restoring INTO a database means - an
-   *                         import must not drop the target's own views because the export carried none.
+   * @param root   the schema object, as written by {@link #toJSON()}. Members it does not carry are left alone (or
+   *               cleared, see {@link SchemaMemberSource}); none of the five is mandatory.
+   * @param source where that object came from, which settles both whether to replace or merge and whether the
+   *               members in it are privileged to install themselves. See {@link SchemaMemberSource}.
    *
    * @return how many members could not be restored, for a caller that reports warnings
    */
-  public synchronized int restoreSchemaMembersFromJSON(final JSONObject root, final boolean replaceExisting) {
+  public synchronized int restoreSchemaMembersFromJSON(final JSONObject root, final SchemaMemberSource source) {
+    // The schema file IS the database's own state: what it names is already installed, so re-reading it replaces
+    // rather than merges. An imported file is a second database's state arriving into a live one, which keeps
+    // whatever the export did not name.
+    final boolean replaceExisting = source == SchemaMemberSource.SCHEMA_FILE;
+
     int failures = 0;
 
     // LOAD TRIGGERS
@@ -2597,6 +2624,46 @@ public class LocalSchema implements Schema {
         try {
           final Trigger trigger = TriggerImpl.fromJSON(triggerJSON);
 
+          // ARBITRARY HOST CODE ARRIVING IN A FILE EARNS THE PERMISSION IT WOULD HAVE EARNED AT THE KEYBOARD.
+          // createTrigger() gates a JAVASCRIPT or JAVA trigger on UPDATE_SECURITY and not UPDATE_SCHEMA for the
+          // reason written there - the executor binds the real database into the script, so the trigger can mint a
+          // server admin (GHSA-38pf-6hp2-pxww). Running an import needs only UPDATE_SCHEMA, so restoring one of
+          // these without the gate would hand that escalation straight back through a JSONL file. Refused per
+          // trigger and counted, not thrown: the rest of the restore is legitimate and has already landed.
+          if (source == SchemaMemberSource.IMPORTED_FILE
+              && (trigger.getActionType() == Trigger.ActionType.JAVASCRIPT
+              || trigger.getActionType() == Trigger.ActionType.JAVA)) {
+            try {
+              database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SECURITY);
+            } catch (final SecurityException e) {
+              ++failures;
+              LogManager.instance().log(this, Level.SEVERE,
+                  "Refused trigger '%s' from the imported schema: a %s trigger runs with the engine's own "
+                      + "privileges, so installing one requires security-admin (UPDATE_SECURITY) and not merely "
+                      + "UPDATE_SCHEMA. Everything else in the import is unaffected", null, triggerName,
+                  trigger.getActionType());
+              continue;
+            }
+          }
+
+          // CHECKED BEFORE THE MAP IS TOUCHED. Putting first and warning after left an entry no listener backed,
+          // which saveConfiguration() then wrote to schema.json: the name stayed occupied, so createTrigger()
+          // refused a later valid definition of it, and on the merge path a live, correctly registered trigger of
+          // that name was replaced by one that could never fire.
+          if (!existsType(trigger.getTypeName())) {
+            ++failures;
+            LogManager.instance().log(this, Level.WARNING,
+                "Cannot register trigger '%s' because type '%s' does not exist",
+                null, triggerName, trigger.getTypeName());
+
+            // Recorded only when the name is free, which on the replace path it always is - the sweep above just
+            // emptied the map - so a trigger whose type is merely absent right now keeps its definition across the
+            // reload instead of being silently dropped from the schema on the next save.
+            if (!triggers.containsKey(trigger.getName()))
+              triggers.put(trigger.getName(), trigger);
+            continue;
+          }
+
           // A trigger of this name already installed is being REPLACED by this one, not joined by it - the map
           // holds one entry per name either way. The sweep above covers that on the replace path; on the MERGE
           // path (an import into a database with a trigger of its own by that name) nothing did, and the put
@@ -2607,16 +2674,8 @@ public class LocalSchema implements Schema {
           unregisterTriggerListener(trigger.getName());
 
           triggers.put(trigger.getName(), trigger);
+          registerTriggerListener(trigger);
 
-          // Re-register trigger listeners after loading
-          if (existsType(trigger.getTypeName())) {
-            registerTriggerListener(trigger);
-          } else {
-            ++failures;
-            LogManager.instance().log(this, Level.WARNING,
-                "Cannot register trigger '%s' because type '%s' does not exist",
-                null, triggerName, trigger.getTypeName());
-          }
         } catch (final Exception e) {
           ++failures;
           LogManager.instance().log(this, Level.SEVERE,
