@@ -85,6 +85,17 @@ public final class BoltErrorCodes {
 
   // Database errors
   public static final String DATABASE_ERROR = "Neo.DatabaseError.General.UnknownError";
+  // The caller named a database this server does not have (a DatabaseNotFoundException). Neo4j's own title for
+  // it, and the first failure a Neo4j driver meets, because a typo in the 'database' connection parameter is the
+  // single most common Bolt misconfiguration. It is permanent and the caller's, so it must not fall into the
+  // generic DatabaseError a driver logs as an internal server fault and cannot tell apart from a broken server;
+  // before it existed a wrong database name and a corrupt one read identically (issue #7874).
+  public static final String DATABASE_NOT_FOUND_ERROR = "Neo.ClientError.Database.DatabaseNotFound";
+  // The database is there but cannot serve this request right now: closed, dropped out from under a resolved
+  // handle, still opening, or - with no default configured and nothing loaded yet - the server has no database at
+  // all. Neo4j classifies this as TRANSIENT on purpose, and so does ArcadeDB: unlike DATABASE_NOT_FOUND_ERROR the
+  // very same request succeeds once the database is open, which is what a driver's retry is for (issue #7874).
+  public static final String DATABASE_UNAVAILABLE_ERROR = "Neo.TransientError.Database.DatabaseUnavailable";
 
   private BoltErrorCodes() {
     // Utility class - prevent instantiation

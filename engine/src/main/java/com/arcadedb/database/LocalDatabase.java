@@ -48,6 +48,7 @@ import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.exception.DatabaseMetadataException;
+import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.InvalidDatabaseInstanceException;
@@ -306,7 +307,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   protected void open() {
     if (!new File(databasePath).exists())
-      throw new DatabaseOperationException("Database '" + databasePath + "' does not exist");
+      // The narrower type, not the generic DatabaseOperationException: "you named a database that is not here" is
+      // permanent and the caller's, and a protocol that can say so - HTTP's 404, Bolt's DatabaseNotFound - could
+      // otherwise tell it apart only by matching on this message's wording (issue #7874).
+      throw new DatabaseNotFoundException("Database '" + databasePath + "' does not exist");
 
     if (configurationFile.exists()) {
       try {
