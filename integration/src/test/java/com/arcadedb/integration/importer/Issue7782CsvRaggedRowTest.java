@@ -219,6 +219,62 @@ class Issue7782CsvRaggedRowTest {
   }
 
   /**
+   * {@code -parsingLimitEntries} bounds the edge loop even when every row it is reading is being refused for its
+   * shape. The refusal used to {@code continue} straight past the cap check at the bottom of the loop, so a run of
+   * oversized rows parsed on indefinitely - and it put edges out of step with documents and vertices, where a row
+   * that failed falls through to that same check (CodeRabbit review).
+   */
+  @Test
+  void theEntryLimitStillBoundsALoopThatIsRefusingEveryEdgeRow() throws Exception {
+    final String databasePath = "target/databases/test-import-7782-edge-limit";
+    final File vertices = new File("target/importer-7782-edge-limit-vertices.csv");
+    final File edges = new File("target/importer-7782-edge-limit-edges.csv");
+    Files.writeString(vertices.toPath(), "id,name\n1,Jay\n2,Kim\n", StandardCharsets.UTF_8);
+
+    // A header, one well-formed row so the analysis derives the properties, then a long run of oversized rows.
+    final StringBuilder edgeCsv = new StringBuilder("from,to,since\n1,2,2000\n");
+    for (int i = 0; i < 200; i++)
+      edgeCsv.append("1,2,20").append(i).append(",junk\n");
+    Files.writeString(edges.toPath(), edgeCsv.toString(), StandardCharsets.UTF_8);
+
+    final DatabaseFactory factory = new DatabaseFactory(databasePath);
+    if (factory.exists())
+      factory.open().drop();
+    FileUtils.deleteRecursively(new File(databasePath));
+
+    final Database db = factory.create();
+    try {
+      final Importer importer = new Importer(db, null);
+      importer.settings.vertices = vertices.getAbsolutePath();
+      importer.settings.edges = edges.getAbsolutePath();
+      importer.settings.typeIdProperty = "id";
+      importer.settings.edgeFromField = "from";
+      importer.settings.edgeToField = "to";
+      importer.settings.onRowError = "skip";
+      // Deliberately far below the 201 data rows, and reached while the loop is refusing rows one after another.
+      importer.settings.parsingLimitEntries = 5;
+
+      importer.load();
+
+      // The edge phase parses its own rows; the cap stops it at 5 rather than letting it read all 201.
+      assertThat(context(importer).errors.get())
+          .as("the loop stopped at the cap instead of refusing every remaining row")
+          .isLessThan(10);
+    } finally {
+      while (db.isTransactionActive())
+        db.rollback();
+      db.drop();
+      FileUtils.deleteRecursively(new File(databasePath));
+      vertices.delete();
+      edges.delete();
+    }
+  }
+
+  private static ImporterContext context(final Importer importer) {
+    return importer.context;
+  }
+
+  /**
    * A short VERTEX row whose missing column is the {@code typeIdProperty} itself takes {@code loadVertices()}' own
    * "Property Id ... cannot be found on current record" guard and never reaches the record-building block, so
    * reporting the short row from inside that block missed exactly the rows the guard skipped (CodeRabbit review).
