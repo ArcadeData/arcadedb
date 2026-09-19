@@ -282,8 +282,6 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       JSONObject importedSchema) {
 
     logger.logLine(2, "Loading schema... ");
-    // Kept for the post-record pass that restores the schema-level members (issue #7886).
-    this.importedSchema = importedSchema;
     var databaseSchema = database.getSchema();
     var importedSettings = importedSchema.getJSONObject("settings");
     databaseSchema.setDateFormat(importedSettings.getString("dateFormat"));
@@ -492,6 +490,12 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
           }
         });
 
+    // Kept for the post-record pass that restores the schema-level members (issue #7886), and kept HERE rather
+    // than on entry: every line above can throw, and under -onRowError skip the caller catches that, rolls the
+    // line back and carries on. A field set on entry would then have survived a schema line that was skipped, and
+    // the post-record pass would have restored triggers and views onto types this import never created.
+    this.importedSchema = importedSchema;
+
     // final report
     databaseSchema.getTypes()
         .forEach(type -> logger.logLine(2, " - Created type %s: %s", type.getName(), type.toJSON()));
@@ -535,7 +539,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
     final LocalSchema schema = database.getSchema().getEmbedded();
 
-    final int failures = schema.restoreSchemaMembersFromJSON(importedSchema, false);
+    final int failures = schema.restoreSchemaMembersFromJSON(importedSchema, LocalSchema.SchemaMemberSource.IMPORTED_FILE);
     if (failures > 0) {
       // Warnings and not errors, and counted rather than thrown: by this point every type and every record is in,
       // and refusing the whole restore over one trigger whose type the target already had under another name is
