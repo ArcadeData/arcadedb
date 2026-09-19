@@ -43,6 +43,7 @@ class SnapshotSwapRecoveryTest {
     Files.createDirectories(snapshotBackup);
     Files.writeString(dbDir.resolve(".snapshot-pending"), "");
     Files.writeString(snapshotNew.resolve(".snapshot-complete"), "");
+    Files.writeString(snapshotNew.resolve("schema.json"), "{}");
     Files.writeString(snapshotNew.resolve("data.dat"), "new-snapshot-data");
     Files.writeString(snapshotBackup.resolve("data.dat"), "old-data");
 
@@ -127,6 +128,7 @@ class SnapshotSwapRecoveryTest {
     Files.createDirectories(db1Backup);
     Files.writeString(db1.resolve(".snapshot-pending"), "");
     Files.writeString(db1New.resolve(".snapshot-complete"), "");
+    Files.writeString(db1New.resolve("schema.json"), "{}");
     Files.writeString(db1New.resolve("data.dat"), "db1-new");
     Files.writeString(db1Backup.resolve("data.dat"), "db1-old");
 

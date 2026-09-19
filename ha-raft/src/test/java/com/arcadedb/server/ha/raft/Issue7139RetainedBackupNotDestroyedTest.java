@@ -54,6 +54,24 @@ class Issue7139RetainedBackupNotDestroyedTest {
 
   private static final String DB = "mydb";
 
+  @Test
+  void aNewInstallPreservesUnresolvedPhaseEvenWithoutABackup(@TempDir final Path databasesDir) throws Exception {
+    final Path dbPath = databasesDir.resolve(DB);
+    Files.createDirectories(dbPath);
+    Files.writeString(dbPath.resolve("schema.json"), "{}");
+    Files.writeString(dbPath.resolve("data.dat"), "retained-data");
+    Files.writeString(dbPath.resolve(".snapshot-pending"), "");
+    Files.writeString(dbPath.resolve(".snapshot-swap-state"), "UNKNOWN");
+
+    assertThatThrownBy(() -> SnapshotInstaller.install(DB, dbPath.toString(), () -> null, () -> null, null,
+        serverThatCannotDownload(databasesDir)))
+        .isInstanceOf(IOException.class).hasMessageContaining("unresolved snapshot swap state");
+
+    assertThat(dbPath.resolve("data.dat")).hasContent("retained-data");
+    assertThat(dbPath.resolve(".snapshot-pending")).exists();
+    assertThat(dbPath.resolve(".snapshot-swap-state")).hasContent("UNKNOWN");
+  }
+
   // -------------------------------------------------------------------------------------------------
   // Part 1: a new install must not destroy a backup a failed rollback left behind
   // -------------------------------------------------------------------------------------------------
