@@ -20,8 +20,12 @@ package com.arcadedb.index.sparsevector;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.TransactionException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -198,6 +202,52 @@ class Issue7933AbortedTransactionSparseVectorLeakTest {
     });
   }
 
+  /**
+   * The one arm of {@code concludePhase2} that reaches {@code reset()} without durable changes, found in the review
+   * of PR #7934. A commit refused because the database was fenced by an EARLIER failure appended nothing of its own,
+   * so its buffered postings must be dropped rather than published - which is why that branch runs
+   * {@code undoIndexReplay()} itself, instead of letting {@code reset()} take the publish route every other
+   * non-rollback conclusion takes. It is durability, not the route, that decides which conclusion applies.
+   * <p>
+   * Driven through {@code commit1stPhase}/{@code commit2ndPhase} rather than {@code commit()} because that is the
+   * only shape that reaches the branch. {@code commit()} is refused at the door on a fenced database - the fence is
+   * one of the conditions {@code checkDatabaseIsOpen()} rejects - so the branch exists for a fence raised by a
+   * CONCURRENT transaction while this one was already in phase 1, past that check and past its index replay. The
+   * split call reproduces exactly that window, which is what the replication layer does routinely.
+   */
+  @Test
+  void aCommitRefusedByTheRecoveryFencePublishesNothing() throws Exception {
+    withDatabase(db -> {
+      final RID target = ridOf(db, 6);
+      // Resolved BEFORE the fence: every schema lookup is refused once the database is fenced, so the engines have
+      // to be in hand already. Reading their posting counts does not go through the database at all.
+      final List<LSMSparseVectorIndex> indexes = subIndexes(db);
+      final long postingsBefore = totalPostings(indexes);
+
+      db.begin();
+      target.asDocument(true).modify().set("tokens", dims(9)).set("weights", weights(9)).save();
+
+      final TransactionContext tx = ((DatabaseInternal) db).getTransaction();
+      // Phase 1 replays the queued postings into the buffer; nothing of this transaction is durable yet.
+      final TransactionContext.TransactionPhase1 phase1 = tx.commit1stPhase(true);
+      assertThat(phase1).as("the transaction must have changes to publish, or the branch is never reached").isNotNull();
+
+      ((LocalDatabase) ((DatabaseInternal) db).getEmbedded()).fenceForRecovery("issue #7933 regression test");
+
+      try {
+        tx.commit2ndPhase(phase1);
+        throw new AssertionError("the 2nd phase must be refused: the database is fenced for recovery");
+      } catch (final TransactionException expected) {
+        // THE PRECONDITION UNDER TEST: REFUSED BEFORE ITS OWN WAL APPEND, PAST ITS INDEX REPLAY
+      }
+
+      assertThat(totalPostings(indexes))
+          .as("a commit that appended nothing is not durable, so its postings must be dropped like a rollback's - "
+              + "publishing them would bake a transaction that never committed into the index the reopen recovers")
+          .isEqualTo(postingsBefore);
+    });
+  }
+
   // ---------- harness ----------
 
   @FunctionalInterface
@@ -213,7 +263,13 @@ class Issue7933AbortedTransactionSparseVectorLeakTest {
         test.run(db);
       } finally {
         if (db.isOpen())
-          db.drop();
+          try {
+            db.drop();
+          } catch (final Exception dropRefused) {
+            // A database fenced for recovery refuses the operations drop() needs; closing it is all that is left,
+            // and the files go with the temporary directory in tearDown(). Only the fence test can reach this.
+            db.close();
+          }
       }
     }
   }
@@ -308,8 +364,12 @@ class Issue7933AbortedTransactionSparseVectorLeakTest {
    * engine and its own memtable, and which bucket a record landed in is not something the test gets to choose.
    */
   private static long totalPostings(final Database db) {
+    return totalPostings(subIndexes(db));
+  }
+
+  private static long totalPostings(final List<LSMSparseVectorIndex> indexes) {
     long total = 0;
-    for (final LSMSparseVectorIndex idx : subIndexes(db))
+    for (final LSMSparseVectorIndex idx : indexes)
       total += idx.getEngine().totalPostings();
     return total;
   }
