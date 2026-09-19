@@ -34,6 +34,15 @@ public class AnalyzedEntity {
   private final long                          maxValueSampling;
   private       long                          totalRowLength = 0;
   private       long                          analyzedRows   = 0;
+  /**
+   * How many columns the source's header declares, or {@code -1} when the source has no notion of one.
+   * <p>
+   * Recorded by the analysis so the LOAD pass can measure a row against the same number the analysis measured it
+   * against, instead of rediscovering it from the properties it happened to create - which is not the same number:
+   * a property only exists once some row supplied a value at its index, so a header column no row ever fills leaves
+   * no trace in {@link #properties} at all (issue #7782).
+   */
+  private       int                           headerColumns  = -1;
 
   public AnalyzedEntity(final String name, final EntityType type, final long maxValueSampling) {
     this.name = name;
@@ -58,6 +67,16 @@ public class AnalyzedEntity {
     }
 
     property.setLastContent(content);
+  }
+
+  /** See {@link #headerColumns}. Ignores a non-positive count: "no header" stays "no header". */
+  public void setHeaderColumns(final int headerColumns) {
+    if (headerColumns > 0)
+      this.headerColumns = headerColumns;
+  }
+
+  public int getHeaderColumns() {
+    return headerColumns;
   }
 
   public int getAverageRowLength() {

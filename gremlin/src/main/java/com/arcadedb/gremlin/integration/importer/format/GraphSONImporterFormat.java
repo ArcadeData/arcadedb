@@ -93,7 +93,7 @@ public class GraphSONImporterFormat extends CSVImporterFormat {
 
     if (usesNonRidIds) {
       // Use custom import that handles non-RID IDs
-      importWithIdMapping(lines, database);
+      importWithIdMapping(lines, database, context);
     } else {
       // Use standard TinkerPop import for RID-format IDs
       // Convert the lines back to an InputStream
@@ -115,13 +115,70 @@ public class GraphSONImporterFormat extends CSVImporterFormat {
    * 2. Builds a mapping from original IDs to new ArcadeDB RIDs
    * 3. Creates edges using the ID mapping
    */
-  private void importWithIdMapping(final List<String> lines, final DatabaseInternal database) {
+  private void importWithIdMapping(final List<String> lines, final DatabaseInternal database, final ImporterContext context) {
     final Map<Object, RID> idMapping = new HashMap<>();
     final List<EdgeData> pendingEdges = new ArrayList<>();
 
-    // First pass: create vertices and collect edge data
-    database.begin();
+    // WHETHER THE TRANSACTIONS BELOW ARE THIS IMPORT'S TO BEGIN, COMMIT AND ROLL BACK - SEE
+    // ImporterContext#importOwnsTransaction. ASKED ONCE, BEFORE THE FIRST begin(), BECAUSE AFTER THAT A TRANSACTION
+    // IS ALWAYS ACTIVE AND THE ANSWER WOULD ALWAYS BE "THE CALLER'S".
+    final boolean ownsTransaction = context.importOwnsTransaction(database);
 
+    // First pass: create vertices and collect edge data
+    inTransaction(database, ownsTransaction, () -> createVertices(lines, database, idMapping, pendingEdges));
+
+    // Second pass: create edges using the ID mapping
+    if (!pendingEdges.isEmpty())
+      inTransaction(database, ownsTransaction, () -> createEdges(pendingEdges, database, idMapping));
+  }
+
+  /**
+   * Runs one pass of the import in the transaction it belongs in, and leaves nothing of its own behind when it
+   * throws.
+   * <p>
+   * The two passes used to be a bare {@code database.begin()} ... {@code database.commit()} pair with no
+   * {@code try}/{@code finally} and no ownership guard, and several ordinary conditions throw from inside them: a
+   * label naming an existing non-vertex/non-edge type, a malformed line, any failure out of {@code save()}. The
+   * transaction then stayed pushed on the caller's {@code DatabaseContext} stack - {@code LocalDatabase#begin()}
+   * PUSHES an independent level rather than joining the caller's - so the caller's own next {@code commit()} popped
+   * and committed the TOP one, the importer's. The failed import's partial work became durable while the caller's
+   * own records were eventually rolled back: the two halves swapped (issue #7771).
+   * <p>
+   * Nothing is begun or committed when the caller already owns a live transaction. That is the other half of the
+   * same answer: a nested {@code commit()} is independently durable, so even a SUCCESSFUL import would have
+   * published itself on its own schedule, whatever the caller's transaction later decided. Writing into the
+   * caller's transaction instead makes the import part of their unit of work, which is what
+   * {@code Importer(Database, String)} promises.
+   * <p>
+   * {@code database.transaction(block, true)} is deliberately not reused for this: its generic {@code catch} rolls
+   * back whatever is active even when it JOINED the caller's transaction rather than creating one, which is the very
+   * thing this must not do (the #7860 / #7328 mechanism).
+   */
+  private static void inTransaction(final DatabaseInternal database, final boolean ownsTransaction, final Runnable pass) {
+    if (!ownsTransaction) {
+      pass.run();
+      return;
+    }
+
+    database.begin();
+    // Whether the level just pushed is still the current one. Cleared right BEFORE the commit, not after:
+    // LocalDatabase#commit() pops in a finally whether or not the commit itself succeeded, so after a commit that
+    // threw the transaction database.isTransactionActive() reports is no longer ours and rolling it back would
+    // reach past our own level for whatever is underneath it (issue #7328).
+    boolean txOpen = true;
+    try {
+      pass.run();
+      txOpen = false;
+      database.commit();
+    } finally {
+      if (txOpen && database.isTransactionActive())
+        database.rollback();
+    }
+  }
+
+  /** The vertex pass: one vertex per line, with its outgoing edges collected into {@code pendingEdges}. */
+  private void createVertices(final List<String> lines, final DatabaseInternal database, final Map<Object, RID> idMapping,
+      final List<EdgeData> pendingEdges) {
     for (final String line : lines) {
       final JSONObject vertexJson = new JSONObject(line);
       final Object originalId = vertexJson.get("id");
@@ -173,59 +230,54 @@ public class GraphSONImporterFormat extends CSVImporterFormat {
         }
       }
     }
+  }
 
-    database.commit();
+  /** The edge pass: the edges collected by {@link #createVertices}, resolved through the original-id mapping. */
+  private void createEdges(final List<EdgeData> pendingEdges, final DatabaseInternal database,
+      final Map<Object, RID> idMapping) {
+    for (final EdgeData edgeData : pendingEdges) {
+      final RID outRid = idMapping.get(edgeData.outV);
+      final RID inRid = idMapping.get(edgeData.inV);
 
-    // Second pass: create edges using the ID mapping
-    if (!pendingEdges.isEmpty()) {
-      database.begin();
-
-      for (final EdgeData edgeData : pendingEdges) {
-        final RID outRid = idMapping.get(edgeData.outV);
-        final RID inRid = idMapping.get(edgeData.inV);
-
-        if (outRid == null) {
-          LogManager.instance().log(this, Level.WARNING,
-              "Skipping edge: source vertex with ID '%s' not found", edgeData.outV);
-          continue;
-        }
-
-        if (inRid == null) {
-          LogManager.instance().log(this, Level.WARNING,
-              "Skipping edge: target vertex with ID '%s' not found", edgeData.inV);
-          continue;
-        }
-
-        // Ensure edge type exists
-        if (!database.getSchema().existsType(edgeData.label)) {
-          database.getSchema().createEdgeType(edgeData.label);
-        } else if (!(database.getSchema().getType(edgeData.label) instanceof EdgeType)) {
-          throw new ImportException("Type '" + edgeData.label + "' is not an edge type");
-        }
-
-        // Create edge
-        final Vertex outVertex = outRid.asVertex();
-        final MutableEdge edge = outVertex.newEdge(edgeData.label, inRid.asVertex());
-
-        // Store original edge ID if present
-        if (edgeData.edgeId != null) {
-          edge.set(ORIGINAL_ID_PROPERTY, String.valueOf(edgeData.edgeId));
-        }
-
-        // Copy edge properties
-        if (edgeData.properties != null) {
-          for (final String propName : edgeData.properties.keySet()) {
-            final Object propValue = extractPropertyValue(edgeData.properties, propName);
-            if (propValue != null) {
-              edge.set(propName, propValue);
-            }
-          }
-        }
-
-        edge.save();
+      if (outRid == null) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Skipping edge: source vertex with ID '%s' not found", edgeData.outV);
+        continue;
       }
 
-      database.commit();
+      if (inRid == null) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Skipping edge: target vertex with ID '%s' not found", edgeData.inV);
+        continue;
+      }
+
+      // Ensure edge type exists
+      if (!database.getSchema().existsType(edgeData.label)) {
+        database.getSchema().createEdgeType(edgeData.label);
+      } else if (!(database.getSchema().getType(edgeData.label) instanceof EdgeType)) {
+        throw new ImportException("Type '" + edgeData.label + "' is not an edge type");
+      }
+
+      // Create edge
+      final Vertex outVertex = outRid.asVertex();
+      final MutableEdge edge = outVertex.newEdge(edgeData.label, inRid.asVertex());
+
+      // Store original edge ID if present
+      if (edgeData.edgeId != null) {
+        edge.set(ORIGINAL_ID_PROPERTY, String.valueOf(edgeData.edgeId));
+      }
+
+      // Copy edge properties
+      if (edgeData.properties != null) {
+        for (final String propName : edgeData.properties.keySet()) {
+          final Object propValue = extractPropertyValue(edgeData.properties, propName);
+          if (propValue != null) {
+            edge.set(propName, propValue);
+          }
+        }
+      }
+
+      edge.save();
     }
   }
 
