@@ -42,6 +42,7 @@ import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.engine.BackupDirectoryResolver;
 import com.arcadedb.engine.MaintenanceCoordinator;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.TransactionManager;
@@ -95,8 +96,17 @@ public class ServerDatabase implements DatabaseInternal {
     // this server's databases is wrapped here, in the one constructor ArcadeDBServer uses for all four of its open
     // paths, so binding it here covers them all; setWrapper delegates down to the embedded instance, which is the
     // same map the statement reads through whichever wrapper layer it happens to hold.
-    if (server != null)
+    if (server != null) {
       wrapped.setWrapper(MaintenanceCoordinator.WRAPPER_NAME, server.getBackupCoordinator());
+      // AND THE ONE DEFINITION OF WHERE THIS SERVER KEEPS ITS BACKUPS (issue #7863), for the same reason and
+      // through the same channel: 'BACKUP DATABASE' resolved it from arcadedb.server.backupDirectory alone, so an
+      // archive it wrote while config/backup.json named a different directory was invisible to 'list backups' and
+      // out of reach of 'delete backup' and 'restore backup'. Resolved on CALL rather than captured here, so a
+      // 'set backup config' that moves the directory is seen by the next statement, and so the control plane's
+      // chain stays the single authority instead of being copied into a field at open time.
+      wrapped.setWrapper(BackupDirectoryResolver.WRAPPER_NAME,
+          (BackupDirectoryResolver) () -> new ServerControlPlane(server).resolveBackupDirectory().toString());
+    }
   }
 
   private ServerQueryProfiler getProfiler() {
