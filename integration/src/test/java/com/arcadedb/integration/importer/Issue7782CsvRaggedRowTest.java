@@ -219,6 +219,57 @@ class Issue7782CsvRaggedRowTest {
   }
 
   /**
+   * The end-to-end half of the "entity that measured no row" case, driven through {@code Importer.load()} rather
+   * than the {@code AnalyzedEntity} accessor, so the caller/callee contract is exercised and not just the accessor
+   * (both reviewers on PR #7948 asked for this, each predicting an {@code ArithmeticException} out of
+   * {@code loadEdges()}' {@code expectedEdges} estimate).
+   * <p>
+   * That is not what happens, and the real outcome is worse in a quieter way: the {@code -edgeFromField} lookup runs
+   * BEFORE the estimate and fails first, so the operator was told to "Specify -edgeFromField &lt;from-field-name&gt;"
+   * having specified it correctly. The import now names what actually went wrong - every row was refused for its
+   * shape - and says so for documents, vertices and edges alike.
+   */
+  @Test
+  void aSourceWhoseEveryRowIsRefusedNamesThatRatherThanBlamingTheSettings() throws Exception {
+    final String databasePath = "target/databases/test-import-7782-all-ragged";
+    final File vertices = new File("target/importer-7782-all-ragged-vertices.csv");
+    final File edges = new File("target/importer-7782-all-ragged-edges.csv");
+    Files.writeString(vertices.toPath(), "id,name\n1,Jay\n2,Kim\n", StandardCharsets.UTF_8);
+    // EVERY data row carries a fourth value the header has no name for.
+    Files.writeString(edges.toPath(), "from,to,since\n1,2,2020,junk\n2,1,2021,junk\n", StandardCharsets.UTF_8);
+
+    final DatabaseFactory factory = new DatabaseFactory(databasePath);
+    if (factory.exists())
+      factory.open().drop();
+    FileUtils.deleteRecursively(new File(databasePath));
+
+    final Database db = factory.create();
+    try {
+      final Importer importer = new Importer(db, null);
+      importer.settings.vertices = vertices.getAbsolutePath();
+      importer.settings.edges = edges.getAbsolutePath();
+      importer.settings.typeIdProperty = "id";
+      importer.settings.edgeFromField = "from";
+      importer.settings.edgeToField = "to";
+      importer.settings.onRowError = "skip";
+
+      assertThatThrownBy(importer::load)
+          .isInstanceOf(ImportException.class)
+          .hasMessageContaining("No usable row found in the edge source")
+          .satisfies(e -> assertThat(e.getMessage())
+              .as("-edgeFromField is set correctly, so the refusal must not point at it")
+              .doesNotContain("Specify -edgeFromField"));
+    } finally {
+      while (db.isTransactionActive())
+        db.rollback();
+      db.drop();
+      FileUtils.deleteRecursively(new File(databasePath));
+      vertices.delete();
+      edges.delete();
+    }
+  }
+
+  /**
    * {@code getAverageRowLength()} is the one reader of {@code analyzedRows}, and a ragged row the analysis refuses
    * never reaches {@code setRowSize()} - so an entity can now exist having measured no row at all. Division by zero
    * there would reach {@code loadEdges()}' {@code expectedEdges} estimate as an {@code ArithmeticException} instead
