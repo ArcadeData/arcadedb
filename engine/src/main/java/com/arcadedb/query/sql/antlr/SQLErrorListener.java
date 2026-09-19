@@ -23,6 +23,8 @@ import org.antlr.v4.runtime.BaseErrorListener;
 import org.antlr.v4.runtime.RecognitionException;
 import org.antlr.v4.runtime.Recognizer;
 
+import java.util.Locale;
+
 /**
  * ANTLR error listener that converts ANTLR parse errors to CommandSQLParsingException.
  * Provides clear, user-friendly error messages for SQL syntax errors.
@@ -88,14 +90,14 @@ public class SQLErrorListener extends BaseErrorListener {
       return null;
     }
 
-    final String msgLower = msg.toLowerCase();
+    final String msgLower = msg.toLowerCase(Locale.ROOT);
 
     // Detect "AND and" or "OR and" patterns (duplicate operators)
     // ANTLR may report this as "extraneous input", "no viable alternative", or similar
     if (msgLower.contains("'and'") || msgLower.contains("'or'")) {
       // Look at the context around the error position to determine which operator is duplicated
       if (charPositionInLine > 0 && charPositionInLine <= sqlText.length()) {
-        final String before = sqlText.substring(Math.max(0, charPositionInLine - 10), charPositionInLine).toUpperCase().trim();
+        final String before = sqlText.substring(Math.max(0, charPositionInLine - 10), charPositionInLine).toUpperCase(Locale.ROOT).trim();
         if (before.endsWith("AND") || before.contains("AND ")) {
           return "AND operator must be followed by a condition";
         } else if (before.endsWith("OR") || before.contains("OR ")) {
@@ -113,7 +115,7 @@ public class SQLErrorListener extends BaseErrorListener {
     // Detect missing condition after AND/OR at end of query
     if (msgLower.contains("missing") || msgLower.contains("expecting") || msgLower.contains("no viable alternative")) {
       if (charPositionInLine > 0 && charPositionInLine <= sqlText.length()) {
-        final String before = sqlText.substring(Math.max(0, charPositionInLine - 10), Math.min(sqlText.length(), charPositionInLine)).toUpperCase().trim();
+        final String before = sqlText.substring(Math.max(0, charPositionInLine - 10), Math.min(sqlText.length(), charPositionInLine)).toUpperCase(Locale.ROOT).trim();
         if (before.endsWith("AND")) {
           return "AND operator must be followed by a condition";
         } else if (before.endsWith("OR")) {

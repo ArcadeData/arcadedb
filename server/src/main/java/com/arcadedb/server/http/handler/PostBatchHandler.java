@@ -335,7 +335,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // Determine format from Content-Type
     final HeaderValues contentTypeHeader = exchange.getRequestHeaders().get("Content-Type");
     final String contentType = contentTypeHeader != null && !contentTypeHeader.isEmpty()
-        ? contentTypeHeader.getFirst().toLowerCase()
+        ? contentTypeHeader.getFirst().toLowerCase(Locale.ROOT)
         : "application/x-ndjson";
 
     // Response encoding, negotiated exactly the way #7306 negotiated the streaming query. Read before any work

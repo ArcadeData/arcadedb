@@ -66,22 +66,13 @@ public class RemoteDocumentType implements DocumentType {
   }
 
   void reload(final Result record) {
+    final Object recordsAsObject = record.getProperty("records");
+    if (recordsAsObject instanceof Integer recordsAsInt)
+      count = recordsAsInt;
+    else if (recordsAsObject instanceof Long recordsAsLong)
+      count = recordsAsLong.intValue();
 
-	  Object recordsAsObject = record.getProperty("records");
-
-	  if (recordsAsObject != null) {
-
-		  if (recordsAsObject instanceof Integer recordsAsInt) {
-			  count = recordsAsInt;
-		  }
-		  else if (recordsAsObject instanceof Long recordsAsLong) {
-			  count = recordsAsLong.intValue();
-		  }
-	  }
-
-    // count = record.getProperty("records");
-
-	buckets = record.getProperty("buckets");
+    buckets = record.getProperty("buckets");
     bucketSelectionStrategy = record.getProperty("bucketSelectionStrategy");
     parentTypes = record.getProperty("parentTypes");
 
@@ -145,9 +136,19 @@ public class RemoteDocumentType implements DocumentType {
     return name;
   }
 
+  /**
+   * The SQL spelling of {@code <this type>.<property>}, both halves escaped. Every statement in this class that
+   * names a property of this type goes through here: the hand-rolled back-ticks it replaced turned a name carrying
+   * a backslash into a DIFFERENT name on the server and a name ending in one into a parse error, which is the same
+   * defect {@code Identifier.quote()} was extracted for in #7740 item 1 (issue #7914).
+   */
+  private String qualified(final String propertyName) {
+    return Identifier.quote(name) + "." + Identifier.quote(propertyName);
+  }
+
 //  @Override
   public void rename(final String newName) {
-    remoteDatabase.command("sql", "alter type `" + name + "` name `" + newName + "`");
+    remoteDatabase.command("sql", "alter type " + Identifier.quote(name) + " name " + Identifier.quote(newName));
     remoteDatabase.getSchema().reload();
   }
 
@@ -162,7 +163,7 @@ public class RemoteDocumentType implements DocumentType {
 
   @Override
   public Property createProperty(final String propertyName, final String propertyType) {
-    remoteDatabase.command("sql", "create property `" + name + "`.`" + propertyName + "` " + propertyType);
+    remoteDatabase.command("sql", "create property " + qualified(propertyName) + " " + propertyType);
     remoteDatabase.getSchema().reload();
     return getProperty(propertyName);
   }
@@ -170,28 +171,28 @@ public class RemoteDocumentType implements DocumentType {
   @Override
   public Property createProperty(final String propertyName, final Class<?> propertyType) {
     remoteDatabase.command("sql",
-        "create property `" + name + "`.`" + propertyName + "` " + Type.getTypeByClass(propertyType).name());
+        "create property " + qualified(propertyName) + " " + Type.getTypeByClass(propertyType).name());
     remoteDatabase.getSchema().reload();
     return getProperty(propertyName);
   }
 
   @Override
   public Property createProperty(String propertyName, Type propertyType) {
-    remoteDatabase.command("sql", "create property `" + name + "`.`" + propertyName + "` " + propertyType.name());
+    remoteDatabase.command("sql", "create property " + qualified(propertyName) + " " + propertyType.name());
     remoteDatabase.getSchema().reload();
     return getProperty(propertyName);
   }
 
   @Override
   public Property createProperty(final String propertyName, final Type propertyType, final String ofType) {
-    remoteDatabase.command("sql", "create property `" + name + "`.`" + propertyName + "` " + propertyType.name() + " of " + ofType);
+    remoteDatabase.command("sql", "create property " + qualified(propertyName) + " " + propertyType.name() + " of " + Identifier.quote(ofType));
     remoteDatabase.getSchema().reload();
     return getProperty(propertyName);
   }
 
   @Override
   public Property getOrCreateProperty(final String propertyName, final String propertyType) {
-    remoteDatabase.command("sql", "create property `" + name + "`.`" + propertyName + "` if not exists " + propertyType);
+    remoteDatabase.command("sql", "create property " + qualified(propertyName) + " if not exists " + propertyType);
     remoteDatabase.getSchema().reload();
     return getProperty(propertyName);
   }
@@ -199,7 +200,7 @@ public class RemoteDocumentType implements DocumentType {
   @Override
   public Property getOrCreateProperty(final String propertyName, final String propertyType, final String ofType) {
     remoteDatabase.command("sql",
-        "create property `" + name + "`.`" + propertyName + "` if not exists " + propertyType + " of " + ofType);
+        "create property " + qualified(propertyName) + " if not exists " + propertyType + " of " + Identifier.quote(ofType));
     remoteDatabase.getSchema().reload();
     return getProperty(propertyName);
   }
@@ -207,14 +208,14 @@ public class RemoteDocumentType implements DocumentType {
   @Override
   public Property getOrCreateProperty(final String propertyName, final Class<?> propertyType) {
     remoteDatabase.command("sql",
-        "create property `" + name + "`.`" + propertyName + "` if not exists " + Type.getTypeByClass(propertyType).name());
+        "create property " + qualified(propertyName) + " if not exists " + Type.getTypeByClass(propertyType).name());
     remoteDatabase.getSchema().reload();
     return getProperty(propertyName);
   }
 
   @Override
   public Property getOrCreateProperty(final String propertyName, final Type propertyType) {
-    remoteDatabase.command("sql", "create property `" + name + "`.`" + propertyName + "` if not exists " + propertyType.name());
+    remoteDatabase.command("sql", "create property " + qualified(propertyName) + " if not exists " + propertyType.name());
     remoteDatabase.getSchema().reload();
     return getProperty(propertyName);
   }
@@ -222,7 +223,7 @@ public class RemoteDocumentType implements DocumentType {
   @Override
   public Property getOrCreateProperty(final String propertyName, final Type propertyType, final String ofType) {
     remoteDatabase.command("sql",
-        "create property `" + name + "`.`" + propertyName + "` if not exists " + propertyType.name() + " of " + ofType);
+        "create property " + qualified(propertyName) + " if not exists " + propertyType.name() + " of " + Identifier.quote(ofType));
     remoteDatabase.getSchema().reload();
     return getProperty(propertyName);
   }
@@ -230,7 +231,7 @@ public class RemoteDocumentType implements DocumentType {
   @Override
   public Property dropProperty(final String propertyName) {
     final Property p = getProperty(propertyName);
-    remoteDatabase.command("sql", "drop property `" + name + "`.`" + propertyName + "`");
+    remoteDatabase.command("sql", "drop property " + qualified(propertyName));
     remoteDatabase.getSchema().reload();
     return p;
   }
@@ -242,7 +243,7 @@ public class RemoteDocumentType implements DocumentType {
     // reads it through Expression.getDefaultAlias(), which unescapes a quoted one), so an unquoted name here would
     // let whitespace or a keyword spelling be parsed as more than one token instead of the literal new name.
     remoteDatabase.command("sql",
-        "alter property `" + name + "`.`" + propertyName + "` name " + Identifier.quote(newPropertyName));
+        "alter property " + qualified(propertyName) + " name " + Identifier.quote(newPropertyName));
     remoteDatabase.getSchema().reload();
     return getProperty(newPropertyName);
   }
@@ -263,28 +264,28 @@ public class RemoteDocumentType implements DocumentType {
 
   @Override
   public DocumentType addSuperType(final String superName) {
-    remoteDatabase.command("sql", "alter type `" + name + "` supertype +`" + superName + "`");
+    remoteDatabase.command("sql", "alter type " + Identifier.quote(name) + " supertype +" + Identifier.quote(superName));
     remoteDatabase.getSchema().reload();
     return this;
   }
 
   @Override
   public DocumentType addSuperType(final DocumentType superType) {
-    remoteDatabase.command("sql", "alter type `" + name + "` supertype +`" + superType.getName() + "`");
+    remoteDatabase.command("sql", "alter type " + Identifier.quote(name) + " supertype +" + Identifier.quote(superType.getName()));
     remoteDatabase.getSchema().reload();
     return this;
   }
 
   @Override
   public DocumentType removeSuperType(final String superTypeName) {
-    remoteDatabase.command("sql", "alter type `" + name + "` supertype -`" + superTypeName + "`");
+    remoteDatabase.command("sql", "alter type " + Identifier.quote(name) + " supertype -" + Identifier.quote(superTypeName));
     remoteDatabase.getSchema().reload();
     return this;
   }
 
   @Override
   public DocumentType removeSuperType(final DocumentType superType) {
-    remoteDatabase.command("sql", "alter type `" + name + "` supertype -`" + superType.getName() + "`");
+    remoteDatabase.command("sql", "alter type " + Identifier.quote(name) + " supertype -" + Identifier.quote(superType.getName()));
     remoteDatabase.getSchema().reload();
     return this;
   }
@@ -296,8 +297,8 @@ public class RemoteDocumentType implements DocumentType {
 
 //  @Override
   public DocumentType setAliases(final Set<String> aliases) {
-    final String aliasesAsString = aliases.stream().map(a -> "`" + a + "`").collect(Collectors.joining(","));
-    remoteDatabase.command("sql", "alter type `" + name + "` aliases " + aliasesAsString);
+    final String aliasesAsString = aliases.stream().map(Identifier::quote).collect(Collectors.joining(","));
+    remoteDatabase.command("sql", "alter type " + Identifier.quote(name) + " aliases " + aliasesAsString);
     remoteDatabase.getSchema().reload();
     return this;
   }
@@ -497,7 +498,7 @@ public class RemoteDocumentType implements DocumentType {
 
   @Override
   public DocumentType addBucket(Bucket bucket) {
-    remoteDatabase.command("sql", "alter type `" + name + "` bucket +`" + bucket.getName() + "`");
+    remoteDatabase.command("sql", "alter type " + Identifier.quote(name) + " bucket +" + Identifier.quote(bucket.getName()));
     return remoteDatabase.getSchema().reload().getType(name);
   }
 
@@ -563,7 +564,7 @@ public class RemoteDocumentType implements DocumentType {
 
   @Override
   public Object setCustomValue(final String key, Object value) {
-    remoteDatabase.command("sql", "alter type `" + name + "` custom " + key + " = ?", value);
+    remoteDatabase.command("sql", "alter type " + Identifier.quote(name) + " custom " + Identifier.quote(key) + " = ?", value);
     return custom.put(key, value);
   }
 

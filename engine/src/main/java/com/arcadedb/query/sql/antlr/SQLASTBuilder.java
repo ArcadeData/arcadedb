@@ -1294,7 +1294,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
     final Object valueObj = visit(ctx.expression());
 
-    final String keyName = key.getStringValue().toLowerCase();
+    final String keyName = key.getStringValue().toLowerCase(Locale.ROOT);
 
     // Map the key to the appropriate field
     switch (keyName) {
@@ -3617,7 +3617,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           && firstIdCtx.RID_ATTR() == null && firstIdCtx.TYPE_ATTR() == null
           && firstIdCtx.IN_ATTR() == null && firstIdCtx.OUT_ATTR() == null && firstIdCtx.THIS() == null) {
         final String baseIdText = firstIdCtx.getText();
-        if (FUNCTION_NAMESPACES.contains(baseIdText.toLowerCase())) {
+        if (FUNCTION_NAMESPACES.contains(baseIdText.toLowerCase(Locale.ROOT))) {
           return buildNamespaceQualifiedFunctionCall(baseIdText, ctx.methodCall(0), ctx);
         }
       }
@@ -4283,7 +4283,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
         final Identifier id = (Identifier) visit(ctx.identifier());
         paramName = id.getValue();
       } else {
-        paramName = ctx.FROM().getText().toLowerCase();
+        paramName = ctx.FROM().getText().toLowerCase(Locale.ROOT);
       }
       final NamedParameter param = new NamedParameter();
       param.paramName = paramName;
@@ -6008,7 +6008,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
       if (!bodyCtx.NULL_STRATEGY().isEmpty() && bodyCtx.identifier().size() > legacyIdIdx) {
         final Identifier nsId = (Identifier) visit(bodyCtx.identifier(legacyIdIdx));
-        stmt.nullStrategy = LSMTreeIndexAbstract.NULL_STRATEGY.valueOf(nsId.getValue().toUpperCase());
+        stmt.nullStrategy = LSMTreeIndexAbstract.NULL_STRATEGY.valueOf(nsId.getValue().toUpperCase(Locale.ROOT));
       }
 
       return stmt;
@@ -6097,7 +6097,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // NULL_STRATEGY (comes first in grammar and toString)
     if (!bodyCtx.NULL_STRATEGY().isEmpty() && bodyCtx.identifier().size() > extraIdIndex) {
       final Identifier nsId = (Identifier) visit(bodyCtx.identifier(extraIdIndex));
-      stmt.nullStrategy = LSMTreeIndexAbstract.NULL_STRATEGY.valueOf(nsId.getValue().toUpperCase());
+      stmt.nullStrategy = LSMTreeIndexAbstract.NULL_STRATEGY.valueOf(nsId.getValue().toUpperCase(Locale.ROOT));
       extraIdIndex++;
     }
 

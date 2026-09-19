@@ -41,6 +41,7 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinarySerializer;
@@ -525,7 +526,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     checkDatabaseIsOpen();
     stats.countBucket.incrementAndGet();
     return ((Number) ((ResultSet) databaseCommand("query", "sql",
-        "select count(*) as count from bucket:" + bucketName, null, false,
+        "select count(*) as count from " + bucketTarget(bucketName), null, false,
         (connection, response) -> createResultSet(response))).nextIfAvailable().getProperty("count")).longValue();
   }
 
@@ -533,9 +534,13 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   public long countType(final String typeName, final boolean polymorphic) {
     checkDatabaseIsOpen();
     stats.countType.incrementAndGet();
-    final String appendix = polymorphic ? "" : " where @type = '" + typeName + "'";
+    // The target is escaped as an IDENTIFIER and the @type filter bound as a string PARAMETER, the same split
+    // iterateType() uses: unescaped, a type name carrying a back-tick or a quote counted a different type or
+    // failed to parse (PR #7942 review).
+    final String appendix = polymorphic ? "" : " where @type = :typeName";
+    final Map<String, Object> params = polymorphic ? null : Map.of("typeName", typeName);
     return ((Number) ((ResultSet) databaseCommand("query", "sql",
-        "select count(*) as count from " + typeName + appendix, null,
+        "select count(*) as count from " + Identifier.quote(typeName) + appendix, params,
         false, (connection, response) -> createResultSet(response))).nextIfAvailable().getProperty("count")).longValue();
   }
 
@@ -592,11 +597,15 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
   @Override
   public Iterator<Record> iterateType(final String typeName, final boolean polymorphic) {
-    String query = "select from `" + typeName + "`";
-    if (!polymorphic)
-      query += " where @type = '" + typeName + "'";
+    // Both halves escaped: the name reaches the server as an IDENTIFIER in the target and as a string PARAMETER in
+    // the filter, so a name carrying a back-tick or a quote is the name the caller asked for rather than a
+    // different one or a parse error (issue #7914).
+    final String query = "select from " + Identifier.quote(typeName)
+        + (polymorphic ? "" : " where @type = :typeName");
 
-    final ResultSet resultSet = query("sql", query);
+    final ResultSet resultSet = polymorphic ?
+        query("sql", query) :
+        query("sql", query, Map.of("typeName", typeName));
     return new Iterator<>() {
       @Override
       public boolean hasNext() {
@@ -610,9 +619,22 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     };
   }
 
+  /**
+   * The SQL spelling of a bucket as a query TARGET, with the name escaped.
+   * <p>
+   * Not {@code bucket:} + a quoted name: the grammar's bucket target in a FROM position is the single lexer token
+   * {@code BUCKET_IDENTIFIER: BUCKET COLON IDENTIFIER}, and that {@code IDENTIFIER} is the BARE form - back-ticks
+   * there are a parse error, which is how #7914's first pass turned a working {@code countBucket} into one that
+   * counted nothing (PR #7942 review). The single-element bucket LIST is the form that does take an
+   * {@code identifier}, quoted ones included, and it addresses the same one bucket.
+   */
+  private static String bucketTarget(final String bucketName) {
+    return "bucket:[" + Identifier.quote(bucketName) + "]";
+  }
+
   @Override
   public Iterator<Record> iterateBucket(final String bucketName) {
-    final ResultSet resultSet = query("sql", "select from bucket:`" + bucketName + "`");
+    final ResultSet resultSet = query("sql", "select from " + bucketTarget(bucketName));
     return new Iterator<>() {
       @Override
       public boolean hasNext() {
@@ -1631,7 +1653,8 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       if (updated == 0)
         throw new RecordNotFoundException("Record " + rid + " not found", rid);
     } else {
-      final ResultSet result = command("sql", "insert into " + record.getTypeName() + " content " + json);
+      final ResultSet result = command("sql",
+          "insert into " + Identifier.quote(record.getTypeName()) + " content " + json);
       rid = result.next().getIdentity().get();
       trackCreatedRecord(record);
     }
@@ -1647,8 +1670,11 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
     final JSONObject json = record.toJSON();
     json.remove(RID_PROPERTY);  // Remove @rid to avoid SQL parsing issues
+    // Both names escaped: the bucket name is caller-supplied on this overload, and the type name is only as
+    // trustworthy as whoever built the record (PR #7942 review).
     final ResultSet result = command("sql",
-        "insert into " + record.getTypeName() + " bucket " + bucketName + " content " + json);
+        "insert into " + Identifier.quote(record.getTypeName()) + " bucket " + Identifier.quote(bucketName)
+            + " content " + json);
     final RID newRID = result.next().getIdentity().get();
     trackCreatedRecord(record);
     return newRID;

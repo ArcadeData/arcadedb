@@ -49,6 +49,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.concurrent.CompletableFuture;
@@ -493,7 +494,7 @@ public class RemoteHttpComponent extends RWLockContext {
 
     final ReadConsistency rc = remoteDb.getReadConsistency();
     if (rc != ReadConsistency.EVENTUAL)
-      requestBuilder = requestBuilder.header("X-ArcadeDB-Read-Consistency", rc.name().toLowerCase());
+      requestBuilder = requestBuilder.header("X-ArcadeDB-Read-Consistency", rc.name().toLowerCase(Locale.ROOT));
     if (rc == ReadConsistency.READ_YOUR_WRITES) {
       final long last = remoteDb.getLastCommitIndex();
       if (last >= 0)

@@ -23,6 +23,7 @@ import com.arcadedb.log.LogManager;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.logging.Level;
 
@@ -59,7 +60,7 @@ public class LineProtocolParser {
     public static Precision fromString(final String s) {
       if (s == null || s.isEmpty())
         return NANOSECONDS;
-      return switch (s.toLowerCase()) {
+      return switch (s.toLowerCase(Locale.ROOT)) {
         case "ns" -> NANOSECONDS;
         case "us", "u" -> MICROSECONDS;
         case "ms" -> MILLISECONDS;

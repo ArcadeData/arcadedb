@@ -58,6 +58,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -445,7 +446,7 @@ public class PromQLEvaluator {
 
   private PromQLResult evaluateFunction(final FunctionCallExpr fn, final long evalTimeMs, final long queryStartMs,
       final long queryEndMs, final long stepMs, final int depth) {
-    final String name = fn.name().toLowerCase();
+    final String name = fn.name().toLowerCase(Locale.ROOT);
 
     // Range-vector functions
     if (isRangeFunction(name)) {
@@ -482,7 +483,7 @@ public class PromQLEvaluator {
 
   private PromQLResult evaluateScalarFunction(final FunctionCallExpr fn, final long evalTimeMs, final long queryStartMs,
       final long queryEndMs, final long stepMs, final int depth) {
-    final String name = fn.name().toLowerCase();
+    final String name = fn.name().toLowerCase(Locale.ROOT);
     final PromQLResult argResult = evaluate(fn.args().getFirst(), evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
     final double param = extractSecondParam(fn, evalTimeMs, queryStartMs, queryEndMs, stepMs, depth);
 
