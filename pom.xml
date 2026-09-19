@@ -165,6 +165,7 @@
         <module>ha-raft</module>
         <module>metrics</module>
         <module>tracing</module>
+        <module>logging</module>
         <module>integration</module>
         <module>console</module>
         <module>gremlin</module>

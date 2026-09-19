@@ -121,6 +121,7 @@
                 <exclude>com.arcadedb:arcadedb-graphql</exclude>
                 <exclude>com.arcadedb:arcadedb-metrics</exclude>
                 <exclude>com.arcadedb:arcadedb-tracing</exclude>
+                <exclude>com.arcadedb:arcadedb-logging</exclude>
             </excludes>
         </dependencySet>
         <!-- Plugin modules in separate directory -->
@@ -138,6 +139,7 @@
                 <include>com.arcadedb:arcadedb-graphql</include>
                 <include>com.arcadedb:arcadedb-metrics</include>
                 <include>com.arcadedb:arcadedb-tracing</include>
+                <include>com.arcadedb:arcadedb-logging</include>
             </includes>
             <useTransitiveDependencies>false</useTransitiveDependencies>
         </dependencySet>

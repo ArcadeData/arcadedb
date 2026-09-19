@@ -241,10 +241,11 @@ The following table lists runtime dependencies bundled with ArcadeDB distributio
 | io.micrometer | micrometer-registry-otlp | 1.16.5 | Apache 2.0 | https://micrometer.io/ |
 | org.hdrhistogram | HdrHistogram | 2.2.2 | Public Domain / CC0 | https://hdrhistogram.github.io/HdrHistogram/ |
 
-### Distributed Tracing (Optional)
+### Distributed Tracing and Log Export (Optional)
 
-Used only by the optional `tracing` module (OpenTelemetry distributed tracing). Confined to that
-plugin; not on the core/server compile classpath.
+Used only by the optional `tracing` module (OpenTelemetry distributed tracing) and the optional
+`logging` module (OTLP log export). Confined to those plugins; not on the core/server compile
+classpath.
 
 | Group ID | Artifact ID | Version | License | Homepage |
 |----------|-------------|---------|---------|----------|
