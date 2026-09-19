@@ -365,7 +365,14 @@ public class CreateIndexStatement extends DDLStatement {
     final List<String> collations = new ArrayList<>();
     for (final Property prop : propertyList)
       collations.add(prop.collate != null ? prop.collate.getStringValue() : IndexMetadata.COLLATION_DEFAULT);
-    builder.withCollations(collations);
+    try {
+      builder.withCollations(collations);
+    } catch (final IllegalArgumentException e) {
+      // Same treatment the METADATA clause gets a few lines down, and for the same reason: the collation keyword
+      // comes from the statement, so one this engine does not implement is a client mistake and must answer 400
+      // with a parsing error rather than escaping as a bare IllegalArgumentException (PR #7942 review).
+      throw new CommandSQLParsingException("Invalid COLLATE in CREATE INDEX: " + e.getMessage(), e);
+    }
     builder.withCallback((document, totalIndexed) -> {
       total.incrementAndGet();
       // Progress goes to the log, not to stdout: this runs inside the server process, where a dot written to

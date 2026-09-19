@@ -135,12 +135,18 @@ class NoDefaultLocaleCaseConversionTest {
     assertThat(offendersIn("Fixture.java", "  final String k = keyword.toUpperCase(Locale.ROOT);")).isEmpty();
     assertThat(offendersIn("Fixture.java", "  // match field.toLowerCase() against a CI index")).isEmpty();
     assertThat(offendersIn("Fixture.java", "   * {@code haystack.toUpperCase().contains(needle)} copies")).isEmpty();
+
+    // a comment TRAILING real code is still a comment
+    assertThat(offendersIn("Fixture.java", "  foo(); // see keyword.toUpperCase() below")).isEmpty();
+
+    // ...but a `//` inside a string literal does not start one, or the guard would walk past a real offender
+    assertThat(offendersIn("Fixture.java", "  final String k = uri(\"http://x\").toUpperCase();")).hasSize(1);
   }
 
   /**
-   * Every offending line of {@code text}, skipping a line whose match is inside a comment - the family is
-   * DESCRIBED in a good many javadocs and {@code //} notes in this tree, precisely because it has been fixed
-   * twice, and a guard that flagged its own documentation would be turned off rather than obeyed.
+   * Every offending line of {@code text}, skipping a match that is inside a comment - the family is DESCRIBED in
+   * a good many javadocs and {@code //} notes in this tree, precisely because it has been fixed twice, and a
+   * guard that flagged its own documentation would be turned off rather than obeyed.
    */
   private static List<String> offendersIn(final String fileName, final String text) {
     final List<String> offenders = new ArrayList<>();
@@ -148,13 +154,45 @@ class NoDefaultLocaleCaseConversionTest {
 
     while (matcher.find()) {
       final int lineStart = text.lastIndexOf('\n', matcher.start()) + 1;
-      final String before = text.substring(lineStart, matcher.start()).strip();
-      if (before.startsWith("//") || before.startsWith("*") || before.startsWith("/*"))
+      final String before = text.substring(lineStart, matcher.start());
+      if (before.stripLeading().startsWith("*") || before.stripLeading().startsWith("/*"))
+        continue;
+      if (commentStart(before) > -1)
         continue;
 
       final int lineEnd = text.indexOf('\n', matcher.start());
       offenders.add(fileName + ": " + text.substring(lineStart, lineEnd < 0 ? text.length() : lineEnd).strip());
     }
     return offenders;
+  }
+
+  /**
+   * Where a line-comment begins in {@code beforeTheMatch}, or {@code -1} if the match is in real code.
+   * <p>
+   * String literals are tracked rather than ignored, and that direction matters: treating any {@code //} as a
+   * comment start would let {@code uri("http://x").toUpperCase()} through, and a guard's FALSE NEGATIVE is the
+   * expensive kind - it is the one thing this class exists to prevent. Testing only whether the line STARTS with
+   * {@code //} had the opposite flaw, flagging a trailing comment after real code (PR #7942 review).
+   */
+  private static int commentStart(final String beforeTheMatch) {
+    boolean inString = false;
+    boolean inChar = false;
+
+    for (int i = 0; i < beforeTheMatch.length(); i++) {
+      final char c = beforeTheMatch.charAt(i);
+
+      if (c == '\\' && (inString || inChar)) {
+        ++i;
+        continue;
+      }
+      if (c == '"' && !inChar)
+        inString = !inString;
+      else if (c == '\'' && !inString)
+        inChar = !inChar;
+      else if (c == '/' && !inString && !inChar && i + 1 < beforeTheMatch.length()
+          && beforeTheMatch.charAt(i + 1) == '/')
+        return i;
+    }
+    return -1;
   }
 }

@@ -19,6 +19,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
@@ -151,7 +152,11 @@ class Issue7900LocaleSensitiveDDLKeywordsTest extends TestHelper {
     database.command("sql", "create document type BadCollate");
     database.command("sql", "create property BadCollate.n STRING");
 
+    // reported as a PARSING error, the same classification the METADATA clause gets, so a client mistake in the
+    // statement answers 400 rather than escaping as a bare IllegalArgumentException (PR #7942 review)
     assertThatThrownBy(() -> database.command("sql", "create index on BadCollate (n collate nosuch) unique"))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("COLLATE")
         .hasMessageContaining("nosuch");
   }
 
