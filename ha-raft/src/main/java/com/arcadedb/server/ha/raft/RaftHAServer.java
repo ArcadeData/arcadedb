@@ -3388,6 +3388,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * the connection setup is paid once per administrative request and there is no second client to keep in step
    * with {@code refreshRaftClient}'s leader re-seeding, TLS parameters and teardown.
    *
+   * <p>
+   * <b>The per-RPC timeout is set here rather than inherited</b> (review of PR #7941). Bounding the retry COUNT
+   * bounds nothing on its own: a {@code setConfiguration} whose RPC hangs at the transport with no reply never
+   * reaches a second attempt, so the deadline in {@code RaftClusterManager} is not consulted until that one call
+   * returns. {@link #CLIENT_REQUEST_TIMEOUT_MS} is what makes it return, and it is written on these properties
+   * by {@link #buildRaftClient} - on the same shared object, so it is already there in practice. Setting it
+   * again is a no-op that costs nothing and removes the dependency on that ordering, which is the kind of
+   * implicit thing that stops being true when someone moves a call.
+   *
    * @return null before {@code start()} has built the Raft properties, which is also what a unit-test harness
    * that never stood up a Raft server has - the caller then falls back to {@link #getClient()}
    */
@@ -3395,6 +3404,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final RaftProperties properties = raftProperties;
     if (properties == null)
       return null;
+    RaftClientConfigKeys.Rpc.setRequestTimeout(properties,
+        TimeDuration.valueOf(CLIENT_REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS));
     final RaftClient.Builder builder = RaftClient.newBuilder()
         .setRaftGroup(raftGroup)
         .setProperties(properties)
