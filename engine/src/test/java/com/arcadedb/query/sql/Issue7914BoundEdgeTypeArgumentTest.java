@@ -101,6 +101,40 @@ class Issue7914BoundEdgeTypeArgumentTest extends TestHelper {
     assertThat(connected.hasNext()).as("the bound edge type must not stop the traversal from matching").isTrue();
   }
 
+  /**
+   * The shape {@code countEdges} and the {@code getEdges}/{@code getVertices} family send: SEVERAL bound type
+   * names in one traversal call, which is where those two sites used to write single-quoted literals.
+   */
+  @Test
+  void severalBoundTypesFilterTheTraversalTheSameWayLiteralsDid() {
+    database.command("sql", "create vertex type N3");
+    database.command("sql", "create edge type A3");
+    database.command("sql", "create edge type B3");
+    database.command("sql", "create edge type C3");
+
+    database.transaction(() -> {
+      database.command("sql", "create vertex N3 set n = 1");
+      for (int i = 2; i <= 4; i++)
+        database.command("sql", "create vertex N3 set n = " + i);
+      database.command("sql", "create edge A3 from (select from N3 where n = 1) to (select from N3 where n = 2)");
+      database.command("sql", "create edge B3 from (select from N3 where n = 1) to (select from N3 where n = 3)");
+      database.command("sql", "create edge C3 from (select from N3 where n = 1) to (select from N3 where n = 4)");
+    });
+
+    final long viaLiterals = count("select both('A3', 'B3').size() as count from N3 where n = 1", Map.of());
+    final long viaParameters = count("select both(:t0, :t1).size() as count from N3 where n = 1",
+        Map.of("t0", "A3", "t1", "B3"));
+
+    assertThat(viaParameters)
+        .as("two bound type names must filter exactly as the two literals did")
+        .isEqualTo(viaLiterals)
+        .isEqualTo(2);
+  }
+
+  private long count(final String sql, final Map<String, Object> params) {
+    return database.query("sql", sql, params).next().<Number>getProperty("count").longValue();
+  }
+
   private long countNeighbours(final String sql, final Map<String, Object> params) {
     final ResultSet result = database.query("sql", sql, params);
     assertThat(result.hasNext()).isTrue();
