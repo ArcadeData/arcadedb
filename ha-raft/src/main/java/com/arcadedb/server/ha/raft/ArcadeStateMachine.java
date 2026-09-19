@@ -3613,6 +3613,27 @@ public class ArcadeStateMachine extends BaseStateMachine {
           "Failed to install snapshot during bootstrap for database '%s': %s. Scheduling an async retry once a "
               + "leader is reachable.", dbName, e.getMessage());
 
+      // Recorded DURABLY here, not after the retry also fails (CodeRabbit on PR #7964). At this instant this node
+      // holds a copy that did NOT match the cluster's committed baseline and was NOT replaced, which is exactly
+      // what this mark means - and it is the only record that says so, because applyTransaction persists this
+      // database's applied index whatever happens here, so the entry reads as applied while the reinstall it
+      // ordered never happened. That is the same argument retryBootstrapInstall's own give-up already makes for
+      // the no-local-copy arm; the difference was that the OTHER arm hands the retry to triggerSnapshotDownload,
+      // which returns void and swallows its own failures, so nothing downstream could record it.
+      //
+      // It is also what keeps the issue #7519 readiness gate honest across the retry. The in-flight registration
+      // in installFromLeaderForBootstrap has already been released by its finally, and re-taking it for the
+      // duration of the scheduled retry would be weaker than this, not stronger: that set is in memory and per
+      // state-machine instance, so it does not survive the restartRatis that rebuilds one, while the condition
+      // being reported - a copy the committed baseline rejected is still on disk - does survive it, and this mark
+      // is persisted in .raft/bootstrap-baselines.
+      //
+      // Nothing has to remember to clear it: the targeted install clears it on success
+      // (installFromLeaderForBootstrap), the full resync clears every one of them on success
+      // (downloadAllDatabasesFrom -> clearAllBootstrapUnreconciled), and reconcileBootstrapDivergence re-verifies
+      // it against the leader on the HealthMonitor tick and clears it when the copies match.
+      markBootstrapUnreconciled(dbName);
+
       if (hadLocalCopy) {
         // Safety net: install rolls back + reopens on failure; reopen here if left deregistered for any reason.
         // This branch should be unreachable on the normal failed-download case - install() is download-before-
@@ -3803,21 +3824,34 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   public String bootstrapWindowReason() {
     final int installing = bootstrapInstallsInFlight.size();
-    if (installing > 0)
-      return "The cluster's first-formation bootstrap is replacing " + installing + " database(s) on this node from "
-          + "the leader's snapshot: what is on disk is the copy the cluster's committed baseline decided against, "
-          + "so this node must not serve it. GET /api/v1/cluster names them";
-
     // Not getBootstrapUnreconciledDatabases(): that sorts a copy, and this runs on every readiness probe.
     ensureBootstrapBaselinesLoaded();
     final int unreconciled = bootstrapUnreconciledDatabases.size();
-    if (unreconciled > 0)
-      return unreconciled + " database(s) on this node hold a copy the cluster's committed bootstrap baseline did "
-          + "not adopt, and nothing has reconciled them since: their file ids are out of step with every other "
-          + "peer. GET /api/v1/cluster names them; POST /api/v1/cluster/resync/<database> on this node discards "
-          + "the local copy and adopts the leader's";
 
-    return null;
+    if (installing == 0 && unreconciled == 0)
+      return null;
+
+    // BOTH are reported when both hold, rather than the first one found (review of PR #7964). They are different
+    // databases in different states - an install replacing database A while database B sits unreconciled - and an
+    // operator who reads only the install would go on believing the node comes back by itself when the install
+    // finishes, which is the one case where it does not.
+    final StringBuilder reason = new StringBuilder(256);
+    if (installing > 0)
+      reason.append("The cluster's first-formation bootstrap is replacing ").append(installing)
+          .append(" database(s) on this node from the leader's snapshot: what is on disk is the copy the cluster's "
+              + "committed baseline decided against, so this node must not serve it.");
+    if (unreconciled > 0) {
+      if (installing > 0)
+        reason.append(' ');
+      reason.append(unreconciled)
+          .append(" database(s) on this node hold a copy the cluster's committed bootstrap baseline did not adopt, "
+              + "and nothing has reconciled them since: their file ids are out of step with every other peer. "
+              + "POST /api/v1/cluster/resync/<database> on this node discards the local copy and adopts the "
+              + "leader's.");
+    }
+    // Said once, whichever arms fired: the authenticated route is where the names are, and it is the answer to
+    // "which databases" for both conditions alike.
+    return reason.append(" GET /api/v1/cluster names them.").toString();
   }
 
   /**

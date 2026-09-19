@@ -154,12 +154,19 @@ class Issue7519BootstrapWindowGateTest {
   }
 
   /**
-   * And it comes back. A failed install must not wedge the node out of the Service for good: the mark is cleared
-   * in a {@code finally}, on the failure path too. What is left is the copy the cluster did not adopt, which the
-   * unreconciled mark reports in its own right and an operator can resync.
+   * A failed install hands over to a durable mark rather than to nothing. This is the path the gate leaks on if
+   * the handover is missing, and it is the LIKELY path during a real first formation: the bootstrap entry is
+   * applied while leader election on this peer may not have settled, so the very first download often has no
+   * leader to pull from.
+   * <p>
+   * The in-flight registration is released - the node is genuinely not installing any more, and holding readiness
+   * on a condition nothing clears would wedge it out of the Service for good. What replaces it is the
+   * unreconciled mark, which is persisted in {@code .raft/bootstrap-baselines}, so unlike the in-flight set it
+   * survives the {@code restartRatis} that rebuilds a state machine - and the condition it reports (a copy the
+   * committed baseline rejected is still on disk) survives a restart too.
    */
   @Test
-  void aFailedBootstrapInstallDoesNotWedgeTheNodeOutOfTheService() {
+  void aFailedBootstrapInstallHandsReadinessOverToTheDurableUnreconciledMark() {
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     sm.setServer(stubbedServer(configuration()));
 
@@ -167,8 +174,47 @@ class Issue7519BootstrapWindowGateTest {
         () -> sm.applyBootstrapFingerprintEntry(baselineOfAnotherCopy(Long.MAX_VALUE), 7L));
 
     assertThat(sm.getBootstrapInstallsInFlight())
-        .as("a node that is no longer installing is no longer held out on that ground")
+        .as("the node is not installing any more, so it is not held out on that ground")
         .isEmpty();
+    assertThat(sm.getBootstrapUnreconciledDatabases())
+        .as("but the copy the committed baseline rejected is still on disk, and only this records that")
+        .containsExactly(DB_NAME);
+    assertThat(sm.bootstrapWindowReason())
+        .as("so the node stays out of the Service across the scheduled retry, not only during the install")
+        .isNotNull();
+  }
+
+  /**
+   * Both conditions at once - an install replacing one database while another sits unreconciled - are reported
+   * together. An operator who read only the install would go on believing the node comes back by itself once the
+   * install finishes, which is the one case where it does not. Observed from inside the install, the only moment
+   * at which both are true.
+   */
+  @Test
+  void bothHalvesOfTheWindowAreReportedWhenBothHold() {
+    final ArcadeDBServer server = stubbedServer(configuration());
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+
+    final AtomicReference<String> reasonInsideTheInstall = new AtomicReference<>();
+    when(server.getBackupCoordinator()).thenAnswer(invocation -> {
+      reasonInsideTheInstall.set(sm.bootstrapWindowReason());
+      return null;
+    });
+
+    sm.setServer(server);
+    // A second database left unreconciled by an earlier pass, which no install in this test will clear.
+    sm.markBootstrapUnreconciled("another-database");
+
+    assertThatNoException().isThrownBy(
+        () -> sm.applyBootstrapFingerprintEntry(baselineOfAnotherCopy(Long.MAX_VALUE), 7L));
+
+    final String reason = reasonInsideTheInstall.get();
+    assertThat(reason).as("the probe was taken while the install was in flight").isNotNull();
+    assertThat(reason).contains("is replacing 1 database(s) on this node");
+    assertThat(reason).contains("1 database(s) on this node hold a copy");
+    assertThat(reason).as("the route that names them is said once, not once per condition")
+        .endsWith(" GET /api/v1/cluster names them.");
+    assertThat(reason).doesNotContain("another-database");
   }
 
   /**
