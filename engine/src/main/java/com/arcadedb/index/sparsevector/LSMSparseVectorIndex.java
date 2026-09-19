@@ -30,6 +30,7 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexFactoryHandler;
 import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.IndexReplayConclusion;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
@@ -496,18 +497,78 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       tx.addAfterCommitCallbackIfAbsent(afterCommitFlushKey, engine::maybeFlush);
       return;
     }
+    // #7933: no open transaction to queue onto, but the commit of one may still be in flight. An UPDATE indexes at
+    // commit time, not at save() time - TransactionContext.commit1stPhase() drains its deferred writes through
+    // updateRecordNoLock, which re-runs DocumentIndexer and lands right here, with the status no longer BEGUN - and
+    // that is BEFORE the page versions are validated, so applying straight through would leak exactly what the
+    // deferral below exists to prevent. This path is what a conflicted vector REWRITE travels.
+    final SparseVectorReplayBuffer buffer = replayBuffer();
+    if (buffer != null) {
+      buffer.record(dim, rid, weight, !add);
+      return;
+    }
+
     if (add)
       engine.put(dim, rid, weight);
     else
       engine.remove(dim, rid);
   }
 
-  /** Apply a single posting carried through commit replay via {@link SparsePostingReplayKey}. */
+  /**
+   * Takes delivery of a single posting carried through commit replay via {@link SparsePostingReplayKey}.
+   * <p>
+   * <b>Deferred, not applied (issue #7933).</b> The replay runs inside {@code commit1stPhase()} BEFORE the page
+   * versions are validated, so a transaction that then loses the MVCC check has already replayed every one of its
+   * postings - and this index's replay writes into the engine's process-wide {@link Memtable}, which no rollback
+   * can reach. Buffering here and publishing from {@link SparseVectorReplayBuffer#publishIndexReplay()} - which
+   * {@code TransactionContext.reset()} calls, and which a rolled back transaction never reaches - is what keeps an
+   * aborted transaction's postings and tombstones out of the index. See {@link SparseVectorReplayBuffer} for why
+   * deferring rather than journalling-and-undoing is the only correct answer for this index.
+   * <p>
+   * The direct branch is for a replay with no transaction driving it. Nothing in the engine does that today -
+   * {@code TransactionIndexContext.commit()} is the only caller of {@code putReplay}/{@code removeReplay} - but a
+   * marker reaching {@link #put} outside a commit must still land somewhere rather than be silently dropped.
+   */
   private void applyReplayPosting(final SparsePostingReplayKey key, final boolean add) {
+    final SparseVectorReplayBuffer buffer = replayBuffer();
+    if (buffer != null) {
+      buffer.record(key.dim(), key.rid(), key.weight(), !add);
+      return;
+    }
+
     if (add)
       engine.put(key.dim(), key.rid(), key.weight());
     else
       engine.remove(key.dim(), key.rid());
+  }
+
+  /**
+   * This transaction's deferred-posting buffer, created and registered on first use, or null when no transaction is
+   * replaying - in which case the caller applies straight through.
+   * <p>
+   * Gated on {@link TransactionContext.STATUS#COMMIT_1ST_PHASE} rather than merely on a transaction being present -
+   * the same test {@code LSMVectorIndex.replayableTransaction()} makes for the same reason. That is the status
+   * {@code commit1stPhase()} sets before it drains the deferred record writes and then {@code indexChanges.commit()},
+   * so it covers both routes into this buffer, and it is what tells a write that a conclusion is about to be applied
+   * to apart from one issued in an ordinary open transaction, which would be buffered against a conclusion that is
+   * not coming.
+   */
+  private SparseVectorReplayBuffer replayBuffer() {
+    final TransactionContext tx = underlyingIndex.getMutableIndex().getDatabase().getTransaction();
+    if (tx == null || tx.getStatus() != TransactionContext.STATUS.COMMIT_1ST_PHASE)
+      return null;
+
+    final IndexReplayConclusion registered = tx.getIndexReplayConclusion(this);
+    if (registered != null)
+      return (SparseVectorReplayBuffer) registered;
+
+    final SparseVectorReplayBuffer created = new SparseVectorReplayBuffer(engine);
+    tx.addIndexReplayConclusion(this, created);
+    // Registered here as well as in queueOrApply, and keyed so the two never register it twice: a transaction whose
+    // ONLY sparse writes are deferred updates (which never pass through the BEGUN branch) would otherwise leave the
+    // memtable to be bounded by some later transaction's commit.
+    tx.addAfterCommitCallbackIfAbsent(afterCommitFlushKey, engine::maybeFlush);
+    return created;
   }
 
   // --------------------------- pure delegation below ---------------------------
