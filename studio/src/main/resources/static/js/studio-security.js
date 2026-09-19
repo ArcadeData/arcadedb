@@ -10,12 +10,171 @@ var groupsDataTable = null;
 var groupsData = null;
 var editingGroupName = null;
 var editingGroupDatabase = null;
+// Last GET /api/v1/cluster payload seen by this page, or null when the server is not clustered (the route is
+// registered by the HA plugin, so a standalone server simply answers an error and the gate stays silent).
+var securityClusterStatus = null;
 
 function initSecurity() {
   if (!securityInitialized) {
     securityInitialized = true;
     loadUsers();
   }
+  // Asked every time the panel is opened, not once: a rolling upgrade finishes WHILE Studio is open, and a gate
+  // that never refreshed would keep an operator locked out of a form the cluster has since become ready for.
+  refreshSecurityClusterReadiness();
+}
+
+// ==================== Cluster readiness for replicated security changes ====================
+
+/**
+ * Re-reads the cluster status and re-applies the capability gate (issues #7511, #7538, #7548).
+ *
+ * A group or API-token change is replicated as a Raft log entry whose TYPE a peer that predates it cannot
+ * decode, and such a peer HALTS rather than skip a committed entry - so the leader refuses the whole change with
+ * a 409 while any peer has not advertised the capability. That refusal is correct and names the peer, but it
+ * arrives after the operator has filled in a form, usually inside a change window. This puts the same fact in
+ * front of them before the click.
+ *
+ * Every failure is swallowed on purpose: the route belongs to the HA plugin, so a standalone server answers 404
+ * or 400, and a Studio that showed an error toast for "this server is not a cluster" would be worse than one
+ * that says nothing.
+ */
+function refreshSecurityClusterReadiness(callback) {
+  jQuery
+    .ajax({
+      type: "GET",
+      url: "api/v1/cluster",
+      beforeSend: function (xhr) {
+        xhr.setRequestHeader("Authorization", globalCredentials);
+      },
+    })
+    .done(function (data) {
+      securityClusterStatus = data;
+    })
+    .fail(function () {
+      securityClusterStatus = null;
+    })
+    .always(function () {
+      renderSecurityCapabilityGate();
+      if (callback) callback();
+    });
+}
+
+/**
+ * The capability gap that blocks `capability`, or null when nothing does.
+ *
+ * Delegates the decision to studio-cluster.js so the Cluster page's banner and this gate cannot drift apart -
+ * including the part that matters most, that only a LEADER can answer for its peers (see
+ * clusterCapabilityReadiness). A follower, an unclustered server and a cluster that is fully upgraded all
+ * produce the same answer here: nothing to report, nothing disabled.
+ */
+function securityCapabilityGap(capability) {
+  if (typeof clusterSecurityCapabilityGaps !== "function") return null;
+
+  var gaps = clusterSecurityCapabilityGaps(securityClusterStatus);
+  for (var i = 0; i < gaps.length; i++) if (gaps[i].capability === capability) return gaps[i];
+  return null;
+}
+
+/** The warning an operator reads in place of the 409 they would otherwise have discovered by pressing the button. */
+function securityCapabilityBanner(gap) {
+  if (!gap) return "";
+
+  var peers = "";
+  for (var i = 0; i < gap.missing.length; i++) {
+    peers += "<li><b>" + escapeHtml(gap.missing[i].id) + "</b>: " + escapeHtml(gap.missing[i].reason) + "</li>";
+  }
+
+  return (
+    '<div class="alert alert-warning py-2 px-3 mb-3" style="font-size:0.82rem;">' +
+    '<div><i class="fa fa-exclamation-triangle" style="margin-right:6px;"></i><b>The cluster is not ready for ' +
+    escapeHtml(gap.what) +
+    ".</b> They are replicated as a <code>" +
+    escapeHtml(gap.capability) +
+    "</code> entry, and a peer that cannot decode one halts rather than skip it, so the leader refuses the change " +
+    "instead of writing it.</div>" +
+    '<ul class="mb-1 mt-1">' +
+    peers +
+    "</ul>" +
+    "<div>Finish the rolling upgrade - or restore contact with those peers - and reissue the change; it succeeds " +
+    "unchanged, with no sequencing by hand.</div>" +
+    "</div>"
+  );
+}
+
+/**
+ * Paints the banner on the Groups and API Tokens tabs and disables the Create buttons while the cluster cannot
+ * accept the change. Deletion is NOT disabled, and that is deliberate: a revocation is refused by the same gate,
+ * but taking the control away would leave an operator unable even to try, while the banner above the table
+ * already says why it would fail - and the 409 is now rendered as an explanation rather than a raw toast.
+ */
+function renderSecurityCapabilityGate() {
+  var gates = [
+    { capability: "security-groups-entry", banner: "#groupsCapabilityGate", button: "#btnCreateGroup" },
+    { capability: "security-api-tokens-entry", banner: "#tokensCapabilityGate", button: "#btnCreateToken" },
+  ];
+
+  for (var i = 0; i < gates.length; i++) {
+    var gate = gates[i];
+    var gap = securityCapabilityGap(gate.capability);
+
+    $(gate.banner).html(securityCapabilityBanner(gap));
+    $(gate.button)
+      .prop("disabled", gap != null)
+      .attr("title", gap ? "The cluster is not ready: " + gap.missing.length + " peer(s) have not finished upgrading" : null);
+  }
+}
+
+/**
+ * The same gate inside the Create/Edit Group modal, and on its Save button.
+ *
+ * Needed as well as the tab-level one because Edit Group is reachable from the table while Create Group is
+ * disabled, and an EDIT is replicated by the very same entry a create is - so a form that looked usable would
+ * hand back a 409 after the permissions had been retyped.
+ */
+function applyGroupModalCapabilityGate() {
+  var gap = securityCapabilityGap("security-groups-entry");
+  $("#groupModalCapabilityGate").html(securityCapabilityBanner(gap));
+  $("#groupModalSaveBtn").prop("disabled", gap != null);
+}
+
+/**
+ * Maps the leader's refusal to replicate a security change onto something worth reading (issues #7538, #7548).
+ * Returns null for every other failure, which leaves 400/403/412/500 rendering through globalNotifyError()
+ * exactly as before.
+ *
+ * The 409 needs its own handling for the same reason the 412 of issue #7804 did: globalNotifyError() renders
+ * json.error as the toast TITLE and json.detail as the body, and in production mode the server CONCEALS detail -
+ * so what reaches the operator is the bare heading "Cluster is not ready for this operation" with nothing to act
+ * on. The peers ride in exceptionArgs precisely because that field survives production mode, and this is the
+ * only thing in Studio that reads them.
+ */
+function clusterCapabilityRefusal(jqXHR) {
+  if (!jqXHR || jqXHR.status !== 409) return null;
+
+  var json;
+  try {
+    json = JSON.parse(jqXHR.responseText);
+  } catch (e) {
+    return null; // Not the server's JSON body: some other 409, or a proxy's error page.
+  }
+  if (!json || json.exception !== "com.arcadedb.server.ClusterCapabilityNotReadyException") return null;
+
+  // "<capability>|<peer>,<peer>,+N more" - bounded on purpose, and the only half production mode still emits.
+  var args = typeof json.exceptionArgs === "string" ? json.exceptionArgs : "";
+  var separator = args.indexOf("|");
+  var capability = separator >= 0 ? args.substring(0, separator) : args;
+  var peers = separator >= 0 ? args.substring(separator + 1) : "";
+
+  var message = "The leader refused this change because ";
+  message += peers ? "peer(s) " + peers + " have" : "at least one peer has";
+  message += " not advertised the '" + (capability || "required") + "' capability, so they cannot decode the entry " +
+    "it would be replicated as and would halt on applying it. Nothing was submitted, so nothing has changed " +
+    "anywhere in the cluster. Finish the rolling upgrade - or restore contact with those peers - and reissue it.";
+
+  if (json.detail) message += " Server: " + json.detail;
+
+  return { title: "Cluster is not ready for this change", message: message };
 }
 
 // ==================== Users & Permissions ====================
@@ -386,6 +545,7 @@ function loadApiTokens() {
     .done(function (data) {
       apiTokensLoaded = true;
       renderApiTokensTable(data.result || []);
+      renderSecurityCapabilityGate();
     })
     .fail(function (jqXHR) {
       globalNotifyError(jqXHR.responseText);
@@ -554,7 +714,7 @@ function createApiToken() {
     .fail(function (jqXHR) {
       // The create modal is deliberately left open on every failure: the form still holds what was typed,
       // and for the 412 below the fix is to reopen Studio elsewhere, not to retype the permissions.
-      var refusal = apiTokenTransportRefusal(jqXHR);
+      var refusal = apiTokenTransportRefusal(jqXHR) || clusterCapabilityRefusal(jqXHR);
       if (refusal) globalNotify(refusal.title, refusal.message, "danger");
       else globalNotifyError(jqXHR.responseText);
     });
@@ -617,7 +777,11 @@ function deleteApiToken(tokenHash) {
       loadApiTokens();
     })
     .fail(function (jqXHR) {
-      globalNotifyError(jqXHR.responseText);
+      // A revocation is replicated by the same entry a mint is, so the same gate refuses it - and a revocation
+      // that silently did not happen is the more dangerous of the two.
+      var refusal = clusterCapabilityRefusal(jqXHR);
+      if (refusal) globalNotify(refusal.title, refusal.message, "danger");
+      else globalNotifyError(jqXHR.responseText);
     });
 }
 
@@ -655,6 +819,7 @@ function loadGroups() {
         filterSelect.val("*");
 
       renderGroupsTable();
+      renderSecurityCapabilityGate();
     })
     .fail(function (jqXHR) {
       globalNotifyError(jqXHR.responseText);
@@ -778,6 +943,7 @@ function showCreateGroupForm() {
     });
 
   $("#groupNewType").html('<option value="">Add type...</option>');
+  applyGroupModalCapabilityGate();
   new bootstrap.Modal(document.getElementById("createGroupModal")).show();
 }
 
@@ -838,6 +1004,7 @@ function editGroup(db, name) {
   }
 
   loadTypesForGroupDatabase();
+  applyGroupModalCapabilityGate();
   new bootstrap.Modal(document.getElementById("createGroupModal")).show();
 }
 
@@ -942,7 +1109,13 @@ function saveGroup() {
       loadGroups();
     })
     .fail(function (jqXHR) {
-      globalNotifyError(jqXHR.responseText);
+      // The modal is left open: the form still holds what was typed, and the fix for a 409 is to finish the
+      // rolling upgrade and press Create again, not to retype the permissions.
+      var refusal = clusterCapabilityRefusal(jqXHR);
+      if (refusal) {
+        globalNotify(refusal.title, refusal.message, "danger");
+        refreshSecurityClusterReadiness();
+      } else globalNotifyError(jqXHR.responseText);
     });
 }
 
@@ -963,7 +1136,11 @@ function deleteGroup(db, name) {
       loadGroups();
     })
     .fail(function (jqXHR) {
-      globalNotifyError(jqXHR.responseText);
+      var refusal = clusterCapabilityRefusal(jqXHR);
+      if (refusal) {
+        globalNotify(refusal.title, refusal.message, "danger");
+        refreshSecurityClusterReadiness();
+      } else globalNotifyError(jqXHR.responseText);
     });
 }
 
