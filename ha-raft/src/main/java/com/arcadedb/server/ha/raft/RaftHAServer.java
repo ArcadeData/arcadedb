@@ -1176,6 +1176,13 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // rows - and an operator could not answer "is this cluster ready for a group change" without first finding
     // the leader. A probe is a read-only peer-to-peer GET and configuredPeers() is available in every role, so
     // there was never anything leader-shaped about the asking itself.
+    //
+    // WHAT IT COSTS, said out loud because it is a change in shape and not only in role (review of PR #7941):
+    // the fan-out was N-1 probes per REFRESH_PERIOD_MS cluster-wide and is now N*(N-1), because every node asks
+    // rather than one. On the cluster sizes Raft is useful at - single-digit voters, since every write needs a
+    // majority round trip - that is a handful of read-only HTTP GETs every five seconds against an endpoint
+    // that answers from memory, which is why it is paid rather than avoided. It is quadratic, though, so a
+    // deployment that grows the voter count well past that should know where the traffic comes from.
     startCapabilityMonitor();
 
     // Periodic snapshot/log-purge trigger (issue #5345). Started on every node, not only the leader:
