@@ -152,6 +152,11 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
    *   <li><b>Edges are collected only when the caller yields them.</b> Under a plain {@code YIELD nodes} the walk
    *   uses the neighbour-RID iterator, which reads the adjacency entries without materialising a single edge.</li>
    * </ul>
+   * An adjacency entry whose far endpoint has no record is dropped whole - neither the vertex nor the edge reaching
+   * it is reported - and the missing endpoint is remembered, so the second edge pointing at the same ghost costs a
+   * set probe instead of another failed load and another report. The one entry not covered by that guarantee is a
+   * neighbour the {@code labelFilter} excludes: it is never loaded, so nothing here knows whether it exists, and
+   * loading it to find out would undo the very saving the filter is there to make.
    * The walk is level-synchronous rather than a queue of (vertex, level) pairs: the level is a property of the
    * wave, so tracking it per entry allocates one wrapper per vertex to carry a number the loop already knows.
    *
@@ -169,6 +174,7 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
     final boolean collectEdges = reachableEdges != null;
 
     final RidHashSet visitedNodes = new RidHashSet();
+    final RidHashSet ghostNodes = new RidHashSet(16);
     final EdgeIdentitySet visitedEdges = collectEdges ? new EdgeIdentitySet() : null;
 
     visitedNodes.add(startNode.getIdentity());
@@ -187,14 +193,14 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
           for (final Vertex.DIRECTION direction : BOTH_DIRECTIONS) {
             for (final Edge edge : current.getEdges(direction, edgeTypes)) {
               try {
-                // RESOLVED BEFORE THE EDGE IS RECORDED: READING THE ENDPOINT IS WHAT FORCES A LAZILY LOADED EDGE, SO A
-                // GHOST EDGE SURFACES HERE AND IS SKIPPED WHOLE, RATHER THAN LANDING IN THE RESULT AND FAILING LATER
+                // READING THE ENDPOINT IS WHAT FORCES A LAZILY LOADED EDGE, SO A GHOST EDGE RECORD SURFACES HERE
                 final RID neighborId = direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut();
 
-                if (visitedEdges.add(edge.getIdentity()))
+                // AND THE EDGE IS RECORDED ONLY ONCE ITS FAR ENDPOINT HAS ANSWERED, SO relationships NEVER CARRIES AN
+                // EDGE WHOSE VERTEX nodes HAD TO LEAVE OUT
+                if (visitNeighbor(database, neighborId, labelFilter, visitedNodes, ghostNodes, reachableNodes, nextFrontier)
+                    && visitedEdges.add(edge.getIdentity()))
                   reachableEdges.add(edge);
-
-                visitNeighbor(database, neighborId, labelFilter, visitedNodes, reachableNodes, nextFrontier);
               } catch (final RecordNotFoundException e) {
                 GhostEdgeReporter.reportSkipped(e);
               }
@@ -202,13 +208,8 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
           }
         } else {
           // ONLY THE NODES ARE ASKED FOR: WALK THE ADJACENCY ENTRIES WITHOUT LOADING A SINGLE EDGE RECORD
-          for (final RID neighborId : current.getConnectedVertexRIDs(Vertex.DIRECTION.BOTH, edgeTypes)) {
-            try {
-              visitNeighbor(database, neighborId, labelFilter, visitedNodes, reachableNodes, nextFrontier);
-            } catch (final RecordNotFoundException e) {
-              GhostEdgeReporter.reportSkipped(e);
-            }
-          }
+          for (final RID neighborId : current.getConnectedVertexRIDs(Vertex.DIRECTION.BOTH, edgeTypes))
+            visitNeighbor(database, neighborId, labelFilter, visitedNodes, ghostNodes, reachableNodes, nextFrontier);
         }
       }
 
@@ -220,17 +221,43 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
    * Adds a neighbour to the walk unless it has been seen already or its label is filtered out. The vertex record is
    * loaded only once both tests have passed, which is what keeps the walk's loads proportional to the component
    * rather than to its adjacency entries.
+   * <p>
+   * A RID with no record behind it is recorded in {@code ghostNodes} rather than in {@code visitedNodes}: the two
+   * answer different questions, and conflating them would mark a missing vertex as reached - so the FIRST edge to
+   * a ghost would be dropped and every later one silently kept, which is worse than either consistent outcome.
+   *
+   * @return whether the neighbour names a vertex the walk can stand behind: one it loaded, one it had already
+   * loaded, or one the label filter took out of the answer without ever looking. {@code false} says the endpoint is
+   * missing, which is the caller's cue to leave the edge reaching it out of the result too.
    */
-  private void visitNeighbor(final Database database, final RID neighborId, final String[] labelFilter,
-      final RidHashSet visitedNodes, final List<Vertex> reachableNodes, final List<Vertex> nextFrontier) {
-    if (neighborId == null || visitedNodes.contains(neighborId) || !matchesLabels(database, neighborId, labelFilter))
-      return;
+  private boolean visitNeighbor(final Database database, final RID neighborId, final String[] labelFilter,
+      final RidHashSet visitedNodes, final RidHashSet ghostNodes, final List<Vertex> reachableNodes,
+      final List<Vertex> nextFrontier) {
+    if (neighborId == null)
+      return false;
+
+    if (visitedNodes.contains(neighborId))
+      return true;
+
+    if (ghostNodes.contains(neighborId))
+      return false;
+
+    if (!matchesLabels(database, neighborId, labelFilter))
+      return true;
+
+    final Vertex neighbor;
+    try {
+      neighbor = neighborId.asVertex();
+    } catch (final RecordNotFoundException e) {
+      ghostNodes.add(neighborId);
+      GhostEdgeReporter.reportSkipped(e);
+      return false;
+    }
 
     visitedNodes.add(neighborId);
-
-    final Vertex neighbor = neighborId.asVertex();
     reachableNodes.add(neighbor);
     nextFrontier.add(neighbor);
+    return true;
   }
 
   /**

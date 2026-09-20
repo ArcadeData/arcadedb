@@ -169,8 +169,12 @@ class PathSubgraphComponentTest {
   /**
    * Issue #7976: a walk that reads a record per adjacency entry reads {@code EDGES} records or more; a walk that
    * deduplicates on the RID first reads a bounded handful per vertex of the component - the vertex itself plus the
-   * head of each of its two edge lists. The bound below sits between those two, far enough above the second to
-   * survive an extra chunk hop on a denser vertex and far enough below the first that the old walk cannot pass it.
+   * head of each of its two edge lists.
+   * <p>
+   * Measured on this fixture: 129,145 record lookups before the fix, 11,144 after. The two bounds below sit between
+   * those, far enough above 11,144 to survive an extra chunk hop on a denser vertex and far enough below 129,145
+   * that the old walk cannot pass them. Do not loosen them to accommodate a number measured on a different graph -
+   * the whole point of the assertion is that the count follows {@code VERTICES} and not {@code EDGES}.
    */
   @Test
   void yieldingOnlyNodesReadsRecordsPerVertexNotPerEdge() {
