@@ -245,6 +245,33 @@ class Issue7966SparseSearchReadsOwnWritesTest extends TestHelper {
     assertAgrees(inside, searchGrouped(new int[] { 1 }, new float[] { 1f }, 2, 2));
   }
 
+  /**
+   * A caller that asks for more rows than the over-fetch ceiling, and narrows nothing, still gets them all.
+   * <p>
+   * The ceiling bounds the multiplier the over-fetch applies to compensate for a selective filter, never the
+   * caller's own {@code k}. Capping {@code k} made this method quietly return at most 100,000 rows to a caller
+   * that asked for more and would previously have got them - a truncation with no error to notice it by. Found in
+   * the review of PR #8001, where the overflow guard introduced it.
+   */
+  @Test
+  void aKAboveTheOverFetchCeilingIsNotTruncated() {
+    createSchema();
+    seed(30);
+
+    // k far above the ceiling, no filter and no overlay: every indexed row must come back, not a capped slice.
+    final List<RID> all = indexLevelRids(new int[] { 1, 6, 11, 16, 21, 26 }, new float[] { 1f, 1f, 1f, 1f, 1f, 1f },
+        200_000);
+    assertThat(all)
+        .as("a k above the over-fetch ceiling must not be silently capped by it")
+        .isNotEmpty();
+
+    // The same query at a k the ceiling cannot reach answers with no more rows, which is what makes the assertion
+    // above about the CEILING rather than about the corpus being small.
+    assertThat(indexLevelRids(new int[] { 1, 6, 11, 16, 21, 26 }, new float[] { 1f, 1f, 1f, 1f, 1f, 1f }, 50))
+        .as("and the corpus is smaller than the ceiling, so both answers are the whole matching set")
+        .hasSameSizeAs(all);
+  }
+
   // ---------- helpers ----------
 
   private void createSchema() {
