@@ -321,7 +321,8 @@ public class CallStep extends AbstractExecutionStep {
     if (declared == null || declared.isEmpty())
       return Set.of();
 
-    if (!callClause.hasYield() || callClause.isYieldAll() || callClause.getYieldItems().isEmpty())
+    // isYieldAll() IS "hasYield() with no items", so an empty item list is already covered by it
+    if (!callClause.hasYield() || callClause.isYieldAll())
       return Set.copyOf(declared);
 
     final Set<String> requested = new HashSet<>(declared.size());

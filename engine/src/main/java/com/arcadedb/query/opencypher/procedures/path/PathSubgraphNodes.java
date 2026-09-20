@@ -88,7 +88,7 @@ public class PathSubgraphNodes extends AbstractPathProcedure {
     final String[] labelFilter = extractLabels(config.get("labelFilter"));
     final int maxLevel = config.containsKey("maxLevel") ? NumberUtils.saturateToInt((Number) config.get("maxLevel")) : Integer.MAX_VALUE;
 
-    // ONLY THE NODES ARE EVER YIELDED HERE, SO THE WALK NEVER MATERIALISES AN EDGE (issue #7976)
+    // Only the nodes are ever yielded here, so the walk never materialises an edge (issue #7976)
     final List<Vertex> reachableNodes = new ArrayList<>();
     collectReachableComponent(startNode, relTypes, labelFilter, maxLevel, reachableNodes, null);
 

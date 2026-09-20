@@ -127,13 +127,13 @@ public class PathSpanningTree extends AbstractPathProcedure {
 
         for (final Edge edge : edges) {
           try {
-            // THE NEIGHBOUR IS IDENTIFIED BY ITS RID: A SPANNING TREE REJECTS EVERY EDGE THAT WOULD CLOSE A CYCLE, SO
-            // MOST ENTRIES NEVER NEED THE VERTEX RECORD AT ALL (issue #7976)
+            // The neighbour is identified by its RID: a spanning tree rejects every edge that would close a cycle, so
+            // most entries never need the vertex record at all (issue #7976)
             final RID neighborId = direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut();
 
             if (!visited.contains(neighborId) && matchesLabels(database, neighborId, labelFilter)) {
-              // RESOLVED BEFORE THE RID IS MARKED VISITED: A RID MARKED VISITED BY A LOAD THAT THEN FAILED WOULD MAKE
-              // EVERY LATER EDGE TO THE SAME GHOST SHORT-CIRCUIT, SO ONLY THE FIRST ONE WOULD EVER BE REPORTED
+              // Resolved before the RID is marked visited: a RID marked visited by a load that then failed would make
+              // every later edge to the same ghost short-circuit, so only the first one would ever be reported
               final Vertex neighbor = neighborId.asVertex();
               visited.add(neighborId);
 
