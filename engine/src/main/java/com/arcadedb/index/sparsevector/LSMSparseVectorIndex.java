@@ -386,7 +386,8 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       return pending.size() <= k ? pending : pending.subList(0, k);
 
     final List<RidScore> merged = new ArrayList<>(Math.min(k, committed.size() + pending.size()));
-    int c = 0, p = 0;
+    int c = 0;
+    int p = 0;
     while (merged.size() < k && (c < committed.size() || p < pending.size())) {
       if (p == pending.size() || (c < committed.size() && committed.get(c).score() >= pending.get(p).score()))
         merged.add(committed.get(c++));

@@ -111,6 +111,9 @@ public class TransactionIndexContext {
   private       IdentityHashMap<IndexInternal, Object>                       cachedViews;
   private       long                                                         cachedViewVersion = -1L;
 
+  /** The cached stand-in for "this transaction has written nothing to this index". See {@link #cacheIndexView}. */
+  public static final Object NO_VIEW = new Object();
+
   /**
    * The journal of what one record's indexing added, so it can be taken back exactly (issue #7467).
    * <p>
@@ -943,9 +946,6 @@ public class TransactionIndexContext {
     cachedViewVersion = laneVersion;
     cachedViews.put(index, view == null ? NO_VIEW : view);
   }
-
-  /** The cached stand-in for "this transaction has written nothing to this index". See {@link #cacheIndexView}. */
-  public static final Object NO_VIEW = new Object();
 
   /**
    * The append-only lane of an index that opted out of the key-ordered map, in the order its entries were queued -
