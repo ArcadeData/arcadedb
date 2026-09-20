@@ -34,6 +34,7 @@ import com.arcadedb.index.IndexReplayConclusion;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
+import com.arcadedb.index.vector.GroupAdmissionState;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.IndexMetadata;
@@ -278,6 +279,22 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    * @return ordered list of (RID, score) pairs from highest to lowest score, capped at {@code k}.
    */
   public List<RidScore> topK(final int[] queryIndices, final float[] queryValues, final int k, final Set<RID> allowedRIDs) {
+    return topK(queryIndices, queryValues, k, allowedRIDs, transactionOverlay());
+  }
+
+  /**
+   * {@link #topK(int[], float[], int, Set)} against an overlay the CALLER resolved (issue #7966).
+   * <p>
+   * The no-overlay overload resolves one from whatever transaction is bound to the thread it runs on, which is
+   * right for a caller that searches on its own thread and wrong for one that fans out: on a
+   * {@code SparseVectorScoringPool} worker there is no transaction to find, so the same query would read its own
+   * writes on the serial plan and miss them on the parallel one. A fan-out caller resolves the overlay up front and
+   * passes it here.
+   *
+   * @param overlay what this transaction has queued for this index, or {@code null} for the committed state alone
+   */
+  public List<RidScore> topK(final int[] queryIndices, final float[] queryValues, final int k, final Set<RID> allowedRIDs,
+      final SparseTransactionOverlay overlay) {
     if (queryIndices == null || queryValues == null)
       throw new IndexException("Query indices and values must not be null");
     if (queryIndices.length != queryValues.length)
@@ -318,7 +335,15 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     // Over-fetch when an allowedRIDs whitelist is in play to reduce the chance of returning
     // fewer than K items because the top-scored RIDs were filtered out. The fixed cap keeps
     // worst-case work bounded even when the filter is very selective.
-    final int fetchK = allowedRIDs == null || allowedRIDs.isEmpty() ? k : Math.min(k * 8, 100_000);
+    //
+    // The overlay widens it by exactly the number of RIDs the transaction has touched (issue #7966): those are
+    // dropped from the committed answer below - their committed vector is stale, and a deleted record must not
+    // come back - so fetching k of them and discarding some would under-fill. Fetching k + touched cannot.
+    final Set<RID> pendingRIDs = overlay != null ? overlay.touchedRIDs() : null;
+    final long widened = (long) k + (overlay != null ? overlay.touchedCount() : 0);
+    final int fetchK = allowedRIDs == null || allowedRIDs.isEmpty() ?
+        (int) Math.min(widened, 100_000) :
+        (int) Math.min(widened * 8, 100_000);
 
     final List<RidScore> raw;
     try {
@@ -327,18 +352,62 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       throw new IndexException("Sparse vector top-K failed", e);
     }
 
-    if (allowedRIDs == null || allowedRIDs.isEmpty())
+    final boolean filtered = allowedRIDs != null && !allowedRIDs.isEmpty();
+    if (!filtered && pendingRIDs == null)
       return raw.size() <= k ? raw : raw.subList(0, k);
 
     final List<RidScore> out = new ArrayList<>(Math.min(k, raw.size()));
     for (final RidScore r : raw) {
-      if (!allowedRIDs.contains(r.rid()))
+      if (filtered && !allowedRIDs.contains(r.rid()))
+        continue;
+      if (pendingRIDs != null && pendingRIDs.contains(r.rid()))
         continue;
       out.add(r);
       if (out.size() == k)
         break;
     }
-    return out;
+
+    if (overlay == null)
+      return out;
+
+    // The transaction's own rows, scored from what it has queued, merged into the committed ones by score. Both
+    // sides are exact top-k of their own population, so the merge of the two is the exact top-k of the union.
+    return mergeByScore(out, overlay.topK(queryIndices, effectiveWeights, allowedRIDs, k), k);
+  }
+
+  /**
+   * The best {@code k} of two already-sorted, disjoint score lists, highest first. Disjoint by construction: the
+   * committed side skips every RID the overlay holds.
+   */
+  private static List<RidScore> mergeByScore(final List<RidScore> committed, final List<RidScore> pending, final int k) {
+    if (pending.isEmpty())
+      return committed;
+    if (committed.isEmpty())
+      return pending.size() <= k ? pending : pending.subList(0, k);
+
+    final List<RidScore> merged = new ArrayList<>(Math.min(k, committed.size() + pending.size()));
+    int c = 0, p = 0;
+    while (merged.size() < k && (c < committed.size() || p < pending.size())) {
+      if (p == pending.size() || (c < committed.size() && committed.get(c).score() >= pending.get(p).score()))
+        merged.add(committed.get(c++));
+      else
+        merged.add(pending.get(p++));
+    }
+    return merged;
+  }
+
+  /**
+   * What the transaction bound to THIS thread has queued for this index, or {@code null} when it has queued nothing
+   * - which is every read-only query, and costs one map lookup (issue #7966).
+   * <p>
+   * Public because a caller that fans its per-bucket searches out to a pool has to resolve it here, on its own
+   * thread, and hand it to the workers: see {@link #topK(int[], float[], int, Set, SparseTransactionOverlay)}.
+   */
+  public SparseTransactionOverlay transactionOverlay() {
+    final TransactionContext tx = underlyingIndex.getMutableIndex().getDatabase().getTransactionIfExists();
+    if (tx == null || tx.getStatus() != TransactionContext.STATUS.BEGUN)
+      return null;
+    return SparseTransactionOverlay.of(tx.getIndexChanges().getUnorderedIndexKeys(getName()));
   }
 
   /**
@@ -366,6 +435,15 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    */
   public List<RidScore> topKGrouped(final int[] queryIndices, final float[] queryValues, final int limit, final int groupSize,
       final Set<RID> allowedRIDs, final Function<RID, Object> groupKeyResolver) {
+    return topKGrouped(queryIndices, queryValues, limit, groupSize, allowedRIDs, groupKeyResolver, transactionOverlay());
+  }
+
+  /**
+   * {@link #topKGrouped(int[], float[], int, int, Set, Function)} against an overlay the CALLER resolved, for the
+   * same reason the ungrouped overload has one (issue #7966).
+   */
+  public List<RidScore> topKGrouped(final int[] queryIndices, final float[] queryValues, final int limit, final int groupSize,
+      final Set<RID> allowedRIDs, final Function<RID, Object> groupKeyResolver, final SparseTransactionOverlay overlay) {
     if (queryIndices == null || queryValues == null)
       throw new IndexException("Query indices and values must not be null");
     if (queryIndices.length != queryValues.length)
@@ -404,11 +482,36 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       System.arraycopy(queryValues, 0, effectiveWeights, 0, queryValues.length);
     }
 
+    final List<RidScore> committed;
     try {
-      return engine.topKGrouped(queryIndices, effectiveWeights, limit, groupSize, groupKeyResolver, allowedRIDs);
+      // The excluded set is applied INSIDE the DAAT loop rather than by filtering the result: a grouped search
+      // counts admissions per group as it goes, so dropping rows afterwards would leave groups short of their cap
+      // with candidates still available (issue #7966).
+      committed = engine.topKGrouped(queryIndices, effectiveWeights, limit, groupSize, groupKeyResolver, allowedRIDs,
+          overlay != null ? overlay.touchedRIDs() : null);
     } catch (final IOException e) {
       throw new IndexException("Sparse vector grouped top-K failed", e);
     }
+
+    if (overlay == null)
+      return committed;
+
+    // The transaction's rows carry no group accounting of their own, so the caps are re-applied over the union. The
+    // engine already enforced them on the committed half, which makes this pass idempotent there - the same
+    // relationship the SQL layer's own re-application has with a single-bucket result.
+    final List<RidScore> merged = mergeByScore(committed,
+        overlay.topK(queryIndices, effectiveWeights, allowedRIDs, limit * groupSize),
+        Integer.MAX_VALUE);
+
+    final GroupAdmissionState groups = new GroupAdmissionState(limit, groupSize);
+    final List<RidScore> out = new ArrayList<>(Math.min(merged.size(), limit * groupSize));
+    for (final RidScore candidate : merged) {
+      if (groups.isFull())
+        break;
+      if (groups.admit(groupKeyResolver.apply(candidate.rid())))
+        out.add(candidate);
+    }
+    return out;
   }
 
   /** Counts live postings under one dimension via the engine's merged cursor. O(df). */

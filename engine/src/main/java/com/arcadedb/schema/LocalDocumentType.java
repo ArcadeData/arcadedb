@@ -275,7 +275,7 @@ public class LocalDocumentType implements DocumentType {
       // wait for the whole database's page flush queue to drain. Refusing here unwinds through the catch below,
       // which puts the buckets renamed above back under their old names.
       ((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance().executeInWriteLock(() -> {
-        if (schema.types.putIfAbsent(newName, this) != null)
+        if (schema.typeMap().putIfAbsent(newName, this) != null)
           throw new SchemaException("Type with name '" + newName + "' already exists");
 
         name = newName;
@@ -303,7 +303,7 @@ public class LocalDocumentType implements DocumentType {
       // resolving the old name gets this type rather than nothing. schema.json is unaffected either way -
       // saveConfiguration() keys each entry by t.getName(), so two keys onto one type collapse into one entry.
       ((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance()
-          .executeInWriteLock(() -> schema.types.remove(oldName, this));
+          .executeInWriteLock(() -> schema.typeMap().remove(oldName, this));
 
       // SchemaException too: it is a RuntimeException, and letting it past this catch would leave the buckets
       // already renamed on disk with a schema.json that still names the old files.
@@ -312,7 +312,7 @@ public class LocalDocumentType implements DocumentType {
       // ONLY OUR RESERVATION GOES, and nothing is restored: the old name was never released above, so it still
       // maps to this type. The two-argument remove() is what keeps a refusal - the putIfAbsent losing to whoever
       // already holds the new name - from evicting that winner's entry (#7918).
-      schema.types.remove(newName, this);
+      schema.typeMap().remove(newName, this);
 
       boolean corrupted = false;
 
@@ -479,10 +479,10 @@ public class LocalDocumentType implements DocumentType {
 
     // DEREGISTER ALL PREVIOUS ALIASES
     for (String alias : this.aliases)
-      schema.types.remove(alias);
+      schema.typeMap().remove(alias);
 
     for (String alias : aliases)
-      schema.types.put(alias, this);
+      schema.typeMap().put(alias, this);
 
     // A copy, and an unmodifiable one: the parameter belongs to the caller. Published last so a lock-free
     // instanceOf() either sees the whole previous set or the whole new one.
