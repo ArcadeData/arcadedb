@@ -81,7 +81,10 @@ public abstract class StaticBaseServerTest {
    */
   protected static int getServerHttpPort(final ArcadeDBServer server) {
     final HttpServer http = server != null ? server.getHttpServer() : null;
-    if (http == null)
+    // <= 0 rather than just a null http: getPort() hands back the raw field, which is 0 until the bind loop
+    // runs and -1 once handleServerStartFailure() has given up on the whole range. Neither is a port, and
+    // returning one would be the guess this method exists to refuse.
+    if (http == null || http.getPort() <= 0)
       throw new IllegalStateException("Server is not started: it has not bound an HTTP port yet, so there is none to address");
     return http.getPort();
   }
