@@ -101,6 +101,7 @@ public class PathSpanningTree extends AbstractPathProcedure {
     // BFS to build spanning tree
     final List<List<Object>> allPaths = new ArrayList<>();
     final RidHashSet visited = new RidHashSet();
+    final RidHashSet ghostNodes = new RidHashSet(16);
     final Queue<PathLevel> queue = new ArrayDeque<>();
 
     final List<Object> initialPath = new ArrayList<>();
@@ -134,7 +135,10 @@ public class PathSpanningTree extends AbstractPathProcedure {
             if (!visited.contains(neighborId) && matchesLabels(database, neighborId, labelFilter)) {
               // Resolved before the RID is marked visited: a RID marked visited by a load that then failed would make
               // every later edge to the same ghost short-circuit, so only the first one would ever be reported
-              final Vertex neighbor = neighborId.asVertex();
+              final Vertex neighbor = resolveNeighbor(neighborId, ghostNodes);
+              if (neighbor == null)
+                continue;
+
               visited.add(neighborId);
 
               final List<Object> newPath = new ArrayList<>(current.path.size() + 2);

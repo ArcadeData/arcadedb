@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.utility.NumberUtils;
+import com.arcadedb.utility.RidHashSet;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -100,11 +101,12 @@ public class PathExpand extends AbstractPathProcedure {
     final List<List<Object>> allPaths = new ArrayList<>();
     final List<Object> currentPath = new ArrayList<>();
     final Set<RID> visited = new HashSet<>();
+    final RidHashSet ghostNodes = new RidHashSet(16);
 
     currentPath.add(startNode);
     visited.add(startNode.getIdentity());
 
-    expandPaths(startNode, relTypes, labelFilter, 0, minDepth, maxDepth, currentPath, visited, allPaths, context);
+    expandPaths(startNode, relTypes, labelFilter, 0, minDepth, maxDepth, currentPath, visited, ghostNodes, allPaths, context);
 
     // Convert paths to results
     return allPaths.stream().map(pathElements -> {
@@ -120,7 +122,7 @@ public class PathExpand extends AbstractPathProcedure {
   // set with linear probing cannot remove an entry without tombstones - which RidHashSet deliberately does not carry
   private void expandPaths(final Vertex current, final String[] relTypes, final String[] labelFilter,
       final int currentDepth, final int minDepth, final int maxDepth,
-      final List<Object> currentPath, final Set<RID> visited,
+      final List<Object> currentPath, final Set<RID> visited, final RidHashSet ghostNodes,
       final List<List<Object>> allPaths, final CommandContext context) {
 
     // If we're at or past minDepth, this is a valid path
@@ -135,16 +137,16 @@ public class PathExpand extends AbstractPathProcedure {
 
     // Expand outgoing edges
     expandInDirection(current, relTypes, labelFilter, currentDepth, minDepth, maxDepth,
-        currentPath, visited, allPaths, context, Vertex.DIRECTION.OUT);
+        currentPath, visited, ghostNodes, allPaths, context, Vertex.DIRECTION.OUT);
 
     // Expand incoming edges
     expandInDirection(current, relTypes, labelFilter, currentDepth, minDepth, maxDepth,
-        currentPath, visited, allPaths, context, Vertex.DIRECTION.IN);
+        currentPath, visited, ghostNodes, allPaths, context, Vertex.DIRECTION.IN);
   }
 
   private void expandInDirection(final Vertex current, final String[] relTypes, final String[] labelFilter,
       final int currentDepth, final int minDepth, final int maxDepth,
-      final List<Object> currentPath, final Set<RID> visited,
+      final List<Object> currentPath, final Set<RID> visited, final RidHashSet ghostNodes,
       final List<List<Object>> allPaths, final CommandContext context, final Vertex.DIRECTION direction) {
 
     final Iterable<Edge> edges = relTypes != null && relTypes.length > 0
@@ -157,7 +159,10 @@ public class PathExpand extends AbstractPathProcedure {
         final RID neighborId = direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut();
 
         if (!visited.contains(neighborId) && matchesLabels(current.getDatabase(), neighborId, labelFilter)) {
-          final Vertex neighbor = neighborId.asVertex();
+          final Vertex neighbor = resolveNeighbor(neighborId, ghostNodes);
+          if (neighbor == null)
+            continue;
+
           visited.add(neighborId);
           currentPath.add(edge);
           currentPath.add(neighbor);
@@ -165,7 +170,7 @@ public class PathExpand extends AbstractPathProcedure {
           // try-finally so the path/visited bookkeeping is unwound even if the recursion throws.
           try {
             expandPaths(neighbor, relTypes, labelFilter, currentDepth + 1, minDepth, maxDepth,
-                currentPath, visited, allPaths, context);
+                currentPath, visited, ghostNodes, allPaths, context);
           } finally {
             // Backtrack
             currentPath.removeLast();
@@ -174,8 +179,8 @@ public class PathExpand extends AbstractPathProcedure {
           }
         }
       } catch (final RecordNotFoundException e) {
-        // Only edge.getIn()/getOut() (a ghost edge record, surfaced by its lazy load) and neighborId.asVertex()
-        // (a ghost vertex) above can land here; the recursion has its own per-edge catches.
+        // Only edge.getIn()/getOut() (a ghost edge record, surfaced by its lazy load) can land here now; a ghost
+        // VERTEX is caught and remembered inside resolveNeighbor. The recursion has its own per-edge catches.
         GhostEdgeReporter.reportSkipped(e);
       }
     }

@@ -220,6 +220,28 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
   }
 
   /**
+   * The neighbour vertex behind a RID, or {@code null} when that RID names no record.
+   * <p>
+   * A missing endpoint is remembered in {@code ghostNodes}, so the second edge into the same ghost costs a set probe
+   * instead of another failed load and another report - which matters on a vertex with a high ghost fan-in, where
+   * "report every encounter" means one failed load per edge. It is a set of its own rather than the walk's visited
+   * set because the two answer different questions: a ghost was never reached, and marking it as though it had been
+   * makes a later edge to it look ordinary (issue #7976).
+   */
+  protected Vertex resolveNeighbor(final RID neighborId, final RidHashSet ghostNodes) {
+    if (ghostNodes.contains(neighborId))
+      return null;
+
+    try {
+      return neighborId.asVertex();
+    } catch (final RecordNotFoundException e) {
+      ghostNodes.add(neighborId);
+      GhostEdgeReporter.reportSkipped(e);
+      return null;
+    }
+  }
+
+  /**
    * Adds a neighbour to the walk unless it has been seen already or its label is filtered out. The vertex record is
    * loaded only once both tests have passed, which is what keeps the walk's loads proportional to the component
    * rather than to its adjacency entries.
@@ -247,14 +269,9 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
     if (!matchesLabels(database, neighborId, labelFilter))
       return true;
 
-    final Vertex neighbor;
-    try {
-      neighbor = neighborId.asVertex();
-    } catch (final RecordNotFoundException e) {
-      ghostNodes.add(neighborId);
-      GhostEdgeReporter.reportSkipped(e);
+    final Vertex neighbor = resolveNeighbor(neighborId, ghostNodes);
+    if (neighbor == null)
       return false;
-    }
 
     visitedNodes.add(neighborId);
     reachableNodes.add(neighbor);
