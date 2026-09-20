@@ -123,10 +123,12 @@ public interface Procedure {
    * everything, and a result still carries whatever fields the procedure put in it, because the {@code YIELD}
    * projection happens downstream in {@code CallStep} either way.
    * <p>
-   * {@code requestedYieldFields} is never {@code null}, and is a subset of {@link #getYieldFields()}: a {@code CALL}
+   * {@code requestedYieldFields} is a subset of {@link #getYieldFields()}: a {@code CALL}
    * with no {@code YIELD}, or with {@code YIELD *}, asks for every declared field. It is empty only for a procedure
    * that declares no yield fields at all, which is the one case where there is nothing to ask for - so a procedure
    * decides what to build by asking whether its own field is IN the set, never by reading emptiness as "everything".
+   * The {@code CALL} path never passes {@code null}; an implementation that is also reachable from a direct caller
+   * may still want to treat {@code null} as "everything", the way the three-argument overload does.
    *
    * @param args                 the procedure arguments (already evaluated)
    * @param inputRow             the current input row (may be null for standalone CALL)

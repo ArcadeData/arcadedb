@@ -271,6 +271,7 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
   private boolean visitNeighbor(final Database database, final RID neighborId, final String[] labelFilter,
       final boolean endpointMustExist, final RidHashSet visitedNodes, final RidHashSet ghostNodes,
       final List<Vertex> reachableNodes, final List<Vertex> nextFrontier) {
+    // Before any set is touched: RidHashSet reads the bucket and offset off the RID without checking it for null
     if (neighborId == null)
       return false;
 
