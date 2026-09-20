@@ -127,6 +127,35 @@ class PathSubgraphGhostEndpointTest {
   }
 
   /**
+   * The depth-first branch of {@code path.expandConfig}, which {@code bfs: false} selects, is a different walk from
+   * the breadth-first one above and carries its own visited/ghost bookkeeping.
+   */
+  @Test
+  void expandConfigDepthFirstDoesNotWalkThroughTheGhostVertex() {
+    final ResultSet rs = database.query("cypher", """
+        MATCH (a:Node {name: 'A'})
+        CALL path.expandconfig(a, {relationshipFilter: 'LINK', minLevel: 1, maxLevel: 3, bfs: false}) YIELD path
+        RETURN path
+        """);
+
+    assertThat(pathEndpoints(rs)).containsExactly("A>B");
+  }
+
+  /**
+   * {@code path.expand} is the other depth-first walk, with its own copy of the same bookkeeping.
+   */
+  @Test
+  void expandDoesNotWalkThroughTheGhostVertex() {
+    final ResultSet rs = database.query("cypher", """
+        MATCH (a:Node {name: 'A'})
+        CALL path.expand(a, 'LINK', null, 1, 3) YIELD path
+        RETURN path
+        """);
+
+    assertThat(pathEndpoints(rs)).containsExactly("A>B");
+  }
+
+  /**
    * {@code path.spanningTree} reaches the same endpoint from two different vertices in this fixture, so it also
    * exercises the second encounter with an endpoint already known to be missing.
    */
