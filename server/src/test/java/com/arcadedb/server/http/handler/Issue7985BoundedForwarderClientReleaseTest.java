@@ -36,6 +36,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -145,8 +146,14 @@ class Issue7985BoundedForwarderClientReleaseTest {
     assertThat(LeaderDial.releaseBounded(null)).isTrue();
   }
 
+  /**
+   * Sends {@value #FORWARDS_PER_CYCLE} forwards to the silent peer and returns only once every one of them
+   * has genuinely reached it, so the release under test always has an exchange to cancel.
+   */
   private static List<CompletableFuture<HttpResponse<String>>> parkForwards(final HttpClient client,
       final SilentPeer peer) throws InterruptedException {
+    peer.expect(FORWARDS_PER_CYCLE);
+
     final List<CompletableFuture<HttpResponse<String>>> parked = new ArrayList<>(FORWARDS_PER_CYCLE);
     for (int i = 0; i < FORWARDS_PER_CYCLE; i++)
       parked.add(client.sendAsync(
@@ -155,8 +162,7 @@ class Issue7985BoundedForwarderClientReleaseTest {
               .GET().build(),
           HttpResponse.BodyHandlers.ofString()));
 
-    // Let the exchanges reach the peer, so the release below has something to cancel rather than an idle client.
-    Thread.sleep(20);
+    peer.awaitOnTheWire();
     return parked;
   }
 
@@ -164,11 +170,18 @@ class Issue7985BoundedForwarderClientReleaseTest {
    * A listener that accepts connections and then says nothing at all - the leader in a long stop-the-world
    * pause, or behind a partition that does not RST, which is the state issue #7739 describes an operator
    * restarting into.
+   * <p>
+   * It also reports when a parked exchange is genuinely <b>on the wire</b>: every accepted connection gets a
+   * reader that blocks for the first byte of the request and only then counts down the latch {@link #expect(int)}
+   * armed. A fixed sleep in its place establishes nothing - on a slow runner the release under test would be
+   * handed an idle client, which even the unfixed code releases correctly, so the regression test would pass
+   * for the wrong reason (CodeRabbit review on PR #8026).
    */
   static final class SilentPeer implements Closeable {
-    private final ServerSocket listener;
-    private final Thread       acceptor;
-    private final List<Socket> accepted = new ArrayList<>();
+    private final    ServerSocket   listener;
+    private final    Thread         acceptor;
+    private final    List<Socket>   accepted  = new ArrayList<>();
+    private volatile CountDownLatch onTheWire = new CountDownLatch(0);
 
     private SilentPeer(final ServerSocket listener) {
       this.listener = listener;
@@ -179,6 +192,9 @@ class Issue7985BoundedForwarderClientReleaseTest {
             synchronized (accepted) {
               accepted.add(socket);
             }
+            // The latch is read HERE, not inside the reader: a connection accepted after expect() belongs to
+            // the round expect() armed, and one accepted before it counts down the round it was opened for.
+            countDownWhenRequestArrives(socket, onTheWire);
           }
         } catch (final IOException ignored) {
           // the listener was closed while this test was tearing down
@@ -194,6 +210,35 @@ class Issue7985BoundedForwarderClientReleaseTest {
 
     String address() {
       return listener.getInetAddress().getHostAddress() + ":" + listener.getLocalPort();
+    }
+
+    /** Arms the latch for the next {@code exchanges} requests. Called before they are sent. */
+    void expect(final int exchanges) {
+      onTheWire = new CountDownLatch(exchanges);
+    }
+
+    /** Blocks until every request armed by {@link #expect(int)} has arrived here. */
+    void awaitOnTheWire() throws InterruptedException {
+      assertThat(onTheWire.await(30, TimeUnit.SECONDS))
+          .as("every parked request reached the silent peer, so the release under test has an exchange to cancel")
+          .isTrue();
+    }
+
+    /**
+     * The peer never answers, so the only thing this reader does is prove the request was written: one blocking
+     * read of its first byte, and no response ever.
+     */
+    private static void countDownWhenRequestArrives(final Socket socket, final CountDownLatch latch) {
+      final Thread reader = new Thread(() -> {
+        try {
+          if (socket.getInputStream().read() >= 0)
+            latch.countDown();
+        } catch (final IOException ignored) {
+          // closed by the release under test or by teardown; either way nothing of this test's is in flight
+        }
+      }, "issue7985-silent-peer-reader");
+      reader.setDaemon(true);
+      reader.start();
     }
 
     @Override

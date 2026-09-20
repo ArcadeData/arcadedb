@@ -146,8 +146,9 @@ public record LeaderDial(String address, boolean https, HttpClient client, Strin
    * smaller problem than a shutdown that does not finish, and every caller is already on its way down.
    *
    * @param client  the client to release; {@code null} is accepted, for a caller whose client was never built
-   * @param graceMs how long to wait for termination, clamped to {@link #MIN_FORWARD_TIMEOUT_MS} like every
-   *                other bound in this class
+   * @param graceMs how long to wait for termination, floored at {@link #MIN_FORWARD_TIMEOUT_MS} the way every
+   *                other bound in this class is - a floor, never a ceiling: a caller asking for longer than
+   *                {@link #CLIENT_RELEASE_GRACE_MS} gets what it asked for
    *
    * @return whether the client terminated within the grace
    */
