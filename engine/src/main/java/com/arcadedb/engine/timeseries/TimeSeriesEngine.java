@@ -52,13 +52,6 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public class TimeSeriesEngine implements AutoCloseable {
 
-  /**
-   * A projection of NO columns: every read path builds a row as {@code columnIndices.length + 1} slots with the
-   * timestamp in slot 0, so this asks for the timestamp alone and decodes not one value column. Used by
-   * {@link #hasRowsInRange}, which only needs to know whether a row exists.
-   */
-  private static final int[]           EMPTY_PROJECTION = new int[0];
-
   private final DatabaseInternal       database;
   private final String                 typeName;
   private final List<ColumnDefinition> columns;
@@ -541,20 +534,23 @@ public class TimeSeriesEngine implements AutoCloseable {
   /**
    * Whether any row of this type falls in {@code [fromTs, toTs]} (issue #7709).
    * <p>
-   * Folded over {@link #forEachRow} with a visitor that stops on the first row, rather than given a walk of its
-   * own: the sealed layer already drops a block whose directory entry puts it outside the range, so the answer
-   * costs one block read at most - and a "no" costs no block read at all. It does cost one mutable-bucket scan per
-   * shard either way, because {@link TimeSeriesShard#forEachRow} reads that bucket in the same lock window it
-   * snapshots the sealed directory in and so cannot skip it for a visitor that stops early (issue #7897, and
-   * issue #7965 for giving it back its laziness).
+   * Each shard is asked in turn and the first "yes" ends the question, so a type whose rows are spread over every
+   * shard is answered by the first one. The per-shard answer costs one sealed block read at most - a block whose
+   * directory entry puts it outside the range is dropped on the entry - plus, only when the sealed layer has
+   * nothing to offer, the mutable-bucket pages up to the first row in range. See
+   * {@link TimeSeriesShard#hasRowsInRange} for why that is a walk of its own rather than a fold of
+   * {@link #forEachRow}: this used to be the latter, and issue #7897 made it pay a full mutable-bucket scan per
+   * shard whatever the visitor decided (issue #7965).
    * <p>
    * This is what scopes {@code /label/__name__/values} to the requested range, which is a metric name rather than
    * a tag value and so has no declaration to read.
    */
   public boolean hasRowsInRange(final long fromTs, final long toTs, final AggregationMetrics metrics)
       throws IOException {
-    // forEachRow answers false when the visitor stopped it, which here means it had a row to offer.
-    return !forEachRow(fromTs, toTs, EMPTY_PROJECTION, null, metrics, row -> false);
+    for (final TimeSeriesShard shard : shards)
+      if (shard.hasRowsInRange(fromTs, toTs, metrics))
+        return true;
+    return false;
   }
 
   /**
