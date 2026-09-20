@@ -1573,6 +1573,8 @@ public class DatabaseChecker {
     if (verboseLevel > 0)
       LogManager.instance().log(this, Level.INFO, "Checking existence constraints...");
 
+    // An ESTIMATE, and only ever the progress bar's: countType reads the maintained bucket counters rather than
+    // scanning, so it is cheap and can lag reality after some repair sequences. Nothing here is decided by it.
     long total = 0;
     for (final ConstrainedType constrained : constrainedTypes)
       total += database.countType(constrained.type().getName(), false);
@@ -1584,49 +1586,8 @@ public class DatabaseChecker {
     for (final ConstrainedType constrained : constrainedTypes) {
       final DocumentType type = constrained.type();
 
-      for (final Bucket bucket : type.getBuckets(false)) {
-        // COLLECTED DURING THE SCAN AND DELETED AFTER IT: LocalBucket.scan walks the very pages a delete rewrites,
-        // so removing from inside the callback would mutate the structure being iterated.
-        //
-        // POSITIONS rather than RIDs, and per bucket rather than per type: within one bucket a RID is its position
-        // and nothing else, so this is 8 bytes per record to remove instead of a whole RID object with its header,
-        // on the one input that really can be every record of a type at once (see setDeleteInvalidRecords - one
-        // ALTER PROPERTY does it). That is the smallest a scan-then-delete can be; it is proportional to the number
-        // of VIOLATIONS, not to the size of the database, and the order is forced by the bucket walk above.
-        final BucketPositions toDelete = new BucketPositions();
-
-        database.begin();
-        try {
-          bucket.scan((rid, view) -> {
-            try {
-              final Document record = database.getRecordFactory().newImmutableRecord(database, type, rid, view, null)
-                  .asDocument(true);
-
-              for (final Property property : constrained.properties()) {
-                final String violation = DocumentValidator.describeUnmetExistenceConstraint(record, property);
-                if (violation != null) {
-                  addConstraintViolation(rid, violation);
-                  if (fix && deleteInvalidRecords)
-                    toDelete.add(rid.getPosition());
-                  // ONE finding per record, like the write path: a record missing two mandatory properties is one
-                  // incomplete record, not two, and the repair for it is the same either way.
-                  break;
-                }
-              }
-            } catch (final Exception e) {
-              // Unreadable. That is corruption, and checkDocuments/checkVertices/checkEdges have already reported
-              // it in their own vocabulary and, under FIX, already removed it. Saying it again here - in a second
-              // vocabulary, about a record that may no longer exist - would only make the report harder to read.
-            }
-            stepTick();
-            return true;
-          }, null);
-        } finally {
-          database.commit();
-        }
-
-        resolved += deleteConstraintViolatingRecords(bucket.getFileId(), toDelete);
-      }
+      for (final Bucket bucket : type.getBuckets(false))
+        resolved += checkConstraintsOfBucket(type, constrained.properties(), bucket);
     }
 
     if ((Long) result.get("totalConstraintViolations") > resolved)
@@ -1637,6 +1598,81 @@ public class DatabaseChecker {
       addWarning(CONSTRAINT_VIOLATIONS_REMAIN_WARNING);
 
     stepComplete();
+  }
+
+  /**
+   * The existence-constraint pass over ONE bucket, in as many passes over it as the repair needs (issue #7952).
+   * <p>
+   * <b>Why a loop.</b> A pass cannot delete from inside the scan - {@code LocalBucket.scan} walks the very pages a
+   * delete rewrites - so it collects first and removes after, and what it collects is bounded by
+   * {@link #INVALID_RECORDS_PER_REPAIR_PASS} so the collecting cannot exhaust the heap. A bucket with more
+   * violations than one pass may hold therefore gets another pass, which is what keeps the bound from costing
+   * completeness: an operator who asked for these records to go does not get some of them removed and no word about
+   * the rest.
+   * <p>
+   * ONLY THE FIRST PASS REPORTS, and that is not cosmetic: {@link #addConstraintViolation} counts a first sighting,
+   * and past the reporting cap the set it de-duplicates against can no longer recognise a RID it was not allowed to
+   * retain - so a re-scan would count those records a second time and publish a total larger than the number of
+   * records that exist. The first pass sees every record and owns the findings and the progress ticks; the ones
+   * after it only collect.
+   * <p>
+   * The loop cannot spin: it stops as soon as a pass fails to fill its quota, and also as soon as one removes
+   * nothing, which is what a {@code beforeDelete} listener vetoing every delete produces - without that second
+   * guard those records would be re-collected for ever.
+   *
+   * @return how many records are no longer violating - see {@link #deleteConstraintViolatingRecords}
+   */
+  private long checkConstraintsOfBucket(final DocumentType type, final Property[] constrained, final Bucket bucket) {
+    long resolved = 0;
+    boolean reportFindings = true;
+
+    while (true) {
+      final BucketPositions toDelete = new BucketPositions(invalidRecordsPerRepairPass);
+      final boolean report = reportFindings;
+
+      // No catch/rollback, matching checkDocuments: the scan writes nothing, so committing and rolling back are the
+      // same thing here, and the finally is there to end the transaction on both paths rather than to undo work.
+      database.begin();
+      try {
+        bucket.scan((rid, view) -> {
+          try {
+            final Document record = database.getRecordFactory().newImmutableRecord(database, type, rid, view, null)
+                .asDocument(true);
+
+            for (final Property property : constrained) {
+              final String violation = DocumentValidator.describeUnmetExistenceConstraint(record, property);
+              if (violation != null) {
+                if (report)
+                  addConstraintViolation(rid, violation);
+                if (fix && deleteInvalidRecords)
+                  toDelete.add(rid.getPosition());
+                // ONE finding per record, like the write path: a record missing two mandatory properties is one
+                // incomplete record, not two, and the repair for it is the same either way.
+                break;
+              }
+            }
+          } catch (final Exception e) {
+            // Unreadable. That is corruption, and checkDocuments/checkVertices/checkEdges have already reported it
+            // in their own vocabulary and, under FIX, already removed it. Saying it again here - in a second
+            // vocabulary, about a record that may no longer exist - would only make the report harder to read.
+          }
+          if (report)
+            stepTick();
+          return true;
+        }, null);
+      } finally {
+        database.commit();
+      }
+
+      reportFindings = false;
+
+      final long deletedBefore = (Long) result.get("totalDeletedConstraintViolatingRecords");
+      resolved += deleteConstraintViolatingRecords(bucket.getFileId(), toDelete);
+      final boolean removedSomething = (Long) result.get("totalDeletedConstraintViolatingRecords") > deletedBefore;
+
+      if (!toDelete.isFull() || !removedSomething)
+        return resolved;
+    }
   }
 
   /**
@@ -1687,7 +1723,7 @@ public class DatabaseChecker {
               if (violation != null) {
                 addConstraintViolation(rid, violation);
                 if (fix && deleteInvalidRecords)
-                  toDelete.computeIfAbsent(rid.getBucketId(), k -> new BucketPositions()).add(rid.getPosition());
+                  toDelete.computeIfAbsent(rid.getBucketId(), k -> new BucketPositions(records.size())).add(rid.getPosition());
                 break;
               }
             }
@@ -1736,28 +1772,74 @@ public class DatabaseChecker {
   }
 
   /**
-   * The positions, within ONE bucket, of the records a {@code FIX DELETE INVALID RECORDS} is going to take out
-   * (issue #7952).
+   * How many records one repair PASS over a bucket takes out before the next pass goes back for more (issue #7952,
+   * PR review).
    * <p>
-   * A growable {@code long[]} rather than a {@code List<RID>} because this is the one collection in this class whose
-   * size is the number of records to REPAIR rather than the number of findings to REPORT, and therefore the one that
-   * a cap cannot bound without silently leaving records behind: a single {@code ALTER PROPERTY ... MANDATORY TRUE}
-   * can put every record of a populated type in it. Within a bucket a RID is its position and nothing else, so this
-   * costs 8 bytes per record instead of a whole object with its header - proportional to the violations it is about
-   * to remove, never to the size of the database.
+   * This is a memory bound, not a transaction bound - {@link RepairTransaction} owns the second and measures it in
+   * dirtied pages, which is what a WAL (and under HA a Raft) entry is actually made of. What this bounds is the list
+   * of pending removals a pass may hold: at 8 bytes per entry, 1M is 8MB, and a bucket with more violations than
+   * that simply gets another pass rather than a bigger array.
+   * <p>
+   * Deliberately NOT small. Every pass past the first costs one extra walk of the bucket, so the value trades heap
+   * against re-scans: at a million, a bucket has to hold more than a million violating records before ANY database
+   * pays a second walk, and one whose every record a DDL invalidated pays one extra walk per million. A batch of a
+   * few thousand would bound the memory no better in practice and charge hundreds of walks for it.
+   */
+  private static final int INVALID_RECORDS_PER_REPAIR_PASS = 1_000_000;
+
+  /**
+   * The bound in force for this checker. A package-private seam, on the same pattern as
+   * {@code CheckDatabaseStatement.createChecker}: the multi-pass loop it drives cannot otherwise be proved without
+   * a test that writes a million invalid records, and a loop nothing exercises is a loop nobody knows terminates.
+   * Never set outside a test.
+   */
+  private int invalidRecordsPerRepairPass = INVALID_RECORDS_PER_REPAIR_PASS;
+
+  DatabaseChecker setInvalidRecordsPerRepairPass(final int invalidRecordsPerRepairPass) {
+    this.invalidRecordsPerRepairPass = invalidRecordsPerRepairPass;
+    return this;
+  }
+
+  /**
+   * The positions, within ONE bucket, of the records a {@code FIX DELETE INVALID RECORDS} is going to take out in
+   * the pass in flight (issue #7952).
+   * <p>
+   * A growable {@code long[]} rather than a {@code List<RID>}: within a bucket a RID is its position and nothing
+   * else, so this is 8 bytes per pending removal instead of a whole object with its header, on the one input that
+   * really can be every record of a type at once (see {@link #setDeleteInvalidRecords} - one {@code ALTER PROPERTY}
+   * does it).
+   * <p>
+   * Bounded at {@link #INVALID_RECORDS_PER_REPAIR_PASS}, and the bound costs no completeness because the caller
+   * simply scans again: unlike every REPORTING collection in this class, whose cap trades detail for memory, a cap
+   * here would trade RECORDS LEFT BEHIND for memory, which is not a trade a repair the operator explicitly asked
+   * for may make.
    */
   private static final class BucketPositions {
-    private long[] positions = new long[64];
-    private int    size;
+    private final int    limit;
+    private       long[] positions;
+    private       int    size;
 
-    void add(final long position) {
+    BucketPositions(final int limit) {
+      this.limit = limit;
+      this.positions = new long[Math.min(64, limit)];
+    }
+
+    /** @return false when the pass is full and this position must be left to the next one */
+    boolean add(final long position) {
+      if (size == limit)
+        return false;
       if (size == positions.length)
-        positions = Arrays.copyOf(positions, size * 2);
+        positions = Arrays.copyOf(positions, Math.min(Math.max(size * 2, 1), limit));
       positions[size++] = position;
+      return true;
     }
 
     boolean isEmpty() {
       return size == 0;
+    }
+
+    boolean isFull() {
+      return size == limit;
     }
   }
 

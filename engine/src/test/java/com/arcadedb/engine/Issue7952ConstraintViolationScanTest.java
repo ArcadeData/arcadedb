@@ -33,6 +33,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.Collection;
 import java.util.Map;
@@ -227,7 +228,7 @@ class Issue7952ConstraintViolationScanTest extends TestHelper {
         return record;
       // A mutable record returned here becomes the record's content, which is exactly what the UPDATE an operator
       // was told to run would have done a moment earlier.
-      return record.asDocument(true).modify().set("orgId", "acme");
+      return record.asDocument(true).modify().set("orgId", "acme").save();
     };
     final BeforeRecordDeleteListener tripwire = record -> {
       if (provisional.equals(record.getIdentity()))
@@ -251,6 +252,73 @@ class Issue7952ConstraintViolationScanTest extends TestHelper {
     } finally {
       database.getSchema().getType("Record").getEvents().unregisterListener(completeOnReadBack)
           .unregisterListener(tripwire);
+    }
+
+    // The completing write was persisted, so a fresh run finds nothing left to report either.
+    final Map<String, Object> after = new DatabaseChecker(db()).setVerboseLevel(0).check();
+    assertThat((Long) after.get("totalConstraintViolations")).isZero();
+    assertThat(db().lookupByRID(provisional, true).asDocument(true).getString("orgId")).isEqualTo("acme");
+  }
+
+  /**
+   * The repair walks a bucket again when one pass could not hold every record it had to take out (PR review): the
+   * pending-removal list is bounded so it cannot exhaust the heap, and the bound must not cost completeness - an
+   * operator who asked for these records to go must not get some of them removed and no word about the rest.
+   * <p>
+   * Driven through the package-private bound rather than by writing a million records, which is the only way to
+   * reach the loop at a size a test can afford.
+   */
+  @Test
+  void aBucketWithMoreViolationsThanOnePassCanHoldIsWalkedAgain() {
+    final DocumentType type = database.getSchema().createDocumentType("Record");
+    type.createProperty("id", Type.INTEGER);
+
+    database.transaction(() -> {
+      for (int i = 0; i < 7; i++)
+        database.newDocument("Record").set("id", i).save();
+    });
+    type.createProperty("orgId", Type.STRING).setMandatory(true);
+
+    final Map<String, Object> result = new DatabaseChecker(db()).setFix(true).setDeleteInvalidRecords(true)
+        .setInvalidRecordsPerRepairPass(2).setVerboseLevel(0).check();
+
+    assertThat((Long) result.get("totalConstraintViolations")).as("every record is reported ONCE").isEqualTo(7L);
+    assertThat((Long) result.get("totalDeletedConstraintViolatingRecords")).as("and every one removed").isEqualTo(7L);
+    assertThat((Collection<RID>) result.get("constraintViolatingRecords")).hasSize(7);
+    assertThat(database.countType("Record", false)).isZero();
+    assertThat((Collection<String>) result.get("warnings"))
+        .as("nothing is left, so the repair advice is not printed")
+        .noneMatch(w -> w.contains("CHECK DATABASE FIX DELETE INVALID RECORDS"));
+  }
+
+  /**
+   * The same loop must terminate when the records it collects cannot be removed at all - a {@code beforeDelete}
+   * listener refusing every delete would otherwise have it re-collect the same full batch for ever.
+   */
+  @Test
+  @Timeout(60)
+  void theRepairPassLoopStopsWhenNothingCanBeRemoved() {
+    final DocumentType type = database.getSchema().createDocumentType("Record");
+    type.createProperty("id", Type.INTEGER);
+
+    database.transaction(() -> {
+      for (int i = 0; i < 5; i++)
+        database.newDocument("Record").set("id", i).save();
+    });
+    type.createProperty("orgId", Type.STRING).setMandatory(true);
+
+    final BeforeRecordDeleteListener veto = record -> false;
+    database.getSchema().getType("Record").getEvents().registerListener(veto);
+    try {
+      final Map<String, Object> result = new DatabaseChecker(db()).setFix(true).setDeleteInvalidRecords(true)
+          .setInvalidRecordsPerRepairPass(1).setVerboseLevel(0).check();
+
+      assertThat((Long) result.get("totalDeletedConstraintViolatingRecords")).isZero();
+      assertThat(database.countType("Record", false)).isEqualTo(5);
+      assertThat((Collection<String>) result.get("warnings"))
+          .anyMatch(w -> w.contains("CHECK DATABASE FIX DELETE INVALID RECORDS"));
+    } finally {
+      database.getSchema().getType("Record").getEvents().unregisterListener(veto);
     }
   }
 
