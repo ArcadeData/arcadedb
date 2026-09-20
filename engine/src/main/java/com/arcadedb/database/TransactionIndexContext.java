@@ -369,6 +369,8 @@ public class TransactionIndexContext {
   }
 
   /** Drops one ordered lane from the identity view, and the index's entry with its last lane. */
+  // The reference comparison below is the POINT of this method, not an oversight: see the block comment on it.
+  @SuppressWarnings("PMD.CompareObjectsWithEquals")
   private void forgetOrderedLane(final IndexInternal owner,
       final TreeMap<ComparableKey, Map<IndexKey, IndexKey>> lane) {
     if (owner == null) {
