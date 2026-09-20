@@ -143,6 +143,43 @@ public interface HAServerPlugin extends ServerPlugin {
   }
 
   /**
+   * Describes why the cluster's first-formation bootstrap makes this node unfit to serve clients, or
+   * {@code null} when it does not (issue #7519).
+   * <p>
+   * The bootstrap protocol picks one peer's copy of each database as the cluster's baseline and has every other
+   * peer replace its whole directory with a snapshot of it. That replacement is not instantaneous and it is not
+   * invisible: the install downloads before it touches the live files - on purpose, so a failed download costs no
+   * availability - which means the local copy stays OPEN and SERVING for the length of the download, and what it
+   * serves is the copy the cluster has just decided against. The node-wide {@code snapshotInstallInProgress}
+   * window that answers 503 covers only the file swap at the end of that, and only on HTTP; Bolt, Postgres,
+   * gRPC, MongoDB and Redis clients are not deflected even there. Issue #7259 closed the test-harness half of
+   * this - a test body no longer starts while the cluster is mid-bootstrap - and left the production half open,
+   * which is this.
+   * <p>
+   * It also covers the state the window can leave behind: a peer whose copy was FRESHER than the chosen baseline
+   * keeps it rather than lose data (issue #6124), and from then on its file ids are assigned by a history no
+   * other peer shares. That is durable, survives restarts, and until an operator or an automatic remedy replaces
+   * the copy, every read this node serves for that database is data the cluster never adopted.
+   * <p>
+   * Consulted by {@code ServerControlPlane.notReadyReason()} and deliberately NOT behind
+   * {@code arcadedb.server.readinessRequiresHA}, for the same reason as {@link #getRaftLogFailure()}: that switch
+   * is opt-in because it gates a node that is merely BEHIND, and a deployment can reasonably serve reads from
+   * one. A node whose database directory is being replaced under it, or which is knowingly holding a copy the
+   * cluster rejected, is not behind - it is serving something else.
+   * <p>
+   * Both conditions are recoverable and both are cleared exactly where this node's copy is replaced by the
+   * cluster's, so a node that recovers rejoins the Service by itself.
+   * <p>
+   * Returns {@code null} when this HA implementation has no such signal - HA disabled, or a non-Raft
+   * implementation.
+   *
+   * @return a human-readable reason, suitable for a readiness response body, or {@code null}
+   */
+  default String getBootstrapWindowReason() {
+    return null;
+  }
+
+  /**
    * Describes the critical error that halted this node's replication state machine, or {@code null} while it is
    * still applying entries (issue #7872).
    * <p>
