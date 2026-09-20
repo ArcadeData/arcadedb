@@ -366,9 +366,12 @@ public class Issue7326GrpcSearchInTransactionIT extends BaseGraphServerTest {
     }
 
     assertThat(grpcFullTextHits).containsExactly("created-in-tx");
+    // Membership, not rank. The seeded 'near' row carries the SAME embedding as the row the transaction inserts,
+    // so the two tie at distance 0 and which of them the search returns first is not a property of this fix -
+    // asserting a position here would be asserting a tie-break.
     assertThat(grpcVectorHits)
-        .as("issue #7378: the query vector IS the new row's embedding, so it ranks first once it is a candidate")
-        .isNotEmpty().first().isEqualTo("created-in-tx");
+        .as("issue #7378: the row this transaction just wrote must be a candidate of its own search")
+        .contains("created-in-tx");
 
     try (final RemoteDatabase http = new RemoteDatabase("localhost", getServer(0).getHttpServer().getPort(),
         getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS)) {
@@ -381,7 +384,9 @@ public class Issue7326GrpcSearchInTransactionIT extends BaseGraphServerTest {
             .put("queryVector", new JSONArray(List.of(1.0, 0.0, 0.0)))
             .put("k", 10))))
             .as("the dense index scan must find the new row on HTTP exactly as it does on gRPC")
-            .isEqualTo(grpcVectorHits);
+            // Order-insensitive for the same tie reason as above; what the parity claim is about is which rows the
+            // two wires return, not how a tie between two identical vectors is broken on each.
+            .containsExactlyInAnyOrderElementsOf(grpcVectorHits);
         assertThat(httpNames(http.fullTextSearch(new JSONObject()
             .put("indexName", TEXT_INDEX)
             .put("queryText", "zulu")
