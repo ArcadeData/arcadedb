@@ -21,15 +21,11 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.http.SilentPeer;
 import com.arcadedb.utility.StallAwareStopwatch;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
-import java.io.Closeable;
-import java.io.IOException;
-import java.net.InetAddress;
-import java.net.ServerSocket;
-import java.net.Socket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -38,7 +34,6 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -160,94 +155,5 @@ class Issue7985BoundedClientReleaseOnStopTest {
 
     peer.awaitOnTheWire();
     return parked;
-  }
-
-  /**
-   * A listener that accepts connections and then says nothing at all: the leader in a long stop-the-world pause,
-   * behind a partition that does not RST, or behind an iptables DROP.
-   * <p>
-   * It also reports when a parked exchange is genuinely <b>on the wire</b>: every accepted connection gets a
-   * reader that blocks for the first byte of the request and only then counts down the latch {@link #expect(int)}
-   * armed. A fixed sleep in its place establishes nothing - on a slow runner the release under test would be
-   * handed an idle client, which even the unfixed code releases correctly, so the regression test would pass
-   * for the wrong reason (CodeRabbit review on PR #8026).
-   */
-  static final class SilentPeer implements Closeable {
-    private final    ServerSocket   listener;
-    private final    Thread         acceptor;
-    private final    List<Socket>   accepted  = new ArrayList<>();
-    private volatile CountDownLatch onTheWire = new CountDownLatch(0);
-
-    private SilentPeer(final ServerSocket listener) {
-      this.listener = listener;
-      this.acceptor = new Thread(() -> {
-        try {
-          while (!Thread.currentThread().isInterrupted()) {
-            final Socket socket = listener.accept();
-            synchronized (accepted) {
-              accepted.add(socket);
-            }
-            // The latch is read HERE, not inside the reader: a connection accepted after expect() belongs to
-            // the round expect() armed, and one accepted before it counts down the round it was opened for.
-            countDownWhenRequestArrives(socket, onTheWire);
-          }
-        } catch (final IOException ignored) {
-          // the listener was closed while this test was tearing down
-        }
-      }, "issue7985-silent-peer");
-      this.acceptor.setDaemon(true);
-      this.acceptor.start();
-    }
-
-    static SilentPeer start() throws IOException {
-      return new SilentPeer(new ServerSocket(0, 256, InetAddress.getLoopbackAddress()));
-    }
-
-    String address() {
-      return listener.getInetAddress().getHostAddress() + ":" + listener.getLocalPort();
-    }
-
-    /** Arms the latch for the next {@code exchanges} requests. Called before they are sent. */
-    void expect(final int exchanges) {
-      onTheWire = new CountDownLatch(exchanges);
-    }
-
-    /** Blocks until every request armed by {@link #expect(int)} has arrived here. */
-    void awaitOnTheWire() throws InterruptedException {
-      assertThat(onTheWire.await(30, TimeUnit.SECONDS))
-          .as("every parked request reached the silent peer, so the release under test has an exchange to cancel")
-          .isTrue();
-    }
-
-    /**
-     * The peer never answers, so the only thing this reader does is prove the request was written: one blocking
-     * read of its first byte, and no response ever.
-     */
-    private static void countDownWhenRequestArrives(final Socket socket, final CountDownLatch latch) {
-      final Thread reader = new Thread(() -> {
-        try {
-          if (socket.getInputStream().read() >= 0)
-            latch.countDown();
-        } catch (final IOException ignored) {
-          // closed by the release under test or by teardown; either way nothing of this test's is in flight
-        }
-      }, "issue7985-silent-peer-reader");
-      reader.setDaemon(true);
-      reader.start();
-    }
-
-    @Override
-    public void close() throws IOException {
-      listener.close();
-      acceptor.interrupt();
-      synchronized (accepted) {
-        for (final Socket socket : accepted)
-          try {
-            socket.close();
-          } catch (final IOException ignored) {
-            // best effort: this test is finished with it either way
-          }
-      }
-    }
   }
 }
