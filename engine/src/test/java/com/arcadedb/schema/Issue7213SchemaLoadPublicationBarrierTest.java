@@ -200,6 +200,11 @@ class Issue7213SchemaLoadPublicationBarrierTest extends TestHelper {
           .as("a replaced index must keep answering with the previous, fully loaded instance until the "
               + "replacement has run its schema hook")
           .isSameAs(indexBefore);
+      // Identity is the mechanism; this is the guarantee a user would notice. The previous instance has its vectors
+      // loaded, so the search still answers while the replacement is mid-build.
+      assertThat(neighbors())
+          .as("the previously published index must stay searchable until the replacement is ready")
+          .containsExactly("a");
     } finally {
       hook.release.countDown();
       loader.join(TimeUnit.MINUTES.toMillis(1));

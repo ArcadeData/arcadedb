@@ -492,8 +492,11 @@ public class LocalSchema implements Schema {
     if (!isStagingPublication())
       return;
 
-    indexMap.putAll(stagedIndexMap);
+    // Buckets first, and the order is not arbitrary: a published index names the bucket it is associated with, so
+    // publishing indexes first would let a reader resolve an index by name a few instructions before the bucket it
+    // points at is resolvable. Nothing points the other way.
     bucketMap.putAll(stagedBucketMap);
+    indexMap.putAll(stagedIndexMap);
 
     endStagedPublication();
   }
@@ -745,6 +748,15 @@ public class LocalSchema implements Schema {
     // that file.
     final List<Component> loaded = new ArrayList<>(toInstantiate.size() + toReplace.size());
 
+    // What to undo in the file-id array if this load dies before its commit. replaceLoadedComponent() and
+    // registerLoadedComponent() take those slots immediately - the load hooks and readConfiguration() resolve
+    // sibling components through them while the load runs - so unlike the staged name maps they are not rolled back
+    // by simply dropping them. Leaving them would hand a file-id lookup a half-built component while
+    // getIndexByName() still answered with the previous, fully built one.
+    final Map<Integer, Component> replacedSlots = new HashMap<>();
+    final List<Integer> addedSlots = new ArrayList<>();
+    boolean committed = false;
+
     // Nothing instantiated below reaches the by-name lookup maps until every schema hook has run (issue #7213).
     // On this path that is a stronger guarantee than on the full load: every index this entry did not touch keeps
     // its published instance throughout, and a REPLACED index keeps answering with the instance the previous load
@@ -757,6 +769,7 @@ public class LocalSchema implements Schema {
           continue;
 
         registerLoadedComponent(component);
+        addedSlots.add(component.getFileId());
         loaded.add(component);
       }
 
@@ -765,7 +778,9 @@ public class LocalSchema implements Schema {
         if (component == null)
           continue;
 
+        final Component previous = getFileByIdIfExists(component.getFileId());
         replaceLoadedComponent(component);
+        replacedSlots.put(component.getFileId(), previous);
         loaded.add(component);
       }
 
@@ -782,6 +797,7 @@ public class LocalSchema implements Schema {
         component.onAfterSchemaLoad();
 
       commitStagedPublication();
+      committed = true;
 
       // attachBloomFilters() is not called: it acts only on LSMTreeIndexCompacted, and a compacted index can never
       // be in `loaded` - the entry is refused instead, by NON_INCREMENTAL_COMPONENT_EXTENSIONS in the first pass and
@@ -797,7 +813,27 @@ public class LocalSchema implements Schema {
 
       return true;
     } finally {
+      if (!committed)
+        rollbackFileSlots(replacedSlots, addedSlots);
+
       endStagedPublication();
+    }
+  }
+
+  /**
+   * Puts the file-id array back the way an aborted {@link #loadIncremental} found it. The array is written directly
+   * rather than through {@link #removeFile}: this runs while an exception is on its way out, and {@code removeFile}
+   * would also rewrite the migrated-file map and touch the transaction, neither of which this load changed.
+   */
+  private void rollbackFileSlots(final Map<Integer, Component> replacedSlots, final List<Integer> addedSlots) {
+    synchronized (files) {
+      for (final Map.Entry<Integer, Component> slot : replacedSlots.entrySet())
+        if (slot.getKey() < files.size())
+          files.set(slot.getKey(), slot.getValue());
+
+      for (final Integer fileId : addedSlots)
+        if (fileId < files.size())
+          files.set(fileId, null);
     }
   }
 
