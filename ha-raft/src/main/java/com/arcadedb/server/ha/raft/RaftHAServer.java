@@ -1794,26 +1794,41 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // The capability refresh runs in every role since issue #7549, so shutdown is the only thing that ends it;
     // it used to come along with stopLagMonitor() because it only ever ran on a leader.
     stopCapabilityMonitor();
-    // After stopCapabilityMonitor(): nothing asks for the client past this point, and
-    // an HttpClient left behind holds a connection pool and a selector thread for the life of the JVM - which in
-    // the HA suites outlives many server start/stop cycles (PR #7314 review).
+    // BEFORE the HTTP clients below, not after (issue #7739). Neither executor touches those clients - the
+    // stalled-resync task dials the follower with HttpURLConnection (requestRemoteResync), and the
+    // channel-recovery tasks reset a Ratis gRPC channel or transfer leadership - so this is not an ordering
+    // constraint on client USE. What it buys is that the executors are told to stop before anything that can
+    // block: however long the three releases below take, these threads are already unwinding rather than
+    // waiting behind a close that has not returned.
+    stalledResyncExecutor.shutdownNow();
+    channelRecoveryExecutor.shutdownNow();
+    // After stopCapabilityMonitor() and the two shutdownNow() above: nothing asks for these clients past this
+    // point, and an HttpClient left behind holds a connection pool and a selector thread for the life of the JVM
+    // - which in the HA suites outlives many server start/stop cycles (PR #7314 review).
     //
-    // This can BLOCK BRIEFLY, and that is deliberate rather than an oversight: the refresh sends its request
-    // outside the cache's monitor, so a probe already in flight when this runs holds HttpClient.close()'s orderly
-    // shutdown until it finishes - bounded by PeerCapabilityRegistry.PROBE_TIMEOUT_MS on a round that has already
-    // been told to stand down. Making the close asynchronous to avoid that wait would hand the shutdown path a
-    // client that outlives the server it belongs to, which is the leak this call exists to prevent.
+    // Each of the three CAN BLOCK, and each is now bounded by LeaderDial.CLIENT_RELEASE_GRACE_MS rather than by
+    // whatever the straggler it is waiting on carries (issue #7985). What they used to be bounded by:
+    //   - capabilityHttpsClients: a probe round already told to stand down, PeerCapabilityRegistry.PROBE_TIMEOUT_MS;
+    //   - forwardHttpsClients and forwardHttpClient: the FORWARD's own deadline - arcadedb.ha.proxyCommandTimeout,
+    //     one hour at its default, or arcadedb.command.timeout when that is set. A single follower-to-leader
+    //     write parked on a leader that accepted the connection and went silent held all of stop() for that long,
+    //     so a rolling restart or a Kubernetes SIGTERM was SIGKILLed long before the Raft server was closed.
+    // Releasing them asynchronously instead would hand the shutdown path a client that outlives the server it
+    // belongs to, which is the leak these calls exist to prevent; abandoning an answer this node will never read
+    // is the cost that is actually worth paying.
+    //
+    // The grace is per client, so the arithmetic worth stating: 3 x CLIENT_RELEASE_GRACE_MS = 15s of added
+    // shutdown in the pathological case where all three have a straggler that does not unwind when cancelled.
+    // The two caches build nothing at all unless this cluster dials an HTTPS peer, so on a plaintext cluster
+    // the ceiling is one grace. Either way it is a ceiling and not a cost: each call returns the moment its
+    // client reports itself terminated.
     capabilityHttpsClients.close();
-    // Same reasoning for the forward client: a forward still in flight holds this close() until it unwinds,
-    // bounded by that request's own timeout, and leaving it open would leak a selector thread per server.
     forwardHttpsClients.close();
     // Same leak this method already prevents for capabilityHttpsClients/forwardHttpsClients, for the plain-HTTP
     // forward client every RaftReplicatedDatabase this server wraps a database with shares (review finding on
     // PR #7650): a fresh RaftHAServer - and a fresh forwardHttpClient - is built on every
     // RaftHAPlugin.startService(), and an unclosed one outlives it.
-    forwardHttpClient.close();
-    stalledResyncExecutor.shutdownNow();
-    channelRecoveryExecutor.shutdownNow();
+    LeaderDial.releaseBounded(forwardHttpClient);
     if (transactionBroker != null) {
       transactionBroker.stop();
       transactionBroker = null;

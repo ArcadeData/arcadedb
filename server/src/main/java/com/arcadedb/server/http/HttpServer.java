@@ -86,6 +86,7 @@ import com.arcadedb.server.ai.AiChatsHandler;
 import com.arcadedb.server.ai.AiConfigHandler;
 import com.arcadedb.server.ai.ChatStorage;
 import com.arcadedb.server.security.ServerSecurityException;
+import com.arcadedb.utility.CodeUtils;
 import io.undertow.Handlers;
 import io.undertow.Undertow;
 import io.undertow.UndertowOptions;
@@ -168,27 +169,38 @@ public class HttpServer implements ServerPlugin {
     this.idempotencyCleanupExecutor.scheduleAtFixedRate(idempotencyCache::cleanupExpired, 30, 30, TimeUnit.SECONDS);
   }
 
+  /**
+   * Releases everything this service owns, and releases ALL of it even when one step fails (issue #7985).
+   * <p>
+   * Every step is guarded individually, the way {@code ArcadeDBServer.stopInternal()} guards each service it
+   * stops and the way {@code undertow.stop()} alone was guarded here. Without that, a throw from any step
+   * skipped the ones after it - including {@code leaderCommandForwarder.close()}, which is last - and
+   * {@code stopInternal()} calls this method inside {@code CodeUtils.executeIgnoringExceptions}, so the throw
+   * did not even reach the caller: the server reported a clean stop while holding the forwarder's HTTP client,
+   * its connection pool and its selector thread for the life of the JVM.
+   * <p>
+   * Order is unchanged and still matters: the forwarder's client is released last, once nothing is left that
+   * could ask it for a forward.
+   */
   @Override
   public void stopService() {
-    webSocketEventBus.stop();
-    insertSessionManager.close();
+    CodeUtils.executeIgnoringExceptions(webSocketEventBus::stop, "Error on stopping the WebSocket event bus", false);
+    CodeUtils.executeIgnoringExceptions(insertSessionManager::close, "Error on closing the WebSocket insert sessions",
+        false);
 
     if (idempotencyCleanupExecutor != null) {
-      idempotencyCleanupExecutor.shutdown();
+      CodeUtils.executeIgnoringExceptions(idempotencyCleanupExecutor::shutdown,
+          "Error on stopping the idempotency cache cleanup", false);
       idempotencyCleanupExecutor = null;
     }
 
-    if (undertow != null) {
-      try {
-        undertow.stop();
-      } catch (final Exception e) {
-        // IGNORE IT
-      }
-    }
+    if (undertow != null)
+      CodeUtils.executeIgnoringExceptions(undertow::stop, "Error on stopping the HTTP listener", false);
 
-    sessionManager.close();
-    authSessionManager.close();
-    leaderCommandForwarder.close();
+    CodeUtils.executeIgnoringExceptions(sessionManager::close, "Error on closing the HTTP sessions", false);
+    CodeUtils.executeIgnoringExceptions(authSessionManager::close, "Error on closing the HTTP auth sessions", false);
+    CodeUtils.executeIgnoringExceptions(leaderCommandForwarder::close,
+        "Error on releasing the leader command forwarder's HTTP client", false);
   }
 
   @Override
