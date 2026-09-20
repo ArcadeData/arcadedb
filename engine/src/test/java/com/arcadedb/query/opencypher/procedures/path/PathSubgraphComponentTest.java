@@ -48,6 +48,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class PathSubgraphComponentTest {
   private static final int VERTICES = 2_000;
+  /** The vertex itself plus the head of each of its two edge lists, with room for a chunk hop on a denser vertex. */
+  private static final int MAX_READS_PER_VERTEX = 8;
   private static final int EDGES    = 20_000;
 
   // Built once for the class: every test here reads, so rebuilding a 20,000-edge graph per method would buy nothing
@@ -191,7 +193,7 @@ class PathSubgraphComponentTest {
     final long reads = readRecords() - before;
 
     assertThat(((Number) result.getProperty("t")).intValue()).isEqualTo(VERTICES);
-    assertThat(reads).isLessThan(8L * VERTICES);
+    assertThat(reads).isLessThan((long) MAX_READS_PER_VERTEX * VERTICES);
     assertThat(reads).isLessThan(EDGES);
   }
 
@@ -210,7 +212,7 @@ class PathSubgraphComponentTest {
         .next();
     final long reads = readRecords() - before;
 
-    assertThat(reads).isLessThan(8L * VERTICES);
+    assertThat(reads).isLessThan((long) MAX_READS_PER_VERTEX * VERTICES);
     assertThat(reads).isLessThan(EDGES);
   }
 }
