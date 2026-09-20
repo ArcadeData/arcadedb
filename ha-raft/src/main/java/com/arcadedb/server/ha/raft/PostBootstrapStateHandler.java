@@ -71,6 +71,22 @@ public class PostBootstrapStateHandler extends AbstractServerHttpHandler {
     this.plugin = plugin;
   }
 
+  /**
+   * Every request blocks, so this is the handler-wide answer rather than a per-exchange one (issue #7861): the
+   * response is a SHA-256 over every database directory on this node, and computing it may open a database that
+   * was deliberately left closed. On an Undertow IO thread - a shared selector - that stalls every other
+   * connection multiplexed onto it, the kubelet readiness and liveness probes included, for as long as the
+   * hashing takes, which on a large database is not bounded by anything this handler controls.
+   * <p>
+   * Not already covered by {@code AbstractServerHttpHandler}'s idempotency dispatch, although this is a POST:
+   * {@code LeaderDatabaseQuery.fetch} sends no {@code X-ArcadeDB-Request-Id}, so that branch never fires for the
+   * one caller this route has.
+   */
+  @Override
+  protected boolean mustExecuteOnWorkerThread() {
+    return true;
+  }
+
   @Override
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
       final JSONObject payload) {
