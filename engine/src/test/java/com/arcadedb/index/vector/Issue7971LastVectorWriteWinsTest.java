@@ -29,6 +29,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -117,6 +118,64 @@ class Issue7971LastVectorWriteWinsTest {
       });
 
       assertOneVectorPerRecord(db, rid);
+    });
+  }
+
+  /**
+   * The same guarantee across a COMPACTION that renames the index mid-transaction, which is what gives one index
+   * two lanes (issue #6105). Raised by CodeRabbit on PR #8001: the sequence stamp alone proves nothing unless the
+   * commit actually consults it across lanes, so this drives the whole path and looks at what the commit left.
+   * <p>
+   * The compaction runs on another thread because it refuses to run inside a transaction - which is also exactly
+   * where production runs it, on the async executor after a commit.
+   */
+  @Test
+  @Tag("slow")
+  void aRewriteEitherSideOfACompactionStillLeavesOneVector() {
+    withDatabase(db -> {
+      final RID rid = insertWith(db, unit(0));
+      final LSMVectorIndex idx = vectorIndex(db);
+      final String nameWhenQueued = idx.getName();
+
+      db.begin();
+      try {
+        final MutableDocument doc = db.lookupByRID(rid, true).asDocument(true).modify();
+        doc.set("embedding", unit(1)).save();
+
+        // The rename, on a thread of its own, with the first write already queued under the old name.
+        final Throwable[] failure = new Throwable[1];
+        final Thread compactor = new Thread(() -> {
+          try {
+            db.command("sql", "COMPACT INDEX `" + nameWhenQueued + "`");
+          } catch (final Throwable t) {
+            failure[0] = t;
+          }
+        }, "issue7971-compactor");
+        compactor.start();
+        try {
+          compactor.join(120_000);
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+          throw new IllegalStateException("interrupted while waiting for the compaction", e);
+        }
+
+        assertThat(compactor.isAlive()).as("the compaction must have finished").isFalse();
+        assertThat(failure[0]).as("the compaction must not have failed").isNull();
+        assertThat(idx.getName())
+            .as("the fixture is only a regression test once the compaction really renamed the index")
+            .isNotEqualTo(nameWhenQueued);
+
+        // ...and the second write, which opens a lane under the new name.
+        doc.set("embedding", unit(2)).save();
+        db.commit();
+      } catch (final RuntimeException e) {
+        db.rollback();
+        throw e;
+      }
+
+      assertThat(vectorIndex(db).countEntries())
+          .as("a rewrite either side of a rename is still ONE record with one embedding, not one per lane")
+          .isEqualTo(1L);
     });
   }
 
