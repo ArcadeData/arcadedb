@@ -180,6 +180,36 @@ class Issue7971LastVectorWriteWinsTest {
   }
 
   /**
+   * A record added and then DELETED in one transaction must not come back, even when the REMOVE could not be keyed
+   * on the vector it retires.
+   * <p>
+   * Raised in the review of PR #8001. The commit replays every REMOVE before any ADD, so a REMOVE only cancels an
+   * ADD by displacing it in the per-key map - which needs the two to share a {@code ComparableKey}. When
+   * {@code removalKey()} falls back to the placeholder (a key the caller could not convert), they do not, and the
+   * winner-per-RID pass looked at {@code ADD}/{@code REPLACE} alone, so it re-added a RID the transaction had
+   * deleted.
+   */
+  @Test
+  void aRecordDeletedAfterBeingAddedDoesNotComeBackWhenTheRemoveCarriesNoKey() {
+    withDatabase(db -> {
+      final RID rid = insertWith(db, unit(0));
+      final LSMVectorIndex idx = vectorIndex(db);
+
+      db.transaction(() -> {
+        idx.remove(new Object[] { unit(0) }, rid);
+        idx.put(new Object[] { unit(1) }, new RID[] { rid });
+        // A removal the index cannot key on - the caller has no usable old value - so it rides the placeholder
+        // and shares no ComparableKey with the ADD above.
+        idx.remove(new Object[] { "not a vector" }, rid);
+      });
+
+      assertThat(vectorIndex(db).countEntries())
+          .as("the record was deleted after being added, so the commit must leave nothing behind for it")
+          .isZero();
+    });
+  }
+
+  /**
    * What "one vector per record" means everywhere it is observable: the live count of the index, the number of nodes
    * a graph build produces, and how many times one search hands the record back.
    * <p>

@@ -592,9 +592,15 @@ public class TransactionIndexContext {
       final List<Object[]> batchKeys = new ArrayList<>(winners.size());
       final List<RID> batchRids = new ArrayList<>(winners.size());
       for (final IndexKey key : winners.values()) {
+        if (key.operation == IndexKey.IndexKeyOperation.REMOVE)
+          // The transaction's last word on this RID was a removal, and the pass above has already replayed it.
+          // Re-adding it here is what made a record deleted after being added come back (PR #8001 review).
+          continue;
         batchKeys.add(key.keyValues);
         batchRids.add(key.rid);
       }
+      if (batchKeys.isEmpty())
+        continue;
       batch.getKey().putBatch(batchKeys, batchRids);
     }
 
@@ -609,15 +615,23 @@ public class TransactionIndexContext {
   }
 
   /**
-   * The winning {@code ADD}/{@code REPLACE} entry per RID within one lane, by write order. Merged across the lanes
-   * of one index by {@link #commit()}, which is where "last write wins" actually has to hold.
+   * The LAST entry written for each RID within one lane, whatever it was. Merged across the lanes of one index by
+   * {@link #commit()}, which is where "last write wins" actually has to hold.
+   * <p>
+   * {@code REMOVE} entries are weighed in, not filtered out (PR #8001 review). The commit replays every
+   * {@code REMOVE} before any {@code ADD}, so a removal cancels an addition only by DISPLACING it in the per-key
+   * map - which requires the two to share a {@code ComparableKey}. They usually do, because
+   * {@code LSMVectorIndex.removalKey()} queues the vector being retired. When it cannot - the caller had no usable
+   * old value and the removal rides the placeholder - they do not, and a pass that considered only
+   * {@code ADD}/{@code REPLACE} would re-add a RID the transaction had deleted. Keeping the last entry of ANY kind
+   * and letting the caller drop a RID whose last word was a removal answers that without depending on the keys
+   * lining up.
    */
   private static Map<RID, IndexKey> lastWritePerRidOf(final Map<ComparableKey, Map<IndexKey, IndexKey>> keys) {
     final Map<RID, IndexKey> winners = new LinkedHashMap<>(keys.size());
     for (final Map.Entry<ComparableKey, Map<IndexKey, IndexKey>> keyValueEntries : keys.entrySet())
       for (final IndexKey key : keyValueEntries.getValue().values())
-        if (key.operation == IndexKey.IndexKeyOperation.ADD || key.operation == IndexKey.IndexKeyOperation.REPLACE)
-          winners.merge(key.rid, key, (previous, current) -> current.sequence > previous.sequence ? current : previous);
+        winners.merge(key.rid, key, (previous, current) -> current.sequence > previous.sequence ? current : previous);
     return winners;
   }
 
