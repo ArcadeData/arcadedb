@@ -58,6 +58,7 @@ class PathSubgraphGhostEndpointTest {
       factory.open().drop();
     database = factory.create();
     database.getSchema().createVertexType("Node");
+    database.getSchema().createVertexType("Other");
     database.getSchema().createEdgeType("LINK");
 
     // A -LINK-> B (kept) and A -LINK-> GHOST, twice, so the second reference exercises the known-ghost path
@@ -65,16 +66,23 @@ class PathSubgraphGhostEndpointTest {
       final MutableVertex a = database.newVertex("Node").set("name", "A").save();
       final MutableVertex b = database.newVertex("Node").set("name", "B").save();
       final MutableVertex ghost = database.newVertex("Node").set("name", "GHOST").save();
+      // A ghost of a type a labelFilter of 'Node' leaves out: its label is answered from the schema without reading
+      // the record, so it is the one neighbour a filtered walk could report an edge to without ever noticing it is
+      // not there
+      final MutableVertex otherGhost = database.newVertex("Other").set("name", "OTHER_GHOST").save();
       a.newEdge("LINK", b, true, (Object[]) null).save();
       a.newEdge("LINK", ghost, true, (Object[]) null).save();
       b.newEdge("LINK", ghost, true, (Object[]) null).save();
+      a.newEdge("LINK", otherGhost, true, (Object[]) null).save();
     });
 
     // Delete only the vertex record: the edges and the adjacency entries naming it stay behind
     final RID ghostRID = (RID) database.query("sql", "SELECT FROM Node WHERE name = 'GHOST'").next().getIdentity().get();
+    final RID otherGhostRID = (RID) database.query("sql", "SELECT FROM Other WHERE name = 'OTHER_GHOST'").next().getIdentity()
+        .get();
     database.transaction(() -> {
-      final Bucket bucket = database.getSchema().getBucketById(ghostRID.getBucketId());
-      bucket.deleteRecord(ghostRID);
+      database.getSchema().getBucketById(ghostRID.getBucketId()).deleteRecord(ghostRID);
+      database.getSchema().getBucketById(otherGhostRID.getBucketId()).deleteRecord(otherGhostRID);
     });
   }
 
@@ -143,6 +151,23 @@ class PathSubgraphGhostEndpointTest {
       paths.add(nodes.stream().map(node -> ((Vertex) node).getString("name")).collect(Collectors.joining(">")));
     }
     return paths;
+  }
+
+  /**
+   * The label of a neighbour is answered from the schema, so a ghost the {@code labelFilter} excludes is the one
+   * that could reach {@code relationships} without ever being read. It must not: an edge is reported only where its
+   * endpoint is there, whatever the filter says about the endpoint's label.
+   */
+  @Test
+  void subgraphAllDropsTheEdgeToALabelFilteredGhost() {
+    final Result result = database.query("cypher", """
+        MATCH (a:Node {name: 'A'})
+        CALL path.subgraphall(a, {relationshipFilter: 'LINK', labelFilter: 'Node'}) YIELD nodes, relationships
+        RETURN nodes, relationships
+        """).next();
+
+    assertThat((List<?>) result.getProperty("nodes")).hasSize(2);
+    assertThat((List<?>) result.getProperty("relationships")).hasSize(1);
   }
 
   @Test

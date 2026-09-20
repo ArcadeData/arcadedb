@@ -111,6 +111,23 @@ class PathSubgraphComponentTest {
     assertThat(rs.hasNext()).isFalse();
   }
 
+  /**
+   * {@code YIELD *} reads every declared field, so {@code relationships} still has to be built - the yield advisory
+   * that lets a {@code YIELD nodes} skip it must not skip it here (issue #7976). This is the "everything" branch of
+   * {@code CallStep.requestedYieldFields}, which a CALL with no YIELD at all takes too.
+   */
+  @Test
+  void yieldStarStillBuildsRelationships() {
+    final Result result = database.query("cypher", """
+        MATCH (n:Entity {id: 0})
+        CALL path.subgraphall(n, {relationshipFilter: 'MENTIONS|RELATES'}) YIELD *
+        RETURN nodes, relationships
+        """).next();
+
+    assertThat(((List<?>) result.getProperty("nodes")).size()).isEqualTo(VERTICES);
+    assertThat(((List<?>) result.getProperty("relationships")).size()).isEqualTo(EDGES);
+  }
+
   @Test
   void subgraphAllStartsFromTheStartNode() {
     final Result result = database.query("cypher", """
