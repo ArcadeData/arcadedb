@@ -634,6 +634,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
       }
 
     final DatabaseInternal database = getDatabase();
+    // Defense in depth, not the live check: the one call site runs inside a CommittedReadScope, where the caller's
+    // transaction is suspended and this can only ever answer false. buildGraphFromScratchWithRetry() asks the same
+    // question before opening that scope, which is where a compaction requested from inside a transaction is
+    // actually refused (issue #7974). This stays for a future caller that reaches here without the scope.
     if (database.isTransactionActive())
       throw new IllegalStateException("Cannot compact vector index '" + indexName + "' inside a transaction");
 
