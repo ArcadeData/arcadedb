@@ -79,6 +79,12 @@ class Issue7589PropertyRenameTest extends TestHelper {
   /**
    * The load-bearing behaviour: a rename does NOT rewrite existing documents. A value already stored under the
    * old name keeps reading back under the old name; a new write after the rename lands under the new name.
+   * <p>
+   * Which has a consequence worth stating, and which {@code CHECK DATABASE} reports since #7952: renaming a
+   * {@code MANDATORY} property leaves every pre-existing document violating that constraint under the NEW name, the
+   * same state {@code ALTER PROPERTY ... MANDATORY TRUE} on a populated type produces. Nothing in the engine said so
+   * before, and a document in it cannot be updated until the property is supplied - so the check reporting it is
+   * the point rather than a nuisance, and this test now pins that it does.
    */
   @Test
   void existingDocumentsAreNotRevisitedByARename() {
@@ -96,6 +102,16 @@ class Issue7589PropertyRenameTest extends TestHelper {
 
     final ResultSet newRow = database.query("sql", "SELECT FROM Person WHERE fullName = 'Grace'");
     assertThat(newRow.hasNext()).as("a document written after the rename uses the new field name").isTrue();
+
+    // #7952: the pre-existing document now violates the MANDATORY constraint that moved with the name.
+    try (final ResultSet check = database.command("sql", "CHECK DATABASE")) {
+      assertThat((Long) check.next().getProperty("totalConstraintViolations"))
+          .as("the document written before the rename no longer satisfies Person.fullName").isEqualTo(1L);
+    }
+
+    // Taken back out so the shared end-of-test integrity assertion, which requires a run with no warnings, still
+    // has a clean database to look at.
+    database.command("sql", "CHECK DATABASE FIX DELETE INVALID RECORDS").close();
   }
 
   @Test
