@@ -115,6 +115,9 @@ public class PathExpand extends AbstractPathProcedure {
     });
   }
 
+  // `visited` here is a boxing Set<RID> rather than the primitive RidHashSet the breadth-first walks use, and has to
+  // stay one: this is a depth-first path enumeration, so it UNMARKS a vertex on backtracking, and an open-addressed
+  // set with linear probing cannot remove an entry without tombstones - which RidHashSet deliberately does not carry
   private void expandPaths(final Vertex current, final String[] relTypes, final String[] labelFilter,
       final int currentDepth, final int minDepth, final int maxDepth,
       final List<Object> currentPath, final Set<RID> visited,
