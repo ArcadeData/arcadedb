@@ -38,9 +38,16 @@ import java.util.*;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public abstract class AbstractPathProcedure implements CypherProcedure {
-  // Private, not protected: `final` on an array fixes the reference and nothing else, so a shared mutable array
-  // handed to subclasses is one stray write away from corrupting every caller of every path procedure
-  private static final String[]           NO_TYPES        = new String[0];
+  /**
+   * The "no edge-type filter" argument. {@code getEdges}, {@code getConnectedVertexRIDs} and their iterators all read
+   * a null and an empty array the same way, so this is a sentinel, not a behaviour change - and sharing one empty
+   * array is safe where sharing {@link #BOTH_DIRECTIONS} would not be, because an array of length zero has nothing a
+   * stray write could reach.
+   */
+  protected static final String[] NO_TYPES = new String[0];
+
+  // Private, not protected: `final` on an array fixes the reference and nothing else, so a shared array with
+  // elements in it, handed to subclasses, is one stray write away from corrupting every caller of every path walk
   private static final Vertex.DIRECTION[] BOTH_DIRECTIONS = { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN };
 
   protected Vertex extractVertex(final Object arg, final String paramName) {

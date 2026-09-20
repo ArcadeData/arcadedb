@@ -105,16 +105,18 @@ public class PathExpandConfig extends AbstractPathProcedure {
 
     // Expand paths
     final List<List<Object>> allPaths = new ArrayList<>();
-    final List<Object> currentPath = new ArrayList<>();
-    final Set<RID> visited = new HashSet<>();
-    final RidHashSet ghostNodes = new RidHashSet(16);
-
-    currentPath.add(startNode);
-    visited.add(startNode.getIdentity());
 
     if (bfs) {
       expandBFS(startNode, relTypes, labelFilter, minLevel, maxLevel, limit, allPaths, context);
     } else {
+      // Only the depth-first walk carries this state, and bfs defaults to true
+      final List<Object> currentPath = new ArrayList<>();
+      final Set<RID> visited = new HashSet<>();
+      final RidHashSet ghostNodes = new RidHashSet(16);
+
+      currentPath.add(startNode);
+      visited.add(startNode.getIdentity());
+
       expandDFS(startNode, relTypes, labelFilter, 0, minLevel, maxLevel, currentPath, visited, ghostNodes, allPaths, context, limit);
     }
 
@@ -168,9 +170,7 @@ public class PathExpandConfig extends AbstractPathProcedure {
 
     // Expand in both directions
     for (final Vertex.DIRECTION direction : new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN }) {
-      final Iterable<Edge> edges = relTypes != null && relTypes.length > 0
-          ? node.getEdges(direction, relTypes)
-          : node.getEdges(direction);
+      final Iterable<Edge> edges = node.getEdges(direction, relTypes != null ? relTypes : NO_TYPES);
 
       for (final Edge edge : edges) {
         try {
@@ -219,9 +219,7 @@ public class PathExpandConfig extends AbstractPathProcedure {
     }
 
     for (final Vertex.DIRECTION direction : new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN }) {
-      final Iterable<Edge> edges = relTypes != null && relTypes.length > 0
-          ? current.getEdges(direction, relTypes)
-          : current.getEdges(direction);
+      final Iterable<Edge> edges = current.getEdges(direction, relTypes != null ? relTypes : NO_TYPES);
 
       for (final Edge edge : edges) {
         if (allPaths.size() >= limit) {
