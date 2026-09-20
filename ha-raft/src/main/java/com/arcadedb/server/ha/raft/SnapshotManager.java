@@ -20,18 +20,23 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.PageSnapshot;
+import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.logging.Level;
 import java.util.zip.CRC32;
 
 /**
@@ -174,6 +179,44 @@ public final class SnapshotManager {
    */
   public static Map<String, Long> computeFileChecksums(final File directory, final PageSnapshot snapshot)
       throws IOException {
+    return computeFileChecksums(directory, snapshot, null);
+  }
+
+  /**
+   * The full form of {@link #computeFileChecksums(File, PageSnapshot)}, which additionally reports the files the
+   * answer does NOT cover because they were gone by the time it tried to read them (#7956).
+   * <p>
+   * {@code listFiles} produces a name and the {@code FileInputStream} below finds nothing there a moment later. The
+   * database read lock the caller holds does not prevent it: a TimeSeries sealed store dropped by retention is
+   * unregistered raw-{@code FileChannel} I/O that takes no write lock at all, and on the
+   * {@code pageSnapshotEnabled=false} path so is a component file dropped by index compaction, which this class's
+   * other javadoc already notes happens WITHOUT the database write lock. The {@code IOException} used to leave the
+   * loop, so the endpoint answered 500 and the cluster comparison reported the node as ERROR - the whole answer lost
+   * to one file that no longer exists, at the moment an operator is using it to decide whether a follower diverged.
+   * <p>
+   * A vanished file is therefore dropped from the map instead, and its name is handed to {@code unreadableFiles} so
+   * the caller can say "this answer does not cover these" rather than imply it is complete. Silently shortening the
+   * map is the one option that is not available: a leader compares its OWN keys, so a short map rolls up as
+   * agreement - the trap {@code PostVerifyDatabaseHandler.collectSealedStores} documents and avoids for the same
+   * reason (#7338). The name is logged at WARNING whether or not a sink was passed, so the two-argument overload
+   * above does not turn it into silence.
+   * <p>
+   * Only a file that is GONE is survivable. One that is still on disk and still cannot be opened is a genuine fault
+   * - a permission problem, a failing disk - and is rethrown, because degrading that to a 200 would hide a broken
+   * node behind the very diagnostic that exists to find broken nodes. {@code FileInputStream} reports both as
+   * {@link FileNotFoundException}, so the two are told apart by asking whether the file is still there.
+   *
+   * @param directory       the database directory to scan
+   * @param snapshot        the open window to serve page files from, or {@code null} to read everything live
+   * @param unreadableFiles collects the names listed but no longer present when read, or {@code null} when the
+   *                        caller does not report them
+   *
+   * @return a map of file name to CRC32 checksum value
+   *
+   * @throws IOException if a file that is still present cannot be read
+   */
+  public static Map<String, Long> computeFileChecksums(final File directory, final PageSnapshot snapshot,
+      final Collection<String> unreadableFiles) throws IOException {
     final Map<String, Long> checksums = new HashMap<>();
     final File[] files = directory.listFiles(File::isFile);
     if (files == null)
@@ -206,6 +249,18 @@ public final class SnapshotManager {
         int bytesRead;
         while ((bytesRead = fis.read(buffer)) != -1)
           crc.update(buffer, 0, bytesRead);
+      } catch (final FileNotFoundException e) {
+        // STILL ON DISK: THE OPEN FAILED FOR A REAL REASON (PERMISSIONS, A FAILING DEVICE) AND MUST STILL FAIL THE
+        // ENDPOINT, WHOSE 500 BODY REPORTS THE DEEPEST CAUSE PRECISELY SO IT CAN NAME IT
+        if (file.exists())
+          throw e;
+
+        LogManager.instance().log(SnapshotManager.class, Level.WARNING,
+            "File '%s' disappeared from '%s' while its checksum was being computed: it is left out of the answer and "
+                + "reported as uncovered", null, name, directory.getName());
+        if (unreadableFiles != null)
+          unreadableFiles.add(name);
+        continue;
       }
       checksums.put(name, crc.getValue());
     }
@@ -246,6 +301,16 @@ public final class SnapshotManager {
    * The last three exist only on a FOLLOWER, and only while it is catching up, which is the worst possible
    * combination for a divergence detector: the node being interrogated is the one carrying a key the leader cannot
    * have, and the endpoint reports that as a difference in the data.
+   * <p>
+   * The final entry is #7955, and it is the odd one out: an index-compaction temporary is a fully REGISTERED
+   * component file rather than unregistered scratch, so unlike everything above it also reaches the page snapshot
+   * window and {@code FileManager.getFiles()}. It is node-local all the same - only the node that happens to be
+   * compacting has one - and it needs the skip for a second reason too: its extension ({@code temp_umtidx} and
+   * friends) is not in {@code LocalDatabase.SUPPORTED_FILE_EXT}, so the post-t0 page-file guard below never
+   * recognised it, and on the branch where no window carries it the file was CRC'd live WHILE COMPACTION WAS
+   * WRITING IT - the torn checksum {@link #computeFileChecksums(File, PageSnapshot)} exists to prevent. Skipping it
+   * here settles both, before either branch is reached. See {@link PaginatedComponent#isTemporaryFileName(String)}
+   * for why the test is on the extension and not on the name.
    */
   private static boolean isNodeLocalScratchFileName(final String name) {
     return name.endsWith(".wal")
@@ -256,6 +321,7 @@ public final class SnapshotManager {
         || name.endsWith(".tmp")
         || name.endsWith(TimeSeriesSealedStore.FILE_EXTENSION + ".incoming")
         || name.endsWith(TimeSeriesSealedStore.FILE_EXTENSION + ArcadeStateMachine.SEALED_STAGING_SUFFIX)
-        || name.equals(ArcadeDBServer.SNAPSHOT_PENDING_FILE);
+        || name.equals(ArcadeDBServer.SNAPSHOT_PENDING_FILE)
+        || PaginatedComponent.isTemporaryFileName(name);
   }
 }
