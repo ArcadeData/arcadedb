@@ -154,11 +154,13 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
    * </ul>
    * An adjacency entry whose far endpoint has no record is dropped whole - neither the vertex nor the edge reaching
    * it is reported - and the missing endpoint is remembered, so the second edge pointing at the same ghost costs a
-   * set probe instead of another failed load and another report. The one entry not covered by that guarantee is a
-   * neighbour the {@code labelFilter} excludes: it is never loaded, so nothing here knows whether it exists, and
-   * loading it to find out would undo the very saving the filter is there to make. That is also why an edge to a
-   * filtered-out neighbour stays in the result while the neighbour itself does not - behaviour that predates this
-   * walk and is being decided on its own in issue #7982, not changed here.
+   * set probe instead of another failed load and another report. That holds for a neighbour the {@code labelFilter}
+   * excludes too, but only when the edges are being collected: a filtered-out neighbour is read solely to learn
+   * whether it exists, and only a caller that will be handed the edge reaching it has any use for the answer. Under
+   * a plain {@code YIELD nodes} such a neighbour is still never read, which is the filter's whole value.
+   * <p>
+   * An edge to a filtered-out neighbour that DOES exist stays in the result while the neighbour itself does not.
+   * That asymmetry predates this walk and is being decided on its own in issue #7982, not changed here.
    * The walk is level-synchronous rather than a queue of (vertex, level) pairs: the level is a property of the
    * wave, so tracking it per entry allocates one wrapper per vertex to carry a number the loop already knows.
    *
@@ -200,8 +202,8 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
 
                 // and the edge is recorded only once its far endpoint has answered, so relationships never carries an
                 // edge whose vertex nodes had to leave out
-                if (visitNeighbor(database, neighborId, labelFilter, visitedNodes, ghostNodes, reachableNodes, nextFrontier)
-                    && visitedEdges.add(edge.getIdentity()))
+                if (visitNeighbor(database, neighborId, labelFilter, true, visitedNodes, ghostNodes, reachableNodes,
+                    nextFrontier) && visitedEdges.add(edge.getIdentity()))
                   reachableEdges.add(edge);
               } catch (final RecordNotFoundException e) {
                 GhostEdgeReporter.reportSkipped(e);
@@ -211,7 +213,7 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
         } else {
           // Only the nodes are asked for: walk the adjacency entries without loading a single edge record
           for (final RID neighborId : current.getConnectedVertexRIDs(Vertex.DIRECTION.BOTH, edgeTypes))
-            visitNeighbor(database, neighborId, labelFilter, visitedNodes, ghostNodes, reachableNodes, nextFrontier);
+            visitNeighbor(database, neighborId, labelFilter, false, visitedNodes, ghostNodes, reachableNodes, nextFrontier);
         }
       }
 
@@ -250,13 +252,18 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
    * answer different questions, and conflating them would mark a missing vertex as reached - so the FIRST edge to
    * a ghost would be dropped and every later one silently kept, which is worse than either consistent outcome.
    *
+   * @param endpointMustExist when true, a neighbour the label filter excludes is still resolved, because the caller
+   * is collecting the edges and an edge is only reported where its endpoint is there; when false the filter's whole
+   * value is that such a neighbour is never read
+   *
    * @return whether the neighbour names a vertex the walk can stand behind: one it loaded, one it had already
-   * loaded, or one the label filter took out of the answer without ever looking. {@code false} says the endpoint is
-   * missing, which is the caller's cue to leave the edge reaching it out of the result too.
+   * loaded, or - only when {@code endpointMustExist} is false - one the label filter took out of the answer without
+   * ever looking. {@code false} says the endpoint is missing, which is the caller's cue to leave the edge reaching
+   * it out of the result too.
    */
   private boolean visitNeighbor(final Database database, final RID neighborId, final String[] labelFilter,
-      final RidHashSet visitedNodes, final RidHashSet ghostNodes, final List<Vertex> reachableNodes,
-      final List<Vertex> nextFrontier) {
+      final boolean endpointMustExist, final RidHashSet visitedNodes, final RidHashSet ghostNodes,
+      final List<Vertex> reachableNodes, final List<Vertex> nextFrontier) {
     if (neighborId == null)
       return false;
 
@@ -266,8 +273,22 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
     if (ghostNodes.contains(neighborId))
       return false;
 
-    if (!matchesLabels(database, neighborId, labelFilter))
+    if (!matchesLabels(database, neighborId, labelFilter)) {
+      // The filter says this neighbour is not part of the answer's nodes. It does NOT say it exists - the label comes
+      // from the schema, and no record was read. That is the whole point when only the nodes are wanted; but a caller
+      // collecting the edges is promised an edge only where its endpoint is there, so for that caller the endpoint
+      // has to be resolved even though the answer will never carry it. Resolving it once is enough: it lands in
+      // visitedNodes (handled, deliberately not in reachableNodes) or in ghostNodes, and either way the next edge
+      // into it is answered from a set.
+      if (!endpointMustExist)
+        return true;
+
+      if (resolveNeighbor(neighborId, ghostNodes) == null)
+        return false;
+
+      visitedNodes.add(neighborId);
       return true;
+    }
 
     final Vertex neighbor = resolveNeighbor(neighborId, ghostNodes);
     if (neighbor == null)

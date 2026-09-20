@@ -75,6 +75,8 @@ public class CallStep extends AbstractExecutionStep {
     this.countOnlyOptimization = enabled;
   }
   private final CallClause callClause;
+  /** Computed on first use and reused: one CALL names one procedure and one YIELD (issue #7976). */
+  private       Set<String> requestedYieldFields;
   private final CypherFunctionFactory functionFactory;
   private final ExpressionEvaluator evaluator;
 
@@ -317,20 +319,24 @@ public class CallStep extends AbstractExecutionStep {
    * everything is the answer that cannot produce a wrong result.
    */
   private Set<String> requestedYieldFields(final CypherProcedure procedure) {
+    // The CALL names one procedure and one YIELD, so the answer is the same for every input row that reaches here
+    if (requestedYieldFields != null)
+      return requestedYieldFields;
+
     final List<String> declared = procedure.getYieldFields();
     if (declared == null || declared.isEmpty())
-      return Set.of();
+      return requestedYieldFields = Set.of();
 
     // isYieldAll() IS "hasYield() with no items", so an empty item list is already covered by it
     if (!callClause.hasYield() || callClause.isYieldAll())
-      return Set.copyOf(declared);
+      return requestedYieldFields = Set.copyOf(declared);
 
     final Set<String> requested = new HashSet<>(declared.size());
     for (final CallClause.YieldItem yieldItem : callClause.getYieldItems())
       if (declared.contains(yieldItem.getFieldName()))
         requested.add(yieldItem.getFieldName());
 
-    return requested.isEmpty() ? Set.copyOf(declared) : requested;
+    return requestedYieldFields = requested.isEmpty() ? Set.copyOf(declared) : requested;
   }
 
   /**
