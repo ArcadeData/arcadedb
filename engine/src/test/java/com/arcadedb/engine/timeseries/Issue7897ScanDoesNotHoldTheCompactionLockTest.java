@@ -326,6 +326,84 @@ class Issue7897ScanDoesNotHoldTheCompactionLockTest extends TestHelper {
   }
 
   /**
+   * The one walk that never reaches {@code resolveLiveBlock}: a block whose directory entry declares a single
+   * value for every projected TAG column is answered from the SNAPSHOT entry alone - one synthetic row, no file
+   * read, no decode (issue #7710) - so the rewrite protection the other race tests exercise is bypassed
+   * altogether and what is left holding the answer up is that those entry fields are immutable once published.
+   * Raced against a retention pass here rather than argued, because "it cannot go wrong" is the kind of claim
+   * this issue was filed about (code review on PR #7970).
+   */
+  @Test
+  @Timeout(180)
+  void theDeclaredCombinationFastPathSurvivesARewriteToo() throws Exception {
+    database.command("sql",
+        "CREATE TIMESERIES TYPE OneHostPerBlock TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE) SHARDS 1");
+    final TimeSeriesEngine perBlockHost =
+        ((LocalTimeSeriesType) database.getSchema().getType("OneHostPerBlock")).getEngine();
+
+    // ONE host per block, which is what makes each block's directory entry declare a single value for the
+    // projected tag column and so makes the #7710 fast path fire instead of a scan.
+    final int blocks = 6;
+    final int perBlock = 200;
+    final List<String> hostNames = new ArrayList<>();
+    for (int b = 0; b < blocks; b++) {
+      final String host = "host_" + b;
+      hostNames.add(host);
+      final long[] timestamps = new long[perBlock];
+      final Object[] hosts = new Object[perBlock];
+      final Object[] values = new Object[perBlock];
+      for (int i = 0; i < perBlock; i++) {
+        timestamps[i] = BASE_TS + ((long) b * perBlock + i) * 1_000L;
+        hosts[i] = host;
+        values[i] = (double) i;
+      }
+      perBlockHost.appendBatch(timestamps, new Object[][] { hosts, values });
+      perBlockHost.compactAll();
+    }
+
+    final long cutoff = BASE_TS + ((long) blocks / 2 * perBlock) * 1_000L;
+
+    final List<Object> seen = new ArrayList<>();
+    final AtomicBoolean retainedOnce = new AtomicBoolean();
+    final AtomicReference<Throwable> retentionFailure = new AtomicReference<>();
+
+    // Counted, not assumed: a block answered from its declaration is counted as SKIPPED precisely because it was
+    // never decompressed, so a non-zero count is the proof that this test drove the fast path and not a scan.
+    final AggregationMetrics metrics = new AggregationMetrics();
+
+    perBlockHost.forEachTagCombination(Long.MIN_VALUE, Long.MAX_VALUE, new int[] { 0 }, metrics, row -> {
+      seen.add(row[1]);
+      if (retainedOnce.compareAndSet(false, true)) {
+        final Thread retention = new Thread(() -> {
+          try {
+            perBlockHost.applyRetention(cutoff);
+          } catch (final Throwable t) {
+            retentionFailure.set(t);
+          }
+        }, "issue7897-fastpath-retention");
+        retention.start();
+        try {
+          retention.join(TimeUnit.SECONDS.toMillis(60));
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      }
+      return true;
+    });
+
+    assertThat(retentionFailure.get()).isNull();
+    assertThat(seen).as("the fast path must hand back declared host names, not bytes read at a moved offset")
+        .isSubsetOf(hostNames.toArray());
+    assertThat(seen).as("and it must still answer, rather than skipping every block once the file was rewritten")
+        .isNotEmpty();
+    assertThat(metrics.getSkippedBlocks())
+        .as("at least one block was answered from its directory entry - otherwise this raced an ordinary scan")
+        .isPositive();
+    assertThat(metrics.getFastPathBlocks() + metrics.getSlowPathBlocks())
+        .as("and the fast path decompressed nothing to do it").isZero();
+  }
+
+  /**
    * The other half of releasing the locks: the walk no longer sees one frozen shard, so it has to be shown that a
    * compaction landing in the middle of it neither drops a row into the gap between the two layers nor hands one
    * over from both.

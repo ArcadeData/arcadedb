@@ -27,6 +27,7 @@ import com.arcadedb.engine.timeseries.codec.DictionaryCodec;
 import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.engine.timeseries.TimeSeriesSealedStore.BlockDirectorySnapshot;
 import com.arcadedb.schema.LocalSchema;
 
 import java.io.File;
@@ -503,7 +504,7 @@ public class TimeSeriesShard implements AutoCloseable {
    */
   public boolean forEachRow(final long fromTs, final long toTs, final int[] columnIndices, final TagFilter tagFilter,
       final AggregationMetrics metrics, final TimeSeriesRowVisitor visitor) throws IOException {
-    final TimeSeriesSealedStore.BlockDirectorySnapshot sealedBlocks;
+    final BlockDirectorySnapshot sealedBlocks;
     final List<Object[]> mutableRows;
     compactionLock.readLock().lock();
     try {
@@ -543,7 +544,7 @@ public class TimeSeriesShard implements AutoCloseable {
       final AggregationMetrics metrics, final TimeSeriesRowVisitor visitor) throws IOException {
     // One window for both layers, then the visit with nothing held - see forEachRow for why each half is the way
     // it is (issue #7897).
-    final TimeSeriesSealedStore.BlockDirectorySnapshot sealedBlocks;
+    final BlockDirectorySnapshot sealedBlocks;
     final List<Object[]> mutableRows;
     compactionLock.readLock().lock();
     try {
