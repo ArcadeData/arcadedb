@@ -55,6 +55,18 @@ import java.util.function.Consumer;
  */
 public class TimeSeriesShard implements AutoCloseable {
 
+  /**
+   * A projection of NO value columns, for {@link #hasRowsInRange}: every read path builds a row as
+   * {@code columnIndices.length + 1} slots with the timestamp in slot 0, so this asks for the timestamp alone and
+   * decodes not one value. Shared rather than allocated per shard per call - the probe visits every shard.
+   */
+  private static final int[]                NO_COLUMNS            = new int[0];
+  /**
+   * The visitor {@link #hasRowsInRange} is: the first row it is offered is the answer, so it always asks to stop.
+   * Stateless, hence one instance rather than a lambda captured per call.
+   */
+  private static final TimeSeriesRowVisitor STOP_AT_THE_FIRST_ROW = row -> false;
+
   private final int                    shardIndex;
   private final String                 typeName;
   private final DatabaseInternal       database;
@@ -491,8 +503,10 @@ public class TimeSeriesShard implements AutoCloseable {
    * <p>
    * What that costs is the mutable bucket read a visitor stopping inside the SEALED layer used to skip - it is now
    * read before the walk starts rather than after it ends. It is bounded by the bucket, which is what every
-   * {@code iterateRange} caller already pays on every call, and {@link TimeSeriesEngine#hasRowsInRange} is the
-   * one caller that notices; issue #7965 tracks giving it back its laziness.
+   * {@code iterateRange} caller already pays on every call, and every caller here reads every row anyway: the one
+   * that stopped early was {@link TimeSeriesEngine#hasRowsInRange}, and it has {@link #hasRowsInRange} of its own
+   * now (issue #7965). A future early-stopping caller wanting the same laziness back wants that shape too - a walk
+   * whose visitor is the shard's own and therefore bounded - and not a lock released between the two layers.
    * <p>
    * The rows arrive sealed-then-mutable, NOT merged by timestamp. Merging is what forces every shard's rows to be
    * resident at once; a folding answer does not need the order, and one that does wants {@code iterateQuery}.
@@ -525,6 +539,51 @@ public class TimeSeriesShard implements AutoCloseable {
         return false;
     }
     return true;
+  }
+
+  /**
+   * Whether either layer holds a row in {@code [fromTs, toTs]} (issue #7965).
+   * <p>
+   * A walk of its own rather than a fold of {@link #forEachRow} with a visitor that stops on the first row,
+   * because the two differ in what the shard is allowed to hold a lock across. {@code forEachRow} hands rows to
+   * the CALLER's code, whose cost is unbounded from here - an {@code EXPORT DATABASE} writing a gzip chunk from
+   * inside the visitor - so issue #7897 had to release {@code compactionLock} before the first row, which in turn
+   * forced both layers to be read in one window up front: a compaction landing between them would seal the
+   * bucket's rows into blocks the sealed walk then hands over as well. The cost of that window is a full
+   * {@code mutableBucket.scanRange} of every shard, paid whether the answer needed it or not.
+   * <p>
+   * Here there is no caller code to run: the answer is a boolean, the probe stops at the first row either layer
+   * produces, and the whole thing is bounded by one block decode plus the pages up to that row. So it holds the
+   * read lock across both layers - the shape #7897 replaced, which was never the problem - and the consistency
+   * question does not arise. The sealed layer is asked FIRST because it is the half that can answer without
+   * reading anything at all: a block whose directory entry puts it outside the range is dropped on the entry.
+   * <p>
+   * The mutable bucket is iterated rather than scanned, so a bucket holding thousands of rows costs the pages up
+   * to the first match and not a materialised list of all of them. That laziness is safe only under the lock -
+   * {@code iterateRange} would otherwise walk into pages a concurrent {@code compact()} has cleared, which is why
+   * {@link #forEachRow} materialises instead - and it never escapes this method.
+   * <p>
+   * No tag filter: the one caller asks whether a metric NAME has a sample in a window, and the bucket's lazy
+   * iterator takes no filter. A filtered existence check would want one, and should add it here rather than fold
+   * {@code forEachRow} again.
+   *
+   * @param metrics optional counters, may be {@code null}. Both layers are charged for what they actually read -
+   *                the blocks decoded and the bucket pages opened - so a probe answered by the sealed layer
+   *                reports no page at all
+   */
+  public boolean hasRowsInRange(final long fromTs, final long toTs, final AggregationMetrics metrics)
+      throws IOException {
+    compactionLock.readLock().lock();
+    try {
+      // forEachRow answers false when the visitor stopped it, which here means the layer had a row to offer.
+      if (!sealedStore.forEachRow(sealedStore.snapshotBlockDirectory(fromTs, toTs), fromTs, toTs, NO_COLUMNS, null,
+          metrics, STOP_AT_THE_FIRST_ROW))
+        return true;
+
+      return mutableBucket.iterateRange(fromTs, toTs, NO_COLUMNS, metrics).hasNext();
+    } finally {
+      compactionLock.readLock().unlock();
+    }
   }
 
   /**
