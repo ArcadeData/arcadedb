@@ -714,6 +714,53 @@ public class TransactionIndexContext {
   }
 
   /**
+   * Every lane belonging to {@code index}, in the order {@link #commit()} replays them - regardless of the names
+   * those lanes were opened under (issue #7378).
+   * <p>
+   * A lane is keyed by the name the index answered to when its FIRST entry was queued, and an {@code LSM_VECTOR}
+   * index renames itself when a compaction swaps in the component file it is named after. That compaction runs on
+   * the async executor, so it can land mid-transaction - which is issue #6105 on the write side, and is why
+   * {@link #indexPerLane} remembers the index rather than the name.
+   * <p>
+   * It also means one index can own MORE THAN ONE lane. {@code addIndexKeyLock} opens a fresh lane whenever
+   * {@code index.getName()} is a name this transaction has not seen, so a transaction that writes, is renamed
+   * under it, and writes again leaves two lanes for one index - one under each name. {@link #commit()} replays
+   * both, because it resolves every lane through {@link #laneIndexName}. A reader that stopped at the first
+   * match would see only one of them and would answer a search with part of the transaction's own writes
+   * missing, which is precisely the defect the overlay in {@code LSMVectorIndex} exists to close. So this returns
+   * all of them.
+   * <p>
+   * The walk is over {@link #indexEntries} and not over {@code indexPerLane}: the former is a
+   * {@link LinkedHashMap} in lane-creation order, which is the order {@code commit()} replays in and therefore
+   * the order a reader has to merge in for "the last write to a RID wins" to mean the same thing on both sides.
+   * {@code indexPerLane} is a {@link HashMap} and its iteration order says nothing.
+   * <p>
+   * Cost is one hash lookup per lane this transaction has opened - O(1) for the ordinary transaction that has
+   * touched one index, O(distinct indexes touched) for one that has touched several, and it is paid even when the
+   * answer is empty. See issue #7967.
+   *
+   * @return the lanes, in replay order; empty when this transaction has queued nothing for {@code index}
+   */
+  public List<TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> getIndexKeyLanes(final IndexInternal index) {
+    List<TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> lanes = null;
+
+    for (final Map.Entry<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> lane : indexEntries.entrySet()) {
+      final IndexInternal owner = indexPerLane.get(lane.getKey());
+      // The same ownership rule laneIndexName applies, including its fallback for a lane restored wholesale by
+      // setKeys, which carries no reference: such a lane answers to its own key. Unreachable from here today -
+      // setKeys is only used by commitFromReplica, whose status is never BEGUN - but the two must not drift.
+      if (owner == null ? !lane.getKey().equals(index.getName()) : owner != index)
+        continue;
+
+      if (lanes == null)
+        lanes = new ArrayList<>(2);
+      lanes.add(lane.getValue());
+    }
+
+    return lanes == null ? List.of() : lanes;
+  }
+
+  /**
    * Called at commit time in the middle of the lock to avoid concurrent insertion of the same key.
    */
   private void checkUniqueIndexKeys(final Index index, final IndexKey key, final RID deleted) {
