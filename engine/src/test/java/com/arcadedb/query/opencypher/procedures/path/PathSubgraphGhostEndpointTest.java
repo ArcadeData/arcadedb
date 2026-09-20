@@ -30,8 +30,10 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -111,14 +113,9 @@ class PathSubgraphGhostEndpointTest {
         RETURN path
         """);
 
-    int paths = 0;
-    while (rs.hasNext()) {
-      final List<?> nodes = (List<?>) ((Map<?, ?>) rs.next().getProperty("path")).get("nodes");
-      for (final Object node : nodes)
-        assertThat(((Vertex) node).getString("name")).isIn("A", "B");
-      ++paths;
-    }
-    assertThat(paths).isPositive();
+    // The live edge is reached and the two ghost edges are not, so exactly one path comes back - asserting only
+    // that some path did would also pass on a walk that rejected every neighbour
+    assertThat(pathEndpoints(rs)).containsExactly("A>B");
   }
 
   /**
@@ -133,14 +130,19 @@ class PathSubgraphGhostEndpointTest {
         RETURN path
         """);
 
-    int paths = 0;
+    // The root path is always returned, so the live neighbour has to be named explicitly: a walk that rejected
+    // every neighbour, ghost or not, would still return the root
+    assertThat(pathEndpoints(rs)).containsExactly("A", "A>B");
+  }
+
+  /** Every returned path as the {@code name}s of its nodes, joined - the whole answer, not just how much of it. */
+  private static List<String> pathEndpoints(final ResultSet rs) {
+    final List<String> paths = new ArrayList<>();
     while (rs.hasNext()) {
       final List<?> nodes = (List<?>) ((Map<?, ?>) rs.next().getProperty("path")).get("nodes");
-      for (final Object node : nodes)
-        assertThat(((Vertex) node).getString("name")).isIn("A", "B");
-      ++paths;
+      paths.add(nodes.stream().map(node -> ((Vertex) node).getString("name")).collect(Collectors.joining(">")));
     }
-    assertThat(paths).isPositive();
+    return paths;
   }
 
   @Test
