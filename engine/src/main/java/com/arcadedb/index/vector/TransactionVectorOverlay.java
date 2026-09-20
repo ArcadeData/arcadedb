@@ -213,6 +213,12 @@ final class TransactionVectorOverlay {
           // and the delta scan reads it back from there on demand - which is a lookup in the transaction's own
           // record cache, not a page read, because the record is one this transaction is holding.
           //
+          // Worked example, budget 2, four RIDs written once each and then A rewritten (PR #8001 review):
+          //   A -> resident (1 of 2)   B -> resident (2 of 2)   C -> declined   D -> declined
+          //   A again -> already resident, so it refreshes its payload for free and the count stays 2
+          //   C again -> NOT resident, and the count is at the budget, so it stays declined
+          // The count is what the budget bounds; the map's size is not, because a declined row costs 32 bytes.
+          //
           // Gated on how many rows HOLD a payload, never on how many rows there are (PR #8001 review). Refreshing
           // a row that already holds one is free - it replaces a copy rather than adding one - but a row that was
           // DECLINED earlier and is written again is not, and counting it as free let a transaction that outran
