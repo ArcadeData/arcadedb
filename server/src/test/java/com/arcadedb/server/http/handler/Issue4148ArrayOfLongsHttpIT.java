@@ -95,7 +95,7 @@ class Issue4148ArrayOfLongsHttpIT extends BaseGraphServerTest {
       payload.put("params", params);
 
     final HttpURLConnection connection = (HttpURLConnection) new URI(
-        "http://127.0.0.1:2480/api/v1/command/" + getDatabaseName()).toURL().openConnection();
+        getServerHttpUrl("/api/v1/command/") + getDatabaseName()).toURL().openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Content-Type", "application/json");
     connection.setRequestProperty("Authorization",

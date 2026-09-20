@@ -70,7 +70,7 @@ class Bolt5002RoutingTableIT extends BaseRaftHATest {
       if (i > 0)
         sb.append(",");
       sb.append("localhost:{raft:").append(2434 + i)
-          .append(",http:").append(2480 + i)
+          .append(",http:").append(getServerHttpPort(i))
           .append(",bolt:").append(BASE_BOLT_PORT + i).append("}");
     }
     return sb.toString();

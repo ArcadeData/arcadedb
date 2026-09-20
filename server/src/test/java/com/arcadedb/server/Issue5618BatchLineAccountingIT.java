@@ -256,7 +256,7 @@ class Issue5618BatchLineAccountingIT extends BaseGraphServerTest {
 
   private JSONObject post(final int expectedStatus, final String body, final String queryParams,
       final String contentType) throws Exception {
-    String url = "http://127.0.0.1:2480/api/v1/batch/" + getDatabaseName();
+    String url = getServerHttpUrl("/api/v1/batch/") + getDatabaseName();
     if (queryParams != null && !queryParams.isEmpty())
       url += "?" + queryParams;
 

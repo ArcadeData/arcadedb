@@ -167,7 +167,7 @@ class Issue7472UnscheduledDatabaseBackupRetentionIT extends BaseGraphServerTest 
 
   private HttpResponse<String> postCommand(final String command) throws Exception {
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(URI.create("http://127.0.0.1:2480/api/v1/server"))
+        .uri(URI.create(getServerHttpUrl("/api/v1/server")))
         .header("Authorization",
             "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
         .header("Content-Type", "application/json")

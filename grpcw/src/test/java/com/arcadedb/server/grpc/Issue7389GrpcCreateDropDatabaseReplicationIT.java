@@ -87,7 +87,7 @@ class Issue7389GrpcCreateDropDatabaseReplicationIT extends BaseRaftHATest {
     for (int i = 0; i < SERVER_COUNT; i++) {
       if (i > 0)
         addresses.append(",");
-      addresses.append("localhost:").append(RAFT_PORTS[i]).append(":").append(2480 + i);
+      addresses.append("localhost:").append(RAFT_PORTS[i]).append(":").append(getServerHttpPort(i));
     }
     return addresses.toString();
   }

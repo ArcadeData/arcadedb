@@ -65,8 +65,7 @@ class PostBootstrapStateHandlerIT extends BaseRaftHATest {
 
   @Test
   void rpcRejectsMissingAuth() throws Exception {
-    final int httpPort = 2480;
-    final URL url = new URL("http://localhost:" + httpPort + "/api/v1/cluster/bootstrap-state");
+    final URL url = new URL(getServerHttpUrl("/api/v1/cluster/bootstrap-state"));
     final HttpURLConnection conn = (HttpURLConnection) url.openConnection();
     conn.setRequestMethod("POST");
     conn.setDoOutput(true);
@@ -107,7 +106,7 @@ class PostBootstrapStateHandlerIT extends BaseRaftHATest {
   }
 
   private JSONObject postBootstrapState(final int serverIndex) throws Exception {
-    final int httpPort = 2480 + serverIndex;
+    final int httpPort = getServerHttpPort(serverIndex);
     final URL url = new URL("http://localhost:" + httpPort + "/api/v1/cluster/bootstrap-state");
     final HttpURLConnection conn = (HttpURLConnection) url.openConnection();
     conn.setRequestMethod("POST");

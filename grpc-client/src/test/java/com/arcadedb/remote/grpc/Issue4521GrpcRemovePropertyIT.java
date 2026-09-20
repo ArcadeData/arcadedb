@@ -54,7 +54,7 @@ class Issue4521GrpcRemovePropertyIT extends BaseGraphServerTest {
   @BeforeEach
   void openAndPrepare() {
     grpcServer = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
-    grpc = new RemoteGrpcDatabase(grpcServer, "localhost", 50051, 2480, getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
+    grpc = new RemoteGrpcDatabase(grpcServer, "localhost", 50051, getServerHttpPort(), getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
 
     grpc.command("sql", "CREATE VERTEX TYPE `" + VERTEX_TYPE + "` IF NOT EXISTS");
     grpc.command("sql", "CREATE PROPERTY `" + VERTEX_TYPE + "`.s IF NOT EXISTS STRING");

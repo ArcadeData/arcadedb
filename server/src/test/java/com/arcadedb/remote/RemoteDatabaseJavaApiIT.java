@@ -47,11 +47,11 @@ class RemoteDatabaseJavaApiIT extends BaseGraphServerTest {
   @Test
   void createUnidirectionalEdge() {
     assertThat(
-        new RemoteServer("127.0.0.1", 2480, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists(DATABASE_NAME)).isTrue();
+        new RemoteServer("127.0.0.1", getServerHttpPort(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists(DATABASE_NAME)).isTrue();
 
     ContextConfiguration configuration = new ContextConfiguration();
     configuration.setValue(GlobalConfiguration.TX_RETRIES, 3);
-    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), DATABASE_NAME, "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS, configuration);
 
     database.command("sql", "CREATE VERTEX TYPE Person");
@@ -89,11 +89,11 @@ class RemoteDatabaseJavaApiIT extends BaseGraphServerTest {
 
   @Test
   void test2() {
-    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), DATABASE_NAME, "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     assertThat(
-        new RemoteServer("127.0.0.1", 2480, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists(DATABASE_NAME)).isTrue();
+        new RemoteServer("127.0.0.1", getServerHttpPort(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists(DATABASE_NAME)).isTrue();
 
     String schema = """
             create vertex type Customer if not exists;
@@ -123,7 +123,7 @@ class RemoteDatabaseJavaApiIT extends BaseGraphServerTest {
 
   @Test
   void explicitLock() {
-    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), DATABASE_NAME, "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     final int TOT = 100;
@@ -150,7 +150,7 @@ class RemoteDatabaseJavaApiIT extends BaseGraphServerTest {
     final Thread[] threads = new Thread[CONCURRENT_THREADS];
     for (int i = 0; i < CONCURRENT_THREADS; i++) {
       threads[i] = new Thread(() -> {
-        final RemoteDatabase db = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+        final RemoteDatabase db = new RemoteDatabase("127.0.0.1", getServerHttpPort(), DATABASE_NAME, "root",
             BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
         for (int k = 0; k < TOT; ++k) {
@@ -197,7 +197,7 @@ class RemoteDatabaseJavaApiIT extends BaseGraphServerTest {
 
   @Test
   void saveRemoteEdgeOnGivenBucket() {
-    final RemoteDatabase db = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+    final RemoteDatabase db = new RemoteDatabase("127.0.0.1", getServerHttpPort(), DATABASE_NAME, "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     Bucket edgeBucket = db.getSchema().createBucket("EdgeBucket");
@@ -220,7 +220,7 @@ class RemoteDatabaseJavaApiIT extends BaseGraphServerTest {
    */
   @Test
   void isConnectedToWithVertexArgument() {
-    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), DATABASE_NAME, "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     database.command("sql", "CREATE VERTEX TYPE Person");
@@ -248,14 +248,14 @@ class RemoteDatabaseJavaApiIT extends BaseGraphServerTest {
   @BeforeEach
   public void beginTest() {
     super.beginTest();
-    final RemoteServer server = new RemoteServer("127.0.0.1", 2480, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+    final RemoteServer server = new RemoteServer("127.0.0.1", getServerHttpPort(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
     if (!server.exists(DATABASE_NAME))
       server.create(DATABASE_NAME);
   }
 
   @AfterEach
   public void endTest() {
-    final RemoteServer server = new RemoteServer("127.0.0.1", 2480, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+    final RemoteServer server = new RemoteServer("127.0.0.1", getServerHttpPort(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
     if (server.exists(DATABASE_NAME))
       server.drop(DATABASE_NAME);
     super.endTest();

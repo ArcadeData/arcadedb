@@ -110,7 +110,7 @@ class CrossLanguageVisibilityHttpIT extends BaseGraphServerTest {
 
   private JSONArray postCommand(final String language, final String command, final JSONObject params) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:2480/api/v1/command/" + getDatabaseName()).openConnection();
+        getServerHttpUrl("/api/v1/command/") + getDatabaseName()).openConnection();
 
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization",

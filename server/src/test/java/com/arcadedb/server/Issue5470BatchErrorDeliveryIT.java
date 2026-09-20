@@ -362,7 +362,7 @@ class Issue5470BatchErrorDeliveryIT extends BaseGraphServerTest {
     });
 
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(URI.create("http://127.0.0.1:2480/api/v1/batch/" + getDatabaseName()))
+        .uri(URI.create(getServerHttpUrl("/api/v1/batch/") + getDatabaseName()))
         .header("Authorization", "Basic " + basicAuth())
         .header("Content-Type", "application/x-ndjson")
         .timeout(Duration.ofMillis(RESPONSE_TIMEOUT_MS))
@@ -574,7 +574,7 @@ class Issue5470BatchErrorDeliveryIT extends BaseGraphServerTest {
 
   private Socket openSocket() throws IOException {
     final Socket socket = new Socket();
-    socket.connect(new InetSocketAddress("127.0.0.1", 2480), 10_000);
+    socket.connect(new InetSocketAddress("127.0.0.1", getServerHttpPort()), 10_000);
     socket.setSoTimeout(RESPONSE_TIMEOUT_MS);
     return socket;
   }
@@ -585,7 +585,7 @@ class Issue5470BatchErrorDeliveryIT extends BaseGraphServerTest {
 
   private String requestHeaders(final long contentLength, final String queryString) {
     return "POST /api/v1/batch/" + getDatabaseName() + queryString + " HTTP/1.1\r\n"
-        + "Host: 127.0.0.1:2480\r\n"
+        + "Host: 127.0.0.1:" + getServerHttpPort() + "\r\n"
         + "Authorization: Basic " + basicAuth() + "\r\n"
         + "Content-Type: application/x-ndjson\r\n"
         + "Content-Length: " + contentLength + "\r\n"
@@ -595,7 +595,7 @@ class Issue5470BatchErrorDeliveryIT extends BaseGraphServerTest {
 
   private String keepAliveRequestHeaders(final long contentLength) {
     return "POST /api/v1/batch/" + getDatabaseName() + " HTTP/1.1\r\n"
-        + "Host: 127.0.0.1:2480\r\n"
+        + "Host: 127.0.0.1:" + getServerHttpPort() + "\r\n"
         + "Authorization: Basic " + basicAuth() + "\r\n"
         + "Content-Type: application/x-ndjson\r\n"
         + "Content-Length: " + contentLength + "\r\n"

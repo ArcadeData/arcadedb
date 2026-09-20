@@ -45,7 +45,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 public class Issue5045GrpcTemporalFidelityIT extends BaseGraphServerTest {
 
   private static final int    GRPC_PORT   = 50051;
-  private static final int    HTTP_PORT   = 2480;
   private static final String VERTEX_TYPE = "Temporal5045";
 
   private RemoteGrpcServer   grpcServer;
@@ -60,7 +59,7 @@ public class Issue5045GrpcTemporalFidelityIT extends BaseGraphServerTest {
   @BeforeEach
   void openAndPrepare() {
     grpcServer = new RemoteGrpcServer("localhost", GRPC_PORT, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
-    grpc = new RemoteGrpcDatabase(grpcServer, "localhost", GRPC_PORT, HTTP_PORT, getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
+    grpc = new RemoteGrpcDatabase(grpcServer, "localhost", GRPC_PORT, getServerHttpPort(), getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
     grpc.command("sql", "CREATE VERTEX TYPE `" + VERTEX_TYPE + "` IF NOT EXISTS");
     grpc.command("sql", "CREATE PROPERTY `" + VERTEX_TYPE + "`.d IF NOT EXISTS DATE");
     grpc.command("sql", "CREATE PROPERTY `" + VERTEX_TYPE + "`.dt IF NOT EXISTS DATETIME");
