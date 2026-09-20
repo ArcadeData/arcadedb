@@ -106,7 +106,7 @@ class PostServerCommandPathTraversalIT extends BaseGraphServerTest {
 
   private HttpResponse<String> executeServerCommand(final String command) throws Exception {
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/server"))
+        .uri(new URI(getServerHttpUrl("/api/v1/server")))
         .POST(HttpRequest.BodyPublishers.ofString(new JSONObject()
             .put("command", command)
             .toString()))

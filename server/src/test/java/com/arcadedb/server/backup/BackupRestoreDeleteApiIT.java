@@ -179,7 +179,7 @@ class BackupRestoreDeleteApiIT extends BaseGraphServerTest {
   private HttpResponse<String> postCommand(final JSONObject payload) throws Exception {
     final HttpClient client = HttpClient.newHttpClient();
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/server"))
+        .uri(new URI(getServerHttpUrl("/api/v1/server")))
         .header("Authorization",
             "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
         .header("Content-Type", "application/json")

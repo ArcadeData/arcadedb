@@ -44,7 +44,7 @@ class Issue5225MixedTypeIndexIT extends BaseGraphServerTest {
 
   private JSONObject cypher(final String command, final int expectedStatus) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:2480/api/v1/command/graph").openConnection();
+        getServerHttpUrl("/api/v1/command/graph")).openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));

@@ -95,7 +95,7 @@ class Issue5276TransferLeaderValidationIT extends BaseRaftHATest {
 
   private HttpResult postTransferLeader(final int serverIndex, final String body) throws Exception {
     final HttpURLConnection conn = (HttpURLConnection) new URI(
-        "http://localhost:" + (2480 + serverIndex) + "/api/v1/cluster/leader").toURL().openConnection();
+        getServerHttpUrl(serverIndex, "/api/v1/cluster/leader")).toURL().openConnection();
     conn.setRequestMethod("POST");
     conn.setDoOutput(true);
     conn.setRequestProperty("Content-Type", "application/json");

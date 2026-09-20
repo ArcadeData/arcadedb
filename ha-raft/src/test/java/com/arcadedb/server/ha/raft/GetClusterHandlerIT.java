@@ -173,7 +173,7 @@ class GetClusterHandlerIT extends BaseRaftHATest {
   }
 
   private JSONObject queryClusterEndpoint(final int serverIndex) throws Exception {
-    final int httpPort = 2480 + serverIndex;
+    final int httpPort = getServerHttpPort(serverIndex);
     final URL url = new URL("http://localhost:" + httpPort + "/api/v1/cluster");
     final HttpURLConnection conn = (HttpURLConnection) url.openConnection();
     conn.setRequestMethod("GET");

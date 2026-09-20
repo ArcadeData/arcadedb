@@ -70,7 +70,7 @@ class TimeSeriesGrpcInsertMaterializationIT extends BaseGraphServerTest {
   @Test
   void tsInsertOverGrpcClientMaterialisesWithoutThrowing() {
     grpcServer = new RemoteGrpcServer("localhost", GRPC_PORT, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
-    db = new RemoteGrpcDatabase(grpcServer, "localhost", GRPC_PORT, 2480, getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
+    db = new RemoteGrpcDatabase(grpcServer, "localhost", GRPC_PORT, getServerHttpPort(), getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
 
     db.command("sql", "CREATE TIMESERIES TYPE " + TYPE_NAME
         + " TIMESTAMP ts TAGS (sensor_id STRING, region STRING) FIELDS (temperature DOUBLE, humidity DOUBLE)");

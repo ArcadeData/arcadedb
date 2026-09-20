@@ -54,7 +54,7 @@ class AbstractQueryHandlerIT extends BaseGraphServerTest {
         .put("serializer", "graph");
 
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/query/graph"))
+        .uri(new URI(getServerHttpUrl("/api/v1/query/graph")))
         .POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
         .setHeader("Authorization",
             "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
@@ -82,7 +82,7 @@ class AbstractQueryHandlerIT extends BaseGraphServerTest {
         .put("serializer", "studio");
 
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/query/graph"))
+        .uri(new URI(getServerHttpUrl("/api/v1/query/graph")))
         .POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
         .setHeader("Authorization",
             "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
@@ -110,7 +110,7 @@ class AbstractQueryHandlerIT extends BaseGraphServerTest {
         .put("serializer", "record");
 
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/query/graph"))
+        .uri(new URI(getServerHttpUrl("/api/v1/query/graph")))
         .POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
         .setHeader("Authorization",
             "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
@@ -138,7 +138,7 @@ class AbstractQueryHandlerIT extends BaseGraphServerTest {
         .put("limit", 10);
 
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/query/graph"))
+        .uri(new URI(getServerHttpUrl("/api/v1/query/graph")))
         .POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
         .setHeader("Authorization",
             "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
@@ -162,7 +162,7 @@ class AbstractQueryHandlerIT extends BaseGraphServerTest {
         .put("serializer", "graph");
 
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/query/graph"))
+        .uri(new URI(getServerHttpUrl("/api/v1/query/graph")))
         .POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
         .setHeader("Authorization",
             "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
@@ -185,7 +185,7 @@ class AbstractQueryHandlerIT extends BaseGraphServerTest {
         .put("serializer", "record");
 
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/query/graph"))
+        .uri(new URI(getServerHttpUrl("/api/v1/query/graph")))
         .POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
         .setHeader("Authorization",
             "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
@@ -212,7 +212,7 @@ class AbstractQueryHandlerIT extends BaseGraphServerTest {
         .put("serializer", "graph");
 
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/query/graph"))
+        .uri(new URI(getServerHttpUrl("/api/v1/query/graph")))
         .POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
         .setHeader("Authorization",
             "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
@@ -235,7 +235,7 @@ class AbstractQueryHandlerIT extends BaseGraphServerTest {
     payload.put("params", params);
 
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/query/graph"))
+        .uri(new URI(getServerHttpUrl("/api/v1/query/graph")))
         .POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
         .setHeader("Authorization",
             "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
@@ -252,7 +252,7 @@ class AbstractQueryHandlerIT extends BaseGraphServerTest {
         .put("command", command);
 
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/command/graph"))
+        .uri(new URI(getServerHttpUrl("/api/v1/command/graph")))
         .POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
         .setHeader("Authorization",
             "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))

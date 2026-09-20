@@ -117,7 +117,7 @@ class Issue5470BatchStreamStallIT extends BaseGraphServerTest {
     final byte[] data = body.toString().getBytes(StandardCharsets.UTF_8);
 
     final HttpURLConnection conn = (HttpURLConnection) new URL(
-        "http://127.0.0.1:2480/api/v1/batch/" + getDatabaseName()).openConnection();
+        getServerHttpUrl("/api/v1/batch/") + getDatabaseName()).openConnection();
     conn.setRequestMethod("POST");
     conn.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
@@ -158,13 +158,13 @@ class Issue5470BatchStreamStallIT extends BaseGraphServerTest {
     final String line = "{\"@type\":\"vertex\",\"@class\":\"V1\",\"id\":2000000}\n";
     final String auth = Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes());
 
-    try (final Socket socket = new Socket("127.0.0.1", 2480)) {
+    try (final Socket socket = new Socket("127.0.0.1", getServerHttpPort())) {
       socket.setSoTimeout(CLIENT_SO_TIMEOUT_MS);
 
       final OutputStream out = socket.getOutputStream();
       // Announce far more bytes than are ever sent, then go silent.
       out.write(("POST /api/v1/batch/" + getDatabaseName() + " HTTP/1.1\r\n"
-          + "Host: 127.0.0.1:2480\r\n"
+          + "Host: 127.0.0.1:" + getServerHttpPort() + "\r\n"
           + "Authorization: Basic " + auth + "\r\n"
           + "Content-Type: application/x-ndjson\r\n"
           + "Content-Length: 1000000\r\n"
@@ -206,13 +206,13 @@ class Issue5470BatchStreamStallIT extends BaseGraphServerTest {
     final byte[] sent = body.toString().getBytes(StandardCharsets.UTF_8);
     final String auth = Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes());
 
-    try (final Socket socket = new Socket("127.0.0.1", 2480)) {
+    try (final Socket socket = new Socket("127.0.0.1", getServerHttpPort())) {
       socket.setSoTimeout(CLIENT_SO_TIMEOUT_MS);
 
       final OutputStream out = socket.getOutputStream();
       // vertexBatchSize=1 commits every record, so the reported counts are exactly what reached the database.
       out.write(("POST /api/v1/batch/" + getDatabaseName() + "?vertexBatchSize=1 HTTP/1.1\r\n"
-          + "Host: 127.0.0.1:2480\r\n"
+          + "Host: 127.0.0.1:" + getServerHttpPort() + "\r\n"
           + "Authorization: Basic " + auth + "\r\n"
           + "Content-Type: application/x-ndjson\r\n"
           + "Content-Length: 1000000\r\n"
@@ -278,12 +278,12 @@ class Issue5470BatchStreamStallIT extends BaseGraphServerTest {
     final byte[] sent = body.toString().getBytes(StandardCharsets.UTF_8);
     final String auth = Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes());
 
-    try (final Socket socket = new Socket("127.0.0.1", 2480)) {
+    try (final Socket socket = new Socket("127.0.0.1", getServerHttpPort())) {
       socket.setSoTimeout(CLIENT_SO_TIMEOUT_MS);
 
       final OutputStream out = socket.getOutputStream();
       out.write(("POST /api/v1/batch/" + getDatabaseName() + "?vertexBatchSize=1 HTTP/1.1\r\n"
-          + "Host: 127.0.0.1:2480\r\n"
+          + "Host: 127.0.0.1:" + getServerHttpPort() + "\r\n"
           + "Authorization: Basic " + auth + "\r\n"
           + "Content-Type: application/x-ndjson\r\n"
           + "Content-Length: 1000000\r\n"

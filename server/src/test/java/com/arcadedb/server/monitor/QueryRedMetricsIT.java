@@ -65,7 +65,7 @@ class QueryRedMetricsIT extends BaseGraphServerTest {
   }
 
   private void post(final String path, final String body) throws Exception {
-    final HttpURLConnection c = (HttpURLConnection) new URL("http://localhost:2480" + path).openConnection();
+    final HttpURLConnection c = (HttpURLConnection) new URL(getServerHttpUrl("") + path).openConnection();
     c.setRequestMethod("POST");
     c.setDoOutput(true);
     c.setRequestProperty("Authorization",

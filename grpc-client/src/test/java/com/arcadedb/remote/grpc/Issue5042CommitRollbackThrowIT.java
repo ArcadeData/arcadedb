@@ -46,7 +46,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 public class Issue5042CommitRollbackThrowIT extends BaseGraphServerTest {
 
   private static final int    GRPC_PORT   = 50051;
-  private static final int    HTTP_PORT   = 2480;
   private static final String VERTEX_TYPE = "Issue5042Vertex";
 
   // Short reaper windows so the abandoned transaction is reclaimed quickly and deterministically.
@@ -77,7 +76,7 @@ public class Issue5042CommitRollbackThrowIT extends BaseGraphServerTest {
   @BeforeEach
   void openAndPrepare() {
     grpcServer = new RemoteGrpcServer("localhost", GRPC_PORT, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
-    grpc = new RemoteGrpcDatabase(grpcServer, "localhost", GRPC_PORT, HTTP_PORT, getDatabaseName(), "root",
+    grpc = new RemoteGrpcDatabase(grpcServer, "localhost", GRPC_PORT, getServerHttpPort(), getDatabaseName(), "root",
         DEFAULT_PASSWORD_FOR_TESTS);
 
     grpc.command("sql", "CREATE VERTEX TYPE `" + VERTEX_TYPE + "` IF NOT EXISTS");

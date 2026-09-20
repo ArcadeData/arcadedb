@@ -33,13 +33,24 @@ import java.io.IOException;
 import static org.assertj.core.api.Assertions.*;
 
 public class RemoteConsoleIT extends BaseGraphServerTest {
-  private static final String URL               = "remote:localhost:2480/console root " + DEFAULT_PASSWORD_FOR_TESTS;
   private static final String URL_SHORT         = "remote:localhost/console root " + DEFAULT_PASSWORD_FOR_TESTS;
   private static final String URL_NOCREDENTIALS = "remote:localhost/console";
   private static final String URL_WRONGPASSWD   = "remote:localhost/console root wrong";
   private static final String URL_NEW_DB        = "remote:localhost/consoleNew root " + DEFAULT_PASSWORD_FOR_TESTS;
 
   private static Console console;
+
+  /**
+   * The connect URL carrying the port the test server ACTUALLY bound, rather than the 2480 the configured range
+   * starts at: anything else already listening there answers instead, and the console reports an authentication
+   * failure rather than a port conflict.
+   * <p>
+   * The {@code URL_*} constants below deliberately keep the port-less form, because the default-port shorthand is
+   * what those tests are about.
+   */
+  private String url() {
+    return "remote:localhost:" + getServerHttpPort() + "/console root " + DEFAULT_PASSWORD_FOR_TESTS;
+  }
 
   public void setTestConfiguration() {
     super.setTestConfiguration();
@@ -53,7 +64,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
 
   @Test
   void connect() throws Exception {
-    assertThat(console.parse("connect " + URL)).isTrue();
+    assertThat(console.parse("connect " + url())).isTrue();
   }
 
   @Test
@@ -73,7 +84,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
 
   @Test
   void createType() throws Exception {
-    assertThat(console.parse("connect " + URL)).isTrue();
+    assertThat(console.parse("connect " + url())).isTrue();
     assertThat(console.parse("create document type Person2")).isTrue();
 
     final StringBuilder buffer = new StringBuilder();
@@ -85,7 +96,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
 
   @Test
   void insertAndSelectRecord() throws Exception {
-    assertThat(console.parse("connect " + URL)).isTrue();
+    assertThat(console.parse("connect " + url())).isTrue();
     assertThat(console.parse("create document type Person2")).isTrue();
     assertThat(console.parse("insert into Person2 set name = 'Jay', lastname='Miner'")).isTrue();
 
@@ -98,13 +109,13 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
 
   @Test
   void listDatabases() throws Exception {
-    assertThat(console.parse("connect " + URL)).isTrue();
+    assertThat(console.parse("connect " + url())).isTrue();
     assertThat(console.parse("list databases;")).isTrue();
   }
 
   @Test
   void insertAndRollback() throws Exception {
-    assertThat(console.parse("connect " + URL)).isTrue();
+    assertThat(console.parse("connect " + url())).isTrue();
     assertThat(console.parse("begin")).isTrue();
     assertThat(console.parse("create document type Person")).isTrue();
     assertThat(console.parse("insert into Person set name = 'Jay', lastname='Miner'")).isTrue();
@@ -118,7 +129,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
 
   @Test
   void insertAndCommit() throws Exception {
-    assertThat(console.parse("connect " + URL)).isTrue();
+    assertThat(console.parse("connect " + url())).isTrue();
     assertThat(console.parse("begin")).isTrue();
     assertThat(console.parse("create document type Person")).isTrue();
     assertThat(console.parse("insert into Person set name = 'Jay', lastname='Miner'")).isTrue();
@@ -132,7 +143,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
 
   @Test
   void transactionExpired() throws Exception {
-    assertThat(console.parse("connect " + URL)).isTrue();
+    assertThat(console.parse("connect " + url())).isTrue();
     assertThat(console.parse("begin")).isTrue();
     assertThat(console.parse("create document type Person")).isTrue();
     assertThat(console.parse("insert into Person set name = 'Jay', lastname='Miner'")).isTrue();
@@ -151,7 +162,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
 
   @Test
   void userMgmt() throws Exception {
-    assertThat(console.parse("connect " + URL)).isTrue();
+    assertThat(console.parse("connect " + url())).isTrue();
     try {
       assertThat(console.parse("drop user albert")).isTrue();
     } catch (final Exception e) {
@@ -201,7 +212,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
    */
   @Test
   void projectionOrder() throws Exception {
-    assertThat(console.parse("connect " + URL)).isTrue();
+    assertThat(console.parse("connect " + url())).isTrue();
     assertThat(console.parse("create document type Order")).isTrue();
     assertThat(console.parse(
       "insert into Order set processor = 'SIR1LRM-7.1', vstart = '20220319_002624.404379', vstop = '20220319_002826.525650', status = 'PENDING'")).isTrue();
@@ -230,7 +241,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
 
   @Test
   void customPropertyInSchema() throws Exception {
-    assertThat(console.parse("connect " + URL)).isTrue();
+    assertThat(console.parse("connect " + url())).isTrue();
     assertThat(console.parse("CREATE DOCUMENT TYPE doc;")).isTrue();
     assertThat(console.parse("ALTER TYPE doc CUSTOM testType = 444;")).isTrue();
     assertThat(console.parse("CREATE PROPERTY doc.prop STRING;")).isTrue();
@@ -251,7 +262,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
 
   @Test
   void ifWithSchemaResult() throws Exception {
-    assertThat(console.parse("connect " + URL)).isTrue();
+    assertThat(console.parse("connect " + url())).isTrue();
     assertThat(console.parse("CREATE DOCUMENT TYPE doc;")).isTrue();
     assertThat(console.parse("CREATE PROPERTY doc.prop STRING;")).isTrue();
 

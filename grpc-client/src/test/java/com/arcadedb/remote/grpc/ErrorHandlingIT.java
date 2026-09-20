@@ -79,7 +79,7 @@ class ErrorHandlingIT extends BaseGraphServerTest {
   @Override
   public void beginTest() {
     super.beginTest();
-    database = new RemoteGrpcDatabase(grpcServer, "localhost", 50051, 2480, getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
+    database = new RemoteGrpcDatabase(grpcServer, "localhost", 50051, getServerHttpPort(), getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
 
     database.command("sql", "CREATE VERTEX TYPE `" + TYPE + "` IF NOT EXISTS BUCKETS 8");
     database.command("sql", "CREATE PROPERTY `" + TYPE + "`.id IF NOT EXISTS STRING");
@@ -126,7 +126,7 @@ class ErrorHandlingIT extends BaseGraphServerTest {
 
     // The authentication error may occur either during construction or during query
     assertThatThrownBy(() -> {
-      RemoteGrpcDatabase badDb = new RemoteGrpcDatabase(badServer, "localhost", 50051, 2480, getDatabaseName(), "root", "wrongpassword");
+      RemoteGrpcDatabase badDb = new RemoteGrpcDatabase(badServer, "localhost", 50051, getServerHttpPort(), getDatabaseName(), "root", "wrongpassword");
       try {
         badDb.query("sql", "SELECT FROM `" + TYPE + "`");
       } finally {
@@ -197,7 +197,7 @@ class ErrorHandlingIT extends BaseGraphServerTest {
 
     // Two concurrent transactions trying to update the same record
     Runnable update1 = () -> {
-      RemoteGrpcDatabase db1 = new RemoteGrpcDatabase(grpcServer, "localhost", 50051, 2480, getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
+      RemoteGrpcDatabase db1 = new RemoteGrpcDatabase(grpcServer, "localhost", 50051, getServerHttpPort(), getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
       try {
         startLatch.await();
         db1.begin();
@@ -214,7 +214,7 @@ class ErrorHandlingIT extends BaseGraphServerTest {
     };
 
     Runnable update2 = () -> {
-      RemoteGrpcDatabase db2 = new RemoteGrpcDatabase(grpcServer, "localhost", 50051, 2480, getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
+      RemoteGrpcDatabase db2 = new RemoteGrpcDatabase(grpcServer, "localhost", 50051, getServerHttpPort(), getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
       try {
         startLatch.await();
         db2.begin();
@@ -266,7 +266,7 @@ class ErrorHandlingIT extends BaseGraphServerTest {
   @DisplayName("Connection to wrong port fails gracefully")
   void connectionRefused_throwsConnectionException() {
     RemoteGrpcServer badServer = new RemoteGrpcServer("localhost", 59999, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
-    RemoteGrpcDatabase badDb = new RemoteGrpcDatabase(badServer, "localhost", 59999, 2480, getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
+    RemoteGrpcDatabase badDb = new RemoteGrpcDatabase(badServer, "localhost", 59999, getServerHttpPort(), getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
 
     try {
       assertThatThrownBy(() -> badDb.query("sql", "SELECT 1"))

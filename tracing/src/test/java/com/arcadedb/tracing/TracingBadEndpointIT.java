@@ -55,7 +55,7 @@ class TracingBadEndpointIT extends BaseGraphServerTest {
     assertThat(getServer(0).isStarted()).isTrue();
 
     // And the server still serves requests with tracing silently disabled.
-    final HttpURLConnection c = (HttpURLConnection) new URL("http://localhost:2480/api/v1/ready").openConnection();
+    final HttpURLConnection c = (HttpURLConnection) new URL(getServerHttpUrl("/api/v1/ready")).openConnection();
     c.setRequestMethod("GET");
     c.connect();
     assertThat(c.getResponseCode()).isEqualTo(204);

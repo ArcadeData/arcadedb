@@ -193,7 +193,7 @@ class PostCommandHandlerProfileIT extends BaseGraphServerTest {
 
   private JSONObject executeCommandWithProfile(final String language, final String command) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(
-        "http://127.0.0.1:2480/api/v1/command/graph").toURL().openConnection();
+        getServerHttpUrl("/api/v1/command/graph")).toURL().openConnection();
 
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization",
@@ -218,7 +218,7 @@ class PostCommandHandlerProfileIT extends BaseGraphServerTest {
 
   private JSONObject executeCommandWithoutProfile(final String language, final String command) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(
-        "http://127.0.0.1:2480/api/v1/command/graph").toURL().openConnection();
+        getServerHttpUrl("/api/v1/command/graph")).toURL().openConnection();
 
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization",

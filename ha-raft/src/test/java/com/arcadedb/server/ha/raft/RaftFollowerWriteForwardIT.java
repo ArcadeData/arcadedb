@@ -78,7 +78,7 @@ class RaftFollowerWriteForwardIT extends BaseRaftHATest {
     LogManager.instance().log(this, Level.INFO,
         "TEST: leader=%d, follower=%d - sending DDL to follower HTTP endpoint", leaderIndex, followerIndex);
 
-    final int followerPort = 2480 + followerIndex;
+    final int followerPort = getServerHttpPort(followerIndex);
     final String dbName = getDatabaseName();
     final HttpResponse<String> response = postCommand(followerPort, dbName,
         "CREATE VERTEX TYPE " + PROXIED_TYPE);
@@ -112,7 +112,7 @@ class RaftFollowerWriteForwardIT extends BaseRaftHATest {
     LogManager.instance().log(this, Level.INFO,
         "TEST: leader=%d, follower=%d - sending DML to follower HTTP endpoint", leaderIndex, followerIndex);
 
-    final int followerPort = 2480 + followerIndex;
+    final int followerPort = getServerHttpPort(followerIndex);
     final String dbName = getDatabaseName();
 
     // Use the built-in V1 type that is pre-created by the base graph schema setup
@@ -152,7 +152,7 @@ class RaftFollowerWriteForwardIT extends BaseRaftHATest {
     assertThat(leaderIndex).as("A Raft leader must be elected before the test").isGreaterThanOrEqualTo(0);
 
     final int followerIndex = firstFollowerIndex(leaderIndex);
-    final int followerPort = 2480 + followerIndex;
+    final int followerPort = getServerHttpPort(followerIndex);
     final String dbName = getDatabaseName();
 
     final JSONObject body = new JSONObject()

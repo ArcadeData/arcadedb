@@ -81,7 +81,7 @@ class Issue5047StreamingCorrectnessIT extends BaseGraphServerTest {
   @Override
   public void beginTest() {
     super.beginTest();
-    database = new RemoteGrpcDatabase(grpcServer, "localhost", GRPC_PORT, 2480, getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
+    database = new RemoteGrpcDatabase(grpcServer, "localhost", GRPC_PORT, getServerHttpPort(), getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
 
     database.command("sql", "CREATE VERTEX TYPE `" + TYPE + "` IF NOT EXISTS BUCKETS 8");
     database.command("sql", "CREATE PROPERTY `" + TYPE + "`.id IF NOT EXISTS LONG");

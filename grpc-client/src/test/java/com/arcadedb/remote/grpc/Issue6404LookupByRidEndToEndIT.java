@@ -56,7 +56,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 public class Issue6404LookupByRidEndToEndIT extends BaseGraphServerTest {
 
   private static final int    GRPC_PORT   = 50051;
-  private static final int    HTTP_PORT   = 2480;
   private static final String VERTEX_TYPE = "Issue6404Vertex";
 
   private RemoteGrpcServer grpcServer;
@@ -89,7 +88,7 @@ public class Issue6404LookupByRidEndToEndIT extends BaseGraphServerTest {
   @Test
   void lookupByRidFindsAnExistingVertexOnAFreshConnectionThatNeverLoadedTheSchema() {
     final RID rid;
-    try (RemoteGrpcDatabase setup = new RemoteGrpcDatabase(grpcServer, "localhost", GRPC_PORT, HTTP_PORT, getDatabaseName(), "root",
+    try (RemoteGrpcDatabase setup = new RemoteGrpcDatabase(grpcServer, "localhost", GRPC_PORT, getServerHttpPort(), getDatabaseName(), "root",
         DEFAULT_PASSWORD_FOR_TESTS)) {
       setup.command("sql", "CREATE VERTEX TYPE `" + VERTEX_TYPE + "` IF NOT EXISTS");
       setup.command("sql", "CREATE PROPERTY `" + VERTEX_TYPE + "`.ldapId IF NOT EXISTS STRING");
@@ -99,7 +98,7 @@ public class Issue6404LookupByRidEndToEndIT extends BaseGraphServerTest {
       }
     }
 
-    try (RemoteGrpcDatabase fresh = new RemoteGrpcDatabase(grpcServer, "localhost", GRPC_PORT, HTTP_PORT, getDatabaseName(), "root",
+    try (RemoteGrpcDatabase fresh = new RemoteGrpcDatabase(grpcServer, "localhost", GRPC_PORT, getServerHttpPort(), getDatabaseName(), "root",
         DEFAULT_PASSWORD_FOR_TESTS)) {
 
       try (ResultSet rs = fresh.query("sql", "SELECT FROM `" + VERTEX_TYPE + "` WHERE ldapId = 'heimdall'")) {

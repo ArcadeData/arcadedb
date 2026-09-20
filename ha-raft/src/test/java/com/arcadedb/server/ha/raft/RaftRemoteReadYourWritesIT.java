@@ -54,8 +54,8 @@ class RaftRemoteReadYourWritesIT extends BaseRaftHATest {
     assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
 
     final int followerIndex = leaderIndex == 0 ? 1 : 0;
-    final int leaderPort = 2480 + leaderIndex;
-    final int followerPort = 2480 + followerIndex;
+    final int leaderPort = getServerHttpPort(leaderIndex);
+    final int followerPort = getServerHttpPort(followerIndex);
     final String dbName = getDatabaseName();
     final String password = BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
 
@@ -96,8 +96,8 @@ class RaftRemoteReadYourWritesIT extends BaseRaftHATest {
     assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
 
     final int followerIndex = leaderIndex == 0 ? 1 : 0;
-    final int leaderPort = 2480 + leaderIndex;
-    final int followerPort = 2480 + followerIndex;
+    final int leaderPort = getServerHttpPort(leaderIndex);
+    final int followerPort = getServerHttpPort(followerIndex);
     final String dbName = getDatabaseName();
     final String password = BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
 
@@ -163,8 +163,8 @@ class RaftRemoteReadYourWritesIT extends BaseRaftHATest {
     assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
 
     final int followerIndex = leaderIndex == 0 ? 1 : 0;
-    final int leaderPort = 2480 + leaderIndex;
-    final int followerPort = 2480 + followerIndex;
+    final int leaderPort = getServerHttpPort(leaderIndex);
+    final int followerPort = getServerHttpPort(followerIndex);
     final String dbName = getDatabaseName();
     final String password = BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
     final String vertexType = "RywBatchVertex";
@@ -220,8 +220,8 @@ class RaftRemoteReadYourWritesIT extends BaseRaftHATest {
     assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
 
     final int followerIndex = leaderIndex == 0 ? 1 : 0;
-    final int leaderPort = 2480 + leaderIndex;
-    final int followerPort = 2480 + followerIndex;
+    final int leaderPort = getServerHttpPort(leaderIndex);
+    final int followerPort = getServerHttpPort(followerIndex);
     final String dbName = getDatabaseName();
     final String password = BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
     final String vertexType = "RywBatchForwardedVertex";

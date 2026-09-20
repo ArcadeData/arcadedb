@@ -137,7 +137,7 @@ class Int8VectorHttpIT extends BaseGraphServerTest {
 
   private HttpResult postQueryRaw(final String command, final JSONObject params) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(
-        "http://127.0.0.1:2480/api/v1/query/" + getDatabaseName()).toURL().openConnection();
+        getServerHttpUrl("/api/v1/query/") + getDatabaseName()).toURL().openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Content-Type", "application/json");
     connection.setRequestProperty("Authorization",

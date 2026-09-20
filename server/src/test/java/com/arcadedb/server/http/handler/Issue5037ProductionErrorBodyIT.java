@@ -81,7 +81,7 @@ class Issue5037ProductionErrorBodyIT extends BaseGraphServerTest {
 
   private HttpURLConnection post(final String sqlCommand) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(
-        "http://127.0.0.1:2480/api/v1/command/graph").toURL().openConnection();
+        getServerHttpUrl("/api/v1/command/graph")).toURL().openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));

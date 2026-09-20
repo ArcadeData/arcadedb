@@ -159,7 +159,7 @@ class Issue7308RestoreTargetNameIT extends BaseGraphServerTest {
   @Test
   void anSseClientStillGetsAnHttpStatusForARequestRejectedBeforeTheRestoreStarts() throws Exception {
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/server"))
+        .uri(new URI(getServerHttpUrl("/api/v1/server")))
         .header("Authorization",
             "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
         .header("Content-Type", "application/json")
@@ -193,7 +193,7 @@ class Issue7308RestoreTargetNameIT extends BaseGraphServerTest {
 
   private HttpResponse<String> postCommand(final String command) throws Exception {
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/server"))
+        .uri(new URI(getServerHttpUrl("/api/v1/server")))
         .header("Authorization",
             "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
         .header("Content-Type", "application/json")

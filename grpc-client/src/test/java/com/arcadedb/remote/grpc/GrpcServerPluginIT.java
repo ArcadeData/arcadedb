@@ -93,7 +93,7 @@ public class GrpcServerPluginIT extends BaseGraphServerTest {
     super.beginTest();
     server = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
 
-    database = new RemoteGrpcDatabase(server, "localhost", 50051, 2480, getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
+    database = new RemoteGrpcDatabase(server, "localhost", 50051, getServerHttpPort(), getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
     createSchema();
 
   }

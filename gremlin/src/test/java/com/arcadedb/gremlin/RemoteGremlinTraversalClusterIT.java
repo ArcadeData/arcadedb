@@ -73,7 +73,7 @@ class RemoteGremlinTraversalClusterIT extends AbstractGremlinServerIT {
   @Test
   void aPooledInstanceKeepsItsClusterUntilTheFactoryIsClosed() {
     final Cluster cluster;
-    try (final ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", 2480, getDatabaseName(), "root",
+    try (final ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", getServerHttpPort(), getDatabaseName(), "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
 
       final ArcadeGraph borrowed = pool.get();
@@ -96,6 +96,6 @@ class RemoteGremlinTraversalClusterIT extends AbstractGremlinServerIT {
   }
 
   private RemoteDatabase remoteDatabase() {
-    return new RemoteDatabase("127.0.0.1", 2480, getDatabaseName(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+    return new RemoteDatabase("127.0.0.1", getServerHttpPort(), getDatabaseName(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
   }
 }

@@ -33,7 +33,7 @@ class Issue1515IT extends BaseGraphServerTest {
 
   @Test
   void rename_me() {
-    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, getDatabaseName(), "root",
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), getDatabaseName(), "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     String script = """

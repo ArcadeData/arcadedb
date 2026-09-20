@@ -43,7 +43,7 @@ class RaftTransferLeadershipIT extends BaseRaftHATest {
 
     final int targetIndex = leaderIndex == 0 ? 1 : 0;
 
-    final int httpPort = 2480 + leaderIndex;
+    final int httpPort = getServerHttpPort(leaderIndex);
     final HttpURLConnection conn = (HttpURLConnection) new URI(
         "http://localhost:" + httpPort + "/api/v1/cluster/leader").toURL().openConnection();
     conn.setRequestMethod("POST");

@@ -49,7 +49,7 @@ class WebSocketEventBusIT extends BaseGraphServerTest {
   @Test
   void closeUnsubscribesAll() throws Throwable {
     execute(() -> {
-      try (final var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root",
+      try (final var client = new WebSocketClientHelper(getServerWsUrl("/ws"), "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
         var result = new JSONObject(client.send(buildActionMessage("subscribe", "graph", "V1")));
         assertThat(result.get("result")).isEqualTo("ok");
@@ -67,14 +67,14 @@ class WebSocketEventBusIT extends BaseGraphServerTest {
   void badCloseIsCleanedUp() throws Throwable {
     execute(() -> {
       {
-        final var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root",
+        final var client = new WebSocketClientHelper(getServerWsUrl("/ws"), "root",
             BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
         final var result = new JSONObject(client.send(buildActionMessage("subscribe", "graph", "V1")));
         assertThat(result.get("result")).isEqualTo("ok");
         client.breakConnection();
       }
 
-      try (final var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root",
+      try (final var client = new WebSocketClientHelper(getServerWsUrl("/ws"), "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
         final JSONObject result = new JSONObject(client.send(buildActionMessage("subscribe", "graph", "V1")));
         assertThat(result.get("result")).isEqualTo("ok");
@@ -100,7 +100,7 @@ class WebSocketEventBusIT extends BaseGraphServerTest {
   @Test
   void invalidJsonReturnsError() throws Throwable {
     execute(() -> {
-      try (final var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root",
+      try (final var client = new WebSocketClientHelper(getServerWsUrl("/ws"), "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
         final var result = new JSONObject(client.send("42"));
         assertThat(result.get("result")).isEqualTo("error");
@@ -113,7 +113,7 @@ class WebSocketEventBusIT extends BaseGraphServerTest {
   void authenticationFailureReturns403() throws Throwable {
     execute(() ->
       assertThatThrownBy(() -> {
-        new WebSocketClientHelper("ws://localhost:2480/ws", "root", "bad");
+        new WebSocketClientHelper(getServerWsUrl("/ws"), "root", "bad");
       }).isInstanceOf(UpgradeFailedException.class)
           .hasMessageContaining("403"), "authenticationFailureReturns403");
   }
@@ -121,7 +121,7 @@ class WebSocketEventBusIT extends BaseGraphServerTest {
   @Test
   void invalidDatabaseReturnsError() throws Throwable {
     execute(() -> {
-      try (final var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root",
+      try (final var client = new WebSocketClientHelper(getServerWsUrl("/ws"), "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
         final var result = new JSONObject(client.send(buildActionMessage("subscribe", "invalid")));
         assertThat(result.get("result")).isEqualTo("error");
@@ -136,7 +136,7 @@ class WebSocketEventBusIT extends BaseGraphServerTest {
   @Test
   void unsubscribeWithoutSubscribeDoesNothing() throws Throwable {
     execute(() -> {
-      try (final var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root",
+      try (final var client = new WebSocketClientHelper(getServerWsUrl("/ws"), "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
         final var result = new JSONObject(client.send(buildActionMessage("unsubscribe", "graph")));
         assertThat(result.get("result")).isEqualTo("ok");
@@ -147,7 +147,7 @@ class WebSocketEventBusIT extends BaseGraphServerTest {
   @Test
   void invalidActionReturnsError() throws Throwable {
     execute(() -> {
-      try (final var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root",
+      try (final var client = new WebSocketClientHelper(getServerWsUrl("/ws"), "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
         final var result = new JSONObject(client.send(buildActionMessage("invalid", "graph")));
         assertThat(result.get("result")).isEqualTo("error");
@@ -159,7 +159,7 @@ class WebSocketEventBusIT extends BaseGraphServerTest {
   @Test
   void missingActionReturnsError() throws Throwable {
     execute(() -> {
-      try (final var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root",
+      try (final var client = new WebSocketClientHelper(getServerWsUrl("/ws"), "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
         final var result = new JSONObject(client.send("{\"database\": \"graph\"}"));
         assertThat(result.get("result")).isEqualTo("error");
@@ -171,7 +171,7 @@ class WebSocketEventBusIT extends BaseGraphServerTest {
   @Test
   void subscribeDatabaseWorks() throws Throwable {
     execute(() -> {
-      try (final var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root",
+      try (final var client = new WebSocketClientHelper(getServerWsUrl("/ws"), "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
         final var result = client.send(buildActionMessage("subscribe", "graph"));
         assertThat(new JSONObject(result).get("result")).isEqualTo("ok");
@@ -191,8 +191,8 @@ class WebSocketEventBusIT extends BaseGraphServerTest {
   void twoSubscribersAreServiced() throws Throwable {
     execute(() -> {
       final var clients = new WebSocketClientHelper[] {
-          new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS),
-          new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS) };
+          new WebSocketClientHelper(getServerWsUrl("/ws"), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS),
+          new WebSocketClientHelper(getServerWsUrl("/ws"), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS) };
 
       for (final var client : clients) {
         final var result = client.send(buildActionMessage("subscribe", "graph"));
@@ -225,7 +225,7 @@ class WebSocketEventBusIT extends BaseGraphServerTest {
       final int clientCount = 8;
       final var clients = new WebSocketClientHelper[clientCount];
       for (int i = 0; i < clientCount; i++)
-        clients[i] = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+        clients[i] = new WebSocketClientHelper(getServerWsUrl("/ws"), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
       final ExecutorService pool = Executors.newFixedThreadPool(clientCount);
       try {
@@ -274,7 +274,7 @@ class WebSocketEventBusIT extends BaseGraphServerTest {
   @Test
   void subscribeTypeWorks() throws Throwable {
     execute(() -> {
-      try (final var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root",
+      try (final var client = new WebSocketClientHelper(getServerWsUrl("/ws"), "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
         final var result = client.send(buildActionMessage("subscribe", "graph", "V1"));
         assertThat(new JSONObject(result).get("result")).isEqualTo("ok");
@@ -293,7 +293,7 @@ class WebSocketEventBusIT extends BaseGraphServerTest {
   @Test
   void subscribeChangeTypeWorks() throws Throwable {
     execute(() -> {
-      try (final var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root",
+      try (final var client = new WebSocketClientHelper(getServerWsUrl("/ws"), "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
         final var result = client.send(buildActionMessage("subscribe", "graph", null, new String[] { "create" }));
         assertThat(new JSONObject(result).get("result")).isEqualTo("ok");
@@ -312,7 +312,7 @@ class WebSocketEventBusIT extends BaseGraphServerTest {
   @Test
   void subscribeMultipleChangeTypesWorks() throws Throwable {
     execute(() -> {
-      try (final var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root",
+      try (final var client = new WebSocketClientHelper(getServerWsUrl("/ws"), "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
         final var result = client.send(
             buildActionMessage("subscribe", "graph", null, new String[] { "create", "update", "delete" }));
@@ -348,7 +348,7 @@ class WebSocketEventBusIT extends BaseGraphServerTest {
   @Test
   void subscribeChangeTypeDoesNotPushOtherChangeTypes() throws Throwable {
     execute(() -> {
-      try (final var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root",
+      try (final var client = new WebSocketClientHelper(getServerWsUrl("/ws"), "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
         final var result = client.send(buildActionMessage("subscribe", "graph", null, new String[] { "update" }));
         assertThat(new JSONObject(result).get("result")).isEqualTo("ok");
@@ -363,7 +363,7 @@ class WebSocketEventBusIT extends BaseGraphServerTest {
   @Test
   void subscribeTypeDoesNotPushOtherTypes() throws Throwable {
     execute(() -> {
-      try (final var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root",
+      try (final var client = new WebSocketClientHelper(getServerWsUrl("/ws"), "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
         final var result = client.send(buildActionMessage("subscribe", "graph", "V1"));
         assertThat(new JSONObject(result).get("result")).isEqualTo("ok");
@@ -382,7 +382,7 @@ class WebSocketEventBusIT extends BaseGraphServerTest {
     // permanently stopping the change stream (only an ArcadeDB restart recovered it). After the fix the
     // edge event must be delivered and the stream must keep working for subsequent changes.
     execute(() -> {
-      try (final var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root",
+      try (final var client = new WebSocketClientHelper(getServerWsUrl("/ws"), "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
         final var result = client.send(buildActionMessage("subscribe", "graph"));
         assertThat(new JSONObject(result).get("result")).isEqualTo("ok");
@@ -426,7 +426,7 @@ class WebSocketEventBusIT extends BaseGraphServerTest {
   @Test
   void unsubscribeDatabaseWorks() throws Throwable {
     execute(() -> {
-      try (final var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root",
+      try (final var client = new WebSocketClientHelper(getServerWsUrl("/ws"), "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
         var result = client.send(buildActionMessage("subscribe", "graph"));
         assertThat(new JSONObject(result).get("result")).isEqualTo("ok");
@@ -455,7 +455,7 @@ class WebSocketEventBusIT extends BaseGraphServerTest {
       security.createUser(new JSONObject().put("name", user).put("password", security.encodePassword(password))
           .put("databases", new JSONObject().put("otherdb", new JSONArray(new String[] { "admin" }))));
       try {
-        try (final var client = new WebSocketClientHelper("ws://localhost:2480/ws", user, password)) {
+        try (final var client = new WebSocketClientHelper(getServerWsUrl("/ws"), user, password)) {
           final var result = new JSONObject(client.send(buildActionMessage("subscribe", "graph")));
           assertThat(result.get("result")).isEqualTo("error");
           assertThat(result.getString("error", "")).contains("Security");
@@ -481,7 +481,7 @@ class WebSocketEventBusIT extends BaseGraphServerTest {
       security.createUser(new JSONObject().put("name", user).put("password", security.encodePassword(password))
           .put("databases", new JSONObject().put("graph", new JSONArray(new String[] { "admin" }))));
       try {
-        try (final var client = new WebSocketClientHelper("ws://localhost:2480/ws", user, password)) {
+        try (final var client = new WebSocketClientHelper(getServerWsUrl("/ws"), user, password)) {
           final var result = new JSONObject(client.send(buildActionMessage("subscribe", "graph")));
           assertThat(result.get("result")).isEqualTo("ok");
 

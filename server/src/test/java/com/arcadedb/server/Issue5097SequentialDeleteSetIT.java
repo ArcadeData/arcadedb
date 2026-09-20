@@ -66,7 +66,7 @@ class Issue5097SequentialDeleteSetIT extends BaseGraphServerTest {
   private JSONArray cmd(final HttpClient client, final String cypher) throws Exception {
     final JSONObject payload = new JSONObject().put("language", "cypher").put("command", cypher);
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(URI.create("http://127.0.0.1:2480/api/v1/command/" + getDatabaseName()))
+        .uri(URI.create(getServerHttpUrl("/api/v1/command/") + getDatabaseName()))
         .header("Authorization", auth)
         .header("Content-Type", "application/json")
         .POST(HttpRequest.BodyPublishers.ofString(payload.toString()))

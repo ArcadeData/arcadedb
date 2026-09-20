@@ -66,8 +66,8 @@ class RaftTimeSeriesWriteReadYourWritesIT extends BaseRaftHATest {
     assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
 
     final int followerIndex = leaderIndex == 0 ? 1 : 0;
-    final int leaderPort = 2480 + leaderIndex;
-    final int followerPort = 2480 + followerIndex;
+    final int leaderPort = getServerHttpPort(leaderIndex);
+    final int followerPort = getServerHttpPort(followerIndex);
     final String dbName = getDatabaseName();
     final String password = BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
     final String tsType = "RywWeather";
@@ -125,8 +125,8 @@ class RaftTimeSeriesWriteReadYourWritesIT extends BaseRaftHATest {
     assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
 
     final int followerIndex = leaderIndex == 0 ? 1 : 0;
-    final int leaderPort = 2480 + leaderIndex;
-    final int followerPort = 2480 + followerIndex;
+    final int leaderPort = getServerHttpPort(leaderIndex);
+    final int followerPort = getServerHttpPort(followerIndex);
     final String dbName = getDatabaseName();
     final String password = BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
     final String tsType = "RywPartialWriteWeather";
@@ -177,8 +177,8 @@ class RaftTimeSeriesWriteReadYourWritesIT extends BaseRaftHATest {
     assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
 
     final int followerIndex = leaderIndex == 0 ? 1 : 0;
-    final int leaderPort = 2480 + leaderIndex;
-    final int followerPort = 2480 + followerIndex;
+    final int leaderPort = getServerHttpPort(leaderIndex);
+    final int followerPort = getServerHttpPort(followerIndex);
     final String dbName = getDatabaseName();
     final String password = BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
     final String metricName = "ryw_cpu_usage";
@@ -237,7 +237,7 @@ class RaftTimeSeriesWriteReadYourWritesIT extends BaseRaftHATest {
   void prometheusNonexistentDatabaseNeverSurfacesA500() throws Exception {
     final int leaderIndex = findLeaderIndex();
     assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
-    final int leaderPort = 2480 + leaderIndex;
+    final int leaderPort = getServerHttpPort(leaderIndex);
     final String password = BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
     final String bogusDb = "this_database_does_not_exist";
 

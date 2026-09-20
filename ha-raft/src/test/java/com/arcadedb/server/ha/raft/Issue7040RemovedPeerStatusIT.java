@@ -108,7 +108,7 @@ class Issue7040RemovedPeerStatusIT extends BaseRaftHATest {
     for (final Object replica : replicas)
       assertThat(((Map<?, ?>) replica).get("id")).isNotEqualTo(removedPeerId);
     assertThat(replicas).hasSize(1);
-    assertThat(leaderRaft.getReplicaAddresses()).doesNotContain("localhost:" + (2480 + removedIndex));
+    assertThat(leaderRaft.getReplicaAddresses()).doesNotContain("localhost:" + (getServerHttpPort(removedIndex)));
 
     // A follower that is still a member sees the same picture: the live configuration is committed cluster-wide.
     final int otherFollower = (leaderIndex + 2) % getServerCount();
@@ -125,7 +125,7 @@ class Issue7040RemovedPeerStatusIT extends BaseRaftHATest {
   }
 
   private JSONObject queryClusterEndpoint(final int serverIndex) throws Exception {
-    final int httpPort = 2480 + serverIndex;
+    final int httpPort = getServerHttpPort(serverIndex);
     final URL url = new URL("http://localhost:" + httpPort + "/api/v1/cluster");
     final HttpURLConnection conn = (HttpURLConnection) url.openConnection();
     conn.setRequestMethod("GET");

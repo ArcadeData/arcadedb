@@ -55,7 +55,7 @@ class RemoteGrpcDatabaseWithCompressionIT extends BaseGraphServerTest {
     server = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
 
     final ContextConfiguration config = new ContextConfiguration();
-    database = new RemoteGrpcDatabaseWithCompression(server, "localhost", 50051, 2480, getDatabaseName(), "root",
+    database = new RemoteGrpcDatabaseWithCompression(server, "localhost", 50051, getServerHttpPort(), getDatabaseName(), "root",
         DEFAULT_PASSWORD_FOR_TESTS, config);
 
     // Create test schema

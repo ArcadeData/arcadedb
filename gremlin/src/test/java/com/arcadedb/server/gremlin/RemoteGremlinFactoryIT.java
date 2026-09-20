@@ -42,7 +42,7 @@ class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
 
   @Test
   void okPoolRelease() {
-    try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", 2480, getDatabaseName(), "root",
+    try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", getServerHttpPort(), getDatabaseName(), "root",
         DEFAULT_PASSWORD_FOR_TESTS)) {
       for (int i = 0; i < 1_000; i++) {
         final ArcadeGraph instance = pool.get();
@@ -56,7 +56,7 @@ class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
 
   @Test
   void errorPoolRelease() {
-    try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", 2480, getDatabaseName(), "root",
+    try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", getServerHttpPort(), getDatabaseName(), "root",
         DEFAULT_PASSWORD_FOR_TESTS)) {
       for (int i = 0; i < pool.getMaxInstances(); i++) {
         final ArcadeGraph instance = pool.get();
@@ -71,7 +71,7 @@ class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
 
   @Test
   void executeTraversalSeparateTransactions() {
-    try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", 2480, getDatabaseName(), "root",
+    try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", getServerHttpPort(), getDatabaseName(), "root",
         DEFAULT_PASSWORD_FOR_TESTS)) {
       try (final ArcadeGraph graph = pool.get()) {
         for (int i = 0; i < 1_000; i++)
@@ -92,7 +92,7 @@ class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
 
   @Test
   void executeTraversalTxMgmtMultiThreads() throws Exception {
-    try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", 2480, getDatabaseName(), "root",
+    try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", getServerHttpPort(), getDatabaseName(), "root",
         DEFAULT_PASSWORD_FOR_TESTS)) {
 
       try (final ArcadeGraph graph = pool.get()) {
@@ -136,7 +136,7 @@ class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
 
   @Test
   void executeTraversalNoTxMgmtMultiThreads() throws Exception {
-    try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", 2480, getDatabaseName(), "root",
+    try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", getServerHttpPort(), getDatabaseName(), "root",
         DEFAULT_PASSWORD_FOR_TESTS)) {
 
       try (final ArcadeGraph graph = pool.get()) {
@@ -163,7 +163,7 @@ class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
 
   @Test
   void executeTraversalTxMgmtHttp() throws Exception {
-    try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", 2480, getDatabaseName(), "root",
+    try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", getServerHttpPort(), getDatabaseName(), "root",
         DEFAULT_PASSWORD_FOR_TESTS)) {
 
       for (int i = 0; i < 1000; i++) {
@@ -183,7 +183,7 @@ class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
 
   @Test
   void executeTraversalTxMgmt() {
-    try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", 2480, getDatabaseName(), "root",
+    try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", getServerHttpPort(), getDatabaseName(), "root",
         DEFAULT_PASSWORD_FOR_TESTS)) {
 
       for (int i = 0; i < 1000; i++) {
@@ -204,7 +204,7 @@ class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
 
   @Test
   void executeTraversalNoTxMgmt() {
-    try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", 2480, getDatabaseName(), "root",
+    try (ArcadeGraphFactory pool = ArcadeGraphFactory.withRemote("127.0.0.1", getServerHttpPort(), getDatabaseName(), "root",
         DEFAULT_PASSWORD_FOR_TESTS)) {
 
       for (int i = 0; i < 1000; i++) {

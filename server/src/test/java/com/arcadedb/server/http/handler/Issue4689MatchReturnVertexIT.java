@@ -133,7 +133,7 @@ class Issue4689MatchReturnVertexIT extends BaseGraphServerTest {
     executeCommand(0, "opencypher", "CREATE (u:DefaultSerTest {name: 'Bob2', age: 25})");
 
     final HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:2480/api/v1/command/" + getDatabaseName()).openConnection();
+        getServerHttpUrl("/api/v1/command/") + getDatabaseName()).openConnection();
     try {
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",

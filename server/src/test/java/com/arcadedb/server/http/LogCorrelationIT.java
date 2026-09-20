@@ -64,7 +64,7 @@ class LogCorrelationIT extends BaseGraphServerTest {
     attachRequestIdProbe(seenRequestIds);
 
     final String requestId = "corr-test-echo-42";
-    final HttpURLConnection c = (HttpURLConnection) new URL("http://localhost:2480/api/v1/ready").openConnection();
+    final HttpURLConnection c = (HttpURLConnection) new URL(getServerHttpUrl("/api/v1/ready")).openConnection();
     c.setRequestMethod("GET");
     c.setRequestProperty("X-Request-Id", requestId);
     c.connect();
@@ -80,7 +80,7 @@ class LogCorrelationIT extends BaseGraphServerTest {
 
   @Test
   void requestIdIsGeneratedWhenAbsent() throws Exception {
-    final HttpURLConnection c = (HttpURLConnection) new URL("http://localhost:2480/api/v1/ready").openConnection();
+    final HttpURLConnection c = (HttpURLConnection) new URL(getServerHttpUrl("/api/v1/ready")).openConnection();
     c.setRequestMethod("GET");
     c.connect();
     assertThat(c.getResponseCode()).isEqualTo(204);

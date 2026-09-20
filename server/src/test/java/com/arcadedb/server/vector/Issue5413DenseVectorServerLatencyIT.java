@@ -215,7 +215,7 @@ class Issue5413DenseVectorServerLatencyIT extends BaseGraphServerTest {
         .executor(Executors.newFixedThreadPool(Math.max(2, threads))).build();
     final String auth = "Basic " + Base64.getEncoder()
         .encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes(StandardCharsets.UTF_8));
-    final URI uri = URI.create("http://127.0.0.1:2480/api/v1/query/" + getDatabaseName());
+    final URI uri = URI.create(getServerHttpUrl("/api/v1/query/") + getDatabaseName());
 
     // Pre-serialize the payloads so JSON encoding on the client is not part of the measurement.
     final String[] bodies = new String[queries.length];

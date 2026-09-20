@@ -113,7 +113,7 @@ class Issue6753ConcurrentBackupIT extends BaseGraphServerTest {
 
   private HttpURLConnection postServerCommand(final String command) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(
-        "http://127.0.0.1:2480/api/v1/server").toURL().openConnection();
+        getServerHttpUrl("/api/v1/server")).toURL().openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));

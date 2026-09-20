@@ -61,7 +61,7 @@ class OpenApiDocsEndpointIT extends BaseGraphServerTest {
   void docsEndpointIsAccessible() throws Exception {
     // Test that the OpenAPI docs endpoint exists and returns 200
     HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/docs"))
+        .uri(new URI(getServerHttpUrl("/api/v1/docs")))
         .GET()
         .setHeader("Authorization",
             "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
@@ -78,7 +78,7 @@ class OpenApiDocsEndpointIT extends BaseGraphServerTest {
   void docsEndpointReturnsHtmlContentType() throws Exception {
     // Test that the docs endpoint returns HTML content type
     HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/docs"))
+        .uri(new URI(getServerHttpUrl("/api/v1/docs")))
         .GET()
         .setHeader("Authorization",
             "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
@@ -95,7 +95,7 @@ class OpenApiDocsEndpointIT extends BaseGraphServerTest {
   void docsEndpointContainsSwaggerUiInitialization() throws Exception {
     // Test that HTML contains Swagger UI initialization code
     HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/docs"))
+        .uri(new URI(getServerHttpUrl("/api/v1/docs")))
         .GET()
         .setHeader("Authorization",
             "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
@@ -117,7 +117,7 @@ class OpenApiDocsEndpointIT extends BaseGraphServerTest {
   void docsEndpointReferencesCorrectOpenApiSpecUrl() throws Exception {
     // Test that HTML references the correct OpenAPI spec URL
     HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/docs"))
+        .uri(new URI(getServerHttpUrl("/api/v1/docs")))
         .GET()
         .setHeader("Authorization",
             "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
@@ -136,7 +136,7 @@ class OpenApiDocsEndpointIT extends BaseGraphServerTest {
   void docsEndpointIncludesNecessaryJavaScriptReferences() throws Exception {
     // Test that HTML includes necessary JavaScript references from studio module
     HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/docs"))
+        .uri(new URI(getServerHttpUrl("/api/v1/docs")))
         .GET()
         .setHeader("Authorization",
             "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
@@ -159,7 +159,7 @@ class OpenApiDocsEndpointIT extends BaseGraphServerTest {
   void docsEndpointIncludesNecessaryCssReferences() throws Exception {
     // Test that HTML includes necessary CSS references from studio module
     HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/docs"))
+        .uri(new URI(getServerHttpUrl("/api/v1/docs")))
         .GET()
         .setHeader("Authorization",
             "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
@@ -177,7 +177,7 @@ class OpenApiDocsEndpointIT extends BaseGraphServerTest {
   void docsEndpointIncludesPageTitle() throws Exception {
     // Test that HTML has a proper page title
     HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/docs"))
+        .uri(new URI(getServerHttpUrl("/api/v1/docs")))
         .GET()
         .setHeader("Authorization",
             "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
@@ -199,7 +199,7 @@ class OpenApiDocsEndpointIT extends BaseGraphServerTest {
   void docsEndpointIsValidHtml() throws Exception {
     // Test that the response is valid HTML structure
     HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/docs"))
+        .uri(new URI(getServerHttpUrl("/api/v1/docs")))
         .GET()
         .setHeader("Authorization",
             "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
@@ -238,7 +238,7 @@ class OpenApiDocsEndpointIT extends BaseGraphServerTest {
     // Test that the OpenAPI spec referenced in the docs page is accessible
     // First, get the docs page
     HttpRequest docsRequest = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/docs"))
+        .uri(new URI(getServerHttpUrl("/api/v1/docs")))
         .GET()
         .setHeader("Authorization",
             "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
@@ -252,7 +252,7 @@ class OpenApiDocsEndpointIT extends BaseGraphServerTest {
 
     // Now verify the OpenAPI spec endpoint is accessible
     HttpRequest specRequest = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/openapi.json"))
+        .uri(new URI(getServerHttpUrl("/api/v1/openapi.json")))
         .GET()
         .setHeader("Authorization",
             "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
@@ -273,7 +273,7 @@ class OpenApiDocsEndpointIT extends BaseGraphServerTest {
   void authenticationConfigurationInSwaggerUi() throws Exception {
     // Test that HTML includes authentication configuration
     HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/docs"))
+        .uri(new URI(getServerHttpUrl("/api/v1/docs")))
         .GET()
         .setHeader("Authorization",
             "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
@@ -296,7 +296,7 @@ class OpenApiDocsEndpointIT extends BaseGraphServerTest {
   void docsEndpointDisplaysAllExpectedElements() throws Exception {
     // Test that the documentation page has all expected UI elements
     HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/docs"))
+        .uri(new URI(getServerHttpUrl("/api/v1/docs")))
         .GET()
         .setHeader("Authorization",
             "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
@@ -325,7 +325,7 @@ class OpenApiDocsEndpointIT extends BaseGraphServerTest {
   void docsEndpointWithoutAuthenticationReturnsUnauthorized() throws Exception {
     // Test that accessing docs without authentication returns 401
     HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/docs"))
+        .uri(new URI(getServerHttpUrl("/api/v1/docs")))
         .GET()
         .build();
 
@@ -340,7 +340,7 @@ class OpenApiDocsEndpointIT extends BaseGraphServerTest {
   void docsEndpointSupportsHeadRequest() throws Exception {
     // Test that the docs endpoint supports HEAD requests
     HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/docs"))
+        .uri(new URI(getServerHttpUrl("/api/v1/docs")))
         .method("HEAD", HttpRequest.BodyPublishers.noBody())
         .setHeader("Authorization",
             "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
@@ -363,7 +363,7 @@ class OpenApiDocsEndpointIT extends BaseGraphServerTest {
   void docsEndpointCharsetIsUtf8() throws Exception {
     // Test that the docs endpoint specifies UTF-8 charset
     HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/docs"))
+        .uri(new URI(getServerHttpUrl("/api/v1/docs")))
         .GET()
         .setHeader("Authorization",
             "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
@@ -379,7 +379,7 @@ class OpenApiDocsEndpointIT extends BaseGraphServerTest {
   @Test
   void swaggerUiPageLoadsAndPointsAtTheCompletedSpec() throws Exception {
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/docs"))
+        .uri(new URI(getServerHttpUrl("/api/v1/docs")))
         .GET()
         .setHeader("Authorization",
             "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))
@@ -396,7 +396,7 @@ class OpenApiDocsEndpointIT extends BaseGraphServerTest {
   @Test
   void theServedSpecIsRenderableWithoutParserErrors() throws Exception {
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/openapi.json"))
+        .uri(new URI(getServerHttpUrl("/api/v1/openapi.json")))
         .GET()
         .setHeader("Authorization",
             "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()))

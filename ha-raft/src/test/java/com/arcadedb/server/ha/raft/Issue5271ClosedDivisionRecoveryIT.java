@@ -122,7 +122,7 @@ class Issue5271ClosedDivisionRecoveryIT extends BaseRaftHATest {
 
   private String httpGet(final int serverIndex, final String path) throws Exception {
     final HttpURLConnection conn = (HttpURLConnection) new URI(
-        "http://localhost:" + (2480 + serverIndex) + path).toURL().openConnection();
+        getServerHttpUrl(serverIndex, path)).toURL().openConnection();
     conn.setRequestMethod("GET");
     conn.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes(StandardCharsets.UTF_8)));

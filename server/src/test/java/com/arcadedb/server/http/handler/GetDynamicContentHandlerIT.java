@@ -41,7 +41,7 @@ class GetDynamicContentHandlerIT extends BaseGraphServerTest {
   @Test
   void shouldHandleRootRequest() throws Exception {
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/"))
+        .uri(new URI(getServerHttpUrl("/")))
         .GET()
         .build();
 
@@ -54,7 +54,7 @@ class GetDynamicContentHandlerIT extends BaseGraphServerTest {
   @Test
   void shouldHandleIndexHtmlRequest() throws Exception {
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/index.html"))
+        .uri(new URI(getServerHttpUrl("/index.html")))
         .GET()
         .build();
 
@@ -67,7 +67,7 @@ class GetDynamicContentHandlerIT extends BaseGraphServerTest {
   @Test
   void shouldReturn404ForNonExistentFile() throws Exception {
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/nonexistent.html"))
+        .uri(new URI(getServerHttpUrl("/nonexistent.html")))
         .GET()
         .build();
 
@@ -80,7 +80,7 @@ class GetDynamicContentHandlerIT extends BaseGraphServerTest {
   @Test
   void shouldRejectPathWithDotDot() throws Exception {
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/../etc/passwd"))
+        .uri(new URI(getServerHttpUrl("/../etc/passwd")))
         .GET()
         .build();
 
@@ -93,7 +93,7 @@ class GetDynamicContentHandlerIT extends BaseGraphServerTest {
   void shouldServeJavaScriptWithCorrectContentType() throws Exception {
     // Try to access a common JS file from the static resources
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/js/studio.js"))
+        .uri(new URI(getServerHttpUrl("/js/studio.js")))
         .GET()
         .build();
 
@@ -111,7 +111,7 @@ class GetDynamicContentHandlerIT extends BaseGraphServerTest {
   @Test
   void shouldServeCSSWithCorrectContentType() throws Exception {
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/css/studio.css"))
+        .uri(new URI(getServerHttpUrl("/css/studio.css")))
         .GET()
         .build();
 
@@ -127,7 +127,7 @@ class GetDynamicContentHandlerIT extends BaseGraphServerTest {
   void shouldAddHtmlExtensionWhenMissing() throws Exception {
     // Request without extension should add .html
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/studio"))
+        .uri(new URI(getServerHttpUrl("/studio")))
         .GET()
         .build();
 
@@ -141,7 +141,7 @@ class GetDynamicContentHandlerIT extends BaseGraphServerTest {
   @Test
   void shouldSetCacheControlForStaticAssets() throws Exception {
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/favicon.ico"))
+        .uri(new URI(getServerHttpUrl("/favicon.ico")))
         .GET()
         .build();
 
@@ -157,7 +157,7 @@ class GetDynamicContentHandlerIT extends BaseGraphServerTest {
   @Test
   void shouldServeSVGWithCorrectContentType() throws Exception {
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/images/logo.svg"))
+        .uri(new URI(getServerHttpUrl("/images/logo.svg")))
         .GET()
         .build();
 
@@ -172,7 +172,7 @@ class GetDynamicContentHandlerIT extends BaseGraphServerTest {
   @Test
   void shouldServeIconWithCorrectContentType() throws Exception {
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/favicon.ico"))
+        .uri(new URI(getServerHttpUrl("/favicon.ico")))
         .GET()
         .build();
 
@@ -187,7 +187,7 @@ class GetDynamicContentHandlerIT extends BaseGraphServerTest {
   @Test
   void shouldHandleMultipleRequestsConsistently() throws Exception {
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/"))
+        .uri(new URI(getServerHttpUrl("/")))
         .GET()
         .build();
 
@@ -210,7 +210,7 @@ class GetDynamicContentHandlerIT extends BaseGraphServerTest {
       threads[i] = new Thread(() -> {
         try {
           final HttpRequest request = HttpRequest.newBuilder()
-              .uri(new URI("http://localhost:2480/"))
+              .uri(new URI(getServerHttpUrl("/")))
               .GET()
               .build();
 
@@ -231,7 +231,7 @@ class GetDynamicContentHandlerIT extends BaseGraphServerTest {
   @Test
   void shouldServeJSONWithCorrectContentType() throws Exception {
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/config.json"))
+        .uri(new URI(getServerHttpUrl("/config.json")))
         .GET()
         .build();
 
@@ -247,7 +247,7 @@ class GetDynamicContentHandlerIT extends BaseGraphServerTest {
   void shouldHandleFontFilesWithCorrectContentType() throws Exception {
     // Test WOFF font
     HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/fonts/font.woff"))
+        .uri(new URI(getServerHttpUrl("/fonts/font.woff")))
         .GET()
         .build();
 
@@ -260,7 +260,7 @@ class GetDynamicContentHandlerIT extends BaseGraphServerTest {
 
     // Test WOFF2 font
     request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/fonts/font.woff2"))
+        .uri(new URI(getServerHttpUrl("/fonts/font.woff2")))
         .GET()
         .build();
 
