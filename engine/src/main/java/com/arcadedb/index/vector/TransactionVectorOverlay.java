@@ -31,6 +31,7 @@ import io.github.jbellis.jvector.vector.types.VectorFloat;
 import io.github.jbellis.jvector.vector.types.VectorTypeSupport;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -152,6 +153,15 @@ final class TransactionVectorOverlay {
     // iteration order is the lanes' own, which is the order commit() replays them in.
     LinkedHashMap<RID, DeltaVectorEntry> pending = null;
     Set<RID> superseded = null;
+    // How many rows actually HOLD a payload, not how many rows there are. The two differ once the budget starts
+    // declining, and gating on the wrong one is how the budget leaks - see where it is read below.
+    int residentPayloads = 0;
+    // The write order of the entry each pending RID is currently represented by, so a RID written in more than one
+    // lane keeps the one written LAST rather than the one encountered last (PR #8001 review). Lane order is replay
+    // order, so the two usually agree - but an index that renamed itself mid-transaction owns two lanes, and a
+    // record rewritten either side of that rename has an entry in each. The commit picks by write order; so must
+    // this, or a search inside the transaction ranks the record by an embedding the commit is about to discard.
+    Map<RID, Integer> pendingSequence = null;
 
     for (final TreeMap<ComparableKey, Map<IndexKey, IndexKey>> lane : lanes)
       for (final Map<IndexKey, IndexKey> bucket : lane.values()) {
@@ -202,10 +212,30 @@ final class TransactionVectorOverlay {
           // is. A declined row is never a dropped row: the vector is still in the record this transaction saved,
           // and the delta scan reads it back from there on demand - which is a lookup in the transaction's own
           // record cache, not a page read, because the record is one this transaction is holding.
-          final DeltaVectorEntry row = pending.size() < payloadBudget || pending.containsKey(entry.rid) ?
+          //
+          // Gated on how many rows HOLD a payload, never on how many rows there are (PR #8001 review). Refreshing
+          // a row that already holds one is free - it replaces a copy rather than adding one - but a row that was
+          // DECLINED earlier and is written again is not, and counting it as free let a transaction that outran
+          // the budget and then rewrote its declined rows creep back over it, one row at a time, which is the one
+          // thing the budget exists to stop. The sibling counter on the committed side (deltaResidentPayloads)
+          // counts the same thing for the same reason.
+          if (pendingSequence == null)
+            pendingSequence = new HashMap<>();
+          final Integer heldSequence = pendingSequence.get(entry.rid);
+          if (heldSequence != null && entry.sequence <= heldSequence)
+            // An earlier write of a RID this overlay already represents by a later one. Nothing to contribute.
+            continue;
+          pendingSequence.put(entry.rid, entry.sequence);
+
+          final DeltaVectorEntry previous = pending.get(entry.rid);
+          final boolean alreadyResident = previous != null && previous.vector != null;
+          final boolean keepPayload = alreadyResident || residentPayloads < payloadBudget;
+          if (keepPayload && !alreadyResident)
+            ++residentPayloads;
+
+          pending.put(entry.rid, keepPayload ?
               new DeltaVectorEntry(PENDING_VECTOR_ID, entry.rid, vts.createFloatVector(vector)) :
-              new DeltaVectorEntry(PENDING_VECTOR_ID, entry.rid, null);
-          pending.put(entry.rid, row);
+              new DeltaVectorEntry(PENDING_VECTOR_ID, entry.rid, null));
         }
       }
 

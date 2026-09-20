@@ -155,6 +155,10 @@ class Issue7742RebuildAbsorbsWritesThatRaceItTest {
 
         stop.set(true);
         writer.join(30_000);
+        assertThat(writer.isAlive())
+            .as("the writer must have stopped, or the final build below still races it and its assertion would "
+                + "fail for a reason its message denies")
+            .isFalse();
         assertThat(writerFailure.get()).as("the ingest must survive every rebuild that ran alongside it").isNull();
 
         // One last build with nothing writing: it must absorb everything that is genuinely pending.

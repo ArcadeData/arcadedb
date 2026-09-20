@@ -189,6 +189,24 @@ public class LocalSchema implements Schema {
    * {@code readConfiguration()} used to do to types a concurrent reader could still be holding.
    */
   private             Map<String, LocalDocumentType>         supersededTypes;
+
+  /**
+   * The bucket-id maps a load has derived from {@link #stagedTypes}, held back with it (PR #8001 review).
+   * <p>
+   * {@code readConfiguration()} rebuilds these from the graph it has just assembled, and it does so BEFORE the
+   * barrier. Assigning them to the live fields there would let {@code getTypeByBucketId()} hand out a
+   * new-generation type - carrying indexes whose {@code onAfterSchemaLoad()} has not run - while {@code getType()}
+   * still answers with the previous graph, and would publish the involved-bucket map security reads through a
+   * generation early. They are published in the same step as the graph they describe instead.
+   */
+  private             Map<Integer, LocalDocumentType>        stagedBucketId2TypeMap;
+  private             Map<Integer, LocalDocumentType>        stagedBucketId2InvolvedTypeMap;
+
+  /**
+   * The graph {@link #commitStagedPublication()} published, so {@link #endStagedPublication()} can tell an abort
+   * from a commit and close only what an abort leaves behind.
+   */
+  private             Map<String, LocalDocumentType>         publishedFromStaging;
   private             String                                 encoding                      = DEFAULT_ENCODING;
   private final       DatabaseInternal                       database;
   private final       SecurityManager                        security;
@@ -554,6 +572,13 @@ public class LocalSchema implements Schema {
     final Map<String, LocalDocumentType> published = new ConcurrentHashMap<>(stagedTypes);
     final Map<String, LocalDocumentType> superseded = supersededTypes;
     types = published;
+    publishedFromStaging = published;
+    // ...and the maps derived from it, in the same step, so getTypeByBucketId() and getType() cannot be caught
+    // answering from two different generations (PR #8001 review).
+    if (stagedBucketId2TypeMap != null) {
+      bucketId2TypeMap = stagedBucketId2TypeMap;
+      bucketId2InvolvedTypeMap = stagedBucketId2InvolvedTypeMap;
+    }
 
     // Only now, with nothing able to reach them through the schema any more. A TimeSeries type owns an engine with
     // open files; the rebuild has already opened a fresh one per type, so leaving these behind would leak them.
@@ -591,10 +616,19 @@ public class LocalSchema implements Schema {
 
     stagedIndexMap.clear();
     stagedBucketMap.clear();
+    // Only when the graph was NOT published: after a successful commit these very instances are the live ones
+    // (PR #8001 review). A load that dies after readConfiguration() has initialised a TimeSeries engine per type
+    // would otherwise leak one engine, and its file handles, per failed reload.
+    if (types != publishedFromStaging)
+      closeTimeSeriesTypesOf(stagedTypes);
+    publishedFromStaging = null;
     stagedTypes.clear();
+    stagedBucketId2TypeMap = null;
+    stagedBucketId2InvolvedTypeMap = null;
     supersededTypes = null;
     stagingThread.set(null);
   }
+
 
   /**
    * The index registered under {@code name} AS THIS THREAD SEES IT: a load in flight sees what it has staged, every
@@ -3852,7 +3886,6 @@ public class LocalSchema implements Schema {
       for (final Bucket b : t.getBuckets(false))
         newBucketId2TypeMap.put(b.getFileId(), t);
     }
-    bucketId2TypeMap = newBucketId2TypeMap;
 
     // COMPUTE INVOLVED BUCKETS FOR SECURITY
     final Map<Integer, LocalDocumentType> newBucketId2InvolvedTypeMap = new HashMap<>();
@@ -3860,6 +3893,15 @@ public class LocalSchema implements Schema {
       for (final Bucket b : t.getInvolvedBuckets())
         newBucketId2InvolvedTypeMap.put(b.getFileId(), t);
     }
+
+    if (isStagingPublication()) {
+      // Derived from the staged graph, so they belong to it and are published with it (PR #8001 review).
+      stagedBucketId2TypeMap = newBucketId2TypeMap;
+      stagedBucketId2InvolvedTypeMap = newBucketId2InvolvedTypeMap;
+      return;
+    }
+
+    bucketId2TypeMap = newBucketId2TypeMap;
     bucketId2InvolvedTypeMap = newBucketId2InvolvedTypeMap;
   }
 }

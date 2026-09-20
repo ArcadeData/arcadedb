@@ -93,6 +93,13 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
   private final String                       afterCommitFlushKey;
 
   /**
+   * Ceiling on the rows one grouped search may materialise, so {@code limit * groupSize} cannot be turned into an
+   * allocation by a caller that passes two large numbers. Matches the over-fetch cap the ungrouped path already
+   * applies, and the order of magnitude {@code SQLFunctionVectorSparseNeighbors} enforces before it calls in.
+   */
+  private static final int MAX_GROUPED_ROWS = 100_000;
+
+  /**
    * Factory handler used by the schema to instantiate sparse vector indexes.
    */
   public static class LSMSparseVectorIndexFactoryHandler implements IndexFactoryHandler {
@@ -570,13 +577,6 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     }
     return out;
   }
-
-  /**
-   * Ceiling on the rows one grouped search may materialise, so {@code limit * groupSize} cannot be turned into an
-   * allocation by a caller that passes two large numbers. Matches the over-fetch cap the ungrouped path already
-   * applies, and the order of magnitude {@code SQLFunctionVectorSparseNeighbors} enforces before it calls in.
-   */
-  private static final int MAX_GROUPED_ROWS = 100_000;
 
   /** Counts live postings under one dimension via the engine's merged cursor. O(df). */
   private long countPostings(final int dim) {
