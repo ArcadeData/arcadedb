@@ -1653,8 +1653,11 @@ public class DatabaseChecker {
             }
           } catch (final Exception e) {
             // Unreadable. That is corruption, and checkDocuments/checkVertices/checkEdges have already reported it
-            // in their own vocabulary and, under FIX, already removed it. Saying it again here - in a second
-            // vocabulary, about a record that may no longer exist - would only make the report harder to read.
+            // in their own vocabulary and, under FIX, already removed it. Reporting it again here - in a second
+            // vocabulary, about a record that may no longer exist - would only make the report harder to read. FINE
+            // rather than silence so someone debugging a record this pass appears to have skipped can see why.
+            LogManager.instance().log(this, Level.FINE,
+                "Skipped %s in the existence-constraint pass: it cannot be read (reported by the record passes)", e, rid);
           }
           if (report)
             stepTick();
@@ -1723,12 +1726,20 @@ public class DatabaseChecker {
               if (violation != null) {
                 addConstraintViolation(rid, violation);
                 if (fix && deleteInvalidRecords)
-                  toDelete.computeIfAbsent(rid.getBucketId(), k -> new BucketPositions(records.size())).add(rid.getPosition());
+                  // Bounded by the SCOPE rather than by INVALID_RECORDS_PER_REPAIR_PASS, and deliberately: this arm
+                  // removes only records the statement named, so the operator has already written the bound down -
+                  // a RECORD scope exists to be hand-typed after a failed repair. There is no second pass here for
+                  // the same reason; the limit is what was asked for, per bucket at worst, so it cannot be hit.
+                  toDelete.computeIfAbsent(rid.getBucketId(), k -> new BucketPositions(records.size()))
+                      .add(rid.getPosition());
                 break;
               }
             }
           } catch (final Exception e) {
-            // Missing or unreadable: checkScopedRecords has already said so in the vocabulary that fits.
+            // Missing or unreadable: checkScopedRecords has already said so in the vocabulary that fits. Logged at
+            // FINE for the same reason as the type-wide arm - a skip nobody can explain is worse than a quiet one.
+            LogManager.instance().log(this, Level.FINE,
+                "Skipped %s in the existence-constraint pass: it cannot be read (reported by the record passes)", e, rid);
           }
           stepTick();
         }
