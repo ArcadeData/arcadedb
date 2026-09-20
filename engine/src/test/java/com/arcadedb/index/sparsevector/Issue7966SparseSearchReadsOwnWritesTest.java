@@ -203,6 +203,48 @@ class Issue7966SparseSearchReadsOwnWritesTest extends TestHelper {
     return rids;
   }
 
+  /**
+   * The grouped plan when the distinct-group limit BINDS - the shape raised in the review of PR #8001, where a
+   * pending row promotes a group the committed-only pass had ranked out.
+   * <p>
+   * The two-stage admission really can leave such a group short of its {@code groupSize}: the committed pass runs
+   * its own {@code GroupAdmissionState} over the committed universe alone and never returns the members of a group
+   * that did not place in ITS top {@code limit}. What this test pins is that the answer is still the SAME one the
+   * search gives after the commit, because the committed-only path has that shortfall too - so widening the
+   * committed pass here, which was tried, made the in-transaction answer better than the post-commit one and broke
+   * the very invariant this class exists to hold. The shortfall is real and is issue #8002; it belongs where the
+   * admission is decided, not in the overlay merge.
+   */
+  @Test
+  void theGroupedPlanAgreesWithTheCommitWhenAPendingRowPromotesAGroup() {
+    createSchema();
+    database.transaction(() -> database.getSchema().getType(TYPE_NAME).createProperty("category", Type.STRING));
+
+    // Three groups on one dimension, ranked far apart: "a" beats "b" beats "c" on the committed side alone.
+    database.transaction(() -> {
+      newDoc(new int[] { 1 }, new float[] { 0.90f }).set("category", "a").save();
+      newDoc(new int[] { 1 }, new float[] { 0.80f }).set("category", "a").save();
+      newDoc(new int[] { 1 }, new float[] { 0.70f }).set("category", "b").save();
+      newDoc(new int[] { 1 }, new float[] { 0.60f }).set("category", "b").save();
+      newDoc(new int[] { 1 }, new float[] { 0.50f }).set("category", "c").save();
+      newDoc(new int[] { 1 }, new float[] { 0.40f }).set("category", "c").save();
+    });
+
+    final Map<RID, Float> inside = new LinkedHashMap<>();
+    database.transaction(() -> {
+      // A pending row that makes "c" the BEST group, which the committed-only pass had ranked third of three.
+      newDoc(new int[] { 1 }, new float[] { 0.99f }).set("category", "c").save();
+      // limit 2 groups of 2: the union's answer is c{0.99, 0.50} and a{0.90, 0.80}. The committed pass, run over
+      // the committed universe alone with limit 2, returns a and b - so c's 0.50 row never reaches the merge.
+      inside.putAll(searchGrouped(new int[] { 1 }, new float[] { 1f }, 2, 2));
+    });
+
+    assertThat(inside)
+        .as("the row this transaction inserted must lead: it is the best score in the corpus")
+        .isNotEmpty();
+    assertAgrees(inside, searchGrouped(new int[] { 1 }, new float[] { 1f }, 2, 2));
+  }
+
   // ---------- helpers ----------
 
   private void createSchema() {
