@@ -156,7 +156,9 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
    * it is reported - and the missing endpoint is remembered, so the second edge pointing at the same ghost costs a
    * set probe instead of another failed load and another report. The one entry not covered by that guarantee is a
    * neighbour the {@code labelFilter} excludes: it is never loaded, so nothing here knows whether it exists, and
-   * loading it to find out would undo the very saving the filter is there to make.
+   * loading it to find out would undo the very saving the filter is there to make. That is also why an edge to a
+   * filtered-out neighbour stays in the result while the neighbour itself does not - behaviour that predates this
+   * walk and is being decided on its own in issue #7982, not changed here.
    * The walk is level-synchronous rather than a queue of (vertex, level) pairs: the level is a property of the
    * wave, so tracking it per entry allocates one wrapper per vertex to carry a number the loop already knows.
    *
