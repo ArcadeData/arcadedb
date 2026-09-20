@@ -82,6 +82,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 
 /**
@@ -157,7 +158,14 @@ public class LocalSchema implements Schema {
   private final       DatabaseInternal                       database;
   private final       SecurityManager                        security;
   private final       List<Component>                        files                         = Collections.synchronizedList(new ArrayList<>());
-  final               Map<String, LocalBucket>               bucketMap                     = new HashMap<>();
+  // Concurrent for the same reason indexMap below is, and the reason is not symmetry: the bucket lookup maps are
+  // written by the schema load and by DDL from arbitrary user threads while queries resolve bucket names on the
+  // correctness path (LocalDocumentType.restoreExternalBuckets and ensureExternalBucketFor read it directly). A
+  // plain HashMap made that publication rest on whichever file lock the two sides happened to share, and left a
+  // concurrent getBuckets() free to throw ConcurrentModificationException at a reader that did nothing wrong
+  // (issue #7213). Null keys and values never reach it: every put passes a component's own name, and the accessors
+  // below (existsBucket, getBucketByName, getBucketByNameIfExists) null-guard the one name a caller supplies.
+  final               Map<String, LocalBucket>               bucketMap                     = new ConcurrentHashMap<>();
   private             Map<Integer, LocalDocumentType>        bucketId2TypeMap              = new HashMap<>();
   private             Map<Integer, LocalDocumentType>        bucketId2InvolvedTypeMap      = new HashMap<>();
   // Concurrent, not because the map is written often, but because it is written from threads that are not the ones
@@ -172,6 +180,48 @@ public class LocalSchema implements Schema {
   // cannot be null - LocalDocumentType uses the TypeIndex's own name, and ManualIndexBuilder.create() rejects a null
   // one up front, it being the only route by which a caller-supplied name reaches this map unmediated.
   protected final     Map<String, IndexInternal>             indexMap                      = new ConcurrentHashMap<>();
+
+  /**
+   * The index and bucket components an in-flight schema load has instantiated but whose {@code onAfterSchemaLoad()}
+   * has not run yet (issue #7213).
+   * <p>
+   * Both {@link #load(ComponentFile.MODE, boolean)} and {@link #loadIncremental} have to make a component resolvable
+   * BY NAME before {@link #readConfiguration()} runs, because that is how the logical schema binds an index to its
+   * type and a type to its buckets; and {@code readConfiguration()} in turn has to run before the schema hooks,
+   * because a hook reads what it set - {@code LSMVectorIndexMutable.onAfterSchemaLoad()} loads the index' vectors
+   * only once {@code readConfiguration()} has set its dimensions. Publishing straight into {@link #indexMap} and
+   * {@link #bucketMap} therefore left a window in which {@link #getIndexByName} answered with an index whose hook
+   * had not run, which for a vector index is an index with no vectors loaded: a search that silently finds nothing.
+   * <p>
+   * These two maps hold the new components for the length of that window. Only the thread named by
+   * {@link #stagingThread} ever reads them, so no other thread can reach a component through them, and
+   * {@link #commitStagedPublication()} moves them into the live maps once every hook has run. Publication is atomic
+   * PER NAME rather than for the map as a whole: a concurrent lookup resolves a name to the fully initialized new
+   * component or to whatever the live map held before, never to one in between. What the live map held before
+   * differs by path - {@link #loadIncremental} leaves the previous component in place, while
+   * {@link #load(ComponentFile.MODE, boolean)} empties the maps up front and so answers "not found" for the
+   * duration, which is what it answered before this barrier existed too (issue #7963).
+   * <p>
+   * The loading thread itself sees straight through the barrier: {@link #lookupIndex} and {@link #lookupBucket}
+   * resolve its staged components first, so the schema rebuild resolves the components it has just built exactly as
+   * it did when they went into the live maps directly. Every by-name accessor on this class goes through those two.
+   */
+  // Plain maps, and safely so although SUCCESSIVE loads run on different threads (a database open, then the Ratis
+  // apply thread on a follower): the only writes to them happen between a successful compareAndSet on
+  // stagingThread and the set(null) that releases it, so the release/acquire pair on that AtomicReference orders
+  // one load's last write before the next load's first read. Nothing outside that window touches them - every
+  // accessor reaches them only after isStagingPublication() has answered true, which only the owning thread gets.
+  private final       Map<String, IndexInternal>             stagedIndexMap                = new HashMap<>();
+  private final       Map<String, LocalBucket>               stagedBucketMap               = new HashMap<>();
+
+  /**
+   * The thread whose load owns {@link #stagedIndexMap}/{@link #stagedBucketMap}, or {@code null} when nothing is
+   * staging. Read by threads other than the loading one - every staged-aware lookup tests it, and the
+   * external-bucket restore in {@link LocalDocumentType} reaches one from DDL threads too - and claimed with a
+   * {@code compareAndSet} rather than a plain write, so two loads arriving at the same instant cannot both decide
+   * the window is free.
+   */
+  private final       AtomicReference<Thread>                stagingThread                 = new AtomicReference<>();
   protected final     Map<String, Trigger>                   triggers                      = new HashMap<>();
   protected final     Map<String, MaterializedViewImpl>     materializedViews             = new LinkedHashMap<>();
   protected final     Map<String, ContinuousAggregateImpl> continuousAggregates          = new LinkedHashMap<>();
@@ -274,63 +324,80 @@ public class LocalSchema implements Schema {
   }
 
   public void load(final ComponentFile.MODE mode, final boolean initialize) throws IOException {
-    files.clear();
-    types.clear();
-    bucketMap.clear();
-    indexMap.clear();
-    dictionary = null;
+    // Claim the staging window FIRST, before a single field is cleared. beginStagedPublication() refuses a load
+    // that overlaps another, and a refusal has to leave the schema exactly as it found it: clearing first would
+    // mean a refused load empties the live schema for everyone, including the load legitimately in flight on the
+    // other thread - a worse outcome than the one the refusal exists to prevent.
+    beginStagedPublication();
+    try {
+      files.clear();
+      types.clear();
+      bucketMap.clear();
+      indexMap.clear();
+      dictionary = null;
 
-    SortedIndexBuildRecoveryMarker.recoverInterruptedBuilds(database, mode);
+      // Nothing this rebuild instantiates reaches the by-name lookup maps until every schema hook below has run
+      // (issue #7213). The clears stay: a full rebuild drops every component instance, so the previous generation
+      // cannot be kept alive as a stand-in the way loadIncremental keeps its untouched ones.
+      SortedIndexBuildRecoveryMarker.recoverInterruptedBuilds(database, mode);
 
-    final Collection<ComponentFile> filesToOpen = database.getFileManager().getFiles();
+      final Collection<ComponentFile> filesToOpen = database.getFileManager().getFiles();
 
-    // REGISTER THE DICTIONARY FIRST
-    for (final ComponentFile file : filesToOpen) {
-      if (file != null)
-        if (Dictionary.DICT_EXT.equals(file.getFileExtension())) {
-          dictionary = (Dictionary) componentFactory.createComponent(file, mode);
-          registerFile(dictionary);
-          // Only now can the dictionary write a missing header page: doing so commits a transaction
-          // that has to resolve the dictionary's file id, which registerFile above has just made
-          // resolvable. Relevant when the database was killed before the page reached disk.
-          if (mode == ComponentFile.MODE.READ_WRITE)
-            dictionary.createHeaderPageIfMissing();
-          break;
-        }
-    }
-
-    if (dictionary == null)
-      throw new ConfigurationException("Dictionary file not found in database directory");
-
-    for (final ComponentFile file : filesToOpen) {
-      if (file != null && !Dictionary.DICT_EXT.equals(file.getFileExtension())) {
-        final Component pf = componentFactory.createComponent(file, mode);
-
-        if (pf != null)
-          registerLoadedComponent(pf);
+      // REGISTER THE DICTIONARY FIRST
+      for (final ComponentFile file : filesToOpen) {
+        if (file != null)
+          if (Dictionary.DICT_EXT.equals(file.getFileExtension())) {
+            dictionary = (Dictionary) componentFactory.createComponent(file, mode);
+            registerFile(dictionary);
+            // Only now can the dictionary write a missing header page: doing so commits a transaction
+            // that has to resolve the dictionary's file id, which registerFile above has just made
+            // resolvable. Relevant when the database was killed before the page reached disk.
+            if (mode == ComponentFile.MODE.READ_WRITE)
+              dictionary.createHeaderPageIfMissing();
+            break;
+          }
       }
+
+      if (dictionary == null)
+        throw new ConfigurationException("Dictionary file not found in database directory");
+
+      for (final ComponentFile file : filesToOpen) {
+        if (file != null && !Dictionary.DICT_EXT.equals(file.getFileExtension())) {
+          final Component pf = componentFactory.createComponent(file, mode);
+
+          if (pf != null)
+            registerLoadedComponent(pf);
+        }
+      }
+
+      if (initialize)
+        initComponents();
+
+      readConfiguration();
+
+      final List<Component> snapshot;
+      synchronized (files) {
+        snapshot = new ArrayList<>(files);
+      }
+      for (final Component f : snapshot)
+        if (f != null)
+          f.onAfterSchemaLoad();
+
+      // Every component is registered by now, which is what resolving a filter to its compacted index by name needs.
+      attachBloomFilters(snapshot);
+
+      if (mode == ComponentFile.MODE.READ_WRITE)
+        sweepOrphanCompactedIndexFiles(snapshot);
+
+      // Only here, with every hook run and every bloom filter attached, do the new components become reachable by
+      // name. A lookup that arrives before this point gets "not found" - which is what it already got, since the
+      // clears above emptied the maps - rather than an index that has not finished loading itself.
+      commitStagedPublication();
+
+      updateSecurity();
+    } finally {
+      endStagedPublication();
     }
-
-    if (initialize)
-      initComponents();
-
-    readConfiguration();
-
-    final List<Component> snapshot;
-    synchronized (files) {
-      snapshot = new ArrayList<>(files);
-    }
-    for (final Component f : snapshot)
-      if (f != null)
-        f.onAfterSchemaLoad();
-
-    // Every component is registered by now, which is what resolving a filter to its compacted index by name needs.
-    attachBloomFilters(snapshot);
-
-    if (mode == ComponentFile.MODE.READ_WRITE)
-      sweepOrphanCompactedIndexFiles(snapshot);
-
-    updateSecurity();
   }
 
   /**
@@ -347,12 +414,11 @@ public class LocalSchema implements Schema {
    * Same as {@link #registerLoadedComponent} for a file id that ALREADY has a component: the new instance takes the
    * old one's slot in a single set, so a concurrent {@link #getFileById} never observes the slot empty.
    * <p>
-   * Like {@link #load(ComponentFile.MODE, boolean)}, this publishes the component BEFORE {@link #readConfiguration()}
-   * and the {@code onAfterSchemaLoad()} pass, so a reader can reach an index whose schema hook has not run yet - the
-   * one component for which that is observable is {@code LSMVectorIndexMutable}, which loads its vectors there.
-   * Pre-existing (the full load republishes EVERY index that way, once per applied entry on a follower) and narrowed
-   * by this path to the single index an entry touched; closing it needs a staged swap of the whole logical schema and
-   * is tracked by issue #7213.
+   * The by-name registration goes through {@link #registerInLookupMaps}, which stages it while a load is in flight
+   * (issue #7213), so {@link #getIndexByName} keeps answering with the component the previous load published until
+   * every schema hook of this one has run. The file-id slot is still taken over immediately, because
+   * {@link #readConfiguration()} and the load hooks resolve sibling components through it while the load runs; that
+   * half of the window is tracked by issue #7962.
    */
   private void replaceLoadedComponent(final Component component) {
     registerInLookupMaps(component);
@@ -364,11 +430,210 @@ public class LocalSchema implements Schema {
 
   private void registerInLookupMaps(final Component component) {
     final Object mainComponent = component.getMainComponent();
+    final boolean staged = isStagingPublication();
 
     if (mainComponent instanceof LocalBucket bucket)
-      bucketMap.put(component.getName(), bucket);
+      (staged ? stagedBucketMap : bucketMap).put(component.getName(), bucket);
     else if (mainComponent instanceof IndexInternal internal)
-      indexMap.put(component.getName(), internal);
+      (staged ? stagedIndexMap : indexMap).put(component.getName(), internal);
+  }
+
+  /**
+   * Whether THIS thread is the one running a load that is staging its components (issue #7213). Every staged-aware
+   * accessor below tests this rather than merely "is a load running", so a component in {@link #stagedIndexMap} is
+   * reachable only by the load that built it.
+   */
+  private boolean isStagingPublication() {
+    return stagingThread.get() == Thread.currentThread();
+  }
+
+  /**
+   * The factory that turns a {@link ComponentFile} into its {@link Component}. Package-visible so the regression
+   * test for issue #7213 can register a handler whose {@code onAfterSchemaLoad()} blocks: holding a load inside the
+   * window between publication and the schema hooks is the only way to observe that window from another thread.
+   */
+  ComponentFactory getComponentFactory() {
+    return componentFactory;
+  }
+
+  /**
+   * Opens the window in which a load's new components are held back from {@link #indexMap}/{@link #bucketMap}.
+   * Paired with {@link #commitStagedPublication()} on the way out, and with {@link #endStagedPublication()} in a
+   * {@code finally} so a load that throws leaves nothing staged behind.
+   */
+  private void beginStagedPublication() {
+    // ONE load at a time per schema, and the refusal is loud on purpose. Two loads sharing these maps would have the
+    // second clear the first one's staged components and take `stagingThread` from under it, so the first would
+    // commit nothing and the schema would come up missing whatever it had staged - silently, on a database that
+    // opened. Concurrent loads already corrupt each other through the `files.clear()` at the head of load(), so this
+    // is not a new restriction; it is the first place that says so out loud rather than leaving the next caller to
+    // find out from a schema that lost half its indexes.
+    final Thread current = Thread.currentThread();
+    if (!stagingThread.compareAndSet(null, current)) {
+      // compareAndSet and not "read, test, write": the whole point is to refuse a load that arrives at the same
+      // instant as another, and a check-then-act on a volatile field lets both of them pass the check.
+      final Thread other = stagingThread.get();
+      throw new IllegalStateException(
+          "A schema load is already in flight on thread '" + (other != null ? other.getName() : "?") + "'"
+              + (other == current ? " (this one)" : "") + ": loads of the same schema cannot overlap");
+    }
+
+    stagedIndexMap.clear();
+    stagedBucketMap.clear();
+  }
+
+  /**
+   * Publishes everything staged by this thread's load, which is what makes the new components reachable by name.
+   * {@code putAll} on a {@link ConcurrentHashMap} is a sequence of single puts, so this is atomic per NAME and not
+   * for the map as a whole - and per name is exactly the guarantee issue #7213 asks for: no lookup can resolve a
+   * name to a component whose {@code onAfterSchemaLoad()} has not run.
+   */
+  private void commitStagedPublication() {
+    if (!isStagingPublication())
+      return;
+
+    // Buckets first, and the order is not arbitrary: a published index names the bucket it is associated with, so
+    // publishing indexes first would let a reader resolve an index by name a few instructions before the bucket it
+    // points at is resolvable. Nothing points the other way.
+    bucketMap.putAll(stagedBucketMap);
+    indexMap.putAll(stagedIndexMap);
+
+    endStagedPublication();
+  }
+
+  /**
+   * Closes the window without publishing. Idempotent, and a no-op on any thread that is not the staging one, so it
+   * is safe in the {@code finally} that follows {@link #commitStagedPublication()}.
+   */
+  private void endStagedPublication() {
+    if (!isStagingPublication())
+      return;
+
+    stagedIndexMap.clear();
+    stagedBucketMap.clear();
+    stagingThread.set(null);
+  }
+
+  /**
+   * The index registered under {@code name} AS THIS THREAD SEES IT: a load in flight sees what it has staged, every
+   * other thread sees only what is published. Every by-name index accessor resolves through this, which is what
+   * makes the barrier invisible to the load itself - the schema rebuild resolves the components it has just built,
+   * exactly as it did when they went straight into {@link #indexMap} - while a concurrent reader cannot reach one
+   * whose {@code onAfterSchemaLoad()} has not run (issue #7213).
+   */
+  IndexInternal lookupIndex(final String name) {
+    if (name == null)
+      return null;
+
+    if (isStagingPublication()) {
+      final IndexInternal staged = stagedIndexMap.get(name);
+      if (staged != null)
+        return staged;
+    }
+    return indexMap.get(name);
+  }
+
+  /**
+   * Bucket counterpart of {@link #lookupIndex}. Package-visible because {@link LocalDocumentType} resolves bucket
+   * names directly while {@link #readConfiguration()} rebuilds it - {@code restoreExternalBuckets} and
+   * {@code ensureExternalBucketFor} - and a load that staged its buckets would otherwise be told they do not exist
+   * and create a second one under the same name.
+   */
+  LocalBucket lookupBucket(final String name) {
+    if (name == null)
+      return null;
+
+    if (isStagingPublication()) {
+      final LocalBucket staged = stagedBucketMap.get(name);
+      if (staged != null)
+        return staged;
+    }
+    return bucketMap.get(name);
+  }
+
+  /**
+   * Registers a bucket by name, staged while a load is in flight. The one caller that is not the component
+   * registration itself is {@link #createBucket}, which the schema rebuild reaches through
+   * {@code LocalDocumentType.ensureExternalBucketFor} when a type's paired external-property bucket is missing.
+   */
+  private void publishBucketDuringLoad(final String name, final LocalBucket bucket) {
+    if (isStagingPublication())
+      stagedBucketMap.put(name, bucket);
+    else
+      bucketMap.put(name, bucket);
+  }
+
+  /**
+   * Every bucket this thread can see, published plus this thread's staged ones. Same rule as
+   * {@link #indexesDuringLoad()}.
+   */
+  private Collection<LocalBucket> bucketsDuringLoad() {
+    if (!isStagingPublication() || stagedBucketMap.isEmpty())
+      return bucketMap.values();
+
+    final Map<String, LocalBucket> merged = new LinkedHashMap<>(bucketMap);
+    merged.putAll(stagedBucketMap);
+    return merged.values();
+  }
+
+  /**
+   * Registers an index by name on behalf of the schema-rebuilding code, staged while a load is in flight. Three
+   * kinds of registration come through here, and all three are part of rebuilding the logical schema rather than of
+   * serving a reader:
+   * <ul>
+   *   <li>the decorating index types {@link #readConfiguration()} mints - full-text, geospatial, sparse vector -
+   *       taking over the name of the plain LSM index the load registered;</li>
+   *   <li>the {@link com.arcadedb.index.TypeIndex} wrapper {@link LocalDocumentType#addIndexInternal} mints, which
+   *       is the name a user's {@code SELECT} resolves ({@code MyType[myProperty]}) and therefore the one that made
+   *       issue #7213 observable at all: it wraps the bucket-level index whose schema hook has not run;</li>
+   *   <li>the bucket-level index {@code createBucketIndex} builds, which {@link #readConfiguration()} can reach
+   *       through {@code LocalDocumentType.addBucketInternal} - that propagates the type's existing indexes onto a
+   *       bucket it is binding, and the load calls it for every bucket of every type it restores.</li>
+   * </ul>
+   */
+  void publishIndexDuringLoad(final String name, final IndexInternal index) {
+    if (isStagingPublication())
+      stagedIndexMap.put(name, index);
+    else
+      indexMap.put(name, index);
+  }
+
+  /**
+   * Withdraws a name the schema-rebuilding code registered. It has to reach the live map even mid-load: the one
+   * caller is {@link LocalDocumentType#addIndexInternal} dislodging a {@code TypeIndex} wrapper that a previous
+   * drop left behind invalid, and leaving that entry published would hand a reader an index that answers
+   * {@code isValid() == false}.
+   */
+  void removeIndexDuringLoad(final String name) {
+    if (isStagingPublication())
+      stagedIndexMap.remove(name);
+
+    indexMap.remove(name);
+  }
+
+  /**
+   * Bucket counterpart of {@link #removeIndexDuringLoad}, and the same reason: a name withdrawn while a load is
+   * staging has to leave the staged map too, or the commit would publish it after the drop.
+   */
+  private void removeBucketDuringLoad(final String name) {
+    if (isStagingPublication())
+      stagedBucketMap.remove(name);
+
+    bucketMap.remove(name);
+  }
+
+  /**
+   * Every index the schema-rebuilding code can see: the published ones plus this thread's staged ones, staged
+   * winning on a name they share. {@link #readConfiguration()}'s orphan-relinking pass walks this, and on a full
+   * load every index in the database is staged, so walking {@link #indexMap} alone would walk nothing.
+   */
+  Collection<IndexInternal> indexesDuringLoad() {
+    if (!isStagingPublication() || stagedIndexMap.isEmpty())
+      return indexMap.values();
+
+    final Map<String, IndexInternal> merged = new LinkedHashMap<>(indexMap);
+    merged.putAll(stagedIndexMap);
+    return merged.values();
   }
 
   /**
@@ -483,48 +748,93 @@ public class LocalSchema implements Schema {
     // that file.
     final List<Component> loaded = new ArrayList<>(toInstantiate.size() + toReplace.size());
 
-    for (final ComponentFile file : toInstantiate) {
-      final Component component = componentFactory.createComponent(file, mode);
-      if (component == null)
-        continue;
+    // What to undo in the file-id array if this load dies before its commit. replaceLoadedComponent() and
+    // registerLoadedComponent() take those slots immediately - the load hooks and readConfiguration() resolve
+    // sibling components through them while the load runs - so unlike the staged name maps they are not rolled back
+    // by simply dropping them. Leaving them would hand a file-id lookup a half-built component while
+    // getIndexByName() still answered with the previous, fully built one.
+    final Map<Integer, Component> replacedSlots = new HashMap<>();
+    final List<Integer> addedSlots = new ArrayList<>();
+    boolean committed = false;
 
-      registerLoadedComponent(component);
-      loaded.add(component);
+    // Nothing instantiated below reaches the by-name lookup maps until every schema hook has run (issue #7213).
+    // On this path that is a stronger guarantee than on the full load: every index this entry did not touch keeps
+    // its published instance throughout, and a REPLACED index keeps answering with the instance the previous load
+    // published until its replacement has finished loading itself.
+    beginStagedPublication();
+    try {
+      for (final ComponentFile file : toInstantiate) {
+        final Component component = componentFactory.createComponent(file, mode);
+        if (component == null)
+          continue;
+
+        registerLoadedComponent(component);
+        addedSlots.add(component.getFileId());
+        loaded.add(component);
+      }
+
+      for (final ComponentFile file : toReplace) {
+        final Component component = componentFactory.createComponent(file, mode);
+        if (component == null)
+          continue;
+
+        final Component previous = getFileByIdIfExists(component.getFileId());
+        replaceLoadedComponent(component);
+        replacedSlots.put(component.getFileId(), previous);
+        loaded.add(component);
+      }
+
+      // Same ordering as load(): every load hook runs BEFORE readConfiguration(), because the logical schema binds
+      // to what the hooks published (an index' key types, a hash index' metadata)...
+      for (final Component component : loaded)
+        component.onAfterLoad();
+
+      readConfiguration();
+
+      // ...and every schema hook runs AFTER it, because those read what readConfiguration() just set on the index
+      // metadata (a vector index loads its vectors only once its dimensions are known).
+      for (final Component component : loaded)
+        component.onAfterSchemaLoad();
+
+      commitStagedPublication();
+      committed = true;
+
+      // attachBloomFilters() is not called: it acts only on LSMTreeIndexCompacted, and a compacted index can never
+      // be in `loaded` - the entry is refused instead, by NON_INCREMENTAL_COMPONENT_EXTENSIONS in the first pass and
+      // by NON_INCREMENTAL_TOUCHED_COMPONENT_EXTENSIONS in the second. Relaxing either set means restoring the call.
+      //
+      // sweepOrphanCompactedIndexFiles() is deliberately NOT run here either. It proves a compacted file is an
+      // orphan by observing that no mutable index claimed it during the load - a proof that only holds when EVERY
+      // mutable index was re-instantiated in the same pass. On this path most of them were not, so the sweep would
+      // drop live files. An orphan left behind is reclaimed by the next full load (a restart, or any entry that
+      // falls back).
+
+      updateSecurity();
+
+      return true;
+    } finally {
+      if (!committed)
+        rollbackFileSlots(replacedSlots, addedSlots);
+
+      endStagedPublication();
     }
+  }
 
-    for (final ComponentFile file : toReplace) {
-      final Component component = componentFactory.createComponent(file, mode);
-      if (component == null)
-        continue;
+  /**
+   * Puts the file-id array back the way an aborted {@link #loadIncremental} found it. The array is written directly
+   * rather than through {@link #removeFile}: this runs while an exception is on its way out, and {@code removeFile}
+   * would also rewrite the migrated-file map and touch the transaction, neither of which this load changed.
+   */
+  private void rollbackFileSlots(final Map<Integer, Component> replacedSlots, final List<Integer> addedSlots) {
+    synchronized (files) {
+      for (final Map.Entry<Integer, Component> slot : replacedSlots.entrySet())
+        if (slot.getKey() < files.size())
+          files.set(slot.getKey(), slot.getValue());
 
-      replaceLoadedComponent(component);
-      loaded.add(component);
+      for (final Integer fileId : addedSlots)
+        if (fileId < files.size())
+          files.set(fileId, null);
     }
-
-    // Same ordering as load(): every load hook runs BEFORE readConfiguration(), because the logical schema binds
-    // to what the hooks published (an index' key types, a hash index' metadata)...
-    for (final Component component : loaded)
-      component.onAfterLoad();
-
-    readConfiguration();
-
-    // ...and every schema hook runs AFTER it, because those read what readConfiguration() just set on the index
-    // metadata (a vector index loads its vectors only once its dimensions are known).
-    for (final Component component : loaded)
-      component.onAfterSchemaLoad();
-
-    // attachBloomFilters() is not called: it acts only on LSMTreeIndexCompacted, and a compacted index can never be
-    // in `loaded` - the entry is refused instead, by NON_INCREMENTAL_COMPONENT_EXTENSIONS in the first pass and by
-    // NON_INCREMENTAL_TOUCHED_COMPONENT_EXTENSIONS in the second. Relaxing either set means restoring the call.
-    //
-    // sweepOrphanCompactedIndexFiles() is deliberately NOT run here either. It proves a compacted file is an orphan
-    // by observing that no mutable index claimed it during the load - a proof that only holds when EVERY mutable
-    // index was re-instantiated in the same pass. On this path most of them were not, so the sweep would drop live
-    // files. An orphan left behind is reclaimed by the next full load (a restart, or any entry that falls back).
-
-    updateSecurity();
-
-    return true;
   }
 
   /**
@@ -689,11 +999,13 @@ public class LocalSchema implements Schema {
 
   @Override
   public Collection<? extends Bucket> getBuckets() {
-    return Collections.unmodifiableCollection(bucketMap.values());
+    return Collections.unmodifiableCollection(bucketsDuringLoad());
   }
 
   public boolean existsBucket(final String bucketName) {
-    return bucketMap.containsKey(bucketName);
+    // Null-guarded because bucketMap is a ConcurrentHashMap, which rejects a null key with an NPE where the previous
+    // HashMap simply answered "absent". Callers pass a name straight from SQL, so keep the old answer.
+    return lookupBucket(bucketName) != null;
   }
 
   /**
@@ -705,7 +1017,8 @@ public class LocalSchema implements Schema {
    */
   @Override
   public Bucket getBucketByName(final String name) {
-    final Bucket p = bucketMap.get(name);
+    // Same null guard as existsBucket, for the same reason.
+    final Bucket p = lookupBucket(name);
     if (p == null)
       throw new SchemaException("Bucket with name '" + name + "' was not found");
     return p;
@@ -713,7 +1026,8 @@ public class LocalSchema implements Schema {
 
   @Override
   public Bucket getBucketByNameIfExists(final String name) {
-    return bucketMap.get(name);
+    // Same null guard as existsBucket, for the same reason.
+    return lookupBucket(name);
   }
 
   /**
@@ -776,7 +1090,7 @@ public class LocalSchema implements Schema {
 
     checkValidBucketName(bucketName);
 
-    if (bucketMap.containsKey(bucketName))
+    if (lookupBucket(bucketName) != null)
       throw new SchemaException("Cannot create bucket '" + bucketName + "' because already exists");
 
     // Discoverability warning for the EXTERNAL property naming convention. The engine creates paired buckets
@@ -804,7 +1118,7 @@ public class LocalSchema implements Schema {
         final LocalBucket bucket = new LocalBucket(database, bucketName, dir + File.separator + bucketName,
             ComponentFile.MODE.READ_WRITE, pageSize, version);
         registerFile((Component) bucket);
-        bucketMap.put(bucketName, bucket);
+        publishBucketDuringLoad(bucketName, bucket);
 
         return bucket;
 
@@ -1055,14 +1369,15 @@ public class LocalSchema implements Schema {
   public boolean existsIndex(final String indexName) {
     // Null-guarded because indexMap is a ConcurrentHashMap, which rejects a null key with an NPE where the previous
     // HashMap simply answered "absent". Callers pass a name straight from SQL, so keep the old answer.
-    return indexName != null && indexMap.containsKey(indexName);
+    return lookupIndex(indexName) != null;
   }
 
   @Override
   public Index[] getIndexes() {
-    final Index[] indexes = new Index[indexMap.size()];
+    final Collection<IndexInternal> visible = indexesDuringLoad();
+    final Index[] indexes = new Index[visible.size()];
     int i = 0;
-    for (final Index index : indexMap.values())
+    for (final Index index : visible)
       indexes[i++] = index;
     return indexes;
   }
@@ -1084,7 +1399,7 @@ public class LocalSchema implements Schema {
    * unique = false} - which drops the flag and this index together.
    */
   private void checkIndexIsNotBackingAConstraint(final String indexName) {
-    final IndexInternal index = indexName != null ? indexMap.get(indexName) : null;
+    final IndexInternal index = lookupIndex(indexName);
     if (index == null || index.getTypeName() == null || !existsType(index.getTypeName()))
       return;
 
@@ -1102,7 +1417,7 @@ public class LocalSchema implements Schema {
         multipleUpdate = true;
 
       try {
-        final IndexInternal index = indexName != null ? indexMap.get(indexName) : null;
+        final IndexInternal index = lookupIndex(indexName);
         if (index == null)
           return null;
 
@@ -1125,7 +1440,11 @@ public class LocalSchema implements Schema {
               parentTypeIndex.removeIndexOnBucket(index);
 
             index.drop();
-            indexMap.remove(indexName);
+            // Staging-aware: createBucketIndex()'s failure rollback reaches this method for an index it registered
+            // through publishIndexDuringLoad(), and readConfiguration() can reach createBucketIndex() by way of
+            // LocalDocumentType.addBucketInternal(). A plain indexMap.remove() would be a no-op against a staged
+            // entry and commitStagedPublication() would then publish the dropped index as live.
+            removeIndexDuringLoad(indexName);
 
             if (index.getTypeName() != null) {
               final LocalDocumentType type = getType(index.getTypeName());
@@ -1138,7 +1457,7 @@ public class LocalSchema implements Schema {
                 // empty wrapper.
                 if (parentTypeIndex != null && parentTypeIndex.countIndexesOnBuckets() == 0) {
                   type.removeTypeIndexInternal(parentTypeIndex);
-                  indexMap.remove(parentTypeIndex.getName());
+                  removeIndexDuringLoad(parentTypeIndex.getName());
                 }
               }
             }
@@ -1519,7 +1838,7 @@ public class LocalSchema implements Schema {
   public Index getIndexByName(final String indexName) {
     // Same null guard as existsIndex: a null name must still surface as "not found", not as the NPE a
     // ConcurrentHashMap raises on a null key.
-    final Index p = indexName != null ? indexMap.get(indexName) : null;
+    final Index p = lookupIndex(indexName);
     if (p == null)
       throw new SchemaException("Index with name '" + indexName + "' was not found");
     return p;
@@ -1695,7 +2014,7 @@ public class LocalSchema implements Schema {
       }
 
       for (String key : json.keySet()) {
-        final LocalBucket bucket = bucketMap.get(key);
+        final LocalBucket bucket = lookupBucket(key);
         if (bucket != null) {
           if (legacyFile) {
             bucket.setCachedRecordCount(json.getLong(key));
@@ -1909,7 +2228,7 @@ public class LocalSchema implements Schema {
         }
         removeFile(bucket.getFileId());
 
-        bucketMap.remove(bucketName);
+        removeBucketDuringLoad(bucketName);
 
         return null;
 
@@ -2205,7 +2524,7 @@ public class LocalSchema implements Schema {
         final JSONArray schemaBucket = schemaType.getJSONArray("buckets");
         if (schemaBucket != null) {
           for (int i = 0; i < schemaBucket.length(); ++i) {
-            final Bucket bucket = bucketMap.get(schemaBucket.getString(i));
+            final Bucket bucket = lookupBucket(schemaBucket.getString(i));
             if (bucket == null) {
               LogManager.instance()
                   .log(this, Level.WARNING, "Cannot find bucket '%s' for type '%s', removing it from type configuration", null,
@@ -2285,7 +2604,7 @@ public class LocalSchema implements Schema {
             for (int i = 0; i < properties.length; ++i)
               properties[i] = schemaIndexProperties.getString(i);
 
-            IndexInternal index = indexMap.get(indexName);
+            IndexInternal index = lookupIndex(indexName);
             if (index != null) {
               index.setMetadata(indexJSON);
               // Apply the user-supplied TypeIndex name (issue #4139) here so it works for every
@@ -2314,20 +2633,20 @@ public class LocalSchema implements Schema {
                     // colliding with the query parser's default-field sentinel.
                     LSMTreeFullTextIndex.checkReservedPropertyNames(ftMeta.propertyNames);
                     index = new LSMTreeFullTextIndex((LSMTreeIndex) index, ftMeta);
-                    indexMap.put(indexName, index);
+                    publishIndexDuringLoad(indexName, index);
                   } else if (configuredIndexType.equalsIgnoreCase(Schema.INDEX_TYPE.GEOSPATIAL.toString())) {
                     final int precision = indexJSON.getInt("precision", GeoIndexMetadata.DEFAULT_PRECISION);
                     // A definition with no tokenization field predates the FRONTIER layout (#5478), so its entries are
                     // the full ancestor chain: reading it as anything else would make put/remove miss them.
                     index = new LSMTreeGeoIndex((LSMTreeIndex) index, precision, GeoIndexMetadata.readTokenization(indexJSON));
-                    indexMap.put(indexName, index);
+                    publishIndexDuringLoad(indexName, index);
                   } else if (configuredIndexType.equalsIgnoreCase(Schema.INDEX_TYPE.LSM_SPARSE_VECTOR.toString())) {
                     final LSMSparseVectorIndexMetadata sparseMeta = new LSMSparseVectorIndexMetadata(typeName, properties, -1);
                     sparseMeta.fromJSON(indexJSON);
                     // Same reason as the full-text branch above (issue #5742).
                     sparseMeta.inheritCommonSettingsFrom(index.getMetadata());
                     index = new LSMSparseVectorIndex((LSMTreeIndex) index, sparseMeta);
-                    indexMap.put(indexName, index);
+                    publishIndexDuringLoad(indexName, index);
                   } else {
                     orphanIndexes.put(indexName, indexJSON);
                     indexJSON.put("type", typeName);
@@ -2340,7 +2659,7 @@ public class LocalSchema implements Schema {
               }
 
               final String bucketName = indexJSON.getString("bucket");
-              final Bucket bucket = bucketMap.get(bucketName);
+              final Bucket bucket = lookupBucket(bucketName);
               if (bucket == null) {
                 orphanIndexes.put(indexName, indexJSON);
                 indexJSON.put("type", typeName);
@@ -2369,7 +2688,7 @@ public class LocalSchema implements Schema {
       boolean completed = false;
       while (!completed) {
         completed = true;
-        for (final IndexInternal index : indexMap.values()) {
+        for (final IndexInternal index : indexesDuringLoad()) {
           if (index.getTypeName() == null) {
             final String indexName = index.getName();
 
@@ -2387,7 +2706,7 @@ public class LocalSchema implements Schema {
               continue;
 
             final String bucketName = indexName.substring(0, pos);
-            final Bucket bucket = bucketMap.get(bucketName);
+            final Bucket bucket = lookupBucket(bucketName);
             if (bucket != null) {
               for (final Map.Entry<String, JSONObject> entry : orphanIndexes.entrySet()) {
                 // Same guard as above, for the same reason: these keys are persisted schema entries, so a hand-edited
@@ -3304,7 +3623,7 @@ public class LocalSchema implements Schema {
 
     final String indexName = bucket.getName() + "_" + System.nanoTime();
 
-    if (indexMap.containsKey(indexName))
+    if (lookupIndex(indexName) != null)
       throw new DatabaseMetadataException(
           "Cannot create index '" + indexName + "' on type '" + typeName + "' because it already exists");
 
@@ -3332,7 +3651,7 @@ public class LocalSchema implements Schema {
     try {
       registerFile(index.getComponent());
 
-      indexMap.put(indexName, index);
+      publishIndexDuringLoad(indexName, index);
 
       // An index created but not populated here is parked UNAVAILABLE, so nothing can read it while it is empty. Two
       // callers arrive with build=false: the sorted build, which populates every bucket index in one streamed pass
