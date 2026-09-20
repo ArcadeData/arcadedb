@@ -38,7 +38,7 @@ class QueryMetricsProtocolIT extends BaseGraphServerTest {
 
   @Test
   void httpQueryRecordedWithProtocolTag() throws Exception {
-    final HttpURLConnection c = (HttpURLConnection) new URL("http://localhost:2480/api/v1/query/graph").openConnection();
+    final HttpURLConnection c = (HttpURLConnection) new URL(getServerHttpUrl("/api/v1/query/graph")).openConnection();
     c.setRequestMethod("POST");
     c.setDoOutput(true);
     c.setRequestProperty("Authorization",

@@ -39,7 +39,7 @@ class Issue4689MatchReturnVertexRemoteIT extends BaseGraphServerTest {
 
   @Test
   void cypherMatchReturnWholeVertexOverRemote() {
-    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, getDatabaseName(), "root",
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), getDatabaseName(), "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     database.command("opencypher", "CREATE (u:IssueUser {name: 'Alice', age: 30})");
@@ -61,7 +61,7 @@ class Issue4689MatchReturnVertexRemoteIT extends BaseGraphServerTest {
 
   @Test
   void cypherMatchReturnVertexProjectionOverRemote() {
-    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, getDatabaseName(), "root",
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), getDatabaseName(), "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     database.command("opencypher", "CREATE (u:IssueUserProj {name: 'Charlie', age: 35})");
@@ -76,7 +76,7 @@ class Issue4689MatchReturnVertexRemoteIT extends BaseGraphServerTest {
 
   @Test
   void sqlSelectWholeRecordOverRemote() {
-    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, getDatabaseName(), "root",
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), getDatabaseName(), "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     database.command("sql", "CREATE VERTEX TYPE SqlRemoteAll");
@@ -97,7 +97,7 @@ class Issue4689MatchReturnVertexRemoteIT extends BaseGraphServerTest {
 
   @Test
   void sqlSelectFieldOverRemote() {
-    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, getDatabaseName(), "root",
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), getDatabaseName(), "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     database.command("sql", "CREATE VERTEX TYPE SqlRemoteFields");
@@ -113,7 +113,7 @@ class Issue4689MatchReturnVertexRemoteIT extends BaseGraphServerTest {
 
   @Test
   void cypherMatchReturnVertexWithEdgesOverRemote() {
-    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, getDatabaseName(), "root",
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), getDatabaseName(), "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     database.command("opencypher", "CREATE (u:UserEdgeRemote {name: 'Src', role: 'admin'})");

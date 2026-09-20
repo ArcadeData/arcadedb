@@ -73,7 +73,7 @@ class StreamingQueryIT extends BaseGraphServerTest {
   @Override
   public void beginTest() {
     super.beginTest();
-    database = new RemoteGrpcDatabase(grpcServer, "localhost", 50051, 2480, getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
+    database = new RemoteGrpcDatabase(grpcServer, "localhost", 50051, getServerHttpPort(), getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
 
     database.command("sql", "CREATE VERTEX TYPE `" + TYPE + "` IF NOT EXISTS BUCKETS 8");
     database.command("sql", "CREATE PROPERTY `" + TYPE + "`.id IF NOT EXISTS LONG");

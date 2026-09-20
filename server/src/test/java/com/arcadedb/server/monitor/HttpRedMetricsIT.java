@@ -83,7 +83,7 @@ class HttpRedMetricsIT extends BaseGraphServerTest {
   @Test
   void httpRequestsTimerRecordsErrorStatus() throws Exception {
     // An unauthenticated request to a protected endpoint returns 401, exercising the error path.
-    final HttpURLConnection c = (HttpURLConnection) new URL("http://localhost:2480/api/v1/command/graph").openConnection();
+    final HttpURLConnection c = (HttpURLConnection) new URL(getServerHttpUrl("/api/v1/command/graph")).openConnection();
     c.setRequestMethod("POST");
     c.setDoOutput(true);
     c.setRequestProperty("Content-Type", "application/json");
@@ -161,7 +161,7 @@ class HttpRedMetricsIT extends BaseGraphServerTest {
   }
 
   private void hitGet(final String path) throws Exception {
-    final HttpURLConnection c = (HttpURLConnection) new URL("http://localhost:2480" + path).openConnection();
+    final HttpURLConnection c = (HttpURLConnection) new URL(getServerHttpUrl("") + path).openConnection();
     c.setRequestMethod("GET");
     c.connect();
     c.getResponseCode();
@@ -169,7 +169,7 @@ class HttpRedMetricsIT extends BaseGraphServerTest {
   }
 
   private void issueReady() throws Exception {
-    final HttpURLConnection connection = (HttpURLConnection) new URL("http://localhost:2480/api/v1/ready").openConnection();
+    final HttpURLConnection connection = (HttpURLConnection) new URL(getServerHttpUrl("/api/v1/ready")).openConnection();
     connection.setRequestMethod("GET");
     connection.connect();
     connection.getResponseCode();
@@ -177,7 +177,7 @@ class HttpRedMetricsIT extends BaseGraphServerTest {
   }
 
   private void issueQuery() throws Exception {
-    final HttpURLConnection c = (HttpURLConnection) new URL("http://localhost:2480/api/v1/query/graph").openConnection();
+    final HttpURLConnection c = (HttpURLConnection) new URL(getServerHttpUrl("/api/v1/query/graph")).openConnection();
     c.setRequestMethod("POST");
     c.setDoOutput(true);
     c.setRequestProperty("Authorization",

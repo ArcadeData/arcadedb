@@ -82,7 +82,7 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
   @BeforeEach
   void openAndPrepare() {
     grpcServer = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
-    grpc = new RemoteGrpcDatabase(grpcServer, "localhost", 50051, 2480, getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
+    grpc = new RemoteGrpcDatabase(grpcServer, "localhost", 50051, getServerHttpPort(), getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
 
     grpc.command("sql", "CREATE DOCUMENT TYPE `" + DOC_TYPE + "` IF NOT EXISTS", Map.of());
     grpc.command("sql", "CREATE PROPERTY `" + DOC_TYPE + "`.name IF NOT EXISTS STRING", Map.of());
@@ -390,7 +390,7 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
     // Re-open to verify the insert was rolled back
     grpcServer.close();
     grpcServer = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
-    grpc = new RemoteGrpcDatabase(grpcServer, "localhost", 50051, 2480, getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
+    grpc = new RemoteGrpcDatabase(grpcServer, "localhost", 50051, getServerHttpPort(), getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
     try (ResultSet rs = grpc.query("sql", "SELECT FROM `" + DOC_TYPE + "` WHERE name = 'autoRollback'", Map.of())) {
       assertThat(rs.hasNext()).isFalse();
     }

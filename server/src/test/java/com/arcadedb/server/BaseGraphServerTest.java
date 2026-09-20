@@ -456,6 +456,62 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
     return servers[i];
   }
 
+  /**
+   * The HTTP port server {@code serverIndex} ACTUALLY bound, which is not the 2480 the configured range starts
+   * at. {@code arcadedb.server.httpIncomingPort} defaults to the range {@code 2480-2489} precisely so a test
+   * server can start next to anything else already listening, and {@link HttpServer#getPort()} is the only
+   * place the choice it made is recorded.
+   * <p>
+   * A test that hardcodes 2480 instead is answered by whatever holds that port - a developer's own instance, an
+   * IDE-launched server, a previous run that has not exited - and the failure reads as {@code 403} or "Too many
+   * failed authentication attempts", never as a port conflict. {@code 2480 + serverIndex} is worse rather than
+   * better: one stranger on 2480 shifts EVERY server in the cluster up by one, so each index addresses its
+   * neighbour and the test fails somewhere else entirely.
+   *
+   * @throws IllegalStateException when that server is not started, because there is no port to answer with and
+   *                               a guess would reintroduce exactly the defect this method exists to remove
+   */
+  protected int getServerHttpPort(final int serverIndex) {
+    return getServerHttpPort(getServer(serverIndex));
+  }
+
+  /**
+   * The HTTP port of the first server, for the single-server tests that are the majority.
+   */
+  protected int getServerHttpPort() {
+    return getServerHttpPort(0);
+  }
+
+  /**
+   * {@code http://127.0.0.1:<the port server serverIndex actually bound><path>}. {@code path} starts with a
+   * slash, e.g. {@code "/api/v1/ready"}.
+   */
+  protected String getServerHttpUrl(final int serverIndex, final String path) {
+    return getServerHttpUrl(getServer(serverIndex), path);
+  }
+
+  /**
+   * {@link #getServerHttpUrl(int, String)} against the first server.
+   */
+  protected String getServerHttpUrl(final String path) {
+    return getServerHttpUrl(0, path);
+  }
+
+  /**
+   * {@code ws://localhost:<the port server serverIndex actually bound><path>}, for the WebSocket endpoint. The
+   * host is {@code localhost} rather than {@code 127.0.0.1} to match what the WebSocket helpers already dial.
+   */
+  protected String getServerWsUrl(final int serverIndex, final String path) {
+    return getServerWsUrl(getServer(serverIndex), path);
+  }
+
+  /**
+   * {@link #getServerWsUrl(int, String)} against the first server.
+   */
+  protected String getServerWsUrl(final String path) {
+    return getServerWsUrl(0, path);
+  }
+
   protected ArcadeDBServer[] getServers() {
     return servers;
   }
@@ -642,7 +698,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
 
   protected String command(final int serverIndex, final String command) throws Exception {
     final HttpURLConnection initialConnection = (HttpURLConnection) new URI(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph")
+        getServerHttpUrl(serverIndex, "/api/v1/command/graph"))
         .toURL()
         .openConnection();
     try {
@@ -669,7 +725,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
       } catch (final Exception ignored) {
       }
       LogManager.instance().log(this, Level.SEVERE, "Error on connecting to server %s (error body: %s)", e,
-          "http://127.0.0.1:248" + serverIndex, errorBody);
+          getServerHttpUrl(serverIndex, ""), errorBody);
       throw e;
     } finally {
       initialConnection.disconnect();
@@ -678,7 +734,7 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
 
   protected JSONObject executeCommand(final int serverIndex, final String language, final String payloadCommand) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
+        getServerHttpUrl(serverIndex, "/api/v1/command/graph")).openConnection();
 
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization",

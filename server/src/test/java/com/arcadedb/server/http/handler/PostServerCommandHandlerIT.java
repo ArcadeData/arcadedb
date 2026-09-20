@@ -351,7 +351,7 @@ class PostServerCommandHandlerIT extends BaseGraphServerTest {
   void restoreDatabaseCommand() throws Exception {
     // Create a backup of the existing "graph" database
     HttpRequest backupReq = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/command/graph"))
+        .uri(new URI(getServerHttpUrl("/api/v1/command/graph")))
         .POST(HttpRequest.BodyPublishers.ofString(new JSONObject()
             .put("language", "sql")
             .put("command", "backup database")
@@ -446,7 +446,7 @@ class PostServerCommandHandlerIT extends BaseGraphServerTest {
       final String url = "http://127.0.0.1:" + localServer.getAddress().getPort() + "/data";
 
       final HttpRequest request = HttpRequest.newBuilder()
-          .uri(new URI("http://localhost:2480/api/v1/server"))
+          .uri(new URI(getServerHttpUrl("/api/v1/server")))
           .POST(HttpRequest.BodyPublishers.ofString(new JSONObject()
               .put("command", "import database issue6474_import_ssrf_test_sse " + url)
               .toString()))
@@ -480,7 +480,7 @@ class PostServerCommandHandlerIT extends BaseGraphServerTest {
    */
   private HttpResponse<String> executeServerCommand(String command) throws Exception {
     HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/server"))
+        .uri(new URI(getServerHttpUrl("/api/v1/server")))
         .POST(HttpRequest.BodyPublishers.ofString(new JSONObject()
             .put("command", command)
             .toString()))

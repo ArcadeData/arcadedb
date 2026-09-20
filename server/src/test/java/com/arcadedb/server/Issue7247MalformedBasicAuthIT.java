@@ -68,7 +68,7 @@ class Issue7247MalformedBasicAuthIT extends BaseGraphServerTest {
 
   private int statusForAuthorizationHeader(final String authorization) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:2480/api/v1/query/graph/sql/select%201").openConnection();
+        getServerHttpUrl("/api/v1/query/graph/sql/select%201")).openConnection();
     connection.setRequestMethod("GET");
     connection.setRequestProperty("Authorization", authorization);
     try {

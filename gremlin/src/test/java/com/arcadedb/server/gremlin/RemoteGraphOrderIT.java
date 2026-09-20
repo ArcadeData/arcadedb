@@ -34,10 +34,10 @@ class RemoteGraphOrderIT extends AbstractGremlinServerIT {
   void order() throws Exception {
     testEachServer(serverIndex -> {
       assertThat(
-          new RemoteServer("127.0.0.1", 2480 + serverIndex, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists(
+          new RemoteServer("127.0.0.1", getServerHttpPort(serverIndex), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists(
               getDatabaseName())).isTrue();
 
-      try (final RemoteDatabase db = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, getDatabaseName(), "root",
+      try (final RemoteDatabase db = new RemoteDatabase("127.0.0.1", getServerHttpPort(serverIndex), getDatabaseName(), "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
         /*
          * (rootVtx) --<edgType0>--> (connectedVtx0)

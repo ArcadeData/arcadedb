@@ -82,7 +82,7 @@ class Issue7549FollowerCapabilityReportingIT extends BaseRaftHATest {
   }
 
   private JSONObject queryClusterEndpoint(final int serverIndex) throws Exception {
-    final URL url = new URL("http://localhost:" + (2480 + serverIndex) + "/api/v1/cluster");
+    final URL url = new URL(getServerHttpUrl(serverIndex, "/api/v1/cluster"));
     final HttpURLConnection conn = (HttpURLConnection) url.openConnection();
     conn.setRequestMethod("GET");
     conn.setRequestProperty("Authorization",

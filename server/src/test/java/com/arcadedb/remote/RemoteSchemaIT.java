@@ -44,7 +44,7 @@ class RemoteSchemaIT extends BaseGraphServerTest {
   @Test
   void documentType() throws Exception {
     testEachServer(serverIndex -> {
-      final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+      final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(serverIndex), DATABASE_NAME, "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
       assertThat(database.getSchema().existsType("Document")).isFalse();
@@ -67,7 +67,7 @@ class RemoteSchemaIT extends BaseGraphServerTest {
   @Test
   void vertexType() throws Exception {
     testEachServer(serverIndex -> {
-      final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+      final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(serverIndex), DATABASE_NAME, "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
       assertThat(database.getSchema().existsType("Vertex")).isFalse();
@@ -111,7 +111,7 @@ class RemoteSchemaIT extends BaseGraphServerTest {
   @Test
   void edgeType() throws Exception {
     testEachServer(serverIndex -> {
-      final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+      final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(serverIndex), DATABASE_NAME, "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
       assertThat(database.getSchema().existsType("Edge")).isFalse();
@@ -132,7 +132,7 @@ class RemoteSchemaIT extends BaseGraphServerTest {
   @Test
   void edgeTypeFlagsSurviveTheRemoteSchemaListing() throws Exception {
     testEachServer(serverIndex -> {
-      try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+      try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(serverIndex), DATABASE_NAME, "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
 
         database.command("sql", "CREATE EDGE TYPE LightEdge LIGHTWEIGHT UNIQUE");
@@ -162,7 +162,7 @@ class RemoteSchemaIT extends BaseGraphServerTest {
   void bucketAccessorsLoadSchemaLazily() throws Exception {
     testEachServer(serverIndex -> {
       // FRESH RemoteDatabase: schema (and the buckets map) is not loaded yet.
-      try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+      try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(serverIndex), DATABASE_NAME, "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
 
         // Before the fix this threw NullPointerException because the buckets map was null.
@@ -170,13 +170,13 @@ class RemoteSchemaIT extends BaseGraphServerTest {
       }
 
       // Now create a type so we have a known bucket, then verify getBucketByName works on a fresh instance.
-      try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+      try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(serverIndex), DATABASE_NAME, "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
         final DocumentType type = database.getSchema().createDocumentType("BucketDoc");
         final String bucketName = type.getBuckets(false).getFirst().getName();
 
         // Fresh instance again to make sure the accessor itself loads the schema.
-        try (final RemoteDatabase fresh = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+        try (final RemoteDatabase fresh = new RemoteDatabase("127.0.0.1", getServerHttpPort(serverIndex), DATABASE_NAME, "root",
             BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
           final Bucket bucket = fresh.getSchema().getBucketByName(bucketName);
           assertThat(bucket).isNotNull();
@@ -197,7 +197,7 @@ class RemoteSchemaIT extends BaseGraphServerTest {
   @Test
   void existsIndexAndBucket() throws Exception {
     testEachServer(serverIndex -> {
-      try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+      try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(serverIndex), DATABASE_NAME, "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
 
         final DocumentType type = database.getSchema().createDocumentType("IndexedDoc");
@@ -225,14 +225,14 @@ class RemoteSchemaIT extends BaseGraphServerTest {
   @Test
   void rawDdlThroughCommandIsVisibleToAlreadyWarmSchemaCache() throws Exception {
     testEachServer(serverIndex -> {
-      try (final RemoteDatabase warmDatabase = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+      try (final RemoteDatabase warmDatabase = new RemoteDatabase("127.0.0.1", getServerHttpPort(serverIndex), DATABASE_NAME, "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
 
         // Warm the schema cache before the type exists, exactly like a long-lived connection would.
         assertThat(warmDatabase.getSchema().existsType("RawDdlType")).isFalse();
 
         // A second, independent connection issues the DDL directly, bypassing createVertexType().
-        try (final RemoteDatabase otherDatabase = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+        try (final RemoteDatabase otherDatabase = new RemoteDatabase("127.0.0.1", getServerHttpPort(serverIndex), DATABASE_NAME, "root",
             BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
           otherDatabase.command("sql", "CREATE VERTEX TYPE RawDdlType");
         }
@@ -255,7 +255,7 @@ class RemoteSchemaIT extends BaseGraphServerTest {
   @Test
   void getOrCreateTypesAreIdempotent() throws Exception {
     testEachServer(serverIndex -> {
-      try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+      try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(serverIndex), DATABASE_NAME, "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
         assertThat(database.getSchema().getOrCreateDocumentType("Doc").getName()).isEqualTo("Doc");
         assertThat(database.getSchema().getOrCreateDocumentType("Doc").getName()).isEqualTo("Doc");
@@ -275,14 +275,14 @@ class RemoteSchemaIT extends BaseGraphServerTest {
   @BeforeEach
   public void beginTest() {
     super.beginTest();
-    final RemoteServer server = new RemoteServer("127.0.0.1", 2480, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+    final RemoteServer server = new RemoteServer("127.0.0.1", getServerHttpPort(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
     if (!server.exists(DATABASE_NAME))
       server.create(DATABASE_NAME);
   }
 
   @AfterEach
   public void endTest() {
-    final RemoteServer server = new RemoteServer("127.0.0.1", 2480, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+    final RemoteServer server = new RemoteServer("127.0.0.1", getServerHttpPort(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
     if (server.exists(DATABASE_NAME))
       server.drop(DATABASE_NAME);
     super.endTest();

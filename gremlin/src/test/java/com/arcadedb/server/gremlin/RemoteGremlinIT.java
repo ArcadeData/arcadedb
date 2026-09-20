@@ -36,10 +36,10 @@ class RemoteGremlinIT extends AbstractGremlinServerIT {
   void insert() throws Exception {
     testEachServer(serverIndex -> {
       assertThat(
-          new RemoteServer("127.0.0.1", 2480 + serverIndex, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists(
+          new RemoteServer("127.0.0.1", getServerHttpPort(serverIndex), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists(
               getDatabaseName())).isTrue();
 
-      final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, getDatabaseName(), "root",
+      final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(serverIndex), getDatabaseName(), "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
       try (final ArcadeGraph graph = ArcadeGraph.open(database)) {
@@ -67,7 +67,7 @@ class RemoteGremlinIT extends AbstractGremlinServerIT {
   @Test
   void dropVertex() throws Exception {
     testEachServer(serverIndex -> {
-      final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, getDatabaseName(), "root",
+      final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(serverIndex), getDatabaseName(), "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
       try (final ArcadeGraph graph = ArcadeGraph.open(database)) {

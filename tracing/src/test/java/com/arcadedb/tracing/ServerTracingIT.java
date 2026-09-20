@@ -57,7 +57,7 @@ class ServerTracingIT extends BaseGraphServerTest {
 
     try {
       final String parentTraceId = "4bf92f3577b34da6a3ce929d0e0e4736";
-      final HttpURLConnection c = (HttpURLConnection) new URL("http://localhost:2480/api/v1/ready").openConnection();
+      final HttpURLConnection c = (HttpURLConnection) new URL(getServerHttpUrl("/api/v1/ready")).openConnection();
       c.setRequestMethod("GET");
       c.setRequestProperty("traceparent", "00-" + parentTraceId + "-00f067aa0ba902b7-01");
       c.connect();
@@ -96,7 +96,7 @@ class ServerTracingIT extends BaseGraphServerTest {
     plugin.attachForTest(registry, exporter);
 
     try {
-      final HttpURLConnection c = (HttpURLConnection) new URL("http://localhost:2480/api/v1/command/graph").openConnection();
+      final HttpURLConnection c = (HttpURLConnection) new URL(getServerHttpUrl("/api/v1/command/graph")).openConnection();
       c.setRequestMethod("POST");
       c.setDoOutput(true);
       c.setRequestProperty("Authorization",

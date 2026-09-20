@@ -47,14 +47,14 @@ class RemoteGraphBatchIT extends BaseGraphServerTest {
   @BeforeEach
   public void beginTest() {
     super.beginTest();
-    final RemoteServer server = new RemoteServer("127.0.0.1", 2480, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+    final RemoteServer server = new RemoteServer("127.0.0.1", getServerHttpPort(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
     if (!server.exists(DATABASE_NAME))
       server.create(DATABASE_NAME);
   }
 
   @AfterEach
   public void endTest() {
-    final RemoteServer server = new RemoteServer("127.0.0.1", 2480, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+    final RemoteServer server = new RemoteServer("127.0.0.1", getServerHttpPort(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
     if (server.exists(DATABASE_NAME))
       server.drop(DATABASE_NAME);
     super.endTest();
@@ -62,7 +62,7 @@ class RemoteGraphBatchIT extends BaseGraphServerTest {
 
   @Test
   void batchVerticesAndEdges() {
-    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), DATABASE_NAME, "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     database.command("sql", "CREATE VERTEX TYPE Person");
@@ -97,7 +97,7 @@ class RemoteGraphBatchIT extends BaseGraphServerTest {
 
   @Test
   void batchResult() {
-    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), DATABASE_NAME, "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     database.command("sql", "CREATE VERTEX TYPE City IF NOT EXISTS");
@@ -124,7 +124,7 @@ class RemoteGraphBatchIT extends BaseGraphServerTest {
 
   @Test
   void batchVerticesOnly() {
-    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), DATABASE_NAME, "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     database.command("sql", "CREATE VERTEX TYPE Product IF NOT EXISTS");
@@ -144,7 +144,7 @@ class RemoteGraphBatchIT extends BaseGraphServerTest {
 
   @Test
   void batchWithBuilderOptions() {
-    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), DATABASE_NAME, "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     database.command("sql", "CREATE VERTEX TYPE Node IF NOT EXISTS");
@@ -172,7 +172,7 @@ class RemoteGraphBatchIT extends BaseGraphServerTest {
 
   @Test
   void emptyBatch() {
-    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), DATABASE_NAME, "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     final RemoteGraphBatch batch = database.batch().build();
@@ -187,7 +187,7 @@ class RemoteGraphBatchIT extends BaseGraphServerTest {
 
   @Test
   void batchWithSpecialCharacters() {
-    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), DATABASE_NAME, "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     database.command("sql", "CREATE VERTEX TYPE Article IF NOT EXISTS");
@@ -207,7 +207,7 @@ class RemoteGraphBatchIT extends BaseGraphServerTest {
 
   @Test
   void autoFlushVertices() {
-    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), DATABASE_NAME, "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     database.command("sql", "CREATE VERTEX TYPE Item IF NOT EXISTS");
@@ -230,7 +230,7 @@ class RemoteGraphBatchIT extends BaseGraphServerTest {
 
   @Test
   void autoFlushEdgesWithCrossFlushReferences() {
-    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), DATABASE_NAME, "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     database.command("sql", "CREATE VERTEX TYPE Person IF NOT EXISTS");
@@ -279,7 +279,7 @@ class RemoteGraphBatchIT extends BaseGraphServerTest {
 
   @Test
   void explicitFlush() {
-    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), DATABASE_NAME, "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     database.command("sql", "CREATE VERTEX TYPE Node IF NOT EXISTS");
@@ -305,7 +305,7 @@ class RemoteGraphBatchIT extends BaseGraphServerTest {
 
   @Test
   void autoFlushAggregatesResult() {
-    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), DATABASE_NAME, "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     database.command("sql", "CREATE VERTEX TYPE V IF NOT EXISTS");
@@ -349,7 +349,7 @@ class RemoteGraphBatchIT extends BaseGraphServerTest {
    */
   @Test
   void uniqueEdgeIndexRejectsDuplicatesSameFlush() {
-    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), DATABASE_NAME, "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     database.command("sql", "CREATE VERTEX TYPE zone");
@@ -391,7 +391,7 @@ class RemoteGraphBatchIT extends BaseGraphServerTest {
    */
   @Test
   void uniqueEdgeIndexRejectsDuplicatesAcrossFlushes() {
-    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), DATABASE_NAME, "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     database.command("sql", "CREATE VERTEX TYPE zone");
@@ -437,7 +437,7 @@ class RemoteGraphBatchIT extends BaseGraphServerTest {
    */
   @Test
   void mapAndListPropertiesRoundTrip() {
-    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), DATABASE_NAME, "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     database.command("sql", "CREATE VERTEX TYPE MapTest IF NOT EXISTS");
@@ -471,7 +471,7 @@ class RemoteGraphBatchIT extends BaseGraphServerTest {
    */
   @Test
   void floatArrayPropertyRoundTrip() {
-    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), DATABASE_NAME, "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     database.command("sql", "CREATE VERTEX TYPE Embedding IF NOT EXISTS");
@@ -501,7 +501,7 @@ class RemoteGraphBatchIT extends BaseGraphServerTest {
    */
   @Test
   void binaryPropertyRoundTrip() {
-    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), DATABASE_NAME, "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     database.command("sql", "CREATE VERTEX TYPE Blob IF NOT EXISTS");

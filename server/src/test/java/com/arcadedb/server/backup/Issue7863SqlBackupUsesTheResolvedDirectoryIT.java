@@ -180,12 +180,12 @@ class Issue7863SqlBackupUsesTheResolvedDirectoryIT extends BaseGraphServerTest {
   }
 
   private HttpResponse<String> postDatabaseCommand(final String databaseName, final String command) throws Exception {
-    return post("http://localhost:2480/api/v1/command/" + databaseName,
+    return post(getServerHttpUrl("/api/v1/command/") + databaseName,
         new JSONObject().put("language", "sql").put("command", command));
   }
 
   private HttpResponse<String> postServerCommand(final String command) throws Exception {
-    return post("http://localhost:2480/api/v1/server", new JSONObject().put("command", command));
+    return post(getServerHttpUrl("/api/v1/server"), new JSONObject().put("command", command));
   }
 
   private HttpResponse<String> post(final String url, final JSONObject payload) throws Exception {

@@ -63,11 +63,11 @@ class PrometheusEngineMetricsIT extends BaseGraphServerTest {
 
     final HttpClient client = HttpClient.newHttpClient();
     // Warm-up HTTP request so the always-on arcadedb.http.requests timer is registered before scraping.
-    client.send(HttpRequest.newBuilder().uri(URI.create("http://localhost:2480/api/v1/ready")).GET().build(),
+    client.send(HttpRequest.newBuilder().uri(URI.create(getServerHttpUrl("/api/v1/ready"))).GET().build(),
         HttpResponse.BodyHandlers.ofString());
 
     final HttpResponse<String> response = client.send(
-        HttpRequest.newBuilder().uri(URI.create("http://localhost:2480/prometheus")).GET().build(),
+        HttpRequest.newBuilder().uri(URI.create(getServerHttpUrl("/prometheus"))).GET().build(),
         HttpResponse.BodyHandlers.ofString());
 
     assertThat(response.statusCode()).isEqualTo(200);

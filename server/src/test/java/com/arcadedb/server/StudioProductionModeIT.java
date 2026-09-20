@@ -91,7 +91,7 @@ class StudioProductionModeIT extends StaticBaseServerTest {
 
   private HttpResponse<String> get(final String path) throws Exception {
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480" + path))
+        .uri(new URI(getServerHttpUrl(server, path)))
         .GET()
         .build();
     return client.send(request, BodyHandlers.ofString());

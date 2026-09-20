@@ -38,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class Issue5037BeginHandlerIT extends BaseGraphServerTest {
 
   private String beginUrl() {
-    return "http://127.0.0.1:2480/api/v1/begin/" + getDatabaseName();
+    return getServerHttpUrl("/api/v1/begin/") + getDatabaseName();
   }
 
   @Test

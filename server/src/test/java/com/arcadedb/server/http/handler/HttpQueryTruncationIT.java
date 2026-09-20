@@ -365,7 +365,7 @@ class HttpQueryTruncationIT extends BaseGraphServerTest {
   }
 
   private RemoteDatabase newRemoteDatabase() {
-    return new RemoteDatabase("127.0.0.1", 2480, getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
+    return new RemoteDatabase("127.0.0.1", getServerHttpPort(), getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
   }
 
   private JSONObject query(final JSONObject payload) throws Exception {
@@ -388,7 +388,7 @@ class HttpQueryTruncationIT extends BaseGraphServerTest {
 
   private HttpResponse<String> send(final String endpoint, final JSONObject payload) throws Exception {
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://127.0.0.1:2480/api/v1/" + endpoint + "/" + getDatabaseName()))
+        .uri(new URI(getServerHttpUrl("/api/v1/") + endpoint + "/" + getDatabaseName()))
         .POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
         .setHeader("Content-Type", "application/json")
         .setHeader("Authorization",
@@ -411,7 +411,7 @@ class HttpQueryTruncationIT extends BaseGraphServerTest {
   private HttpResponse<String> sendGet(final String command, final String limit) throws Exception {
     // The command travels as a path segment: URLEncoder emits '+' for a space, which is only a space in a
     // query string.
-    final String url = "http://127.0.0.1:2480/api/v1/query/" + getDatabaseName() + "/sql/"
+    final String url = getServerHttpUrl("/api/v1/query/") + getDatabaseName() + "/sql/"
         + URLEncoder.encode(command, StandardCharsets.UTF_8).replace("+", "%20")
         + (limit == null ? "" : "?limit=" + limit);
 

@@ -139,7 +139,7 @@ public class GrpcServerIT extends BaseGraphServerTest {
    * Helper to login via HTTP and get a token
    */
   private String loginAndGetToken(final String username, final String password) throws Exception {
-    final HttpURLConnection conn = (HttpURLConnection) new URI("http://localhost:2480/api/v1/login").toURL().openConnection();
+    final HttpURLConnection conn = (HttpURLConnection) new URI(getServerHttpUrl("/api/v1/login")).toURL().openConnection();
     conn.setRequestMethod("POST");
     conn.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString((username + ":" + password).getBytes(StandardCharsets.UTF_8)));
@@ -158,7 +158,7 @@ public class GrpcServerIT extends BaseGraphServerTest {
    * Helper to logout via HTTP to invalidate a token
    */
   private void logout(final String token) throws Exception {
-    final HttpURLConnection conn = (HttpURLConnection) new URI("http://localhost:2480/api/v1/logout").toURL().openConnection();
+    final HttpURLConnection conn = (HttpURLConnection) new URI(getServerHttpUrl("/api/v1/logout")).toURL().openConnection();
     conn.setRequestMethod("POST");
     conn.setRequestProperty("Authorization", "Bearer " + token);
     conn.getResponseCode(); // Execute request

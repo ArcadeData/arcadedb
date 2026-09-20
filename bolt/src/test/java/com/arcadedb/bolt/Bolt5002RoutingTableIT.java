@@ -65,6 +65,9 @@ class Bolt5002RoutingTableIT extends BaseRaftHATest {
   @Override
   protected String getServerAddresses() {
     // Object form so each node declares its own Bolt port (nodes share localhost, differ only by port).
+    // The HTTP port is the literal range start and MUST stay one: startServers() calls this before it has
+    // constructed any server, so there is no bound port to read yet. BaseRaftHATest.startServers() patches
+    // the addresses with the ports each server actually bound once they are up.
     final StringBuilder sb = new StringBuilder();
     for (int i = 0; i < getServerCount(); i++) {
       if (i > 0)

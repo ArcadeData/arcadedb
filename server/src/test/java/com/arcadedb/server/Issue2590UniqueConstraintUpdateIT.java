@@ -48,7 +48,7 @@ class Issue2590UniqueConstraintUpdateIT extends BaseGraphServerTest {
   @Test
   void uniqueIndexOnUpdate() {
 
-    try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, "graph", "root",
+    try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), "graph", "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
 
       database.command("sqlscript", """
@@ -89,7 +89,7 @@ class Issue2590UniqueConstraintUpdateIT extends BaseGraphServerTest {
    */
   @Test
   void remoteDatabaseUniqueConstraintViolationOnUpdate() throws Exception {
-    try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, "graph", "root",
+    try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), "graph", "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
 
       // Create vertex type with unique field
@@ -157,7 +157,7 @@ class Issue2590UniqueConstraintUpdateIT extends BaseGraphServerTest {
    */
   @Test
   void remoteDatabaseUniqueConstraintWithIntegerType() throws Exception {
-    try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, "graph", "root",
+    try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), "graph", "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
 
       // Create vertex type with unique integer field
@@ -212,7 +212,7 @@ class Issue2590UniqueConstraintUpdateIT extends BaseGraphServerTest {
    */
   @Test
   void remoteDatabaseUpdateMultipleFieldsWithUniqueConstraint() throws Exception {
-    try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, "graph", "root",
+    try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), "graph", "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
 
       // Create vertex type with unique field
@@ -280,7 +280,7 @@ class Issue2590UniqueConstraintUpdateIT extends BaseGraphServerTest {
    */
   @Test
   void remoteDatabaseValidUpdateToUniqueNonDuplicateValue() throws Exception {
-    try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, "graph", "root",
+    try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), "graph", "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
 
       // Create vertex type with unique field
@@ -340,7 +340,7 @@ class Issue2590UniqueConstraintUpdateIT extends BaseGraphServerTest {
    */
   @Test
   void remoteDatabaseSwapUniqueValuesBetweenRecords() throws Exception {
-    try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, "graph", "root",
+    try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), "graph", "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
 
       // Create vertex type with unique field
@@ -364,7 +364,7 @@ class Issue2590UniqueConstraintUpdateIT extends BaseGraphServerTest {
    */
   @Test
   void remoteDatabaseParameterizedUpdateWithUniqueConstraint() throws Exception {
-    try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, "graph", "root",
+    try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), "graph", "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
 
       // Create vertex type with unique field
@@ -393,7 +393,7 @@ class Issue2590UniqueConstraintUpdateIT extends BaseGraphServerTest {
    */
   @Test
   void remoteDatabaseConcurrentUpdateWithUniqueConstraint() throws Exception {
-    try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, "graph", "root",
+    try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), "graph", "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
 
       // Create vertex type with unique field
