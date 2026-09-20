@@ -154,23 +154,20 @@ public class LocalSchema implements Schema {
 
   final               IndexFactory                           indexFactory                  = new IndexFactory();
   /**
-   * The logical schema graph. A REFERENCE and no longer a fixed map, because a load publishes a whole new graph at
-   * one instant rather than tearing this one down and refilling it in place (issue #7961).
-   * <p>
-   * Read through {@link #typeMap()} by everything that can run while a load is in flight - which includes the load
-   * itself, and {@link LocalDocumentType}/{@link TypeBuilder}, whose writes reach the graph the schema rebuild is
-   * assembling rather than the one still being served.
-   */
-  /**
    * The published schema state: the logical type graph and the two bucket-id maps derived from it, in ONE
-   * immutable holder behind ONE volatile field (PR #8001 review).
+   * immutable holder behind ONE volatile field (issue #7961, then PR #8001's review).
    * <p>
-   * The three used to be separate fields assigned one after another, which left two problems a reader could hit.
-   * A reader could see the new graph through {@code getType()} while {@code getTypeByBucketId()} still answered
-   * from the previous maps - two generations in one query - and the maps were plain fields, so the contents of the
-   * {@code HashMap}s a load built were not safely published at all. One volatile write of one holder settles both:
-   * a reader sees all three of the previous generation or all three of the new one, and everything reachable from
-   * the holder is published with it.
+   * A REFERENCE and not a fixed map, because a load publishes a whole new graph at one instant rather than tearing
+   * this one down and refilling it in place. And one holder rather than three fields, because three assigned one
+   * after another left two problems a reader could hit: it could see the new graph through {@code getType()} while
+   * {@code getTypeByBucketId()} still answered from the previous maps - two generations in one query - and the
+   * maps were plain fields, so the contents of the {@code HashMap}s a load built were not safely published at all.
+   * One volatile write of one holder settles both: a reader sees all three of the previous generation or all three
+   * of the new one, and everything reachable from the holder is published with it.
+   * <p>
+   * The graph inside is read through {@link #typeMap()} by everything that can run while a load is in flight -
+   * which includes the load itself, and {@link LocalDocumentType}/{@link TypeBuilder}, whose writes reach the graph
+   * the rebuild is assembling rather than the one still being served.
    */
   private volatile    SchemaState                            published                     = SchemaState.empty();
 
@@ -670,7 +667,6 @@ public class LocalSchema implements Schema {
     supersededTypes = null;
     stagingThread.set(null);
   }
-
 
   /**
    * The index registered under {@code name} AS THIS THREAD SEES IT: a load in flight sees what it has staged, every
