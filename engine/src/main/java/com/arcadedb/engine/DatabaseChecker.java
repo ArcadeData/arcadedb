@@ -1586,6 +1586,13 @@ public class DatabaseChecker {
    * {@link #check()}, before a record is read: a type with no {@code MANDATORY}/{@code NOTNULL} property is not in
    * it, contributes no step to the plan, and costs nothing. A database with none runs no pass at all.
    * <p>
+   * What it is NOT free for, stated plainly: a type that DOES declare one is read and deserialised twice in the same
+   * run, because {@link #checkDocuments} and {@code GraphDatabaseChecker}'s vertex and edge arms have already walked
+   * every one of those records. Issue #7981 covers folding the question into those scans so the report-only run -
+   * the routine one - stops paying for the extra walk. It is not folded in here because the question would then be
+   * asked from two classes, and because the REPAIR cannot ride those scans anyway: the bounded delete passes below
+   * need a scan they own.
+   * <p>
    * <b>A finding is NOT corruption</b> and is deliberately kept out of {@code corruptedRecords}: that set feeds
    * {@code affectedBuckets}, so filing it there would drop and rebuild every index on the record's bucket for a
    * record that reads, deserialises and indexes correctly.
@@ -1672,6 +1679,11 @@ public class DatabaseChecker {
                 if (report)
                   addConstraintViolation(rid, violation);
                 if (fix && deleteInvalidRecords)
+                  // The return value is deliberately ignored, and the invariant that makes that safe is worth
+                  // stating because it is not local: a position this pass has no room for is a record this pass
+                  // therefore never deletes, so it is still in the bucket for the NEXT pass to find - which is
+                  // exactly what the loop below goes round for. Turning this into an early exit, or into a "could
+                  // not queue" warning, would break that.
                   toDelete.add(rid.getPosition());
                 // ONE finding per record, like the write path: a record missing two mandatory properties is one
                 // incomplete record, not two, and the repair for it is the same either way.

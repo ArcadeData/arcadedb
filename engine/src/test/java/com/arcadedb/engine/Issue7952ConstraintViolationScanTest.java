@@ -323,6 +323,51 @@ class Issue7952ConstraintViolationScanTest extends TestHelper {
   }
 
   /**
+   * The other half of re-validating against the LIVE type (PR review): the record is unchanged, but the constraint
+   * it violated is gone by the time the repair reaches it, so there is nothing left to condemn it for and it must
+   * survive. Re-reading the constrained properties from the array the scan was planned with would delete it.
+   * <p>
+   * Same hook as the concurrent-completion test and for the same reason - an {@code AfterRecordReadListener} fires
+   * on the re-validation's {@code lookupByRID} and not on the bucket scan - except that here the listener changes
+   * the SCHEMA and hands the record back untouched.
+   */
+  @Test
+  void aRecordWhoseConstraintIsDroppedBeforeTheRepairReachesItIsLeftAlone() {
+    createConstrainedDocumentType();
+
+    final RID provisional = leaveProvisionalRecord("Record", 1);
+
+    final AtomicBoolean dropped = new AtomicBoolean();
+    final AfterRecordReadListener dropTheConstraint = record -> {
+      if (provisional.equals(record.getIdentity()) && dropped.compareAndSet(false, true))
+        database.getSchema().getType("Record").getProperty("orgId").setMandatory(false);
+      return record;
+    };
+    final BeforeRecordDeleteListener tripwire = record -> {
+      if (provisional.equals(record.getIdentity()))
+        fail("the repair must not delete a record whose type no longer constrains the missing property");
+      return true;
+    };
+
+    database.getSchema().getType("Record").getEvents().registerListener(dropTheConstraint)
+        .registerListener(tripwire);
+    try {
+      final Map<String, Object> result = new DatabaseChecker(db()).setFix(true).setDeleteInvalidRecords(true)
+          .setVerboseLevel(0).check();
+
+      assertThat(dropped.get()).as("the re-read really did happen - otherwise this test proves nothing").isTrue();
+      assertThat((Long) result.get("totalConstraintViolations")).as("the scan still found it").isEqualTo(1L);
+      assertThat((Long) result.get("totalDeletedConstraintViolatingRecords")).isZero();
+      assertThat(database.countType("Record", false)).as("but nothing removed it").isEqualTo(1);
+      assertThat((Collection<String>) result.get("warnings"))
+          .anyMatch(w -> w.contains(provisional.toString()) && w.contains("left in place"));
+    } finally {
+      database.getSchema().getType("Record").getEvents().unregisterListener(dropTheConstraint)
+          .unregisterListener(tripwire);
+    }
+  }
+
+  /**
    * A {@code beforeDelete} listener can refuse a delete, and {@code LocalDatabase.deleteRecord} reports that by
    * returning without deleting rather than by throwing. The report must not claim a record is gone that a trigger
    * deliberately kept.
