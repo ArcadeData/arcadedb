@@ -231,6 +231,57 @@ class Issue7213SchemaLoadPublicationBarrierTest extends TestHelper {
   }
 
   /**
+   * A second load arriving while one is staging must be refused, and the refusal must cost the schema nothing.
+   * Racing two threads into {@code beginStagedPublication()} would test the refusal only by luck, so this pins it
+   * the deterministic way: hold the first load inside its hook pass, then try the second from the test thread and
+   * look at what the refusal left behind. The "left behind" half is the point - a refusal that had already run
+   * {@code load()}'s clears would have emptied the live schema for the load still legitimately in flight.
+   */
+  @Test
+  @Timeout(value = 2, unit = TimeUnit.MINUTES)
+  void aSecondLoadIsRefusedWhileOneIsStagingAndCostsTheSchemaNothing() throws Exception {
+    final LocalSchema schema = schema();
+    final String blockingBucketName = firstBucketNameOf(schema);
+    final Index indexBefore = schema.getIndexByName(INDEX_NAME);
+
+    final BlockingHook hook = installBlockingBucket(schema, blockingBucketName);
+    final AtomicReference<Throwable> loadFailure = new AtomicReference<>();
+    final Thread loader = new Thread(() -> {
+      try {
+        schema.load(ComponentFile.MODE.READ_WRITE, true);
+      } catch (final Throwable t) {
+        loadFailure.set(t);
+      }
+    }, "issue7213-first-load");
+
+    try {
+      loader.start();
+      assertThat(hook.entered.await(60, TimeUnit.SECONDS)).isTrue();
+
+      assertThatThrownBy(() -> schema.loadIncremental(ComponentFile.MODE.READ_WRITE, Set.of(), Set.of()))
+          .as("an incremental refresh cannot start while a full load is staging")
+          .isInstanceOf(IllegalStateException.class)
+          .hasMessageContaining("already in flight");
+
+      assertThatThrownBy(() -> schema.load(ComponentFile.MODE.READ_WRITE, true))
+          .as("neither can a second full load")
+          .isInstanceOf(IllegalStateException.class)
+          .hasMessageContaining("already in flight");
+    } finally {
+      hook.release.countDown();
+      loader.join(TimeUnit.MINUTES.toMillis(1));
+      restoreRealBuckets(schema);
+    }
+
+    // The refused loads must not have touched anything the first one was in the middle of rebuilding.
+    assertThat(loadFailure.get()).as("the refusals must not have broken the load that owned the window").isNull();
+    assertThat(schema.existsIndex(INDEX_NAME)).isTrue();
+    assertThat(schema.getIndexByName(INDEX_NAME)).isNotSameAs(indexBefore);
+    assertThat(schema.existsBucket(blockingBucketName)).isTrue();
+    assertThat(neighbors()).containsExactly("a");
+  }
+
+  /**
    * The {@code finally} on both load paths is a guarantee, not an implementation detail: a load that dies inside the
    * hook pass must leave the staging window closed, or the next load refuses to start and the database never comes
    * back. Nothing else in the suite kills a load between {@code beginStagedPublication()} and its commit.

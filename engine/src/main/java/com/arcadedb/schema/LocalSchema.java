@@ -82,6 +82,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 
 /**
@@ -205,21 +206,22 @@ public class LocalSchema implements Schema {
    * resolve its staged components first, so the schema rebuild resolves the components it has just built exactly as
    * it did when they went into the live maps directly. Every by-name accessor on this class goes through those two.
    */
-  // Concurrent rather than plain maps although only one thread at a time uses them: SUCCESSIVE loads run on
-  // different threads (a database open, then the Ratis apply thread on a follower), and nothing orders the clear
-  // beginStagedPublication() does against the clear the previous load's endStagedPublication() did - that write
-  // happens before `stagingThread = null`, which the next load never reads before clearing. A plain HashMap would
-  // make that a data race on the map's own internals for no gain: these maps are touched once per component of one
-  // load, which is not a path where the difference is measurable.
-  private final       Map<String, IndexInternal>             stagedIndexMap                = new ConcurrentHashMap<>();
-  private final       Map<String, LocalBucket>               stagedBucketMap               = new ConcurrentHashMap<>();
+  // Plain maps, and safely so although SUCCESSIVE loads run on different threads (a database open, then the Ratis
+  // apply thread on a follower): the only writes to them happen between a successful compareAndSet on
+  // stagingThread and the set(null) that releases it, so the release/acquire pair on that AtomicReference orders
+  // one load's last write before the next load's first read. Nothing outside that window touches them - every
+  // accessor reaches them only after isStagingPublication() has answered true, which only the owning thread gets.
+  private final       Map<String, IndexInternal>             stagedIndexMap                = new HashMap<>();
+  private final       Map<String, LocalBucket>               stagedBucketMap               = new HashMap<>();
 
   /**
    * The thread whose load owns {@link #stagedIndexMap}/{@link #stagedBucketMap}, or {@code null} when nothing is
-   * staging. Volatile because threads other than the loading one test it: every staged-aware lookup does, and the
-   * external-bucket restore in {@link LocalDocumentType} reaches one of them from DDL threads too.
+   * staging. Read by threads other than the loading one - every staged-aware lookup tests it, and the
+   * external-bucket restore in {@link LocalDocumentType} reaches one from DDL threads too - and claimed with a
+   * {@code compareAndSet} rather than a plain write, so two loads arriving at the same instant cannot both decide
+   * the window is free.
    */
-  private volatile    Thread                                 stagingThread;
+  private final       AtomicReference<Thread>                stagingThread                 = new AtomicReference<>();
   protected final     Map<String, Trigger>                   triggers                      = new HashMap<>();
   protected final     Map<String, MaterializedViewImpl>     materializedViews             = new LinkedHashMap<>();
   protected final     Map<String, ContinuousAggregateImpl> continuousAggregates          = new LinkedHashMap<>();
@@ -322,17 +324,21 @@ public class LocalSchema implements Schema {
   }
 
   public void load(final ComponentFile.MODE mode, final boolean initialize) throws IOException {
-    files.clear();
-    types.clear();
-    bucketMap.clear();
-    indexMap.clear();
-    dictionary = null;
-
-    // Nothing this rebuild instantiates reaches the by-name lookup maps until every schema hook below has run
-    // (issue #7213). The clears above stay where they are: a full rebuild drops every component instance, so the
-    // previous generation cannot be kept alive as a stand-in the way loadIncremental keeps its untouched ones.
+    // Claim the staging window FIRST, before a single field is cleared. beginStagedPublication() refuses a load
+    // that overlaps another, and a refusal has to leave the schema exactly as it found it: clearing first would
+    // mean a refused load empties the live schema for everyone, including the load legitimately in flight on the
+    // other thread - a worse outcome than the one the refusal exists to prevent.
     beginStagedPublication();
     try {
+      files.clear();
+      types.clear();
+      bucketMap.clear();
+      indexMap.clear();
+      dictionary = null;
+
+      // Nothing this rebuild instantiates reaches the by-name lookup maps until every schema hook below has run
+      // (issue #7213). The clears stay: a full rebuild drops every component instance, so the previous generation
+      // cannot be kept alive as a stand-in the way loadIncremental keeps its untouched ones.
       SortedIndexBuildRecoveryMarker.recoverInterruptedBuilds(database, mode);
 
       final Collection<ComponentFile> filesToOpen = database.getFileManager().getFiles();
@@ -438,7 +444,7 @@ public class LocalSchema implements Schema {
    * reachable only by the load that built it.
    */
   private boolean isStagingPublication() {
-    return stagingThread == Thread.currentThread();
+    return stagingThread.get() == Thread.currentThread();
   }
 
   /**
@@ -463,15 +469,17 @@ public class LocalSchema implements Schema {
     // is not a new restriction; it is the first place that says so out loud rather than leaving the next caller to
     // find out from a schema that lost half its indexes.
     final Thread current = Thread.currentThread();
-    final Thread other = stagingThread;
-    if (other != null)
+    if (!stagingThread.compareAndSet(null, current)) {
+      // compareAndSet and not "read, test, write": the whole point is to refuse a load that arrives at the same
+      // instant as another, and a check-then-act on a volatile field lets both of them pass the check.
+      final Thread other = stagingThread.get();
       throw new IllegalStateException(
-          "A schema load is already in flight on thread '" + other.getName() + "'"
+          "A schema load is already in flight on thread '" + (other != null ? other.getName() : "?") + "'"
               + (other == current ? " (this one)" : "") + ": loads of the same schema cannot overlap");
+    }
 
     stagedIndexMap.clear();
     stagedBucketMap.clear();
-    stagingThread = current;
   }
 
   /**
@@ -500,7 +508,7 @@ public class LocalSchema implements Schema {
 
     stagedIndexMap.clear();
     stagedBucketMap.clear();
-    stagingThread = null;
+    stagingThread.set(null);
   }
 
   /**
