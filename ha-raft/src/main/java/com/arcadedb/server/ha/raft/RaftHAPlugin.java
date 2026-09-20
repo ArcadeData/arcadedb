@@ -574,6 +574,12 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   }
 
   @Override
+  public String getCriticalHaltReason() {
+    final RaftHAServer s = raftHAServer;
+    return s != null ? s.getCriticalHaltReason() : null;
+  }
+
+  @Override
   public String getClusterToken() {
     return raftHAServer != null ? raftHAServer.getClusterToken() : null;
   }

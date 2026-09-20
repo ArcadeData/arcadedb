@@ -179,6 +179,36 @@ public interface HAServerPlugin extends ServerPlugin {
     return null;
   }
 
+  /**
+   * Describes the critical error that halted this node's replication state machine, or {@code null} while it is
+   * still applying entries (issue #7872).
+   * <p>
+   * The terminal counterpart of {@link #getRaftLogFailure()}, and consulted for the same reason and in the same
+   * place. The Raft implementation trips this when a committed entry cannot be applied at all - an entry type
+   * written by a newer node, an un-decodable entry with no database to quarantine instead, an unexpected error
+   * around the apply - after which every later apply is refused outright. The node's data is frozen at that
+   * index and no amount of waiting moves it, so a readiness probe that answered 200 would keep a Kubernetes
+   * Service routing reads to a replica whose state machine is dead.
+   * <p>
+   * NOT behind {@code arcadedb.server.readinessRequiresHA}, for the reason {@link #getRaftLogFailure()} gives:
+   * that switch gates a node that is BEHIND, and this one is not behind, it has stopped. With the switch off the
+   * node used to answer 204 on {@code /api/v1/ready} with a dead state machine, which is a strictly worse variant
+   * of the same reporting gap rather than a deployment choice.
+   * <p>
+   * Unlike the log failure this does NOT clear: the halt trips an asynchronous {@code server.stop()}, and the
+   * recovery is that restart, not an in-place repair. It is published because that stop can fail - its only
+   * failure handling is a log line - leaving a process up, answering HTTP, with nothing machine-readable to say
+   * that it has stopped replicating.
+   * <p>
+   * Returns {@code null} when this HA implementation has no such concept - HA disabled, or a non-Raft
+   * implementation.
+   *
+   * @return a human-readable description of the halt, suitable for a readiness response body, or {@code null}
+   */
+  default String getCriticalHaltReason() {
+    return null;
+  }
+
   String getClusterName();
 
   Map<String, Object> getStats();

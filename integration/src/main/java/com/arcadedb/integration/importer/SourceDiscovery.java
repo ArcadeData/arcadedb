@@ -343,27 +343,9 @@ public class SourceDiscovery {
       } else if ("xml".equalsIgnoreCase(knownFileType)) {
         return new XMLImporterFormat();
       } else if ("graphml".equalsIgnoreCase(knownFileType)) {
-
-        try {
-          final Class<FormatImporter> clazz = (Class<FormatImporter>) Class.forName(
-              "com.arcadedb.gremlin.integration.importer.format.GraphMLImporterFormat");
-          return clazz.getConstructor().newInstance();
-        } catch (final ClassNotFoundException | InvocationTargetException | InstantiationException | IllegalAccessException |
-                       NoSuchMethodException e) {
-          LogManager.instance().log(this, Level.SEVERE, "Impossible to find importer for 'graphml' ", e);
-        }
-
+        return gremlinFormatImporter(knownFileType, "com.arcadedb.gremlin.integration.importer.format.GraphMLImporterFormat");
       } else if ("graphson".equalsIgnoreCase(knownFileType)) {
-
-        try {
-          final Class<FormatImporter> clazz = (Class<FormatImporter>) Class.forName(
-              "com.arcadedb.gremlin.integration.importer.format.GraphSONImporterFormat");
-          return clazz.getConstructor().newInstance();
-        } catch (final ClassNotFoundException | InvocationTargetException | InstantiationException | IllegalAccessException |
-                       NoSuchMethodException e) {
-          LogManager.instance().log(this, Level.SEVERE, "Impossible to find importer for 'graphson' ", e);
-        }
-
+        return gremlinFormatImporter(knownFileType, "com.arcadedb.gremlin.integration.importer.format.GraphSONImporterFormat");
       } else {
         LogManager.instance()
             .log(this, Level.WARNING, "File type '%s' is not supported. Trying to understand file type...", knownFileType);
@@ -380,6 +362,35 @@ public class SourceDiscovery {
       return format;
 
     return analyzeText(parser, settings, logger, userDelimiter);
+  }
+
+  /**
+   * The importer for a file type the optional {@code arcadedb-gremlin} module supplies, resolved by name because
+   * {@code arcadedb-integration} deliberately does not depend on it.
+   * <p>
+   * A failed lookup THROWS. It used to log {@code SEVERE} and fall out of the known-file-type chain into the generic
+   * content sniffer below, which is written for an UNKNOWN type - its own message says so - and for a {@code .graphml}
+   * source answered "XML". {@code XMLImporterFormat} then imported the GraphML container as ONE ordinary record and
+   * {@code Importer.load()} RETURNED NORMALLY with {@code createdVertices=1}: the CLI exited 0 and
+   * {@code IMPORT DATABASE} answered 200 while the two nodes and the edge the file described were gone, the only
+   * trace being a log line nobody reads after a command that just said it worked (issue #7781). A known file type
+   * whose handler is absent is not a candidate for sniffing - it is a refusal, and one that has to name the module
+   * that supplies the handler, because "Error on parsing source" sent the operator to look at their file.
+   */
+  @SuppressWarnings("unchecked")
+  private static FormatImporter gremlinFormatImporter(final String fileType, final String className) {
+    try {
+      final Class<FormatImporter> clazz = (Class<FormatImporter>) Class.forName(className);
+      return clazz.getConstructor().newInstance();
+    } catch (final ClassNotFoundException | InvocationTargetException | InstantiationException | IllegalAccessException |
+                   NoSuchMethodException | ClassCastException e) {
+      // ClassCastException too: the cast above is unchecked, so a class that RESOLVES but is not a FormatImporter -
+      // a gremlin module whose version does not match this one - would otherwise escape as a raw cast failure naming
+      // neither the format nor the module, which is the exact shape of failure this method exists to replace.
+      throw new ImportException(
+          "Cannot import a '" + fileType + "' source: its importer is provided by the optional arcadedb-gremlin module, "
+              + "which is not available on this classpath", e);
+    }
   }
 
   /**

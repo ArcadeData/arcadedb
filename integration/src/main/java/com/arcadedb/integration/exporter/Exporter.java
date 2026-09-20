@@ -24,11 +24,9 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.integration.exporter.format.AbstractExporterFormat;
 import com.arcadedb.integration.exporter.format.JsonlExporterFormat;
 import com.arcadedb.integration.importer.ConsoleLogger;
-import com.arcadedb.log.LogManager;
 
 import java.lang.reflect.InvocationTargetException;
 import java.util.*;
-import java.util.logging.Level;
 
 public class Exporter {
   protected ExporterSettings       settings           = new ExporterSettings();
@@ -214,32 +212,41 @@ public class Exporter {
     case JsonlExporterFormat.NAME:
       return new JsonlExporterFormat(database, settings, context, logger);
 
-    case "graphml": {
-      try {
-        final Class<AbstractExporterFormat> clazz = (Class<AbstractExporterFormat>) Class.forName(
-            "com.arcadedb.gremlin.integration.exporter.format.GraphMLExporterFormat");
-        return clazz.getConstructor(DatabaseInternal.class, ExporterSettings.class, ExporterContext.class, ConsoleLogger.class)
-            .newInstance(database, settings, context, logger);
-      } catch (final InstantiationException | IllegalAccessException | InvocationTargetException | NoSuchMethodException |
-                     ClassNotFoundException e) {
-        LogManager.instance().log(this, Level.SEVERE, "Impossible to find exporter for 'graphml' ", e);
-      }
-    }
+    case "graphml":
+      return gremlinExporterFormat("graphml", "com.arcadedb.gremlin.integration.exporter.format.GraphMLExporterFormat");
 
-    case "graphson": {
-      try {
-        final Class<AbstractExporterFormat> clazz = (Class<AbstractExporterFormat>) Class.forName(
-            "com.arcadedb.gremlin.integration.exporter.format.GraphSONExporterFormat");
-        return clazz.getConstructor(DatabaseInternal.class, ExporterSettings.class, ExporterContext.class, ConsoleLogger.class)
-            .newInstance(database, settings, context, logger);
-      } catch (final InstantiationException | IllegalAccessException | InvocationTargetException | NoSuchMethodException |
-                     ClassNotFoundException e) {
-        LogManager.instance().log(this, Level.SEVERE, "Impossible to find exporter for 'graphson' ", e);
-      }
-    }
+    case "graphson":
+      return gremlinExporterFormat("graphson", "com.arcadedb.gremlin.integration.exporter.format.GraphSONExporterFormat");
 
     default:
       throw new ExportException("Format '" + settings.format + "' not supported");
+    }
+  }
+
+  /**
+   * The exporter for a format the optional {@code arcadedb-gremlin} module supplies, resolved by name because
+   * {@code arcadedb-integration} deliberately does not depend on it.
+   * <p>
+   * The mirror of {@code SourceDiscovery}'s import-side lookup, and it had the mirror defect: each {@code case}
+   * logged {@code SEVERE} and then ran off the end of its own block, so {@code case "graphml"} FELL THROUGH into
+   * {@code case "graphson"}. With the module absent both lookups fail together and only the log misleads - it
+   * reports about graphson for a graphml request - but with the module present and only {@code GraphMLExporterFormat}
+   * failing to construct, the fall-through returned a GraphSONExporterFormat and wrote a GraphSON archive into the
+   * file the operator named {@code .graphml} (issue #7781). One {@code return} per format makes that unreachable by
+   * construction, and the refusal names the format actually requested plus the module that supplies it.
+   */
+  @SuppressWarnings("unchecked")
+  private AbstractExporterFormat gremlinExporterFormat(final String format, final String className) {
+    try {
+      final Class<AbstractExporterFormat> clazz = (Class<AbstractExporterFormat>) Class.forName(className);
+      return clazz.getConstructor(DatabaseInternal.class, ExporterSettings.class, ExporterContext.class, ConsoleLogger.class)
+          .newInstance(database, settings, context, logger);
+    } catch (final InstantiationException | IllegalAccessException | InvocationTargetException | NoSuchMethodException |
+                   ClassNotFoundException | ClassCastException e) {
+      // ClassCastException too - see SourceDiscovery.gremlinFormatImporter() for why the unchecked cast needs it.
+      throw new ExportException(
+          "Cannot export in '" + format + "' format: its exporter is provided by the optional arcadedb-gremlin module, "
+              + "which is not available on this classpath", e);
     }
   }
 }

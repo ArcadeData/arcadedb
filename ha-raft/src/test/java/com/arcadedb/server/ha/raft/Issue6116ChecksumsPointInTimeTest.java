@@ -25,6 +25,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.PageSnapshot;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.utility.FileUtils;
 
 import org.junit.jupiter.api.AfterEach;
@@ -194,6 +195,49 @@ class Issue6116ChecksumsPointInTimeTest {
       assertThat(viaSnapshot.keySet()).isNotEmpty().isEqualTo(viaSuspension.keySet());
       for (final String name : viaSnapshot.keySet())
         assertThat(viaSnapshot.getLong(name)).as(name).isEqualTo(viaSuspension.getLong(name));
+    } finally {
+      handler.close();
+    }
+  }
+
+  /**
+   * #7459, on the live endpoint rather than on the scan in isolation: the reachability check for the skip list.
+   * {@code SnapshotHttpHandler.computeChecksums} is what {@code GET /api/v1/ha/snapshot/{db}/checksums} and the
+   * cluster-wide {@code /api/v1/cluster/checksums} comparison call, and it has TWO branches - the point-in-time
+   * window and the suspend-and-freeze fallback. Both reach the same directory scan, so both are driven here with
+   * real scratch names sitting in a real database directory.
+   * <p>
+   * {@code operator-notes.txt} is the control: a file the scan has no business skipping. Without it this test would
+   * still pass against a scan that skipped everything.
+   */
+  @Test
+  void neitherPathChecksumsTheScratchFilesLeftInTheDatabaseDirectory() throws Exception {
+    final SnapshotHttpHandler handler = new SnapshotHttpHandler(null);
+    try (final Database database = createDatabase()) {
+      final DatabaseInternal db = (DatabaseInternal) database;
+      final File dbDir = new File(db.getDatabasePath());
+
+      Files.writeString(new File(dbDir, "schema.json.1234567890.tmp").toPath(), "{}");
+      Files.writeString(new File(dbDir, "weather_shard_0.ts.sealed.tmp").toPath(), "sealed");
+      Files.writeString(new File(dbDir, "weather_shard_0.ts.sealed.incoming").toPath(), "half an install");
+      Files.writeString(new File(dbDir, "weather_shard_1.ts.sealed.parts").toPath(), "three slices of seven");
+      Files.writeString(new File(dbDir, ArcadeDBServer.SNAPSHOT_PENDING_FILE).toPath(), "");
+      Files.writeString(new File(dbDir, "operator-notes.txt").toPath(), "not scratch, and not a page file");
+
+      GlobalConfiguration.PAGE_SNAPSHOT_ENABLED.setValue(true);
+      final JSONObject viaSnapshot = handler.computeChecksums(db);
+
+      GlobalConfiguration.PAGE_SNAPSHOT_ENABLED.setValue(false);
+      final JSONObject viaSuspension = handler.computeChecksums(db);
+
+      for (final JSONObject answer : new JSONObject[] { viaSnapshot, viaSuspension }) {
+        assertThat(answer.keySet()).as("the control proves the scan is still reading the directory")
+            .contains("operator-notes.txt");
+        assertThat(answer.keySet()).as("no node-local scratch file may be reported to a peer")
+            .doesNotContain("schema.json.1234567890.tmp", "weather_shard_0.ts.sealed.tmp",
+                "weather_shard_0.ts.sealed.incoming", "weather_shard_1.ts.sealed.parts",
+                ArcadeDBServer.SNAPSHOT_PENDING_FILE);
+      }
     } finally {
       handler.close();
     }

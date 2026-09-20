@@ -398,6 +398,17 @@ public class ServerControlPlane {
     if (logFailure != null)
       return "Replication log writer has failed on this node: " + logFailure;
 
+    // Its own branch, and outside the gate, for the same reason and one more (issue #7872). The halt used to be
+    // reported through the generic getReadinessSignal() branch below, so an operator was told the node "has not
+    // caught up" when it had stopped applying permanently and would never catch up - the one wording that points
+    // at waiting, which is the one thing that cannot work here. And because it was reported only through that
+    // branch, it was reported only when readinessRequiresHA was on; with the gate off the node answered 204 with
+    // a dead state machine, which is a worse variant of the same gap rather than a deployment choice.
+    final String criticalHalt = haCriticalHalt();
+    if (criticalHalt != null)
+      return "Replication state machine has halted after a critical error on this node " + criticalHalt
+          + ". It applies no further entries and does not recover in place: restart this node.";
+
     // Checked here for the same reason and on the same terms as the log failure above (issue #7519): the
     // readinessRequiresHA gate below is about a node that is BEHIND the cluster, and this node is not behind -
     // its database directory is being replaced under it from the cluster's bootstrap baseline, or it is
@@ -557,6 +568,27 @@ public class ServerControlPlane {
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING,
           "Cannot read the HA bootstrap-window signal for the readiness probe", e);
+      return null;
+    }
+  }
+
+  /**
+   * The HA layer's critical-halt description, or {@code null} when there is none to report - including when there
+   * is no HA layer at all (issue #7872). Reads {@link HAServerPlugin#getCriticalHaltReason()}.
+   * <p>
+   * Same shape and same defensiveness as {@link #haRaftLogFailure()} above, deliberately: both answer "has this
+   * node's replication stopped for good", both are consulted outside the {@code readinessRequiresHA} gate, and a
+   * probe that propagated an exception would be answered with a 500 the orchestrator reads as "unknown" rather
+   * than as the NOT READY the failing node deserves.
+   */
+  private String haCriticalHalt() {
+    final HAServerPlugin ha = server.getHA();
+    if (ha == null)
+      return null;
+    try {
+      return ha.getCriticalHaltReason();
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "Cannot read the HA critical-halt signal for the readiness probe", e);
       return null;
     }
   }

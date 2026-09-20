@@ -1546,6 +1546,26 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * One-line description of the critical halt for {@code RaftHAPlugin.getCriticalHaltReason()}, which is what the
+   * readiness probe reads (issue #7872). {@code null} while the state machine is applying entries.
+   */
+  public String getCriticalHaltReason() {
+    final ArcadeStateMachine.CriticalHalt halt = getCriticalHalt();
+    return halt != null ? halt.describe() : null;
+  }
+
+  /**
+   * The critical halt itself rather than its one-line description (issue #7872): {@code GetClusterHandler} and
+   * {@code ClusterAlerts} publish the index and the timestamp separately, which is what tells an operator whether
+   * the answer is "upgrade this node" or "file a bug". {@code null} while the state machine is applying, and
+   * before HA has started.
+   */
+  public ArcadeStateMachine.CriticalHalt getCriticalHalt() {
+    final ArcadeStateMachine sm = stateMachine;
+    return sm != null ? sm.getCriticalHalt() : null;
+  }
+
+  /**
    * {@inheritDoc}
    * <p>
    * "Enough" is two log segments ({@code arcadedb.ha.logSegmentSize}): Ratis rolls the open segment and

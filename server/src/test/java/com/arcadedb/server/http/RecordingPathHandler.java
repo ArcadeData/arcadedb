@@ -21,7 +21,9 @@ package com.arcadedb.server.http;
 import io.undertow.server.HttpHandler;
 import io.undertow.server.handlers.PathHandler;
 
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -30,24 +32,33 @@ import java.util.Set;
  * routes compared against the paths declared for it in the OpenAPI spec (issue #4896's
  * per-plugin-module anti-drift check). Behaves identically to a plain {@code PathHandler} as a
  * router; recording is a side effect only.
+ * <p>
+ * The handler INSTANCES are recorded alongside the paths (issue #7861), so a test can also ask a question of the
+ * handlers themselves - "does every route that blocks dispatch off the Undertow IO thread" - against the real
+ * inventory {@code registerAPI} installs rather than a list somebody maintains by hand and forgets.
  */
 public class RecordingPathHandler extends PathHandler {
 
-  private final Set<String> registeredPaths = new LinkedHashSet<>();
+  private final Map<String, HttpHandler> registered = new LinkedHashMap<>();
 
   @Override
   public synchronized PathHandler addExactPath(final String path, final HttpHandler handler) {
-    registeredPaths.add(path);
+    registered.put(path, handler);
     return super.addExactPath(path, handler);
   }
 
   @Override
   public synchronized PathHandler addPrefixPath(final String path, final HttpHandler handler) {
-    registeredPaths.add(path);
+    registered.put(path, handler);
     return super.addPrefixPath(path, handler);
   }
 
   public synchronized Set<String> getRegisteredPaths() {
-    return Set.copyOf(registeredPaths);
+    return new LinkedHashSet<>(registered.keySet());
+  }
+
+  /** Every registered route's handler, keyed by the path it was registered at, in registration order. */
+  public synchronized Map<String, HttpHandler> getRegisteredHandlers() {
+    return new LinkedHashMap<>(registered);
   }
 }
