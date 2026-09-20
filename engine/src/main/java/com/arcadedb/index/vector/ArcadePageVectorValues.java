@@ -22,6 +22,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
 import io.github.jbellis.jvector.graph.ImmutableGraphIndex;
@@ -316,8 +317,14 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
       if (lsmIndex != null)
         lsmIndex.metrics.incrementVectorFetchFromDocuments();
 
-      // Cache the result if caching is enabled
-      if (vectorCache != null)
+      // Cache the result if caching is enabled - unless what was just read is the calling transaction's own
+      // uncommitted write (issue #7974). The cache is scoped to the INDEX and outlives the transaction, so a value
+      // that a rollback is still free to take back must not be published into it: the record reverts, the cache
+      // does not, and every later search on this index then scores that row by an embedding the database does not
+      // hold, until the database is closed. The search that read it still gets the value it read - the
+      // transaction's own view of its own write is not this method's business to withhold - it simply does not
+      // become everybody else's.
+      if (vectorCache != null && !isWrittenByCallingTransaction(rid))
         vectorCache.put(vectorId, result);
 
       return result;
@@ -331,6 +338,19 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
           "Error reading vector from document (ordinal=%d, RID=%s): %s", ordinal, rid, e.getMessage());
       return deletedSentinelVector;
     }
+  }
+
+  /**
+   * Whether the record just read is one the calling transaction has WRITTEN and not yet committed, so the value
+   * read from it is visible to this thread alone and a rollback can still take it back (issue #7974).
+   * <p>
+   * Asks for the transaction's own written copy rather than for its record cache: the cache also holds records the
+   * transaction merely READ, which are committed and perfectly cacheable. A thread with no transaction, or one
+   * whose transaction never touched this record, answers false on one null check and one map lookup.
+   */
+  private boolean isWrittenByCallingTransaction(final RID rid) {
+    final TransactionContext tx = database.getTransactionIfExists();
+    return tx != null && tx.isActive() && tx.getWrittenRecord(rid) != null;
   }
 
   /**

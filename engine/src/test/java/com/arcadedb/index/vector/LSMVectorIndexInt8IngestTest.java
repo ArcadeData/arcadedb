@@ -351,8 +351,13 @@ class LSMVectorIndexInt8IngestTest extends TestHelper {
         doc.set("embedding", quantize(generateNormalizedTestVector(DIMENSIONS, i)));
         doc.save();
       }
+    });
 
-      // Force the HNSW graph to be built and persisted before the reopen.
+    // Force the HNSW graph to be built and persisted before the reopen. OUTSIDE the transaction that wrote the
+    // rows, deliberately (issue #7974): a rebuild reads committed state only, so a search issued before the commit
+    // would build the graph over nothing - and the reason it used to build one over all 50 rows is the very
+    // defect that issue names, an uncommitted write reaching the state the index persists.
+    database.transaction(() -> {
       final TypeIndex idx = (TypeIndex) database.getSchema().getIndexByName("Doc[embedding]");
       final LSMVectorIndex lsm = (LSMVectorIndex) idx.getIndexesOnBuckets()[0];
       final List<Pair<RID, Float>> beforeReopen = lsm.findNeighborsFromVector(
