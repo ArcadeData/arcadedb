@@ -409,6 +409,17 @@ public class ServerControlPlane {
       return "Replication state machine has halted after a critical error on this node " + criticalHalt
           + ". It applies no further entries and does not recover in place: restart this node.";
 
+    // Checked here for the same reason and on the same terms as the log failure above (issue #7519): the
+    // readinessRequiresHA gate below is about a node that is BEHIND the cluster, and this node is not behind -
+    // its database directory is being replaced under it from the cluster's bootstrap baseline, or it is
+    // knowingly holding a copy that baseline did not adopt. Either way what it would serve is not the cluster's
+    // data, on any protocol, and only the tail of the first case (the file swap) is deflected today, and only
+    // on HTTP. Placed AFTER the log failure because a wedged log writer is the more fundamental report: a node
+    // in both states cannot finish the bootstrap install either.
+    final String bootstrapWindow = haBootstrapWindow();
+    if (bootstrapWindow != null)
+      return bootstrapWindow;
+
     if (server.getConfiguration().getValueAsBoolean(GlobalConfiguration.SERVER_READINESS_REQUIRES_HA)
         && server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_ENABLED)) {
       final HAServerPlugin ha = server.getHA();
@@ -534,6 +545,29 @@ public class ServerControlPlane {
       return ha.getRaftLogFailure();
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "Cannot read the HA log-failure signal for the readiness probe", e);
+      return null;
+    }
+  }
+
+  /**
+   * The HA layer's first-formation bootstrap reason for not serving clients, or {@code null} when there is none -
+   * including when there is no HA layer at all (issue #7519). Reads
+   * {@link HAServerPlugin#getBootstrapWindowReason()}; see it for what the window is and why it is not behind
+   * {@code arcadedb.server.readinessRequiresHA}.
+   * <p>
+   * Defensive against a plugin that throws, on the same terms as {@link #haRaftLogFailure()}: a probe that
+   * propagates is answered with a 500 the orchestrator reads as "unknown" rather than as an answer, so a signal
+   * that cannot be read is treated as absent and the remaining gates decide.
+   */
+  private String haBootstrapWindow() {
+    final HAServerPlugin ha = server.getHA();
+    if (ha == null)
+      return null;
+    try {
+      return ha.getBootstrapWindowReason();
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Cannot read the HA bootstrap-window signal for the readiness probe", e);
       return null;
     }
   }
