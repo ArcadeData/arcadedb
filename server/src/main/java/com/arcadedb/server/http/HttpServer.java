@@ -181,26 +181,33 @@ public class HttpServer implements ServerPlugin {
    * <p>
    * Order is unchanged and still matters: the forwarder's client is released last, once nothing is left that
    * could ask it for a forward.
+   * <p>
+   * The guards log the throwable ({@code logException = true}) rather than the message alone, because this
+   * catch is now the last one a failure here meets: before, a throw propagated to {@code stopInternal()}, and
+   * a reader at least saw "Error on stopping HTTP service" with something to chase. {@code undertow.stop()}
+   * keeps its original silence - it was the one step already guarded, with a bare {@code // IGNORE IT}, and
+   * making an already-tolerated shutdown failure start logging at SEVERE is a separate decision from stopping
+   * it skipping the steps below.
    */
   @Override
   public void stopService() {
-    CodeUtils.executeIgnoringExceptions(webSocketEventBus::stop, "Error on stopping the WebSocket event bus", false);
+    CodeUtils.executeIgnoringExceptions(webSocketEventBus::stop, "Error on stopping the WebSocket event bus", true);
     CodeUtils.executeIgnoringExceptions(insertSessionManager::close, "Error on closing the WebSocket insert sessions",
-        false);
+        true);
 
     if (idempotencyCleanupExecutor != null) {
       CodeUtils.executeIgnoringExceptions(idempotencyCleanupExecutor::shutdown,
-          "Error on stopping the idempotency cache cleanup", false);
+          "Error on stopping the idempotency cache cleanup", true);
       idempotencyCleanupExecutor = null;
     }
 
     if (undertow != null)
-      CodeUtils.executeIgnoringExceptions(undertow::stop, "Error on stopping the HTTP listener", false);
+      CodeUtils.executeIgnoringExceptions(undertow::stop);
 
-    CodeUtils.executeIgnoringExceptions(sessionManager::close, "Error on closing the HTTP sessions", false);
-    CodeUtils.executeIgnoringExceptions(authSessionManager::close, "Error on closing the HTTP auth sessions", false);
+    CodeUtils.executeIgnoringExceptions(sessionManager::close, "Error on closing the HTTP sessions", true);
+    CodeUtils.executeIgnoringExceptions(authSessionManager::close, "Error on closing the HTTP auth sessions", true);
     CodeUtils.executeIgnoringExceptions(leaderCommandForwarder::close,
-        "Error on releasing the leader command forwarder's HTTP client", false);
+        "Error on releasing the leader command forwarder's HTTP client", true);
   }
 
   @Override
