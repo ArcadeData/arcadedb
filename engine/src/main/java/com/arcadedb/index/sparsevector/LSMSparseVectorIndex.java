@@ -93,11 +93,12 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
   private final String                       afterCommitFlushKey;
 
   /**
-   * Ceiling on the rows one grouped search may materialise, so {@code limit * groupSize} cannot be turned into an
-   * allocation by a caller that passes two large numbers. Matches the over-fetch cap the ungrouped path already
-   * applies, and the order of magnitude {@code SQLFunctionVectorSparseNeighbors} enforces before it calls in.
+   * Ceiling on the rows a search may materialise BEYOND what the caller asked for: the ungrouped path's over-fetch
+   * multiplier, and the grouped path's {@code limit * groupSize} product, neither of which may be turned into an
+   * allocation by a caller passing two large numbers. Never applied to {@code k} itself - a caller that asks for
+   * more rows than this and narrows nothing still gets them (PR #8001 review).
    */
-  private static final int MAX_GROUPED_ROWS = 100_000;
+  private static final int MAX_OVERFETCH_ROWS = 100_000;
 
   /**
    * Factory handler used by the schema to instantiate sparse vector indexes.
@@ -349,9 +350,15 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     // come back - so fetching k of them and discarding some would under-fill. Fetching k + touched cannot.
     final Set<RID> pendingRIDs = overlay != null ? overlay.touchedRIDs() : null;
     final long widened = (long) k + (overlay != null ? overlay.touchedCount() : 0);
+    // The unfiltered branch stays UNCAPPED, as it was before the overflow guard went in (PR #8001 review). The
+    // 100_000 ceiling belongs to the over-fetch: it bounds the multiplier applied to compensate for a selective
+    // filter, not the caller's own k. Capping the unfiltered branch made this method quietly return at most
+    // 100_000 rows to a caller that asked for more and would previously have got them all - a truncation with no
+    // error to notice it by. The SQL function refuses a k that large long before it reaches here, but this method
+    // is public and an embedded caller is not going through it.
     final int fetchK = allowedRIDs == null || allowedRIDs.isEmpty() ?
-        (int) Math.min(widened, 100_000) :
-        (int) Math.min(widened * 8, 100_000);
+        (int) Math.min(widened, Integer.MAX_VALUE) :
+        (int) Math.min(widened * 8, MAX_OVERFETCH_ROWS);
 
     final List<RidScore> raw;
     try {
@@ -562,7 +569,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     // the ArrayList below, which throws. The SQL function that reaches this today caps the product long before
     // that, but this method is public and an embedded caller is not going through it. Same cast the sibling code
     // already makes for the same product (LSMVectorIndex, SQLFunctionVectorNeighbors).
-    final int rowBudget = (int) Math.min((long) limit * groupSize, MAX_GROUPED_ROWS);
+    final int rowBudget = (int) Math.min((long) limit * groupSize, MAX_OVERFETCH_ROWS);
 
     final List<RidScore> merged = mergeByScore(committed,
         overlay.topK(queryIndices, effectiveWeights, allowedRIDs, rowBudget), Integer.MAX_VALUE);
