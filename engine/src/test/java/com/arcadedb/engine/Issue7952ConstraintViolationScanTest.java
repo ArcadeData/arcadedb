@@ -442,6 +442,41 @@ class Issue7952ConstraintViolationScanTest extends TestHelper {
     assertThat((Long) result.get("totalConstraintViolations")).isEqualTo(1L);
   }
 
+  /**
+   * The {@code RECORD}-scoped arm has its own delete path - its own grouping of the named records by bucket, its own
+   * {@link com.arcadedb.engine.DatabaseChecker} pending-removal lists and its own per-bucket delete loop - so it
+   * needs its own proof that it removes what it names (PR review). Two types, so the grouping really is exercised
+   * across more than one bucket, and a third record left unnamed so the scope is shown to bound the repair too.
+   */
+  @Test
+  void theRecordScopeRemovesTheRecordsItNamesAndOnlyThose() {
+    createConstrainedDocumentType();
+    final DocumentType other = database.getSchema().createDocumentType("Other");
+    other.createProperty("id", Type.INTEGER);
+    other.createProperty("orgId", Type.STRING).setMandatory(true);
+
+    final RID inRecord = leaveProvisionalRecord("Record", 1);
+    final RID inOther = leaveProvisionalRecord("Other", 2);
+    final RID notNamed = leaveProvisionalRecord("Record", 3);
+
+    assertThat(inRecord.getBucketId()).as("the two named records live in different buckets")
+        .isNotEqualTo(inOther.getBucketId());
+
+    final Map<String, Object> result = new DatabaseChecker(db()).setRecords(Set.of(inRecord, inOther))
+        .setFix(true).setDeleteInvalidRecords(true).setVerboseLevel(0).check();
+
+    assertThat((Collection<RID>) result.get("deletedConstraintViolatingRecords"))
+        .containsExactlyInAnyOrder(inRecord, inOther);
+    assertThat((Long) result.get("totalDeletedConstraintViolatingRecords")).isEqualTo(2L);
+    assertThat((Long) result.get("removedRecords")).isEqualTo(2L);
+    assertThatThrownBy(() -> db().lookupByRID(inRecord, true)).isInstanceOf(RecordNotFoundException.class);
+    assertThatThrownBy(() -> db().lookupByRID(inOther, true)).isInstanceOf(RecordNotFoundException.class);
+
+    assertThat(db().lookupByRID(notNamed, true)).as("a record the scope did not name is untouched").isNotNull();
+    assertThat(database.countType("Record", false)).isEqualTo(1);
+    assertThat(database.countType("Other", false)).isZero();
+  }
+
   /** The {@code TYPE} scope narrows the pass the same way it narrows every other one. */
   @Test
   void theTypeScopeNarrowsThePass() {
