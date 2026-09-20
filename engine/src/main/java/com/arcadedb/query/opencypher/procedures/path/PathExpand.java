@@ -171,7 +171,8 @@ public class PathExpand extends AbstractPathProcedure {
           }
         }
       } catch (final RecordNotFoundException e) {
-        // Only the outer edge.get*Vertex() above can land here; the recursion has its own per-edge catches.
+        // Only edge.getIn()/getOut() (a ghost edge record, surfaced by its lazy load) and neighborId.asVertex()
+        // (a ghost vertex) above can land here; the recursion has its own per-edge catches.
         GhostEdgeReporter.reportSkipped(e);
       }
     }

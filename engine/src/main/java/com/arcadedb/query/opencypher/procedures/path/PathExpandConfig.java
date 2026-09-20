@@ -175,10 +175,14 @@ public class PathExpandConfig extends AbstractPathProcedure {
           final RID neighborId = direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut();
 
           if (!visited.contains(neighborId) && matchesLabels(node.getDatabase(), neighborId, labelFilter)) {
+            // RESOLVED BEFORE THE RID IS MARKED VISITED: A RID MARKED VISITED BY A LOAD THAT THEN FAILED WOULD MAKE
+            // EVERY LATER EDGE TO THE SAME GHOST SHORT-CIRCUIT, SO ONLY THE FIRST ONE WOULD EVER BE REPORTED
+            final Vertex neighbor = neighborId.asVertex();
             visited.add(neighborId);
+
             final List<Object> newPath = new ArrayList<>(currentPath);
             newPath.add(edge);
-            newPath.add(neighborId.asVertex());
+            newPath.add(neighbor);
             nextFrontier.add(newPath);
           }
         } catch (final RecordNotFoundException e) {
@@ -236,7 +240,8 @@ public class PathExpandConfig extends AbstractPathProcedure {
             }
           }
         } catch (final RecordNotFoundException e) {
-          // Only the outer edge.get*Vertex() above can land here; the recursion has its own per-edge catches.
+          // Only edge.getIn()/getOut() (a ghost edge record, surfaced by its lazy load) and neighborId.asVertex()
+          // (a ghost vertex) above can land here; the recursion has its own per-edge catches.
           GhostEdgeReporter.reportSkipped(e);
         }
       }
