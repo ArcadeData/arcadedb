@@ -569,6 +569,10 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     // the ArrayList below, which throws. The SQL function that reaches this today caps the product long before
     // that, but this method is public and an embedded caller is not going through it. Same cast the sibling code
     // already makes for the same product (LSMVectorIndex, SQLFunctionVectorNeighbors).
+    // A CAPACITY HINT for the list below, and nothing more (PR #8001 review). What actually bounds the admitted
+    // rows is the GroupAdmissionState: at most limit groups of groupSize each. The cap is here so a caller passing
+    // two large numbers cannot turn their product into the allocation, not to decide what comes back - an
+    // ArrayList given a small hint grows, it does not truncate.
     final int rowBudget = (int) Math.min((long) limit * groupSize, MAX_OVERFETCH_ROWS);
 
     // EVERY pending row, not the best rowBudget of them (PR #8001 review). A global-score cut here happens BEFORE

@@ -516,6 +516,12 @@ public class TransactionIndexContext {
       }
     }
 
+    // SECOND PASS over indexEntries, and it handles only the ADDs. Every REMOVE - for a vector index as much as for
+    // any other - was already replayed through index.removeReplay() by the pass above, which is why the vector
+    // batch below can skip a RID whose last entry is a REMOVE without leaving it untombstoned: the tombstone has
+    // happened, and skipping only avoids adding it straight back (PR #8001 review asked for this to be said here
+    // rather than only at the skip itself).
+    //
     // Per dense vector index, the winning entry per RID across ALL of that index's lanes. Identity-keyed for the
     // same reason the lane map is: which index a batch belongs to is a question about the object.
     final Map<LSMVectorIndex, Map<RID, IndexKey>> vectorBatches = new IdentityHashMap<>();
