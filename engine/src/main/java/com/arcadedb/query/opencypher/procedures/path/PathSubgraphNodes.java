@@ -18,24 +18,16 @@
  */
 package com.arcadedb.query.opencypher.procedures.path;
 
-import com.arcadedb.database.RID;
-import com.arcadedb.exception.RecordNotFoundException;
-import com.arcadedb.graph.Edge;
-import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
 import com.arcadedb.utility.NumberUtils;
-import com.arcadedb.utility.RidHashSet;
 
-import java.util.ArrayDeque;
-import java.util.HashSet;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Queue;
-import java.util.Set;
 import java.util.stream.Stream;
 
 /**
@@ -96,59 +88,14 @@ public class PathSubgraphNodes extends AbstractPathProcedure {
     final String[] labelFilter = extractLabels(config.get("labelFilter"));
     final int maxLevel = config.containsKey("maxLevel") ? NumberUtils.saturateToInt((Number) config.get("maxLevel")) : Integer.MAX_VALUE;
 
-    // BFS to find all reachable nodes
-    final Set<Vertex> reachableNodes = new HashSet<>();
-    final RidHashSet visited = new RidHashSet();
-    final Queue<VertexLevel> queue = new ArrayDeque<>();
-
-    queue.add(new VertexLevel(startNode, 0));
-    visited.add(startNode.getIdentity());
-    reachableNodes.add(startNode);
-
-    while (!queue.isEmpty()) {
-      final VertexLevel current = queue.poll();
-
-      if (current.level >= maxLevel) {
-        continue;
-      }
-
-      // Expand in both directions
-      for (final Vertex.DIRECTION direction : new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN }) {
-        final Iterable<Edge> edges = relTypes != null && relTypes.length > 0
-            ? current.vertex.getEdges(direction, relTypes)
-            : current.vertex.getEdges(direction);
-
-        for (final Edge edge : edges) {
-          try {
-            final Vertex neighbor = direction == Vertex.DIRECTION.OUT ? edge.getInVertex() : edge.getOutVertex();
-            final RID neighborId = neighbor.getIdentity();
-
-            if (!visited.contains(neighborId) && matchesLabels(neighbor, labelFilter)) {
-              visited.add(neighborId);
-              reachableNodes.add(neighbor);
-              queue.add(new VertexLevel(neighbor, current.level + 1));
-            }
-          } catch (final RecordNotFoundException e) {
-            GhostEdgeReporter.reportSkipped(e);
-          }
-        }
-      }
-    }
+    // ONLY THE NODES ARE EVER YIELDED HERE, SO THE WALK NEVER MATERIALISES AN EDGE (issue #7976)
+    final List<Vertex> reachableNodes = new ArrayList<>();
+    collectReachableComponent(startNode, relTypes, labelFilter, maxLevel, reachableNodes, null);
 
     return reachableNodes.stream().map(node -> {
       final ResultInternal result = new ResultInternal();
       result.setProperty("node", node);
       return (Result) result;
     });
-  }
-
-  private static class VertexLevel {
-    final Vertex vertex;
-    final int level;
-
-    VertexLevel(final Vertex vertex, final int level) {
-      this.vertex = vertex;
-      this.level = level;
-    }
   }
 }

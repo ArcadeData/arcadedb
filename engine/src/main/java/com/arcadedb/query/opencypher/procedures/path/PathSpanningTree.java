@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.procedures.path;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
@@ -90,6 +91,7 @@ public class PathSpanningTree extends AbstractPathProcedure {
     validateArgs(args);
 
     final Vertex startNode = extractVertex(args[0], "startNode");
+    final Database database = startNode.getDatabase();
     final Map<String, Object> config = extractConfig(args[1]);
 
     final String[] relTypes = extractRelTypes(config.get("relationshipFilter"));
@@ -106,8 +108,9 @@ public class PathSpanningTree extends AbstractPathProcedure {
     queue.add(new PathLevel(initialPath, startNode, 0));
     visited.add(startNode.getIdentity());
 
-    // Add root path
-    allPaths.add(new ArrayList<>(initialPath));
+    // Add root path. A path already in allPaths is never appended to again - an expansion builds a new list from it -
+    // so the defensive copies this used to make were copies of lists nobody could mutate (issue #7976)
+    allPaths.add(initialPath);
 
     while (!queue.isEmpty()) {
       final PathLevel current = queue.poll();
@@ -124,17 +127,21 @@ public class PathSpanningTree extends AbstractPathProcedure {
 
         for (final Edge edge : edges) {
           try {
-            final Vertex neighbor = direction == Vertex.DIRECTION.OUT ? edge.getInVertex() : edge.getOutVertex();
-            final RID neighborId = neighbor.getIdentity();
+            // THE NEIGHBOUR IS IDENTIFIED BY ITS RID: A SPANNING TREE REJECTS EVERY EDGE THAT WOULD CLOSE A CYCLE, SO
+            // MOST ENTRIES NEVER NEED THE VERTEX RECORD AT ALL (issue #7976)
+            final RID neighborId = direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut();
 
-            if (!visited.contains(neighborId) && matchesLabels(neighbor, labelFilter)) {
+            if (!visited.contains(neighborId) && matchesLabels(database, neighborId, labelFilter)) {
               visited.add(neighborId);
 
-              final List<Object> newPath = new ArrayList<>(current.path);
+              final Vertex neighbor = neighborId.asVertex();
+
+              final List<Object> newPath = new ArrayList<>(current.path.size() + 2);
+              newPath.addAll(current.path);
               newPath.add(edge);
               newPath.add(neighbor);
 
-              allPaths.add(new ArrayList<>(newPath));
+              allPaths.add(newPath);
               queue.add(new PathLevel(newPath, neighbor, current.level + 1));
             }
           } catch (final RecordNotFoundException e) {
