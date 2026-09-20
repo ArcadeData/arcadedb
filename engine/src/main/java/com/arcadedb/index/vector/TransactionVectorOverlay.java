@@ -58,10 +58,10 @@ import java.util.TreeMap;
  *       replays through {@code putBatch}/{@code putReplay}. One row per RID: a transaction that saves the same
  *       record's embedding more than once queues an entry per save, and replaying them all leaves ONE live vector,
  *       because a new location for a RID tombstones the id it supersedes ({@link VectorLocationIndex}'s class
- *       javadoc: "an update tombstones the id it supersedes"). The overlay keeps the last entry of the lane for
+ *       javadoc: "an update tombstones the id it supersedes"). The overlay keeps the last such entry across this index's lanes for
  *       that reason and not as a tidy-up: contributing both would rank the record twice inside the transaction and
- *       once after the commit. "Last" is taken in the lane's own iteration order, which is the order
- *       {@code commit()} replays it in, so the survivor is the same one either way whatever order the saves
+ *       once after the commit. "Last" is taken in the lanes' own iteration order, which is the order
+ *       {@code commit()} replays them in, so the survivor is the same one either way whatever order the saves
  *       happened in.</li>
  *   <li>{@code REMOVE}, and a {@code REPLACE}'s {@code oldRid}, supersede whatever the committed index holds for
  *       that RID - the two {@code commit()} replays through {@code removeReplay}. The queued key cannot be used for
@@ -120,58 +120,62 @@ final class TransactionVectorOverlay {
     if (changes == null)
       return null;
 
-    final TreeMap<ComparableKey, Map<IndexKey, IndexKey>> lane = changes.getIndexKeys(index);
-    if (lane == null || lane.isEmpty())
+    // Every lane this index owns, in replay order. More than one is possible: a compaction that renames the index
+    // mid-transaction makes the next write open a second lane under the new name, and commit() replays both, so a
+    // reader that took only one would answer with part of this transaction's own writes missing.
+    final List<TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> lanes = changes.getIndexKeyLanes(index);
+    if (lanes.isEmpty())
       return null;
 
     // Keyed by RID so a second save of one record replaces the first rather than adding a second row; the
-    // iteration order is the lane's, which is the order commit() replays in.
+    // iteration order is the lanes' own, which is the order commit() replays them in.
     LinkedHashMap<RID, DeltaVectorEntry> pending = null;
     Set<RID> superseded = null;
 
-    for (final Map<IndexKey, IndexKey> bucket : lane.values()) {
-      for (final IndexKey entry : bucket.values()) {
-        if (entry == null || entry.rid == null)
-          continue;
+    for (final TreeMap<ComparableKey, Map<IndexKey, IndexKey>> lane : lanes)
+      for (final Map<IndexKey, IndexKey> bucket : lane.values()) {
+        for (final IndexKey entry : bucket.values()) {
+          if (entry == null || entry.rid == null)
+            continue;
 
-        if (entry.operation == IndexKeyOperation.REMOVE) {
+          if (entry.operation == IndexKeyOperation.REMOVE) {
+            if (superseded == null)
+              superseded = new HashSet<>();
+            superseded.add(entry.rid);
+            continue;
+          }
+
+          // ADD and REPLACE, the two operations commit() turns into a put. A REPLACE also retires the RID it
+          // replaced, which commit() removes separately.
+          //
+          // REPLACE cannot actually reach a dense vector index today: TransactionIndexContext.addIndexKeyLock only
+          // promotes an ADD to a REPLACE under `index.isUnique()`, and LSMVectorIndex.isUnique() returns a
+          // hard-coded false. It is handled anyway because this method's contract is to model what commit() applies,
+          // and commit()'s vector branch reads `ADD || REPLACE` - so the two stay one rule rather than two that have
+          // to be kept in step.
+          if (entry.oldRid != null) {
+            if (superseded == null)
+              superseded = new HashSet<>();
+            superseded.add(entry.oldRid);
+          }
+
+          final float[] vector = vectorOf(entry.keyValues);
+          if (vector == null)
+            // Not a vector this index can score. Nothing to contribute, and deliberately not an exception: commit
+            // replay is where a malformed queued key is diagnosed, and a search must not be the thing that fails.
+            continue;
+
+          // The committed copy of a re-embedded row must not be ranked alongside the pending one, so an ADD
+          // supersedes its own RID as well. Harmless when the row is new: there is no committed copy to suppress.
           if (superseded == null)
             superseded = new HashSet<>();
           superseded.add(entry.rid);
-          continue;
+
+          if (pending == null)
+            pending = new LinkedHashMap<>();
+          pending.put(entry.rid, new DeltaVectorEntry(PENDING_VECTOR_ID, entry.rid, vts.createFloatVector(vector)));
         }
-
-        // ADD and REPLACE, the two operations commit() turns into a put. A REPLACE also retires the RID it
-        // replaced, which commit() removes separately.
-        //
-        // REPLACE cannot actually reach a dense vector index today: TransactionIndexContext.addIndexKeyLock only
-        // promotes an ADD to a REPLACE under `index.isUnique()`, and LSMVectorIndex.isUnique() returns a
-        // hard-coded false. It is handled anyway because this method's contract is to model what commit() applies,
-        // and commit()'s vector branch reads `ADD || REPLACE` - so the two stay one rule rather than two that have
-        // to be kept in step.
-        if (entry.oldRid != null) {
-          if (superseded == null)
-            superseded = new HashSet<>();
-          superseded.add(entry.oldRid);
-        }
-
-        final float[] vector = vectorOf(entry.keyValues);
-        if (vector == null)
-          // Not a vector this index can score. Nothing to contribute, and deliberately not an exception: commit
-          // replay is where a malformed queued key is diagnosed, and a search must not be the thing that fails.
-          continue;
-
-        // The committed copy of a re-embedded row must not be ranked alongside the pending one, so an ADD
-        // supersedes its own RID as well. Harmless when the row is new: there is no committed copy to suppress.
-        if (superseded == null)
-          superseded = new HashSet<>();
-        superseded.add(entry.rid);
-
-        if (pending == null)
-          pending = new LinkedHashMap<>();
-        pending.put(entry.rid, new DeltaVectorEntry(PENDING_VECTOR_ID, entry.rid, vts.createFloatVector(vector)));
       }
-    }
 
     if (pending == null && superseded == null)
       return null;

@@ -143,6 +143,58 @@ class Issue7378ApproximateSearchReadsOwnWritesTest extends TestHelper {
     }
   }
 
+  /**
+   * The overlay superseding a row that is still in the delta buffer rather than in the graph - the one combination
+   * of the two structures {@code TransactionVectorOverlay.augment()} handles that nothing else here reaches.
+   * <p>
+   * Every other test in this PR supersedes a graph-resident row, so {@code augment()}'s filter over the committed
+   * buffer - the branch that drops a buffered entry whose RID this transaction has rewritten - was reachable but
+   * never actually matched anything.
+   * <p>
+   * It lives on the approximate path on purpose. {@code findNeighborsFromVectorApproximate} is the one search that
+   * never calls {@code rebuildGraphBeforeSearch()}, and on a graph below {@code ASYNC_REBUILD_MIN_GRAPH_SIZE} that
+   * method rebuilds synchronously and drains the buffer - so on the exact path the row is in the graph by the time
+   * the assertion runs and the test would pass without ever reaching the branch it names. The delta count is
+   * asserted on both sides of the search for exactly that reason.
+   */
+  @Test
+  void aBufferedRowTheTransactionRewritesIsNotAlsoReturnedFromTheBuffer() {
+    createSchemaAndData();
+    final LSMVectorIndex index = vectorIndex();
+
+    final float[] query = vector(17);
+
+    // Committed after the graph was built, and the graph is frozen, so this row lives in the buffer and nowhere
+    // else.
+    //
+    // Its committed vector is deliberately NEAR the query, not far from it: if it were far, a build that failed to
+    // drop it from the merged buffer would simply rank it outside TOP_K and the "only once" assertion below would
+    // hold for the wrong reason. Near enough to be inside TOP_K, and distinct enough from the pending vector to be
+    // a second row rather than the same one, is what makes this test able to fail.
+    database.transaction(() -> database.newDocument("Doc").set("id", "buffered").set("embedding", nearly(query))
+        .save());
+    assertThat(index.getStats().get("deltaVectorsCount"))
+        .as("the fixture is only a regression test while the row is in the buffer rather than the graph")
+        .isEqualTo(1L);
+
+    database.begin();
+    try {
+      database.command("sql", "UPDATE Doc SET embedding = ? WHERE id = 'buffered'", (Object) query);
+
+      final List<String> ids = idsOf(index.findNeighborsFromVectorApproximate(query, TOP_K, null));
+
+      assertThat(index.getStats().get("deltaVectorsCount"))
+          .as("the search must not have drained the buffer, or this test proves nothing about augment()")
+          .isEqualTo(1L);
+      assertThat(ids).as("the rewritten row is scored on the vector this transaction wrote")
+          .contains("buffered");
+      assertThat(ids).as("and the buffer's own copy of it must not come back alongside the pending one")
+          .containsOnlyOnce("buffered");
+    } finally {
+      database.rollback();
+    }
+  }
+
   // ------------------------------------------------------------------------------------------------- helpers
 
   private void createSchemaAndData() {
@@ -161,6 +213,14 @@ class Issue7378ApproximateSearchReadsOwnWritesTest extends TestHelper {
           "quantization": "PRODUCT",
           "pqClusters": %d
         }""".formatted(DIMENSIONS, PQ_CLUSTERS));
+  }
+
+  /** A vector a short step from {@code v}: close enough to rank alongside it, far enough to be a distinct row. */
+  private static float[] nearly(final float[] v) {
+    final float[] near = new float[v.length];
+    for (int i = 0; i < v.length; i++)
+      near[i] = v[i] + 0.02f;
+    return near;
   }
 
   private static float[] vector(final int seed) {

@@ -6206,7 +6206,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final Set<RID> allowedRIDs, final List<Pair<RID, Float>> results, final TransactionVectorOverlay overlay) {
     // The buffer as the calling transaction sees it: its own uncommitted rows appended, the rows it superseded
     // dropped (issue #7378). Without an overlay this is the plain volatile snapshot and costs nothing extra.
-    final List<DeltaVectorEntry> currentDelta = overlay == null ? deltaVectors : overlay.augment(deltaVectors);
+    mergeWithDeltaScan(queryVectorFloat, k, allowedRIDs, results, mergedDelta(overlay));
+  }
+
+  /**
+   * {@link #mergeWithDeltaScan}'s body, over a buffer view the caller has already merged. Separate so a caller
+   * that needs the merged list for itself - {@link #mergeWithDeltaScanApproximate}, which walks it again to resolve
+   * the rows this scan admitted - does not pay for {@code augment()} twice per search: it is a pass over the whole
+   * committed buffer plus an allocation sized to it, on the path whose contract is microseconds.
+   */
+  private void mergeWithDeltaScan(final VectorFloat<?> queryVectorFloat, final int k,
+      final Set<RID> allowedRIDs, final List<Pair<RID, Float>> results, final List<DeltaVectorEntry> currentDelta) {
     if (currentDelta.isEmpty() || k <= 0)
       return;
 
@@ -6366,7 +6376,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // No quantizer to score through - the caller checked isPQSearchAvailable(), but a rebuild can discard it
       // between that check and here. Exact scoring is the honest fallback: it is what the graph side degrades to
       // as well once PQ is gone, so the two stay on one scale either way.
-      mergeWithDeltaScan(queryVectorFloat, k, allowedRIDs, results, overlay);
+      mergeWithDeltaScan(queryVectorFloat, k, allowedRIDs, results, mergedDelta(overlay));
       return;
     }
 
@@ -6378,8 +6388,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
     // rebuild landing between the two can leave it merging rows this one no longer holds; that is the case the
     // unresolved-row branch below already covers, and it degrades to an exact score rather than a wrong one.
     // Same view of the buffer stage 1 will scan, so the resolve pass below can find every row it admitted -
-    // including the calling transaction's own pending rows (issue #7378).
-    final List<DeltaVectorEntry> currentDelta = overlay == null ? deltaVectors : overlay.augment(deltaVectors);
+    // including the calling transaction's own pending rows (issue #7378). Built once and handed to stage 1 rather
+    // than letting it build its own, which used to run augment() twice per search on this path.
+    final List<DeltaVectorEntry> currentDelta = mergedDelta(overlay);
     if (currentDelta.isEmpty())
       return;
 
@@ -6390,7 +6401,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       graphRIDs.add(row.getFirst());
 
     // Stage 1 - the cheap exact prune, unchanged. Whatever it contributes is a superset of the rows that can matter.
-    mergeWithDeltaScan(queryVectorFloat, k, allowedRIDs, results, overlay);
+    mergeWithDeltaScan(queryVectorFloat, k, allowedRIDs, results, currentDelta);
     if (results.isEmpty())
       return;
 
@@ -8064,6 +8075,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private TransactionVectorOverlay transactionOverlay() {
     return TransactionVectorOverlay.open(getDatabase(), this, vts);
+  }
+
+  /**
+   * The delta buffer as the calling transaction sees it: the volatile snapshot when there is no overlay, and the
+   * snapshot with this transaction's superseded rows dropped and its pending rows appended when there is one.
+   * The result is read-only to the caller - see {@code TransactionVectorOverlay.augment}.
+   */
+  private List<DeltaVectorEntry> mergedDelta(final TransactionVectorOverlay overlay) {
+    final List<DeltaVectorEntry> committed = deltaVectors; // volatile snapshot
+    return overlay == null ? committed : overlay.augment(committed);
   }
 
   /** {@code overlay.pendingCount()}, or 0 when there is no overlay. */

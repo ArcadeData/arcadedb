@@ -327,6 +327,58 @@ class Issue7378VectorSearchReadsOwnWritesTest extends TestHelper {
     }
   }
 
+  /**
+   * The second half of the rename case: a write, a compaction that renames the index, and then ANOTHER write to
+   * the same index, all inside one transaction.
+   * <p>
+   * {@code addIndexKeyLock} keys a lane by the name the index answers to when the entry is queued and opens a new
+   * lane for a name it has not seen, so this sequence leaves TWO lanes for one index - one under each name.
+   * {@code TransactionIndexContext.commit()} replays both, because it resolves every lane through the index it
+   * remembers rather than through its key. A reader that stopped at the first lane it matched would see one of the
+   * two writes and answer the search with the other missing, which is the defect of #7378 relocated rather than
+   * fixed. Both rows have to be candidates here.
+   */
+  @Test
+  @Tag("slow")
+  void aSearchAfterARenameSeesTheWritesFromBothSidesOfIt() throws Exception {
+    seedAndBuildGraph();
+    final LSMVectorIndex index = vectorIndex();
+    final String nameWhenQueued = index.getName();
+
+    database.begin();
+    try {
+      database.newDocument("Doc").set("id", "before-rename").set("grp", "g-tx")
+          .set("embedding", PENDING_DIRECTION).save();
+
+      final Throwable[] failure = new Throwable[1];
+      final Thread compactor = new Thread(() -> {
+        try {
+          database.command("sql", "COMPACT INDEX `" + nameWhenQueued + "`");
+        } catch (final Throwable t) {
+          failure[0] = t;
+        }
+      }, "issue7378-compactor-2");
+      compactor.start();
+      compactor.join(120_000);
+
+      assertThat(compactor.isAlive()).as("the compaction must have finished").isFalse();
+      assertThat(failure[0]).as("the compaction must not have failed").isNull();
+      assertThat(index.getName())
+          .as("the fixture is only a regression test once the compaction really renamed the index")
+          .isNotEqualTo(nameWhenQueued);
+
+      // Queued under the NEW name, so it opens a second lane for the same index.
+      database.newDocument("Doc").set("id", "after-rename").set("grp", "g-tx")
+          .set("embedding", PENDING_DIRECTION).save();
+
+      assertThat(idsOf(index.findNeighborsFromVector(PENDING_DIRECTION, 5)))
+          .as("both writes are this transaction's own, whichever name their lane was opened under")
+          .contains("before-rename", "after-rename");
+    } finally {
+      database.rollback();
+    }
+  }
+
   /** A rolled back transaction leaves nothing behind: the overlay lives on the transaction, not on the index. */
   @Test
   void aRolledBackTransactionTakesItsPendingRowBackOut() {
