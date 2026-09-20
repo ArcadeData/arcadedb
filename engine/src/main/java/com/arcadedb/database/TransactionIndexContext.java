@@ -579,6 +579,11 @@ public class TransactionIndexContext {
     // order of the TreeMap being walked - a hash of the vector's contents - decide which of them a search ranks it
     // by. The write-order stamp is what turns that back into "the last write wins": the survivor is chosen by WHEN
     // it was queued, not by where its key sorted, nor by which lane it landed in.
+    // Through putBatch unconditionally, including a lane carrying a single entry - which took putReplay directly
+    // before the cross-lane accumulation above made that distinction unrepresentable. Measured rather than assumed
+    // (PR #8001 review asked for it): 20k single-row transactions against a 128-dimension index run in 684 ms
+    // through putBatch and 685 ms through a putReplay fast path, i.e. the two ArrayLists and the map entry cost
+    // nothing measurable next to the page write and WAL append each row already pays for.
     for (final Map.Entry<LSMVectorIndex, Map<RID, IndexKey>> batch : vectorBatches.entrySet()) {
       final Map<RID, IndexKey> winners = batch.getValue();
       if (winners.isEmpty())

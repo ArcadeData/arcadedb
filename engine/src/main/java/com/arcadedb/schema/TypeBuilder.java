@@ -66,7 +66,7 @@ public class TypeBuilder<T> {
     // types) and must be atomic, otherwise two callers racing on the same name both observe the type as
     // incomplete and both try to associate the same bucket, the loser failing with "the bucket is already
     // associated to the type". The lookup runs under the shared lock so a type being built by another
-    // thread - which publishes itself into schema.types BEFORE its buckets are added - is never observed
+    // thread - which publishes itself into the schema's type map BEFORE its buckets are added - is never observed
     // half-populated; anything that mutates re-checks under the exclusive lock. The fast path can also throw,
     // for the type-already-exists and wrong-type cases, exactly as the locked path does.
     //
