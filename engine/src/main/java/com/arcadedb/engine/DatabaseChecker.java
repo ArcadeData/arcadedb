@@ -241,8 +241,10 @@ public class DatabaseChecker {
     result.put("constraintViolatingRecords", new LinkedHashSet<RID>());
     result.put("totalConstraintViolations", 0L);
     // Which of the above this run actually removed. Stays empty unless BOTH fix and deleteInvalidRecords are set;
-    // see setDeleteInvalidRecords for why the removal is a clause of its own.
+    // see setDeleteInvalidRecords for why the removal is a clause of its own. Bounded like the list above, so it
+    // gets the exact total the cap would otherwise hide - a caller must never infer "all of them" from its size.
     result.put("deletedConstraintViolatingRecords", new LinkedHashSet<RID>());
+    result.put("totalDeletedConstraintViolatingRecords", 0L);
     result.put("totalWarnings", 0L);
     result.put("totalCorruptedRecords", 0L);
     result.put("distinctMissingReferences", 0L);
@@ -882,8 +884,9 @@ public class DatabaseChecker {
         // The per-kind arm of the same repair (issue #6136, item 3): this arm only ever deletes, so its whole
         // contribution to autoFix is a deleted record.
         result.put("removedRecords", (Long) result.get("removedRecords") + 1);
-        // Same reason as mergeDeletedRecords: a removal nobody lists cannot be audited.
-        ((LinkedHashSet<RID>) result.get("deletedRecordsAfterFix")).add(rid);
+        // Same reason as mergeDeletedRecords: a removal nobody lists cannot be audited. Bounded - see
+        // addDeletedAfterFix, which owns the cap for both writers in this class.
+        addDeletedAfterFix(rid);
       } catch (final RecordNotFoundException e) {
         // ALREADY GONE
       } catch (final Exception e) {
@@ -1576,17 +1579,21 @@ public class DatabaseChecker {
 
     stepBegin("Checking existence constraints", total);
 
-    long removed = 0;
+    long resolved = 0;
 
     for (final ConstrainedType constrained : constrainedTypes) {
       final DocumentType type = constrained.type();
 
       for (final Bucket bucket : type.getBuckets(false)) {
-        // COLLECTED DURING THE SCAN AND DELETED AFTER IT, per bucket: LocalBucket.scan walks the very pages a
-        // delete rewrites. Per bucket rather than per type or per run so the list is bounded by one bucket's
-        // records - a database whose every record is a finding (the ALTER PROPERTY case, on a populated type) must
-        // not accumulate one RID per record of the whole type before it removes the first.
-        final List<RID> toDelete = new ArrayList<>();
+        // COLLECTED DURING THE SCAN AND DELETED AFTER IT: LocalBucket.scan walks the very pages a delete rewrites,
+        // so removing from inside the callback would mutate the structure being iterated.
+        //
+        // POSITIONS rather than RIDs, and per bucket rather than per type: within one bucket a RID is its position
+        // and nothing else, so this is 8 bytes per record to remove instead of a whole RID object with its header,
+        // on the one input that really can be every record of a type at once (see setDeleteInvalidRecords - one
+        // ALTER PROPERTY does it). That is the smallest a scan-then-delete can be; it is proportional to the number
+        // of VIOLATIONS, not to the size of the database, and the order is forced by the bucket walk above.
+        final BucketPositions toDelete = new BucketPositions();
 
         database.begin();
         try {
@@ -1600,7 +1607,7 @@ public class DatabaseChecker {
                 if (violation != null) {
                   addConstraintViolation(rid, violation);
                   if (fix && deleteInvalidRecords)
-                    toDelete.add(rid);
+                    toDelete.add(rid.getPosition());
                   // ONE finding per record, like the write path: a record missing two mandatory properties is one
                   // incomplete record, not two, and the repair for it is the same either way.
                   break;
@@ -1618,11 +1625,11 @@ public class DatabaseChecker {
           database.commit();
         }
 
-        removed += deleteConstraintViolatingRecords(toDelete);
+        resolved += deleteConstraintViolatingRecords(bucket.getFileId(), toDelete);
       }
     }
 
-    if ((Long) result.get("totalConstraintViolations") > removed)
+    if ((Long) result.get("totalConstraintViolations") > resolved)
       // ONE summary line rather than a repair instruction repeated on every per-record warning: both repairs apply
       // to all of them, and which one is right depends on whether the records hold data - a question the operator
       // can answer and this pass cannot. Keyed on what is STILL in that state rather than on whether the removal
@@ -1656,7 +1663,9 @@ public class DatabaseChecker {
 
     stepBegin("Checking existence constraints", records.size());
 
-    final List<RID> toDelete = new ArrayList<>();
+    // Keyed by bucket, like the type-wide arm's per-bucket list, because that is what the delete works on - a
+    // RECORD scope can name records of several types living in several buckets.
+    final Map<Integer, BucketPositions> toDelete = new LinkedHashMap<>();
 
     database.begin();
     try {
@@ -1678,7 +1687,7 @@ public class DatabaseChecker {
               if (violation != null) {
                 addConstraintViolation(rid, violation);
                 if (fix && deleteInvalidRecords)
-                  toDelete.add(rid);
+                  toDelete.computeIfAbsent(rid.getBucketId(), k -> new BucketPositions()).add(rid.getPosition());
                 break;
               }
             }
@@ -1692,7 +1701,11 @@ public class DatabaseChecker {
       database.commit();
     }
 
-    if ((Long) result.get("totalConstraintViolations") > deleteConstraintViolatingRecords(toDelete))
+    long resolved = 0;
+    for (final Map.Entry<Integer, BucketPositions> entry : toDelete.entrySet())
+      resolved += deleteConstraintViolatingRecords(entry.getKey(), entry.getValue());
+
+    if ((Long) result.get("totalConstraintViolations") > resolved)
       // Same summary as the type-wide arm, for the same reason, and keyed the same way.
       addWarning(CONSTRAINT_VIOLATIONS_REMAIN_WARNING);
 
@@ -1723,53 +1736,200 @@ public class DatabaseChecker {
   }
 
   /**
-   * Removes the records {@code FIX DELETE INVALID RECORDS} was asked to take out (issue #7952).
+   * The positions, within ONE bucket, of the records a {@code FIX DELETE INVALID RECORDS} is going to take out
+   * (issue #7952).
    * <p>
-   * Through {@code database.deleteRecord} rather than through the bucket, unlike {@link #deleteCorruptedRecords}:
-   * the record here is perfectly readable, so the record-level API can do its whole job - clean the index entries
-   * that really do describe it, cascade its EXTERNAL property values, and, for a vertex, delete the edges that
-   * would otherwise be left dangling. Deleting through the bucket would leave all three behind, and the index
-   * rebuild that repairs that for a corrupt record does not run for this finding, because a constraint violation is
-   * not corruption and puts nothing into {@code affectedBuckets}.
-   *
-   * @return how many records are actually gone, which is what the caller compares against the number it found
+   * A growable {@code long[]} rather than a {@code List<RID>} because this is the one collection in this class whose
+   * size is the number of records to REPAIR rather than the number of findings to REPORT, and therefore the one that
+   * a cap cannot bound without silently leaving records behind: a single {@code ALTER PROPERTY ... MANDATORY TRUE}
+   * can put every record of a populated type in it. Within a bucket a RID is its position and nothing else, so this
+   * costs 8 bytes per record instead of a whole object with its header - proportional to the violations it is about
+   * to remove, never to the size of the database.
    */
-  private long deleteConstraintViolatingRecords(final List<RID> toDelete) {
+  private static final class BucketPositions {
+    private long[] positions = new long[64];
+    private int    size;
+
+    void add(final long position) {
+      if (size == positions.length)
+        positions = Arrays.copyOf(positions, size * 2);
+      positions[size++] = position;
+    }
+
+    boolean isEmpty() {
+      return size == 0;
+    }
+  }
+
+  /**
+   * Removes the records {@code FIX DELETE INVALID RECORDS} was asked to take out of one bucket (issue #7952).
+   * <p>
+   * <b>Every record is re-validated inside this transaction, immediately before it is deleted</b>, and that is not
+   * belt and braces - it is what keeps this clause from destroying data. The scan that found these records has
+   * already committed, and the repair this very check RECOMMENDS for them in
+   * {@link #CONSTRAINT_VIOLATIONS_REMAIN_WARNING} is an ordinary {@code UPDATE} supplying the missing property. So
+   * the concurrent write that invalidates the finding is not an exotic race: it is the other half of the feature,
+   * and an operator running the repair from two terminals would otherwise have the completed record - with real
+   * data in it - deleted by the run that found it incomplete a moment earlier. A record that has been completed in
+   * the meantime is reported and LEFT ALONE. This is where the constraint-violation arm differs from
+   * {@link #deleteCorruptedRecords}, which needs no such check: nothing can concurrently repair a record that
+   * cannot even be read.
+   * <p>
+   * The constraints are re-read from each record's own LIVE type rather than from the array the scan was planned
+   * with, so a constraint dropped by a concurrent DDL also spares the record. Cached per type, so it costs one
+   * lookup per type rather than one per record.
+   * <p>
+   * <b>Batched through {@link RepairTransaction}</b>, the component every other repair pass of the engine already
+   * uses, rather than one transaction for the whole bucket. Under HA one transaction is one Raft log entry, and an
+   * entry over {@code min(ha.appendBufferSize, ha.grpcMessageSizeMax)} is refused with a
+   * {@code ReplicatedEntryTooLargeException} that nothing retries - so a single transaction over a bucket whose every
+   * record a DDL just invalidated is not merely large, it is a repair that cannot commit at all (the failure
+   * {@code arcadedb.checkDatabaseRepairBatchPages} exists for, issue #6128).
+   * <p>
+   * Deletes through {@code database.deleteRecord} rather than through the bucket, unlike
+   * {@link #deleteCorruptedRecords}: the record here is perfectly readable, so the record-level API can do its whole
+   * job - clean the index entries that really do describe it, cascade its EXTERNAL property values, and, for a
+   * vertex, delete the edges that would otherwise be left dangling. Deleting through the bucket would leave all
+   * three behind, and the index rebuild that repairs that for a corrupt record does not run for this finding,
+   * because a constraint violation is not corruption and puts nothing into {@code affectedBuckets}.
+   *
+   * @return how many of them are no longer in that state - deleted, already gone, or completed by someone else -
+   * which is what the caller compares against the number it found, rather than how many THIS run deleted
+   */
+  private long deleteConstraintViolatingRecords(final int bucketId, final BucketPositions toDelete) {
     if (toDelete.isEmpty())
       return 0;
 
-    final LinkedHashSet<RID> deleted = (LinkedHashSet<RID>) result.get("deletedConstraintViolatingRecords");
-    long removed = 0;
+    // Per type rather than per record: existenceConstrainedProperties walks the type's polymorphic properties and
+    // allocates, and a bucket holds records of one type anyway - a RECORD scope is what can make this hold more.
+    final Map<String, Property[]> liveConstraints = new HashMap<>();
+    long resolved = 0;
 
-    database.begin();
+    final RepairTransaction repair = new RepairTransaction(database, RepairTransaction.configuredBatchPages(database));
+    repair.begin();
+    boolean completed = false;
     try {
-      for (final RID rid : toDelete) {
-        try {
-          database.deleteRecord(database.lookupByRID(rid, false));
-          ++removed;
-          // Bounded like every other RID set this class publishes: this is the one finding a single DDL can produce
-          // by the million (see setDeleteInvalidRecords), so the audit list is capped while the COUNT stays exact -
-          // removedRecords and the return value below are both unbounded totals.
-          CollectionUtils.addBounded(deleted, maxWarnings, rid);
-          result.put("autoFix", (Long) result.get("autoFix") + 1);
-          result.put("removedRecords", (Long) result.get("removedRecords") + 1);
-          // Listed under deletedRecordsAfterFix too, which is the audit of everything this run took out whatever
-          // found it - a removal nobody lists cannot be audited.
-          ((LinkedHashSet<RID>) result.get("deletedRecordsAfterFix")).add(rid);
-        } catch (final RecordNotFoundException e) {
-          // ALREADY GONE - removed by an earlier pass of this same run, or by a concurrent writer. Counted as gone,
-          // because it is: the caller's question is "is anything still in this state", not "did I do the deleting".
-          ++removed;
-        } catch (final Exception e) {
-          addWarning("record " + rid + " does not satisfy an existence constraint of its own type and could not be "
-              + "removed (error: " + e.getMessage() + ")");
-        }
+      for (int i = 0; i < toDelete.size; i++) {
+        if (deleteConstraintViolatingRecord(new RID(bucketId, toDelete.positions[i]), liveConstraints))
+          ++resolved;
+        // Only ever BETWEEN records, never inside one: see RepairTransaction.commitBatchIfFull.
+        repair.commitBatchIfFull();
       }
+      completed = true;
     } finally {
-      database.commit();
+      repair.finish(completed);
     }
 
-    return removed;
+    return resolved;
+  }
+
+  /**
+   * Re-validates one record and removes it if it is still in the state the scan found it in. See
+   * {@link #deleteConstraintViolatingRecords} for why the re-validation is load-bearing.
+   *
+   * @return whether the record is no longer violating an existence constraint of its type, which a record someone
+   * else completed, and a record that was already gone, both satisfy
+   */
+  private boolean deleteConstraintViolatingRecord(final RID rid, final Map<String, Property[]> liveConstraints) {
+    // The RECORD is kept, not just the Document view: database.deleteRecord dispatches on the record's runtime type
+    // to reach GraphEngine for a vertex or an edge, and handing it a plain Document view would silently take the
+    // third branch and leave a deleted vertex's edges dangling.
+    final Record record;
+    final Document document;
+    try {
+      record = database.lookupByRID(rid, true);
+      document = record.asDocument(true);
+    } catch (final RecordNotFoundException e) {
+      // Already gone - removed by an earlier pass of this same run, or by a concurrent writer. No longer in that
+      // state, which is the question this answers.
+      return true;
+    } catch (final Exception e) {
+      addWarning("record " + rid + " does not satisfy an existence constraint of its own type and could not be "
+          + "re-read to remove it (error: " + e.getMessage() + ")");
+      return false;
+    }
+
+    final Property[] constrained = liveConstraints.computeIfAbsent(document.getType().getName(),
+        k -> DocumentValidator.existenceConstrainedProperties(document.getType()));
+
+    boolean stillViolating = false;
+    for (final Property property : constrained)
+      if (DocumentValidator.unmetExistenceConstraint(document, property) != null) {
+        stillViolating = true;
+        break;
+      }
+
+    if (!stillViolating) {
+      // Completed - or its constraint dropped - between the scan and now, which is exactly what the repair this
+      // check recommends does. Reported rather than silently skipped: an operator who asked for N records to go and
+      // sees N-1 removed has to be able to find out why without guessing.
+      addWarning("record " + rid + " satisfied its type's existence constraints again by the time the repair "
+          + "reached it - completed by another write during this check - and has been left in place");
+      return true;
+    }
+
+    try {
+      database.deleteRecord(record);
+
+      // A beforeDelete listener can VETO a delete, and LocalDatabase.deleteRecord reports that by returning without
+      // deleting rather than by throwing - so the only honest way to know is to look. Counting a vetoed delete as a
+      // removal would have the report claim records are gone that a trigger deliberately kept.
+      if (recordExists(rid)) {
+        addWarning("record " + rid + " does not satisfy an existence constraint of its own type and its removal was "
+            + "refused by a beforeDelete listener on its type");
+        return false;
+      }
+
+      CollectionUtils.addBounded((LinkedHashSet<RID>) result.get("deletedConstraintViolatingRecords"), maxWarnings, rid);
+      result.put("totalDeletedConstraintViolatingRecords",
+          (Long) result.get("totalDeletedConstraintViolatingRecords") + 1);
+      result.put("autoFix", (Long) result.get("autoFix") + 1);
+      result.put("removedRecords", (Long) result.get("removedRecords") + 1);
+      addDeletedAfterFix(rid);
+      return true;
+    } catch (final RecordNotFoundException e) {
+      // Taken out from under us between the re-read above and the delete.
+      return true;
+    } catch (final Exception e) {
+      addWarning("record " + rid + " does not satisfy an existence constraint of its own type and could not be "
+          + "removed (error: " + e.getMessage() + ")");
+      return false;
+    }
+  }
+
+  /**
+   * Whether the record is still there, asked inside the current transaction so a delete made in it is visible.
+   * <p>
+   * {@code loadContent} is TRUE and has to be: with it false, {@code LocalDatabase.lookupByRID} hands back a lazy
+   * record without reading the bucket at all whenever the RID's bucket belongs to a type - so the probe would answer
+   * "still there" for every record, including the ones it had just deleted. Reading the content is what actually
+   * asks the bucket, which is the only thing that knows.
+   */
+  private boolean recordExists(final RID rid) {
+    try {
+      return database.lookupByRID(rid, true) != null;
+    } catch (final RecordNotFoundException e) {
+      return false;
+    }
+  }
+
+  /**
+   * Records one removal in {@code deletedRecordsAfterFix}, the audit of everything a run took out whatever found it,
+   * under the same {@link CollectionUtils#addBounded} cap as every other RID set this class publishes.
+   * <p>
+   * The cap is new (PR review on #7952) and applies to BOTH writers in this class, deliberately: the set was
+   * unbounded while {@code corruptedRecords}, which decides what goes into it from the other arm, was capped at
+   * 100k - so the two already disagreed about how much a run may retain, and the constraint-violation arm is the
+   * first that can realistically reach millions of removals in one run (one {@code ALTER PROPERTY} does it). The
+   * exact counts are unaffected and are where a caller should read the totals from: {@code removedRecords},
+   * {@code autoFix} and {@code totalDeletedConstraintViolatingRecords}.
+   * <p>
+   * What this does NOT reach is the graph arms' own removals, which arrive already collected through
+   * {@code mergeDeletedRecords}; capping those means capping them inside {@code GraphDatabaseChecker}, which has its
+   * own budget parameters and is not this change's business.
+   */
+  private void addDeletedAfterFix(final RID rid) {
+    CollectionUtils.addBounded((LinkedHashSet<RID>) result.get("deletedRecordsAfterFix"), maxWarnings, rid);
   }
 
   /** Detects (and on FIX deletes) external-property records that are no longer referenced by any primary record. */

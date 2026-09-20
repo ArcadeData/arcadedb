@@ -98,7 +98,6 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
   public static final String DELETE_ORPHANS_WITHOUT_FIX_ERROR =
       "CHECK DATABASE DELETE ORPHANS removes records, so it requires FIX: write CHECK DATABASE FIX DELETE ORPHANS. "
           + "Without it the orphan edge records are still reported, under the unreachableEdgeRecords key";
-  /** Shared with the grammar's own diagnostics: {@code RECLAIM UNREFERENCED FILES} is a repair and needs FIX too. */
   /** Shared with the grammar's own diagnostics: {@code DELETE INVALID RECORDS} is a repair and needs FIX too. */
   public static final String DELETE_INVALID_RECORDS_WITHOUT_FIX_ERROR =
       "CHECK DATABASE DELETE INVALID RECORDS removes records, so it requires FIX: write CHECK DATABASE FIX DELETE "
