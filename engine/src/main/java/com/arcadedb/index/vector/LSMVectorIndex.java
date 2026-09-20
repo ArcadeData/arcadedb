@@ -21,6 +21,7 @@ package com.arcadedb.index.vector;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
+import com.arcadedb.database.CommittedReadScope;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
@@ -2900,6 +2901,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private void buildGraphFromScratchWithRetry(final GraphBuildCallback graphCallback, final boolean compactDataFile,
       final boolean releaseResidentGraphFirst) {
+    // A compaction rewrites the data file outside transactional control, so it may not run under a caller's
+    // transaction. That guard belongs to rewriteDataFileWithLiveEntries and still stands there, but from here on
+    // the build runs with the caller's transaction suspended and would therefore never see one: asked here,
+    // before the suspension, it still answers about the caller.
+    final DatabaseInternal database = getDatabase();
+    if (compactDataFile && database.isTransactionActive())
+      throw new IllegalStateException("Cannot compact vector index '" + indexName + "' inside a transaction");
+
     // Serialize graph builds for this index. The index write lock used to do this implicitly by covering the
     // whole preparation phase; now that the O(index size) validation runs unlocked (issue #5391), two builds
     // could interleave their vectorIndex re-sync and their ordinal-map publication and leave a searcher with an
@@ -2913,7 +2922,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // to re-validate a graph file this build is replacing; a build that fails leaves graphState at LOADING,
       // which graphNotYetMaterialised() still answers true on, so the retry path is unaffected.
       persistedGraphUnresolved = false;
-      buildGraphFromScratchExclusively(graphCallback, compactDataFile, releaseResidentGraphFirst);
+
+      // The graph is derived state: it describes the database as the last COMMITTED transaction left it, it is
+      // persisted, and every other transaction searches it. This build can be reached from inside a caller's
+      // transaction all the same - rebuildGraphBeforeSearch() rebuilds synchronously, on the calling thread,
+      // whenever the resident graph is small - and without this every record it reads would come back through
+      // that transaction. An embedding written and not yet committed was baked into the graph that way and the
+      // rollback could not take it back (issue #7974). Suspending covers every read the build makes on this
+      // thread at once: the page parse, the document-scan recovery fallback and its bucket count, the per-vector
+      // validation reads, JVector's lazy reads during construction, and the inline vectors the persist writes.
+      // The persist keeps opening a transaction of its own (issue #7058) - it now opens it on the suspended
+      // thread's fresh context, so it cannot reach the caller's at all rather than merely promising not to.
+      try (final CommittedReadScope ignored = CommittedReadScope.open(database)) {
+        buildGraphFromScratchExclusively(graphCallback, compactDataFile, releaseResidentGraphFirst);
+      }
     } finally {
       // The scan work this build was meant to make unnecessary has been paid for; start the amortization window
       // again (issue #6797). Reset for a FAILED build too, deliberately: the buffer it did not drain is still
