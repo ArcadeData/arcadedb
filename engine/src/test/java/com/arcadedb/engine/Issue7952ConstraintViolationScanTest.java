@@ -382,6 +382,41 @@ class Issue7952ConstraintViolationScanTest extends TestHelper {
   }
 
   /**
+   * The repair-pass boundary is hit inside SEVERAL types in one run (PR review). The per-type loop is independent
+   * per constrained type, so the thing actually worth pinning is the accounting that is NOT per type: the progress
+   * total is one number for every constrained type together, and the ticks come only from each bucket's first pass,
+   * so a type that needs three passes must still contribute exactly its record count and no more.
+   */
+  @Test
+  @Timeout(60)
+  void severalTypesCanEachCrossTheRepairPassBoundaryInOneRun() {
+    final DocumentType record = database.getSchema().createDocumentType("Record");
+    record.createProperty("id", Type.INTEGER);
+    final DocumentType other = database.getSchema().createDocumentType("Other");
+    other.createProperty("id", Type.INTEGER);
+
+    database.transaction(() -> {
+      for (int i = 0; i < 5; i++)
+        database.newDocument("Record").set("id", i).save();
+      for (int i = 0; i < 7; i++)
+        database.newDocument("Other").set("id", i).save();
+    });
+    record.createProperty("orgId", Type.STRING).setMandatory(true);
+    other.createProperty("orgId", Type.STRING).setMandatory(true);
+
+    final Map<String, Object> result = new DatabaseChecker(db()).setFix(true).setDeleteInvalidRecords(true)
+        .setInvalidRecordsPerRepairPass(2).setVerboseLevel(0).check();
+
+    assertThat((Long) result.get("totalConstraintViolations")).as("each record reported exactly once").isEqualTo(12L);
+    assertThat((Long) result.get("totalDeletedConstraintViolatingRecords")).isEqualTo(12L);
+    assertThat(database.countType("Record", false)).isZero();
+    assertThat(database.countType("Other", false)).isZero();
+    assertThat((Collection<String>) result.get("warnings"))
+        .as("nothing is left, so the repair advice is not printed")
+        .noneMatch(w -> w.contains("CHECK DATABASE FIX DELETE INVALID RECORDS"));
+  }
+
+  /**
    * The same loop must terminate when the records it collects cannot be removed at all - a {@code beforeDelete}
    * listener refusing every delete would otherwise have it re-collect the same full batch for ever.
    */
