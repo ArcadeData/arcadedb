@@ -162,6 +162,8 @@ final class TransactionVectorOverlay {
     // record rewritten either side of that rename has an entry in each. The commit picks by write order; so must
     // this, or a search inside the transaction ranks the record by an embedding the commit is about to discard.
     Map<RID, Integer> pendingSequence = null;
+    /** Per RID, the write order of the LAST removal seen. See where it is applied after the walk. */
+    Map<RID, Integer> lastRemove = null;
 
     for (final TreeMap<ComparableKey, Map<IndexKey, IndexKey>> lane : lanes)
       for (final Map<IndexKey, IndexKey> bucket : lane.values()) {
@@ -173,6 +175,14 @@ final class TransactionVectorOverlay {
             if (superseded == null)
               superseded = new HashSet<>();
             superseded.add(entry.rid);
+
+            // ...and remember WHEN, so a removal that came after the row this overlay contributes can drop it once
+            // the whole lane has been read (PR #8001 review). Recorded rather than acted on here because a lane is
+            // walked in ComparableKey order, not write order: the REMOVE is as likely to be seen before the ADD it
+            // retires as after it, and only the sequence says which actually happened first.
+            if (lastRemove == null)
+              lastRemove = new HashMap<>();
+            lastRemove.merge(entry.rid, entry.sequence, Math::max);
             continue;
           }
 
@@ -244,6 +254,20 @@ final class TransactionVectorOverlay {
               new DeltaVectorEntry(PENDING_VECTOR_ID, entry.rid, null));
         }
       }
+
+    // A RID whose last word was a removal contributes no row: the transaction added it and then deleted it. The
+    // commit reaches the same answer by dropping a RID whose last entry is a REMOVE, and the two have to agree, or
+    // a search inside the transaction returns a record the commit is about to leave out (PR #8001 review). It
+    // stays in `superseded` either way, which is what keeps its committed copy out of the answer too.
+    if (pending != null && lastRemove != null)
+      for (final Map.Entry<RID, Integer> removal : lastRemove.entrySet()) {
+        final Integer heldSequence = pendingSequence.get(removal.getKey());
+        if (heldSequence != null && removal.getValue() > heldSequence)
+          pending.remove(removal.getKey());
+      }
+
+    if (pending != null && pending.isEmpty())
+      pending = null;
 
     if (pending == null && superseded == null)
       return null;

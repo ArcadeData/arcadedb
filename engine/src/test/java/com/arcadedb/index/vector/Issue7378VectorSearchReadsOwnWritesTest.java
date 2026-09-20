@@ -292,6 +292,54 @@ class Issue7378VectorSearchReadsOwnWritesTest extends TestHelper {
   }
 
   /**
+   * A row added and then deleted inside one transaction is gone from that transaction's own search, and from the
+   * answer after the commit - even when the removal could not be keyed on the vector it retires, so the two never
+   * collapsed in the queue. Raised in the review of PR #8001; the overlay and the commit reach the same answer by
+   * the same rule (the last entry for a RID decides), and this is what holds them to it.
+   */
+  @Test
+  void aRowAddedAndThenDeletedInTheSameTransactionIsGoneFromBothSides() {
+    seedAndBuildGraph();
+    final LSMVectorIndex index = vectorIndex();
+
+    database.begin();
+    final String pendingId;
+    try {
+      insertPendingRow();
+      pendingId = "created-in-tx";
+      assertThat(idsOf(index.findNeighborsFromVector(PENDING_DIRECTION, 5)))
+          .as("precondition: the transaction can see its own row before it deletes it")
+          .contains(pendingId);
+
+      // Delete it through the index with a key it cannot convert, so the REMOVE rides the placeholder and shares
+      // no ComparableKey with the ADD it retires.
+      final RID rid = ridOf(index.findNeighborsFromVector(PENDING_DIRECTION, 5), pendingId);
+      index.remove(new Object[] { "not a vector" }, rid);
+
+      assertThat(idsOf(index.findNeighborsFromVector(PENDING_DIRECTION, 5)))
+          .as("a row this transaction deleted must be gone from its own search")
+          .doesNotContain(pendingId);
+
+      database.commit();
+    } catch (final RuntimeException e) {
+      database.rollback();
+      throw e;
+    }
+
+    assertThat(idsOf(index.findNeighborsFromVector(PENDING_DIRECTION, 5)))
+        .as("...and must not come back after the commit either")
+        .doesNotContain(pendingId);
+  }
+
+  /** The RID the search returned for {@code id}. */
+  private RID ridOf(final List<Pair<RID, Float>> results, final String id) {
+    for (final Pair<RID, Float> r : results)
+      if (id.equals(r.getFirst().asDocument(true).get("id")))
+        return r.getFirst();
+    throw new IllegalStateException("no result for id " + id);
+  }
+
+  /**
    * The reason {@code TransactionIndexContext.getIndexKeys(IndexInternal)} exists, driven rather than argued.
    * <p>
    * An {@link LSMVectorIndex} is named after the component file it holds, and a compaction swaps that file in and
