@@ -571,8 +571,15 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     // already makes for the same product (LSMVectorIndex, SQLFunctionVectorNeighbors).
     final int rowBudget = (int) Math.min((long) limit * groupSize, MAX_OVERFETCH_ROWS);
 
+    // EVERY pending row, not the best rowBudget of them (PR #8001 review). A global-score cut here happens BEFORE
+    // the per-group caps are applied, so it can spend the whole budget on the surplus of one good group and starve
+    // another of its only candidate: with limit 2, groupSize 1 and pending A:0.99, A:0.98, B:0.50, a budget of two
+    // returns both A rows, admission keeps one and rejects the other, and B is never offered - while the same
+    // search after the commit returns A and B. Only the admission pass knows which rows a cap can still take, so
+    // it is the only thing allowed to drop one. The overlay already scores its whole pending set to sort it, so
+    // this costs list length rather than work, and the loop below stops as soon as the groups are full.
     final List<RidScore> merged = mergeByScore(committed,
-        overlay.topK(queryIndices, effectiveWeights, allowedRIDs, rowBudget), Integer.MAX_VALUE);
+        overlay.topK(queryIndices, effectiveWeights, allowedRIDs, Integer.MAX_VALUE), Integer.MAX_VALUE);
 
     final GroupAdmissionState groups = new GroupAdmissionState(limit, groupSize);
     final List<RidScore> out = new ArrayList<>(Math.min(merged.size(), rowBudget));
