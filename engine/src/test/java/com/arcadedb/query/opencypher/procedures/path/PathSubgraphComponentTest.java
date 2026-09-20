@@ -24,8 +24,8 @@ import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -49,10 +49,12 @@ class PathSubgraphComponentTest {
   private static final int VERTICES = 2_000;
   private static final int EDGES    = 20_000;
 
-  private Database database;
+  // BUILT ONCE FOR THE CLASS: EVERY TEST HERE READS, SO REBUILDING A 20,000-EDGE GRAPH PER METHOD WOULD BUY NOTHING
+  // AND WOULD PUT THE CLASS IN THE SLOW LANE FOR THE FIXTURE RATHER THAN FOR THE THING UNDER TEST
+  private static Database database;
 
-  @BeforeEach
-  void setup() {
+  @BeforeAll
+  static void setup() {
     final DatabaseFactory factory = new DatabaseFactory("./target/databases/test-path-subgraph-component");
     if (factory.exists())
       factory.open().drop();
@@ -82,13 +84,13 @@ class PathSubgraphComponentTest {
     });
   }
 
-  @AfterEach
-  void teardown() {
+  @AfterAll
+  static void teardown() {
     if (database != null)
       database.drop();
   }
 
-  private long readRecords() {
+  private static long readRecords() {
     return ((Number) ((LocalDatabase) database).getStats().get("readRecord")).longValue();
   }
 

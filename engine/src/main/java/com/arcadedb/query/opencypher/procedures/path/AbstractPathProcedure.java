@@ -38,8 +38,10 @@ import java.util.*;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public abstract class AbstractPathProcedure implements CypherProcedure {
-  protected static final String[]            NO_TYPES        = new String[0];
-  protected static final Vertex.DIRECTION[]  BOTH_DIRECTIONS = { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN };
+  // PRIVATE, NOT protected: `final` on an array fixes the reference and nothing else, so a shared mutable array
+  // handed to subclasses is one stray write away from corrupting every caller of every path procedure
+  private static final String[]           NO_TYPES        = new String[0];
+  private static final Vertex.DIRECTION[] BOTH_DIRECTIONS = { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN };
 
   protected Vertex extractVertex(final Object arg, final String paramName) {
     if (arg == null)
