@@ -98,29 +98,34 @@ public final class CommittedReadScope implements AutoCloseable {
     if (suspended == null)
       return;
 
-    // Anything the block began on the fresh context and did not conclude is ours to discard: it was never the
-    // caller's, and leaving it active would restore the caller's stack underneath a live transaction object that
-    // nothing would ever conclude.
-    //
-    // EVERY frame, innermost first, not just the top one. Today there is only ever the one context this scope
-    // pushed - a block that opens a transaction of its own finds it inactive and re-begins it in place rather than
-    // nesting (see LocalDatabase.begin()) - but the restore below replaces the whole list, so a block that did
-    // nest would otherwise have its outer frames dropped still active, holding their file locks with nothing left
-    // to release them. Making the sweep exhaustive states that invariant here instead of relying on a call graph
-    // this class cannot see.
-    for (int i = context.transactions.size() - 1; i >= 0; i--) {
-      final TransactionContext own = context.transactions.get(i);
-      if (own.isActive())
-        try {
-          own.rollback();
-        } catch (final Exception e) {
-          // A failed rollback must not cost the caller its own transactions, which the restore below gives back.
-          LogManager.instance().log(this, Level.WARNING,
-              "Error rolling back a transaction left open inside a committed-read scope: %s", e.getMessage());
-        }
+    // Restoring the caller's stack is the one guarantee this class makes, so it happens in a finally: a sweep
+    // that dies on an Error would otherwise leave the thread holding the scope's own context and the caller's
+    // transactions unreachable, with nothing left able to conclude them.
+    try {
+      // Anything the block began on the fresh context and did not conclude is ours to discard: it was never the
+      // caller's, and leaving it active would restore the caller's stack underneath a live transaction object that
+      // nothing would ever conclude.
+      //
+      // EVERY frame, innermost first, not just the top one. Today there is only ever the one context this scope
+      // pushed - a block that opens a transaction of its own finds it inactive and re-begins it in place rather
+      // than nesting (see LocalDatabase.begin()) - but the restore below replaces the whole list, so a block that
+      // did nest would otherwise have its outer frames dropped still active, holding their file locks with nothing
+      // left to release them. Making the sweep exhaustive states that invariant here instead of relying on a call
+      // graph this class cannot see.
+      for (int i = context.transactions.size() - 1; i >= 0; i--) {
+        final TransactionContext own = context.transactions.get(i);
+        if (own.isActive())
+          try {
+            own.rollback();
+          } catch (final Exception e) {
+            // A failed rollback must not cost the caller its own transactions, which the restore below gives back.
+            LogManager.instance().log(this, Level.WARNING,
+                "Error rolling back a transaction left open inside a committed-read scope: %s", e.getMessage());
+          }
+      }
+    } finally {
+      context.transactions.clear();
+      context.transactions.addAll(suspended);
     }
-
-    context.transactions.clear();
-    context.transactions.addAll(suspended);
   }
 }

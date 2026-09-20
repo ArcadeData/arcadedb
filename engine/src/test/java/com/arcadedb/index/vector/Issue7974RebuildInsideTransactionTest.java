@@ -32,10 +32,12 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.io.IOException;
 import java.util.List;
 import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for issue #7974: a similarity search issued inside an open transaction rebuilds the graph
@@ -207,6 +209,43 @@ class Issue7974RebuildInsideTransactionTest {
             .as("no result may be a row no committed transaction ever wrote")
             .allSatisfy(rid -> assertThat(db.lookupByRID(rid, true).asDocument().getString("name"))
                 .doesNotStartWith("tx"));
+      } finally {
+        db.drop();
+      }
+    }
+  }
+
+  @Test
+  void compactingInsideATransactionIsStillRefused() {
+    FileUtils.deleteRecursively(new File(DB_PATH));
+    final Random rng = new Random(7974);
+
+    try (final DatabaseFactory factory = new DatabaseFactory(DB_PATH)) {
+      final Database db = factory.create();
+      try {
+        createSchema(db, false);
+        insertSeedRows(db, rng);
+
+        final LSMVectorIndex lsm = vectorIndex(db);
+        assertThat(lsm.scheduleCompaction()).as("precondition: the compaction slot was taken").isTrue();
+
+        // A compaction rewrites the data file outside transactional control, so it may not run under a caller's
+        // transaction. The refusal is asked BEFORE the build suspends that transaction (issue #7974) - inside the
+        // suspension it could only ever answer false - so this pins the question at its new evaluation point.
+        db.begin();
+        try {
+          assertThatThrownBy(lsm::compact)
+              .isInstanceOf(IllegalStateException.class)
+              .hasMessageContaining("inside a transaction");
+        } finally {
+          db.rollback();
+        }
+
+        // The refusal hands the scheduling slot back, so ask for it again before the control run.
+        assertThat(lsm.scheduleCompaction()).isTrue();
+        assertThat(lsm.compact()).as("and outside a transaction it runs").isTrue();
+      } catch (final IOException | InterruptedException e) {
+        throw new IllegalStateException(e);
       } finally {
         db.drop();
       }
