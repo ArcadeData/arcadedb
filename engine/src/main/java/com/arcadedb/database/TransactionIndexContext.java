@@ -204,6 +204,13 @@ public class TransactionIndexContext {
      * Zero on every entry a lane restored wholesale by {@link #setKeys} carries, which records no write order. The
      * per-RID pick then falls back to the first entry in key order - exactly what that path did before this field
      * existed, so it is left no worse than it was rather than silently given a wrong answer.
+     * <p>
+     * <b>Deliberately NOT part of {@link #equals}/{@link #hashCode}</b>, and it must stay that way. The per-key map
+     * in {@code addIndexKeyLock} identifies an entry by its key (and, on a non-unique index, its RID) so that a
+     * later operation on the same key REPLACES the earlier one - which is what collapses a {@code REMOVE} onto the
+     * {@code ADD} it retires. Including the write order in equality would make every entry distinct, the map would
+     * accumulate one per write instead of one per key, and the dedup this class is built around would quietly stop
+     * happening (PR #8001 review).
      */
     public final int               sequence;
     public       RID               oldRid; // for REPLACE created from same-bucket REMOVE→ADD: the old RID being replaced
@@ -371,11 +378,24 @@ public class TransactionIndexContext {
       return;
     }
     final List<TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> lanes = orderedLanesPerIndex.get(owner);
-    if (lanes != null) {
-      lanes.remove(lane);
-      if (lanes.isEmpty())
-        orderedLanesPerIndex.remove(owner);
-    }
+    if (lanes == null)
+      return;
+
+    // BY IDENTITY, never List.remove(Object) (PR #8001 review). TreeMap inherits equals() from AbstractMap, so it
+    // compares by CONTENT - and two empty ones are always equal. An index can own more than one lane (a compaction
+    // that renames it mid-transaction opens a second one under the new name), and the lane reaching here has just
+    // been emptied, so a content-equality removal could evict the OTHER lane of the same index instead. That lane
+    // would still be in indexEntries and still be replayed by commit(), but no longer reachable through the
+    // identity fast path: a read-your-own-writes search would silently answer with part of the transaction's own
+    // writes missing. Which is the failure mode this map is an IdentityHashMap to avoid in the first place.
+    for (int i = 0; i < lanes.size(); i++)
+      if (lanes.get(i) == lane) {
+        lanes.remove(i);
+        break;
+      }
+
+    if (lanes.isEmpty())
+      orderedLanesPerIndex.remove(owner);
   }
 
   private int countOwnedOrderedLanes() {

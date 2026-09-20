@@ -551,9 +551,16 @@ public class LocalSchema implements Schema {
     // Only now, with nothing able to reach them through the schema any more. A TimeSeries type owns an engine with
     // open files; the rebuild has already opened a fresh one per type, so leaving these behind would leak them.
     // Never the types the new graph carries: a rebuild that reused an instance would otherwise close the live one.
-    if (superseded != null) {
+    if (superseded != null && !superseded.isEmpty()) {
+      // The survivors as an identity SET, built once. containsValue() is itself a scan, so asking it per superseded
+      // type made this O(superseded x published) - and a follower rebuilds its schema once per applied entry, on
+      // schemas that reach four figures of types (issue #6982 reported 1209). By identity because what must not be
+      // closed is the very INSTANCE the new graph is serving, whatever it calls itself (PR #8001 review).
+      final Set<LocalDocumentType> survivors = Collections.newSetFromMap(new IdentityHashMap<>(published.size()));
+      survivors.addAll(published.values());
+
       for (final LocalDocumentType type : superseded.values())
-        if (type instanceof final LocalTimeSeriesType tsType && !published.containsValue(tsType)) {
+        if (type instanceof final LocalTimeSeriesType tsType && !survivors.contains(tsType)) {
           try {
             tsType.close();
           } catch (final Exception e) {

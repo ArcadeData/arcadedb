@@ -46,6 +46,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -380,6 +381,14 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    * committed side skips every RID the overlay holds.
    */
   private static List<RidScore> mergeByScore(final List<RidScore> committed, final List<RidScore> pending, final int k) {
+    // Asserted rather than only documented (PR #8001 review): a caller that handed this an unsorted or overlapping
+    // pair would not fail here, it would return a ranking that is quietly wrong - and Surefire runs this repository
+    // with -ea, so a caller added without those properties trips this before it can ship. Not a hard check: the two
+    // lists are the whole result set of a query, and re-validating them per query would pay O(n) on the hot path to
+    // guard against a mistake only a code change can introduce.
+    assert isDescending(committed) && isDescending(pending) : "mergeByScore() inputs must be sorted by score, highest first";
+    assert disjoint(committed, pending) : "mergeByScore() inputs must be disjoint: the committed side skips every RID the overlay holds";
+
     if (pending.isEmpty())
       return committed;
     if (committed.isEmpty())
@@ -395,6 +404,25 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
         merged.add(pending.get(p++));
     }
     return merged;
+  }
+
+  private static boolean isDescending(final List<RidScore> scores) {
+    for (int i = 1; i < scores.size(); i++)
+      if (scores.get(i - 1).score() < scores.get(i).score())
+        return false;
+    return true;
+  }
+
+  private static boolean disjoint(final List<RidScore> a, final List<RidScore> b) {
+    if (a.isEmpty() || b.isEmpty())
+      return true;
+    final Set<RID> seen = new HashSet<>(a.size() * 4 / 3 + 1);
+    for (final RidScore r : a)
+      seen.add(r.rid());
+    for (final RidScore r : b)
+      if (seen.contains(r.rid()))
+        return false;
+    return true;
   }
 
   /**
