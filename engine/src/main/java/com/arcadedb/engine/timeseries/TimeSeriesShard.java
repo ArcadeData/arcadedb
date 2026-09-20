@@ -22,12 +22,12 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.Component;
 import com.arcadedb.engine.OwnTransaction;
+import com.arcadedb.engine.timeseries.TimeSeriesSealedStore.BlockDirectorySnapshot;
 import com.arcadedb.engine.timeseries.codec.DeltaOfDeltaCodec;
 import com.arcadedb.engine.timeseries.codec.DictionaryCodec;
 import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.engine.timeseries.TimeSeriesSealedStore.BlockDirectorySnapshot;
 import com.arcadedb.schema.LocalSchema;
 
 import java.io.File;
