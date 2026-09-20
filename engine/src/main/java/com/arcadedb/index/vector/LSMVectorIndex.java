@@ -8707,8 +8707,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
           final float[] vector = VectorUtils.toFloatArray(keys[0], metadata.encoding);
           if (vector.length == metadata.dimensions)
             return new ComparableVector(vector);
-        } catch (final IllegalArgumentException ignored) {
+        } catch (final RuntimeException ignored) {
           // Not a vector this index can key on: fall through to the placeholder. The REMOVE is queued either way.
+          //
+          // Broader than the IllegalArgumentException put() catches, on purpose (PR #8001 review). For put() the
+          // key IS the data, so a conversion it cannot make has to be raised to a caller still on the stack. Here
+          // the key is only a dedup hint - the removal resolves what to tombstone through the RID reverse index
+          // and never reads it - so there is no failure to report, and remove() must not gain a way to throw that
+          // it did not have before this method existed. A conversion that grows a new unchecked failure mode for
+          // some future encoding therefore costs the dedup, not the delete.
         }
     }
     return new ComparableVector(new float[metadata.dimensions]);

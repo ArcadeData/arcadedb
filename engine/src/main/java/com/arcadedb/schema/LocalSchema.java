@@ -2555,7 +2555,12 @@ public class LocalSchema implements Schema {
     // staged one - so the published graph is neither emptied nor mutated here, and the TimeSeries types it holds
     // are closed by commitStagedPublication() once the replacement is live rather than before it exists (issue
     // #7961). A readConfiguration() outside a staging window still writes straight into the live map and is
-    // responsible for its own tear-down, which is what the else arm does.
+    // responsible for its own tear-down, which is what the arm below does.
+    //
+    // That arm is unreachable today - both callers, load() and loadIncremental(), run inside a
+    // beginStagedPublication()/endStagedPublication() bracket - and is kept for the same reason the setKeys
+    // fallback in TransactionIndexContext.getIndexKeyLanes is: a third caller must not silently inherit the
+    // staging assumption. It is NOT covered by a test, so anything relying on it needs to bring one.
     final Map<String, LocalDocumentType> graph = typeMap();
     if (graph == published.types())
       closeTimeSeriesTypesOf(graph);
