@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterAll;
@@ -117,7 +118,7 @@ class PathSubgraphComponentTest {
         """).next();
 
     final List<?> nodes = result.getProperty("nodes");
-    assertThat(((com.arcadedb.graph.Vertex) nodes.get(0)).getInteger("id")).isEqualTo(0);
+    assertThat(((Vertex) nodes.get(0)).getInteger("id")).isEqualTo(0);
   }
 
   @Test
