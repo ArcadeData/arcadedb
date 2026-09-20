@@ -2284,17 +2284,28 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // the state the try block has just failed on. Letting that throw would REPLACE the failure being reported,
       // and since #7495 that failure is the RaftLogEntryDecodeException whose whole purpose is to quarantine the
       // database instead of skipping the entry silently. The release is bookkeeping; the apply result is not.
+      //
+      // Since issue #7984 the decode case does not reach here at all: release() is total over the WAL payload,
+      // because bytes it cannot parse are bytes no reservation was ever taken from (see its javadoc). This catch
+      // is what is left - a guard against anything else the bookkeeping could ever raise, not the thing that
+      // makes the decode failure survivable.
       try {
         pageVersions.release(databaseName, pages, decoded.walData());
       } catch (final RuntimeException e) {
         // Attached to the apply's own failure when there is one, so the pair is diagnosable from a single stack
-        // trace, and logged when the apply succeeded and there is nothing to attach it to.
+        // trace, and logged when the apply succeeded and there is nothing to attach it to. Reservations left
+        // behind are NOT swept: dropIfStale exempts a reservation confirmed at append time, which every
+        // reservation of an entry that reached this apply is. They are evicted when the database's ledger is
+        // cleared - a snapshot install, a database drop, or the next change of leadership - and until then they
+        // sit at the version the local copy now carries, which neither fences the page in the engine's phase-1
+        // check (it compares strictly greater) nor mis-validates the next entry on it.
         if (applyFailure != null)
           applyFailure.addSuppressed(e);
         else
           LogManager.instance().log(this, Level.WARNING,
-              "Cannot release the page-version reservations of the Raft entry at index %d (db=%s): %s. The stale-reservation "
-                  + "sweep clears them; the entry's own outcome is unaffected", e, entryIndex, databaseName, e.getMessage());
+              "Cannot release the page-version reservations of the Raft entry at index %d (db=%s): %s. They are evicted "
+                  + "when this database's ledger is next cleared; the entry's own outcome is unaffected",
+              e, entryIndex, databaseName, e.getMessage());
       }
     }
   }
