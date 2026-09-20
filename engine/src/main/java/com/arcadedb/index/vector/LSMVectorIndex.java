@@ -3274,6 +3274,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // snapshotted, so an index under sustained ingestion stopped absorbing anything at all. Held only for the
         // map build, which is a few tens of bytes a pending vector and no I/O; the per-vector validation that
         // follows stays unlocked, which is the property issue #5391 added.
+        //
+        // Deliberately NOT one critical section with the deltaSnapshotId/mutationsAtBuildStart pair taken at the
+        // top of this method, and it does not need to be (PR #8001 review). That pair has to describe ONE instant
+        // because the two answers are compared against each other. This map is only a CACHE: it saves the
+        // validation below a record read it can perform perfectly well itself. A writer landing between the two
+        // sections can append an entry this map misses, and the validation then reads that vector back instead of
+        // finding it here; it can delete one, and the validation finds the id tombstoned and skips it. Neither
+        // changes what the build produces - only how it got there.
         deltaSnapshotById = new HashMap<>(deltaVectors.size() * 4 / 3 + 1);
         lock.readLock().lock();
         try {

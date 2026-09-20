@@ -544,6 +544,13 @@ public class LocalSchema implements Schema {
     // reaches it only from here on, by which point every component's onAfterSchemaLoad() has run - and it sees
     // either the previous graph entire or the new one entire, never a type mid-rebuild, because what changes is
     // one reference and not the contents of a map somebody may be walking.
+    //
+    // Last, and therefore AFTER the two maps above, which leaves a window where getIndexByName() answers with a
+    // new-generation index while getType() still answers with the old-generation type. That window is harmless in
+    // the one direction it could matter (PR #8001 review): a LocalDocumentType holds its own TypeIndex references
+    // in indexesByProperties and never resolves an index through indexMap, so no reader that goes THROUGH a type
+    // can observe the mismatch. The reverse order would not be harmless - it would publish a type graph pointing
+    // at indexes whose names do not resolve yet - which is why this order and not the other one.
     final Map<String, LocalDocumentType> published = new ConcurrentHashMap<>(stagedTypes);
     final Map<String, LocalDocumentType> superseded = supersededTypes;
     types = published;

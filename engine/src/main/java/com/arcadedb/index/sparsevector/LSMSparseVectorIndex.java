@@ -436,7 +436,19 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     final TransactionContext tx = underlyingIndex.getMutableIndex().getDatabase().getTransactionIfExists();
     if (tx == null || tx.getStatus() != TransactionContext.STATUS.BEGUN)
       return null;
-    return SparseTransactionOverlay.of(tx.getIndexChanges().getUnorderedIndexKeys(getName()));
+
+    // Cached on the transaction under the lane version, exactly as the dense overlay is (issue #7967, and the gap
+    // named in the PR #8001 review). The overlay is a pure function of the lanes, and a sparse one is dearer to
+    // build than a dense one: a learned-sparse record queues one entry per non-zero dimension, hundreds of them,
+    // so a transaction that ingests and searches in turn was replaying its whole posting set per search.
+    final TransactionIndexContext changes = tx.getIndexChanges();
+    final Object cached = changes.cachedIndexView(this);
+    if (cached != null)
+      return cached == TransactionIndexContext.NO_VIEW ? null : (SparseTransactionOverlay) cached;
+
+    final SparseTransactionOverlay built = SparseTransactionOverlay.of(changes.getUnorderedIndexKeys(getName()));
+    changes.cacheIndexView(this, built);
+    return built;
   }
 
   /**
@@ -516,6 +528,14 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       // The excluded set is applied INSIDE the DAAT loop rather than by filtering the result: a grouped search
       // counts admissions per group as it goes, so dropping rows afterwards would leave groups short of their cap
       // with candidates still available (issue #7966).
+      //
+      // `limit` and not `limit + <groups the pending rows can promote>`, though the two-stage admission CAN leave a
+      // group short of its cap when a pending row promotes a group the committed-only pass had ranked out (PR
+      // #8001 review). Widening it was tried and reverted: the committed-only pass has the same shortfall on its
+      // own, so widening made the in-transaction answer BETTER than the one the same search gives after the
+      // commit - and "the two agree" is the contract issue #7966 exists to establish, which an answer that is
+      // better in one direction breaks just as surely as one that is worse. The shortfall is real on both sides
+      // and is issue #8002; fixing it belongs where the admission is decided, not here.
       committed = engine.topKGrouped(queryIndices, effectiveWeights, limit, groupSize, groupKeyResolver, allowedRIDs,
           overlay != null ? overlay.touchedRIDs() : null);
     } catch (final IOException e) {
@@ -528,12 +548,20 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     // The transaction's rows carry no group accounting of their own, so the caps are re-applied over the union. The
     // engine already enforced them on the committed half, which makes this pass idempotent there - the same
     // relationship the SQL layer's own re-application has with a single-bucket result.
+    //
+    // long, not int (PR #8001 review): limit and groupSize are validated as positive and nothing bounds them from
+    // above, so their product overflows to a negative int at around 46341 each. That would hand a negative k to the
+    // overlay - which answers List.of(), silently dropping the transaction's own rows - and a negative capacity to
+    // the ArrayList below, which throws. The SQL function that reaches this today caps the product long before
+    // that, but this method is public and an embedded caller is not going through it. Same cast the sibling code
+    // already makes for the same product (LSMVectorIndex, SQLFunctionVectorNeighbors).
+    final int rowBudget = (int) Math.min((long) limit * groupSize, MAX_GROUPED_ROWS);
+
     final List<RidScore> merged = mergeByScore(committed,
-        overlay.topK(queryIndices, effectiveWeights, allowedRIDs, limit * groupSize),
-        Integer.MAX_VALUE);
+        overlay.topK(queryIndices, effectiveWeights, allowedRIDs, rowBudget), Integer.MAX_VALUE);
 
     final GroupAdmissionState groups = new GroupAdmissionState(limit, groupSize);
-    final List<RidScore> out = new ArrayList<>(Math.min(merged.size(), limit * groupSize));
+    final List<RidScore> out = new ArrayList<>(Math.min(merged.size(), rowBudget));
     for (final RidScore candidate : merged) {
       if (groups.isFull())
         break;
@@ -542,6 +570,13 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     }
     return out;
   }
+
+  /**
+   * Ceiling on the rows one grouped search may materialise, so {@code limit * groupSize} cannot be turned into an
+   * allocation by a caller that passes two large numbers. Matches the over-fetch cap the ungrouped path already
+   * applies, and the order of magnitude {@code SQLFunctionVectorSparseNeighbors} enforces before it calls in.
+   */
+  private static final int MAX_GROUPED_ROWS = 100_000;
 
   /** Counts live postings under one dimension via the engine's merged cursor. O(df). */
   private long countPostings(final int dim) {
