@@ -96,6 +96,51 @@ class PathSubgraphGhostEndpointTest {
     assertThat(relationships).hasSize(1);
   }
 
+  /**
+   * {@code path.expandConfig} defaults to a breadth-first walk, so its BFS branch is the one most callers hit. It
+   * resolves the endpoint before marking the RID visited, so a ghost is reported every time it is met rather than
+   * only the first time - and no path is ever built through it.
+   */
+  @Test
+  void expandConfigDoesNotWalkThroughTheGhostVertex() {
+    final ResultSet rs = database.query("cypher", """
+        MATCH (a:Node {name: 'A'})
+        CALL path.expandconfig(a, {relationshipFilter: 'LINK', minLevel: 1, maxLevel: 3}) YIELD path
+        RETURN path
+        """);
+
+    int paths = 0;
+    while (rs.hasNext()) {
+      final List<?> nodes = (List<?>) ((java.util.Map<?, ?>) rs.next().getProperty("path")).get("nodes");
+      for (final Object node : nodes)
+        assertThat(((com.arcadedb.graph.Vertex) node).getString("name")).isIn("A", "B");
+      ++paths;
+    }
+    assertThat(paths).isPositive();
+  }
+
+  /**
+   * {@code path.spanningTree} reaches the same endpoint from two different vertices in this fixture, so it also
+   * exercises the second encounter with an endpoint already known to be missing.
+   */
+  @Test
+  void spanningTreeDoesNotWalkThroughTheGhostVertex() {
+    final ResultSet rs = database.query("cypher", """
+        MATCH (a:Node {name: 'A'})
+        CALL path.spanningtree(a, {relationshipFilter: 'LINK'}) YIELD path
+        RETURN path
+        """);
+
+    int paths = 0;
+    while (rs.hasNext()) {
+      final List<?> nodes = (List<?>) ((java.util.Map<?, ?>) rs.next().getProperty("path")).get("nodes");
+      for (final Object node : nodes)
+        assertThat(((com.arcadedb.graph.Vertex) node).getString("name")).isIn("A", "B");
+      ++paths;
+    }
+    assertThat(paths).isPositive();
+  }
+
   @Test
   void subgraphNodesDropsTheGhostVertex() {
     final ResultSet rs = database.query("cypher", """

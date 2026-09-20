@@ -132,9 +132,10 @@ public class PathSpanningTree extends AbstractPathProcedure {
             final RID neighborId = direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut();
 
             if (!visited.contains(neighborId) && matchesLabels(database, neighborId, labelFilter)) {
-              visited.add(neighborId);
-
+              // RESOLVED BEFORE THE RID IS MARKED VISITED: A RID MARKED VISITED BY A LOAD THAT THEN FAILED WOULD MAKE
+              // EVERY LATER EDGE TO THE SAME GHOST SHORT-CIRCUIT, SO ONLY THE FIRST ONE WOULD EVER BE REPORTED
               final Vertex neighbor = neighborId.asVertex();
+              visited.add(neighborId);
 
               final List<Object> newPath = new ArrayList<>(current.path.size() + 2);
               newPath.addAll(current.path);

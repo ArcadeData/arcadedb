@@ -261,8 +261,10 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
   }
 
   /**
-   * {@link #matchesLabels(Vertex, String[])} answered from the RID alone. A vertex's label is its type name, and a
-   * bucket belongs to exactly one type, so the schema knows the answer without the record being read.
+   * Tells whether a vertex's label is one the caller accepts, answered from the RID alone: a vertex's label is its
+   * type name, and a bucket belongs to exactly one type, so the schema knows the answer without the record being
+   * read. That is the whole point - it replaced a {@code Vertex}-based overload that could only answer once the
+   * record was in hand, which meant loading precisely the vertices the filter exists to leave out.
    */
   protected boolean matchesLabels(final Database database, final RID vertexId, final String[] labels) {
     if (labels == null || labels.length == 0)
@@ -277,18 +279,6 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
       if (vertexType.equals(label))
         return true;
 
-    return false;
-  }
-
-  protected boolean matchesLabels(final Vertex vertex, final String[] labels) {
-    if (labels == null || labels.length == 0)
-      return true;
-
-    final String vertexType = vertex.getTypeName();
-    for (final String label : labels) {
-      if (vertexType.equals(label))
-        return true;
-    }
     return false;
   }
 
