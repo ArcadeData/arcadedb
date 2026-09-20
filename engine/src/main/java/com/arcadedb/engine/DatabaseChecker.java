@@ -81,6 +81,13 @@ public class DatabaseChecker {
   private       boolean             reclaimUnreferencedFiles = false;
   /** #7952: see {@link #setDeleteInvalidRecords(boolean)} for why this is not part of {@link #fix} either. */
   private       boolean             deleteInvalidRecords = false;
+  /**
+   * The bound in force for this checker. A package-private seam, on the same pattern as
+   * {@code CheckDatabaseStatement.createChecker}: the multi-pass loop it drives cannot otherwise be proved without
+   * a test that writes a million invalid records, and a loop nothing exercises is a loop nobody knows terminates.
+   * Never set outside a test.
+   */
+  private int invalidRecordsPerRepairPass = INVALID_RECORDS_PER_REPAIR_PASS;
   private       Set<Object>         buckets      = Collections.emptySet();
   private       Set<String>         types        = Collections.emptySet();
   /**
@@ -91,6 +98,21 @@ public class DatabaseChecker {
    * call. Naming ten vertices of one type costs one sweep; naming one vertex of each of three types costs three.
    */
   private       Set<RID>            records      = Collections.emptySet();
+  /**
+   * How many records one repair PASS over a bucket takes out before the next pass goes back for more (issue #7952,
+   * PR review).
+   * <p>
+   * This is a memory bound, not a transaction bound - {@link RepairTransaction} owns the second and measures it in
+   * dirtied pages, which is what a WAL (and under HA a Raft) entry is actually made of. What this bounds is the list
+   * of pending removals a pass may hold: at 8 bytes per entry, 1M is 8MB, and a bucket with more violations than
+   * that simply gets another pass rather than a bigger array.
+   * <p>
+   * Deliberately NOT small. Every pass past the first costs one extra walk of the bucket, so the value trades heap
+   * against re-scans: at a million, a bucket has to hold more than a million violating records before ANY database
+   * pays a second walk, and one whose every record a DDL invalidated pays one extra walk per million. A batch of a
+   * few thousand would bound the memory no better in practice and charge hundreds of walks for it.
+   */
+  private static final int INVALID_RECORDS_PER_REPAIR_PASS = 1_000_000;
   /**
    * #7952: the one summary line the existence-constraint pass adds when records are left in that state, naming both
    * repairs. Shared by the type-wide and {@code RECORD}-scoped arms so the advice cannot drift between them, and
@@ -1321,6 +1343,11 @@ public class DatabaseChecker {
     return this;
   }
 
+  DatabaseChecker setInvalidRecordsPerRepairPass(final int invalidRecordsPerRepairPass) {
+    this.invalidRecordsPerRepairPass = invalidRecordsPerRepairPass;
+    return this;
+  }
+
   public DatabaseChecker setMaxWarnings(final int maxWarnings) {
     this.maxWarnings = maxWarnings;
     return this;
@@ -1780,35 +1807,6 @@ public class DatabaseChecker {
       result.put("totalConstraintViolations", (Long) result.get("totalConstraintViolations") + 1);
     if (outcome == CollectionUtils.BoundedAdd.RETAINED)
       addWarning("record " + rid + " does not satisfy an existence constraint of its own type: " + violation);
-  }
-
-  /**
-   * How many records one repair PASS over a bucket takes out before the next pass goes back for more (issue #7952,
-   * PR review).
-   * <p>
-   * This is a memory bound, not a transaction bound - {@link RepairTransaction} owns the second and measures it in
-   * dirtied pages, which is what a WAL (and under HA a Raft) entry is actually made of. What this bounds is the list
-   * of pending removals a pass may hold: at 8 bytes per entry, 1M is 8MB, and a bucket with more violations than
-   * that simply gets another pass rather than a bigger array.
-   * <p>
-   * Deliberately NOT small. Every pass past the first costs one extra walk of the bucket, so the value trades heap
-   * against re-scans: at a million, a bucket has to hold more than a million violating records before ANY database
-   * pays a second walk, and one whose every record a DDL invalidated pays one extra walk per million. A batch of a
-   * few thousand would bound the memory no better in practice and charge hundreds of walks for it.
-   */
-  private static final int INVALID_RECORDS_PER_REPAIR_PASS = 1_000_000;
-
-  /**
-   * The bound in force for this checker. A package-private seam, on the same pattern as
-   * {@code CheckDatabaseStatement.createChecker}: the multi-pass loop it drives cannot otherwise be proved without
-   * a test that writes a million invalid records, and a loop nothing exercises is a loop nobody knows terminates.
-   * Never set outside a test.
-   */
-  private int invalidRecordsPerRepairPass = INVALID_RECORDS_PER_REPAIR_PASS;
-
-  DatabaseChecker setInvalidRecordsPerRepairPass(final int invalidRecordsPerRepairPass) {
-    this.invalidRecordsPerRepairPass = invalidRecordsPerRepairPass;
-    return this;
   }
 
   /**
