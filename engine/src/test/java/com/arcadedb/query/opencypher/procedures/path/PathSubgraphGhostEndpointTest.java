@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -30,6 +31,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -111,9 +113,9 @@ class PathSubgraphGhostEndpointTest {
 
     int paths = 0;
     while (rs.hasNext()) {
-      final List<?> nodes = (List<?>) ((java.util.Map<?, ?>) rs.next().getProperty("path")).get("nodes");
+      final List<?> nodes = (List<?>) ((Map<?, ?>) rs.next().getProperty("path")).get("nodes");
       for (final Object node : nodes)
-        assertThat(((com.arcadedb.graph.Vertex) node).getString("name")).isIn("A", "B");
+        assertThat(((Vertex) node).getString("name")).isIn("A", "B");
       ++paths;
     }
     assertThat(paths).isPositive();
@@ -133,9 +135,9 @@ class PathSubgraphGhostEndpointTest {
 
     int paths = 0;
     while (rs.hasNext()) {
-      final List<?> nodes = (List<?>) ((java.util.Map<?, ?>) rs.next().getProperty("path")).get("nodes");
+      final List<?> nodes = (List<?>) ((Map<?, ?>) rs.next().getProperty("path")).get("nodes");
       for (final Object node : nodes)
-        assertThat(((com.arcadedb.graph.Vertex) node).getString("name")).isIn("A", "B");
+        assertThat(((Vertex) node).getString("name")).isIn("A", "B");
       ++paths;
     }
     assertThat(paths).isPositive();
