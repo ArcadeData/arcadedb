@@ -50,13 +50,22 @@ public class DocumentValidator {
     // arithmetic in newDeadline() for types that never use REGEXP at all would be pure waste on that hot path.
     long regexDeadline = 0;
     boolean regexDeadlineComputed = false;
+    boolean deferred = false;
     for (Property entry : document.getType().getPolymorphicProperties()) {
       if (!regexDeadlineComputed && entry.getRegexp() != null) {
         regexDeadline = TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(document.getDatabase()));
         regexDeadlineComputed = true;
       }
-      validateField(document, entry, regexDeadline);
+      deferred |= validateFieldInternal(document, entry, regexDeadline);
     }
+
+    // The document satisfies every existence constraint it has: if it was provisional - created moments ago by this
+    // same statement, missing a property a later clause was going to supply (issue #7945) - this is the write that
+    // completed it, and the end-of-statement check has nothing left to do for it. Skipped entirely unless some
+    // statement somewhere in this JVM is holding a provisional record right now, so the ordinary write path pays
+    // one volatile read.
+    if (!deferred && DeferredExistenceChecks.anyScopeArmed() && document.getIdentity() != null)
+      DeferredExistenceChecks.completed(document);
   }
 
   /**
@@ -70,17 +79,69 @@ public class DocumentValidator {
     validateField(document, p, TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(document.getDatabase())));
   }
 
+  /**
+   * Validates one field, discarding whether the check was deferred - see {@link DeferredExistenceChecks}. That is
+   * correct for a caller validating a whole document field by field, which is what {@link #validate} does and the
+   * reason this overload exists. A caller validating a single field in isolation, in the middle of an openCypher
+   * write statement, would register the record as provisional without anything ever reporting it complete again,
+   * leaving it to be taken back at the end of the statement; no caller does that today.
+   */
   public static void validateField(final MutableDocument document, final Property p, final long regexDeadline) throws ValidationException {
-    if (p.isMandatory() && !document.has(p.getName()))
-      throwValidationException(document.getType(), p, "is mandatory, but not found on record: " + document);
+    validateFieldInternal(document, p, regexDeadline);
+  }
+
+  /**
+   * The kinds of existence constraint a property can carry, i.e. the ones that are about the property being there
+   * at all rather than about the value it holds.
+   */
+  enum ExistenceConstraint {
+    MANDATORY, NOT_NULL
+  }
+
+  /**
+   * The existence constraint the document fails to satisfy on this property, or null when it satisfies both.
+   * <p>
+   * The single definition of that rule. It has two callers who must agree on it exactly: the write path below,
+   * which refuses (or defers) the write, and {@link DeferredExistenceChecks}, which asks the same question again of
+   * the same record once the statement that deferred it has finished. Written twice, a later constraint kind added
+   * to one would be silently invisible to the other - which is the drift this method exists to make impossible.
+   * Only the rule is shared; each caller phrases its own error, because the two are raised at different moments and
+   * say different things about the record.
+   * <p>
+   * Takes a {@link Document} rather than a {@link MutableDocument} because the end-of-statement caller re-reads the
+   * record and holds the immutable form; nothing in the rule needs more than {@code has()} and {@code get()}.
+   */
+  static ExistenceConstraint unmetExistenceConstraint(final Document document, final Property p) {
+    final String name = p.getName();
+    if (p.isMandatory() && !document.has(name))
+      return ExistenceConstraint.MANDATORY;
+    if (p.isNotNull() && document.has(name) && document.get(name) == null)
+      return ExistenceConstraint.NOT_NULL;
+    return null;
+  }
+
+  /**
+   * @return true when an existence constraint the document does not satisfy has been deferred to the end of the
+   * statement instead of being raised here - see {@link DeferredExistenceChecks}
+   */
+  private static boolean validateFieldInternal(final MutableDocument document, final Property p, final long regexDeadline)
+      throws ValidationException {
+    boolean deferred = false;
+
+    final ExistenceConstraint unmetExistence = unmetExistenceConstraint(document, p);
+    if (unmetExistence != null) {
+      if (DeferredExistenceChecks.defer(document))
+        deferred = true;
+      else if (unmetExistence == ExistenceConstraint.MANDATORY)
+        throwValidationException(document.getType(), p, "is mandatory, but not found on record: " + document);
+      else
+        // NULLITY
+        throwValidationException(document.getType(), p, "cannot be null, record: " + document);
+    }
 
     final Object fieldValue = document.get(p.getName());
 
-    if (fieldValue == null) {
-      if (p.isNotNull() && document.has(p.getName()))
-        // NULLITY
-        throwValidationException(document.getType(), p, "cannot be null, record: " + document);
-    } else {
+    if (fieldValue != null) {
       if (p.getRegexp() != null)
         // REGEXP - bounded against catastrophic backtracking (issue #5886): this runs on every insert/update of
         // a validated property, reachable through any write path (REST, any wire protocol) with no query
@@ -119,6 +180,8 @@ public class DocumentValidator {
           throwValidationException(document.getType(), p, "is immutable and cannot be altered. Field value is: " + fieldValue);
       }
     }
+
+    return deferred;
   }
 
   private static void validateMaxValue(MutableDocument document, Property p, Object fieldValue) {

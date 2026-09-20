@@ -93,4 +93,20 @@ class CypherBacktickedVariableTest {
     assertThat(result.hasNext()).isTrue();
     assertThat(result.next().<Integer>getProperty("v")).isEqualTo(4);
   }
+
+  /**
+   * Backticks are quoting, not part of the name: the column a bare backticked variable projects is called what the
+   * variable is called, as it is in Neo4j. Taking the source text instead named the column "`my col`", which no
+   * consumer can ask for by name (issue #7946, where a rewritten SHOW ... WHERE has to backtick its columns
+   * because a SHOW command has columns called `default` and `access`).
+   */
+  @Test
+  void aBareBacktickedVariableProjectsTheNameWithoutItsBackticks() {
+    try (final ResultSet rs = database.query("cypher", "WITH 1 AS `my col` RETURN `my col`")) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result result = rs.next();
+      assertThat(result.getPropertyNames()).containsExactly("my col");
+      assertThat(result.<Number>getProperty("my col").intValue()).isEqualTo(1);
+    }
+  }
 }

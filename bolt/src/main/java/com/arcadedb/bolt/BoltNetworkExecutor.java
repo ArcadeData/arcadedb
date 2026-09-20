@@ -54,6 +54,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.opencypher.query.ShowCommandTail;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.ExecutionStep;
 import com.arcadedb.query.sql.executor.QueryStatistics;
@@ -825,6 +826,25 @@ public class BoltNetworkExecutor extends Thread {
 
     // Intercept known system queries (CALL dbms.components(), SHOW DATABASES, etc.)
     if (handleSystemQuery(query, stream)) {
+      // The command's own YIELD/WHERE tail, applied to the table it produced. Parsed and then dropped before
+      // issue #7946, so SHOW DATABASES WHERE name = $dbName - Neo4j's bootstrap existence check - answered with
+      // every database on the server no matter what was bound.
+      try {
+        applySystemQueryTail(query, params, stream);
+      } catch (final CommandParsingException e) {
+        stream.close(this, "RUN failure");
+        sendFailure(classifyParsingError(e), e.getMessage() != null ? e.getMessage() : "Query parsing error");
+        state = State.FAILED;
+        return;
+      } catch (final Exception e) {
+        stream.close(this, "RUN failure");
+        LogManager.instance().log(this, Level.WARNING, "BOLT system query error", e);
+        sendFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR),
+            e.getMessage() != null ? e.getMessage() : "Database error");
+        state = State.FAILED;
+        return;
+      }
+
       openStream(stream);
 
       final Map<String, Object> metadata = new LinkedHashMap<>();
@@ -1387,6 +1407,33 @@ public class BoltNetworkExecutor extends Thread {
     if (CauseChain.contains(error, ServerSecurityException.class))
       return BoltErrorCodes.FORBIDDEN_ERROR;
     return classifyExecutionError(error, BoltErrorCodes.DATABASE_ERROR);
+  }
+
+  /**
+   * Applies a system query's {@code YIELD}/{@code WHERE} tail to the rows {@link #handleSystemQuery} produced.
+   * <p>
+   * Every intercepted command goes through here, not just {@code SHOW DATABASES}: the tail belongs to the
+   * openCypher {@code SHOW}/{@code CALL} grammar, so a command answered from the server rather than from a query
+   * plan has to honour it or silently answer a different question - which is what issue #7946 reports. The rows
+   * are filtered by the openCypher engine itself, so the predicate means here exactly what it means in a query
+   * (see {@link ShowCommandTail}), including the client's own parameters.
+   * <p>
+   * A command with no tail - by far the common case - costs one lexer pass and nothing else.
+   */
+  private void applySystemQueryTail(final String query, final Map<String, Object> params, final BoltQueryStream stream) {
+    if (stream.syntheticResults == null || stream.fields == null)
+      return;
+
+    // apply() answers with the table unchanged when the command has no tail, so it is called unconditionally
+    // rather than after a hasTail() that would tokenize the query a second time.
+    final ShowCommandTail.Table table = ShowCommandTail.apply(database, query, stream.fields, stream.syntheticResults,
+        params);
+    if (table.rows() == stream.syntheticResults && table.fields() == stream.fields)
+      return;
+
+    stream.fields = table.fields();
+    // Copied into a list PULL may consume destructively: it removes each row as it sends it.
+    stream.syntheticResults = new ArrayList<>(table.rows());
   }
 
   /**
