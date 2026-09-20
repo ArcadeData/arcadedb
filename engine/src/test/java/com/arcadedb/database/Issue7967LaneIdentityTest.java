@@ -18,8 +18,11 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.database.TransactionIndexContext.ComparableKey;
+import com.arcadedb.database.TransactionIndexContext.IndexKey;
 import com.arcadedb.database.TransactionIndexContext.IndexKey.IndexKeyOperation;
 import com.arcadedb.index.IndexInternal;
+import java.util.Map;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -113,6 +116,43 @@ class Issue7967LaneIdentityTest {
     assertThat(changes.getTotalEntries())
         .as("and the surviving lane's entry is still queued for the commit to replay")
         .isEqualTo(1);
+  }
+
+  /**
+   * The commit picks one winner per RID across ALL of an index's lanes, not one per lane.
+   * <p>
+   * Raised by CodeRabbit on PR #8001. An index that renames itself mid-transaction owns a lane under each name, and
+   * a record rewritten either side of that rename has an entry in both. Deduplicating per lane hands the batch a
+   * winner from each - which is exactly the duplicate-embedding defect issue #7971 exists to close, reintroduced
+   * through a second lane. The survivor has to be chosen by write order across the lanes.
+   */
+  @Test
+  void theWinnerPerRidIsChosenAcrossEveryLaneOfTheIndex() {
+    final TransactionIndexContext changes = new TransactionIndexContext(null);
+    final IndexInternal index = nonUniqueIndex("Doc_0_first");
+    final RID rid = new RID(1, 1);
+
+    changes.addIndexKeyLock(index, IndexKeyOperation.ADD, new Object[] { "v1" }, rid);
+
+    Mockito.when(index.getName()).thenReturn("Doc_0_second");
+    changes.addIndexKeyLock(index, IndexKeyOperation.ADD, new Object[] { "v2" }, rid);
+
+    final var lanes = changes.getIndexKeyLanes(index);
+    assertThat(lanes).as("precondition: the rename opened a second lane").hasSize(2);
+
+    // One entry in each lane, for one RID. The later write is the one on the second lane.
+    final IndexKey first = onlyEntryOf(lanes.get(0));
+    final IndexKey second = onlyEntryOf(lanes.get(1));
+    assertThat(second.sequence)
+        .as("the entry on the lane opened after the rename must carry the later write order")
+        .isGreaterThan(first.sequence);
+  }
+
+  private static IndexKey onlyEntryOf(final java.util.TreeMap<ComparableKey, Map<IndexKey, IndexKey>> lane) {
+    assertThat(lane).hasSize(1);
+    final Map<IndexKey, IndexKey> values = lane.firstEntry().getValue();
+    assertThat(values).hasSize(1);
+    return values.values().iterator().next();
   }
 
   private static IndexInternal nonUniqueIndex(final String name) {

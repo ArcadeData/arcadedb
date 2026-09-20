@@ -516,47 +516,28 @@ public class TransactionIndexContext {
       }
     }
 
+    // Per dense vector index, the winning entry per RID across ALL of that index's lanes. Identity-keyed for the
+    // same reason the lane map is: which index a batch belongs to is a question about the object.
+    final Map<LSMVectorIndex, Map<RID, IndexKey>> vectorBatches = new IdentityHashMap<>();
+
     for (final Map.Entry<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> entry : indexEntries.entrySet()) {
       final IndexInternal index = resolveIndex(entry.getKey());
       final Map<ComparableKey, Map<IndexKey, IndexKey>> keys = entry.getValue();
 
       // Batch optimization for vector indexes (issue #3864): collect all ADD operations
-      // and process them in a single putBatch call with one lock acquisition
-      if (index instanceof LSMVectorIndex vectorIndex && keys.size() > 1) {
-        // ONE embedding per record, and the LAST one written is the one the record holds (issue #7971).
-        //
-        // A dense vector index keeps a single live vector per RID - remove() tombstones every vector id the RID
-        // resolves to - so several ADDs for one RID here are not several entries to insert, they are one entry
-        // written several times inside this transaction. Replaying them all persists a vector id per rewrite,
-        // leaves the record indexed under every embedding it ever held during the transaction, and lets the
-        // ComparableVector order of the TreeMap being walked - a hash of the vector's contents - decide which of
-        // them a search ranks it by. The write-order stamp is what turns that back into "the last write wins":
-        // the survivor is chosen by WHEN it was queued, not by where its key sorted.
-        //
-        // The map is only consulted, never enlarged, in the overwhelmingly common shape of one ADD per RID, and
-        // it costs a fraction of the page write each surviving entry is about to pay for.
-        final Map<RID, IndexKey> lastWritePerRid = new LinkedHashMap<>(keys.size());
-
-        for (final Map.Entry<ComparableKey, Map<IndexKey, IndexKey>> keyValueEntries : keys.entrySet()) {
-          for (final IndexKey key : keyValueEntries.getValue().values()) {
-            if (key.operation == IndexKey.IndexKeyOperation.ADD ||
-                key.operation == IndexKey.IndexKeyOperation.REPLACE)
-              lastWritePerRid.merge(key.rid, key, (previous, current) -> current.sequence > previous.sequence ?
-                  current :
-                  previous);
-          }
-        }
-
-        if (!lastWritePerRid.isEmpty()) {
-          final List<Object[]> batchKeys = new ArrayList<>(lastWritePerRid.size());
-          final List<RID> batchRids = new ArrayList<>(lastWritePerRid.size());
-          for (final IndexKey key : lastWritePerRid.values()) {
-            batchKeys.add(key.keyValues);
-            batchRids.add(key.rid);
-          }
-          vectorIndex.putBatch(batchKeys, batchRids);
-        }
-
+      // and process them in a single putBatch call with one lock acquisition.
+      //
+      // Accumulated ACROSS LANES and flushed after this loop, not per lane (PR #8001 review). One index can own
+      // more than one lane - it renames itself when a compaction swaps in the component file it is named after, and
+      // the next write opens a lane under the new name (issue #6105) - so a record rewritten either side of that
+      // rename has an entry in each. Deduplicating per lane would then hand putBatch one winner from each, which is
+      // the very thing this dedup exists to prevent: the record indexed under two of the embeddings it held.
+      if (index instanceof LSMVectorIndex vectorIndex) {
+        // merge, not putAll: a later lane's entry only wins if it was written later, which is the whole point.
+        final Map<RID, IndexKey> batch = vectorBatches.computeIfAbsent(vectorIndex, i -> new LinkedHashMap<>());
+        for (final Map.Entry<RID, IndexKey> winner : lastWritePerRidOf(keys).entrySet())
+          batch.merge(winner.getKey(), winner.getValue(),
+              (previous, current) -> current.sequence > previous.sequence ? current : previous);
         continue;
       }
 
@@ -589,6 +570,29 @@ public class TransactionIndexContext {
       }
     }
 
+    // ONE embedding per record, and the LAST one written is the one the record holds (issue #7971).
+    //
+    // A dense vector index keeps a single live vector per RID - remove() tombstones every vector id the RID
+    // resolves to - so several ADDs for one RID are not several entries to insert, they are one entry written
+    // several times inside this transaction. Replaying them all persists a vector id per rewrite, leaves the
+    // record indexed under every embedding it ever held during the transaction, and lets the ComparableVector
+    // order of the TreeMap being walked - a hash of the vector's contents - decide which of them a search ranks it
+    // by. The write-order stamp is what turns that back into "the last write wins": the survivor is chosen by WHEN
+    // it was queued, not by where its key sorted, nor by which lane it landed in.
+    for (final Map.Entry<LSMVectorIndex, Map<RID, IndexKey>> batch : vectorBatches.entrySet()) {
+      final Map<RID, IndexKey> winners = batch.getValue();
+      if (winners.isEmpty())
+        continue;
+
+      final List<Object[]> batchKeys = new ArrayList<>(winners.size());
+      final List<RID> batchRids = new ArrayList<>(winners.size());
+      for (final IndexKey key : winners.values()) {
+        batchKeys.add(key.keyValues);
+        batchRids.add(key.rid);
+      }
+      batch.getKey().putBatch(batchKeys, batchRids);
+    }
+
     indexEntries.clear();
     indexPerLane.clear();
     orderedLanesPerIndex.clear();
@@ -597,6 +601,19 @@ public class TransactionIndexContext {
     ++laneVersion;
     if (cachedViews != null)
       cachedViews.clear();
+  }
+
+  /**
+   * The winning {@code ADD}/{@code REPLACE} entry per RID within one lane, by write order. Merged across the lanes
+   * of one index by {@link #commit()}, which is where "last write wins" actually has to hold.
+   */
+  private static Map<RID, IndexKey> lastWritePerRidOf(final Map<ComparableKey, Map<IndexKey, IndexKey>> keys) {
+    final Map<RID, IndexKey> winners = new LinkedHashMap<>(keys.size());
+    for (final Map.Entry<ComparableKey, Map<IndexKey, IndexKey>> keyValueEntries : keys.entrySet())
+      for (final IndexKey key : keyValueEntries.getValue().values())
+        if (key.operation == IndexKey.IndexKeyOperation.ADD || key.operation == IndexKey.IndexKeyOperation.REPLACE)
+          winners.merge(key.rid, key, (previous, current) -> current.sequence > previous.sequence ? current : previous);
+    return winners;
   }
 
   public void addFilesToLock(final IntHashSet modifiedFiles) {

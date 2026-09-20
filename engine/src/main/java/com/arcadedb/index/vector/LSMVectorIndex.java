@@ -8678,9 +8678,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * The removal itself never needed a key - {@link #remove(Object[], Identifiable, boolean)} resolves what to
    * tombstone through the RID reverse index and ignores the key entirely - so this used to queue an all-zero
    * placeholder. That placeholder could never equal the real vector of the {@code ADD} it was meant to retire, so
-   * {@code TransactionIndexContext}'s per-key dedup never collapsed the pair: a transaction that rewrote one
-   * record's embedding twice left TWO live {@code ADD} entries behind, under two different keys, and the record
-   * ended up indexed under both of its embeddings at once.
+   * {@code TransactionIndexContext}'s per-key dedup never collapsed the pair, and a transaction that rewrote one
+   * record's embedding twice left TWO live {@code ADD} entries behind, under two different keys.
+   * <p>
+   * <b>What this does and does not close.</b> What stops that record being indexed under both of its embeddings is
+   * the write-order stamp {@code TransactionIndexContext.commit()} picks the surviving entry by: it answers
+   * correctly whatever keys the entries landed under, which is why it and not this is the fix for issue #7971 (PR
+   * #8001 review asked for the causal story to be exact). What this closes is the state of the QUEUE: the lane is
+   * left holding one live {@code ADD} per RID rather than one per rewrite, which is what an in-transaction reader
+   * of that lane needs - {@link TransactionVectorOverlay} contributes one row per pending RID and takes the last
+   * entry it finds, so a lane carrying three of them would have it ranking a record by an embedding the record no
+   * longer has, inside the transaction, where no commit has happened to correct it.
    * <p>
    * {@code DocumentIndexer.updateDocument} already hands the previous key tuple to {@code remove()}, so the
    * truthful key is right there. Queuing it lets the existing dedup retire the superseding {@code ADD} exactly the

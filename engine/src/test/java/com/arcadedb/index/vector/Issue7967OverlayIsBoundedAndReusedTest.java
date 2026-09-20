@@ -131,6 +131,50 @@ class Issue7967OverlayIsBoundedAndReusedTest extends TestHelper {
   }
 
   /**
+   * Rewriting a row the budget already DECLINED must not hand it a payload back for free.
+   * <p>
+   * The gate used to read "is this RID already a key in the map", which is true for a declined row as much as for a
+   * resident one - so a transaction that outran the budget and then rewrote its declined rows crept back over it,
+   * one row at a time, which is the one thing the budget exists to stop. Found in the review of PR #8001.
+   */
+  @Test
+  void rewritingADeclinedRowDoesNotWinItsPayloadBack() {
+    GlobalConfiguration.VECTOR_INDEX_DELTA_CACHE_SIZE.setValue(2);
+
+    createSchema();
+    seed();
+
+    final int pendingRows = 6;
+    database.begin();
+    try {
+      final List<RID> written = new ArrayList<>(pendingRows);
+      for (int i = 0; i < pendingRows; i++)
+        written.add(database.newDocument("Doc").set("id", "pending-" + i).set("embedding", axis(i % DIMENSIONS))
+            .save().getIdentity());
+
+      // Every row past the budget was declined. Rewriting them must not promote them.
+      for (final RID rid : written)
+        database.lookupByRID(rid, true).asDocument(true).modify().set("embedding", axis(1)).save();
+
+      final TransactionVectorOverlay overlay = TransactionVectorOverlay.open((DatabaseInternal) database, subIndex(),
+          VectorizationProvider.getInstance().getVectorTypeSupport(), 2);
+      assertThat(overlay).isNotNull();
+      assertThat(overlay.pendingCount() - overlay.pendingPayloadsDeclined())
+          .as("the rows actually holding a payload must still be within the budget after the rewrites")
+          .isLessThanOrEqualTo(2);
+
+      // ...and the rows are all still answerable, which is the property the budget may never trade away. Asked for
+      // one more than there are pending rows, so a row the budget dropped would show as a missing id rather than
+      // being masked by the limit - which is why this contains rather than equals: the extra slot holds a seed row.
+      assertThat(idsOf(index().findNeighborsFromVector(axis(1), pendingRows + 1)))
+          .as("every rewritten row must still be scored at the vector it now holds, declined payload or not")
+          .contains("pending-0", "pending-1", "pending-2", "pending-3", "pending-4", "pending-5");
+    } finally {
+      database.rollback();
+    }
+  }
+
+  /**
    * The cache: several searches with no write between them build the overlay once. Measured through the lane
    * version the cache is keyed on, because the overlay itself is package-private state with no counter of its own -
    * a version that has not moved is precisely the condition under which a rebuild is not allowed to happen.
@@ -308,6 +352,10 @@ class Issue7967OverlayIsBoundedAndReusedTest extends TestHelper {
 
   private LSMVectorIndex vectorIndex() {
     return (LSMVectorIndex) subIndex();
+  }
+
+  private LSMVectorIndex index() {
+    return vectorIndex();
   }
 
   private IndexInternal subIndex() {
