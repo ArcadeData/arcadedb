@@ -583,8 +583,9 @@ public class LocalSchema implements Schema {
    *   <li>the {@link com.arcadedb.index.TypeIndex} wrapper {@link LocalDocumentType#addIndexInternal} mints, which
    *       is the name a user's {@code SELECT} resolves ({@code MyType[myProperty]}) and therefore the one that made
    *       issue #7213 observable at all: it wraps the bucket-level index whose schema hook has not run;</li>
-   *   <li>the bucket-level index {@code createBucketIndex} builds, which a type restoring its TimeSeries engine can
-   *       reach from inside {@code readConfiguration()}.</li>
+   *   <li>the bucket-level index {@code createBucketIndex} builds, which {@link #readConfiguration()} can reach
+   *       through {@code LocalDocumentType.addBucketInternal} - that propagates the type's existing indexes onto a
+   *       bucket it is binding, and the load calls it for every bucket of every type it restores.</li>
    * </ul>
    */
   void publishIndexDuringLoad(final String name, final IndexInternal index) {
@@ -605,6 +606,17 @@ public class LocalSchema implements Schema {
       stagedIndexMap.remove(name);
 
     indexMap.remove(name);
+  }
+
+  /**
+   * Bucket counterpart of {@link #removeIndexDuringLoad}, and the same reason: a name withdrawn while a load is
+   * staging has to leave the staged map too, or the commit would publish it after the drop.
+   */
+  private void removeBucketDuringLoad(final String name) {
+    if (isStagingPublication())
+      stagedBucketMap.remove(name);
+
+    bucketMap.remove(name);
   }
 
   /**
@@ -1392,7 +1404,11 @@ public class LocalSchema implements Schema {
               parentTypeIndex.removeIndexOnBucket(index);
 
             index.drop();
-            indexMap.remove(indexName);
+            // Staging-aware: createBucketIndex()'s failure rollback reaches this method for an index it registered
+            // through publishIndexDuringLoad(), and readConfiguration() can reach createBucketIndex() by way of
+            // LocalDocumentType.addBucketInternal(). A plain indexMap.remove() would be a no-op against a staged
+            // entry and commitStagedPublication() would then publish the dropped index as live.
+            removeIndexDuringLoad(indexName);
 
             if (index.getTypeName() != null) {
               final LocalDocumentType type = getType(index.getTypeName());
@@ -1405,7 +1421,7 @@ public class LocalSchema implements Schema {
                 // empty wrapper.
                 if (parentTypeIndex != null && parentTypeIndex.countIndexesOnBuckets() == 0) {
                   type.removeTypeIndexInternal(parentTypeIndex);
-                  indexMap.remove(parentTypeIndex.getName());
+                  removeIndexDuringLoad(parentTypeIndex.getName());
                 }
               }
             }
@@ -2176,7 +2192,7 @@ public class LocalSchema implements Schema {
         }
         removeFile(bucket.getFileId());
 
-        bucketMap.remove(bucketName);
+        removeBucketDuringLoad(bucketName);
 
         return null;
 

@@ -142,6 +142,13 @@ class Issue7213SchemaLoadPublicationBarrierTest extends TestHelper {
     assertThat(loadFailure.get()).isNull();
     assertThat(loader.isAlive()).isFalse();
 
+    // The other side of the same barrier, and the reason the load does not trip over its own staging: while the
+    // second thread above could not see the index, the LOADING thread could - it has to, or readConfiguration()
+    // would not find the components it has just built.
+    assertThat(hook.indexVisibleToTheLoadingThread.get())
+        .as("the loading thread must see through the barrier at the very moment another thread cannot")
+        .isTrue();
+
     // ...and the barrier publishes: the rebuilt index is reachable again, is a NEW instance, and has actually
     // loaded its vectors, which is what makes the search below answer at all.
     assertThat(schema.existsIndex(INDEX_NAME)).isTrue();
@@ -334,6 +341,8 @@ class Issue7213SchemaLoadPublicationBarrierTest extends TestHelper {
     private final CountDownLatch release = new CountDownLatch(1);
     /** Throw out of the schema hook instead of parking in it, for the load-dies-mid-window case. */
     private volatile boolean     failInsteadOfBlocking;
+    /** What the LOADING thread saw for the vector index while parked in the hook - the other side of the barrier. */
+    private final AtomicReference<Boolean> indexVisibleToTheLoadingThread = new AtomicReference<>();
 
     private BlockingHook(final String bucketName) {
       this.bucketName = bucketName;
@@ -367,6 +376,11 @@ class Issue7213SchemaLoadPublicationBarrierTest extends TestHelper {
 
     @Override
     public void onAfterSchemaLoad() {
+      // Recorded rather than asserted here: an assertion error thrown out of a load hook would surface as a broken
+      // load rather than as a failed test.
+      hook.indexVisibleToTheLoadingThread.set(
+          ((DatabaseInternal) getDatabase()).getSchema().getEmbedded().existsIndex(INDEX_NAME));
+
       hook.entered.countDown();
       if (hook.failInsteadOfBlocking)
         throw new IllegalStateException("issue7213 deliberate failure inside the schema hook pass");
