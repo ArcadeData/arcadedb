@@ -638,6 +638,11 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
               throw e;
             } catch (final Exception e) {
               // skip files that cannot be checksummed (e.g. in-flight creation)
+              // NOT NAMED IN THE ANSWER, UNLIKE /checksums' unreadableFiles (#7956). THAT ENDPOINT SCANS THE
+              // DIRECTORY, SO IT RACES A FILE DROPPED BETWEEN THE LISTING AND THE READ AND HAS TO SAY WHICH ONE
+              // IT MISSED; THIS ONE ENUMERATES THE REGISTRY, WHERE A FILE THAT IS ABSENT IS ABSENT ON EVERY
+              // NODE. THE FILES THAT ARE NOT IN THE REGISTRY - THE SEALED STORES - ARE REPORTED, BY
+              // collectSealedStores (#7338)
             }
 
           if (compactionPaused)
@@ -662,6 +667,11 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
               collectFileInfo(localChecksums, localFiles, file.getFileName(), file.calculateChecksum(), file.getSize());
             } catch (final Exception e) {
               // skip files that cannot be checksummed (e.g. in-flight creation)
+              // NOT NAMED IN THE ANSWER, UNLIKE /checksums' unreadableFiles (#7956). THAT ENDPOINT SCANS THE
+              // DIRECTORY, SO IT RACES A FILE DROPPED BETWEEN THE LISTING AND THE READ AND HAS TO SAY WHICH ONE
+              // IT MISSED; THIS ONE ENUMERATES THE REGISTRY, WHERE A FILE THAT IS ABSENT IS ABSENT ON EVERY
+              // NODE. THE FILES THAT ARE NOT IN THE REGISTRY - THE SEALED STORES - ARE REPORTED, BY
+              // collectSealedStores (#7338)
             }
           }
         if (compactionPaused)
