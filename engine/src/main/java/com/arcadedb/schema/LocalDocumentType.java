@@ -1744,7 +1744,7 @@ public class LocalDocumentType implements DocumentType {
       // can attach.
       if (propIndex != null && !propIndex.isValid()) {
         indexesByProperties.remove(propertyList);
-        schema.indexMap.remove(propIndex.getName());
+        schema.removeIndexDuringLoad(propIndex.getName());
         propIndex = null;
       }
       if (propIndex == null) {
@@ -1760,7 +1760,10 @@ public class LocalDocumentType implements DocumentType {
             customName :
             name + Arrays.toString(propertyNames).replace(" ", "");
         propIndex = new TypeIndex(typeIndexName, this);
-        schema.indexMap.put(propIndex.getName(), propIndex);
+        // Staged while a schema load is in flight (issue #7213): this wrapper is the name a query resolves, and
+        // publishing it here would hand a reader a TypeIndex over a bucket-level index that has not run its
+        // onAfterSchemaLoad() yet - for a vector index, one with no vectors loaded.
+        schema.publishIndexDuringLoad(propIndex.getName(), propIndex);
         indexesByProperties.put(propertyList, propIndex);
       }
     }
@@ -1910,8 +1913,9 @@ public class LocalDocumentType implements DocumentType {
     externalBucketIdByPrimaryBucketId.computeIfAbsent(primary.getFileId(), pid -> {
       final String extName = InternalBucketNaming.externalPropertyBucketName(primary.getName());
       final LocalBucket external;
-      if (schema.bucketMap.containsKey(extName)) {
-        external = schema.bucketMap.get(extName);
+      final LocalBucket registered = schema.lookupBucket(extName);
+      if (registered != null) {
+        external = registered;
         // Refuse to adopt a bucket that is already registered as the primary bucket of some user type.
         // {@code bucketId2TypeMap} is the authoritative source of "this bucket is a user type's primary
         // bucket": it is rebuilt from each type's {@code getBuckets(false)} list (primary buckets only;
@@ -2020,8 +2024,8 @@ public class LocalDocumentType implements DocumentType {
   void restoreExternalBuckets(final Map<String, String> primaryNameToExternalName) {
     externalBucketIdByPrimaryBucketId.clear();
     for (final Map.Entry<String, String> entry : primaryNameToExternalName.entrySet()) {
-      final LocalBucket primary = schema.bucketMap.get(entry.getKey());
-      final LocalBucket external = schema.bucketMap.get(entry.getValue());
+      final LocalBucket primary = schema.lookupBucket(entry.getKey());
+      final LocalBucket external = schema.lookupBucket(entry.getValue());
       if (primary == null) {
         LogManager.instance()
             .log(this, Level.WARNING, "Cannot restore external bucket mapping for type '%s': primary bucket '%s' not found",
@@ -2053,7 +2057,7 @@ public class LocalDocumentType implements DocumentType {
       if (externalBucketIdByPrimaryBucketId.containsKey(primaryBucket.getFileId()))
         continue;
       final String candidateName = InternalBucketNaming.externalPropertyBucketName(primaryBucket.getName());
-      final LocalBucket candidate = schema.bucketMap.get(candidateName);
+      final LocalBucket candidate = schema.lookupBucket(candidateName);
       if (candidate == null)
         continue;
       if (schema.getTypeByBucketId(candidate.getFileId()) != null) {

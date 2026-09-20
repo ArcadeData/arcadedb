@@ -103,7 +103,10 @@ public class ManualIndexBuilder extends IndexBuilder<Index> {
 
     final LocalSchema schema = database.getSchema().getEmbedded();
 
-    final IndexInternal existing = schema.indexMap.get(indexName);
+    // Through the staging-aware accessors like every other registration of a name, although this one is pure user
+    // DDL and so never runs on a loading thread: leaving the sole direct toucher of indexMap behind would make the
+    // invariant issue #7213 established "everything but this" for the next person to read it.
+    final IndexInternal existing = schema.lookupIndex(indexName);
     if (existing != null) {
       if (!ignoreIfExists)
         throw new SchemaException("Cannot create index '" + indexName + "' because already exists");
@@ -136,7 +139,7 @@ public class ManualIndexBuilder extends IndexBuilder<Index> {
         // accessor the type-index path uses, so there is one answer to "which file does this index own".
         schema.registerFile(index.getComponent());
 
-        schema.indexMap.put(indexName, index);
+        schema.publishIndexDuringLoad(indexName, index);
 
       }, false, 1, null, error -> {
         final IndexInternal indexToRemove = result.get();
@@ -144,7 +147,7 @@ public class ManualIndexBuilder extends IndexBuilder<Index> {
           // Best-effort cleanup, and it must not throw: this callback runs on the way out of the failed transaction,
           // so an exception raised here REPLACES the failure the caller needs to see - which is how the unregistered
           // file above surfaced as a bare fence error with no cause attached.
-          schema.indexMap.remove(indexName);
+          schema.removeIndexDuringLoad(indexName);
           try {
             indexToRemove.drop();
           } catch (final Exception e) {
