@@ -126,7 +126,7 @@
         <gremlin.version>3.8.2</gremlin.version>
 
 
-        <protobuf-maven-plugin.version>5.1.8</protobuf-maven-plugin.version>
+        <protobuf-maven-plugin.version>5.1.9</protobuf-maven-plugin.version>
         <grpc.version>1.84.0</grpc.version>
         <protoc.version>4.33.0</protoc.version>
         <protobuf-java.version>4.36.1</protobuf-java.version>
