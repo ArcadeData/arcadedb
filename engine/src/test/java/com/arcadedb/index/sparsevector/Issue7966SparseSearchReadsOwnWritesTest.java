@@ -272,6 +272,35 @@ class Issue7966SparseSearchReadsOwnWritesTest extends TestHelper {
         .hasSameSizeAs(all);
   }
 
+  /**
+   * Pending rows must reach group admission in full, not pre-truncated by global score.
+   * <p>
+   * The overlay's own top-k was taken at {@code limit * groupSize} BEFORE the caps were applied, so a group whose
+   * rows all rank below another group's surplus never reached the admission pass at all: with {@code limit=2},
+   * {@code groupSize=1} and pending rows A:0.99, A:0.98, B:0.50, the overlay returned both A rows, admission kept
+   * one and rejected the other, and B was never offered - while the same search after the commit returns A and B.
+   * Found by CodeRabbit on PR #8001.
+   */
+  @Test
+  void pendingRowsOfALowerScoringGroupStillReachGroupAdmission() {
+    createSchema();
+    database.transaction(() -> database.getSchema().getType(TYPE_NAME).createProperty("category", Type.STRING));
+
+    final Map<RID, Float> inside = new LinkedHashMap<>();
+    database.transaction(() -> {
+      newDoc(new int[] { 1 }, new float[] { 0.99f }).set("category", "a").save();
+      newDoc(new int[] { 1 }, new float[] { 0.98f }).set("category", "a").save();
+      newDoc(new int[] { 1 }, new float[] { 0.50f }).set("category", "b").save();
+      // Two groups of one: A's surplus row must not crowd B out of the answer.
+      inside.putAll(searchGrouped(new int[] { 1 }, new float[] { 1f }, 2, 1));
+    });
+
+    assertThat(inside.values())
+        .as("one row from each group, not two from the better-scoring one")
+        .containsExactly(0.99f, 0.50f);
+    assertAgrees(inside, searchGrouped(new int[] { 1 }, new float[] { 1f }, 2, 1));
+  }
+
   // ---------- helpers ----------
 
   private void createSchema() {
