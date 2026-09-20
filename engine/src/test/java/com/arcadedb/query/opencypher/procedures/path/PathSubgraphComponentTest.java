@@ -49,8 +49,8 @@ class PathSubgraphComponentTest {
   private static final int VERTICES = 2_000;
   private static final int EDGES    = 20_000;
 
-  // BUILT ONCE FOR THE CLASS: EVERY TEST HERE READS, SO REBUILDING A 20,000-EDGE GRAPH PER METHOD WOULD BUY NOTHING
-  // AND WOULD PUT THE CLASS IN THE SLOW LANE FOR THE FIXTURE RATHER THAN FOR THE THING UNDER TEST
+  // Built once for the class: every test here reads, so rebuilding a 20,000-edge graph per method would buy nothing
+  // and would put the class in the slow lane for the fixture rather than for the thing under test
   private static Database database;
 
   @BeforeAll
@@ -70,7 +70,7 @@ class PathSubgraphComponentTest {
       for (int i = 0; i < VERTICES; i++)
         entities[i] = database.newVertex("Entity").set("id", i).save();
 
-      // ONE CONNECTED COMPONENT: A BACKBONE PLUS RANDOM CHORDS, SO EVERY VERTEX IS REACHED MANY TIMES OVER
+      // One connected component: a backbone plus random chords, so every vertex is reached many times over
       for (int i = 1; i < VERTICES; i++)
         entities[i - 1].newEdge("RELATES", entities[i], true, (Object[]) null).save();
 
@@ -78,7 +78,7 @@ class PathSubgraphComponentTest {
       for (int i = VERTICES - 1; i < EDGES; i++)
         entities[random.nextInt(VERTICES)].newEdge("MENTIONS", entities[random.nextInt(VERTICES)], true, (Object[]) null).save();
 
-      // A CHUNK HANGING OFF THE FIRST ENTITY THROUGH AN EDGE TYPE THE FILTER LEAVES OUT
+      // A chunk hanging off the first entity through an edge type the filter leaves out
       final MutableVertex chunk = database.newVertex("Chunk").set("id", -1).save();
       entities[0].newEdge("IGNORED", chunk, true, (Object[]) null).save();
     });
@@ -139,7 +139,7 @@ class PathSubgraphComponentTest {
         RETURN size(nodes) AS total
         """).next();
 
-    // THE CHUNK IS REACHABLE (NO relationshipFilter HERE) BUT ITS LABEL IS NOT ACCEPTED
+    // The chunk is reachable (no relationshipFilter here) but its label is not accepted
     assertThat(((Number) result.getProperty("total")).intValue()).isEqualTo(VERTICES);
   }
 
@@ -151,7 +151,7 @@ class PathSubgraphComponentTest {
         RETURN size(nodes) AS total
         """).next();
 
-    // THE BACKBONE IS A CHAIN AND THE WALK IS UNDIRECTED, SO 3 HOPS FROM ITS FIRST LINK REACH 4 VERTICES
+    // The backbone is a chain and the walk is undirected, so 3 hops from its first link reach 4 vertices
     assertThat(((Number) result.getProperty("total")).intValue()).isEqualTo(4);
   }
 
@@ -178,7 +178,7 @@ class PathSubgraphComponentTest {
    */
   @Test
   void yieldingOnlyNodesReadsRecordsPerVertexNotPerEdge() {
-    // WARM UP: THE FIRST RUN ALSO PAYS FOR SCHEMA AND BUCKET SET-UP
+    // Warm up: the first run also pays for schema and bucket set-up
     database.query("cypher",
         "MATCH (n:Entity {id: 0}) CALL path.subgraphall(n, {relationshipFilter: 'MENTIONS|RELATES'}) YIELD nodes RETURN size(nodes) AS t")
         .next();

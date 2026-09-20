@@ -38,7 +38,7 @@ import java.util.*;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public abstract class AbstractPathProcedure implements CypherProcedure {
-  // PRIVATE, NOT protected: `final` on an array fixes the reference and nothing else, so a shared mutable array
+  // Private, not protected: `final` on an array fixes the reference and nothing else, so a shared mutable array
   // handed to subclasses is one stray write away from corrupting every caller of every path procedure
   private static final String[]           NO_TYPES        = new String[0];
   private static final Vertex.DIRECTION[] BOTH_DIRECTIONS = { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN };
@@ -188,16 +188,16 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
 
       for (final Vertex current : frontier) {
         if (collectEdges) {
-          // THE EDGES ARE PART OF THE ANSWER: MATERIALISE THEM, BUT STILL TAKE THE NEIGHBOUR FROM THE EDGE'S RID
-          // RATHER THAN FROM ITS RECORD, SO AN ALREADY-VISITED NEIGHBOUR COSTS NOTHING
+          // The edges are part of the answer: materialise them, but still take the neighbour from the edge's RID
+          // rather than from its record, so an already-visited neighbour costs nothing
           for (final Vertex.DIRECTION direction : BOTH_DIRECTIONS) {
             for (final Edge edge : current.getEdges(direction, edgeTypes)) {
               try {
-                // READING THE ENDPOINT IS WHAT FORCES A LAZILY LOADED EDGE, SO A GHOST EDGE RECORD SURFACES HERE
+                // Reading the endpoint is what forces a lazily loaded edge, so a ghost edge record surfaces here
                 final RID neighborId = direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut();
 
-                // AND THE EDGE IS RECORDED ONLY ONCE ITS FAR ENDPOINT HAS ANSWERED, SO relationships NEVER CARRIES AN
-                // EDGE WHOSE VERTEX nodes HAD TO LEAVE OUT
+                // and the edge is recorded only once its far endpoint has answered, so relationships never carries an
+                // edge whose vertex nodes had to leave out
                 if (visitNeighbor(database, neighborId, labelFilter, visitedNodes, ghostNodes, reachableNodes, nextFrontier)
                     && visitedEdges.add(edge.getIdentity()))
                   reachableEdges.add(edge);
@@ -207,7 +207,7 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
             }
           }
         } else {
-          // ONLY THE NODES ARE ASKED FOR: WALK THE ADJACENCY ENTRIES WITHOUT LOADING A SINGLE EDGE RECORD
+          // Only the nodes are asked for: walk the adjacency entries without loading a single edge record
           for (final RID neighborId : current.getConnectedVertexRIDs(Vertex.DIRECTION.BOTH, edgeTypes))
             visitNeighbor(database, neighborId, labelFilter, visitedNodes, ghostNodes, reachableNodes, nextFrontier);
         }

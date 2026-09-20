@@ -150,7 +150,7 @@ public class PathExpand extends AbstractPathProcedure {
 
     for (final Edge edge : edges) {
       try {
-        // THE NEIGHBOUR IS TESTED BY ITS RID AND LOADED ONLY ONCE IT IS GOING INTO THE PATH (issue #7976)
+        // The neighbour is tested by its RID and loaded only once it is going into the path (issue #7976)
         final RID neighborId = direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut();
 
         if (!visited.contains(neighborId) && matchesLabels(current.getDatabase(), neighborId, labelFilter)) {

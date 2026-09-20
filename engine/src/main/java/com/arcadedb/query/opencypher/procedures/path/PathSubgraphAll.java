@@ -111,9 +111,9 @@ public class PathSubgraphAll extends AbstractPathProcedure {
 
     final ResultInternal result = new ResultInternal();
     result.setProperty("nodes", reachableNodes);
-    // AN EMPTY LIST RATHER THAN NOTHING WHEN THE FIELD WAS NOT ASKED FOR: THE YIELD PROJECTION IN CallStep DROPS IT
-    // BEFORE ANYONE CAN READ IT, AND A DECLARED FIELD THAT IS ABSENT ALTOGETHER READS AS null TO ANY PATH THAT SKIPS
-    // THAT PROJECTION, WHICH IS A WORSE ANSWER THAN "NONE COLLECTED"
+    // An empty list rather than nothing when the field was not asked for: the YIELD projection in CallStep drops it
+    // before anyone can read it, and a declared field that is absent altogether reads as null to any path that skips
+    // that projection, which is a worse answer than "none collected"
     result.setProperty("relationships", withRelationships ? reachableEdges : List.of());
 
     return Stream.of(result);

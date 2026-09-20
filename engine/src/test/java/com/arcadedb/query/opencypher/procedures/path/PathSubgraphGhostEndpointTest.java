@@ -56,7 +56,7 @@ class PathSubgraphGhostEndpointTest {
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("LINK");
 
-    // A -LINK-> B (kept) and A -LINK-> GHOST, TWICE, SO THE SECOND REFERENCE EXERCISES THE KNOWN-GHOST PATH
+    // A -LINK-> B (kept) and A -LINK-> GHOST, twice, so the second reference exercises the known-ghost path
     database.transaction(() -> {
       final MutableVertex a = database.newVertex("Node").set("name", "A").save();
       final MutableVertex b = database.newVertex("Node").set("name", "B").save();
@@ -66,7 +66,7 @@ class PathSubgraphGhostEndpointTest {
       b.newEdge("LINK", ghost, true, (Object[]) null).save();
     });
 
-    // DELETE ONLY THE VERTEX RECORD: THE EDGES AND THE ADJACENCY ENTRIES NAMING IT STAY BEHIND
+    // Delete only the vertex record: the edges and the adjacency entries naming it stay behind
     final RID ghostRID = (RID) database.query("sql", "SELECT FROM Node WHERE name = 'GHOST'").next().getIdentity().get();
     database.transaction(() -> {
       final Bucket bucket = database.getSchema().getBucketById(ghostRID.getBucketId());
