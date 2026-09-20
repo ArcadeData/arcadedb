@@ -1774,7 +1774,7 @@ public class DatabaseChecker {
         if (constrained == null) {
           // The type declares no existence constraint (or the RID belongs to no type at all, which
           // checkScopedRecords has already reported): nothing to ask, but the step total counted these records.
-          for (int i = entry.getValue().size(); i > 0; i--)
+          for (int i = 0; i < entry.getValue().size(); i++)
             stepTick();
           continue;
         }
