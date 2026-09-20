@@ -1650,25 +1650,46 @@ public class DatabaseChecker {
    * records that exist. The first pass sees every record and owns the findings and the progress ticks; the ones
    * after it only collect.
    * <p>
-   * The loop cannot spin: it stops as soon as a pass fails to fill its quota, and also as soon as one removes
-   * nothing, which is what a {@code beforeDelete} listener vetoing every delete produces - without that second
-   * guard those records would be re-collected for ever.
+   * <b>Each pass RESUMES where the last one stopped collecting</b>, which is what makes the loop both terminate and
+   * finish the job. {@code LocalBucket.scan} visits positions in strictly ascending order (page by page, slot by
+   * slot), so the highest position a pass queued is a watermark: the next pass skips everything at or below it -
+   * before deserialising, so a skip is a comparison and not a read - and collects what follows.
+   * <p>
+   * The obvious alternative, going round again whenever the last pass DELETED something, is what this replaced and
+   * it was wrong in both directions (PR review). A batch that deleted nothing stopped the loop even though records
+   * it never reached were still removable - a {@code beforeDelete} listener vetoing the first batch abandoned every
+   * record behind it - and a batch whose records were all left in place would otherwise have been re-collected for
+   * ever. A watermark has neither problem: it advances on every full pass whatever the deletes did, so the loop is
+   * bounded by the number of violating records and a record nothing can remove is passed over rather than retried.
    *
    * @return how many records are no longer violating - see {@link #deleteConstraintViolatingRecords}
    */
   private long checkConstraintsOfBucket(final DocumentType type, final Property[] constrained, final Bucket bucket) {
     long resolved = 0;
     boolean reportFindings = true;
+    // Positions at or below this have had their turn: queued by an earlier pass, and then deleted, left in place
+    // because they no longer violated, or refused. None of them is this loop's business again.
+    long collectedUpTo = -1;
 
     while (true) {
       final BucketPositions toDelete = new BucketPositions(invalidRecordsPerRepairPass);
       final boolean report = reportFindings;
+      final long resumeAfter = collectedUpTo;
+      // The highest position this pass queued, so the next one knows where to carry on from.
+      final long[] highestQueued = { resumeAfter };
 
       // No catch/rollback, matching checkDocuments: the scan writes nothing, so committing and rolling back are the
       // same thing here, and the finally is there to end the transaction on both paths rather than to undo work.
       database.begin();
       try {
         bucket.scan((rid, view) -> {
+          // Already had its turn in an earlier pass. Skipped before the record is deserialised, so a later pass
+          // costs a walk of the bucket's slots rather than a second read of its records. The reporting pass never
+          // skips: it owns the findings and the progress ticks, and it is always the first, so it has nothing to
+          // resume after anyway.
+          if (!report && rid.getPosition() <= resumeAfter)
+            return true;
+
           try {
             final Document record = database.getRecordFactory().newImmutableRecord(database, type, rid, view, null)
                 .asDocument(true);
@@ -1678,13 +1699,11 @@ public class DatabaseChecker {
               if (violation != null) {
                 if (report)
                   addConstraintViolation(rid, violation);
-                if (fix && deleteInvalidRecords)
-                  // The return value is deliberately ignored, and the invariant that makes that safe is worth
-                  // stating because it is not local: a position this pass has no room for is a record this pass
-                  // therefore never deletes, so it is still in the bucket for the NEXT pass to find - which is
-                  // exactly what the loop below goes round for. Turning this into an early exit, or into a "could
-                  // not queue" warning, would break that.
-                  toDelete.add(rid.getPosition());
+                // A position this pass has no room for is one it therefore never deletes, so the record is still
+                // in the bucket for the next pass to find - which is what the loop below goes round for. The
+                // watermark only moves for a position actually QUEUED, so nothing is skipped over unqueued.
+                if (fix && deleteInvalidRecords && rid.getPosition() > resumeAfter && toDelete.add(rid.getPosition()))
+                  highestQueued[0] = rid.getPosition();
                 // ONE finding per record, like the write path: a record missing two mandatory properties is one
                 // incomplete record, not two, and the repair for it is the same either way.
                 break;
@@ -1708,12 +1727,15 @@ public class DatabaseChecker {
 
       reportFindings = false;
 
-      final long deletedBefore = (Long) result.get("totalDeletedConstraintViolatingRecords");
       resolved += deleteConstraintViolatingRecords(bucket.getFileId(), toDelete);
-      final boolean removedSomething = (Long) result.get("totalDeletedConstraintViolatingRecords") > deletedBefore;
 
-      if (!toDelete.isFull() || !removedSomething)
+      // Not full means this pass reached the end of the bucket, so there is nothing left to come back for. The
+      // second half is belt and braces against a non-positive budget, which only a test can set: without it a
+      // batch that can never hold anything would be "full" at zero and the watermark would never move.
+      if (!toDelete.isFull() || highestQueued[0] <= resumeAfter)
         return resolved;
+
+      collectedUpTo = highestQueued[0];
     }
   }
 

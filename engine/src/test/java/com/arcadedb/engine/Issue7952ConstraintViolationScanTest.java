@@ -292,6 +292,46 @@ class Issue7952ConstraintViolationScanTest extends TestHelper {
   }
 
   /**
+   * A record nothing can remove must not strand the removable ones behind it (PR review). With a pass that holds
+   * one record, a vetoed first record fills the batch and deletes nothing - and the loop used to stop there, on the
+   * grounds that a pass which removed nothing could only repeat itself. It cannot: the pass resumes from the
+   * highest position it QUEUED, not from what it managed to delete, so the vetoed record is passed over and the one
+   * behind it is still removed.
+   */
+  @Test
+  @Timeout(60)
+  void aRecordThatCannotBeRemovedDoesNotStrandTheOnesBehindIt() {
+    final DocumentType type = database.getSchema().createDocumentType("Record");
+    type.createProperty("id", Type.INTEGER);
+
+    final RID[] rids = new RID[2];
+    database.transaction(() -> {
+      rids[0] = database.newDocument("Record").set("id", 0).save().getIdentity();
+      rids[1] = database.newDocument("Record").set("id", 1).save().getIdentity();
+    });
+    type.createProperty("orgId", Type.STRING).setMandatory(true);
+
+    assertThat(rids[0].getPosition()).as("the vetoed record is scanned first").isLessThan(rids[1].getPosition());
+
+    // Only the FIRST record is undeletable.
+    final BeforeRecordDeleteListener vetoTheFirst = record -> !rids[0].equals(record.getIdentity());
+    database.getSchema().getType("Record").getEvents().registerListener(vetoTheFirst);
+    try {
+      final Map<String, Object> result = new DatabaseChecker(db()).setFix(true).setDeleteInvalidRecords(true)
+          .setInvalidRecordsPerRepairPass(1).setVerboseLevel(0).check();
+
+      assertThat((Collection<RID>) result.get("deletedConstraintViolatingRecords"))
+          .as("the record behind the vetoed one is still removed").containsExactly(rids[1]);
+      assertThat((Long) result.get("totalDeletedConstraintViolatingRecords")).isEqualTo(1L);
+      assertThat(db().lookupByRID(rids[0], true)).as("the vetoed one is kept").isNotNull();
+      assertThatThrownBy(() -> db().lookupByRID(rids[1], true)).isInstanceOf(RecordNotFoundException.class);
+      assertThat(database.countType("Record", false)).isEqualTo(1);
+    } finally {
+      database.getSchema().getType("Record").getEvents().unregisterListener(vetoTheFirst);
+    }
+  }
+
+  /**
    * The same loop must terminate when the records it collects cannot be removed at all - a {@code beforeDelete}
    * listener refusing every delete would otherwise have it re-collect the same full batch for ever.
    */
