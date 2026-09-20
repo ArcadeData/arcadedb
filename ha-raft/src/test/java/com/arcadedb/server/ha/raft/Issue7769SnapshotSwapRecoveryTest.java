@@ -39,6 +39,34 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * skips normal rollback, modelling process interruption rather than an IOException; it does not model power loss.
  */
 class Issue7769SnapshotSwapRecoveryTest {
+  @ParameterizedTest
+  @ValueSource(strings = { "BACKING_UP", "", "BACK", "INSTALLING", "ABSENT" })
+  void unpublishedInitialPhaseNeverDiscardsTheSnapshot(final String temporaryPhase, @TempDir final Path root)
+      throws Exception {
+    final Path db = root.resolve("database");
+    final Path staged = db.resolve(".snapshot-new");
+    createDatabase(db, "old");
+    createDatabase(staged, "new");
+    Files.writeString(db.resolve(".snapshot-pending"), "");
+    Files.writeString(staged.resolve(".snapshot-complete"), "");
+    if (!temporaryPhase.equals("ABSENT"))
+      Files.writeString(db.resolve(".snapshot-swap-state.tmp"), temporaryPhase);
+
+    SnapshotInstaller.recoverPendingSnapshotSwaps(root);
+    SnapshotInstaller.recoverPendingSnapshotSwaps(root);
+
+    if (temporaryPhase.equals("BACKING_UP")) {
+      assertDatabaseValue(db, "new");
+      assertThat(db.resolve(".snapshot-pending")).doesNotExist();
+      assertThat(staged).doesNotExist();
+    } else {
+      assertDatabaseValue(db, "old");
+      assertThat(staged).isDirectory();
+      assertDatabaseValue(staged, "new");
+      assertThat(db.resolve(".snapshot-pending")).exists();
+    }
+  }
+
   @Test
   void failedPendingMarkerRemovalKeepsTheBackup(@TempDir final Path root) throws Exception {
     final Path db = root.resolve("database");
@@ -164,7 +192,8 @@ class Issue7769SnapshotSwapRecoveryTest {
   }
 
   @ParameterizedTest
-  @ValueSource(strings = { "BACKING_UP", "BACKING_UP:", "INSTALLING", "INSTALLING:", "INSTALLED" })
+  @ValueSource(strings = { "BACKING_UP_UNPUBLISHED", "BACKING_UP", "BACKING_UP:",
+      "INSTALLING_UNPUBLISHED", "INSTALLING", "INSTALLING:", "INSTALLED_UNPUBLISHED", "INSTALLED" })
   void realSwapResumesAfterEachDurableBoundary(final String crashPoint, @TempDir final Path root) throws Exception {
     final Path db = root.resolve("database");
     final Path staged = db.resolve(".snapshot-new");
@@ -185,7 +214,8 @@ class Issue7769SnapshotSwapRecoveryTest {
       SnapshotInstaller.swapProgressForTesting = null;
     }
     assertThat(interrupted).isTrue();
-    assertThat(db.resolve(".snapshot-swap-state")).exists();
+    assertThat(db.resolve(crashPoint.equals("BACKING_UP_UNPUBLISHED")
+        ? ".snapshot-swap-state.tmp" : ".snapshot-swap-state")).exists();
 
     SnapshotInstaller.recoverPendingSnapshotSwaps(root);
     SnapshotInstaller.recoverPendingSnapshotSwaps(root);

@@ -845,7 +845,9 @@ public final class SnapshotInstaller {
   private static void reconcileRetainedBackup(final String databaseName, final Path dbPath, final Path snapshotBackup,
       final Path pendingMarker, final ArcadeDBServer server) throws IOException {
     if (!Files.exists(pendingMarker)
-        || (!Files.isDirectory(snapshotBackup) && !Files.exists(dbPath.resolve(SNAPSHOT_SWAP_STATE_FILE))))
+        || (!Files.isDirectory(snapshotBackup) && !Files.exists(dbPath.resolve(SNAPSHOT_SWAP_STATE_FILE))
+        && !Files.exists(dbPath.resolve(SNAPSHOT_SWAP_STATE_FILE + ".tmp"))
+        && !Files.exists(dbPath.resolve(SNAPSHOT_NEW_DIR).resolve(SNAPSHOT_COMPLETE_FILE))))
       return;
 
     LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
@@ -1317,7 +1319,14 @@ public final class SnapshotInstaller {
         return;
 
       } else if (hasCompleteMarker && !hasBackup) {
-        // Swap was already completed but cleanup didn't finish
+        // A complete staging directory can also predate the first phase publication. Only a marker-only
+        // directory proves there are no snapshot files left to install; otherwise preserve the ambiguity.
+        try (final DirectoryStream<Path> staged = Files.newDirectoryStream(snapshotNew,
+            entry -> !entry.getFileName().toString().equals(SNAPSHOT_COMPLETE_FILE))) {
+          if (staged.iterator().hasNext())
+            throw new IOException("Complete snapshot has no published swap phase in " + dbDir
+                + "; preserving staging and the pending marker");
+        }
         LogManager.instance().log(SnapshotInstaller.class, Level.INFO,
             "Cleaning up completed snapshot swap for: %s", null, dbDir);
         requireRecoveredDatabase(dbDir);
@@ -1384,12 +1393,21 @@ public final class SnapshotInstaller {
 
   private static SwapPhase readSwapPhase(final Path dbDir) throws IOException {
     final Path state = dbDir.resolve(SNAPSHOT_SWAP_STATE_FILE);
-    if (!Files.exists(state))
+    final boolean published = Files.exists(state);
+    final Path source = published ? state : dbDir.resolve(SNAPSHOT_SWAP_STATE_FILE + ".tmp");
+    if (!Files.exists(source))
       return null;
     try {
-      return SwapPhase.valueOf(Files.readString(state));
+      final SwapPhase phase = SwapPhase.valueOf(Files.readString(source));
+      // Only the initial transition can legitimately have a temporary file without a published predecessor.
+      // No live files have moved yet. Do not interpret an orphaned later transition as committed state.
+      if (!published && (phase != SwapPhase.BACKING_UP
+          || Files.exists(dbDir.resolve(SNAPSHOT_BACKUP_DIR))
+          || !Files.exists(dbDir.resolve(SNAPSHOT_NEW_DIR).resolve(SNAPSHOT_COMPLETE_FILE))))
+        throw new IOException("Cannot safely resume unpublished swap state in " + source + "; preserving all files");
+      return phase;
     } catch (final IllegalArgumentException e) {
-      throw new IOException("Unrecognized snapshot swap state in " + state + "; preserving all files", e);
+      throw new IOException("Unrecognized snapshot swap state in " + source + "; preserving all files", e);
     }
   }
 
@@ -1400,6 +1418,7 @@ public final class SnapshotInstaller {
     try (final FileChannel channel = FileChannel.open(temporary, StandardOpenOption.WRITE)) {
       channel.force(true);
     }
+    snapshotSwapProgress(phase.name() + "_UNPUBLISHED");
     // No non-atomic fallback: an unsupported filesystem must refuse the swap rather than lose its phase.
     Files.move(temporary, dbDir.resolve(SNAPSHOT_SWAP_STATE_FILE),
         StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
@@ -2001,7 +2020,7 @@ public final class SnapshotInstaller {
    */
   private static void atomicSwap(final Path dbDir, final Path newDir, final Path backupDir) throws IOException {
     SwapPhase phase = readSwapPhase(dbDir);
-    if (phase == null) {
+    if (phase == null || !Files.exists(dbDir.resolve(SNAPSHOT_SWAP_STATE_FILE))) {
       writeSwapPhase(dbDir, SwapPhase.BACKING_UP);
       phase = SwapPhase.BACKING_UP;
     }

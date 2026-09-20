@@ -23,6 +23,8 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -54,14 +56,20 @@ class Issue7139RetainedBackupNotDestroyedTest {
 
   private static final String DB = "mydb";
 
-  @Test
-  void aNewInstallPreservesUnresolvedPhaseEvenWithoutABackup(@TempDir final Path databasesDir) throws Exception {
+  @ParameterizedTest
+  @ValueSource(strings = { ".snapshot-swap-state", ".snapshot-swap-state.tmp", "ABSENT" })
+  void aNewInstallPreservesUnresolvedPhaseEvenWithoutABackup(final String stateFile,
+      @TempDir final Path databasesDir) throws Exception {
     final Path dbPath = databasesDir.resolve(DB);
     Files.createDirectories(dbPath);
     Files.writeString(dbPath.resolve("schema.json"), "{}");
     Files.writeString(dbPath.resolve("data.dat"), "retained-data");
     Files.writeString(dbPath.resolve(".snapshot-pending"), "");
-    Files.writeString(dbPath.resolve(".snapshot-swap-state"), "UNKNOWN");
+    if (!stateFile.equals("ABSENT"))
+      Files.writeString(dbPath.resolve(stateFile), "UNKNOWN");
+    final Path staged = Files.createDirectories(dbPath.resolve(".snapshot-new"));
+    Files.writeString(staged.resolve(".snapshot-complete"), "");
+    Files.writeString(staged.resolve("data.dat"), "new-data");
 
     assertThatThrownBy(() -> SnapshotInstaller.install(DB, dbPath.toString(), () -> null, () -> null, null,
         serverThatCannotDownload(databasesDir)))
@@ -69,7 +77,9 @@ class Issue7139RetainedBackupNotDestroyedTest {
 
     assertThat(dbPath.resolve("data.dat")).hasContent("retained-data");
     assertThat(dbPath.resolve(".snapshot-pending")).exists();
-    assertThat(dbPath.resolve(".snapshot-swap-state")).hasContent("UNKNOWN");
+    if (!stateFile.equals("ABSENT"))
+      assertThat(dbPath.resolve(stateFile)).hasContent("UNKNOWN");
+    assertThat(staged.resolve("data.dat")).hasContent("new-data");
   }
 
   // -------------------------------------------------------------------------------------------------

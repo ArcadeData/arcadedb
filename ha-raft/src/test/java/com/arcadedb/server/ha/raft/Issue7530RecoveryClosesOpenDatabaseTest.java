@@ -30,6 +30,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -304,23 +306,27 @@ class Issue7530RecoveryClosesOpenDatabaseTest {
    * through the same registry lock, reopen, 503 window and maintenance slot that a failing close does. What is
    * pinned is the guard, and the guard is the same code for either origin.
    */
-  @Test
+  @ParameterizedTest
+  @ValueSource(booleans = { true, false })
   @Timeout(180)
-  void anUncheckedFailureRepairingOneDatabaseDoesNotEndTheScan(@TempDir final Path root) throws Exception {
+  void anUncheckedFailureRepairingOneDatabaseDoesNotEndTheScan(final boolean failFirst,
+      @TempDir final Path root) throws Exception {
     final Path databasesDir = startServer(root);
 
-    // Two marked directories. The one that blows up is named so it sorts first is not something the directory
-    // stream guarantees, so the barrier fails only the first database it is called for, whichever that is.
+    // Exercise failure on either visit: directory-stream order differs across filesystems, and both fixtures
+    // must be independently recoverable when they are the visit that does not throw.
     final Path first = stageSyntheticInterruptedSwap(databasesDir);
     final Path second = databasesDir.resolve(DEFERRED_DB);
     Files.createDirectories(second.resolve(SnapshotInstaller.SNAPSHOT_NEW_DIR));
     Files.writeString(second.resolve(SnapshotInstaller.SNAPSHOT_NEW_DIR).resolve(SnapshotInstaller.SNAPSHOT_COMPLETE_FILE), "");
     Files.writeString(second.resolve(SnapshotInstaller.SNAPSHOT_PENDING_FILE), "");
     Files.writeString(second.resolve("data.dat"), "old-data");
+    Files.writeString(second.resolve("schema.json"), "{}");
 
     final AtomicBoolean alreadyFailed = new AtomicBoolean(false);
+    final AtomicBoolean firstVisit = new AtomicBoolean(true);
     SnapshotInstaller.recoveryBarrierForTesting = () -> {
-      if (alreadyFailed.compareAndSet(false, true))
+      if (firstVisit.getAndSet(false) == failFirst && alreadyFailed.compareAndSet(false, true))
         throw new IllegalStateException("simulated unchecked failure while repairing this database");
     };
 
