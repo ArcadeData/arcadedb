@@ -595,6 +595,24 @@ public class LocalSchema implements Schema {
     final Map<String, LocalDocumentType> publishedTypes = new ConcurrentHashMap<>(stagedTypes);
     final Map<String, LocalDocumentType> superseded = supersededTypes;
 
+    // A COPY of the staged graph, not a merge with the live one - so a type written to the previous generation
+    // while this load ran is discarded the instant this publishes (PR #8001 review asked for this to be stated
+    // rather than assumed). Before the graph was staged at all, readConfiguration() cleared and refilled the same
+    // map instance, so such a write was at least landing in the map that survived; the failure mode has changed
+    // from "racy, might survive" to "deterministically lost", which is only acceptable because no such write
+    // exists:
+    //
+    //   - load() runs from LocalDatabase.open(), before the database is open for business. There is no session to
+    //     issue DDL yet;
+    //   - loadIncremental(), and the load() it falls back to, run from ArcadeStateMachine.applySchemaEntry on the
+    //     single Ratis apply thread, where the entry being applied IS the DDL. A follower does not execute local
+    //     DDL of its own - it forwards it to the leader and receives it back as an entry - so there is nothing to
+    //     race with, and entries are applied one at a time in log order.
+    //
+    // beginStagedPublication() already refuses a second overlapping LOAD. What is written down here is the other
+    // half: that nothing else is concurrently mutating the graph either. A caller that breaks that has to publish
+    // by merge instead, and nothing here would raise to tell it so.
+    //
     // ONE volatile write, carrying the graph and both maps derived from it. getType(), getTypeByBucketId() and
     // getInvolvedTypeByBucketId() therefore cannot be caught answering from two different generations, and the
     // maps the load built are safely published rather than handed over through a plain field (PR #8001 review).
