@@ -75,8 +75,13 @@ public class CallStep extends AbstractExecutionStep {
     this.countOnlyOptimization = enabled;
   }
   private final CallClause callClause;
-  /** Computed on first use and reused: one CALL names one procedure and one YIELD (issue #7976). */
-  private       Set<String> requestedYieldFields;
+  /**
+   * Computed on first use and reused: one CALL names one procedure and one YIELD (issue #7976). Volatile, and always
+   * an immutable set, because an execution plan can be cached and replayed: a racing reader of a plain field could
+   * otherwise see a {@link HashSet} whose construction it does not yet see finished. The race itself is harmless -
+   * the value is deterministic, so the worst outcome is computing it twice.
+   */
+  private volatile Set<String> requestedYieldFields;
   private final CypherFunctionFactory functionFactory;
   private final ExpressionEvaluator evaluator;
 
@@ -336,7 +341,7 @@ public class CallStep extends AbstractExecutionStep {
       if (declared.contains(yieldItem.getFieldName()))
         requested.add(yieldItem.getFieldName());
 
-    return requestedYieldFields = requested.isEmpty() ? Set.copyOf(declared) : requested;
+    return requestedYieldFields = Set.copyOf(requested.isEmpty() ? declared : requested);
   }
 
   /**
