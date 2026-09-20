@@ -67,10 +67,18 @@ import java.util.logging.Level;
  * openCypher pipeline auto-commits per step - so between that commit and the end of the statement a concurrent
  * reader can observe a record that does not satisfy its own type's existence constraints, which eager validation
  * made structurally impossible. And because the bookkeeping is this in-memory scope and nothing else, a crash or a
- * killed connection between the creation and {@link #check()} leaves the provisional record behind for good, with
- * no durable trace that would let anything find it later (issue #7952 covers giving operators a way to find one). Both follow from the per-step auto-commit model rather
- * than from the deferral itself - that model already leaves the earlier clauses of a failed statement committed -
- * but the deferral widens the window from "a valid record" to "a record that is not valid yet".
+ * killed connection between the creation and {@link #check()} leaves the provisional record behind. Both follow from
+ * the per-step auto-commit model rather than from the deferral itself - that model already leaves the earlier
+ * clauses of a failed statement committed - but the deferral widens the window from "a valid record" to "a record
+ * that is not valid yet".
+ * <p>
+ * The record left behind is not undiscoverable, which is what issue #7952 settled, and it needed no bookkeeping of
+ * its own to make it so: such a record is BY DEFINITION one that does not satisfy its own type's existence
+ * constraints, and {@code CHECK DATABASE} now asks exactly that question of every record it scans, reporting what it
+ * finds under {@code constraintViolatingRecords} and removing it on request under
+ * {@code FIX DELETE INVALID RECORDS}. The database is its own durable trace. The same scan answers for the routes to
+ * that state that do not involve this class at all - {@code ALTER PROPERTY ... MANDATORY TRUE} on a populated type,
+ * and the {@code RESTORE} of #6127 - which is why it lives in the checker rather than here.
  * <p>
  * Scopes nest: only the outermost {@link #open} returns a scope, so a nested plan (a {@code CALL} subquery, a
  * {@code FOREACH} body, a UNION branch) contributes its provisional records to the enclosing statement's scope and
@@ -423,16 +431,15 @@ public class DeferredExistenceChecks {
         .orElse(null);
   }
 
-  /** How one unsatisfied existence constraint reads at the end of the statement, or null when it is satisfied. */
+  /**
+   * How one unsatisfied existence constraint reads at the end of the statement, or null when it is satisfied. The
+   * sentence itself is {@link DocumentValidator#describeUnmetExistenceConstraint}, shared with the
+   * {@code CHECK DATABASE} scan that meets the same record later (#7952); only the RID is appended here, because
+   * that scan reports the RID in a column of its own.
+   */
   private static String describeUnmetExistenceConstraint(final Document record, final Property property) {
-    final DocumentValidator.ExistenceConstraint unmet = DocumentValidator.unmetExistenceConstraint(record, property);
-    if (unmet == null)
-      return null;
-
-    final String named = "property '" + record.getType().getName() + "." + property.getName() + "'";
-    return unmet == DocumentValidator.ExistenceConstraint.MANDATORY ?
-        named + " is mandatory, but was never set (record " + record.getIdentity() + ")" :
-        named + " cannot be null (record " + record.getIdentity() + ")";
+    final String described = DocumentValidator.describeUnmetExistenceConstraint(record, property);
+    return described == null ? null : described + " (record " + record.getIdentity() + ")";
   }
 
   /**

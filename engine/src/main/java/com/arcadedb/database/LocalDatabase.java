@@ -1346,9 +1346,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // #6127: the schema contract, applied exactly as createRecordNoLock applies it. RESTORE used to skip both of
         // these on the grounds that an emergency repair must never be blocked - but a record written past its own
         // MANDATORY/NOTNULL constraints cannot even be UPDATEd afterwards (updateRecord validates too, so every later
-        // write throws until the missing property is supplied), and CHECK DATABASE is a structural check that never
-        // looks at schema constraints, so nothing downstream catches it either. Refusing up front costs the caller one
-        // explicit `SET name = '<unknown>'` and yields a record the rest of the engine can actually work with.
+        // write throws until the missing property is supplied), and CHECK DATABASE was then a purely structural check
+        // that never looked at schema constraints, so nothing downstream caught it either. Refusing up front costs the
+        // caller one explicit `SET name = '<unknown>'` and yields a record the rest of the engine can actually work
+        // with. CHECK DATABASE does report such a record since #7952, whatever wrote it - which is the safety net for
+        // the copies already on disk, not a reason to relax this refusal.
         setDefaultValues(record);
 
         if (record instanceof MutableDocument doc)

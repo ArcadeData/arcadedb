@@ -94,30 +94,70 @@ public class DocumentValidator {
    * The kinds of existence constraint a property can carry, i.e. the ones that are about the property being there
    * at all rather than about the value it holds.
    */
-  enum ExistenceConstraint {
+  public enum ExistenceConstraint {
     MANDATORY, NOT_NULL
   }
 
   /**
    * The existence constraint the document fails to satisfy on this property, or null when it satisfies both.
    * <p>
-   * The single definition of that rule. It has two callers who must agree on it exactly: the write path below,
-   * which refuses (or defers) the write, and {@link DeferredExistenceChecks}, which asks the same question again of
-   * the same record once the statement that deferred it has finished. Written twice, a later constraint kind added
-   * to one would be silently invisible to the other - which is the drift this method exists to make impossible.
-   * Only the rule is shared; each caller phrases its own error, because the two are raised at different moments and
-   * say different things about the record.
+   * The single definition of that rule. It has three callers who must agree on it exactly: the write path below,
+   * which refuses (or defers) the write; {@link DeferredExistenceChecks}, which asks the same question again of the
+   * same record once the statement that deferred it has finished; and {@code DatabaseChecker}, which asks it of
+   * every record already in the database (issue #7952). Written three times, a later constraint kind added to one
+   * would be silently invisible to the others - which is the drift this method exists to make impossible. Only the
+   * rule is shared; the write path phrases its own error, because it is raised at a different moment and says a
+   * different thing about the record - the two that describe a record already written share
+   * {@link #describeUnmetExistenceConstraint}.
    * <p>
    * Takes a {@link Document} rather than a {@link MutableDocument} because the end-of-statement caller re-reads the
    * record and holds the immutable form; nothing in the rule needs more than {@code has()} and {@code get()}.
    */
-  static ExistenceConstraint unmetExistenceConstraint(final Document document, final Property p) {
+  public static ExistenceConstraint unmetExistenceConstraint(final Document document, final Property p) {
     final String name = p.getName();
     if (p.isMandatory() && !document.has(name))
       return ExistenceConstraint.MANDATORY;
     if (p.isNotNull() && document.has(name) && document.get(name) == null)
       return ExistenceConstraint.NOT_NULL;
     return null;
+  }
+
+  /**
+   * The properties of a type that carry an existence constraint at all - the only ones
+   * {@link #unmetExistenceConstraint} can answer anything but null for - polymorphic properties included.
+   * <p>
+   * Empty for a type that declares none, and that is what it is for (issue #7952): it lets a whole-database scan
+   * decide it has no question to ask of a type WITHOUT reading a single record of it, which is how the check stays
+   * free for the databases - the large majority - that define no {@code MANDATORY}/{@code NOTNULL} property.
+   * <p>
+   * An array rather than a list because the caller is a per-record scan loop: it walks this once per record and an
+   * iterator per record is an allocation per record on the one path whose cost is proportional to the size of the
+   * database. Computed once per type by the caller, never per record.
+   */
+  public static Property[] existenceConstrainedProperties(final DocumentType type) {
+    return type.getPolymorphicProperties().stream()
+        .filter(p -> p.isMandatory() || p.isNotNull())
+        .toArray(Property[]::new);
+  }
+
+  /**
+   * How one unsatisfied existence constraint reads for a record that IS ALREADY IN THE DATABASE, or null when the
+   * record satisfies it. Shared by the two callers that describe such a record - {@link DeferredExistenceChecks} at
+   * the end of the statement that left it incomplete, and {@code DatabaseChecker} when a scan meets it later
+   * (#7952) - so an operator reads the same sentence about the same defect whichever of them reported it.
+   * <p>
+   * Names the property and not the value, deliberately: a NOT NULL violation has no value to quote, and a MANDATORY
+   * one has no property to quote it from. The RID is left to the caller, which has its own place for it.
+   */
+  public static String describeUnmetExistenceConstraint(final Document record, final Property property) {
+    final ExistenceConstraint unmet = unmetExistenceConstraint(record, property);
+    if (unmet == null)
+      return null;
+
+    final String named = "property '" + record.getType().getName() + "." + property.getName() + "'";
+    return unmet == ExistenceConstraint.MANDATORY ?
+        named + " is mandatory, but was never set" :
+        named + " cannot be null";
   }
 
   /**

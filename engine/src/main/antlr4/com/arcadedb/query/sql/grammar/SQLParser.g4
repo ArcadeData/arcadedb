@@ -1153,6 +1153,10 @@ checkDatabaseStatement
       // Issue #6090: opt-in reclaim of ORPHAN EDGE RECORDS (edge records no vertex's edge list references).
       // Deliberately its own clause rather than part of FIX - see DatabaseChecker.setDeleteOrphanEdgeRecords.
       (DELETE ORPHANS)?
+      // Issue #7952: opt-in removal of records that do not satisfy their own type's existence constraints.
+      // Deliberately its own clause too, and for a sharper reason than the other two - ALTER PROPERTY ... MANDATORY
+      // TRUE on a populated type makes every record it holds a finding. See DatabaseChecker.setDeleteInvalidRecords.
+      (DELETE INVALID RECORDS)?
       // Issue #6189: opt-in reclaim of files this node holds that no schema component was ever built for.
       // Deliberately its own clause too - see DatabaseChecker.setReclaimUnreferencedFiles.
       (RECLAIM UNREFERENCED FILES)?
@@ -1761,6 +1765,8 @@ identifier
     | RECLAIM
     | UNREFERENCED
     | FILES
+    | INVALID
+    | RECORDS
     | DEEP
     | FORCE
     | OPTIMIZE
