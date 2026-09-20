@@ -49,6 +49,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -146,6 +147,15 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   private volatile long             globalMinTs    = Long.MAX_VALUE;  // volatile: read without write lock
   private volatile long             globalMaxTs    = Long.MIN_VALUE;  // volatile: read without write lock
   private          boolean          headerDirty;
+  /**
+   * Hands every {@link BlockEntry} this store ever builds a number of its own (issue #7973).
+   * <p>
+   * Atomic rather than lock-guarded because {@code writeTempCompactionFile} builds its entries with NO directory
+   * lock held - that is the whole point of writing the temp file outside the lock - while {@code appendBlock} and
+   * {@code loadDirectory} build theirs under the write lock. In-memory only: nothing on disk records it, and
+   * nothing needs it to, because the only reader is a walk that started in this process.
+   */
+  private final    AtomicLong       blockSequencer = new AtomicLong();
   // Counts how many times downsampleBlocks actually rewrote the sealed file (i.e., selected at least one
   // block to downsample). Used by tests to assert idempotency: a steady-state cycle must not rewrite.
   private          long             downsampleRewriteCount;
@@ -178,6 +188,29 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     // assigned by loadDirectory ALONE, which left every entry this process wrote holding zero in both, and the
     // only thing keeping that from being read was crcValidated short-circuiting the two readers below.
     final long     blockStartOffset; // file offset where the block's metadata begins
+    /**
+     * What this block IS, as opposed to what it currently looks like (issue #7973).
+     * <p>
+     * {@link #resolveLiveBlock} has to find a snapshot entry again in a directory every rewrite replaces wholesale,
+     * and it used to do that by the {@code (minTimestamp, maxTimestamp, sampleCount)} triple - which is the set of
+     * properties a verbatim copy happens to preserve, not an identifier. Two blocks carrying all three values are
+     * indistinguishable under that rule and the walk reads one of them twice; nothing in the tree writes such a
+     * pair today, but that is a statement about the writers rather than an invariant this type enforces, and since
+     * #7897 the resolution is load-bearing for correctness.
+     * <p>
+     * Assigned once from {@link #blockSequencer}, and PRESERVED - not reassigned - by every path that copies a
+     * block verbatim, which is the single {@link #writeRetainedBlock}. It is a constructor parameter, and reaches
+     * {@link #writeNewBlockToFile} as one too, for the reason {@code blockStartOffset} is (#6360 item 3): a field
+     * a caller assigns afterwards is a field a caller can forget, and the compiler makes every site say whether it
+     * is building a new block or copying one.
+     * <p>
+     * {@link #loadDirectory} numbers what it reads afresh, which matters exactly once on a live store: an HA
+     * sealed-blob install ({@code installSealedFile}) replaces the whole file with the leader's and re-loads. A
+     * walk in flight across that install then resolves every snapshot entry to nothing and skips those blocks,
+     * which is the right answer - the blocks it held are gone, and the leader's are not the same blocks however
+     * much of the triple they happen to share.
+     */
+    final long     sequence;
     int            storedCRC;        // CRC32 over metadata + compressed columns, as stored after the data
     volatile boolean crcValidated;   // true once the CRC has been checked (volatile: read without lock)
     // Coarsest granularity (ms) this block has already been downsampled to; 0 = raw / never downsampled.
@@ -198,7 +231,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
      * record one cannot silently inherit the other.
      */
     BlockEntry(final long minTs, final long maxTs, final int sampleCount, final int columnCount,
-        final double[] mins, final double[] maxs, final double[] sums, final long[] counts, final long blockStartOffset) {
+        final double[] mins, final double[] maxs, final double[] sums, final long[] counts, final long blockStartOffset,
+        final long sequence) {
+      this.sequence = sequence;
       this.minTimestamp = minTs;
       this.maxTimestamp = maxTs;
       this.sampleCount = sampleCount;
@@ -334,7 +369,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       // #6360 item 3: the offset is given to the entry rather than patched onto it afterwards, so the entry
       // describes where its block is no matter which side of a restart wrote it.
       final BlockEntry entry = new BlockEntry(minTs, maxTs, sampleCount, colCount, columnMins, columnMaxs, columnSums,
-          columnCounts, blockStart);
+          columnCounts, blockStart, blockSequencer.incrementAndGet());
       entry.tagDistinctValues = tagDistinctValues;
       // Write compressed column data
       for (int c = 0; c < colCount; c++) {
@@ -436,8 +471,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
   /**
    * Returns an iterator over sealed blocks overlapping the given time range.
-   * Eagerly collects all matching rows under the read lock to prevent stale
-   * file offsets after atomic file replacement by concurrent writers.
+   * Eagerly collects all matching rows before returning, so the caller iterates a list rather than the file. The
+   * read lock is taken per block and re-resolves the entry against the live directory first, so an atomic file
+   * replacement by a concurrent writer cannot be read through a stale offset (see {@link #walkBlocks}).
    * <p>
    * Optimizations:
    * - Binary search on block directory to skip to first matching block
@@ -476,21 +512,109 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * series (issue #7354). Returns {@code false} when the visitor asked to stop.
    * <p>
    * This is the loop; {@code iterateRange} is this method with an {@code ArrayList} for a visitor, which is why
-   * the two cannot drift apart. Same read lock over all file I/O, same binary search into the block directory,
-   * same early termination, same per-row tag filtering.
+   * the two cannot drift apart. Same per-block read lock over the file I/O, same binary search into the block
+   * directory, same early termination, same per-row tag filtering.
    * <p>
-   * <b>The visitor runs under the directory read lock</b>, which is what buys the bounded residency: the rows are
-   * produced as the file is read rather than after. That is a shared lock, so it blocks no other reader, but a
-   * writer that needs it - a truncate or a downsample replacing the file - waits for the whole fold rather than
-   * for a copy. A visitor is therefore expected to fold, not to compute: the cost per row belongs to the caller's
-   * answer, and anything expensive should collect and be done afterwards, at which point {@code iterateRange} is
-   * the method that was wanted.
+   * <b>The visitor runs with no lock held</b>, one block behind the read: each block's COLUMNS are decoded under
+   * the directory read lock, the lock is released, and only then are the rows built from them and handed over.
+   * That is what bounds what a writer waits for - a compaction swap, a truncate, a downsample replacing the file - at one block's decode
+   * instead of at the caller's total work. It used to be the other way round, and an {@code EXPORT DATABASE}
+   * writing a gzip chunk per {@code TIMESERIES_CHUNK_SIZE} rows therefore held this lock across its own file I/O
+   * for the whole export (issue #7897). The residency is unchanged: one block, which is what the decode
+   * materialises either way.
    *
    * @param metrics counts the blocks this scan actually decompressed and the rows it materialised, or {@code null}
    */
   public boolean forEachRow(final long fromTs, final long toTs, final int[] columnIndices, final TagFilter tagFilter,
       final AggregationMetrics metrics, final TimeSeriesRowVisitor visitor) throws IOException {
-    return walkBlocks(fromTs, toTs, columnIndices, tagFilter, metrics, visitor, false);
+    return forEachRow(snapshotBlockDirectory(fromTs, toTs), fromTs, toTs, columnIndices, tagFilter, metrics, visitor);
+  }
+
+  /**
+   * {@link #forEachRow(long, long, int[], TagFilter, AggregationMetrics, TimeSeriesRowVisitor)} over a directory
+   * snapshot the caller already took, so the blocks this walks are the ones that existed at the caller's own
+   * instant rather than at this call's (issue #7897).
+   * <p>
+   * {@link TimeSeriesShard#forEachRow} needs that: it reads the mutable bucket in the same window it takes the
+   * snapshot in, and a compaction landing between the two would otherwise seal the bucket's rows into blocks this
+   * walk would then hand over a second time.
+   */
+  boolean forEachRow(final BlockDirectorySnapshot directorySnapshot, final long fromTs, final long toTs,
+      final int[] columnIndices, final TagFilter tagFilter, final AggregationMetrics metrics,
+      final TimeSeriesRowVisitor visitor) throws IOException {
+    return walkBlocks(directorySnapshot, fromTs, toTs, columnIndices, tagFilter, metrics, visitor, false);
+  }
+
+  /**
+   * The directory entries of the blocks that can hold a row in {@code [fromTs, toTs]}, copied out, for a walk that
+   * reads those blocks one at a time instead of holding one lock over all of them (issue #7897).
+   * <p>
+   * Bounded by the RANGE and not by the store, because the copy is per call and a point query against a long-lived
+   * shard should not pay for its whole history: the two binary searches that find the slice run here, under the
+   * lock, against the live list, so what comes back is the run of blocks {@link #walkBlocks} was going to look at
+   * anyway (code review on PR #7970). An unbounded range - which is what an {@code EXPORT DATABASE} asks for -
+   * copies everything, as it must.
+   * <p>
+   * The entries are shared rather than copied. The fields the walk reads OUTSIDE the lock - the timestamps, the
+   * sample count and {@code tagDistinctValues} - are all assigned before the entry is published into
+   * {@code blockDirectory} under the directory WRITE lock, so taking the snapshot under the read lock is the
+   * happens-before edge that makes them visible; the two that are written afterwards, {@code storedCRC} and
+   * {@code crcValidated}, are read only inside the per-block lock window, where they always were
+   * (grep: {@code \.storedCRC\s*=|\.crcValidated\s*=} has 5 hits, 3 of them in the constructor).
+   * <p>
+   * The snapshot is a list of blocks to TRY, not a promise they are all still there: {@link #walkBlocks}
+   * re-resolves each one against the live directory before reading it.
+   */
+  BlockDirectorySnapshot snapshotBlockDirectory(final long fromTs, final long toTs) {
+    directoryLock.readLock().lock();
+    try {
+      final int dirSize = blockDirectory.size();
+      if (dirSize == 0)
+        return BlockDirectorySnapshot.EMPTY;
+
+      // First block whose maxTimestamp >= fromTs. Everything before it ends before the range begins.
+      int lo = 0, hi = dirSize;
+      while (lo < hi) {
+        final int mid = (lo + hi) >>> 1;
+        if (blockDirectory.get(mid).maxTimestamp < fromTs)
+          lo = mid + 1;
+        else
+          hi = mid;
+      }
+      final int first = lo;
+
+      // First block whose minTimestamp > toTs. The directory is ordered by minTimestamp, so everything from there
+      // on starts after the range ends.
+      lo = first;
+      hi = dirSize;
+      while (lo < hi) {
+        final int mid = (lo + hi) >>> 1;
+        if (blockDirectory.get(mid).minTimestamp <= toTs)
+          lo = mid + 1;
+        else
+          hi = mid;
+      }
+      final int end = lo;
+
+      if (first >= end)
+        return BlockDirectorySnapshot.EMPTY;
+
+      return new BlockDirectorySnapshot(new ArrayList<>(blockDirectory.subList(first, end)), first);
+    } finally {
+      directoryLock.readLock().unlock();
+    }
+  }
+
+  /**
+   * A run of directory entries copied out of {@code blockDirectory}, together with the index the run STARTED at
+   * (issue #7897, narrowed to the range on PR #7970).
+   * <p>
+   * {@code firstIndex} is what lets {@link #resolveLiveBlock} try reference identity at the entry's own position
+   * in the live directory before falling back to a search: without it the slice's own indices would name the
+   * wrong blocks.
+   */
+  record BlockDirectorySnapshot(List<BlockEntry> blocks, int firstIndex) {
+    static final BlockDirectorySnapshot EMPTY = new BlockDirectorySnapshot(List.of(), 0);
   }
 
   /**
@@ -523,120 +647,208 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    */
   public boolean forEachTagCombination(final long fromTs, final long toTs, final int[] columnIndices,
       final AggregationMetrics metrics, final TimeSeriesRowVisitor visitor) throws IOException {
-    return walkBlocks(fromTs, toTs, columnIndices, null, metrics, visitor, true);
+    return forEachTagCombination(snapshotBlockDirectory(fromTs, toTs), fromTs, toTs, columnIndices, metrics, visitor);
   }
 
   /**
-   * The block walk both {@link #forEachRow} and {@link #forEachTagCombination} are: one binary search into the
-   * directory, one early termination, one read lock over all the file I/O. {@code combinationsOnly} decides only
-   * whether a block that can be answered from its directory entry is read anyway.
+   * {@link #forEachTagCombination(long, long, int[], AggregationMetrics, TimeSeriesRowVisitor)} over a directory
+   * snapshot the caller already took, for the reason
+   * {@link #forEachRow(BlockDirectorySnapshot, long, long, int[], TagFilter, AggregationMetrics, TimeSeriesRowVisitor)} gives.
    */
-  private boolean walkBlocks(final long fromTs, final long toTs, final int[] columnIndices,
-      final TagFilter tagFilter, final AggregationMetrics metrics, final TimeSeriesRowVisitor visitor,
-      final boolean combinationsOnly) throws IOException {
-    // Hold the read lock for all file I/O to prevent stale offsets after
-    // atomic file replacement by concurrent writers (truncate/downsample).
-    directoryLock.readLock().lock();
-    try {
-      final int tsColIdx = findTimestampColumnIndex();
-      final int dirSize = blockDirectory.size();
-      // See scanRange: a condition on a column outside the projection is applied, not silently refused (#7733).
-      final TagProjection projection = TagProjection.of(columnIndices, tagFilter);
+  boolean forEachTagCombination(final BlockDirectorySnapshot directorySnapshot, final long fromTs, final long toTs,
+      final int[] columnIndices, final AggregationMetrics metrics, final TimeSeriesRowVisitor visitor)
+      throws IOException {
+    return walkBlocks(directorySnapshot, fromTs, toTs, columnIndices, null, metrics, visitor, true);
+  }
 
-      // Loop-invariant for the whole walk, so built once rather than per block: a projection does not vary from
-      // block to block, and neither does the timestamp column (code review on PR #7730). Named apart from the
-      // TagProjection above because they answer different questions: this one is the membership test the
-      // combinations fast path reads a DECLARATION through, and never widens - #7710's walk takes no filter.
-      BitSet combinationColumns = null;
-      int combinationWidth = 0;
-      if (combinationsOnly && columnIndices != null) {
-        combinationColumns = new BitSet();
-        for (final int idx : columnIndices)
-          combinationColumns.set(idx);
-        combinationWidth = columnIndices.length;
+  /**
+   * The block walk both {@link #forEachRow} and {@link #forEachTagCombination} are: one pass over the snapshot's
+   * blocks - which {@link #snapshotBlockDirectory} has already clipped to the range - one early termination, and
+   * one read lock PER BLOCK over that block's file I/O.
+   * {@code combinationsOnly} decides only whether a block that can be answered from its directory entry is read
+   * anyway.
+   * <p>
+   * The lock is per block rather than over the whole walk because the visitor is the caller's code and its cost is
+   * therefore unbounded from here (issue #7897): a block's COLUMNS are decoded under the lock, the lock is
+   * dropped, and the rows are built from those columns and handed over with nothing held. Building them after the
+   * release rather than before is what keeps {@code materializedRows} honest for a visitor that stops on the first
+   * row. A directory entry is immutable once built, so the parts of the walk that read only the entry - the range
+   * test, the tag-filter block test, the declared-combination shortcut - need no lock at all; only the decode
+   * does, and it re-resolves the entry through {@link #resolveLiveBlock} first, because between two blocks the
+   * file may have been swapped under it.
+   */
+  private boolean walkBlocks(final BlockDirectorySnapshot directorySnapshot, final long fromTs, final long toTs,
+      final int[] columnIndices, final TagFilter tagFilter, final AggregationMetrics metrics,
+      final TimeSeriesRowVisitor visitor, final boolean combinationsOnly) throws IOException {
+    final List<BlockEntry> snapshot = directorySnapshot.blocks();
+    final int dirSize = snapshot.size();
+    if (dirSize == 0)
+      return true;
+
+    final int tsColIdx = findTimestampColumnIndex();
+    // See scanRange: a condition on a column outside the projection is applied, not silently refused (#7733).
+    final TagProjection projection = TagProjection.of(columnIndices, tagFilter);
+
+    // Loop-invariant for the whole walk, so built once rather than per block: a projection does not vary from
+    // block to block, and neither does the timestamp column (code review on PR #7730). Named apart from the
+    // TagProjection above because they answer different questions: this one is the membership test the
+    // combinations fast path reads a DECLARATION through, and never widens - #7710's walk takes no filter.
+    BitSet combinationColumns = null;
+    int combinationWidth = 0;
+    if (combinationsOnly && columnIndices != null) {
+      combinationColumns = new BitSet();
+      for (final int idx : columnIndices)
+        combinationColumns.set(idx);
+      combinationWidth = columnIndices.length;
+    }
+
+    // No binary search here any more: the snapshot IS the run of blocks the range can reach, clipped by the two
+    // searches snapshotBlockDirectory ran under the lock. The two bound tests below are kept because a block at
+    // either end of that run can still be out of range on the OTHER bound.
+    for (int blockIdx = 0; blockIdx < dirSize; blockIdx++) {
+      final BlockEntry entry = snapshot.get(blockIdx);
+
+      // Blocks are sorted, so if minTs > toTs all remaining are past range
+      if (entry.minTimestamp > toTs)
+        break;
+
+      if (entry.maxTimestamp < fromTs)
+        continue;
+
+      final BlockMatchResult tagMatch = tagFilter != null
+          ? blockMatchesTagFilter(entry, tagFilter)
+          : BlockMatchResult.FAST_PATH;
+      if (tagMatch == BlockMatchResult.SKIP) {
+        if (metrics != null)
+          metrics.addSkippedBlock();
+        continue;
       }
 
-      // Binary search: find first block whose maxTimestamp >= fromTs
-      int startBlockIdx = 0;
-      if (dirSize > 0) {
-        int lo = 0, hi = dirSize - 1;
-        while (lo < hi) {
-          final int mid = (lo + hi) >>> 1;
-          if (blockDirectory.get(mid).maxTimestamp < fromTs)
-            lo = mid + 1;
-          else
-            hi = mid;
-        }
-        startBlockIdx = lo;
-      }
-
-      for (int blockIdx = startBlockIdx; blockIdx < dirSize; blockIdx++) {
-        final BlockEntry entry = blockDirectory.get(blockIdx);
-
-        // Early termination: blocks are sorted, so if minTs > toTs all remaining are past range
-        if (entry.minTimestamp > toTs)
-          break;
-
-        if (entry.maxTimestamp < fromTs)
-          continue;
-
-        final BlockMatchResult tagMatch = tagFilter != null
-            ? blockMatchesTagFilter(entry, tagFilter)
-            : BlockMatchResult.FAST_PATH;
-        if (tagMatch == BlockMatchResult.SKIP) {
+      if (combinationsOnly) {
+        // The whole point of issue #7710: one row off the directory entry, with no file read and no decode.
+        final Object[] combination = declaredSingleCombination(entry, combinationColumns, combinationWidth, tsColIdx,
+            fromTs, toTs);
+        if (combination != null) {
           if (metrics != null)
             metrics.addSkippedBlock();
-          continue;
-        }
-
-        if (combinationsOnly) {
-          // The whole point of issue #7710: one row off the directory entry, with no file read and no decode.
-          final Object[] combination = declaredSingleCombination(entry, combinationColumns, combinationWidth, tsColIdx,
-              fromTs, toTs);
-          if (combination != null) {
-            if (metrics != null)
-              metrics.addSkippedBlock();
-            if (!visitor.visit(combination))
-              return false;
-            continue;
-          }
-        }
-
-        final long[] ts = decompressTimestamps(entry, tsColIdx);
-        final int start = lowerBound(ts, fromTs);
-        final int end = upperBound(ts, toTs);
-
-        if (start >= end)
-          continue;
-
-        if (metrics != null) {
-          if (tagMatch == BlockMatchResult.SLOW_PATH)
-            metrics.addSlowPathBlock();
-          else
-            metrics.addFastPathBlock();
-        }
-
-        final Object[][] decompCols = decompressColumns(entry, projection.scanIndices(), tsColIdx);
-        final int resultCols = decompCols.length + 1;
-
-        for (int i = start; i < end; i++) {
-          final Object[] row = new Object[resultCols];
-          row[0] = ts[i];
-          for (int c = 0; c < decompCols.length; c++)
-            row[c + 1] = decompCols[c][i];
-          // Use matchesMapped() so the filter works correctly when the row is a subset of the columns.
-          if (tagMatch == BlockMatchResult.SLOW_PATH && !tagFilter.matchesMapped(row, projection.scanIndices()))
-            continue;
-          if (metrics != null)
-            metrics.addMaterializedRows(1);
-          if (!visitor.visit(projection.narrow(row)))
+          if (!visitor.visit(combination))
             return false;
+          continue;
         }
       }
-      return true;
-    } finally {
-      directoryLock.readLock().unlock();
+
+      // The read lock covers this block's DECODE and nothing else - not the next block's, and not the visitor.
+      // What comes out of it is the block's columns, which is the residency this walk has always had; the rows
+      // are built from them afterwards, one at a time, so a visitor that stops on the first one still costs one
+      // Object[] and not a block of them (Issue7354BoundedTagScanTest).
+      long[] ts = null;
+      Object[][] decompCols = null;
+      int start = 0;
+      int end = 0;
+      directoryLock.readLock().lock();
+      try {
+        final BlockEntry live = resolveLiveBlock(entry, directorySnapshot.firstIndex() + blockIdx);
+        // A null live entry means the block was truncated or downsampled away while this walk was between two
+        // blocks: the rows it held are no longer in the store, so there is nothing to hand over and nothing to
+        // read through a stale offset.
+        if (live != null) {
+          final long[] decodedTs = decompressTimestamps(live, tsColIdx);
+          final int from = lowerBound(decodedTs, fromTs);
+          final int to = upperBound(decodedTs, toTs);
+
+          if (from < to) {
+            if (metrics != null) {
+              if (tagMatch == BlockMatchResult.SLOW_PATH)
+                metrics.addSlowPathBlock();
+              else
+                metrics.addFastPathBlock();
+            }
+
+            ts = decodedTs;
+            start = from;
+            end = to;
+            decompCols = decompressColumns(live, projection.scanIndices(), tsColIdx);
+          }
+        }
+      } finally {
+        directoryLock.readLock().unlock();
+      }
+
+      // Null only because the window above declined the block - it was gone, or no row of it was in range.
+      // decompressColumns has one return and it is a toArray, so it never hands back null itself.
+      if (decompCols == null)
+        continue;
+
+      final int resultCols = decompCols.length + 1;
+      for (int i = start; i < end; i++) {
+        final Object[] row = new Object[resultCols];
+        row[0] = ts[i];
+        for (int c = 0; c < decompCols.length; c++)
+          row[c + 1] = decompCols[c][i];
+        // Use matchesMapped() so the filter works correctly when the row is a subset of the columns.
+        if (tagMatch == BlockMatchResult.SLOW_PATH && !tagFilter.matchesMapped(row, projection.scanIndices()))
+          continue;
+        if (metrics != null)
+          metrics.addMaterializedRows(1);
+        if (!visitor.visit(projection.narrow(row)))
+          return false;
+      }
     }
+    return true;
+  }
+
+  /**
+   * The live directory entry for a block the walk holds a snapshot of, or {@code null} when that block is no
+   * longer in the store (issue #7897).
+   * <p>
+   * A snapshot entry carries file offsets, and a walk that releases the directory lock between blocks may find
+   * those offsets belong to a file that has since been replaced - by a compaction swap, by a truncate, by a
+   * downsample. Reference identity at the same index settles the case where nothing happened, in one comparison,
+   * which is the common one: most walks meet no writer at all.
+   * <p>
+   * <b>It is not the case this method exists for.</b> Every directory-rewriting path replaces the WHOLE list with
+   * fresh entries - {@code commitTempCompactionFile} does {@code blockDirectory.clear()} followed by
+   * {@code addAll(newBlockDirectory)}, on every {@code compact()}, for blocks it merely copied verbatim as much as
+   * for the ones it built. So the race this fix is about, a walk crossing a compaction, is exactly the race in
+   * which the identity check fails for every remaining block and the search below answers all of them.
+   * <p>
+   * That search is by {@link BlockEntry#sequence}, the number a block is born with and keeps through every
+   * verbatim copy ({@link #writeRetainedBlock}). It used to be by the
+   * {@code (minTimestamp, maxTimestamp, sampleCount)} triple, which is the set of properties such a copy happens
+   * to preserve rather than an identifier: two blocks carrying all three values answer to each other's entry, and
+   * the walk reads one of them twice and the other never (issue #7973). Nothing in the tree writes such a pair
+   * today - a compaction's new blocks carry strictly newer timestamps - but that is a statement about what the
+   * writers happen to do, not an invariant this type enforces.
+   * <p>
+   * The narrowing is still a binary search on {@code minTimestamp}, which the directory is ordered by and which a
+   * retained block keeps, followed by the run of entries sharing it - so it costs O(log n) per block, not O(n).
+   * A block that answers to none of them was not retained: a truncate dropped it or a downsample replaced it with
+   * a coarser one, and either way the rows this walk was about to read are no longer the rows the store holds.
+   *
+   * @param hintIdx the index the block occupied in the snapshot, which is still its index unless the directory was
+   *                rewritten
+   */
+  private BlockEntry resolveLiveBlock(final BlockEntry snapshotEntry, final int hintIdx) {
+    final int liveSize = blockDirectory.size();
+    if (hintIdx < liveSize && blockDirectory.get(hintIdx) == snapshotEntry)
+      return snapshotEntry;
+
+    int lo = 0, hi = liveSize;
+    while (lo < hi) {
+      final int mid = (lo + hi) >>> 1;
+      if (blockDirectory.get(mid).minTimestamp < snapshotEntry.minTimestamp)
+        lo = mid + 1;
+      else
+        hi = mid;
+    }
+    for (int i = lo; i < liveSize; i++) {
+      final BlockEntry live = blockDirectory.get(i);
+      if (live.minTimestamp != snapshotEntry.minTimestamp)
+        break;
+      if (live.sequence == snapshotEntry.sequence)
+        return live;
+    }
+    return null;
   }
 
   /**
@@ -1701,7 +1913,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           final long[] meta = newMeta.get(b);
           final BlockEntry entry = writeNewBlockToFile(tempFile, (int) meta[2], meta[0], meta[1],
               newCompressed.get(b), newStats.get(b), colCount,
-              newTagDistinctValues != null ? newTagDistinctValues.get(b) : null);
+              newTagDistinctValues != null ? newTagDistinctValues.get(b) : null, blockSequencer.incrementAndGet());
           // Mark the freshly downsampled block so future cycles at the same (or finer) granularity skip it.
           entry.downsampledGranularityMs = newBlocksGranularityMs;
           newDirectory.add(entry);
@@ -1751,12 +1963,30 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     for (int c = 0; c < colCount; c++)
       compressedCols[c] = readBytes(oldEntry.columnOffsets[c], oldEntry.columnSizes[c]);
 
+    target.add(writeRetainedBlock(tempFile, oldEntry, compressedCols, colCount));
+  }
+
+  /**
+   * Writes a block a rewrite is KEEPING into the temp file, and returns the entry that describes it there.
+   * <p>
+   * The one definition of "this is the same block, somewhere else in the file", shared by every path that retains
+   * one: {@link #truncateBefore}, {@link #truncateToBlockCount} and {@link #downsampleBlocks}' retained arm reach
+   * it through {@link #copyBlockToFile}, and {@link #writeTempCompactionFile} calls it directly because it has
+   * already read the bytes under the directory lock. Compaction used to carry its own copy of the three lines,
+   * which is how the {@code downsampledGranularityMs} hand-off came to be written twice and how a THIRD property
+   * to carry across - {@link BlockEntry#sequence}, issue #7973 - would have had two places to be forgotten in.
+   * <p>
+   * Everything that makes the block what it is comes from {@code oldEntry}; only the offsets change, because only
+   * the file did.
+   */
+  private BlockEntry writeRetainedBlock(final RandomAccessFile tempFile, final BlockEntry oldEntry,
+      final byte[][] compressedCols, final int colCount) throws IOException {
     final BlockEntry newEntry = writeNewBlockToFile(tempFile, oldEntry.sampleCount, oldEntry.minTimestamp,
         oldEntry.maxTimestamp, compressedCols, blockStatsOf(oldEntry, compressedCols), colCount,
-        oldEntry.tagDistinctValues);
+        oldEntry.tagDistinctValues, oldEntry.sequence);
     // Preserve the in-memory downsampling marker across the file rewrite so idempotency survives compaction.
     newEntry.downsampledGranularityMs = oldEntry.downsampledGranularityMs;
-    target.add(newEntry);
+    return newEntry;
   }
 
   /**
@@ -1766,7 +1996,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    */
   private BlockEntry writeNewBlockToFile(final RandomAccessFile tempFile, final int sampleCount,
       final long minTs, final long maxTs, final byte[][] compressedCols, final BlockStats stats,
-      final int colCount, final String[][] tagDistinctValues) throws IOException {
+      final int colCount, final String[][] tagDistinctValues, final long sequence) throws IOException {
 
     // Same codec-keyed rule as writeBlock() - see the comment there.
     int numericColCount = 0;
@@ -1810,7 +2040,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     // #6360 item 3: the temp file becomes the live file by an atomic move, so an offset into it is the offset the
     // block will have - exactly as the column offsets set below already are.
     final BlockEntry newEntry = new BlockEntry(minTs, maxTs, sampleCount, colCount, stats.mins(), stats.maxs(),
-        stats.sums(), stats.counts(), blockStart);
+        stats.sums(), stats.counts(), blockStart, sequence);
     newEntry.tagDistinctValues = tagDistinctValues;
     for (int c = 0; c < colCount; c++) {
       newEntry.columnOffsets[c] = dataOffset;
@@ -1899,16 +2129,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         if (spec.isRetained()) {
           final int i = spec.idx();
           final BlockEntry old = retained.get(i);
-          entry = writeNewBlockToFile(tempFile, old.sampleCount, old.minTimestamp, old.maxTimestamp,
-              retainedBytes.get(i), blockStatsOf(old, retainedBytes.get(i)), colCount, old.tagDistinctValues);
-          // Preserve the in-memory downsampling marker across compaction's file rewrite.
-          entry.downsampledGranularityMs = old.downsampledGranularityMs;
+          entry = writeRetainedBlock(tempFile, old, retainedBytes.get(i), colCount);
         } else {
           final int b = spec.idx();
           final long[] meta = newMeta.get(b);
           entry = writeNewBlockToFile(tempFile, (int) meta[2], meta[0], meta[1],
               newCompressed.get(b), newStats.get(b), colCount,
-              newTagDistinctValues != null ? newTagDistinctValues.get(b) : null);
+              newTagDistinctValues != null ? newTagDistinctValues.get(b) : null, blockSequencer.incrementAndGet());
         }
         newDirectory.add(entry);
       }
@@ -2014,7 +2241,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         final long[] meta = newMeta.get(b);
         final BlockEntry entry = writeNewBlockToFile(tempFile, (int) meta[2], meta[0], meta[1],
             newCompressed.get(b), newStats.get(b), colCount,
-            newTagDV != null ? newTagDV.get(b) : null);
+            newTagDV != null ? newTagDV.get(b) : null, blockSequencer.incrementAndGet());
         directory.add(entry);
         if (meta[0] < curGlobalMin)
           curGlobalMin = meta[0];
@@ -3300,7 +3527,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         }
       }
 
-      final BlockEntry entry = new BlockEntry(minTs, maxTs, sampleCount, colCount, mins, maxs, sums, counts, pos);
+      final BlockEntry entry = new BlockEntry(minTs, maxTs, sampleCount, colCount, mins, maxs, sums, counts, pos,
+          blockSequencer.incrementAndGet());
       entry.tagDistinctValues = blockTagDistinctValues;
       long dataPos = tagEndPos;
       for (int c = 0; c < colCount; c++) {

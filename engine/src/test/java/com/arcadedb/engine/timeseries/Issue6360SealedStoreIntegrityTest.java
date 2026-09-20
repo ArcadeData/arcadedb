@@ -166,7 +166,7 @@ class Issue6360SealedStoreIntegrityTest {
   void aBlockEntryIsTrustedOnlyOnceItsWrittenCRCIsRecorded() {
     final double[] stats = { Double.NaN, Double.NaN, 1.0 };
     final TimeSeriesSealedStore.BlockEntry entry =
-        new TimeSeriesSealedStore.BlockEntry(1_000L, 2_000L, 4, 3, stats, stats, stats, new long[] { 0, 0, 4 }, 27L);
+        new TimeSeriesSealedStore.BlockEntry(1_000L, 2_000L, 4, 3, stats, stats, stats, new long[] { 0, 0, 4 }, 27L, 1L);
 
     assertThat(entry.blockStartOffset).isEqualTo(27L);
     assertThat(entry.crcValidated).as("not trusted until the CRC it would be trusted against is known").isFalse();
