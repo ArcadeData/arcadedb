@@ -23,6 +23,8 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.DeferredExistenceChecks;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.event.AfterRecordReadListener;
+import com.arcadedb.event.BeforeRecordDeleteListener;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -35,9 +37,11 @@ import org.junit.jupiter.api.Test;
 import java.util.Collection;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.fail;
 
 /**
  * Regression tests for issue #7952: a record that does not satisfy its own type's existence constraints
@@ -153,6 +157,7 @@ class Issue7952ConstraintViolationScanTest extends TestHelper {
         .setVerboseLevel(0).check();
 
     assertThat((Collection<RID>) result.get("deletedConstraintViolatingRecords")).containsExactly(provisional);
+    assertThat((Long) result.get("totalDeletedConstraintViolatingRecords")).isEqualTo(1L);
     assertThat((Long) result.get("removedRecords")).isEqualTo(1L);
     assertThat(database.countType("Record", false)).as("the complete record is untouched").isEqualTo(1);
     assertThatThrownBy(() -> db().lookupByRID(provisional, true)).isInstanceOf(RecordNotFoundException.class);
@@ -192,6 +197,92 @@ class Issue7952ConstraintViolationScanTest extends TestHelper {
     assertThat((Collection<RID>) result.get("deletedConstraintViolatingRecords")).containsExactly(incomplete);
     assertThat(database.countType("Person", false)).isEqualTo(1);
     assertThat(database.countType("Knows", false)).as("the edge went with the vertex").isZero();
+  }
+
+  /**
+   * The race the repair itself creates, and the reason every record is re-validated inside the delete transaction
+   * (PR review): the repair this check RECOMMENDS is an ordinary {@code UPDATE} supplying the missing property, so
+   * a completed record meeting a {@code FIX DELETE INVALID RECORDS} that found it incomplete a moment earlier is
+   * the other half of the feature rather than an exotic race. It must be left alone, with its data.
+   * <p>
+   * The window is entered where it actually is - the scan has committed, and the delete transaction is reading the
+   * record back - by hooking the read that re-validation makes. An {@code AfterRecordReadListener} fires inside
+   * {@code LocalDatabase.lookupByRID}, which is what re-validation calls and what the bucket scan deliberately does
+   * NOT (it builds its records straight off the page view), so the scan still sees the incomplete record and only
+   * the re-read sees the completed one. That is precisely the state a concurrent {@code UPDATE} produces, without a
+   * second thread to race against.
+   * <p>
+   * NOT a vacuous test: the {@code beforeDelete} tripwire below fails it if the repair ever reaches the delete, and
+   * removing the re-validation from {@code deleteConstraintViolatingRecord} makes it fire.
+   */
+  @Test
+  void aRecordCompletedBetweenTheScanAndTheDeleteIsLeftAlone() {
+    createConstrainedDocumentType();
+
+    final RID provisional = leaveProvisionalRecord("Record", 1);
+
+    final AtomicBoolean completed = new AtomicBoolean();
+    final AfterRecordReadListener completeOnReadBack = record -> {
+      if (!provisional.equals(record.getIdentity()) || !completed.compareAndSet(false, true))
+        return record;
+      // A mutable record returned here becomes the record's content, which is exactly what the UPDATE an operator
+      // was told to run would have done a moment earlier.
+      return record.asDocument(true).modify().set("orgId", "acme");
+    };
+    final BeforeRecordDeleteListener tripwire = record -> {
+      if (provisional.equals(record.getIdentity()))
+        fail("the repair must not delete a record that satisfies its constraints when it is re-read");
+      return true;
+    };
+
+    database.getSchema().getType("Record").getEvents().registerListener(completeOnReadBack)
+        .registerListener(tripwire);
+    try {
+      final Map<String, Object> result = new DatabaseChecker(db()).setFix(true).setDeleteInvalidRecords(true)
+          .setVerboseLevel(0).check();
+
+      assertThat(completed.get()).as("the re-read really did happen - otherwise this test proves nothing").isTrue();
+      assertThat((Collection<RID>) result.get("deletedConstraintViolatingRecords")).isEmpty();
+      assertThat((Long) result.get("totalDeletedConstraintViolatingRecords")).isZero();
+      assertThat((Long) result.get("removedRecords")).isZero();
+      assertThat(database.countType("Record", false)).as("the completed record keeps its data").isEqualTo(1);
+      assertThat((Collection<String>) result.get("warnings"))
+          .anyMatch(w -> w.contains(provisional.toString()) && w.contains("left in place"));
+    } finally {
+      database.getSchema().getType("Record").getEvents().unregisterListener(completeOnReadBack)
+          .unregisterListener(tripwire);
+    }
+  }
+
+  /**
+   * A {@code beforeDelete} listener can refuse a delete, and {@code LocalDatabase.deleteRecord} reports that by
+   * returning without deleting rather than by throwing. The report must not claim a record is gone that a trigger
+   * deliberately kept.
+   */
+  @Test
+  void aRemovalRefusedByABeforeDeleteListenerIsNotCountedAsRemoved() {
+    createConstrainedDocumentType();
+
+    final RID provisional = leaveProvisionalRecord("Record", 1);
+
+    final BeforeRecordDeleteListener veto = record -> false;
+    database.getSchema().getType("Record").getEvents().registerListener(veto);
+    try {
+      final Map<String, Object> result = new DatabaseChecker(db()).setFix(true).setDeleteInvalidRecords(true)
+          .setVerboseLevel(0).check();
+
+      assertThat((Long) result.get("totalDeletedConstraintViolatingRecords")).isZero();
+      assertThat((Collection<RID>) result.get("deletedConstraintViolatingRecords")).isEmpty();
+      assertThat((Long) result.get("removedRecords")).isZero();
+      assertThat(database.countType("Record", false)).as("the listener kept it").isEqualTo(1);
+      assertThat((Collection<String>) result.get("warnings"))
+          .anyMatch(w -> w.contains(provisional.toString()) && w.contains("beforeDelete"));
+      // Still in that state, so the summary still tells the operator what to do about it.
+      assertThat((Collection<String>) result.get("warnings"))
+          .anyMatch(w -> w.contains("CHECK DATABASE FIX DELETE INVALID RECORDS"));
+    } finally {
+      database.getSchema().getType("Record").getEvents().unregisterListener(veto);
+    }
   }
 
   /** A constraint violation is not corruption: the record loads fine and its index entries are correct. */
