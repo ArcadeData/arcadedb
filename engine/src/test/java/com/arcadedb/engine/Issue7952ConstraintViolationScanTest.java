@@ -332,6 +332,56 @@ class Issue7952ConstraintViolationScanTest extends TestHelper {
   }
 
   /**
+   * The other way a full batch can delete nothing, and the reason the loop's progress signal must not be an outcome
+   * of the deletes at all (PR review): every record in the batch is resolved WITHOUT being deleted, because a
+   * concurrent write completed it between the scan and the repair. The records behind it must still be removed.
+   * <p>
+   * Distinct from the vetoed case even though both leave the record in place: a veto makes
+   * {@code deleteConstraintViolatingRecord} answer "still violating" and a completion makes it answer "no longer
+   * violating", so a guard keyed on either answer gets one of the two wrong. The watermark is keyed on neither.
+   */
+  @Test
+  @Timeout(60)
+  void aBatchResolvedWithoutDeletingAnythingStillLetsTheRestBeRemoved() {
+    final DocumentType type = database.getSchema().createDocumentType("Record");
+    type.createProperty("id", Type.INTEGER);
+
+    final RID[] rids = new RID[2];
+    database.transaction(() -> {
+      rids[0] = database.newDocument("Record").set("id", 0).save().getIdentity();
+      rids[1] = database.newDocument("Record").set("id", 1).save().getIdentity();
+    });
+    type.createProperty("orgId", Type.STRING).setMandatory(true);
+
+    assertThat(rids[0].getPosition()).isLessThan(rids[1].getPosition());
+
+    // The FIRST record is completed by "another write" when the repair reads it back, so its batch resolves
+    // without a single deletion.
+    final AtomicBoolean completed = new AtomicBoolean();
+    final AfterRecordReadListener completeTheFirst = record -> {
+      if (!rids[0].equals(record.getIdentity()) || !completed.compareAndSet(false, true))
+        return record;
+      return record.asDocument(true).modify().set("orgId", "acme").save();
+    };
+
+    database.getSchema().getType("Record").getEvents().registerListener(completeTheFirst);
+    try {
+      final Map<String, Object> result = new DatabaseChecker(db()).setFix(true).setDeleteInvalidRecords(true)
+          .setInvalidRecordsPerRepairPass(1).setVerboseLevel(0).check();
+
+      assertThat(completed.get()).as("the re-read really did happen").isTrue();
+      assertThat((Collection<RID>) result.get("deletedConstraintViolatingRecords"))
+          .as("the record behind the completed one is still removed").containsExactly(rids[1]);
+      assertThat((Long) result.get("totalDeletedConstraintViolatingRecords")).isEqualTo(1L);
+      assertThat(db().lookupByRID(rids[0], true).asDocument(true).getString("orgId"))
+          .as("the completed one kept its data").isEqualTo("acme");
+      assertThat(database.countType("Record", false)).isEqualTo(1);
+    } finally {
+      database.getSchema().getType("Record").getEvents().unregisterListener(completeTheFirst);
+    }
+  }
+
+  /**
    * The same loop must terminate when the records it collects cannot be removed at all - a {@code beforeDelete}
    * listener refusing every delete would otherwise have it re-collect the same full batch for ever.
    */
