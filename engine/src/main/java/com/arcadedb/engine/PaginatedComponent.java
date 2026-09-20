@@ -208,13 +208,10 @@ public abstract class PaginatedComponent extends Component {
    * constructor above calls {@code FileManager.getOrCreateFile} - so it is in {@code getFiles()}, in every page
    * snapshot window opened while it exists, and in a directory listing of the database. Everything that enumerates
    * files in order to COMPARE one node with another therefore has to exclude it by name, which is what this
-   * predicate is for (issue #7955). The producers are this class's two callers of {@code TEMP_EXT}:
-   * <pre>
-   * $ grep -rn "TEMP_EXT" --include="*.java" engine/src/main server/src/main ha-raft/src/main
-   * engine/src/main/java/com/arcadedb/index/lsm/LSMTreeIndexAbstract.java:178
-   * engine/src/main/java/com/arcadedb/index/vector/LSMVectorIndex.java:662
-   * engine/src/main/java/com/arcadedb/engine/PaginatedComponent.java:40,206,207
-   * </pre>
+   * predicate is for (issue #7955). The producers are the two classes that build a component on
+   * {@code TEMP_EXT + ext}: {@link com.arcadedb.index.lsm.LSMTreeIndexAbstract} and
+   * {@link com.arcadedb.index.vector.LSMVectorIndex}. Named rather than quoted as grep output with line numbers,
+   * which goes stale the first time anything above them moves (code review on PR #8020).
    * <p>
    * The prefix is looked for in the EXTENSION - what follows the last dot, the same place
    * {@code LocalDatabase.isComponentFileName} takes it from - and not anywhere in the name, so a bucket of a type
