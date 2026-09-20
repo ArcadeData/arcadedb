@@ -2982,10 +2982,30 @@ public class LSMVectorIndex implements Index, IndexInternal {
       }
     }
 
-    // Snapshot the next vector ID so we know which delta entries were included in this build
-    final int deltaSnapshotId = nextId.get();
-    // Snapshot mutation counter so we only subtract mutations present at build start (not concurrent ones)
-    final int mutationsAtBuildStart = mutationsSinceSerialize.get();
+    // Snapshot the next vector ID (which delta entries this build includes) and the mutation counter (how much of
+    // it this build is paying off) AS ONE INSTANT (issue #7742).
+    //
+    // Both are written by the same write-locked section of put()/putBatch(): the id is allocated first, the
+    // mutation counted last. Reading them unlocked lets a writer land between the two, and the two answers then
+    // describe different instants in the only direction that strands a vector: the id is read BEFORE the
+    // allocation, so the new entry is at or past the snapshot and survives the trim at the end of the build, while
+    // the mutation counter is read AFTER the increment, so the subtraction below pays that same entry off. The
+    // buffer is then left holding a genuinely pending vector that the counter says is not there - so the chained
+    // rebuild declines (it compares that counter with the threshold) and cancelInactivityRebuildTimer() cancels
+    // the one mechanism that would otherwise still pick it up. Nothing absorbs it for the rest of the session, and
+    // every query scans it, forever.
+    //
+    // The read lock is all it takes: writers mutate both under the write lock, and holding it for two volatile
+    // reads costs a rebuild nothing next to the build it is about to run.
+    final int deltaSnapshotId;
+    final int mutationsAtBuildStart;
+    lock.readLock().lock();
+    try {
+      deltaSnapshotId = nextId.get();
+      mutationsAtBuildStart = mutationsSinceSerialize.get();
+    } finally {
+      lock.readLock().unlock();
+    }
     // Publish that the snapshot has been taken: mutations recorded after this point survive the build.
     rebuildSnapshotGeneration++;
 
@@ -3248,14 +3268,24 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (inlineQuantization)
         deltaSnapshotById = Collections.emptyMap();
       else {
-        final List<DeltaVectorEntry> deltaSnapshot = deltaVectors;
-        deltaSnapshotById = new HashMap<>(deltaSnapshot.size() * 4 / 3 + 1);
-        // Only the entries that still carry a payload: this map exists to save the validation below a record read
-        // it can perform perfectly well itself, so reading a declined payload back from the pages here would move
-        // the read rather than avoid it, and would do it for every buffered vector instead of on demand.
-        for (final DeltaVectorEntry e : deltaSnapshot)
-          if (e.vector != null)
-            deltaSnapshotById.put(e.vectorId, e.vector);
+        // Under the read lock, like every other walk of this buffer outside the write lock (issue #7742): writers
+        // APPEND to the list in place, so iterating it unlocked threw ConcurrentModificationException and killed
+        // the whole build - which then neither chained into another rebuild nor paid off the mutations it had
+        // snapshotted, so an index under sustained ingestion stopped absorbing anything at all. Held only for the
+        // map build, which is a few tens of bytes a pending vector and no I/O; the per-vector validation that
+        // follows stays unlocked, which is the property issue #5391 added.
+        deltaSnapshotById = new HashMap<>(deltaVectors.size() * 4 / 3 + 1);
+        lock.readLock().lock();
+        try {
+          // Only the entries that still carry a payload: this map exists to save the validation below a record read
+          // it can perform perfectly well itself, so reading a declined payload back from the pages here would move
+          // the read rather than avoid it, and would do it for every buffered vector instead of on demand.
+          for (final DeltaVectorEntry e : deltaVectors)
+            if (e.vector != null)
+              deltaSnapshotById.put(e.vectorId, e.vector);
+        } finally {
+          lock.readLock().unlock();
+        }
       }
 
       // Progress tracking for validation phase
@@ -5860,8 +5890,47 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (cached != null)
       return cached;
 
-    final float[] raw = readPersistedVectorArray(entry.vectorId);
+    // A row of the caller's own transaction whose payload the overlay's budget declined (issue #7967). It has no
+    // vector id yet - one is minted at commit replay - so there is nothing on the pages to read: the vector is in
+    // the record this transaction saved, which is where readRecordVectorArray goes and where the row's key came
+    // from in the first place.
+    final float[] raw = entry.vectorId == TransactionVectorOverlay.PENDING_VECTOR_ID ?
+        readRecordVectorArray(entry.rid) :
+        readPersistedVectorArray(entry.vectorId);
     return raw == null ? null : vts.createFloatVector(raw);
+  }
+
+  /**
+   * Reads a record's indexed vector straight from the record, by RID (issue #7967).
+   * <p>
+   * The document branch of {@link #readPersistedVectorArray}, reached by RID instead of by vector id, for the one
+   * caller that has a RID and no id to resolve it from: a row this transaction has queued but not yet committed.
+   * Inside that transaction the lookup answers with the value the transaction wrote, which is the value its queued
+   * key carries - that is what makes the read-back exact rather than merely close.
+   *
+   * @return the vector, or {@code null} when the record is gone, carries no vector, or carries an unusable one
+   */
+  private float[] readRecordVectorArray(final RID rid) {
+    if (rid == null)
+      return null;
+
+    final String vectorProp = vectorPropertyName();
+    try {
+      final Document doc = (Document) getDatabase().lookupByRID(rid, false);
+      final Object raw = doc.get(vectorProp);
+      if (raw == null)
+        return null;
+
+      final float[] vector = VectorUtils.toFloatArray(raw, metadata.encoding);
+      // Same validity rule as readPersistedVectorArray: a vector of the wrong arity, or an all-zero one, is not
+      // something this index can score against and must be skipped rather than scored as if it were at the origin.
+      if (vector.length == metadata.dimensions && !VectorUtils.isZeroVector(vector))
+        return vector;
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.FINE,
+          "Could not read back the pending vector of %s for index '%s': %s", rid, indexName, e.getMessage());
+    }
+    return null;
   }
 
   /**
@@ -8100,7 +8169,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * (issue #7378). See {@link TransactionVectorOverlay} for what it contributes and why.
    */
   private TransactionVectorOverlay transactionOverlay() {
-    return TransactionVectorOverlay.open(getDatabase(), this, vts);
+    // The same budget the committed buffer's own payloads answer to (issue #7967): what is at stake is the same
+    // heap, and a pending row is one more resident `dimensions * 4` byte copy exactly like a buffered one. Whole,
+    // not halved: the two populations are charged separately and an overlay is bounded by the transaction's write
+    // set, while the buffer is bounded by nothing - so the buffer is where the pressure actually comes from.
+    return TransactionVectorOverlay.open(getDatabase(), this, vts, deltaPayloadCapacity());
   }
 
   /**
@@ -8590,6 +8663,41 @@ public class LSMVectorIndex implements Index, IndexInternal {
     metrics.addInsertLatency(elapsed);
   }
 
+  /**
+   * The {@code ComparableKey} a queued {@code REMOVE} rides on: the vector the caller is retiring, whenever it can
+   * be read from the key it passed (issue #7971).
+   * <p>
+   * The removal itself never needed a key - {@link #remove(Object[], Identifiable, boolean)} resolves what to
+   * tombstone through the RID reverse index and ignores the key entirely - so this used to queue an all-zero
+   * placeholder. That placeholder could never equal the real vector of the {@code ADD} it was meant to retire, so
+   * {@code TransactionIndexContext}'s per-key dedup never collapsed the pair: a transaction that rewrote one
+   * record's embedding twice left TWO live {@code ADD} entries behind, under two different keys, and the record
+   * ended up indexed under both of its embeddings at once.
+   * <p>
+   * {@code DocumentIndexer.updateDocument} already hands the previous key tuple to {@code remove()}, so the
+   * truthful key is right there. Queuing it lets the existing dedup retire the superseding {@code ADD} exactly the
+   * way it does for every other index. The placeholder stays as the fallback for the callers that have no usable
+   * old value (a property that was not set, an unconvertible one): the {@code REMOVE} must still be queued, it just
+   * has nothing to coalesce with, and {@code TransactionIndexContext.commit()} drops the superseded entries by
+   * write order anyway.
+   */
+  private ComparableVector removalKey(final Object[] keys) {
+    if (keys != null && keys.length > 0 && keys[0] != null) {
+      if (keys[0] instanceof ComparableVector c) {
+        if (c.vector.length == metadata.dimensions)
+          return c;
+      } else
+        try {
+          final float[] vector = VectorUtils.toFloatArray(keys[0], metadata.encoding);
+          if (vector.length == metadata.dimensions)
+            return new ComparableVector(vector);
+        } catch (final IllegalArgumentException ignored) {
+          // Not a vector this index can key on: fall through to the placeholder. The REMOVE is queued either way.
+        }
+    }
+    return new ComparableVector(new float[metadata.dimensions]);
+  }
+
   @Override
   public void remove(final Object[] keys) {
     // Not directly supported - use remove(keys, rid) instead
@@ -8614,11 +8722,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     if (!replay && isTransactionalCall()) {
       // Queue on TransactionIndexContext for file locking and transaction tracking.
-      // Use a dummy ComparableVector since we don't have the vector value for removes.
       // TransactionIndexContext will replay this operation during commit, which will hit the else branch below.
       getDatabase().getTransaction()
           .addIndexOperation(this, TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE,
-              new Object[] { new ComparableVector(new float[metadata.dimensions]) }, rid);
+              new Object[] { removalKey(keys) }, rid);
 
     } else {
       // Materialise the locations BEFORE taking the write lock (issue #6722; PR #6731 review). The deferred parse

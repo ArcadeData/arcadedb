@@ -31,6 +31,7 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.sparsevector.LSMSparseVectorIndex;
 import com.arcadedb.index.sparsevector.RidScore;
+import com.arcadedb.index.sparsevector.SparseTransactionOverlay;
 import com.arcadedb.index.sparsevector.SparseVectorScoringPool;
 import com.arcadedb.index.vector.GroupAdmissionState;
 import com.arcadedb.index.vector.VectorUtils;
@@ -228,14 +229,27 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
     // returns up to {@code k} distinct groups, and the post-merge {@link GroupAdmissionState}
     // re-applies the global cap so cross-bucket group keys collapse correctly.
     final int fetchK = k;
+
+    // Resolved HERE, on the caller's thread, and never inside the searches below (issue #7966). A search that
+    // fans out runs on a SparseVectorScoringPool worker, where getTransactionIfExists() answers null, so an
+    // overlay resolved inside the index would make this function read its own transaction's writes on the
+    // single-bucket plan and miss them on the multi-bucket one - the same query answered two ways by a fan-out
+    // heuristic. One lookup per sub-index, and null for every read-only query.
+    final List<SparseTransactionOverlay> overlays = new ArrayList<>(indexes.size());
+    for (final LSMSparseVectorIndex idx : indexes)
+      overlays.add(idx.transactionOverlay());
+
     if (indexes.size() <= 1) {
       // Single bucket: no parallelism opportunity. Skip the pool dispatch overhead and run the
       // topK (or topKGrouped, when grouping is active) on the calling thread.
-      for (final LSMSparseVectorIndex idx : indexes) {
+      for (int i = 0; i < indexes.size(); i++) {
+        final LSMSparseVectorIndex idx = indexes.get(i);
+        final SparseTransactionOverlay overlay = overlays.get(i);
         if (groupBy == null)
-          merged.addAll(idx.topK(queryIndices, queryValues, fetchK, allowedRIDs));
+          merged.addAll(idx.topK(queryIndices, queryValues, fetchK, allowedRIDs, overlay));
         else
-          merged.addAll(idx.topKGrouped(queryIndices, queryValues, fetchK, groupSize, allowedRIDs, groupKeyResolver));
+          merged.addAll(idx.topKGrouped(queryIndices, queryValues, fetchK, groupSize, allowedRIDs, groupKeyResolver,
+              overlay));
       }
     } else {
       // Multi-bucket fan-out (#4085). Per-bucket sub-indexes are independent: different buckets
@@ -245,12 +259,14 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
       // worst case it runs inline on the submitter thread, which is exactly the serial fallback.
       final ExecutorService pool = SparseVectorScoringPool.getInstance().getExecutorService();
       final List<Future<List<RidScore>>> futures = new ArrayList<>(indexes.size());
-      for (final LSMSparseVectorIndex idx : indexes) {
+      for (int i = 0; i < indexes.size(); i++) {
+        final LSMSparseVectorIndex idx = indexes.get(i);
+        final SparseTransactionOverlay overlay = overlays.get(i);
         if (groupBy == null)
-          futures.add(pool.submit(() -> idx.topK(queryIndices, queryValues, fetchK, allowedRIDs)));
+          futures.add(pool.submit(() -> idx.topK(queryIndices, queryValues, fetchK, allowedRIDs, overlay)));
         else
           futures.add(pool.submit(() -> idx.topKGrouped(queryIndices, queryValues, fetchK, groupSize, allowedRIDs,
-              groupKeyResolver)));
+              groupKeyResolver, overlay)));
       }
       // Drain ALL futures even when one fails: a partial drain leaves the still-running tasks
       // contending for index I/O after the caller has moved on. Collect the per-future errors,

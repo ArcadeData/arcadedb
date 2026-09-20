@@ -25,6 +25,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.Pair;
 import org.awaitility.Awaitility;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -51,8 +52,15 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       search to notice that mutations were still pending.</li>
  * </ul>
  *
+ * <p>
+ * Tagged {@code vector} (issue #7742): every method here waits on a graph rebuild, and a rebuild queues for
+ * {@code LSMVectorIndex.REBUILD_SEMAPHORE}, which holds one permit for the whole JVM. Left in the default lane the
+ * class convoys against every other vector test sharing that JVM and pays waits sized for the worst case, which is
+ * exactly what the tag exists to keep out of everyone else's way.
+ *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+@Tag("vector")
 class LSMVectorIndexIncrementalIngestScalingTest extends TestHelper {
 
   private static final int DIM = 32;
@@ -215,7 +223,11 @@ class LSMVectorIndexIncrementalIngestScalingTest extends TestHelper {
         .pollInterval(Duration.ofMillis(200))
         .untilAsserted(() -> {
           final Map<String, Long> stats = idx.getStats();
-          assertThat(stats.get("deltaVectorsCount")).isZero();
+          // Discounting the nodes this build left unreachable, which it re-queues into the buffer on purpose
+          // (issue #7190) and which no later rebuild removes - a Vamana build orphans a fresh set. They are
+          // already IN the graph, so they are not what "absorbs every pending vector" is about, and asserting a
+          // flat zero made a build that orphaned one node read as a rebuild that stopped early (issue #7742).
+          assertThat(stats.get("deltaVectorsCount") - stats.get("unreachableGraphNodes")).isZero();
           assertThat(stats.get("graphNodeCount")).isEqualTo(2_800L);
         });
   }

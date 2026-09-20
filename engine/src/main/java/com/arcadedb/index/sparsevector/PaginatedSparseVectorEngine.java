@@ -767,6 +767,18 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    */
   public List<RidScore> topKGrouped(final int[] queryDims, final float[] queryWeights, final int limit,
       final int groupSize, final Function<RID, Object> groupKeyResolver, final Set<RID> allowedRIDs) throws IOException {
+    return topKGrouped(queryDims, queryWeights, limit, groupSize, groupKeyResolver, allowedRIDs, null);
+  }
+
+  /**
+   * {@link #topKGrouped(int[], float[], int, int, Function, Set)} with a set of RIDs the traversal must skip, for a
+   * caller superseding their committed copy with its own uncommitted one (issue #7966).
+   *
+   * @see BmwScorer#topKGrouped(int[], float[], DimCursor[], int, int, Function, Set, Set)
+   */
+  public List<RidScore> topKGrouped(final int[] queryDims, final float[] queryWeights, final int limit,
+      final int groupSize, final Function<RID, Object> groupKeyResolver, final Set<RID> allowedRIDs,
+      final Set<RID> excludedRIDs) throws IOException {
     ensureOpen();
     if (limit <= 0 || groupSize <= 0)
       return List.of();
@@ -792,7 +804,8 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     try {
       for (int i = 0; i < queryDims.length; i++)
         cursors[i] = openMergedCursor(queryDims[i], mtSnapshot, segSnapshot);
-      return BmwScorer.topKGrouped(queryDims, queryWeights, cursors, limit, groupSize, groupKeyResolver, allowedRIDs);
+      return BmwScorer.topKGrouped(queryDims, queryWeights, cursors, limit, groupSize, groupKeyResolver, allowedRIDs,
+          excludedRIDs);
     } finally {
       for (final DimCursor c : cursors)
         if (c != null)

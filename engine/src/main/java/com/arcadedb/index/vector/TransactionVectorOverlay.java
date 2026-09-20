@@ -109,9 +109,19 @@ final class TransactionVectorOverlay {
    * into existence on a thread that has none. The status gate is {@code BEGUN} alone, matching
    * {@code LSMTreeIndex.get()}: from {@code COMMIT_1ST_PHASE} onwards the queue is being drained into the index
    * itself, so merging it again would double-count every row.
+   * <p>
+   * <b>Built once per version of the lanes, not once per search (issue #7967).</b> The overlay is a pure function
+   * of what the transaction has queued, so {@code TransactionIndexContext} holds the answer - including the
+   * {@code null} one - until the lanes change. Before this, a transaction that ingested and queried in turn paid
+   * a walk of its whole write set, plus a {@link VectorFloat} conversion per pending row, on EVERY query; now it
+   * pays that once per batch it writes. The cache cannot go stale: the version it is keyed on moves on every
+   * change to the lanes, removals included.
+   *
+   * @param payloadBudget how many pending rows may keep a converted {@link VectorFloat}; past it the row keeps
+   *                      only its id and RID and is read back on demand. See {@link #pendingPayloadsDeclined}.
    */
   static TransactionVectorOverlay open(final DatabaseInternal database, final IndexInternal index,
-      final VectorTypeSupport vts) {
+      final VectorTypeSupport vts, final int payloadBudget) {
     final TransactionContext tx = database.getTransactionIfExists();
     if (tx == null || tx.getStatus() != TransactionContext.STATUS.BEGUN)
       return null;
@@ -120,6 +130,17 @@ final class TransactionVectorOverlay {
     if (changes == null)
       return null;
 
+    final Object cached = changes.cachedIndexView(index);
+    if (cached != null)
+      return cached == TransactionIndexContext.NO_VIEW ? null : (TransactionVectorOverlay) cached;
+
+    final TransactionVectorOverlay built = build(changes, index, vts, payloadBudget);
+    changes.cacheIndexView(index, built);
+    return built;
+  }
+
+  private static TransactionVectorOverlay build(final TransactionIndexContext changes, final IndexInternal index,
+      final VectorTypeSupport vts, final int payloadBudget) {
     // Every lane this index owns, in replay order. More than one is possible: a compaction that renames the index
     // mid-transaction makes the next write open a second lane under the new name, and commit() replays both, so a
     // reader that took only one would answer with part of this transaction's own writes missing.
@@ -173,7 +194,18 @@ final class TransactionVectorOverlay {
 
           if (pending == null)
             pending = new LinkedHashMap<>();
-          pending.put(entry.rid, new DeltaVectorEntry(PENDING_VECTOR_ID, entry.rid, vts.createFloatVector(vector)));
+
+          // Past the budget the row keeps only its id and RID, exactly the way the committed buffer's own entries
+          // do past `arcadedb.vectorIndex.deltaCacheSize` (issue #7357) - and for the same reason (issue #7967).
+          // A converted VectorFloat is a SECOND copy of the transaction's whole write set on the heap, on top of
+          // the float[] the queued key already holds, and nothing about a transaction bounds how large that set
+          // is. A declined row is never a dropped row: the vector is still in the record this transaction saved,
+          // and the delta scan reads it back from there on demand - which is a lookup in the transaction's own
+          // record cache, not a page read, because the record is one this transaction is holding.
+          final DeltaVectorEntry row = pending.size() < payloadBudget || pending.containsKey(entry.rid) ?
+              new DeltaVectorEntry(PENDING_VECTOR_ID, entry.rid, vts.createFloatVector(vector)) :
+              new DeltaVectorEntry(PENDING_VECTOR_ID, entry.rid, null);
+          pending.put(entry.rid, row);
         }
       }
 
@@ -182,6 +214,18 @@ final class TransactionVectorOverlay {
 
     return new TransactionVectorOverlay(pending == null ? List.of() : new ArrayList<>(pending.values()),
         superseded == null ? Set.of() : superseded);
+  }
+
+  /**
+   * How many of {@link #pending} were declined a converted payload by the budget, i.e. how many rows a scan has to
+   * read back from their record. Zero on everything but a transaction whose write set outgrew the budget.
+   */
+  int pendingPayloadsDeclined() {
+    int declined = 0;
+    for (int i = 0; i < pending.size(); i++)
+      if (pending.get(i).vector == null)
+        ++declined;
+    return declined;
   }
 
   /** The queued key, as the float array {@code LSMVectorIndex.put()} wrapped it in, or {@code null}. */
