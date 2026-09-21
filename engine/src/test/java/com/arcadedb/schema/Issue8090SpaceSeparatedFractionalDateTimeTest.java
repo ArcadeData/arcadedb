@@ -293,12 +293,22 @@ class Issue8090SpaceSeparatedFractionalDateTimeTest extends TestHelper {
   }
 
   /**
-   * A fractional second only qualifies a second that is actually there: {@code '13:45.123456'} is not a time.
+   * The grammar is exactly what its Javadoc says, in both directions: a fractional second only qualifies a second
+   * that is actually there, and an offset only offsets a time that is actually there.
    */
   @Test
-  void aFractionWithoutSecondsIsRefused() {
+  void theGrammarAcceptsNothingBeyondWhatItDocuments() {
     assertThatThrownBy(() -> DateUtils.parseDateTime(null, "2024-02-29 13:45.123456"))//
+        .as("a fraction with no second to qualify")
         .isInstanceOf(DateTimeParseException.class);
+
+    assertThatThrownBy(() -> DateUtils.parseDateTime(null, "2024-02-29+01:00"))//
+        .as("an offset with no time to offset")
+        .isInstanceOf(DateTimeParseException.class);
+
+    // The shapes either of those could be mistaken for are still read.
+    assertThat(DateUtils.parseDateTime(null, "2024-02-29")).isEqualTo(LocalDateTime.of(2024, 2, 29, 0, 0));
+    assertThat(DateUtils.parseDateTime(null, "2024-02-29 13:45")).isEqualTo(LocalDateTime.of(2024, 2, 29, 13, 45));
   }
 
   /**
@@ -398,6 +408,45 @@ class Issue8090SpaceSeparatedFractionalDateTimeTest extends TestHelper {
     assertThat(Type.convertOrNull(null, "01 01 0001 BC", LocalDate.class)).isNull();
     assertThatThrownBy(() -> Type.convert(null, "01 01 0001 BC", LocalDate.class))//
         .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  /**
+   * Every target that IS an instant keeps the offset the value carries, from whichever format read it - including a
+   * schema pattern that captures one, which resolved through {@code LocalDateTime} and threw the offset away before
+   * any caller could see it. Re-anchoring what was left to the database's zone landed on a different moment than
+   * the value named.
+   */
+  @Test
+  void anOffsetCapturedByASchemaPatternReachesEveryInstantTarget() {
+    final String original = database.getSchema().getDateTimeFormat();
+    database.getSchema().setDateTimeFormat("yyyy-MM-dd HH:mm:ss XXX");
+    try {
+      final String literal = "2024-02-29 13:45:10 +01:00";
+      final Instant expected = OffsetDateTime.parse("2024-02-29T13:45:10+01:00").toInstant();
+
+      assertThat(((ZonedDateTime) Type.convert(database, literal, ZonedDateTime.class)).toInstant()).isEqualTo(expected);
+      assertThat(Type.convert(database, literal, Instant.class)).isEqualTo(expected);
+      assertThat(((Date) Type.convert(database, literal, Date.class)).toInstant()).isEqualTo(expected);
+
+      // The LocalDateTime target still drops it, on purpose: it has no zone to keep (issue #4125).
+      assertThat(Type.convert(database, literal, LocalDateTime.class)).isEqualTo(
+          LocalDateTime.of(2024, 2, 29, 13, 45, 10));
+    } finally {
+      database.getSchema().setDateTimeFormat(original);
+    }
+  }
+
+  /**
+   * With no database in scope there is no zone to rebase onto, so an offset-bearing value must be read as the
+   * instant it names rather than have its offset dropped and the remainder anchored to the JVM's zone.
+   */
+  @Test
+  void anOffsetSurvivesWithNoDatabaseInScope() {
+    final Instant expected = OffsetDateTime.parse("2024-02-29T13:45:10.123456+01:00").toInstant();
+
+    assertThat(DateUtils.parseZonedDateTime(null, "2024-02-29T13:45:10.123456+01:00").toInstant()).isEqualTo(expected);
+    assertThat(DateUtils.parseZonedDateTime(null, "2024-02-29 13:45:10.123456+01:00").toInstant()).isEqualTo(expected);
+    assertThat(Type.convert(null, "2024-02-29T13:45:10.123456+01:00", Instant.class)).isEqualTo(expected);
   }
 
   /**

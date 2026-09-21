@@ -436,7 +436,7 @@ class PostBatchHandlerIT extends BaseGraphServerTest {
       assertThat(eResult.getInt("edgesCreated")).isEqualTo(1);
 
       // Confirm the timestamp survived the round-trip: the rebased wall-clock matches what
-      // {@code parseIsoDateTime} produces given the database's configured timezone. The
+      // {@code DateUtils.parseDateTime} produces given the database's configured timezone. The
       // computation mirrors the engine path so the assertion stays stable regardless of the
       // JVM's default zone.
       final JSONObject query = executeCommand(serverIndex, "sql", "SELECT ts FROM E4142");
