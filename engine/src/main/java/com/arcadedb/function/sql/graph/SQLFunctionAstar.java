@@ -386,11 +386,16 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
    * edges may join the same pair, and this used to {@code break} on the first match, so the distance it reported
    * depended on the order the edges were created in (issue #8031). Every candidate is now weighed and the minimum
    * kept, which is the only one an optimal path can use.
+   * <p>
+   * The edge-type filter travels with it, which it did not before (PR #8093 review): the neighbourhood assembly
+   * restricts itself to {@code paramEdgeTypeNames} and this did not, so with an {@code edgeTypeNames} option in
+   * play the heuristic could price a step off an edge of a type the search is forbidden to walk. The empty array
+   * the option defaults to means "every type", which is how every other call site here already reads it.
    */
   @Override
   protected double getDistance(final Vertex node, final Vertex parent, final Vertex target) {
     double cheapest = Double.POSITIVE_INFINITY;
-    for (final Edge next : node.getEdges(paramDirection)) {
+    for (final Edge next : node.getEdges(paramDirection, paramEdgeTypeNames)) {
       try {
         if (next.getOut().equals(target.getIdentity()) || next.getIn().equals(target.getIdentity())) {
           // getDistance(Edge), the same extraction the neighbourhood assembly uses, so an edge with no weight
