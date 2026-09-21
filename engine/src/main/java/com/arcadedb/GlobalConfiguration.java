@@ -2994,7 +2994,14 @@ public enum GlobalConfiguration {
       out.print("  + ");
       out.print(v.key);
       out.print(" = ");
-      out.println(v.isHidden() ? "<hidden>" : String.valueOf((Object) v.getValue()));
+      // Redaction is publishableValue's, the single rule the settings reports already publish under
+      // (GET /api/v1/server, the MCP get_server_settings tool, SELECT FROM schema:database). isHidden() alone
+      // masks a setting that IS a secret and says nothing about one that CONTAINS a secret, so the credentials
+      // embedded in arcadedb.server.defaultDatabases were printed here in clear by an operator who turned
+      // arcadedb.dumpConfigAtStartup on to record what the server booted with (issue #8038).
+      // The "<hidden>" spelling a wholly hidden setting has always printed is kept, rather than publishableValue's
+      // "*****": this dump is read by people, not parsed, and nothing gains from renaming it here.
+      out.println(v.isHidden() ? "<hidden>" : String.valueOf(v.publishableValue(v.getValue())));
     }
     out.flush();
   }
