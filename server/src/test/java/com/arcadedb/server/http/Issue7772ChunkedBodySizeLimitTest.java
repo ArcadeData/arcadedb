@@ -47,6 +47,17 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Every test below sends the SAME chunked body through a different body-reading entry point of the HTTP
  * server, with the cap set to 1 KB. Each one must be refused; before the fix each one buffered the whole
  * payload and answered as though the request were acceptable.
+ * <p>
+ * Each oversize case offers its body WITHOUT ever sending the terminating {@code 0\r\n\r\n} chunk, and that is
+ * what makes the 413 mean something: it can only come from a server that decided on the bytes it had already
+ * read. A server that waits for the end of the body - which is every one of these paths before the fix - never
+ * answers at all, and the test fails on the read timeout instead.
+ * <p>
+ * What is deliberately NOT asserted is how many body bytes the client managed to write before the answer
+ * arrived. That number measures the kernel socket buffers rather than the server: on a Linux loopback the whole
+ * payload fits in them, so the client finishes writing long before the handler has read its first chunk, and an
+ * {@code isLessThan(offered)} on it is red on CI and green on macOS for reasons that have nothing to do with the
+ * cap. The heap bound the fix provides is not observable from the client side.
  */
 class Issue7772ChunkedBodySizeLimitTest extends BaseGraphServerTest {
 
@@ -70,7 +81,6 @@ class Issue7772ChunkedBodySizeLimitTest extends BaseGraphServerTest {
 
     assertThat(response.statusCode).isEqualTo(413);
     assertThat(response.body).contains(GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE.getKey());
-    assertThat(response.bytesAccepted).isLessThan(OVERSIZED_BODY_BYTES);
   }
 
   /**
@@ -85,7 +95,6 @@ class Issue7772ChunkedBodySizeLimitTest extends BaseGraphServerTest {
 
     assertThat(response.statusCode).isEqualTo(413);
     assertThat(response.body).contains(GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE.getKey());
-    assertThat(response.bytesAccepted).isLessThan(OVERSIZED_BODY_BYTES);
   }
 
   /**
@@ -99,7 +108,6 @@ class Issue7772ChunkedBodySizeLimitTest extends BaseGraphServerTest {
 
     assertThat(response.statusCode).isEqualTo(413);
     assertThat(response.body).contains(GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE.getKey());
-    assertThat(response.bytesAccepted).isLessThan(OVERSIZED_BODY_BYTES);
   }
 
   /**
@@ -115,7 +123,6 @@ class Issue7772ChunkedBodySizeLimitTest extends BaseGraphServerTest {
 
     assertThat(response.statusCode).isEqualTo(413);
     assertThat(response.body).contains(GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE.getKey());
-    assertThat(response.bytesAccepted).isLessThan(OVERSIZED_BODY_BYTES);
   }
 
   /**
@@ -146,34 +153,38 @@ class Issue7772ChunkedBodySizeLimitTest extends BaseGraphServerTest {
     assertThat(response.statusCode).isEqualTo(200);
   }
 
+  /**
+   * Offers {@code bodyBytes} as a chunked body and never terminates it, so only a server that enforces the cap on
+   * the bytes it has read can answer at all.
+   */
   private Response postChunked(final String path, final String contentType, final long bodyBytes) throws Exception {
     final byte[] filler = new byte[8192];
     Arrays.fill(filler, (byte) 'x');
-    return exchange(path, contentType, filler, bodyBytes, true);
+    return exchange(path, contentType, filler, bodyBytes, true, false);
   }
 
   private Response postChunkedBody(final String path, final String contentType, final byte[] body) throws Exception {
-    return exchange(path, contentType, body, body.length, true);
+    return exchange(path, contentType, body, body.length, true, true);
   }
 
   private Response postDeclaredLength(final String path, final String contentType, final long bodyBytes)
       throws Exception {
     final byte[] filler = new byte[8192];
     Arrays.fill(filler, (byte) 'x');
-    return exchange(path, contentType, filler, bodyBytes, false);
+    return exchange(path, contentType, filler, bodyBytes, false, true);
   }
 
   /**
    * Sends {@code totalBytes} of {@code chunk} with {@code Transfer-Encoding: chunked} over a raw socket, so the
-   * encoding is exactly the one under test and never the JDK client's choice, and reports how many body bytes
-   * the server took before answering.
+   * encoding is exactly the one under test and never the JDK client's choice. With {@code endBody} false the
+   * terminating zero-length chunk is never written, so the request stays deliberately unfinished.
    * <p>
    * The response is drained on a separate thread started BEFORE the first body byte goes out: a server that
    * refuses mid-upload answers and closes while the client is still writing, and a reader that only runs after
    * the write loop would lose the very answer being asserted on.
    */
   private Response exchange(final String path, final String contentType, final byte[] chunk, final long totalBytes,
-      final boolean chunked) throws Exception {
+      final boolean chunked, final boolean endBody) throws Exception {
     final String credentials = Base64.getEncoder()
         .encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes(StandardCharsets.UTF_8));
 
@@ -219,7 +230,7 @@ class Issue7772ChunkedBodySizeLimitTest extends BaseGraphServerTest {
           out.flush();
           sent.addAndGet(size);
         }
-        if (chunked && !responseStarted(collected)) {
+        if (chunked && endBody && !responseStarted(collected)) {
           out.write("0\r\n\r\n".getBytes(StandardCharsets.US_ASCII));
           out.flush();
         }
@@ -245,7 +256,7 @@ class Issue7772ChunkedBodySizeLimitTest extends BaseGraphServerTest {
       synchronized (collected) {
         raw = collected.toString();
       }
-      return new Response(statusCodeOf(raw), bodyOf(raw), sent.get());
+      return new Response(statusCodeOf(raw), bodyOf(raw));
     }
   }
 
@@ -274,6 +285,6 @@ class Issue7772ChunkedBodySizeLimitTest extends BaseGraphServerTest {
     return separator < 0 ? "" : raw.substring(separator + 4);
   }
 
-  private record Response(int statusCode, String body, long bytesAccepted) {
+  private record Response(int statusCode, String body) {
   }
 }
