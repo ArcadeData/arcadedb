@@ -377,6 +377,36 @@ class PluginApiSpecTest {
         .containsExactlyInAnyOrder("200", "400", "401", "403", "404", "500", "503");
   }
 
+  /**
+   * #7956 added the one key of a {@code /checksums} answer that is not a file name, and it has to be DECLARED
+   * rather than merely returned. The body stays a flat map - {@code additionalProperties} is still the CRC integer -
+   * so a generated client models {@code /unreadableFiles} as the string array it is only if the property is spelled
+   * out beside it. This module has been bitten by exactly that before: #7577 was an un-named object schema on this
+   * very route that produced an empty client model, which is why the assertion is on the generated schema and not
+   * on the builder call.
+   */
+  @Test
+  void theChecksumsSchemaDeclaresTheReservedUnreadableFilesKey() {
+    final Schema<?> body = openAPI.getPaths().get("/api/v1/ha/snapshot/{database}/checksums").getGet()
+        .getResponses().get("200").getContent().get(SpecBuilders.JSON).getSchema();
+
+    assertThat(((Schema<?>) body.getAdditionalProperties()).getType())
+        .as("every other key is still a file name mapped to its CRC")
+        .isEqualTo("integer");
+
+    // Asserted on the map before it is indexed: an undeclared property leaves getProperties() NULL, and an NPE
+    // deep in the test says far less about what broke than "the reserved key must be declared" does.
+    assertThat(body.getProperties())
+        .as("the reserved key must be declared, or a generated client cannot see it")
+        .isNotNull()
+        .containsKey("/unreadableFiles");
+
+    final Schema<?> unreadable = (Schema<?>) body.getProperties().get("/unreadableFiles");
+    assertThat(unreadable.getType()).isEqualTo("array");
+    assertThat(unreadable.getItems().getType())
+        .as("it carries the NAMES of the files this answer does not cover").isEqualTo("string");
+  }
+
   @Test
   void noClusterOperationIsMarkedPublic() {
     for (final Map.Entry<String, PathItem> entry : openAPI.getPaths().entrySet()) {
