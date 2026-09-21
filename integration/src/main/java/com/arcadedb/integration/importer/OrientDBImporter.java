@@ -529,18 +529,31 @@ public class OrientDBImporter {
       // and a nested commit below is independently durable, so a caller who wrapped this import in a transaction
       // to commit or discard it as a unit used to find the links already updated on disk and a later rollback()
       // taking nothing back (issue #8073). The `else if` is defensive - importOwnsTransaction() already
-      // guarantees a transaction is active whenever it answers false - for a caller that resolved its own
-      // transaction between that check and this call.
-      if (ownsTransaction)
+      // guarantees a transaction is active whenever it answers false, for a caller that resolved its own
+      // transaction between that check and this call - so txOpen below is set from whether THIS call actually
+      // pushed a transaction, not from ownsTransaction directly: were the defensive branch ever taken,
+      // ownsTransaction would stay false while this call is nonetheless the only one that pushed a transaction
+      // and can resolve it, and initialising txOpen from ownsTransaction there would leak it - never committed,
+      // never rolled back.
+      final boolean pushedTransaction;
+      if (ownsTransaction) {
         database.begin();
-      else if (!database.isTransactionActive())
+        pushedTransaction = true;
+      } else if (!database.isTransactionActive()) {
+        logger.errorLine(
+            "- WARNING: importOwnsTransaction() answered false but no transaction was active on entry to "
+                + "updateDocumentLinks(): the invariant it documents did not hold. Proceeding as if this import "
+                + "owns the transaction it is about to push.");
         database.begin();
+        pushedTransaction = true;
+      } else
+        pushedTransaction = false;
       // Whether the transaction just opened (or the one begun after a periodic commit below) is still the current
       // one. Cleared right before every commit - which pops it in a finally even if it throws - so a rollback below
       // can never pop a transaction this method has already committed away (issue #7272). Initialised to
-      // ownsTransaction rather than unconditionally true, so a caller-owned transaction is never the one this
-      // method's commit/rollback resolves (issue #8073).
-      boolean txOpen = ownsTransaction;
+      // pushedTransaction rather than ownsTransaction, so a caller-owned transaction is never the one this
+      // method's commit/rollback resolves, while a transaction this call pushed always is (issue #8073).
+      boolean txOpen = pushedTransaction;
 
       // Documents an intermediate commit already made durable. context.updatedDocuments counts every document
       // touched, the ones still inside the transaction a failure rolls back included.

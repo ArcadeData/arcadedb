@@ -231,26 +231,31 @@ public class RDFImporterFormat extends CSVImporterFormat {
 
           context.createdEdges.incrementAndGet();
 
-          // Gated on ownsTransaction the same way JsonlImporterFormat.load() gates its own periodic commit: a
-          // transaction that predates this import is never ours to commit piecemeal, only to accumulate into and
-          // hand back to whoever owns it (issue #6561). That guard is also what makes the txOpen below
-          // unconditional - reached only when the begin() above pushed a transaction this call exclusively owns.
-          // txCount is incremented inside the guard rather than beside the counter above so that it cannot run away
-          // on the caller-owned path, where nothing would ever reset it.
-          if (ownsTransaction && ++txCount >= settings.commitEvery) {
-            txOpen = false;
-            database.commit();
-            committedEdges = context.createdEdges.get();
-            database.begin();
-            txOpen = true;
-            txCount = 0;
-          }
+          // Incremented here, inside the guard, so it cannot run away on the caller-owned path, where nothing
+          // would ever reset it - but the commit itself is deliberately OUTSIDE this try/catch, below.
+          if (ownsTransaction)
+            ++txCount;
         } catch (final RuntimeException e) {
           if (!skipOnError)
             throw e;
 
           logSkippedRow("RDF statement", line, e);
           context.errors.incrementAndGet();
+        }
+
+        // Deliberately outside the per-row catch above, the same way CSVImporterFormat.loadEdges() places its own
+        // periodic commit: a commit failure is not a row error. Caught in that catch it would be logged under a
+        // "skipping it" message and the loop would carry on with no transaction active - LocalDatabase#commit()
+        // pops in its own finally and the begin() below would never run - turning one infrastructure failure into
+        // one more for every remaining row, all misreported as bad data. Left to escape, it reaches the finally
+        // below instead, which corrects the counter and lets the real cause propagate.
+        if (ownsTransaction && txCount >= settings.commitEvery) {
+          txOpen = false;
+          database.commit();
+          committedEdges = context.createdEdges.get();
+          database.begin();
+          txOpen = true;
+          txCount = 0;
         }
 
         // SAME CAP AND SAME '>=' AS XMLImporterFormat.load() (ISSUE #7341): context.parsed IS INCREMENTED ONCE PER
