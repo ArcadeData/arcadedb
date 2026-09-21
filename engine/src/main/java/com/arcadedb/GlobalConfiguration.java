@@ -1560,8 +1560,9 @@ public enum GlobalConfiguration {
       remote_read endpoints) a client that compresses turns that cap into a ratio multiplier: line protocol is \
       highly repetitive text and ratios in the hundreds are ordinary, so an accepted 100MB body is worth tens of \
       GB of heap. A body that decodes past this value is refused with HTTP 413 before the decoded bytes are \
-      materialized. Set to -1 (the default) to follow 'arcadedb.server.httpBodyContentMaxSize', which is what an \
-      administrator raising a single knob expects - including its own -1, meaning unlimited. A positive value \
+      materialized. Set to a NEGATIVE value (-1 is the default) to follow 'arcadedb.server.httpBodyContentMaxSize', \
+      which is what an administrator raising a single knob expects - including its own -1, meaning unlimited. Set \
+      to 0 for unlimited without following that setting, the same way 0 means unlimited there. Any other value \
       overrides it, so a legitimately large compressed payload can be allowed without also widening what may \
       arrive uncompressed""",
       Long.class, -1L),

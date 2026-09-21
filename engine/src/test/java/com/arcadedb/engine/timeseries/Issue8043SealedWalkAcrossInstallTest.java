@@ -29,8 +29,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.io.RandomAccessFile;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.zip.CRC32;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -203,6 +206,128 @@ class Issue8043SealedWalkAcrossInstallTest {
       // Only the surviving block's combination, not the two whose rows were deleted.
       assertThat(combinations.stream().map(r -> (String) r[1]).toList()).containsExactly("C");
       assertThat(metrics.getVanishedBlocks()).isEqualTo(2);
+    }
+  }
+
+  /**
+   * The window a rolling upgrade opens: a sealed file that still holds blocks written before this change records
+   * no id for them, and the walk has to resolve them across an install anyway.
+   * <p>
+   * Review of PR #8095 found that the first cut minted a fresh RANDOM id for such a block on every load, which is
+   * the #8043 defect again, narrowed to exactly the blocks that predate the fix and lasting until the leader's
+   * maintenance rewrites them. The id is derived from the block's own record instead, so it is the same on every
+   * load of the same file and therefore the same on a follower as on the leader whose bytes it is holding.
+   */
+  @Test
+  void aWalkCrossingAnInstallOfPreIssue8043BlocksKeepsThemToo() throws Exception {
+    // A "TSB2" file: the layout every block had between issues #7089 and #8043, which records no block id.
+    writeLegacyTsb2File(FOLLOWER_PATH, new long[][] { { 1000L, 2000L }, { 3000L, 4000L }, { 5000L, 6000L } });
+
+    try (final TimeSeriesSealedStore follower = new TimeSeriesSealedStore(FOLLOWER_PATH, columns)) {
+      assertThat(follower.getBlockCount()).isEqualTo(3);
+
+      final BlockDirectorySnapshot snapshot = follower.snapshotBlockDirectory(0L, Long.MAX_VALUE);
+      assertThat(snapshot.blocks()).hasSize(3);
+      assertThat(snapshot.blocks().stream().map(b -> b.blockId).distinct().count())
+          .as("a derived id still has to be unique within the file").isEqualTo(3);
+
+      // The leader ships the same file back - byte for byte, as a follower's sealed store always is - and it
+      // lands mid-walk.
+      follower.installSealedFileBytes(follower.readWholeSealedFile());
+
+      final AggregationMetrics metrics = new AggregationMetrics();
+      final List<Object[]> rows = new ArrayList<>();
+      assertThat(follower.forEachRow(snapshot, 0L, Long.MAX_VALUE, null, null, metrics, rows::add)).isTrue();
+
+      assertThat(rows).hasSize(6);
+      assertThat(metrics.getVanishedBlocks()).isZero();
+    }
+  }
+
+  /**
+   * ... and the derived id is not thrown away by the first rewrite: a retained block carries it into the "TSB3"
+   * record, so it is PERSISTED from then on rather than derived again from an offset the rewrite has changed.
+   */
+  @Test
+  void aRewriteOfALegacyBlockPersistsTheIdItWasDerivedWith() throws Exception {
+    writeLegacyTsb2File(FOLLOWER_PATH, new long[][] { { 1000L, 2000L }, { 5000L, 6000L } });
+
+    final long retainedId;
+    try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(FOLLOWER_PATH, columns)) {
+      retainedId = store.snapshotBlockDirectory(5000L, 6000L).blocks().getFirst().blockId;
+      // Drops the first block and copies the second verbatim - into the current layout, which records the id.
+      store.truncateBefore(5000L);
+      assertThat(store.getBlockCount()).isEqualTo(1);
+      assertThat(store.snapshotBlockDirectory(0L, Long.MAX_VALUE).blocks().getFirst().blockId)
+          .as("a verbatim copy keeps the id, derived or not").isEqualTo(retainedId);
+    }
+
+    try (final TimeSeriesSealedStore reopened = new TimeSeriesSealedStore(FOLLOWER_PATH, columns)) {
+      assertThat(reopened.snapshotBlockDirectory(0L, Long.MAX_VALUE).blocks().getFirst().blockId)
+          .as("and the rewrite wrote it down, so the reopen reads it back rather than deriving it at a new offset")
+          .isEqualTo(retainedId);
+    }
+  }
+
+  /**
+   * A "TSB2" sealed file, written by hand because no path in the tree writes one any more: magic, min/max
+   * timestamp, sample count, column sizes, the [min, max, sum, count] statistics quadruple of issue #7089, the
+   * tag section, the data and the CRC - and no block id, which is the whole point.
+   */
+  private void writeLegacyTsb2File(final String path, final long[][] blocks) throws Exception {
+    try (final RandomAccessFile raf = new RandomAccessFile(path + ".ts.sealed", "rw")) {
+      raf.setLength(0);
+      final ByteBuffer header = ByteBuffer.allocate(27);
+      header.putInt(0x54534958);                                   // "TSIX"
+      header.put((byte) 1);                                        // the version TSB2 blocks were written under
+      header.putShort((short) columns.size());
+      header.putInt(blocks.length);
+      header.putLong(blocks[0][0]);
+      header.putLong(blocks[blocks.length - 1][blocks[blocks.length - 1].length - 1]);
+      raf.write(header.array());
+
+      for (final long[] timestamps : blocks) {
+        final String[] tags = new String[timestamps.length];
+        final double[] values = new double[timestamps.length];
+        for (int i = 0; i < timestamps.length; i++) {
+          tags[i] = "A";
+          values[i] = i + 1.0;
+        }
+        final byte[] tsBytes = DeltaOfDeltaCodec.encode(timestamps);
+        final byte[] tagBytes = DictionaryCodec.encode(tags);
+        final byte[] valBytes = GorillaXORCodec.encode(values);
+
+        double sum = 0;
+        for (final double v : values)
+          sum += v;
+
+        // magic + minTs + maxTs + sampleCount + 3 column sizes + numericColCount + one quadruple + tagColCount
+        final ByteBuffer meta = ByteBuffer.allocate(4 + 8 + 8 + 4 + 4 * 3 + 4 + (8 + 8 + 8 + 8) + 2);
+        meta.putInt(0x54534232);                                   // "TSB2" - no block id follows
+        meta.putLong(timestamps[0]);
+        meta.putLong(timestamps[timestamps.length - 1]);
+        meta.putInt(timestamps.length);
+        meta.putInt(tsBytes.length);
+        meta.putInt(tagBytes.length);
+        meta.putInt(valBytes.length);
+        meta.putInt(1);                                            // one column carries statistics
+        meta.putDouble(values[0]);
+        meta.putDouble(values[values.length - 1]);
+        meta.putDouble(sum);
+        meta.putLong(values.length);
+        meta.putShort((short) 0);                                  // no TAG declaration
+
+        final CRC32 crc = new CRC32();
+        crc.update(meta.array());
+        crc.update(tsBytes);
+        crc.update(tagBytes);
+        crc.update(valBytes);
+        raf.write(meta.array());
+        raf.write(tsBytes);
+        raf.write(tagBytes);
+        raf.write(valBytes);
+        raf.writeInt((int) crc.getValue());
+      }
     }
   }
 
