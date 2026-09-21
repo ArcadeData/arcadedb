@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.procedures.merge;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
@@ -187,7 +188,21 @@ public class MergeNode implements CypherProcedure {
     return Stream.of(result);
   }
 
-  @SuppressWarnings("unchecked")
+  /**
+   * Reads the {@code labels} argument, validating every entry as a name a vertex type can actually be created
+   * under.
+   * <p>
+   * The entries are caller-supplied, and the procedure turns them into a type name, so they get the same check the
+   * other openCypher write paths apply - {@code toString()}-ing whatever arrived used to make a number a label and,
+   * worse, let a label carrying {@link Labels#LABEL_SEPARATOR} through: the separator is how a composite type name
+   * encodes the boundary between its labels, so {@code ['A~B', 'C']} and {@code ['A', 'B~C']} both named the type
+   * {@code A~B~C} and the second call merged onto the node the first one had created (issue #8100).
+   * <p>
+   * The refusal is a {@link CommandSemanticException} rather than this class's usual
+   * {@link IllegalArgumentException} so it keeps its identity through {@code CallStep}, which turns any other
+   * exception into a {@code null} row under {@code OPTIONAL CALL} - a malformed argument is a malformed argument
+   * inside {@code OPTIONAL CALL} too.
+   */
   private List<String> extractLabels(final Object arg) {
     switch (arg) {
       case null -> {
@@ -197,13 +212,13 @@ public class MergeNode implements CypherProcedure {
         final List<String> result = new ArrayList<>();
         for (final Object item : list) {
           if (item != null) {
-            result.add(item.toString());
+            result.add(requireUsableLabel(item));
           }
         }
         return result;
       }
       case String s -> {
-        return List.of(s);
+        return List.of(requireUsableLabel(s));
       }
       default -> {
       }
@@ -211,6 +226,13 @@ public class MergeNode implements CypherProcedure {
 
     throw new IllegalArgumentException(
         getName() + "(): labels must be a list or string, got " + arg.getClass().getSimpleName());
+  }
+
+  private String requireUsableLabel(final Object item) {
+    if (!(item instanceof String label))
+      throw new CommandSemanticException(getName() + "(): every label must be a string, but got "
+          + item.getClass().getSimpleName() + " (" + item + ")");
+    return Labels.requireUsableLabelName(label, "a label passed to " + getName() + "()");
   }
 
   @SuppressWarnings("unchecked")

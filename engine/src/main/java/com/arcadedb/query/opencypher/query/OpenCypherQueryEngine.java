@@ -32,6 +32,7 @@ import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.QuerySession;
+import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.CypherAdminStatement;
 import com.arcadedb.query.opencypher.ast.CypherDDLStatement;
 import com.arcadedb.query.opencypher.ast.CypherSessionStatement;
@@ -530,7 +531,12 @@ public class OpenCypherQueryEngine implements QueryEngine {
       if (ddl.isForRelationship())
         schema.getOrCreateEdgeType(typeName);
       else
-        schema.getOrCreateVertexType(typeName);
+        // The DDL auto-create reaches the schema without going through Labels.ensureCompositeType, so it carries
+        // the separator guard itself: a label containing it would otherwise occupy the very name the ordinary
+        // label set that spells out its parts computes (issue #8100). The check sits inside the auto-create
+        // branch on purpose - a name containing the separator is what an existing composite type is legitimately
+        // called, so indexing one must keep working.
+        schema.getOrCreateVertexType(Labels.requireUsableLabelName(typeName, "a label in this statement"));
     }
 
     // For TYPED constraints, resolve the target type first so properties are created with the correct type
@@ -922,7 +928,12 @@ public class OpenCypherQueryEngine implements QueryEngine {
       if (ddl.isForRelationship())
         schema.getOrCreateEdgeType(typeName);
       else
-        schema.getOrCreateVertexType(typeName);
+        // The DDL auto-create reaches the schema without going through Labels.ensureCompositeType, so it carries
+        // the separator guard itself: a label containing it would otherwise occupy the very name the ordinary
+        // label set that spells out its parts computes (issue #8100). The check sits inside the auto-create
+        // branch on purpose - a name containing the separator is what an existing composite type is legitimately
+        // called, so indexing one must keep working.
+        schema.getOrCreateVertexType(Labels.requireUsableLabelName(typeName, "a label in this statement"));
     }
 
     // Cypher properties are dynamically typed and travel over Bolt with their actual Java type

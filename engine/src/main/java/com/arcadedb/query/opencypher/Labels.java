@@ -658,12 +658,40 @@ public final class Labels {
     if (!(value instanceof String label))
       throw new CommandSemanticException("A dynamic label expression in " + clause + " must evaluate to a string or a "
           + "list of strings, but it evaluated to " + value.getClass().getSimpleName() + " (" + value + ")");
+    return requireUsableLabelName(label, "a dynamic label expression in " + clause);
+  }
+
+  /**
+   * Refuses a label that cannot be used as the name of a vertex type, naming {@code source} so the message says
+   * where the label came from.
+   * <p>
+   * Two names are unusable. A blank one is not a type name at all. A name containing {@link #LABEL_SEPARATOR} is
+   * worse than unusable: that character is how {@link #ensureCompositeType} encodes the boundary between the
+   * labels of a composite type, so a label carrying it makes two different label sets compute the same type name -
+   * {@code [A~B, C]} and {@code [A, B~C]} both produce {@code A~B~C} - and a write under one of them silently
+   * matches a node created under the other. The composite then collects both spellings as supertypes, and
+   * {@link #getLabels} stops recognising the type as the composite of its own supertype set and reports the
+   * synthetic name itself (issue #8100).
+   * <p>
+   * This is the shared half of the check {@link #appendDynamicLabels} has applied to {@code SET n:$(expr)} since
+   * issue #7059; {@code ensureCompositeType} applies it to every other write path, and {@code merge.node} applies
+   * it to its own arguments before it computes a type name from them.
+   *
+   * @param label  the label to check
+   * @param source a noun phrase naming where the label came from, read as the subject of "... produced it", e.g.
+   *               {@code "a label passed to merge.node()"}
+   *
+   * @return {@code label}, when it is usable
+   *
+   * @throws CommandSemanticException when the label is blank or contains {@link #LABEL_SEPARATOR}
+   */
+  public static String requireUsableLabelName(final String label, final String source) {
     if (label.isBlank())
       throw new CommandSemanticException(
-          "A dynamic label expression in " + clause + " evaluated to a blank label, which is not a usable type name");
+          "A blank label is not a usable type name, and " + source + " produced one");
     if (label.contains(LABEL_SEPARATOR))
-      throw new CommandSemanticException("A dynamic label expression in " + clause + " evaluated to '" + label
-          + "', but '" + LABEL_SEPARATOR + "' is reserved as the separator between the labels of a composite type "
+      throw new CommandSemanticException("'" + label + "' cannot be used as a label - " + source + " produced it - "
+          + "because '" + LABEL_SEPARATOR + "' is reserved as the separator between the labels of a composite type "
           + "and cannot appear inside a single label");
     return label;
   }
@@ -684,15 +712,23 @@ public final class Labels {
    * name match), but a single-label {@code CREATE (:`~NO_LABEL~`)} bypasses that entirely and would otherwise
    * land the vertex on the sentinel type itself - the exact {@code V}/{@code Vertex} collision this class exists
    * to close, reopened under a name a query merely has to spell correctly instead of guess (issue #6395 review).
-   * Every write path that can introduce a new label - {@code CreateStep}, {@code MergeStep}, {@code SetStep}'s
-   * {@code SET n:Label}, and the {@code merge.node} procedure - creates its type through this one method, so the
-   * guard here closes all of them at once.
+   * A label containing {@link #LABEL_SEPARATOR} is refused here for the same reason, by
+   * {@link #requireUsableLabelName}: the separator is what the composite name is built out of a few lines below,
+   * so a label carrying it collapses two different label sets onto one type (issue #8100).
+   * <p>
+   * The guards sit in this method because it is where the write paths converge - grepping the main sources for
+   * {@code ensureCompositeType} finds {@code CreateStep}, {@code MergeStep}, {@code SetClauseApplier} (which
+   * serves {@code SET n:Label} and {@code SET n:$(expr)} alike), {@code RemoveStep} and the
+   * {@code merge.node} procedure, and no other caller that builds a type from a label. The read paths
+   * ({@code MatchNodeStep}, {@code IndexSelectionRule}) resolve names without creating types and deliberately do
+   * not validate: an unusable label in a pattern matches nothing and is harmless.
    *
    * @param schema the database schema
    * @param labels list of labels for the vertex (duplicates are ignored)
    * @return the type name to use (composite type name if multiple unique labels)
    *
-   * @throws CommandSemanticException when {@code labels} contains {@link #NO_LABEL_TYPE}
+   * @throws CommandSemanticException when {@code labels} contains {@link #NO_LABEL_TYPE}, a blank label, or a
+   *                                  label containing {@link #LABEL_SEPARATOR}
    */
   public static String ensureCompositeType(final Schema schema, final List<String> labels) {
     if (labels == null || labels.isEmpty())
@@ -704,6 +740,10 @@ public final class Labels {
     if (uniqueLabels.contains(NO_LABEL_TYPE))
       throw new CommandSemanticException(
           "'" + NO_LABEL_TYPE + "' is a reserved type name and cannot be used as a label");
+
+    // The sentinel above is checked first because it carries LABEL_SEPARATOR itself and deserves its own message.
+    for (final String label : uniqueLabels)
+      requireUsableLabelName(label, "this statement");
 
     // Handle single label case (including after deduplication)
     if (uniqueLabels.size() == 1) {
