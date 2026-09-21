@@ -36,6 +36,9 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
+import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -144,5 +147,64 @@ class RDFImporterFormatRowErrorPolicyTest {
     assertThat(context.errors.get())
         .as("the short line must be counted as an error, not silently dropped")
         .isEqualTo(1);
+  }
+
+  /**
+   * A commit failure at a {@code -commitEvery} boundary is an infrastructure failure, not a bad row: it must
+   * propagate out of {@code load()} even under {@code -onRowError skip}, rather than being caught by the per-row
+   * try/catch and logged as "skipping it", which would also leave the loop with no transaction active and turn
+   * every remaining row into a cascading, misreported failure.
+   */
+  @Test
+  void commitFailureDuringSkipOnRowErrorIsNotAbsorbedAsARowError() throws Exception {
+    final RDFImporterFormat format = new RDFImporterFormat();
+    final ImporterContext context = new ImporterContext();
+    final ImporterSettings settings = settings();
+    settings.onRowError = "skip";
+    settings.commitEvery = 1;
+
+    final RuntimeException commitFailure = new RuntimeException("simulated commit failure");
+    final DatabaseInternal failingOnCommit = commitFailsOnFirstCall((DatabaseInternal) database, commitFailure);
+
+    final Parser parser = rdfParser("""
+        v1,rel,v2
+        v3,rel,v4
+        """);
+
+    assertThatThrownBy(() -> format.load(null, null, parser, failingOnCommit, context, settings))
+        .as("a commit failure must propagate, not be swallowed as a per-row skip")
+        .isSameAs(commitFailure);
+
+    assertThat(context.errors.get())
+        .as("neither row is a bad row: the failure is in the commit, not in anything the loop parsed or wrote")
+        .isZero();
+  }
+
+  /**
+   * Wraps a real {@link DatabaseInternal} so its very first {@code commit()} call throws {@code failure} instead of
+   * committing, and every other call - including every later {@code commit()} - passes straight through to the real
+   * database. A JDK dynamic proxy rather than a hand-rolled subclass because {@link DatabaseInternal} is a large
+   * interface and the test needs to intercept exactly one method.
+   */
+  private static DatabaseInternal commitFailsOnFirstCall(final DatabaseInternal real, final RuntimeException failure) {
+    final InvocationHandler handler = new InvocationHandler() {
+      private boolean commitCalled = false;
+
+      @Override
+      public Object invoke(final Object proxy, final Method method, final Object[] args) throws Throwable {
+        if ("commit".equals(method.getName()) && (args == null || args.length == 0) && !commitCalled) {
+          commitCalled = true;
+          throw failure;
+        }
+        try {
+          return method.invoke(real, args);
+        } catch (final java.lang.reflect.InvocationTargetException e) {
+          throw e.getCause();
+        }
+      }
+    };
+
+    return (DatabaseInternal) Proxy.newProxyInstance(DatabaseInternal.class.getClassLoader(), new Class<?>[] { DatabaseInternal.class },
+        handler);
   }
 }

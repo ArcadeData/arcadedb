@@ -380,12 +380,24 @@ public class Neo4jImporter {
       // durable, so a caller who wrapped this import in a transaction to commit or discard it as a unit used to
       // find the vertices already on disk and a later rollback() taking nothing back (issue #8073). The `else if`
       // is defensive - importOwnsTransaction() already guarantees a transaction is active whenever it answers
-      // false - for a caller that resolved its own transaction between that check and this call.
-      if (ownsTransaction)
+      // false, for a caller that resolved its own transaction between that check and this call - so txOpen[0] is
+      // set from whether THIS call actually pushed a transaction, not from ownsTransaction directly: were the
+      // defensive branch ever taken, ownsTransaction would stay false while this call is nonetheless the only
+      // one that pushed a transaction and can resolve it, and tying txOpen[0] to ownsTransaction there would leak
+      // it - never committed, never rolled back.
+      final boolean pushedTransaction;
+      if (ownsTransaction) {
         database.begin();
-      else if (!database.isTransactionActive())
+        pushedTransaction = true;
+      } else if (!database.isTransactionActive()) {
+        log("- WARNING: importOwnsTransaction() answered false but no transaction was active on entry to "
+            + "parseVertices(): the invariant it documents did not hold. Proceeding as if this import owns the "
+            + "transaction it is about to push.");
         database.begin();
-      txOpen[0] = ownsTransaction;
+        pushedTransaction = true;
+      } else
+        pushedTransaction = false;
+      txOpen[0] = pushedTransaction;
       ownTx[0] = currentTransaction();
 
       try {
@@ -554,7 +566,11 @@ public class Neo4jImporter {
       };
     }
 
-    try {
+    // Java 9+'s try-with-resources over an already-declared effectively-final variable: null-safe (batch is null on
+    // the caller-owned-transaction path, where try-with-resources skips close() rather than throwing), and unlike
+    // a manual try/finally it attaches a close() failure as SUPPRESSED to a readFileSimple() failure instead of
+    // replacing it, so a double failure does not hide which one happened first.
+    try (batch) {
       readFileSimple(json -> {
         lineNumber.incrementAndGet();
 
@@ -631,9 +647,6 @@ public class Neo4jImporter {
 
         return null;
       });
-    } finally {
-      if (batch != null)
-        batch.close();
     }
 
     final long elapsedInSecs = (System.currentTimeMillis() - context.startedOn) / 1000;
