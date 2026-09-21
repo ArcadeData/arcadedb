@@ -223,9 +223,72 @@ public class LocalDocumentType implements DocumentType {
         return null;
 
       unlinkSuperType((LocalDocumentType) superType);
+      dropSubIndexesNoLongerCovered((LocalDocumentType) superType);
       return null;
     });
     return this;
+  }
+
+  /**
+   * Drops every sub-index that the linkage created over a bucket the former super type - or an ancestor of it - no
+   * longer reaches, which is the INDEX half of what {@link #removeSuperType(DocumentType)} has to undo.
+   * <p>
+   * Linking propagates the super type's indexes (its own AND the ones it inherits, {@code getAllIndexes(true)}) over
+   * this type's buckets, and every one of those components is attached to the ANCESTOR's {@link TypeIndex} by
+   * {@link #addIndexInternal}. Unlinking used to undo only the polymorphic BUCKET side (issue #6935), so the
+   * ancestor's wrapper kept fanning out over the detached subtree: {@code lookupByKey} handed back records of a
+   * foreign type, {@code countEntries()} counted them, and the ancestor's UNIQUE constraint stayed enforced across
+   * them, refusing a key that was genuinely free. {@code SELECT} was spared only because the planner filters index
+   * results by type downstream (issue #7892).
+   * <p>
+   * Dropped rather than merely detached, which is what makes it the exact mirror of {@link #addSuperType}: the
+   * components exist BECAUSE of the linkage, they index a property the subtype no longer even has, and a detachment
+   * alone would leave them on disk, invisible to the schema and resurrected by the next reload - which re-reads the
+   * attachment from {@code schema.json} and would put the ancestor's wrapper straight back over them.
+   * <p>
+   * Which buckets are "no longer reached" is read from the polymorphic caches {@link #unlinkSuperType} has just
+   * recomputed, never subtracted from the detached subtree. That is the same rule and the same reason as there: in a
+   * diamond, a bucket the former super type still reaches through another surviving path must keep its sub-index.
+   */
+  private void dropSubIndexesNoLongerCovered(final LocalDocumentType formerSuperType) {
+    final List<String> orphans = new ArrayList<>();
+    // BY IDENTITY: TypeIndex.equals() is content-based and asks an empty wrapper for its property names, which is
+    // exactly the state the wrappers in here are about to be left in.
+    final Set<TypeIndex> affectedWrappers = Collections.newSetFromMap(new IdentityHashMap<>());
+    collectSubIndexesNoLongerCovered(formerSuperType, new HashSet<>(), orphans, affectedWrappers);
+
+    for (final String indexName : orphans)
+      schema.dropIndex(indexName);
+
+    // A wrapper whose LAST sub-index was one of the orphans has to leave its owner's index list too, or the next
+    // schema serialization asks an empty TypeIndex for its property names and fails. LocalSchema's own leaf-drop
+    // cleanup cannot do it here: it looks the wrapper up from the SUB-type the component belonged to and walks that
+    // type's super types, and the link that would have led it to the owner is exactly the one just severed.
+    for (final TypeIndex wrapper : affectedWrappers)
+      if (wrapper.countIndexesOnBuckets() == 0) {
+        final LocalDocumentType owner = schema.getType(wrapper.getTypeName());
+        owner.removeTypeIndexInternal(wrapper);
+        schema.removeIndexDuringLoad(wrapper.getName());
+      }
+  }
+
+  /** Walks {@code type} and its super types, collecting the sub-indexes sitting on buckets the type no longer reaches. */
+  private static void collectSubIndexesNoLongerCovered(final LocalDocumentType type, final Set<String> visited,
+      final List<String> orphans, final Set<TypeIndex> affectedWrappers) {
+    if (!visited.add(type.getName()))
+      // A DIAMOND REACHES THE SAME ANCESTOR THROUGH MORE THAN ONE PATH
+      return;
+
+    final Set<Integer> stillCovered = new HashSet<>(type.getBucketIds(true));
+    for (final TypeIndex typeIndex : type.indexesByProperties.values())
+      for (final IndexInternal subIndex : typeIndex.getIndexesOnBuckets())
+        if (!stillCovered.contains(subIndex.getAssociatedBucketId())) {
+          orphans.add(subIndex.getName());
+          affectedWrappers.add(typeIndex);
+        }
+
+    for (final LocalDocumentType superType : type.superTypes)
+      collectSubIndexesNoLongerCovered(superType, visited, orphans, affectedWrappers);
   }
 
   /**
