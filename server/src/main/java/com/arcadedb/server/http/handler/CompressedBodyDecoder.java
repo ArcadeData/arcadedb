@@ -141,10 +141,23 @@ public final class CompressedBodyDecoder {
   /**
    * Stops the read the moment the budget is spent, rather than after it.
    * <p>
-   * Both overrides count what they actually returned and throw as soon as the total passes the budget, so the most
-   * this ever holds is the budget plus one buffer - a body that would decode to a hundred times the budget is
-   * refused having decompressed the budget, which is the whole point of reading it through a stream instead of
-   * calling {@code readAllBytes} on the raw {@code GZIPInputStream}.
+   * Both overrides count what they actually returned and throw as soon as the total passes the budget, so a body
+   * that would decode to a hundred times the budget is refused having decompressed the budget - which is the whole
+   * point of reading it through a stream instead of calling {@code readAllBytes} on the raw
+   * {@code GZIPInputStream}.
+   * <p>
+   * What that bounds is a SOFT multiple of the budget and not the budget itself (review of PR #8095). The caller
+   * accumulates into {@code readAllBytes}' own buffer, which grows geometrically, so at the instant the cap trips
+   * that buffer can already be about the size of the budget and the copy that grew it transiently held the
+   * previous one too: roughly 2x the configured value, not "the budget plus a small fixed buffer". Every buffered
+   * read has that shape and it is bounded either way - which is the property that matters here, the unbounded one
+   * being what issue #8084 is about - but the number an operator is sizing is the budget, so say which multiple of
+   * it they are really agreeing to.
+   * <p>
+   * The throw is a {@code RuntimeException} out of a method declared to throw {@code IOException} alone, and that
+   * is deliberate: the stream never escapes this class - it is created, drained and closed inside
+   * {@link #gunzip} - and both public methods declare the exception. A future caller that hands this stream
+   * somewhere else owns making that call site expect it.
    */
   private static final class BoundedInputStream extends FilterInputStream {
     private final long maxSize;
