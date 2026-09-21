@@ -880,6 +880,10 @@ public enum Type {
       // ParseException is deliberately NOT caught here: the SimpleDateFormat paths now report a non-match by
       // answering null through parseFully(), so nothing under this try can raise one, and naming it would suggest
       // a path that no longer exists.
+      //
+      // This arm covers the WHOLE try above, not just the date branches. That is safe because no non-date branch
+      // raises a DateTimeException today - but a future branch added there that throws one for an unrelated reason
+      // would be escalated from a silent null to a refusal by this arm, not by any decision of its own.
       throw new IllegalArgumentException(
           "Error in conversion of value '" + value + "' to type '" + targetClass.getSimpleName() + "': " + e.getMessage(), e);
     } catch (final Exception e) {
