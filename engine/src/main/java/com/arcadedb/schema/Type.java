@@ -329,8 +329,18 @@ public enum Type {
    * on a schemaless property where one heterogeneous row must not fail {@code CREATE INDEX} - calls this one.
    */
   public static Object convertOrNull(final Database database, final Object value, final Class<?> targetClass) {
+    return convertOrNull(database, value, targetClass, null);
+  }
+
+  /**
+   * {@link #convertOrNull(Database, Object, Class)} carrying the target {@link Property}, so a datetime keeps being
+   * truncated to the precision the column declares while a value that cannot be converted still answers
+   * {@code null} instead of throwing.
+   */
+  public static Object convertOrNull(final Database database, final Object value, final Class<?> targetClass,
+      final Property property) {
     try {
-      return convert(database, value, targetClass);
+      return convert(database, value, targetClass, property);
     } catch (final IllegalArgumentException e) {
       return null;
     }

@@ -300,6 +300,58 @@ class Issue8090SpaceSeparatedFractionalDateTimeTest extends TestHelper {
   }
 
   /**
+   * Every READ-side surface answers {@code null} for a value it cannot express, rather than aborting the query at
+   * the first row that does not fit. Making {@code Type.convert} strict must not leak past the write path.
+   */
+  @Test
+  void readSideSurfacesAnswerNullRatherThanFailing() {
+    database.getSchema().createDocumentType("Read8090");
+    database.transaction(() -> {
+      database.newDocument("Read8090").set("v", "2024-02-29 13:45:10.123456").save();
+      database.newDocument("Read8090").set("v", "not a date").save();
+    });
+
+    database.transaction(() -> {
+      // convert() and asDate()/asDatetime() must each yield one row with a value and one with null, not an error.
+      for (final String projection : new String[] { "v.convert('datetime')", "v.asDatetime()", "v.asDate()" }) {
+        int nulls = 0, values = 0;
+        final ResultSet rs = database.query("sql", "SELECT " + projection + " AS d FROM Read8090");
+        while (rs.hasNext()) {
+          if (rs.next().getProperty("d") == null)
+            ++nulls;
+          else
+            ++values;
+        }
+        assertThat(nulls).as("%s nulls", projection).isEqualTo(1);
+        assertThat(values).as("%s values", projection).isEqualTo(1);
+      }
+    });
+  }
+
+  /**
+   * The typed date/time accessors READ a value the record already holds, so one they cannot express keeps
+   * answering null: the value is not lost, it is simply not that shape. Only a WRITE refuses.
+   */
+  @Test
+  void typedDateAccessorsStayLenient() {
+    database.getSchema().createDocumentType("Acc8090");
+
+    database.transaction(() -> {
+      final MutableDocument doc = database.newDocument("Acc8090").set("v", "not a date").save();
+
+      assertThat(doc.getDate("v")).isNull();
+      assertThat(doc.getCalendar("v")).isNull();
+      assertThat(doc.getLocalDate("v")).isNull();
+      assertThat(doc.getLocalDateTime("v")).isNull();
+      assertThat(doc.getZonedDateTime("v")).isNull();
+      assertThat(doc.getInstant("v")).isNull();
+
+      // ...and the value itself was never lost, which is why answering null here costs nothing.
+      assertThat(doc.getString("v")).isEqualTo("not a date");
+    });
+  }
+
+  /**
    * {@code java.util.Date} is the other target class fed by the same literal shape.
    */
   @Test
