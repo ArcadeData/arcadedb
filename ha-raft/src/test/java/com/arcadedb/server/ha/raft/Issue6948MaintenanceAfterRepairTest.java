@@ -37,6 +37,7 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #6948, the remainder of #6839: a TimeSeries type that recovers through the HA sealed-store repair came back
@@ -140,8 +141,11 @@ class Issue6948MaintenanceAfterRepairTest {
     final LocalTimeSeriesType broken = (LocalTimeSeriesType) database.getSchema().getType(TYPE_NAME);
     assertThat(broken.isEngineAvailable()).isFalse();
 
-    new ArcadeStateMachine().applySealedBlobs(database,
-        List.of(new TsSealedBlob(TYPE_NAME, 0, SEALED_FILE, new byte[512])));
+    // The entry is REFUSED since issue #8070 - a repair that did not take effect must not be checkpointed as
+    // applied - and what this test is about is what the refused attempt left behind.
+    assertThatThrownBy(() -> new ArcadeStateMachine().applySealedBlobs(database,
+        List.of(new TsSealedBlob(TYPE_NAME, 0, SEALED_FILE, new byte[512]))))
+        .isInstanceOf(SealedStoreNotInstalledException.class);
 
     assertThat(broken.isEngineAvailable()).isFalse();
     assertThat(scheduler().isScheduled(TYPE_NAME))
