@@ -555,29 +555,10 @@ public class CypherSemanticValidator {
             checkBooleanExpressionScope(matchClause.getWhereClause().getConditionExpression(), scope);
           break;
         case CREATE:
-          final CreateClause createClause = entry.getTypedClause();
-          if (createClause != null && !createClause.isEmpty())
-            for (final PathPattern path : createClause.getPathPatterns()) {
-              // Check property value expressions for undefined variables
-              for (final NodePattern node : path.getNodes())
-                if (node.hasProperties())
-                  checkPropertyValuesScope(node.getProperties(), scope);
-              for (final RelationshipPattern rel : path.getRelationships())
-                if (rel.hasProperties())
-                  checkPropertyValuesScope(rel.getProperties(), scope);
-              checkPatternVarsNotShadowed(path, scope, shadowed);
-              addBoundVarsFromPattern(path, scope);
-            }
+          validateCreateClauseScope(entry.getTypedClause(), scope, shadowed);
           break;
         case MERGE:
-          final MergeClause mergeClause = entry.getTypedClause();
-          if (mergeClause != null) {
-            checkPatternVarsNotShadowed(mergeClause.getPathPattern(), scope, shadowed);
-            addBoundVarsFromPattern(mergeClause.getPathPattern(), scope);
-            // Validate ON CREATE SET / ON MATCH SET variables
-            validateSetClauseScope(mergeClause.getOnCreateSet(), scope);
-            validateSetClauseScope(mergeClause.getOnMatchSet(), scope);
-          }
+          validateMergeClauseScope(entry.getTypedClause(), scope, shadowed);
           break;
         case UNWIND:
           final UnwindClause unwindClause = entry.getTypedClause();
@@ -648,24 +629,13 @@ public class CypherSemanticValidator {
           }
           break;
         case SET:
-          final SetClause setClause = entry.getTypedClause();
-          if (setClause != null && !setClause.isEmpty())
-            for (final SetClause.SetItem item : setClause.getItems()) {
-              if (isValidVariableName(item.getVariable()) && !scope.contains(item.getVariable()))
-                throw new CommandSemanticException("UndefinedVariable: Variable '" + item.getVariable() + "' not defined");
-              if (item.getValueExpression() != null)
-                checkExpressionScope(item.getValueExpression(), scope);
-            }
+          validateSetClauseScope(entry.getTypedClause(), scope);
           break;
         case REMOVE:
-          // REMOVE references variables that must be in scope — but complex to validate
+          validateRemoveClauseScope(entry.getTypedClause(), scope);
           break;
         case DELETE:
-          final DeleteClause deleteClause2 = entry.getTypedClause();
-          if (deleteClause2 != null && !deleteClause2.isEmpty())
-            for (final String var : deleteClause2.getVariables())
-              if (isValidVariableName(var) && !scope.contains(var))
-                throw new CommandSemanticException("UndefinedVariable: Variable '" + var + "' not defined");
+          validateDeleteClauseScope(entry.getTypedClause(), scope);
           break;
         case RETURN:
           // Validate RETURN references — only check top-level variable references
@@ -724,8 +694,108 @@ public class CypherSemanticValidator {
           }
           break;
         case FOREACH:
+          final ForeachClause foreachClause = entry.getTypedClause();
+          if (foreachClause != null) {
+            checkExpressionScope(foreachClause.getListExpression(), scope);
+            // The loop variable and whatever the body itself binds (a CREATE/MERGE pattern, a nested
+            // FOREACH's own loop variable) live only inside the loop: a copy of the outer scope keeps
+            // the outer clauses from seeing them once this FOREACH is done (issue #8105).
+            final Set<String> bodyScope = new HashSet<>(scope);
+            bodyScope.add(foreachClause.getVariable());
+            validateForeachBodyScope(foreachClause, bodyScope, shadowed);
+          }
           break;
       }
+    }
+  }
+
+  /**
+   * Validates the updating clauses inside a {@code FOREACH} body against {@code scope} (the outer scope
+   * plus the loop variable). Only the clause kinds the grammar allows inside a {@code FOREACH} body -
+   * {@code SET}, {@code REMOVE}, {@code DELETE}, {@code CREATE}, {@code MERGE} and a nested
+   * {@code FOREACH} - can appear, so this reuses the same per-clause checks the top-level statement runs
+   * rather than the full {@link #validateVariableScope} switch (issue #8105).
+   */
+  private void validateForeachBodyScope(final ForeachClause foreachClause, final Set<String> scope,
+      final Set<String> shadowed) {
+    for (final ClauseEntry entry : foreachClause.getInnerClauses()) {
+      switch (entry.getType()) {
+        case SET -> validateSetClauseScope(entry.getTypedClause(), scope);
+        case REMOVE -> validateRemoveClauseScope(entry.getTypedClause(), scope);
+        case DELETE -> validateDeleteClauseScope(entry.getTypedClause(), scope);
+        case CREATE -> validateCreateClauseScope(entry.getTypedClause(), scope, shadowed);
+        case MERGE -> validateMergeClauseScope(entry.getTypedClause(), scope, shadowed);
+        case FOREACH -> {
+          final ForeachClause nested = entry.getTypedClause();
+          if (nested != null) {
+            checkExpressionScope(nested.getListExpression(), scope);
+            final Set<String> nestedScope = new HashSet<>(scope);
+            nestedScope.add(nested.getVariable());
+            validateForeachBodyScope(nested, nestedScope, shadowed);
+          }
+        }
+        default -> {
+          // The parser rejects any other clause kind inside a FOREACH body before this runs.
+        }
+      }
+    }
+  }
+
+  private void validateCreateClauseScope(final CreateClause createClause, final Set<String> scope,
+      final Set<String> shadowed) {
+    if (createClause == null || createClause.isEmpty())
+      return;
+    for (final PathPattern path : createClause.getPathPatterns()) {
+      // Check property value expressions for undefined variables
+      for (final NodePattern node : path.getNodes())
+        if (node.hasProperties())
+          checkPropertyValuesScope(node.getProperties(), scope);
+      for (final RelationshipPattern rel : path.getRelationships())
+        if (rel.hasProperties())
+          checkPropertyValuesScope(rel.getProperties(), scope);
+      checkPatternVarsNotShadowed(path, scope, shadowed);
+      addBoundVarsFromPattern(path, scope);
+    }
+  }
+
+  private void validateMergeClauseScope(final MergeClause mergeClause, final Set<String> scope,
+      final Set<String> shadowed) {
+    if (mergeClause == null)
+      return;
+    checkPatternVarsNotShadowed(mergeClause.getPathPattern(), scope, shadowed);
+    addBoundVarsFromPattern(mergeClause.getPathPattern(), scope);
+    // Validate ON CREATE SET / ON MATCH SET variables
+    validateSetClauseScope(mergeClause.getOnCreateSet(), scope);
+    validateSetClauseScope(mergeClause.getOnMatchSet(), scope);
+  }
+
+  private void validateDeleteClauseScope(final DeleteClause deleteClause, final Set<String> scope) {
+    if (deleteClause == null || deleteClause.isEmpty())
+      return;
+    for (final String var : deleteClause.getVariables())
+      if (isValidVariableName(var) && !scope.contains(var))
+        throw new CommandSemanticException("UndefinedVariable: Variable '" + var + "' not defined");
+  }
+
+  /**
+   * Validates a {@code REMOVE} clause's items against {@code scope}: the target variable of every item -
+   * a property removal ({@code REMOVE n.prop}, {@code REMOVE n[expr]}) or a label removal
+   * ({@code REMOVE n:Label}) - must already be bound, matching the check {@code SET} and {@code DELETE}
+   * already make. A dynamic property key or a Cypher 25 {@code $(expr)} label expression is walked too,
+   * since it can itself reference a variable the scope has lost (issue #8104).
+   */
+  private void validateRemoveClauseScope(final RemoveClause removeClause, final Set<String> scope) {
+    if (removeClause == null || removeClause.isEmpty())
+      return;
+    for (final RemoveClause.RemoveItem item : removeClause.getItems()) {
+      final String var = item.getVariable();
+      if (isValidVariableName(var) && !scope.contains(var))
+        throw new CommandSemanticException("UndefinedVariable: Variable '" + var + "' not defined");
+      if (item.getKeyExpression() != null)
+        checkExpressionScope(item.getKeyExpression(), scope);
+      if (item.hasLabelExpressions())
+        for (final Expression labelExpression : item.getLabelExpressions())
+          checkExpressionScope(labelExpression, scope);
     }
   }
 
