@@ -466,29 +466,65 @@ public class LocalDocumentType implements DocumentType {
 
   /**
    * Sets the list of aliases for the type. Any previous configuration will be lost.
+   * <p>
+   * Every check and both map passes run inside the single {@link #recordFileChanges} callback, i.e. under the
+   * database write lock, for the same two reasons {@link #createProperty} and {@link #dropProperty} spell out and
+   * this method used to violate (issue #8064). {@code checkForSchemaMutation()} is a precondition check, not a
+   * lock, and it was the only thing here:
+   * <ul>
+   *   <li><b>Check-then-put.</b> The refusal consulted {@code schema.existsType(alias)} and the install happened
+   *   several statements later, so two concurrent {@code ALTER TYPE ... ALIASES} on different types could both
+   *   pass the check and the second {@code put} silently won, leaving two types believing they owned one name.
+   *   The reservation is now an atomic {@code putIfAbsent} under the write lock, the same shape {@link #rename}
+   *   uses, so the check and the install are one step.</li>
+   *   <li><b>Unconditional deregistration.</b> EVERY previous alias was removed from the type map before the new
+   *   set was installed, so a concurrent reader resolving a name the new set still carries saw it disappear. Only
+   *   the aliases the new set drops are removed now, and the install runs first, so a surviving name never leaves
+   *   the map at all.</li>
+   * </ul>
+   * A refusal part way through unwinds what this call had already reserved: the aliases are all-or-nothing, never
+   * a half-installed set left behind by a rejected {@code ALTER TYPE}.
+   * <p>
+   * {@code recordFileChanges} saves {@code schema.json} itself, which is why the explicit
+   * {@code schema.saveConfiguration()} this method used to end with is gone.
    */
   public LocalDocumentType setAliases(final Set<String> aliases) {
     checkForSchemaMutation();
-    final Set<String> newAliases = new HashSet<>(aliases);
-    newAliases.removeAll(this.aliases);
-    for (String alias : newAliases) {
-      if (schema.existsType(alias))
-        throw new SchemaException("Cannot set alias '" + alias + "' for type '" + name + "' because it is already used by type '"
-            + schema.getType(alias).getName() + "'");
-    }
 
-    // DEREGISTER ALL PREVIOUS ALIASES
-    for (String alias : this.aliases)
-      schema.typeMap().remove(alias);
+    return recordFileChanges(() -> {
+      final Set<String> previousAliases = this.aliases;
 
-    for (String alias : aliases)
-      schema.typeMap().put(alias, this);
+      // ONLY THE GENUINELY NEW NAMES ARE RESERVED: AN ALIAS THIS TYPE ALREADY ANSWERS TO IS ALREADY IN THE MAP
+      // POINTING AT US, AND putIfAbsent WOULD REPORT IT AS TAKEN - BY OURSELVES
+      final Set<String> addedAliases = new HashSet<>(aliases);
+      addedAliases.removeAll(previousAliases);
 
-    // A copy, and an unmodifiable one: the parameter belongs to the caller. Published last so a lock-free
-    // instanceOf() either sees the whole previous set or the whole new one.
-    this.aliases = Set.copyOf(aliases);
-    schema.saveConfiguration();
-    return this;
+      final List<String> reserved = new ArrayList<>(addedAliases.size());
+      try {
+        for (final String alias : addedAliases) {
+          final LocalDocumentType owner = schema.typeMap().putIfAbsent(alias, this);
+          if (owner != null)
+            throw new SchemaException("Cannot set alias '" + alias + "' for type '" + name
+                + "' because it is already used by type '" + owner.getName() + "'");
+          reserved.add(alias);
+        }
+      } catch (final RuntimeException e) {
+        // UNWIND ONLY WHAT THIS CALL RESERVED, AND ONLY WHILE IT STILL POINTS AT US
+        for (final String alias : reserved)
+          schema.typeMap().remove(alias, this);
+        throw e;
+      }
+
+      // DEREGISTER ONLY THE PREVIOUS ALIASES THE NEW SET NO LONGER CARRIES, AFTER THE NEW ONES ARE IN
+      for (final String alias : previousAliases)
+        if (!aliases.contains(alias))
+          schema.typeMap().remove(alias, this);
+
+      // A copy, and an unmodifiable one: the parameter belongs to the caller. Published last so a lock-free
+      // instanceOf() either sees the whole previous set or the whole new one.
+      this.aliases = Set.copyOf(aliases);
+      return this;
+    });
   }
 
   /**
