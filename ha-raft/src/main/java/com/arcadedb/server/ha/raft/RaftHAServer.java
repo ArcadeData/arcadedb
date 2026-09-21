@@ -29,6 +29,7 @@ import com.arcadedb.server.ha.raft.ratis.RatisSnapshotDigestWarningFilter;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.LeaderDial;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider;
+import com.arcadedb.utility.CodeUtils;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.client.RaftClientConfigKeys;
 import org.apache.ratis.conf.Parameters;
@@ -1773,6 +1774,17 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   /**
    * Stops the Raft client and server, releasing all resources.
+   * <p>
+   * <b>Every step is guarded, so one throw cannot skip the ones after it</b> (issue #7985, review on PR #8026).
+   * This method is reached through {@code RaftHAPlugin.stopService()}, which
+   * {@code ArcadeDBServer.stopInternal()} calls inside {@code CodeUtils.executeIgnoringExceptions} - so a throw
+   * from an early step would not reach a caller that could report it, and would silently take the three HTTP
+   * client releases below with it: exactly the leak this method's releases exist to close, and exactly the
+   * shape {@code HttpServer.stopService()} is guarded against for the same reason. None of the steps below
+   * throws today ({@code HealthMonitor.stop()}, {@code RaftLogCompactionScheduler.stop()},
+   * {@link #stopLagMonitor()} and {@link #stopCapabilityMonitor()} all guard-and-{@code shutdownNow()}), so
+   * this guards an invariant rather than fixing a live bug - which is the point: the invariant is one a later
+   * change to any of them would otherwise reopen without a test noticing.
    */
   public void stop() {
     shutdownRequested = true;
@@ -1783,37 +1795,59 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       autoJoinThread = null;
     }
     if (healthMonitor != null) {
-      healthMonitor.stop();
+      CodeUtils.executeIgnoringExceptions(healthMonitor::stop, "Error on stopping the HA health monitor", true);
       healthMonitor = null;
     }
     if (logCompactionScheduler != null) {
-      logCompactionScheduler.stop();
+      CodeUtils.executeIgnoringExceptions(logCompactionScheduler::stop,
+          "Error on stopping the Raft log compaction scheduler", true);
       logCompactionScheduler = null;
     }
-    stopLagMonitor();
+    CodeUtils.executeIgnoringExceptions(this::stopLagMonitor, "Error on stopping the HA lag monitor", true);
     // The capability refresh runs in every role since issue #7549, so shutdown is the only thing that ends it;
     // it used to come along with stopLagMonitor() because it only ever ran on a leader.
-    stopCapabilityMonitor();
-    // After stopCapabilityMonitor(): nothing asks for the client past this point, and
-    // an HttpClient left behind holds a connection pool and a selector thread for the life of the JVM - which in
-    // the HA suites outlives many server start/stop cycles (PR #7314 review).
+    CodeUtils.executeIgnoringExceptions(this::stopCapabilityMonitor,
+        "Error on stopping the HA peer-capability monitor", true);
+    // BEFORE the HTTP clients below, not after (issue #7739). Neither executor touches those clients - the
+    // stalled-resync task dials the follower with HttpURLConnection (requestRemoteResync), and the
+    // channel-recovery tasks reset a Ratis gRPC channel or transfer leadership - so this is not an ordering
+    // constraint on client USE. What it buys is that the executors are told to stop before anything that can
+    // block: however long the three releases below take, these threads are already unwinding rather than
+    // waiting behind a close that has not returned.
+    CodeUtils.executeIgnoringExceptions(stalledResyncExecutor::shutdownNow,
+        "Error on stopping the HA stalled-replica resync executor", true);
+    CodeUtils.executeIgnoringExceptions(channelRecoveryExecutor::shutdownNow,
+        "Error on stopping the HA channel-recovery executor", true);
+    // After stopCapabilityMonitor() and the two shutdownNow() above: nothing asks for these clients past this
+    // point, and an HttpClient left behind holds a connection pool and a selector thread for the life of the JVM
+    // - which in the HA suites outlives many server start/stop cycles (PR #7314 review).
     //
-    // This can BLOCK BRIEFLY, and that is deliberate rather than an oversight: the refresh sends its request
-    // outside the cache's monitor, so a probe already in flight when this runs holds HttpClient.close()'s orderly
-    // shutdown until it finishes - bounded by PeerCapabilityRegistry.PROBE_TIMEOUT_MS on a round that has already
-    // been told to stand down. Making the close asynchronous to avoid that wait would hand the shutdown path a
-    // client that outlives the server it belongs to, which is the leak this call exists to prevent.
-    capabilityHttpsClients.close();
-    // Same reasoning for the forward client: a forward still in flight holds this close() until it unwinds,
-    // bounded by that request's own timeout, and leaving it open would leak a selector thread per server.
-    forwardHttpsClients.close();
+    // Each of the three CAN BLOCK, and each is now bounded by LeaderDial.CLIENT_RELEASE_GRACE_MS rather than by
+    // whatever the straggler it is waiting on carries (issue #7985). What they used to be bounded by:
+    //   - capabilityHttpsClients: a probe round already told to stand down, PeerCapabilityRegistry.PROBE_TIMEOUT_MS;
+    //   - forwardHttpsClients and forwardHttpClient: the FORWARD's own deadline - arcadedb.ha.proxyCommandTimeout,
+    //     one hour at its default, or arcadedb.command.timeout when that is set. A single follower-to-leader
+    //     write parked on a leader that accepted the connection and went silent held all of stop() for that long,
+    //     so a rolling restart or a Kubernetes SIGTERM was SIGKILLed long before the Raft server was closed.
+    // Releasing them asynchronously instead would hand the shutdown path a client that outlives the server it
+    // belongs to, which is the leak these calls exist to prevent; abandoning an answer this node will never read
+    // is the cost that is actually worth paying.
+    //
+    // The grace is per client, so the arithmetic worth stating: 3 x CLIENT_RELEASE_GRACE_MS = 15s of added
+    // shutdown in the pathological case where all three have a straggler that does not unwind when cancelled.
+    // The two caches build nothing at all unless this cluster dials an HTTPS peer, so on a plaintext cluster
+    // the ceiling is one grace. Either way it is a ceiling and not a cost: each call returns the moment its
+    // client reports itself terminated.
+    CodeUtils.executeIgnoringExceptions(capabilityHttpsClients::close,
+        "Error on releasing the HA peer-capability HTTPS client", true);
+    CodeUtils.executeIgnoringExceptions(forwardHttpsClients::close,
+        "Error on releasing the HA leader-forward HTTPS client", true);
     // Same leak this method already prevents for capabilityHttpsClients/forwardHttpsClients, for the plain-HTTP
     // forward client every RaftReplicatedDatabase this server wraps a database with shares (review finding on
     // PR #7650): a fresh RaftHAServer - and a fresh forwardHttpClient - is built on every
     // RaftHAPlugin.startService(), and an unclosed one outlives it.
-    forwardHttpClient.close();
-    stalledResyncExecutor.shutdownNow();
-    channelRecoveryExecutor.shutdownNow();
+    CodeUtils.executeIgnoringExceptions(() -> LeaderDial.releaseBounded(forwardHttpClient),
+        "Error on releasing the HA shared plain-HTTP forward client", true);
     if (transactionBroker != null) {
       transactionBroker.stop();
       transactionBroker = null;
