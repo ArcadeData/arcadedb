@@ -96,6 +96,36 @@ class Issue7892RemoveSuperTypeDetachesIndexesTest extends TestHelper {
   }
 
   @Test
+  void anIndexOwnedByTheGRANDPARENTOfTheSeveredLinkIsDetachedToo() {
+    // Z6 <- A6 <- B6 <- C6, severing B6 -> A6. Z6[n] is propagated down the whole chain, so its wrapper holds
+    // components over A6's, B6's and C6's buckets - and the two that go belong to types Z6 can no longer reach. This
+    // is the collectSubIndexesNoLongerCovered() recursion into the FORMER SUPER TYPE'S own super types: without it
+    // the walk would stop at A6 and leave the top of the chain indexing the detached subtree (PR #8091 review).
+    database.command("sql", "CREATE DOCUMENT TYPE Z6_7892");
+    database.command("sql", "CREATE PROPERTY Z6_7892.n INTEGER");
+    database.command("sql", "CREATE INDEX ON Z6_7892 (n) UNIQUE");
+    database.command("sql", "CREATE DOCUMENT TYPE A6_7892 EXTENDS Z6_7892");
+    database.command("sql", "CREATE DOCUMENT TYPE B6_7892 EXTENDS A6_7892");
+    database.command("sql", "CREATE DOCUMENT TYPE C6_7892 EXTENDS B6_7892");
+    database.transaction(() -> database.command("sql", "INSERT INTO C6_7892 SET n = 6"));
+    database.transaction(() -> database.command("sql", "INSERT INTO A6_7892 SET n = 60"));
+
+    assertThat(database.lookupByKey("Z6_7892", "n", 6).hasNext()).isTrue();
+
+    database.getSchema().getType("B6_7892").removeSuperType("A6_7892");
+
+    assertThat(database.lookupByKey("Z6_7892", "n", 6).hasNext())
+        .as("Z6 is no longer an ancestor of C6 either, so its index must not reach C6's bucket").isFalse();
+    assertThat(database.lookupByKey("Z6_7892", "n", 60).hasNext()).as("A6 is still a subtype of Z6").isTrue();
+    assertThat(database.getSchema().getIndexByName("Z6_7892[n]").countEntries()).isEqualTo(1);
+    assertThat(coveredBuckets("Z6_7892[n]"))
+        .containsAll(database.getSchema().getType("A6_7892").getBucketIds(false))
+        .doesNotContainAnyElementsOf(database.getSchema().getType("B6_7892").getBucketIds(false))
+        .doesNotContainAnyElementsOf(database.getSchema().getType("C6_7892").getBucketIds(false));
+    assertThat(indexNames()).noneMatch(n -> n.startsWith("B6_7892_") || n.startsWith("C6_7892_"));
+  }
+
+  @Test
   void aBucketStillReachedThroughAnotherPathOfADiamondKeepsItsSubIndex() {
     // C3 EXTENDS BOTH B3 AND A3, AND B3 EXTENDS A3: SEVERING B3 -> A3 MUST NOT TAKE C3'S SUB-INDEX AWAY, BECAUSE C3
     // IS STILL A SUBTYPE OF A3.

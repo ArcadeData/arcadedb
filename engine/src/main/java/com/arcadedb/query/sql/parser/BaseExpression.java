@@ -193,8 +193,15 @@ public class BaseExpression extends MathExpression {
       // A NUMBER has no bare modifier* alternative at all, and NULL renders the same either way - keeping the
       // parentheses on it is what issue #7774's tests pin, and it has no historical unaliased name to protect.
       return false;
-    // An identifier chain, a string literal, an input parameter, or a nested block (a parenthesised expression, a
-    // map or array literal, a CASE): every one of them carries its own modifier* in the grammar.
+    // An identifier chain, a string literal, an input parameter, or a nested block: every one of them carries its own
+    // modifier* in the grammar.
+    //
+    // `expression != null` is what recognises EVERY nested block, whatever kind it is, and it can do that because of
+    // an invariant of the AST builder rather than anything visible here: a map literal, an array literal, a CASE and
+    // an extended CASE are each wrapped as BaseExpression{expression = Expression{...}} before being attached to a
+    // parent (SQLASTBuilder#visitMapLit, #visitArrayLit, #visitCaseExpr, #visitExtendedCaseExpr), even though
+    // ArrayLiteralExpression and CaseExpression extend MathExpression directly and never appear here unwrapped.
+    // A new grammar alternative that attaches one of those nodes RAW would slip past this and lose its parentheses.
     return identifier != null || string != null || inputParam != null || expression != null;
   }
 

@@ -49,16 +49,12 @@ public final class IndexKeyEquality {
   /**
    * Two key tuples are the same key when they have the same length and every element is
    * {@link #sameValue(Object, Object) the same key value}. A null tuple equals only another null tuple.
+   * <p>
+   * Which is what {@link Arrays#deepEquals} already is, element for element: it short-circuits on identity and on a
+   * null operand, checks the lengths, and compares each element the way {@link #sameValue} does.
    */
   public static boolean sameTuple(final Object[] a, final Object[] b) {
-    if (a == b)
-      return true;
-    if (a == null || b == null || a.length != b.length)
-      return false;
-    for (int i = 0; i < a.length; i++)
-      if (!sameValue(a[i], b[i]))
-        return false;
-    return true;
+    return Arrays.deepEquals(a, b);
   }
 
   /**
