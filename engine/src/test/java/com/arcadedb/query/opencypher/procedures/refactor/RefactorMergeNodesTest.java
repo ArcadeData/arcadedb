@@ -529,4 +529,47 @@ class RefactorMergeNodesTest {
 
     assertThat(tag).isNull();
   }
+
+  /**
+   * An empty list contributes no values, so the merge sees exactly one distinct value and the survivor ends up
+   * with the scalar rather than with a one-element list. Raised in review on #7428 as an untested corner of the
+   * "distinct values seen" semantics; pinned here so the answer is on the record either way.
+   */
+  @Test
+  void combinePolicyTreatsAnEmptyListAsContributingNothing() {
+    database.begin();
+    database.newVertex("Person").set("name", "A").set("tag", List.of()).save();
+    database.newVertex("Person").set("name", "B").set("tag", "x").save();
+    database.commit();
+
+    database.begin();
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (a:Person {name:'A'}), (b:Person {name:'B'}) "
+            + "CALL apoc.refactor.mergeNodes([a,b], {properties: 'combine'}) YIELD node RETURN node.tag AS tag");
+    final Object tag = rs.next().getProperty("tag");
+    database.commit();
+
+    assertThat(tag).isEqualTo("x");
+  }
+
+  /**
+   * Both sides empty leaves no distinct value at all, so the property stays the empty list it was - the collapse to
+   * a scalar applies to exactly one distinct value, not to fewer.
+   */
+  @Test
+  void combinePolicyLeavesTwoEmptyListsAsAnEmptyList() {
+    database.begin();
+    database.newVertex("Person").set("name", "A").set("tag", List.of()).save();
+    database.newVertex("Person").set("name", "B").set("tag", List.of()).save();
+    database.commit();
+
+    database.begin();
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (a:Person {name:'A'}), (b:Person {name:'B'}) "
+            + "CALL apoc.refactor.mergeNodes([a,b], {properties: 'combine'}) YIELD node RETURN node.tag AS tag");
+    final Object tag = rs.next().getProperty("tag");
+    database.commit();
+
+    assertThat(tag).isEqualTo(List.of());
+  }
 }
