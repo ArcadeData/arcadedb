@@ -55,10 +55,22 @@ public enum SelectOperator {
     }
   },
 
+  /**
+   * UNARY: NEGATES ITS LEFT OPERAND, {@code right} IS ALWAYS {@code null} (SEE
+   * {@code new SelectTreeNode(operand, SelectOperator.not, null)}, THE SHAPE EVERY IN-TREE USE BUILDS).
+   * <p>
+   * #8059: THE BODY USED TO BE {@code left == Boolean.FALSE} - A REFERENCE COMPARISON AGAINST THE *UNEVALUATED*
+   * OPERAND, WHICH IN A REAL TREE IS A SelectTreeNode AND NEVER Boolean.FALSE, SO THE WHOLE EXPRESSION ANSWERED
+   * false FOR EVERY RECORD AND THE QUERY RETURNED NOTHING. EVERY OTHER OPERATOR ROUTES ITS OPERANDS THROUGH
+   * SelectExecutor.evaluateValue(); THIS ONE DID NOT.
+   */
   not("not", true, 2) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
-      return left == Boolean.FALSE;
+      final Object leftValue = SelectExecutor.evaluateValue(record, left);
+      if (leftValue instanceof Boolean booleanValue)
+        return !booleanValue;
+      throw new IllegalArgumentException("A boolean operand was expected by 'not' but '" + leftValue + "' was returned");
     }
   },
 
@@ -76,35 +88,66 @@ public enum SelectOperator {
     }
   },
 
+  /**
+   * #8049: AN ORDERING COMPARISON AGAINST A MISSING OR NULL OPERAND IS false, NEVER true.
+   * <p>
+   * BinaryComparator.compareTo() IS A *SORT* ORDER AND SORTS null FIRST: compareTo(null, x) IS -1 AND
+   * compareTo(x, null) IS 1. READ AS A PREDICATE THAT MADE A RECORD WITHOUT THE PROPERTY SATISFY EVERY
+   * {@code < } AND {@code <=} ON IT, SO {@code a < 5} MATCHED RECORDS THAT CARRY NO {@code a} AT ALL - AND ONLY
+   * WHILE NO INDEX EXISTED ON {@code a}, BECAUSE AN INDEX HOLDS NO ENTRY FOR A RECORD THAT LACKS THE PROPERTY AND
+   * SelectExecutor.filterWithIndexesFinalNode() ANSWERS THE LEAF FROM A RANGE SCAN. THE SAME SELECT OVER THE SAME
+   * DATA THEREFORE RETURNED A DIFFERENT NUMBER OF ROWS DEPENDING ON THE PHYSICAL SCHEMA, WHICH IS THE ONE THING
+   * ADDING AN INDEX MUST NEVER DO.
+   * <p>
+   * REJECTING null ON *EITHER* SIDE IS SQL'S OWN RULE (A COMPARISON WITH NULL IS UNKNOWN, AND UNKNOWN DOES NOT
+   * MATCH), IT IS WHAT {@code between} ALREADY DID ON ITS LEFT OPERAND, AND IT IS WHAT THE INDEX PATH DOES BY
+   * CONSTRUCTION - SO ALL FOUR DIRECTIONS, THE INDEX PLAN AND THE FULL SCAN NOW AGREE. USE {@code is null} /
+   * {@code is not null} TO ASK ABOUT ABSENCE.
+   */
   lt("<", false, 1) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
-      return BinaryComparator.compareTo(SelectExecutor.evaluateValue(record, left), SelectExecutor.evaluateValue(record, right))
-          < 0;
+      final Object leftValue = SelectExecutor.evaluateValue(record, left);
+      final Object rightValue = SelectExecutor.evaluateValue(record, right);
+      if (leftValue == null || rightValue == null)
+        return false;
+      return BinaryComparator.compareTo(leftValue, rightValue) < 0;
     }
   },
 
+  /** #8049: see {@link #lt}. */
   le("<=", false, 1) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
-      return BinaryComparator.compareTo(SelectExecutor.evaluateValue(record, left), SelectExecutor.evaluateValue(record, right))
-          <= 0;
+      final Object leftValue = SelectExecutor.evaluateValue(record, left);
+      final Object rightValue = SelectExecutor.evaluateValue(record, right);
+      if (leftValue == null || rightValue == null)
+        return false;
+      return BinaryComparator.compareTo(leftValue, rightValue) <= 0;
     }
   },
 
+  /** #8049: see {@link #lt}. A null LEFT was already rejected by the sort order; a null RIGHT was not. */
   gt(">", false, 1) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
-      return BinaryComparator.compareTo(SelectExecutor.evaluateValue(record, left), SelectExecutor.evaluateValue(record, right))
-          > 0;
+      final Object leftValue = SelectExecutor.evaluateValue(record, left);
+      final Object rightValue = SelectExecutor.evaluateValue(record, right);
+      if (leftValue == null || rightValue == null)
+        return false;
+      return BinaryComparator.compareTo(leftValue, rightValue) > 0;
     }
   },
 
+  /** #8049: see {@link #lt} and {@link #gt}. */
   ge(">=", false, 1) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
-      return BinaryComparator.compareTo(SelectExecutor.evaluateValue(record, left), SelectExecutor.evaluateValue(record, right))
-          >= 0;
+      final Object leftValue = SelectExecutor.evaluateValue(record, left);
+      final Object rightValue = SelectExecutor.evaluateValue(record, right);
+      if (leftValue == null || rightValue == null)
+        return false;
+      return BinaryComparator.compareTo(leftValue, rightValue) >= 0;
     }
   },
 
@@ -149,8 +192,14 @@ public enum SelectOperator {
     Object eval(final Document record, final Object left, final Object right) {
       final Object leftValue = SelectExecutor.evaluateValue(record, left);
       final Object rightValue = SelectExecutor.evaluateValue(record, right);
-      if (rightValue instanceof Object[] range && range.length == 2)
+      if (rightValue instanceof Object[] range && range.length == 2) {
+        // #8049: SAME RULE AS lt/le/gt/ge. THE LOWER-BOUND COMPARE ALREADY REJECTED A null LEFT FOR EVERY NON-null
+        // BOUND, SO THIS ONLY CLOSES THE "BOTH THE VALUE AND THE BOUND ARE null" CORNER, BUT IT MAKES THE RULE ONE
+        // RULE RATHER THAN AN ACCIDENT OF THE SORT ORDER
+        if (leftValue == null || range[0] == null || range[1] == null)
+          return false;
         return BinaryComparator.compareTo(leftValue, range[0]) >= 0 && BinaryComparator.compareTo(leftValue, range[1]) <= 0;
+      }
       throw new IllegalArgumentException("BETWEEN requires a range of two values");
     }
   },

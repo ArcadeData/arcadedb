@@ -687,26 +687,8 @@ public class SelectExecutor {
     if (!CURSOR_BUILDABLE_OPERATORS.contains(node.operator))
       return;
 
-    if (node.getParent().operator == SelectOperator.not)
-      // #6575: A LEAF DIRECTLY UNDER not WOULD OTHERWISE BUILD A "POSITIVE" CURSOR FOR THE UN-NEGATED CONDITION
-      // (E.G. AN eq CURSOR FOR NOT a = 'x' YIELDS THE RECORDS WHERE a = 'x' IS TRUE) - evaluateWhere() THEN
-      // REJECTS EVERY ONE OF THOSE CANDIDATES SINCE THEY ALL SATISFY THE POSITIVE CONDITION BY CONSTRUCTION, SO
-      // THE QUERY WOULD SILENTLY RETURN ZERO ROWS INSTEAD OF "EVERY RECORD WHERE a != 'x'". isTheNodeFullyIndexed()
-      // STILL SETS node.index HERE (SEE ITS not BRANCH), SO REFUSE THE CURSOR HERE INSTEAD, THE SAME WAY
-      // is_null/is_not_null LEAVES ARE ALREADY EXCLUDED THERE. NEITHER A FLUENT .not() NOR Select.json() REACH THIS
-      // TODAY, BUT THE DEFENSIVE POSTURE MUST HOLD THE MOMENT EITHER PATH OPENS UP.
+    if (!isCursorSoundOnPath(node))
       return;
-
-    if (node.getParent().operator == SelectOperator.or) {
-      // UNDER AN 'OR' OPERATOR: BOTH SIDES MUST BE INDEXED, OTHERWISE CANNOT USE INDEXES
-      if (node != node.getParent().right) {
-        if (!isTheNodeFullyIndexed((SelectTreeNode) node.getParent().right))
-          return;
-      } else {
-        if (node.getParent().left instanceof SelectTreeNode leftNode && !isTheNodeFullyIndexed(leftNode))
-          return;
-      }
-    }
 
     final Object rightValue;
     if (node.right instanceof SelectParameterValue value)
@@ -780,6 +762,50 @@ public class SelectExecutor {
   }
 
   /**
+   * Decides whether an index cursor built for {@code leaf} is SOUND, by looking at the whole path from the leaf up
+   * to the root rather than only at the leaf's immediate sibling.
+   * <p>
+   * The union of the cursors {@link #filterWithIndexesFinalNode} builds is the ONLY candidate set the query ever
+   * evaluates ({@link #lookForIndexes} feeds it straight into {@link #buildIterator}), so a cursor is admissible
+   * only when every record that could satisfy the whole WHERE is guaranteed to be inside that union. Two ancestors
+   * can break that guarantee, and #8048 showed both were only checked one level up:
+   * <ul>
+   *   <li><b>{@code or}</b> - a branch of an {@code or} may only contribute a cursor when the OTHER branch also
+   *   contributes one covering all of its own matches, otherwise the other branch's records are never offered to
+   *   {@link #evaluateWhere}. Checking only {@code leaf.getParent()} missed every leaf nested deeper: in
+   *   {@code b = 1 and a = 0 or b = 2} the indexed leaf {@code a = 0} has the {@code and} as its parent, so the
+   *   gate never fired, the candidate set collapsed to "records with a = 0" and the whole {@code b = 2} branch was
+   *   silently dropped - 2 rows instead of 7, and only once an index on {@code a} existed.</li>
+   *   <li><b>{@code not}</b> - a cursor under a negation yields exactly the records the negation REJECTS (#6575),
+   *   so the query would answer with zero rows. The old check looked at the direct parent alone, which leaves
+   *   {@code not (a = 1 and b = 2)} exposed: the leaf's parent is the {@code and}, the {@code not} is one level
+   *   further up, and the positive cursor was built anyway.</li>
+   * </ul>
+   * A {@code run} ancestor (the synthetic root {@link Select#compile} adds) and an {@code and} ancestor impose no
+   * condition: an {@code and} narrows, so a cursor covering one conjunct is always a superset of the conjunction.
+   *
+   * @return {@code true} when no ancestor forbids the cursor
+   */
+  private boolean isCursorSoundOnPath(final SelectTreeNode leaf) {
+    SelectTreeNode child = leaf;
+    for (SelectTreeNode ancestor = leaf.getParent(); ancestor != null; ancestor = ancestor.getParent()) {
+      if (ancestor.operator == SelectOperator.not)
+        return false;
+
+      if (ancestor.operator == SelectOperator.or) {
+        // THE SIBLING IS THE CHILD THAT IS NOT THE ONE WE CAME UP THROUGH. A NON-node SIBLING (OR A MISSING ONE)
+        // CAN NEVER BE ANSWERED BY AN INDEX, SO IT DISQUALIFIES THIS BRANCH JUST AS AN UN-INDEXED ONE WOULD
+        final Object sibling = ancestor.right == child ? ancestor.left : ancestor.right;
+        if (!(sibling instanceof SelectTreeNode siblingNode) || !isTheNodeFullyIndexed(siblingNode))
+          return false;
+      }
+
+      child = ancestor;
+    }
+    return true;
+  }
+
+  /**
    * Considers a fully indexed node when both properties are indexed or only one with an AND operator.
    */
   private boolean isTheNodeFullyIndexed(final SelectTreeNode node) {
@@ -808,12 +834,22 @@ public class SelectExecutor {
       final boolean rightIsIndexed = isTheNodeFullyIndexed((SelectTreeNode) node.right);
 
       if (node.operator.equals(SelectOperator.and))
-        // AND: ONE OR BOTH MEANS INDEXED
+        // AND: ONE OR BOTH MEANS INDEXED - THE CURSOR FOR EITHER CONJUNCT ALREADY CONTAINS EVERY RECORD SATISFYING
+        // THE CONJUNCTION, AND evaluateWhere() NARROWS IT DOWN
         return leftIsIndexed || rightIsIndexed;
       else if (node.operator.equals(SelectOperator.or))
-        return leftIsIndexed || rightIsIndexed;
+        // #8048: OR NEEDS *BOTH*. THIS ARM USED TO CARRY THE SAME EXPRESSION AS THE and ARM ABOVE, WHOSE "ONE OR
+        // BOTH MEANS INDEXED" COMMENT IS THE RULE FOR AND ONLY. WITH ||, A COMPOSITE SIBLING LIKE (b = 1 or a = 2)
+        // REPORTED ITSELF FULLY INDEXED ON THE STRENGTH OF a = 2 ALONE, THE LEAF ON THE OTHER SIDE OF THE OUTER OR
+        // GOT ITS CURSOR, AND EVERY RECORD MATCHING b = 1 ONLY WAS NEVER EVEN LOOKED AT
+        return leftIsIndexed && rightIsIndexed;
       else if (node.operator.equals(SelectOperator.not))
-        return leftIsIndexed;
+        // #8048/#8059: NEVER. A CURSOR UNDER A NEGATION IS THE SET OF RECORDS THE NEGATION REJECTS (#6575), SO
+        // filterWithIndexesFinalNode() REFUSES TO BUILD ONE FOR ANY LEAF BELOW A not - AND A BRANCH THAT CONTRIBUTES
+        // NO CURSOR IS EXACTLY WHAT AN or SIBLING MUST NOT BE TOLD IS "INDEXED". REPORTING leftIsIndexed HERE WAS
+        // THE #6577 DEFECT IN A DIFFERENT SHAPE: or(a = 1, not (b = 2)) DROPPED THE WHOLE NEGATED BRANCH. THE
+        // RECURSION ABOVE STILL RAN, SO THE LEAF UNDERNEATH KEEPS THE node.index SIDE EFFECT IT ALWAYS HAD
+        return false;
     }
     return false;
   }
