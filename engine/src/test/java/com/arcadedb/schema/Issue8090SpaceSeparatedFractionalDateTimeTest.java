@@ -25,8 +25,10 @@ import com.arcadedb.utility.DateUtils;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
+import java.time.ZonedDateTime;
 import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoUnit;
 import java.util.Date;
@@ -349,6 +351,53 @@ class Issue8090SpaceSeparatedFractionalDateTimeTest extends TestHelper {
       // ...and the value itself was never lost, which is why answering null here costs nothing.
       assertThat(doc.getString("v")).isEqualTo("not a date");
     });
+  }
+
+  /**
+   * For a {@code ZonedDateTime} target the zone is the whole point of the type, so an offset the input carries is
+   * preserved rather than dropped - and the same moment denotes the same instant whichever separator it arrives
+   * with. Before issue #8090 every string reaching this branch answered null, because the only patterns it tried
+   * carry no zone at all.
+   */
+  @Test
+  void zonedDateTimeTargetPreservesAnOffsetWhicheverSeparator() {
+    final Instant expected = OffsetDateTime.parse("2024-02-29T13:45:10.123456+01:00").toInstant();
+
+    for (final String literal : new String[] { "2024-02-29T13:45:10.123456+01:00", "2024-02-29 13:45:10.123456+01:00",
+        "2024-02-29 13:45:10.123456+01" }) {
+      final Object converted = Type.convert(database, literal, ZonedDateTime.class);
+      assertThat(converted).as("literal '%s'", literal).isInstanceOf(ZonedDateTime.class);
+      assertThat(((ZonedDateTime) converted).toInstant()).as("literal '%s'", literal).isEqualTo(expected);
+    }
+
+    // With no offset to preserve there is nothing to keep, so the wall-clock is anchored to the database's zone.
+    assertThat(Type.convert(database, "2024-02-29 13:45:10.123456", ZonedDateTime.class)).isEqualTo(
+        LocalDateTime.of(2024, 2, 29, 13, 45, 10, 123_456_000).atZone(database.getSchema().getZoneId()));
+
+    assertThatThrownBy(() -> Type.convert(database, "not-a-timestamp", ZonedDateTime.class))//
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  /**
+   * The third policy: a caller materializing a value it did not write, with no schema in scope to read date
+   * patterns from - the remote client - keeps what it was handed rather than nulling or refusing it. A value the
+   * server formatted with a custom pattern is not readable client-side, and losing it there would be its own
+   * silent data loss.
+   */
+  @Test
+  void convertOrKeepHandsBackWhatItCannotRead() {
+    // No Database, so no schema patterns: this is exactly the remote client's situation.
+    assertThat(Type.convertOrKeep(null, "01 01 0001 BC", LocalDate.class)).isEqualTo("01 01 0001 BC");
+    assertThat(Type.convertOrKeep(null, "not a date", LocalDateTime.class)).isEqualTo("not a date");
+
+    // ...and it still converts whatever it CAN read, so keeping is the fallback, not the behaviour.
+    assertThat(Type.convertOrKeep(null, "2024-02-29 13:45:10.123456", LocalDateTime.class)).isEqualTo(
+        LocalDateTime.of(2024, 2, 29, 13, 45, 10, 123_456_000));
+
+    // The sibling policies on the same input: no value, and refuse.
+    assertThat(Type.convertOrNull(null, "01 01 0001 BC", LocalDate.class)).isNull();
+    assertThatThrownBy(() -> Type.convert(null, "01 01 0001 BC", LocalDate.class))//
+        .isInstanceOf(IllegalArgumentException.class);
   }
 
   /**

@@ -529,6 +529,51 @@ public class DateUtils {
   }
 
   /**
+   * Parses into a {@link ZonedDateTime}, PRESERVING an offset the input carries instead of dropping it.
+   * <p>
+   * The offset-dropping policy {@link #parseDateTimeKeepingWallClock} implements exists for a {@code LocalDateTime}
+   * target, where there is no zone to keep and Cypher's {@code datetime()} round-trip depends on the wall-clock
+   * surviving (issue #4125). For a {@code ZonedDateTime} target the zone IS the type, so discarding a real offset
+   * would change the instant the client sent. It also made the answer depend on the SEPARATOR:
+   * {@code '...T13:45:10+01:00'} kept its offset because {@link ZonedDateTime#parse} claimed it first, while the same
+   * moment written {@code '... 13:45:10+01:00'} fell through to the wall-clock chain and lost it. Both spellings now
+   * denote the same instant.
+   * <p>
+   * An input with no offset has nothing to preserve and is anchored to the database's zone, as before.
+   */
+  public static ZonedDateTime parseZonedDateTime(final Database database, final String string) {
+    try {
+      return ZonedDateTime.parse(string);
+    } catch (final DateTimeParseException ignore) {
+      // Not an ISO zoned form. The SQL-timestamp spelling may still carry an offset.
+    }
+
+    if (hasSpaceDateTimeSeparator(string)) {
+      try {
+        if (SPACE_SEPARATED_DATE_TIME.parseBest(string, OffsetDateTime::from,
+            LocalDateTime::from) instanceof OffsetDateTime offset)
+          return offset.toZonedDateTime();
+      } catch (final DateTimeParseException ignore) {
+        // Fall through: the shared chain below is what reports a value nothing can read.
+      }
+    }
+
+    return parseDateTimeKeepingWallClock(database, string).atZone(zoneOf(database));
+  }
+
+  /**
+   * The database's configured zone, falling back to the JVM's when there is no database in scope.
+   */
+  private static ZoneId zoneOf(final Database database) {
+    if (database != null) {
+      final ZoneId zoneId = database.getSchema().getZoneId();
+      if (zoneId != null)
+        return zoneId;
+    }
+    return ZoneId.systemDefault();
+  }
+
+  /**
    * Turns an offset-bearing value into the local datetime that gets stored. With {@code rebaseOffset} the instant is
    * moved onto the database's configured zone first, so the stored wall-clock denotes the same moment the client
    * sent; without it the wall-clock is kept exactly as written. Without a database there is no zone to consult and

@@ -98,7 +98,12 @@ class RemoteDateIT {
 
       try (ResultSet resultSet = remote.query("sql", "select from Order")) {
         Result result = resultSet.next();
-        assertThat(result.toElement().get("vstart")).isEqualTo(vstart.toString());
+        // The same LocalDateTime the embedded assertion above expects, NOT its toString(). The remote client used to
+        // hand back the raw String here, and only for the sub-millisecond precisions: it picked a parse format by
+        // comparing the value's LENGTH against the three built-in patterns (10, 19 and 23 characters), and a
+        // microsecond literal is 26, so it matched none of them and the value was passed through unconverted. That
+        // length guess is gone (issue #8090), so remote now answers the same type as embedded.
+        assertThat(result.toElement().get("vstart")).isEqualTo(vstart);
       }
 
     } finally {
