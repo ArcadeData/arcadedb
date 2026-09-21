@@ -574,15 +574,19 @@ public class DateUtils {
     DateTimeParseException isoFailure = null;
     if (!hasSpaceDateTimeSeparator(string)) {
       // ISO demands a 'T', so both of these are guaranteed to fail on a space-separated value and are not run.
+      //
+      // Offset-LESS first, though this method exists to keep offsets: that is the commoner ISO shape, and whichever
+      // is tried second pays a thrown exception on every value of the other kind. An offset-bearing value still
+      // reaches ZonedDateTime.parse with its offset intact, one attempt later.
       try {
-        return ZonedDateTime.parse(string);
+        return LocalDateTime.parse(string).atZone(zoneOf(database));
       } catch (final DateTimeParseException e) {
         isoFailure = e;
       }
       try {
-        return LocalDateTime.parse(string).atZone(zoneOf(database));
+        return ZonedDateTime.parse(string);
       } catch (final DateTimeParseException ignore) {
-        // Keep the zoned failure: it is the one an offset-bearing input most resembled.
+        // Keep the offset-less failure: with no offset in the value, that is the format it most resembled.
       }
     }
 
