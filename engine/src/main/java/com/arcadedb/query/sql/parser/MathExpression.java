@@ -33,7 +33,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
-import java.math.RoundingMode;
+import java.math.MathContext;
 import java.time.Duration;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
@@ -172,10 +172,33 @@ public class MathExpression extends SimpleNode {
         return left / right;
       }
 
+      /**
+       * The exact quotient whenever the division terminates, and only otherwise a bounded one.
+       * <p>
+       * {@code left.divide(right, RoundingMode.HALF_UP)} - what this used to be - produces the quotient AT THE
+       * SCALE OF THE LEFT OPERAND. That is invisible while both operands carry fractional digits, and silently
+       * destructive the moment the left one does not: {@code new BigDecimal(BigInteger)} has scale 0 by
+       * construction, so every division with a {@code BigInteger} on the left answered a whole number -
+       * {@code 1 / 2} was {@code 1} and {@code 7 / 2} was {@code 4} (issue #8041). Nothing in the answer said a
+       * rounding had happened, and the integer arms of this same operator go out of their way to avoid exactly
+       * that, returning a {@code double} when the quotient is inexact.
+       * <p>
+       * {@code divide(BigDecimal)} with no rounding argument is the exact one: it answers the quotient with the
+       * preferred scale {@code left.scale() - right.scale()}, widening it as far as the exact result needs, and
+       * throws {@link ArithmeticException} only when the quotient has a non-terminating decimal expansion
+       * ({@code 1 / 3}). That is the one case that HAS to round, and it rounds at {@code DECIMAL128} - 34
+       * significant digits, the same precision the IEEE 754 decimal128 format carries - rather than at whatever
+       * scale the left operand happens to have.
+       */
       @Override
       public Number apply(final BigDecimal left, final BigDecimal right) {
         checkDivisorNotZero(this, right.signum() == 0);
-        return left.divide(right, RoundingMode.HALF_UP);
+        try {
+          return left.divide(right);
+        } catch (final ArithmeticException e) {
+          // Non-terminating decimal expansion: there is no exact answer to give, so bound the precision.
+          return left.divide(right, MathContext.DECIMAL128);
+        }
       }
 
       @Override
