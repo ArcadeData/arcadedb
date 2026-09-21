@@ -164,6 +164,10 @@ public class PostTimeSeriesWriteHandler extends DatabaseAbstractHandler {
             CompressedBodyDecoder.maxDecompressedSize(httpServer.getServer().getConfiguration()),
             DatabaseFactory.getDefaultCharset());
       } catch (final IOException ex) {
+        // A body that is not valid gzip. NOT a body that is too large: RequestBodyTooLargeException is unchecked
+        // and this arm names IOException, so the refusal passes through to the 413 mapping at the request
+        // boundary rather than being reported as a malformed body (review of PR #8095). The two Prometheus
+        // handlers need an explicit rethrow for the same effect only because their arm names Exception.
         throw new IllegalArgumentException("Failed to decompress gzip body: " + ex.getMessage(), ex);
       }
     }
