@@ -263,7 +263,20 @@ public class Select {
     else
       throw new IllegalArgumentException("Unsupported value " + parsedLeft);
 
-    final SelectOperator parsedOperator = SelectOperator.byName(condition.getString(1));
+    final String parsedOperatorName = condition.getString(1);
+    final SelectOperator parsedOperator = SelectOperator.byName(parsedOperatorName);
+    if (parsedOperator == null)
+      throw new IllegalArgumentException("Unsupported operator '" + parsedOperatorName + "' in condition " + condition);
+
+    // #8059: 'not' IS UNARY - IT NEGATES ITS LEFT OPERAND AND ITS RIGHT IS ALWAYS null (SEE SelectOperator.not) -
+    // WHILE A JSON CONDITION IS BY CONSTRUCTION THE BINARY TRIPLE [left, operator, right]. THERE IS NO WELL-DEFINED
+    // READING OF 'X not Y', AND THE TREE THIS USED TO BUILD FOR IT WAS EXECUTED AS A NEGATION OF A LEFT OPERAND WITH
+    // A RIGHT OPERAND SILENTLY DROPPED. REFUSE IT HERE INSTEAD OF HANDING THE CALLER A QUIETLY WRONG RESULT SET: A
+    // NEGATION IS EXPRESSED WITH THE COMPLEMENTARY OPERATOR ('<>', 'is null', 'is not null', ...)
+    if (parsedOperator == SelectOperator.not)
+      throw new IllegalArgumentException(
+          "Operator 'not' is unary and cannot be used in a JSON condition, which is always [left, operator, right]. "
+              + "Use the complementary operator instead (for example '<>' for '=', 'is null' for 'is not null')");
 
     if (parsedOperator.logicOperator)
       setLogic(parsedOperator);
@@ -353,14 +366,27 @@ public class Select {
         lastTreeElement.getParent().setRight(newNode);
         lastTreeElement = newTreeElement;
       } else {
-        // OR+ OPERATOR
+        // OR+ OPERATOR: THE NEW OPERATOR DOES NOT BIND MORE TIGHTLY THAN THE ONE ALREADY THERE, SO THE CURRENT
+        // SUBTREE IS PUSHED DOWN AND BECOMES THE LEFT CHILD OF A NODE CARRYING THE NEW OPERATOR
         final SelectTreeNode currentParent = lastTreeElement.getParent();
+        // #8047: READ THE GRANDPARENT *BEFORE* THE SelectTreeNode CONSTRUCTOR RE-PARENTS currentParent UNDER newNode.
+        // THE CONSTRUCTOR ALREADY DOES TWO OF THE THREE THINGS THIS BRANCH NEEDS - IT SETS currentParent.parent TO
+        // newNode AND, THROUGH SelectTreeNode.setParent, MOVES THE GRANDPARENT'S OWN CHILD POINTER OVER TO newNode -
+        // SO THE ONLY THING LEFT IS newNode'S UPWARD LINK. READING currentParent.getParent() *AFTER* THE CONSTRUCTOR
+        // HANDED BACK newNode ITSELF, SO THE CALL REDUCED TO newNode.setParent(newNode) AND INSTALLED A SELF-PARENT
+        // CYCLE. THAT CYCLE THEN DEFEATED THE *NEXT* RE-PARENTING - setParent REWIRES THE GRANDPARENT BY TESTING
+        // this.parent.left/right == this, AND ON A SELF-PARENTED NODE BOTH TESTS COMPARE THE NODE AGAINST ITS OWN
+        // CHILDREN AND FAIL - SO THE NEXT NODE, AND EVERYTHING APPENDED TO IT, DANGLED OFF THE TREE rootTreeElement
+        // REFERS TO AND THE EXECUTOR NEVER SAW IT. FROM THE FIFTH CONDITION ON, AN 'OR' FOLLOWED BY THREE OR MORE
+        // 'AND's SILENTLY DISCARDED EVERY REMAINING CONDITION AND THE QUERY RETURNED MORE ROWS THAN THE PREDICATE
+        // ALLOWS
+        final SelectTreeNode grandParent = currentParent.getParent();
         currentParent.setRight(newTreeElement);
         final SelectTreeNode newNode = new SelectTreeNode(currentParent, newLogicOperator, null);
         if (rootTreeElement.equals(currentParent))
           rootTreeElement = newNode;
         else
-          newNode.setParent(currentParent.getParent());
+          newNode.setParent(grandParent);
         lastTreeElement = currentParent;
       }
     }
