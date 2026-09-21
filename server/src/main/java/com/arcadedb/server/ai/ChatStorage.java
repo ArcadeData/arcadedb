@@ -282,9 +282,13 @@ public class ChatStorage {
    *
    * <p>Runs only for a candidate that has already passed the other two checks and is about to be
    * moved, so the listing is off the hot path: a successful migration makes the hashed directory
-   * exist, and every later lookup returns before reaching here.
+   * exist, and every later lookup returns before reaching here. It is O(entries in {@code chats/})
+   * rather than O(1), which is why it is placed last of the three checks.
+   *
+   * <p>Package-private rather than private so the comparison can be exercised directly: reaching it
+   * through the migration needs a case-insensitive filesystem, and CI runs on a case-sensitive one.
    */
-  private static boolean isSpelledExactlyOnDisk(final File legacyDir, final String legacyName) {
+  static boolean isSpelledExactlyOnDisk(final File legacyDir, final String legacyName) {
     final String[] entries = legacyDir.getParentFile().list();
     if (entries == null)
       return false;

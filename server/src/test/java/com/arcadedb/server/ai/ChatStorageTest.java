@@ -467,6 +467,50 @@ class ChatStorageTest {
   }
 
   @Test
+  void anUpperCaseHexLegacyDirectoryIsRefusedOnEveryFilesystem() throws Exception {
+    // Companion to aUsernameSpellingAnotherUsersHashInUpperCase...: that test can only reach the
+    // HASHED_DIR_NAME check on a case-insensitive filesystem, and CI runs on a case-sensitive one,
+    // where it returns at "!legacyDir.exists()" and passes because there was nothing to migrate.
+    // This one creates a directory literally named with 64 UPPER-case hex characters, so exists()
+    // hits it for real whatever the filesystem does with case, and the refusal can only come from
+    // HASHED_DIR_NAME matching case-insensitively. It fails against a lower-case-only pattern.
+    final String upperHexName = "A1B2C3D4E5F60718293A4B5C6D7E8F90A1B2C3D4E5F60718293A4B5C6D7E8F90";
+    assertThat(upperHexName).hasSize(64);
+    assertThat(ChatStorage.sanitizeFilename(upperHexName)).isEqualTo(upperHexName);
+
+    final File legacyDir = Paths.get(TEST_ROOT, "chats", upperHexName).toFile();
+    assertThat(legacyDir.mkdirs()).isTrue();
+    final JSONObject chat = ChatStorage.createNewChat("db", "Must not be claimed");
+    FileUtils.writeFile(new File(legacyDir, ChatStorage.sanitizeFilename(chat.getString("id")) + ".json"), chat.toString());
+    assertThat(legacyDir).exists();
+
+    assertThat(chatStorage.listChats(upperHexName)).isEmpty();
+    // Refused, not consumed: the directory is still there under its original name.
+    assertThat(legacyDir).exists();
+    assertThat(Paths.get(TEST_ROOT, "chats", ChatStorage.hashUsername(upperHexName)).toFile()).doesNotExist();
+  }
+
+  @Test
+  void isSpelledExactlyOnDiskComparesAgainstTheParentListingNotTheFilesystemsOwnComparison() throws Exception {
+    // Direct unit test of the third guard. Reaching it through migrateLegacyDirectoryIfPresent needs
+    // a case-insensitive filesystem; comparing against the parent's listing is deterministic on both
+    // kinds, so the comparison itself can be exercised anywhere.
+    final File chatsDir = Paths.get(TEST_ROOT, "chats").toFile();
+    assertThat(new File(chatsDir, "alice").mkdirs()).isTrue();
+
+    // The spelling that is really on disk.
+    assertThat(ChatStorage.isSpelledExactlyOnDisk(new File(chatsDir, "alice"), "alice")).isTrue();
+    // A different spelling of it - what a case-insensitive filesystem would have said exists().
+    assertThat(ChatStorage.isSpelledExactlyOnDisk(new File(chatsDir, "Alice"), "Alice")).isFalse();
+    assertThat(ChatStorage.isSpelledExactlyOnDisk(new File(chatsDir, "ALICE"), "ALICE")).isFalse();
+    // A name nothing on disk matches at all.
+    assertThat(ChatStorage.isSpelledExactlyOnDisk(new File(chatsDir, "bob"), "bob")).isFalse();
+    // An unreadable/absent parent must not be treated as a match.
+    final File missingParent = Paths.get(TEST_ROOT, "chats", "nope", "deeper").toFile();
+    assertThat(ChatStorage.isSpelledExactlyOnDisk(missingParent, "deeper")).isFalse();
+  }
+
+  @Test
   void anUnderscoreFreeLegacyDirectoryStillMigratesBecauseOnlyOneUsernameCouldHaveProducedIt() throws Exception {
     // The complement of the #7620 fix: sanitizeFilename only ever rewrites a character TO '_', so a
     // legacy name with no underscore is the image of exactly one string - itself. Those migrations
