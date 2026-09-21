@@ -504,8 +504,13 @@ public class LocalDocumentType implements DocumentType {
         for (final String alias : addedAliases) {
           final LocalDocumentType owner = schema.typeMap().putIfAbsent(alias, this);
           if (owner != null)
-            throw new SchemaException("Cannot set alias '" + alias + "' for type '" + name
-                + "' because it is already used by type '" + owner.getName() + "'");
+            // OWNED BY US MEANS IT IS THIS TYPE'S OWN NAME: EVERY ALIAS IT ALREADY CARRIES WAS FILTERED OUT ABOVE.
+            // SAYING "ALREADY USED BY TYPE 'X'" WITH X NAMED TWICE READS AS AN ENGINE BUG RATHER THAN AS THE
+            // REFUSAL IT IS, SO SAY WHICH OF THE TWO REFUSALS THIS IS
+            throw new SchemaException(owner == this ?
+                "Cannot set alias '" + alias + "' for type '" + name + "' because it is the name of the type itself" :
+                "Cannot set alias '" + alias + "' for type '" + name + "' because it is already used by type '"
+                    + owner.getName() + "'");
           reserved.add(alias);
         }
       } catch (final RuntimeException e) {
