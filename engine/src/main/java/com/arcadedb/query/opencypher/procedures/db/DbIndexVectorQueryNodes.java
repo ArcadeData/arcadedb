@@ -287,9 +287,7 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
     final String vectorProperty = lsmIndex.getPropertyNames().getFirst();
     final String idProperty = lsmIndex.getIdPropertyName();
 
-    // Shared with vector.neighbors, the SQL entry point onto this same lookup: see buildVectorByIdLookup for why
-    // all three names are quoted and what each one broke when they were not. The two held byte-for-byte copies of
-    // the statement and had to be fixed in lockstep, which is the drift a single owner of the escaping prevents.
+    // Shared with vector.neighbors, the SQL entry point onto this same lookup (issue #8097).
     try (final var rs = context.getDatabase().query("sql",
         SQLFunctionVectorAbstract.buildVectorByIdLookup(typeName, vectorProperty, idProperty), keyStr)) {
       if (rs.hasNext()) {

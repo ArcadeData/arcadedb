@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.parser.Identifier;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -65,6 +66,8 @@ class CypherVectorQueryNodesIdentifierQuotingIssue8097Test extends TestHelper {
     createVectorType("SpacedIdProperty", "external id", "embedding");
     // 4. all three ordinary: the fix must not change the answer on the common case.
     createVectorType("Plain", "uuid", "embedding");
+    // 5. a type name carrying the one character that is significant INSIDE a quoted identifier.
+    createVectorType("Back`Tick", "uuid", "embedding");
   }
 
   /**
@@ -96,6 +99,23 @@ class CypherVectorQueryNodesIdentifierQuotingIssue8097Test extends TestHelper {
   @Test
   void aVertexIdentifierKeyStillResolvesWhenEveryNameIsOrdinary() {
     assertNearestIsSelf("Plain", "embedding", "uuid", "u7");
+  }
+
+  /**
+   * Wrapping in back-ticks is not on its own enough: inside a quoted identifier a back-tick is significant, and
+   * {@code Identifier.quote} escapes it. Without that escaping the name {@code Back`Tick} would close its own
+   * identifier and run the remainder into the statement - the #7858 defect - so this test is what makes the
+   * escaping path an assertion of this class rather than something inherited from {@code Identifier}'s own tests.
+   */
+  @Test
+  void aVertexIdentifierKeyResolvesWhenTheTypeNameCarriesABackTick() {
+    assertNearestIsSelf("Back`Tick", "embedding", "uuid", "u3");
+  }
+
+  /** The same escaping, through the SQL entry point. */
+  @Test
+  void vectorNeighborsResolvesAVertexIdentifierKeyWhenTheTypeNameCarriesABackTick() {
+    assertNeighborsNearestIsSelf("Back`Tick", "embedding", "uuid", "u3");
   }
 
   /**
@@ -159,7 +179,7 @@ class CypherVectorQueryNodesIdentifierQuotingIssue8097Test extends TestHelper {
     final List<String> ids = new ArrayList<>();
     try (final ResultSet rs = database.query("opencypher",
         "CALL db.index.vector.queryNodes('" + typeName + "[" + vectorProperty + "]', $k, $key) YIELD node AS n "
-            + "RETURN n.`" + idProperty + "` AS id", params)) {
+            + "RETURN n." + Identifier.quote(idProperty) + " AS id", params)) {
       while (rs.hasNext())
         ids.add(rs.next().getProperty("id"));
     }
@@ -171,12 +191,13 @@ class CypherVectorQueryNodesIdentifierQuotingIssue8097Test extends TestHelper {
 
   private void createVectorType(final String typeName, final String idProperty, final String vectorProperty) {
     database.transaction(() -> {
-      database.command("sql", "CREATE VERTEX TYPE `" + typeName + "`");
-      database.command("sql", "CREATE PROPERTY `" + typeName + "`.`" + idProperty + "` STRING");
-      database.command("sql", "CREATE PROPERTY `" + typeName + "`.`" + vectorProperty + "` ARRAY_OF_FLOATS");
-      database.command("sql", "CREATE INDEX ON `" + typeName + "` (`" + idProperty + "`) UNIQUE");
-      database.command("sql", "CREATE INDEX ON `" + typeName + "` (`" + vectorProperty + "`) LSM_VECTOR METADATA {"
-          + "dimensions: " + DIMENSIONS + ", similarity: 'COSINE', idPropertyName: '" + idProperty + "'}");
+      final String type = Identifier.quote(typeName);
+      database.command("sql", "CREATE VERTEX TYPE " + type);
+      database.command("sql", "CREATE PROPERTY " + type + "." + Identifier.quote(idProperty) + " STRING");
+      database.command("sql", "CREATE PROPERTY " + type + "." + Identifier.quote(vectorProperty) + " ARRAY_OF_FLOATS");
+      database.command("sql", "CREATE INDEX ON " + type + " (" + Identifier.quote(idProperty) + ") UNIQUE");
+      database.command("sql", "CREATE INDEX ON " + type + " (" + Identifier.quote(vectorProperty) + ") LSM_VECTOR "
+          + "METADATA {dimensions: " + DIMENSIONS + ", similarity: 'COSINE', idPropertyName: '" + idProperty + "'}");
     });
 
     database.transaction(() -> {
