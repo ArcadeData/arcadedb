@@ -20,6 +20,9 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.query.sql.parser.Skip;
 
+import java.util.ArrayDeque;
+import java.util.Deque;
+
 /**
  * Created by luigidellaquila on 08/07/16.
  */
@@ -27,6 +30,17 @@ public class SkipExecutionStep extends AbstractExecutionStep {
   private final Skip    skip;
   private       int     skipped = 0;
   private       boolean finished;
+
+  /**
+   * Rows an upstream batch carried PAST the skip point, waiting to be handed to the caller.
+   * <p>
+   * {@code syncPull} asks upstream for only the rows it still owes the skip, but a step is free to answer with
+   * more than it was asked for, and every {@code schema:} catalog listing answered with its whole listing until
+   * issue #7898. Draining that batch here - which is what this step used to do, discarding every row it received
+   * rather than the ones it owed - lost them: {@code SELECT FROM schema:types SKIP 1} answered zero rows out of
+   * six. They are kept here instead and served in the requested batch size.
+   */
+  private final Deque<Result> overflow = new ArrayDeque<>();
 
   public SkipExecutionStep(final Skip skip, final CommandContext context) {
     super(context);
@@ -48,10 +62,22 @@ public class SkipExecutionStep extends AbstractExecutionStep {
         finished = true;
         return new InternalResultSet();//empty
       }
-      while (rs.hasNext()) {
+      // Discard only what is still owed...
+      while (skipped < skipValue && rs.hasNext()) {
         rs.next();
         skipped++;
       }
+      // ...and keep whatever the batch carried beyond it (issue #7898).
+      while (rs.hasNext())
+        overflow.add(rs.next());
+    }
+
+    if (!overflow.isEmpty()) {
+      final InternalResultSet batch = new InternalResultSet();
+      final int count = nRecords > 0 ? Math.min(nRecords, overflow.size()) : overflow.size();
+      for (int i = 0; i < count; i++)
+        batch.add(overflow.poll());
+      return batch;
     }
 
     return prev.syncPull(context, nRecords);
@@ -64,6 +90,7 @@ public class SkipExecutionStep extends AbstractExecutionStep {
 
   @Override
   public void close() {
+    overflow.clear();
     if (prev != null)
       prev.close();
   }

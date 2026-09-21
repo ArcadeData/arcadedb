@@ -26,7 +26,6 @@ import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.DownsamplingTier;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.engine.timeseries.TimeSeriesShard;
-import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.Index;
@@ -47,198 +46,162 @@ import java.util.stream.Collectors;
  *
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
-public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
-
-  private final List<ResultInternal> result = new ArrayList<>();
-
-  private int cursor = 0;
+public class FetchFromSchemaTypesStep extends AbstractFetchFromSchemaListStep {
 
   public FetchFromSchemaTypesStep(final CommandContext context) {
     super(context);
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    pullPrevious(context, nRecords);
+  protected void fetchListing(final CommandContext context) {
+    final Schema schema = context.getDatabase().getSchema();
 
-    if (cursor == 0) {
-      final long begin = context.isProfiling() ? System.nanoTime() : 0;
-      try {
-        final Schema schema = context.getDatabase().getSchema();
+    final SecurityDatabaseUser currentUser = currentUser(context);
 
-        final SecurityDatabaseUser currentUser = currentUser(context);
+    final List<String> orderedTypes = schema.getTypes().stream().map(x -> x.getName()).sorted(String::compareToIgnoreCase)
+        .collect(Collectors.toList());
+    for (final String typeName : orderedTypes) {
+      final DocumentType type = schema.getType(typeName);
 
-        final List<String> orderedTypes = schema.getTypes().stream().map(x -> x.getName()).sorted(String::compareToIgnoreCase)
-            .collect(Collectors.toList());
-        for (final String typeName : orderedTypes) {
-          final DocumentType type = schema.getType(typeName);
+      // Issue #4238: hide types the current user cannot read at all instead of throwing.
+      // RemoteSchema.reload() lists every type on its first command and aborted the whole
+      // listing the first time it hit a restricted type, locking the remote driver out
+      // even from types the user was allowed to read.
+      if (!SecurityHelper.canAccessType(currentUser, type, SecurityDatabaseUser.ACCESS.READ_RECORD))
+        continue;
 
-          // Issue #4238: hide types the current user cannot read at all instead of throwing.
-          // RemoteSchema.reload() lists every type on its first command and aborted the whole
-          // listing the first time it hit a restricted type, locking the remote driver out
-          // even from types the user was allowed to read.
-          if (!SecurityHelper.canAccessType(currentUser, type, SecurityDatabaseUser.ACCESS.READ_RECORD))
-            continue;
+      final ResultInternal r = new ResultInternal(context.getDatabase());
+      result.add(r);
 
-          final ResultInternal r = new ResultInternal(context.getDatabase());
-          result.add(r);
+      r.setProperty("name", type.getName());
 
-          r.setProperty("name", type.getName());
+      final boolean isTimeSeries = type instanceof LocalTimeSeriesType;
+      String t = "?";
 
-          final boolean isTimeSeries = type instanceof LocalTimeSeriesType;
-          String t = "?";
+      if (isTimeSeries)
+        t = LocalTimeSeriesType.KIND_CODE;
+      else if (type.getType() == Document.RECORD_TYPE)
+        t = "document";
+      else if (type.getType() == Vertex.RECORD_TYPE)
+        t = "vertex";
+      else if (type.getType() == Edge.RECORD_TYPE)
+        t = "edge";
 
-          if (isTimeSeries)
-            t = LocalTimeSeriesType.KIND_CODE;
-          else if (type.getType() == Document.RECORD_TYPE)
-            t = "document";
-          else if (type.getType() == Vertex.RECORD_TYPE)
-            t = "vertex";
-          else if (type.getType() == Edge.RECORD_TYPE)
-            t = "edge";
+      r.setProperty("type", t);
 
-          r.setProperty("type", t);
-
-          // The storage shape of an edge type, which tooling cannot infer from the record count: a LIGHTWEIGHT type
-          // keeps no edge record, so its count is 0 however many edges the graph holds (issue #7477).
-          if (type instanceof EdgeType edgeType) {
-            r.setProperty("lightweight", edgeType.isLightweight());
-            r.setProperty("bidirectional", edgeType.isBidirectional());
-            r.setProperty("unique", edgeType.isUnique());
-          }
-
-          if (isTimeSeries)
-            populateTimeSeriesMetadata(r, (LocalTimeSeriesType) type);
-          else
-            r.setProperty("records", safeCountType(context, typeName));
-          r.setProperty("buckets", type.getBuckets(false).stream().map(b -> b.getName()).collect(Collectors.toList()));
-          r.setProperty("bucketSelectionStrategy", type.getBucketSelectionStrategy().getName());
-          // Expose the partition-mapping-stale flag (issue #4087). Set unconditionally via the
-          // {@link DocumentType} interface so any implementation - including future replica or
-          // proxy types - participates without an instanceof gate.
-          r.setProperty("needsRepartition", type.isNeedsRepartition());
-
-          // Expose the primary->external bucket mapping for types that have any EXTERNAL property. Lets tooling
-          // (Studio etc.) tell the user where the externalised values for each primary bucket are stored.
-          if (type instanceof LocalDocumentType ldt) {
-            final Map<String, String> extMap = new HashMap<>();
-            for (final Bucket b : type.getBuckets(false)) {
-              final Integer extId = ldt.getExternalBucketIdFor(b.getFileId());
-              if (extId != null) {
-                // #5636: null-tolerant on purpose. An external bucket tiered to a secondary path can be referenced
-                // by the schema without being loaded; the throwing getBucketById(int) made the guard below dead and
-                // turned a whole `SELECT FROM schema:types` into a SchemaException over one unreadable mapping.
-                final Bucket extBucket = context.getDatabase().getSchema().getBucketByIdIfExists(extId);
-                if (extBucket != null)
-                  extMap.put(b.getName(), extBucket.getName());
-              }
-            }
-            if (!extMap.isEmpty())
-              r.setProperty("externalBuckets", extMap);
-          }
-
-          final List<String> parents = type.getSuperTypes().stream().map(pt -> pt.getName()).collect(Collectors.toList());
-          r.setProperty("parentTypes", parents);
-
-          final List<ResultInternal> propertiesTypes = type.getPropertyNames().stream().sorted(String::compareToIgnoreCase)
-              .map(name -> type.getProperty(name)).map(property -> {
-                final ResultInternal propRes = new ResultInternal(context.getDatabase());
-                propRes.setProperty("id", property.getId());
-                propRes.setProperty("name", property.getName());
-                propRes.setProperty("type", property.getType());
-
-                if (property.getOfType() != null)
-                  propRes.setProperty("ofType", property.getOfType());
-                if (property.isMandatory())
-                  propRes.setProperty("mandatory", property.isMandatory());
-                if (property.isReadonly())
-                  propRes.setProperty("readOnly", property.isReadonly());
-                if (property.isNotNull())
-                  propRes.setProperty("notNull", property.isNotNull());
-                if (property.isHidden())
-                  propRes.setProperty("hidden", property.isHidden());
-                if (property.isExternal())
-                  propRes.setProperty("external", property.isExternal());
-                // Only emit the compression policy when explicitly set to a non-default value, mirroring the
-                // toJSON convention. Studio renders the badge tooltip and a small label off this field.
-                final String cmp = property.getCompression();
-                if (cmp != null && !"none".equalsIgnoreCase(cmp))
-                  propRes.setProperty("compression", cmp);
-                if (property.getMin() != null)
-                  propRes.setProperty("min", property.getMin());
-                if (property.getMax() != null)
-                  propRes.setProperty("max", property.getMax());
-                // Issue #6134: the DEFINITION, not the evaluated value. Schema metadata must report what was declared -
-                // `sysdate()`, not a snapshot of when the row was fetched - and evaluating here made a single broken
-                // default (or a plain property, whose unset sentinel used to leak out as "<DEFAULT_NOT_SET>") corrupt
-                // or break the listing of the whole schema.
-                final Object defaultValue = property.getDefaultValueDefinition();
-                if (defaultValue != null)
-                  propRes.setProperty("default", defaultValue);
-                if (property.getRegexp() != null)
-                  propRes.setProperty("regexp", property.getRegexp());
-
-                final Map<String, Object> customs = new HashMap<>();
-                for (final Object customKey : property.getCustomKeys().stream().sorted(String::compareToIgnoreCase).toArray())
-                  customs.put((String) customKey, property.getCustomValue((String) customKey));
-                propRes.setProperty("custom", customs);
-
-                return propRes;
-              }).collect(Collectors.toList());
-          r.setProperty("properties", propertiesTypes);
-
-          final List<ResultInternal> indexes = type.getAllIndexes(false).stream().sorted(Comparator.comparing(Index::getName))
-              .map(typeIndex -> {
-                final ResultInternal propRes = new ResultInternal();
-                propRes.setProperty("name", typeIndex.getName());
-                propRes.setProperty("typeName", typeIndex.getTypeName());
-                propRes.setProperty("type", typeIndex.getType());
-                propRes.setProperty("unique", typeIndex.isUnique());
-                propRes.setProperty("properties", typeIndex.getPropertyNames());
-                propRes.setProperty("automatic", typeIndex.isAutomatic());
-                // Advisory only, and absent on a healthy index: the reason this one should be rebuilt (see
-                // IndexInternal#getUpgradeWarning). Studio flags the row on it.
-                final String upgradeWarning = ((IndexInternal) typeIndex).getUpgradeWarning();
-                if (upgradeWarning != null)
-                  propRes.setProperty("upgradeWarning", upgradeWarning);
-                return propRes;
-              }).collect(Collectors.toList());
-          r.setProperty("indexes", indexes);
-
-          final Map<String, Object> customs = new HashMap<>();
-          for (final Object customKey : type.getCustomKeys().stream().sorted(String::compareToIgnoreCase).toArray())
-            customs.put((String) customKey, type.getCustomValue((String) customKey));
-          r.setProperty("custom", customs);
-
-          context.setVariable("current", r);
-        }
-      } finally {
-        if (context.isProfiling()) {
-          cost += System.nanoTime() - begin;
-        }
+      // The storage shape of an edge type, which tooling cannot infer from the record count: a LIGHTWEIGHT type
+      // keeps no edge record, so its count is 0 however many edges the graph holds (issue #7477).
+      if (type instanceof EdgeType edgeType) {
+        r.setProperty("lightweight", edgeType.isLightweight());
+        r.setProperty("bidirectional", edgeType.isBidirectional());
+        r.setProperty("unique", edgeType.isUnique());
       }
+
+      if (isTimeSeries)
+        populateTimeSeriesMetadata(r, (LocalTimeSeriesType) type);
+      else
+        r.setProperty("records", safeCountType(context, typeName));
+      r.setProperty("buckets", type.getBuckets(false).stream().map(b -> b.getName()).collect(Collectors.toList()));
+      r.setProperty("bucketSelectionStrategy", type.getBucketSelectionStrategy().getName());
+      // Expose the partition-mapping-stale flag (issue #4087). Set unconditionally via the
+      // {@link DocumentType} interface so any implementation - including future replica or
+      // proxy types - participates without an instanceof gate.
+      r.setProperty("needsRepartition", type.isNeedsRepartition());
+
+      // Expose the primary->external bucket mapping for types that have any EXTERNAL property. Lets tooling
+      // (Studio etc.) tell the user where the externalised values for each primary bucket are stored.
+      if (type instanceof LocalDocumentType ldt) {
+        final Map<String, String> extMap = new HashMap<>();
+        for (final Bucket b : type.getBuckets(false)) {
+          final Integer extId = ldt.getExternalBucketIdFor(b.getFileId());
+          if (extId != null) {
+            // #5636: null-tolerant on purpose. An external bucket tiered to a secondary path can be referenced
+            // by the schema without being loaded; the throwing getBucketById(int) made the guard below dead and
+            // turned a whole `SELECT FROM schema:types` into a SchemaException over one unreadable mapping.
+            final Bucket extBucket = context.getDatabase().getSchema().getBucketByIdIfExists(extId);
+            if (extBucket != null)
+              extMap.put(b.getName(), extBucket.getName());
+          }
+        }
+        if (!extMap.isEmpty())
+          r.setProperty("externalBuckets", extMap);
+      }
+
+      final List<String> parents = type.getSuperTypes().stream().map(pt -> pt.getName()).collect(Collectors.toList());
+      r.setProperty("parentTypes", parents);
+
+      final List<ResultInternal> propertiesTypes = type.getPropertyNames().stream().sorted(String::compareToIgnoreCase)
+          .map(name -> type.getProperty(name)).map(property -> {
+            final ResultInternal propRes = new ResultInternal(context.getDatabase());
+            propRes.setProperty("id", property.getId());
+            propRes.setProperty("name", property.getName());
+            propRes.setProperty("type", property.getType());
+
+            if (property.getOfType() != null)
+              propRes.setProperty("ofType", property.getOfType());
+            if (property.isMandatory())
+              propRes.setProperty("mandatory", property.isMandatory());
+            if (property.isReadonly())
+              propRes.setProperty("readOnly", property.isReadonly());
+            if (property.isNotNull())
+              propRes.setProperty("notNull", property.isNotNull());
+            if (property.isHidden())
+              propRes.setProperty("hidden", property.isHidden());
+            if (property.isExternal())
+              propRes.setProperty("external", property.isExternal());
+            // Only emit the compression policy when explicitly set to a non-default value, mirroring the
+            // toJSON convention. Studio renders the badge tooltip and a small label off this field.
+            final String cmp = property.getCompression();
+            if (cmp != null && !"none".equalsIgnoreCase(cmp))
+              propRes.setProperty("compression", cmp);
+            if (property.getMin() != null)
+              propRes.setProperty("min", property.getMin());
+            if (property.getMax() != null)
+              propRes.setProperty("max", property.getMax());
+            // Issue #6134: the DEFINITION, not the evaluated value. Schema metadata must report what was declared -
+            // `sysdate()`, not a snapshot of when the row was fetched - and evaluating here made a single broken
+            // default (or a plain property, whose unset sentinel used to leak out as "<DEFAULT_NOT_SET>") corrupt
+            // or break the listing of the whole schema.
+            final Object defaultValue = property.getDefaultValueDefinition();
+            if (defaultValue != null)
+              propRes.setProperty("default", defaultValue);
+            if (property.getRegexp() != null)
+              propRes.setProperty("regexp", property.getRegexp());
+
+            final Map<String, Object> customs = new HashMap<>();
+            for (final Object customKey : property.getCustomKeys().stream().sorted(String::compareToIgnoreCase).toArray())
+              customs.put((String) customKey, property.getCustomValue((String) customKey));
+            propRes.setProperty("custom", customs);
+
+            return propRes;
+          }).collect(Collectors.toList());
+      r.setProperty("properties", propertiesTypes);
+
+      final List<ResultInternal> indexes = type.getAllIndexes(false).stream().sorted(Comparator.comparing(Index::getName))
+          .map(typeIndex -> {
+            final ResultInternal propRes = new ResultInternal();
+            propRes.setProperty("name", typeIndex.getName());
+            propRes.setProperty("typeName", typeIndex.getTypeName());
+            propRes.setProperty("type", typeIndex.getType());
+            propRes.setProperty("unique", typeIndex.isUnique());
+            propRes.setProperty("properties", typeIndex.getPropertyNames());
+            propRes.setProperty("automatic", typeIndex.isAutomatic());
+            // Advisory only, and absent on a healthy index: the reason this one should be rebuilt (see
+            // IndexInternal#getUpgradeWarning). Studio flags the row on it.
+            final String upgradeWarning = ((IndexInternal) typeIndex).getUpgradeWarning();
+            if (upgradeWarning != null)
+              propRes.setProperty("upgradeWarning", upgradeWarning);
+            return propRes;
+          }).collect(Collectors.toList());
+      r.setProperty("indexes", indexes);
+
+      final Map<String, Object> customs = new HashMap<>();
+      for (final Object customKey : type.getCustomKeys().stream().sorted(String::compareToIgnoreCase).toArray())
+        customs.put((String) customKey, type.getCustomValue((String) customKey));
+      r.setProperty("custom", customs);
+
+      context.setVariable("current", r);
     }
-    return new ResultSet() {
-      @Override
-      public boolean hasNext() {
-        return cursor < result.size();
-      }
-
-      @Override
-      public Result next() {
-        return result.get(cursor++);
-      }
-
-      @Override
-      public void close() {
-        result.clear();
-      }
-
-      @Override
-      public void reset() {
-        cursor = 0;
-      }
-    };
   }
 
   private static SecurityDatabaseUser currentUser(final CommandContext context) {

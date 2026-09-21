@@ -118,6 +118,20 @@ public class UpdateItem extends SimpleNode {
     } else {
       final Object val = doc.getProperty(left.getStringValue());
       leftModifier.setValue(doc, val, rightValue, context);
+      // SET m.k = v / SET l[0] = v reach into the Map or List the record already holds and write into it, without
+      // ever going through MutableDocument.set() - so the owner never learns it changed and SaveElementStep skips
+      // a record it believes clean, losing the write while the statement still reports count 1 and RETURN AFTER
+      // still shows the new value (issue #8027). The same call the REMOVE side has made since #4730; it is here
+      // and not inside the Modifier chain because this is the one place that knows the mutation is finished.
+      //
+      // Unconditional, unlike the OPERATOR_EQ arm above, which skips the write when the value is unchanged to
+      // avoid a needless MVCC version bump. Answering "did anything actually change?" here would mean threading a
+      // result back through every Modifier/SuffixIdentifier/ArraySelector/ArrayRangeSelector overload - and for
+      // the range and Set selectors, which rebuild the whole collection, there is no honest answer to thread. The
+      // cost of not doing it is one spurious version bump on a nested SET that writes the value already there;
+      // the cost of getting it wrong is the lost write this issue is about. REMOVE has made the same trade since
+      // #4730.
+      doc.markElementDirty();
     }
   }
 
