@@ -87,7 +87,7 @@ public class DateUtils {
       .appendValue(ChronoField.MINUTE_OF_HOUR, 2)//
       .optionalStart().appendLiteral(':').appendValue(ChronoField.SECOND_OF_MINUTE, 2)//
       .appendFraction(ChronoField.NANO_OF_SECOND, 0, 9, true).optionalEnd()//
-      .optionalStart().appendPattern("[XXX][XX][X]").optionalEnd()//
+      .appendPattern("[XXX][XX][X]")// already optional: the brackets ARE the optional sections
       .optionalEnd()//
       .parseDefaulting(ChronoField.HOUR_OF_DAY, 0)//
       .parseDefaulting(ChronoField.MINUTE_OF_HOUR, 0)//
@@ -462,17 +462,41 @@ public class DateUtils {
       }
     }
 
+    final Temporal parsed = parseSchemaOrSqlTimestamp(database, string, isoFailure);
+    return parsed instanceof OffsetDateTime offset ?
+        dropZone(database, offset.toZonedDateTime(), rebaseOffset) :
+        (LocalDateTime) parsed;
+  }
+
+  /**
+   * The tail of the chain both entry points share: the schema's patterns, then {@link #SPACE_SEPARATED_DATE_TIME}.
+   * Answers an {@link OffsetDateTime} when whichever format matched captured an offset and a {@link LocalDateTime}
+   * otherwise, leaving each caller to apply its own offset policy.
+   * <p>
+   * Shared rather than reached by {@code parseZonedDateTime} calling {@code parseDateTime}, which made it parse the
+   * same string twice: once itself to look for an offset, then again inside the nested call that re-derived the
+   * schema attempt and re-ran the same formatter. Bounded duplicate work, but on a path every {@code DATE} and
+   * {@code Instant} string write in the SQL-timestamp form now reaches.
+   *
+   * @param isoFailure the ISO failure to report in preference to this step's own, or {@code null} when the ISO
+   *                   formats were skipped because the input could not have matched them
+   */
+  private static Temporal parseSchemaOrSqlTimestamp(final Database database, final String string,
+      final DateTimeParseException isoFailure) {
     if (database != null) {
       // getFormatter(), not DateTimeFormatter.ofPattern(): the latter binds the JVM default locale, so a schema
       // pattern with a textual field parsed here but not through format()/parse() (issue #7144)
       final Temporal fromSchema = parseWithSchemaPatterns(database, string);
       if (fromSchema != null)
-        return fromSchema instanceof OffsetDateTime offset ?
-            dropZone(database, offset.toZonedDateTime(), rebaseOffset) :
-            (LocalDateTime) fromSchema;
+        return fromSchema;
     }
 
-    return parseSqlTimestamp(database, string, isoFailure, rebaseOffset);
+    // Unconditional, not gated on the separator: the time part is optional, so this is also what reads a bare date.
+    try {
+      return (Temporal) SPACE_SEPARATED_DATE_TIME.parseBest(string, OffsetDateTime::from, LocalDateTime::from);
+    } catch (final DateTimeParseException e) {
+      throw isoFailure != null ? isoFailure : e;
+    }
   }
 
   /**
@@ -519,28 +543,6 @@ public class DateUtils {
   }
 
   /**
-   * Final step of {@link #parseDateTime}: {@link #SPACE_SEPARATED_DATE_TIME}, with an offset in the input treated
-   * exactly as the ISO zoned branch treats it.
-   *
-   * @param isoFailure the failure from the ISO attempts, rethrown in preference to this format's own when nothing
-   *                   matched, so the caller sees the error for the format the input most resembled. {@code null}
-   *                   when those attempts were skipped because the input is space-separated and could not have
-   *                   matched them, in which case this format's own failure is the only one there is.
-   */
-  private static LocalDateTime parseSqlTimestamp(final Database database, final String string,
-      final DateTimeParseException isoFailure, final boolean rebaseOffset) {
-    final TemporalAccessor parsed;
-    try {
-      parsed = SPACE_SEPARATED_DATE_TIME.parseBest(string, OffsetDateTime::from, LocalDateTime::from);
-    } catch (final DateTimeParseException e) {
-      throw isoFailure != null ? isoFailure : e;
-    }
-    return parsed instanceof OffsetDateTime offset ?
-        dropZone(database, offset.toZonedDateTime(), rebaseOffset) :
-        (LocalDateTime) parsed;
-  }
-
-  /**
    * The schema's two patterns, in order, as a {@link Temporal} that still carries any offset they captured.
    */
   private static Temporal parseWithSchemaPatterns(final Database database, final String string) {
@@ -562,28 +564,27 @@ public class DateUtils {
    * An input with no offset has nothing to preserve and is anchored to the database's zone, as before.
    */
   public static ZonedDateTime parseZonedDateTime(final Database database, final String string) {
-    try {
-      return ZonedDateTime.parse(string);
-    } catch (final DateTimeParseException ignore) {
-      // Not an ISO zoned form. The SQL-timestamp spelling may still carry an offset.
-    }
-
-    if (hasSpaceDateTimeSeparator(string)) {
+    DateTimeParseException isoFailure = null;
+    if (!hasSpaceDateTimeSeparator(string)) {
+      // ISO demands a 'T', so both of these are guaranteed to fail on a space-separated value and are not run.
       try {
-        if (SPACE_SEPARATED_DATE_TIME.parseBest(string, OffsetDateTime::from,
-            LocalDateTime::from) instanceof OffsetDateTime offset)
-          return offset.toZonedDateTime();
+        return ZonedDateTime.parse(string);
+      } catch (final DateTimeParseException e) {
+        isoFailure = e;
+      }
+      try {
+        return LocalDateTime.parse(string).atZone(zoneOf(database));
       } catch (final DateTimeParseException ignore) {
-        // Fall through: the shared chain below is what reports a value nothing can read.
+        // Keep the zoned failure: it is the one an offset-bearing input most resembled.
       }
     }
 
     // A schema pattern can capture an offset too ('yyyy-MM-dd HH:mm:ss XXX'), and it is the value's own offset just
     // as much as an ISO one is, so it is kept rather than replaced by the database's zone.
-    if (database != null && parseWithSchemaPatterns(database, string) instanceof OffsetDateTime offset)
-      return offset.toZonedDateTime();
-
-    return parseDateTimeKeepingWallClock(database, string).atZone(zoneOf(database));
+    final Temporal parsed = parseSchemaOrSqlTimestamp(database, string, isoFailure);
+    return parsed instanceof OffsetDateTime offset ?
+        offset.toZonedDateTime() :
+        ((LocalDateTime) parsed).atZone(zoneOf(database));
   }
 
   /**

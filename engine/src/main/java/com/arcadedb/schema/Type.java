@@ -737,6 +737,11 @@ public enum Type {
               }
             }
           else
+            // With no database there are no schema patterns to try, so this is the whole chain. Note the contract
+            // change: this branch used to fall off the end and answer the ORIGINAL String when its string-length
+            // guess matched nothing, where it now refuses like every other datetime target (issue #8090). No caller
+            // in the reactor sees it - BaseDocument.getLocalDate goes through convertOrNull - but Type.convert is
+            // public, so an outside caller relying on the silent pass-through gets an IllegalArgumentException.
             return DateUtils.parseDateTimeKeepingWallClock(null, valueAsString).toLocalDate();
         }
       } else if (targetClass.equals(LocalDateTime.class)) {
