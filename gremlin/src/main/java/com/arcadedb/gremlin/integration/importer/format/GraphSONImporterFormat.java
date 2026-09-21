@@ -210,8 +210,6 @@ public class GraphSONImporterFormat extends CSVImporterFormat {
   private void createVertices(final List<String> lines, final DatabaseInternal database, final Map<Object, RID> idMapping,
       final List<EdgeData> pendingEdges, final ImporterContext context) {
     for (final String line : lines) {
-      context.parsed.incrementAndGet();
-
       final JSONObject vertexJson = new JSONObject(line);
       final Object originalId = vertexJson.get("id");
       final String label = vertexJson.getString("label", "vertex");
@@ -242,6 +240,10 @@ public class GraphSONImporterFormat extends CSVImporterFormat {
 
       vertex.save();
       context.createdVertices.incrementAndGet();
+      // Incremented here, after save() succeeds, not at the top of the loop: matching createEdges()'s own
+      // placement right after edge.save() so a line that fails before this point (malformed JSON, a label naming
+      // a non-vertex type) doesn't count as parsed when nothing was actually created from it (issue #8116 review).
+      context.parsed.incrementAndGet();
       final RID newRid = vertex.getIdentity();
       idMapping.put(originalId, newRid);
 
@@ -312,7 +314,7 @@ public class GraphSONImporterFormat extends CSVImporterFormat {
 
       edge.save();
       context.createdEdges.incrementAndGet();
-      // createVertices() above already counts context.parsed per source line (one vertex each), so this pass adds
+      // createVertices() above already counts context.parsed once per vertex actually created, so this pass adds
       // one per edge actually created, matching the TinkerPop-reader route's context.parsed = createdVertices +
       // createdEdges - without this, parsedRecords on this route counted vertices only, understating the report
       // for a source whose lines embed outgoing edges (issue #8116 review).
