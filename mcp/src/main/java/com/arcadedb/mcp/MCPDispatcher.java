@@ -467,27 +467,27 @@ public class MCPDispatcher {
   }
 
   /**
-   * Renders a tool's arguments for the request log. The value a caller writes to a secret setting is masked here,
+   * Renders a tool's arguments for the request log. The value a caller writes to a setting is redacted here,
    * because this line is emitted before the tool runs and would otherwise place the secret in the log regardless of
-   * how the tool's own response is redacted. Masking is deliberately limited to the one argument that is a secret by
-   * definition: arguments elsewhere carry caller data, which cannot be told apart from a secret without guessing, and
-   * blanking it would leave the log unable to explain what a call did.
+   * how the tool's own response is redacted. Redaction is deliberately limited to the one argument that can be a
+   * secret by definition: arguments elsewhere carry caller data, which cannot be told apart from a secret without
+   * guessing, and blanking it would leave the log unable to explain what a call did.
    */
   static String formatArgs(final String toolName, final JSONObject args) {
     if (args.length() == 0)
       return "{}";
-    final boolean maskValue = "set_server_setting".equals(toolName) && isHiddenSetting(settingKey(args));
+    final GlobalConfiguration redacted =
+        "set_server_setting".equals(toolName) ? settingToRedactWith(settingKey(args)) : null;
     final StringBuilder sb = new StringBuilder("{");
     boolean first = true;
     for (final String key : args.keySet()) {
       if (!first)
         sb.append(", ");
       first = false;
-      if (maskValue && "value".equals(key)) {
-        sb.append(key).append("=\"*****\"");
-        continue;
-      }
-      final Object value = args.get(key);
+      final Object raw = args.get(key);
+      // publishableValue leaves a value carrying no secret exactly as it was, so this neither blanks nor reshapes
+      // an ordinary setting's value, and a non-String argument stays the type the branches below render.
+      final Object value = redacted != null && "value".equals(key) ? redacted.publishableValue(raw) : raw;
       if (value instanceof String s) {
         final String sanitized = sanitizeForLog(s);
         if (sanitized.length() > 100)
@@ -522,15 +522,20 @@ public class MCPDispatcher {
   }
 
   /**
-   * Reports whether a configuration key names a setting the server treats as secret, using the same
-   * {@link GlobalConfiguration#isHidden()} rule the settings tools apply. An unresolvable key is not secret: the
-   * tool rejects it before it can change anything.
+   * The setting whose {@link GlobalConfiguration#publishableValue(Object)} rule governs the logged {@code value}
+   * argument, or {@code null} when there is none to apply. That is the same single rule the settings READERS
+   * publish under - {@code GET /api/v1/server}, the MCP {@code get_server_settings} tool and {@code SELECT FROM
+   * schema:database} all call it.
+   * <p>
+   * This used to answer a boolean taken from {@link GlobalConfiguration#isHidden()}, which covers a setting that
+   * IS a secret and says nothing about one that CONTAINS a secret: the credentials embedded in
+   * {@code arcadedb.server.defaultDatabases} were written to this log in clear while every getter masked them
+   * (issue #8038). An unresolvable key is still not redacted: the tool rejects it before it can change anything.
    */
-  private static boolean isHiddenSetting(final String key) {
+  private static GlobalConfiguration settingToRedactWith(final String key) {
     if (key == null || key.isEmpty())
-      return false;
-    final GlobalConfiguration cfg = GlobalConfiguration.findByKey(key);
-    return cfg != null && cfg.isHidden();
+      return null;
+    return GlobalConfiguration.findByKey(key);
   }
 
   private static String sanitizeForLog(final String value) {
