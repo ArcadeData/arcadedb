@@ -84,6 +84,19 @@ class DeltaOverlay {
   // absorbed as the scan swallowed, the next one is genuine and does have to spend a budget.
   private final Map<String, Map<Long, Integer>> absorbedDeletedEdgesPerType;
 
+  // The mirror image of the map above, on the ADD side: buffered additions the freshly built base CSR had ALREADY
+  // captured at post-compaction re-application time, per type and packed pair. Non-empty only on that path.
+  // The add side used to dedup by PRESENCE - it skipped a buffered add whenever the fresh run held ANY occurrence of
+  // the pair - which drops a real edge as soon as the pair carries parallel ones: with one occurrence of s -> t in
+  // the fresh run and a buffered add of a SECOND one, the second existed in neither the fresh base nor the overlay
+  // until the next compaction (issue #7884). The discriminator is the same multiplicity comparison the deletion side
+  // got under #7042, read the other way round: with `before` the pair's occurrences at compaction start and `fresh`
+  // its occurrences in the newly scanned base, exactly max(0, fresh - before) of the pair's buffered additions were
+  // captured by the scan. Those are recorded here and skipped; the ones beyond them committed after the scan crossed
+  // the bucket and belong in the overlay. Kept as a count for the same reason the deletion side is: the captured
+  // population is a PREFIX of the pair's buffered additions.
+  private final Map<String, Map<Long, Integer>> absorbedAddedEdgesPerType;
+
   // Per-node deleted edge counts for O(1) lookup: edgeType -> nodeId -> count
   private final Map<String, IntIntHashMap> deletedOutEdgeCounts;
   private final Map<String, IntIntHashMap> deletedInEdgeCounts;
@@ -123,6 +136,7 @@ class DeltaOverlay {
     this.deletedEdgesPerType = Collections.emptyMap();
     this.deletedEdgeRIDsPerType = Collections.emptyMap();
     this.absorbedDeletedEdgesPerType = Collections.emptyMap();
+    this.absorbedAddedEdgesPerType = Collections.emptyMap();
     this.deletedOutEdgeCounts = Collections.emptyMap();
     this.deletedInEdgeCounts = Collections.emptyMap();
     this.propertyOverrides = Collections.emptyMap();
@@ -146,6 +160,7 @@ class DeltaOverlay {
       final Map<String, Map<Long, Integer>> deletedEdgesPerType,
       final Map<String, Set<RID>> deletedEdgeRIDsPerType,
       final Map<String, Map<Long, Integer>> absorbedDeletedEdgesPerType,
+      final Map<String, Map<Long, Integer>> absorbedAddedEdgesPerType,
       final Map<String, IntIntHashMap> deletedOutEdgeCounts,
       final Map<String, IntIntHashMap> deletedInEdgeCounts,
       final Map<Integer, Map<String, Object>> propertyOverrides,
@@ -163,6 +178,7 @@ class DeltaOverlay {
     this.deletedEdgesPerType = deletedEdgesPerType;
     this.deletedEdgeRIDsPerType = deletedEdgeRIDsPerType;
     this.absorbedDeletedEdgesPerType = absorbedDeletedEdgesPerType;
+    this.absorbedAddedEdgesPerType = absorbedAddedEdgesPerType;
     this.deletedOutEdgeCounts = deletedOutEdgeCounts;
     this.deletedInEdgeCounts = deletedInEdgeCounts;
     this.propertyOverrides = propertyOverrides;
@@ -207,10 +223,11 @@ class DeltaOverlay {
    * <p>
    * When {@code baseCsrPerType} is non-null (post-compaction delta re-application, see issue #4588),
    * an added edge whose both endpoints are base nodes and that the freshly built base CSR already
-   * contains is skipped, unless the same edge is masked as deleted (either by an earlier buffered
+   * captured is skipped, unless the same edge is masked as deleted (either by an earlier buffered
    * delta or within this delta). The compaction scan is read-committed and non-atomic, so a buffered
    * delta may already be reflected in the new base CSR; re-adding it to the overlay would surface a
-   * duplicate neighbour and inflate the delta edge counter.
+   * duplicate neighbour and inflate the delta edge counter. Which of the pair's buffered additions the
+   * scan captured is a MULTIPLICITY question - see {@link #capturedByFreshScan} and issue #7884.
    */
   DeltaOverlay merge(final TxDelta delta, final NodeIdMapping baseMapping,
       final Map<String, CSRAdjacencyIndex> baseCsrPerType) {
@@ -255,6 +272,9 @@ class DeltaOverlay {
     final Map<String, Map<Long, Integer>> newAbsorbedDeletions = new HashMap<>();
     for (final var entry : absorbedDeletedEdgesPerType.entrySet())
       newAbsorbedDeletions.put(entry.getKey(), new HashMap<>(entry.getValue()));
+    final Map<String, Map<Long, Integer>> newAbsorbedAdditions = new HashMap<>();
+    for (final var entry : absorbedAddedEdgesPerType.entrySet())
+      newAbsorbedAdditions.put(entry.getKey(), new HashMap<>(entry.getValue()));
     final Map<Integer, Map<String, Object>> newPropOverrides = new HashMap<>(propertyOverrides.size());
     for (final var propEntry : propertyOverrides.entrySet())
       newPropOverrides.put(propEntry.getKey(), new HashMap<>(propEntry.getValue()));
@@ -308,10 +328,11 @@ class DeltaOverlay {
       final int tgtId = resolveNodeId(ed.target, baseMapping, newOverflowIds);
       if (srcId < 0 || tgtId < 0)
         continue; // endpoint not in view
-      // Post-compaction re-application: if the freshly built base CSR already contains this edge (the
+      // Post-compaction re-application: if the freshly built base CSR already captured this edge (the
       // read-committed scan crossed its bucket after it committed), re-adding it would duplicate the
       // neighbour and inflate the counter. Skip it unless it is masked as deleted, in which case the
-      // overlay must keep the explicit add to reinstate it. See issue #4588.
+      // overlay must keep the explicit add to reinstate it. See issue #4588, and capturedByFreshScan() for
+      // why "already captured" is a multiplicity question and not a presence one (issue #7884).
       if (baseCsrPerType != null && srcId < baseNodeCount && tgtId < baseNodeCount) {
         final CSRAdjacencyIndex csr = baseCsrPerType.get(ed.edgeType);
         if (csr != null && csr.hasForwardEdge(srcId, tgtId)) {
@@ -319,7 +340,7 @@ class DeltaOverlay {
           final Map<Long, Integer> prevDel = newDeletedEdges.get(ed.edgeType);
           final boolean masked = (prevDel != null && prevDel.containsKey(packed))
               || (sameDeltaDeleted != null && sameDeltaDeleted.contains(packed));
-          if (!masked) {
+          if (!masked && capturedByFreshScan(ed, srcId, tgtId, packed, csr, preCount, newAbsorbedAdditions)) {
             // Remembered for the update loop below: the fresh base CSR already carries this edge, scan and
             // all, so a property change to it in this same delta is already in the columns and dirties
             // nothing. Without this the ordinary insert - one create and one update of the same edge - would
@@ -472,9 +493,54 @@ class DeltaOverlay {
         overflowRIDsList.toArray(new RID[0]),
         overflowPropsList.toArray(new Map[0]),
         newDeleted, newDeletedOverflow, newAddedEdges, newDeletedEdges, newDeletedEdgeRIDs,
-        newAbsorbedDeletions, newDelOutCounts, newDelInCounts, newPropOverrides,
+        newAbsorbedDeletions, newAbsorbedAdditions, newDelOutCounts, newDelInCounts, newPropOverrides,
         newOutIndex, newInIndex,
         newOverflowCount, newDeltaEdgeCount, newDirtyTypes, newAllDirty);
+  }
+
+  /**
+   * Whether this buffered addition is one the freshly built base CSR already captured, and so must NOT be added to
+   * the overlay a second time - asked by MULTIPLICITY, the way the deletion side asks its own question (issue #7042).
+   * <p>
+   * The compaction scan is read-committed and non-atomic, so a buffered addition may or may not already be reflected
+   * in the fresh run, and the fresh multiplicity alone cannot say which: it is the RISE over the pre-compaction
+   * multiplicity that counts the additions the scan captured. With {@code before} the pair's occurrences at
+   * compaction start and {@code fresh} its occurrences in the newly scanned base, exactly {@code max(0, fresh -
+   * before)} of the pair's buffered additions are already in the fresh run. Those are recorded in
+   * {@code absorbedAdditions} and skipped; anything beyond them committed after the scan crossed the bucket and has
+   * to live in the overlay, because it is in neither the fresh base nor anywhere else (issue #7884).
+   * <p>
+   * Dedup by presence - which is what this used to be - answers "captured" for every buffered addition to a pair the
+   * fresh run holds ANY occurrence of, so a second parallel edge between an already-connected pair was dropped
+   * outright until the next compaction.
+   * <p>
+   * When {@code preCount} is null the reference is unavailable, so no addition can be shown to have been captured and
+   * the pre-#7884 presence answer stands - which is also what the callers that pass no {@code baseCsrPerType} get,
+   * since they never reach here.
+   * <p>
+   * No identity dedup here, unlike the deletion side. A buffered addition is one commit's report that an edge came
+   * into existence, and the engine cannot report the same edge RID created twice without the record having been
+   * deleted and its slot reused in between - at which point it is a DIFFERENT edge (issue #6777) and counting it as
+   * one is the right answer, not a replay to be absorbed. An addition that does reach the overlay is deduped by RID
+   * there, which is what absorbs a replay on the ordinary (non-compaction) path.
+   */
+  private static boolean capturedByFreshScan(final TxDelta.EdgeDelta ed, final int srcId, final int tgtId,
+      final long packed, final CSRAdjacencyIndex csr, final PreCompactionPairCount preCount,
+      final Map<String, Map<Long, Integer>> absorbedAdditions) {
+    if (preCount == null)
+      return true;
+
+    final int capturable = csr.forwardEdgeCount(srcId, tgtId) - preCount.occurrences(ed.edgeType, ed.source, ed.target);
+    if (capturable <= 0)
+      return false;
+
+    final Map<Long, Integer> capturedForType = absorbedAdditions.computeIfAbsent(ed.edgeType, k -> new HashMap<>());
+    final int capturedSoFar = capturedForType.getOrDefault(packed, 0);
+    if (capturedSoFar >= capturable)
+      return false;
+
+    capturedForType.put(packed, capturedSoFar + 1);
+    return true;
   }
 
   // --- Query helpers ---
@@ -564,6 +630,16 @@ class DeltaOverlay {
    */
   int countAbsorbedDeletions(final String edgeType, final int srcId, final int tgtId) {
     final Map<Long, Integer> absorbed = absorbedDeletedEdgesPerType.get(edgeType);
+    return absorbed == null ? 0 : absorbed.getOrDefault(packEdge(srcId, tgtId), 0);
+  }
+
+  /**
+   * Returns how many of the pair's buffered ADDITIONS the freshly built base CSR had already captured at
+   * post-compaction re-application time, and which were therefore skipped rather than appended to the overlay. Zero
+   * on every path other than that re-application. See {@link #capturedByFreshScan} and issue #7884.
+   */
+  int countAbsorbedAdditions(final String edgeType, final int srcId, final int tgtId) {
+    final Map<Long, Integer> absorbed = absorbedAddedEdgesPerType.get(edgeType);
     return absorbed == null ? 0 : absorbed.getOrDefault(packEdge(srcId, tgtId), 0);
   }
 
