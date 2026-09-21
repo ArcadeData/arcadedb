@@ -160,6 +160,14 @@ public class TruncateTypeStatement extends DDLStatement {
       // named in the message, which is strictly more useful than #7919's "report a grandchild against the direct
       // subtype it hangs from" - that phrasing existed only because a grandchild could not be reached from here.
       for (final DocumentType descendant : collectPolymorphicDescendants(typez)) {
+        // Only a graph type can produce a refusal, so anything else is not worth counting. That matters because the
+        // count is not free - a bucket-record sum, or a whole count(*) query for a lightweight edge type - and the
+        // shape this loop exists for (#8042) is precisely a hierarchy with non-graph types in it, so the intermediate
+        // DocumentTypes it walks through can easily outnumber the graph types it is looking for. instanceof, not
+        // isSubTypeOf("V")/("E") - see the root's own guard above.
+        if (!(descendant instanceof VertexType) && !(descendant instanceof EdgeType))
+          continue;
+
         // Each descendant is counted on its OWN records, NOT polymorphically, because the walk above already visits
         // every one of them individually. Counting polymorphically here would charge a descendant's records to every
         // graph-type ancestor between it and the root, and since the walk is pre-order that EMPTY ancestor is
@@ -181,7 +189,6 @@ public class TruncateTypeStatement extends DDLStatement {
             ? countLightweightEdgesOfExactType(db, descendant.getName())
             : context.getDatabase().countType(descendant.getName(), false);
         if (descendantRecs > 0) {
-          // instanceof, not isSubTypeOf("V")/("E") - see the root's own guard above (issue #8042)
           if (descendant instanceof VertexType) {
             throw new CommandExecutionException("'TRUNCATE TYPE' command cannot be used on not empty vertex classes (" + descendant.getName()
                 + "). Apply the 'UNSAFE' keyword to force it (at your own risk)");
