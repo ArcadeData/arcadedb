@@ -36,6 +36,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression tests for issue #8036: openCypher {@code UNWIND} over a native-array property returned zero
@@ -186,29 +187,20 @@ class CypherUnwindArrayComponentTypeIssue8036Test {
   }
 
   /**
-   * Pins the one deliberate asymmetry this change introduces, so that nobody removes it by accident while
-   * answering #8098. {@code UNWIND} treats a {@code BINARY} property as a single opaque value, because that is
-   * what {@code MultiValue.isSequenceArray()} means and what SQL answers. The list predicates do not share that
-   * rule: they reach the {@code byte[]} through {@code MultiValue.getMultiValueAsList()}, which has no
-   * {@code byte[]} exclusion, so they evaluate the predicate once per byte. That is the same answer the three
-   * sibling helpers - {@code ListComprehensionExpression}, {@code ReduceExpression}, {@code AllReduceExpression}
-   * - already give for a {@code byte[]}, each through an explicit {@code byte[]} arm in its own ladder.
-   * <p>
-   * Before this change the predicates saw an EMPTY list for a {@code byte[]} instead, so {@code all()} was
-   * vacuously true and {@code any()} false; the assertions below are the ones that tell those two apart.
-   * #8098 is where the question "is a BINARY property a sequence to openCypher?" gets settled for every clause
-   * at once.
+   * #8098 settled the question this test used to pin as a deliberate, temporary asymmetry: a {@code BINARY}
+   * property is one opaque value to every openCypher clause, {@code UNWIND} included, not a sequence to explode
+   * one byte at a time. The list predicates now apply the same {@code MultiValue.isSequenceArray()} guard
+   * {@code UNWIND} always has, so treating {@code t.blob} as iterable raises the same "not iterable" error any
+   * other non-list scalar already gets, instead of silently evaluating once per byte.
    */
   @Test
-  void listPredicatesOverABinaryPropertyEvaluateOncePerByteUntilIssue8098IsSettled() {
-    // blob = { 10, 11, 12, 13 }: with an empty element list these two would answer true and false respectively.
-    assertThat(predicate("all(x IN t.blob WHERE x > 100)")).isEqualTo(Boolean.FALSE);
-    assertThat(predicate("any(x IN t.blob WHERE x = 11)")).isEqualTo(Boolean.TRUE);
+  void listPredicatesOverABinaryPropertyAreOpaqueLikeUnwind() {
+    assertThatThrownBy(() -> predicate("all(x IN t.blob WHERE x > 100)"))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> predicate("any(x IN t.blob WHERE x = 11)"))
+        .isInstanceOf(IllegalArgumentException.class);
 
-    assertThat(predicate("all(x IN t.blob WHERE x > 0)")).isEqualTo(Boolean.TRUE);
-    assertThat(predicate("none(x IN t.blob WHERE x = 10)")).isEqualTo(Boolean.FALSE);
-
-    // UNWIND, on the same property in the same run, still answers one opaque row - the asymmetry itself.
+    // UNWIND, on the same property, still answers one opaque row - both clauses now agree.
     assertThat(unwindProperty("blob")).hasSize(1);
   }
 

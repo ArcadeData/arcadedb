@@ -58,8 +58,11 @@ public class ListIndexExpression implements Expression {
     }
 
     // Treat Collections and Java arrays (incl. primitive arrays from numeric-array parameters,
-    // issue #4284) uniformly as Cypher lists, without copying.
-    final boolean isListLike = listValue instanceof Collection || listValue.getClass().isArray();
+    // issue #4284) uniformly as Cypher lists, without copying. A byte[] (BINARY) is deliberately
+    // excluded: it is one opaque value everywhere in openCypher, the same rule UNWIND already
+    // applies, so indexing into one falls through to the same TypeError any other non-list scalar
+    // gets (issue #8098).
+    final boolean isListLike = listValue instanceof Collection || MultiValue.isSequenceArray(listValue);
 
     // Map/Document property access via bracket notation: map['key']
     if (indexValue instanceof String) {
