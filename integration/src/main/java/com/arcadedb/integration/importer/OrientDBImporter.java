@@ -577,7 +577,7 @@ public class OrientDBImporter {
 
           context.updatedDocuments.incrementAndGet();
 
-          if (ownsTransaction && context.updatedDocuments.get() > 0 && context.updatedDocuments.get() % batchSize == 0) {
+          if (pushedTransaction && context.updatedDocuments.get() > 0 && context.updatedDocuments.get() % batchSize == 0) {
             txOpen = false;
             database.commit();
             committedDocuments = context.updatedDocuments.get();
@@ -585,7 +585,7 @@ public class OrientDBImporter {
             txOpen = true;
           }
         }
-        if (ownsTransaction) {
+        if (pushedTransaction) {
           txOpen = false;
           database.commit();
         }
@@ -607,9 +607,9 @@ public class OrientDBImporter {
 
         // Outside the txOpen branch above, because a commit() that threw has already popped its own transaction
         // and would otherwise leave the batch it failed to write counted as if it had survived. Gated on
-        // ownsTransaction for the same reason the rollback above is: the documents touched inside a caller's own
+        // pushedTransaction for the same reason the rollback above is: the documents touched inside a caller's own
         // transaction are the caller's to commit or discard, so their fate is not this method's to report on.
-        if (!completed && ownsTransaction) {
+        if (!completed && pushedTransaction) {
           // What the report calls "updated" has to be what survived: leaving the counter at the number of documents
           // touched would credit the import with the ones the rollback just took away.
           final long readDocuments = context.updatedDocuments.get();

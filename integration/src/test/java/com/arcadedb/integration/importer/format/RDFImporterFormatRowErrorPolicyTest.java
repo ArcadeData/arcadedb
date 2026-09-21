@@ -178,6 +178,14 @@ class RDFImporterFormatRowErrorPolicyTest {
     assertThat(context.errors.get())
         .as("neither row is a bad row: the failure is in the commit, not in anything the loop parsed or wrote")
         .isZero();
+
+    // The proxy's commit() throws BEFORE delegating to the real one, so the real transaction is never popped the
+    // way a genuine commit() failure would leave it (DatabaseContext#popIfNotLastTransaction() does not pop the
+    // outermost transaction either way, so this is the case a real failure exercises too): it must still come
+    // down through the finally block's own rollback(), not linger active after load() has thrown.
+    assertThat(database.isTransactionActive())
+        .as("the transaction the commit failed on must have been rolled back, not left dangling")
+        .isFalse();
   }
 
   /**

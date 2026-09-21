@@ -245,13 +245,22 @@ public class RDFImporterFormat extends CSVImporterFormat {
 
         // Deliberately outside the per-row catch above, the same way CSVImporterFormat.loadEdges() places its own
         // periodic commit: a commit failure is not a row error. Caught in that catch it would be logged under a
-        // "skipping it" message and the loop would carry on with no transaction active - LocalDatabase#commit()
-        // pops in its own finally and the begin() below would never run - turning one infrastructure failure into
+        // "skipping it" message and the begin() below would never run - turning one infrastructure failure into
         // one more for every remaining row, all misreported as bad data. Left to escape, it reaches the finally
         // below instead, which corrects the counter and lets the real cause propagate.
         if (ownsTransaction && txCount >= settings.commitEvery) {
+          // txOpen cleared before the call, matching CSVImporterFormat.loadEdges()'s own convention - but
+          // DatabaseContext#popIfNotLastTransaction() does NOT pop the outermost transaction off the stack, only a
+          // nested one, so a commit() that fails on THIS transaction (the common case: nothing predates it when
+          // ownsTransaction is true) can leave it still active rather than popped. Restored from the live state on
+          // failure so the finally below still rolls it back instead of leaking it.
           txOpen = false;
-          database.commit();
+          try {
+            database.commit();
+          } catch (final RuntimeException | Error commitFailure) {
+            txOpen = database.isTransactionActive();
+            throw commitFailure;
+          }
           committedEdges = context.createdEdges.get();
           database.begin();
           txOpen = true;
