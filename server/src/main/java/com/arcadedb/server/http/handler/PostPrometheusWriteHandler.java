@@ -29,6 +29,7 @@ import com.arcadedb.schema.TimeSeriesTypeBuilder;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.http.RequestBodyTooLargeException;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.Label;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.Sample;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.TimeSeries;
@@ -36,7 +37,6 @@ import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.WriteRequest;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HttpString;
-import org.xerial.snappy.Snappy;
 
 import java.util.Arrays;
 import java.util.List;
@@ -118,10 +118,16 @@ public class PostPrometheusWriteHandler extends AbstractBinaryHttpHandler {
     if (rawBytes == null || rawBytes.length == 0)
       return new ExecutionResponse(400, "{ \"error\" : \"Request body is empty\"}");
 
-    // Snappy decompress
+    // Snappy decompress, under the decoded-body budget (issue #8084): Snappy.uncompress allocates its whole output
+    // array up front from a length the payload itself declares, so the cap on the compressed bytes bounds nothing
+    // here. RequestBodyTooLargeException is deliberately NOT caught by the arm below - it is answered 413 by the
+    // request boundary, and turning it into this 400 would tell the client its body was malformed.
     final byte[] decompressed;
     try {
-      decompressed = Snappy.uncompress(rawBytes);
+      decompressed = CompressedBodyDecoder.snappyUncompress(rawBytes,
+          CompressedBodyDecoder.maxDecompressedSize(httpServer.getServer().getConfiguration()));
+    } catch (final RequestBodyTooLargeException e) {
+      throw e;
     } catch (final Exception e) {
       return new ExecutionResponse(400, "{ \"error\" : \"Invalid Snappy-compressed data\"}");
     }

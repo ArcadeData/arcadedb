@@ -41,6 +41,7 @@ import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.HttpSessionException;
 import com.arcadedb.server.http.HttpSessionManager;
 import com.arcadedb.server.http.IdempotencyCache;
+import com.arcadedb.server.http.RequestBodyTooLargeException;
 import com.arcadedb.server.http.ResultSetTooLargeException;
 import com.arcadedb.server.security.ApiTokenConfiguration;
 import com.arcadedb.server.ServerControlPlane;
@@ -751,6 +752,19 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       sendErrorResponse(exchange, 413,
           "Result set too large for a single response (" + GlobalConfiguration.SERVER_HTTP_QUERY_MAX_RESULT_ROWS.getKey()
               + ")", tooLarge, String.valueOf(tooLarge.getMaxResultRows()));
+      return;
+    }
+
+    // 413 Content Too Large, the REQUEST side of the pair above: a body that declared a Content-Encoding decoded
+    // past arcadedb.server.httpBodyContentDecompressedMaxSize (issue #8084). Independent of every other arm for
+    // the reason the response-side one is, and 4xx for the same reason: the request is answerable, just not as
+    // written, and the caller fixes it by sending less or by compressing less.
+    final RequestBodyTooLargeException bodyTooLarge = firstOf(e, cause, RequestBodyTooLargeException.class);
+    if (bodyTooLarge != null) {
+      logUserError(bodyTooLarge);
+      sendErrorResponse(exchange, 413,
+          "Request body too large once decoded (" + GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_DECOMPRESSED_MAX_SIZE.getKey()
+              + ")", bodyTooLarge, String.valueOf(bodyTooLarge.getMaxSize()));
       return;
     }
 

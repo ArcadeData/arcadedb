@@ -48,6 +48,12 @@ import java.util.List;
 public class PrometheusApiSpec implements OpenApiContributor {
 
   private static final String BASE     = "/api/v1/ts/{database}/prom";
+  /**
+   * Both Snappy routes take the same bound and answer it the same way (issue #8084): the cap on the compressed
+   * bytes says nothing about what they expand to, and the decoded body is materialized whole.
+   */
+  private static final String SNAPPY_TOO_LARGE_DESCRIPTION =
+      "The Snappy body decodes past arcadedb.server.httpBodyContentDecompressedMaxSize";
   private static final String PROTOBUF = "application/x-protobuf";
 
   @Override
@@ -88,6 +94,7 @@ public class PrometheusApiSpec implements OpenApiContributor {
     responses.addApiResponse("401", SpecBuilders.errorResponse("Unauthorized"));
     responses.addApiResponse("403", SpecBuilders.errorResponse("Forbidden"));
     responses.addApiResponse("404", SpecBuilders.errorResponse(SpecBuilders.WRITE_STALE_SESSION_DESCRIPTION));
+    responses.addApiResponse("413", SpecBuilders.errorResponse(SNAPPY_TOO_LARGE_DESCRIPTION));
     responses.addApiResponse("500", SpecBuilders.errorResponse("Internal server error"));
     responses.get("204").addHeaderObject(SpecBuilders.SESSION_HEADER, SpecBuilders.sessionEchoHeader());
     post.setResponses(responses);
@@ -124,6 +131,7 @@ public class PrometheusApiSpec implements OpenApiContributor {
     responses.addApiResponse("401", SpecBuilders.errorResponse("Unauthorized"));
     responses.addApiResponse("403", SpecBuilders.errorResponse("Forbidden"));
     responses.addApiResponse("404", SpecBuilders.errorResponse(SpecBuilders.READ_STALE_SESSION_DESCRIPTION));
+    responses.addApiResponse("413", SpecBuilders.errorResponse(SNAPPY_TOO_LARGE_DESCRIPTION));
     responses.addApiResponse("500", SpecBuilders.errorResponse("Internal server error"));
     post.setResponses(responses);
 
