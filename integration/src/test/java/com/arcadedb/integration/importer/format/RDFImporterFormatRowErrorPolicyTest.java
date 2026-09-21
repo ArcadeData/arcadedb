@@ -37,6 +37,7 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
@@ -206,7 +207,7 @@ class RDFImporterFormatRowErrorPolicyTest {
         }
         try {
           return method.invoke(real, args);
-        } catch (final java.lang.reflect.InvocationTargetException e) {
+        } catch (final InvocationTargetException e) {
           throw e.getCause();
         }
       }
