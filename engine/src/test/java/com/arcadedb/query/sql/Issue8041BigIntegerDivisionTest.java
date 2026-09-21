@@ -80,6 +80,26 @@ public class Issue8041BigIntegerDivisionTest extends TestHelper {
   }
 
   /**
+   * The SCALE of every division that already answered correctly is unchanged, so this stays a bug fix rather
+   * than a formatting change (PR #8093 review).
+   * <p>
+   * The old {@code divide(right, HALF_UP)} padded as well as rounded: {@code 10.00 / 2.00} came back
+   * {@code 5.00}, not {@code 5}, and an application that renders money off {@code toString()} reads that
+   * difference even though the numbers compare equal. {@code isEqualByComparingTo} cannot see it, so these
+   * assert {@code toPlainString()}.
+   */
+  @Test
+  void theScaleOfAnAlreadyCorrectDivisionIsPreserved() {
+    assertThat(divide(new BigDecimal("10.00"), new BigDecimal("2.00")).toPlainString()).isEqualTo("5.00");
+    assertThat(divide(new BigDecimal("6.0"), new BigDecimal("3")).toPlainString()).isEqualTo("2.0");
+    assertThat(divide(new BigDecimal("1.000"), new BigDecimal("4")).toPlainString()).isEqualTo("0.250");
+    // ...and the scale only ever WIDENS: where the old code had to round to reach the left scale, it no longer
+    // does, which is the fix itself.
+    assertThat(divide(new BigDecimal("1"), new BigDecimal("4")).toPlainString()).isEqualTo("0.25");
+    assertThat(divide(BigInteger.ONE, BigInteger.TWO).toPlainString()).isEqualTo("0.5");
+  }
+
+  /**
    * The only case that HAS to round. It must round at a real precision rather than at the left operand's scale,
    * which for a BigInteger is zero - the whole of this issue.
    */
