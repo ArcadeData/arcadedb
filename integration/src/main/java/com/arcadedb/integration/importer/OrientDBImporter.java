@@ -134,6 +134,13 @@ public class OrientDBImporter {
    * without going through {@link #run()}, gets the same "I own this" behaviour {@link ImporterContext#importOwnsTransaction}
    * would answer for a fresh {@link ImporterContext} in any case, since {@link ImporterContext#callerTransactionActiveOnEntry}
    * itself defaults to {@code false}.
+   * <p>
+   * On the caller-owned path, {@link #parseRecords()} calls {@code executeBatch()} directly rather than through
+   * {@code database.transaction(..., false, CONCURRENT_MAX_RETRY)} (issue #8073, {@code #8116} review round 2):
+   * joining via that wrapper would let its generic-exception handler roll back the caller's transaction on a batch
+   * failure. The trade-off is that {@code CONCURRENT_MAX_RETRY}'s automatic retry on
+   * {@code NeedRetryException}/{@code DuplicatedKeyException} is lost on this path - a transient conflict that the
+   * default path retries transparently instead propagates straight to the caller.
    */
   private              boolean                    ownsTransaction                 = true;
 
