@@ -55,8 +55,13 @@ class DropTimeSeriesTypeTest extends TestHelper {
 
   @Test
   void dropTimeSeriesTypeIfExists() {
-    // DROP TIMESERIES TYPE ... IF EXISTS should not throw for nonexistent types
+    // DROP TIMESERIES TYPE ... IF EXISTS should not throw for nonexistent types, and (issue #7871) must report a
+    // dropped:false row rather than an empty result set, the same contract every other guarded DROP statement uses.
     final ResultSet rs = database.command("sql", "DROP TIMESERIES TYPE NonExistent IF EXISTS");
+    assertThat(rs.hasNext()).isTrue();
+    final Result row = rs.next();
+    assertThat((String) row.getProperty("operation")).isEqualTo("drop type");
+    assertThat((Boolean) row.getProperty("dropped")).isFalse();
     assertThat(rs.hasNext()).isFalse();
   }
 
