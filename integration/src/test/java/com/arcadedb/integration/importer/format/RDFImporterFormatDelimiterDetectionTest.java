@@ -166,8 +166,12 @@ class RDFImporterFormatDelimiterDetectionTest {
   /**
    * #6946's invariant, which the fix must not undo: a sniffed delimiter is a guess and never overrides the
    * delimiter the user set explicitly. Asserted in its negative form because the two can only differ on a
-   * source one of them fails to split - a comma forced onto a space-delimited N-Triples file leaves one
-   * column, and {@code row[1]} is out of bounds. The guess does not silently rescue it.
+   * source one of them fails to split - a comma forced onto a space-delimited N-Triples file leaves one column.
+   * The guess does not silently rescue it.
+   * <p>
+   * The failure used to surface as an {@link ArrayIndexOutOfBoundsException} root cause - {@code row[1]} out of
+   * bounds - and now surfaces as the arity check #8069 added instead, naming the line and the column count rather
+   * than an unchecked array access. Same outcome (nothing imported), better failure.
    */
   @Test
   void anExplicitDelimiterStillOverridesTheDetectedOne() throws Exception {
@@ -180,7 +184,7 @@ class RDFImporterFormatDelimiterDetectionTest {
     assertThatThrownBy(() -> new Importer(
         ("-url file://" + rdf + " -database " + DB_PATH + " -edgeType Related -delimiter ,").split(" ")).load())
         .isInstanceOf(ImportException.class)
-        .hasRootCauseInstanceOf(ArrayIndexOutOfBoundsException.class);
+        .hasMessageContaining("fewer than the 3 an RDF statement requires");
 
     assertThat(countOf("Related"))
         .as("nothing was imported: the user's comma was honoured, not the detected space")

@@ -1,0 +1,148 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.integration.importer.format;
+
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.integration.importer.ImportException;
+import com.arcadedb.integration.importer.ImporterContext;
+import com.arcadedb.integration.importer.ImporterSettings;
+import com.arcadedb.integration.importer.Parser;
+import com.arcadedb.integration.importer.Source;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
+import com.arcadedb.utility.FileUtils;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import java.io.ByteArrayInputStream;
+import java.io.File;
+import java.nio.charset.StandardCharsets;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/**
+ * Issue #8069: {@code RDFImporterFormat.load()} dereferenced {@code row[0]}/{@code row[1]}/{@code row[2]} with no
+ * arity check, so a line with fewer than three fields threw {@link ArrayIndexOutOfBoundsException} straight out of
+ * the loop and aborted the whole import - and {@code -onRowError skip} was never even consulted, since nothing in
+ * this format read {@link ImporterSettings#isSkipOnRowError()}. {@code CSVImporterFormat}'s sibling row loops
+ * (fixed by #7782) already gate an arity failure on that setting; this format now reuses the same policy and its
+ * {@code logSkippedRow} logging.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+class RDFImporterFormatRowErrorPolicyTest {
+
+  private static final String DB_PATH = "target/databases/rdf-importer-row-error-policy-test";
+
+  private Database database;
+
+  @BeforeEach
+  void setup() {
+    FileUtils.deleteRecursively(new File(DB_PATH));
+    database = new DatabaseFactory(DB_PATH).create();
+    database.transaction(() -> {
+      database.getSchema().createVertexType("Node").createProperty("id", Type.STRING);
+      database.getSchema().getType("Node").getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, new String[] { "id" });
+      database.getSchema().createEdgeType("Related");
+    });
+  }
+
+  @AfterEach
+  void cleanup() {
+    if (database != null) {
+      if (database.isTransactionActive())
+        database.rollbackAllNested();
+      if (database.isOpen())
+        database.drop();
+      database = null;
+    }
+    FileUtils.deleteRecursively(new File(DB_PATH));
+  }
+
+  private static Parser rdfParser(final String content) throws Exception {
+    final byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
+    final Source source = new Source("test.rdf", new ByteArrayInputStream(bytes), bytes.length, false, null, null);
+    return new Parser(source, 0);
+  }
+
+  private ImporterSettings settings() {
+    final ImporterSettings settings = new ImporterSettings();
+    settings.vertexTypeName = "Node";
+    settings.edgeTypeName = "Related";
+    settings.typeIdProperty = "id";
+    settings.commitEvery = 1_000;
+    return settings;
+  }
+
+  private long countOf(final String typeName) {
+    return database.query("sql", "select count(*) as c from " + typeName).next().<Long>getProperty("c");
+  }
+
+  @Test
+  void aShortLineAbortsTheWholeImportByDefaultAndNamesTheLine() throws Exception {
+    final RDFImporterFormat format = new RDFImporterFormat();
+    final ImporterContext context = new ImporterContext();
+
+    // Line 2 (0-based line 1) has only two fields: no object term.
+    final Parser parser = rdfParser("""
+        v1,rel,v2
+        v2,rel
+        v3,rel,v4
+        """);
+
+    assertThatThrownBy(() -> format.load(null, null, parser, (DatabaseInternal) database, context, settings()))
+        .isInstanceOf(ImportException.class)
+        .hasMessageContaining("line 1")
+        .hasMessageContaining("2 column");
+
+    assertThat(countOf("Related"))
+        .as("the default policy aborts the whole import: not even the row before the short one is durable, since "
+            + "nothing owns the transaction to commit it piecemeal here")
+        .isZero();
+  }
+
+  @Test
+  void skipOnRowErrorSkipsTheShortLineAndImportsTheRest() throws Exception {
+    final RDFImporterFormat format = new RDFImporterFormat();
+    final ImporterContext context = new ImporterContext();
+    final ImporterSettings settings = settings();
+    settings.onRowError = "skip";
+
+    final Parser parser = rdfParser("""
+        v1,rel,v2
+        v2,rel
+        v3,rel,v4
+        """);
+
+    format.load(null, null, parser, (DatabaseInternal) database, context, settings);
+
+    assertThat(countOf("Related"))
+        .as("both well-formed statements must have been imported despite the short line between them")
+        .isEqualTo(2);
+    assertThat(context.createdEdges.get()).isEqualTo(2);
+    assertThat(context.errors.get())
+        .as("the short line must be counted as an error, not silently dropped")
+        .isEqualTo(1);
+  }
+}

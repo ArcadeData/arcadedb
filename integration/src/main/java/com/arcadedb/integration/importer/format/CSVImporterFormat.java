@@ -41,6 +41,7 @@ import com.arcadedb.schema.VertexType;
 
 import com.univocity.parsers.common.AbstractParser;
 import com.univocity.parsers.common.CommonParserSettings;
+import com.univocity.parsers.csv.CsvFormat;
 import com.univocity.parsers.csv.CsvParser;
 import com.univocity.parsers.csv.CsvParserSettings;
 import com.univocity.parsers.tsv.TsvParser;
@@ -83,6 +84,20 @@ public class CSVImporterFormat extends AbstractImporterFormat {
    */
   private long shortRowsReported = 0;
 
+  /**
+   * The {@code CsvFormat} - quote, quote escape, line separator - univocity's own {@code detectFormatAutomatically}
+   * discovered while {@link #analyze} read this source, or {@code null} when {@link #analyze} never ran detection
+   * (a TSV source, a multi-character delimiter, or no delimiter at all). {@link #createCSVParser} applies it
+   * verbatim instead of either re-detecting or defaulting, so the two passes agree on which quote character this
+   * source is read with.
+   * <p>
+   * Before this field existed, {@code createCSVParser} always used univocity's hard default ({@code "}) whatever
+   * {@link #analyze} had actually detected: a file quoted with {@code '} was analysed with the quote correctly
+   * recognised and loaded as if it were not there at all, splitting the same row into a different number of columns
+   * on each pass (issue #8046).
+   */
+  private CsvFormat detectedFormat;
+
   public CSVImporterFormat() {
     this(null);
   }
@@ -116,15 +131,21 @@ public class CSVImporterFormat extends AbstractImporterFormat {
    * one column split and loaded with another: the inferred property types belonged to different columns than the
    * values that landed in them, silently (issue #7867).
    * <p>
-   * {@code detectFormatAutomatically} is kept for a single-character separator, where it is what discovers the
+   * {@code detectFormatAutomatically} is used for a single-character separator, where it is what discovers the
    * quote and quote-escape characters, and is skipped for a longer one: it takes {@code char...} and has no
    * multi-character form, so offering it a truncated candidate is the very truncation this method exists to remove.
+   * <p>
+   * Only {@link #analyze} calls this with detection able to run (it is the only caller that reaches this on a
+   * settings object with detection not already turned off): {@link #createCSVParser} instead applies
+   * {@link #detectedFormat}, the result of that same detection, so the two passes read the source with the same
+   * quote character rather than each running (or not running) detection on its own - which is how they used to
+   * disagree (issue #8046). Detection itself does not run here, at the call, but later, inside
+   * {@code beginParsing()}, once univocity has a stream to sample.
    */
-  private static void applyDelimiter(final CsvParserSettings parserSettings, final String delimiter,
-      final boolean detectFormat) {
+  private static void applyDelimiter(final CsvParserSettings parserSettings, final String delimiter) {
     if (delimiter == null)
       return;
-    if (detectFormat && delimiter.length() == 1)
+    if (delimiter.length() == 1)
       parserSettings.detectFormatAutomatically(delimiter.charAt(0));
     parserSettings.getFormat().setDelimiter(delimiter);
   }
@@ -471,9 +492,11 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
   /**
    * Logs a skipped row at WARNING (message only) and FINE (full stack trace), used by both {@code loadDocuments} and
-   * {@code loadVertices} when {@code -onRowError skip} discards a row.
+   * {@code loadVertices} when {@code -onRowError skip} discards a row. Package-visible rather than {@code private}
+   * so {@link RDFImporterFormat#load} can reuse it for its own row loop instead of duplicating the two-level
+   * logging (issue #8069).
    */
-  private void logSkippedRow(final String what, final long line, final RuntimeException e) {
+  void logSkippedRow(final String what, final long line, final RuntimeException e) {
     LogManager.instance()
         .log(this, Level.WARNING, "Error on importing %s at line %d, skipping it (reason: %s)", null, what, line, e.getMessage());
     LogManager.instance().log(this, Level.FINE, "Full error on importing %s at line %d", e, what, line);
@@ -1217,11 +1240,13 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
     if ("\t".equals(delimiter) || "\\t".equals(delimiter)) {
       parserSettings = tsvParserSettings = new TsvParserSettings();
+      csvParserSettings = null;
     } else {
+      tsvParserSettings = null;
       parserSettings = csvParserSettings = new CsvParserSettings();
       // Detection off for a source with no delimiter at all too, which applyDelimiter() below leaves untouched.
       csvParserSettings.setDelimiterDetectionEnabled(false);
-      applyDelimiter(csvParserSettings, delimiter, true);
+      applyDelimiter(csvParserSettings, delimiter);
     }
 
     parserSettings.setReadInputOnSeparateThread(false);
@@ -1272,6 +1297,19 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
     try (final Reader inputFileReader = sourceReader(parser)) {
       csvParser.beginParsing(inputFileReader);
+
+      // THE FORMAT detectFormatAutomatically() (INSIDE applyDelimiter() ABOVE) DISCOVERED FROM THIS SOURCE - QUOTE,
+      // QUOTE ESCAPE, DELIMITER, LINE SEPARATOR - CAPTURED ONTO THE INSTANCE RIGHT AFTER beginParsing() MAKES IT
+      // AVAILABLE, SO createCSVParser() CAN APPLY THE SAME ONE LATER INSTEAD OF EITHER RE-DETECTING (WHICH COULD IN
+      // THEORY LAND ON A DIFFERENT GUESS) OR DEFAULTING, WHICH USED TO READ THIS SOURCE WITH A DIFFERENT QUOTE
+      // CHARACTER THAN THE ANALYSIS JUST DERIVED ITS SCHEMA FROM (ISSUE #8046).
+      // csvParserSettings.getFormat() is NOT what detection actually mutates - univocity's CsvFormatDetector.apply()
+      // writes the discovered delimiter/quote/quoteEscape onto CsvParser's OWN instance fields, not back onto the
+      // settings object, so getFormat() would still read the plain, undetected default here. getDetectedFormat() is
+      // the parser's own accessor for what its detector actually found; null when detection never ran (TSV, a
+      // multi-character delimiter, or no delimiter at all - see applyDelimiter()).
+      if (csvParserSettings != null)
+        detectedFormat = ((CsvParser) csvParser).getDetectedFormat();
 
       String[] row;
       for (long line = 0; (row = csvParser.parseNext()) != null; ++line) {
@@ -1345,10 +1383,17 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       return new TsvParser(tsvParserSettings);
     } else {
       final CsvParserSettings csvParserSettings = new CsvParserSettings();
-      // The same helper analyze() uses, so the two passes cannot split one file into different columns (#7867).
-      // No format auto-detection here: this pass never had it, and turning it on would change which quote character
-      // a source already importing today is read with.
-      applyDelimiter(csvParserSettings, delimiter, false);
+      if (detectedFormat != null)
+        // Reuses the exact format analyze() detected reading this same source - quote, quote escape, delimiter -
+        // rather than either re-running detection (which could in theory land on a different guess) or defaulting,
+        // which is what used to read this pass with a different quote character than the analysis just derived its
+        // schema from (issue #8046).
+        csvParserSettings.setFormat(detectedFormat);
+      else
+        // No detection to reuse: analyze() never ran one on this source (TSV never reaches this branch, and a
+        // multi-character or absent delimiter skips detection - see applyDelimiter()). The same helper analyze()
+        // uses, so the two passes still cannot disagree about the delimiter itself (#7867).
+        applyDelimiter(csvParserSettings, delimiter);
       csvParserSettings.setMaxColumns(settings.getIntValue("maxProperties", csvParserSettings.getMaxColumns()));
       csvParserSettings.setMaxCharsPerColumn(settings.getIntValue("maxPropertySize", csvParserSettings.getMaxCharsPerColumn()));
       return new CsvParser(csvParserSettings);

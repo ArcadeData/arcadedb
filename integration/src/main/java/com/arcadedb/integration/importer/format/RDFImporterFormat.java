@@ -152,6 +152,11 @@ public class RDFImporterFormat extends CSVImporterFormat {
     // begin() below, because after that begin() a transaction is always active.
     final boolean ownsTransaction = context.importOwnsTransaction(database);
 
+    // The same policy CSVImporterFormat's row loops read once and gate their per-row try/catch on (issue #8069):
+    // whether a row this loop cannot make an edge out of aborts the whole import (the default) or is logged,
+    // counted as an error and skipped.
+    final boolean skipOnError = settings.isSkipOnRowError();
+
     // Whether a transaction this call owns is still the current one. Cleared right before every commit -
     // LocalDatabase#commit() pops the transaction in a finally, so a commit that throws still leaves it off the
     // stack - which keeps the rollback below from popping the caller's instead (issue #7272).
@@ -197,37 +202,55 @@ public class RDFImporterFormat extends CSVImporterFormat {
           continue;
         }
 
-        final String v1Id = getStringContent(row[0], STRING_CONTENT_SKIP);
-        final String edgeLabel = getStringContent(row[1], STRING_CONTENT_SKIP);
-        final String v2Id = getStringContent(row[2], STRING_CONTENT_SKIP);
+        try {
+          // AN RDF STATEMENT IS EXACTLY SUBJECT, PREDICATE, OBJECT: FEWER FIELDS THAN THAT IS NOT A ROW THIS
+          // FORMAT CAN MAKE AN EDGE OUT OF. CHECKED INSIDE THE PER-ROW try SO -onRowError GOVERNS IT HERE TOO,
+          // THE SAME WAY CSVImporterFormat's OWN ARITY GATE DOES FOR ITS ROW LOOPS (ISSUE #8069). WITHOUT THIS,
+          // row[0]/row[1]/row[2] BELOW THREW ArrayIndexOutOfBoundsException STRAIGHT OUT OF THE LOOP, AND
+          // -onRowError skip WAS NEVER EVEN CONSULTED.
+          if (row.length < 3)
+            throw new ImportException(
+                "Row at line " + line + " has " + row.length + " column(s), fewer than the 3 an RDF statement "
+                    + "requires (subject, predicate, object) - use -onRowError skip to skip such rows and continue");
 
-        // CREATE AN EDGE
-        database.newEdgeByKeys(settings.vertexTypeName,
-            new String[] { typeIdProperty },
-            new Object[] { v1Id },
-            settings.vertexTypeName,
-            new String[] { typeIdProperty },
-            new Object[] { v2Id }, true,
-            settings.edgeTypeName,
-            true,
-            LABEL_PROPERTY,
-            edgeLabel);
+          final String v1Id = getStringContent(row[0], STRING_CONTENT_SKIP);
+          final String edgeLabel = getStringContent(row[1], STRING_CONTENT_SKIP);
+          final String v2Id = getStringContent(row[2], STRING_CONTENT_SKIP);
 
-        context.createdEdges.incrementAndGet();
+          // CREATE AN EDGE
+          database.newEdgeByKeys(settings.vertexTypeName,
+              new String[] { typeIdProperty },
+              new Object[] { v1Id },
+              settings.vertexTypeName,
+              new String[] { typeIdProperty },
+              new Object[] { v2Id }, true,
+              settings.edgeTypeName,
+              true,
+              LABEL_PROPERTY,
+              edgeLabel);
 
-        // Gated on ownsTransaction the same way JsonlImporterFormat.load() gates its own periodic commit: a
-        // transaction that predates this import is never ours to commit piecemeal, only to accumulate into and
-        // hand back to whoever owns it (issue #6561). That guard is also what makes the txOpen below
-        // unconditional - reached only when the begin() above pushed a transaction this call exclusively owns.
-        // txCount is incremented inside the guard rather than beside the counter above so that it cannot run away
-        // on the caller-owned path, where nothing would ever reset it.
-        if (ownsTransaction && ++txCount >= settings.commitEvery) {
-          txOpen = false;
-          database.commit();
-          committedEdges = context.createdEdges.get();
-          database.begin();
-          txOpen = true;
-          txCount = 0;
+          context.createdEdges.incrementAndGet();
+
+          // Gated on ownsTransaction the same way JsonlImporterFormat.load() gates its own periodic commit: a
+          // transaction that predates this import is never ours to commit piecemeal, only to accumulate into and
+          // hand back to whoever owns it (issue #6561). That guard is also what makes the txOpen below
+          // unconditional - reached only when the begin() above pushed a transaction this call exclusively owns.
+          // txCount is incremented inside the guard rather than beside the counter above so that it cannot run away
+          // on the caller-owned path, where nothing would ever reset it.
+          if (ownsTransaction && ++txCount >= settings.commitEvery) {
+            txOpen = false;
+            database.commit();
+            committedEdges = context.createdEdges.get();
+            database.begin();
+            txOpen = true;
+            txCount = 0;
+          }
+        } catch (final RuntimeException e) {
+          if (!skipOnError)
+            throw e;
+
+          logSkippedRow("RDF statement", line, e);
+          context.errors.incrementAndGet();
         }
 
         // SAME CAP AND SAME '>=' AS XMLImporterFormat.load() (ISSUE #7341): context.parsed IS INCREMENTED ONCE PER
