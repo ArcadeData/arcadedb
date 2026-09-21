@@ -38,6 +38,7 @@ public class CreateContinuousAggregateStatement extends DDLStatement {
   public ResultSet executeDDL(final CommandContext context) {
     final Database database = context.getDatabase();
     final String caName = name.getStringValue();
+    final boolean existedBefore = database.getSchema().existsContinuousAggregate(caName);
 
     database.getSchema().buildContinuousAggregate()
         .withName(caName)
@@ -49,6 +50,7 @@ public class CreateContinuousAggregateStatement extends DDLStatement {
     final ResultInternal r = new ResultInternal();
     r.setProperty("operation", "create continuous aggregate");
     r.setProperty("name", caName);
+    r.setProperty("created", !existedBefore);
     result.add(r);
     return result;
   }

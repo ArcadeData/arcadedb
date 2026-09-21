@@ -26,6 +26,7 @@ import com.arcadedb.query.sql.method.AbstractSQLMethod;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -60,8 +61,13 @@ public class SQLMethodAsMap extends AbstractSQLMethod {
       iter = (Iterator<Object>) value;
     else if (value instanceof Iterable<?>)
       iter = ((Iterable<Object>) value).iterator();
-    else
-      return null;
+    else {
+      // AN ARRAY (split(), A JSON ARRAY PARAMETER): THE HELPER ALWAYS ANSWERS A LIST FOR AN ARRAY, NEVER NULL (ISSUE #7877)
+      final List<Object> list = listReceiverOrNull(value);
+      if (list == null)
+        return null;
+      iter = list.iterator();
+    }
 
     final HashMap<String, Object> map = new HashMap<>();
     while (iter.hasNext()) {
