@@ -48,18 +48,26 @@ public class GraphMLImporterFormat extends CSVImporterFormat {
     final long verticesBefore = countRecordsOfKind(database, VertexType.class);
     final long edgesBefore = countRecordsOfKind(database, EdgeType.class);
 
-    try (final InputStream is = parser.getInputStream()) {
-      graph.io(IoCore.graphml()).reader().create().readGraph(is, graph);
-    } catch (final IOException e) {
-      throw new ImportException("Error on importing GraphML", e);
+    // The before/after delta is taken in a finally, not just after a successful read: TinkerPop's reader can fail
+    // partway through with a RuntimeException (a malformed record, a schema conflict) rather than the IOException
+    // caught below, and on the caller-owned-transaction path #8073 added, whatever it already wrote stays durable
+    // until the caller resolves the transaction either way - so the count must still reach the caller even when
+    // readGraph() throws, the same way Neo4jImporter/OrientDBImporter/RDFImporterFormat preserve an accurate
+    // counter across a partial failure elsewhere in this same code path.
+    try {
+      try (final InputStream is = parser.getInputStream()) {
+        graph.io(IoCore.graphml()).reader().create().readGraph(is, graph);
+      } catch (final IOException e) {
+        throw new ImportException("Error on importing GraphML", e);
+      }
+    } finally {
+      final long createdVertices = countRecordsOfKind(database, VertexType.class) - verticesBefore;
+      final long createdEdges = countRecordsOfKind(database, EdgeType.class) - edgesBefore;
+
+      context.createdVertices.addAndGet(createdVertices);
+      context.createdEdges.addAndGet(createdEdges);
+      context.parsed.addAndGet(createdVertices + createdEdges);
     }
-
-    final long createdVertices = countRecordsOfKind(database, VertexType.class) - verticesBefore;
-    final long createdEdges = countRecordsOfKind(database, EdgeType.class) - edgesBefore;
-
-    context.createdVertices.addAndGet(createdVertices);
-    context.createdEdges.addAndGet(createdEdges);
-    context.parsed.addAndGet(createdVertices + createdEdges);
   }
 
   @Override
