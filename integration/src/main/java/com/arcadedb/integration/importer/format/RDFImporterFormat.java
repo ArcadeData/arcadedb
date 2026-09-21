@@ -286,13 +286,22 @@ public class RDFImporterFormat extends CSVImporterFormat {
           break;
       }
 
-      txOpen = false;
       // Same resolvesTransaction gate as the periodic commit above and as CSVImporterFormat.loadDocuments()'s own
       // trailing commit: a transaction that predates the import stays the caller's to commit or discard, and this
       // one used to commit it as a side effect of the import succeeding. The edges are left staged in it instead
       // (issue #7288).
-      if (resolvesTransaction)
-        database.commit();
+      if (resolvesTransaction) {
+        // Same restore-on-failure as the periodic commit above, and for the same reason: a failing commit() does
+        // not always pop the outermost transaction, so txOpen cleared unconditionally before the call would leave
+        // a still-active transaction with nothing armed to roll it back.
+        txOpen = false;
+        try {
+          database.commit();
+        } catch (final RuntimeException | Error commitFailure) {
+          txOpen = database.isTransactionActive();
+          throw commitFailure;
+        }
+      }
       completed = true;
 
     } catch (final IOException e) {
