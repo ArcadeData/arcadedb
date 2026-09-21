@@ -112,4 +112,28 @@ class RefactorProcedureArgsTest {
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("config must be a map");
   }
+
+  /**
+   * Issue #7427: the {@code config} argument is optional in APOC, so a call that carries only {@code nodes} has to
+   * resolve to the same empty map an explicit {@code {}} produces.
+   */
+  @Test
+  void extractOptionalConfigReturnsEmptyMapWhenTheArgumentIsAbsent() {
+    assertThat(RefactorProcedureArgs.extractOptionalConfig("test.proc", new Object[] { List.of() }))
+        .isEqualTo(Collections.emptyMap());
+  }
+
+  @Test
+  void extractOptionalConfigReturnsTheTrailingArgumentWhenPresent() {
+    final Map<String, Object> config = Map.of("key", "value");
+    assertThat(RefactorProcedureArgs.extractOptionalConfig("test.proc", new Object[] { List.of(), config }))
+        .isEqualTo(config);
+  }
+
+  @Test
+  void extractOptionalConfigStillRejectsANonMapTrailingArgument() {
+    assertThatThrownBy(() -> RefactorProcedureArgs.extractOptionalConfig("test.proc", new Object[] { List.of(), "x" }))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("config must be a map");
+  }
 }

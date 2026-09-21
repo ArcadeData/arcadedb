@@ -23,6 +23,8 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -30,7 +32,11 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
@@ -285,5 +291,54 @@ class RefactorMergeNodesTest {
     assertThat(rewiredEdges.hasNext()).isTrue();
     assertThat(rewiredEdges.next().<Long>getProperty("since")).isEqualTo(2021L);
     assertThat(rewiredEdges.hasNext()).isFalse();
+  }
+
+  /**
+   * Issue #7427: APOC declares {@code apoc.refactor.mergeNodes(nodes :: LIST<NODE>, config = {} :: MAP)}. Omitting
+   * the config must merge with the documented default property policy ({@code overwrite}), not be rejected.
+   */
+  @Test
+  void mergesNodesWithTheDefaultPolicyWhenTheConfigArgumentIsOmitted() {
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").set("name", "A").set("age", 30L).save();
+    final MutableVertex b = database.newVertex("Person").set("name", "B").set("age", 25L).save();
+    database.commit();
+    final String aId = a.getIdentity().toString();
+
+    database.begin();
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (a:Person {name:'A'}), (b:Person {name:'B'}) CALL apoc.refactor.mergeNodes([a,b]) YIELD node "
+            + "RETURN node");
+    final Vertex survivor = rs.next().getVertex().get();
+    final String survivorId = survivor.getIdentity().toString();
+    final Long age = survivor.getLong("age");
+    database.commit();
+
+    assertThat(survivorId).isEqualTo(aId);
+    // "overwrite" is the default policy, so the absorbed node's value wins - exactly as with an explicit {}
+    assertThat(age).isEqualTo(25L);
+    assertThatThrownBy(() -> database.lookupByRID(b.getIdentity(), true)).isInstanceOf(RecordNotFoundException.class);
+  }
+
+  /**
+   * Issue #7427, the direct-caller entry point: {@code execute()} is public, so the arity gate every caller passes
+   * through is {@code validateArgs}. It has to accept 1 and 2 arguments and keep rejecting 0 and 3.
+   */
+  @Test
+  void arityGateAcceptsOneOrTwoArgumentsAndStillRejectsTheRest() {
+    final CypherProcedure procedure = CypherProcedureRegistry.get("apoc.refactor.mergeNodes");
+
+    assertThat(procedure.getMinArgs()).isEqualTo(1);
+    assertThat(procedure.getMaxArgs()).isEqualTo(2);
+
+    assertThatCode(() -> procedure.validateArgs(new Object[] { List.of() })).doesNotThrowAnyException();
+    assertThatCode(() -> procedure.validateArgs(new Object[] { List.of(), Map.of() })).doesNotThrowAnyException();
+
+    assertThatThrownBy(() -> procedure.validateArgs(new Object[] {}))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("expects 1-2 arguments but got 0");
+    assertThatThrownBy(() -> procedure.validateArgs(new Object[] { List.of(), Map.of(), Map.of() }))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("expects 1-2 arguments but got 3");
   }
 }
