@@ -378,17 +378,6 @@ public interface HAServerPlugin extends ServerPlugin {
   }
 
   /**
-   * The three cluster-replicated security documents, named as {@code ServerSecurity.seedSecurityStateClusterWide}
-   * names them so a seed failure reads the same whichever admission path reports it.
-   * <p>
-   * Reported whole by an admission whose seed could not be run at all, where which of them landed is exactly what
-   * is not known. Lives here because all three admission paths need it and this interface is the one thing they
-   * all already have: {@code ServerControlPlane.connectCluster}, {@code PostAddPeerHandler} and
-   * {@link #addPeerAndReportSeed} (issues #7532, #7521, #7820).
-   */
-  List<String> ALL_SEEDED_SECURITY_DOCUMENTS = List.of("users", "groups", "API tokens");
-
-  /**
    * Adds a new peer to the cluster at runtime.
    */
   default void addPeer(final String peerId, final String address) {
@@ -402,6 +391,17 @@ public interface HAServerPlugin extends ServerPlugin {
   default void addPeer(final String peerId, final String address, final String name) {
     addPeer(peerId, address);
   }
+
+  /**
+   * The three cluster-replicated security documents, named as {@code ServerSecurity.seedSecurityStateClusterWide}
+   * names them so a seed failure reads the same whichever admission path reports it.
+   * <p>
+   * Reported whole by an admission whose seed could not be run at all, where which of them landed is exactly what
+   * is not known. Lives here because all three admission paths need it and this interface is the one thing they
+   * all already have: {@code ServerControlPlane.connectCluster}, {@code PostAddPeerHandler} and
+   * {@link #addPeerAndReportSeed} (issues #7532, #7521, #7820).
+   */
+  List<String> ALL_SEEDED_SECURITY_DOCUMENTS = List.of("users", "groups", "API tokens");
 
   /**
    * {@link #addPeer(String, String, String)} for a caller that needs the outcome of the cluster security seed,
