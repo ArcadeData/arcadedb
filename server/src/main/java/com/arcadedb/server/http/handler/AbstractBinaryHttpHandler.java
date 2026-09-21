@@ -22,7 +22,6 @@ import com.arcadedb.server.http.HttpServer;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.AttachmentKey;
 
-
 /**
  * Base handler for database-scoped endpoints that receive binary (non-JSON) request bodies.
  * Captures raw bytes from the request instead of interpreting them as a string.
