@@ -188,7 +188,9 @@ public class MathExpression extends SimpleNode {
        * throws {@link ArithmeticException} only when the quotient has a non-terminating decimal expansion
        * ({@code 1 / 3}). That is the one case that HAS to round, and it rounds at {@code DECIMAL128} - 34
        * significant digits, the same precision the IEEE 754 decimal128 format carries - rather than at whatever
-       * scale the left operand happens to have.
+       * scale the left operand happens to have. {@code DECIMAL128} rounds HALF_EVEN where the old code said
+       * HALF_UP; that is deliberate and reaches only the 34th significant digit of a quotient that has no exact
+       * form anyway (PR #8093 review).
        * <p>
        * The left operand's scale is then reinstated as a FLOOR, which is what keeps this a pure bug fix rather
        * than a formatting change for everyone (PR #8093 review). {@code 10.00 / 2.00} answered {@code 5.00}
