@@ -20,7 +20,6 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
@@ -43,114 +42,78 @@ import java.util.logging.Level;
  *
  * @author Luca Garulli
  */
-public class FetchFromSchemaIndexesStep extends AbstractExecutionStep {
-
-  private final List<ResultInternal> result = new ArrayList<>();
-
-  private int cursor = 0;
+public class FetchFromSchemaIndexesStep extends AbstractFetchFromSchemaListStep {
 
   public FetchFromSchemaIndexesStep(final CommandContext context) {
     super(context);
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    pullPrevious(context, nRecords);
+  protected void fetchListing(final CommandContext context) {
+    final Schema schema = context.getDatabase().getSchema();
+    final SecurityDatabaseUser currentUser = currentUser(context);
 
-    if (cursor == 0) {
-      final long begin = context.isProfiling() ? System.nanoTime() : 0;
+    for (final Index index : schema.getIndexes()) {
+      // Hide, rather than throw on, an index the current user cannot read the owning type of - matching how
+      // schema:types treats a restricted type (issue #4238).
+      final DocumentType type = index.getTypeName() == null ? null : schema.getType(index.getTypeName());
+      if (!SecurityHelper.canAccessType(currentUser, type, SecurityDatabaseUser.ACCESS.READ_RECORD))
+        continue;
+
+      final ResultInternal r = new ResultInternal(context.getDatabase());
+      result.add(r);
+
       try {
-        final Schema schema = context.getDatabase().getSchema();
-        final SecurityDatabaseUser currentUser = currentUser(context);
+        final int fileId = ((IndexInternal) index).getFileId();
 
-        for (final Index index : schema.getIndexes()) {
-          // Hide, rather than throw on, an index the current user cannot read the owning type of - matching how
-          // schema:types treats a restricted type (issue #4238).
-          final DocumentType type = index.getTypeName() == null ? null : schema.getType(index.getTypeName());
-          if (!SecurityHelper.canAccessType(currentUser, type, SecurityDatabaseUser.ACCESS.READ_RECORD))
-            continue;
+        r.setProperty("name", index.getName());
+        r.setProperty("indexType", index.getType());
+        r.setProperty("typeName", index.getTypeName());
+        // A manual index is bound to no type and no properties, and IndexMetadata coerces the missing list to an empty one, so
+        // the key must be omitted on emptiness - a null check is never false (issue #6005).
+        if (!index.getPropertyNames().isEmpty())
+          r.setProperty("properties", Collections.singletonList(index.getPropertyNames()));
 
-          final ResultInternal r = new ResultInternal(context.getDatabase());
-          result.add(r);
+        // KEY TYPES
+        final List<String> keyTypes = new ArrayList<>();
+        if (((IndexInternal) index).getKeyTypes() != null)
+          for (final Type k : ((IndexInternal) index).getKeyTypes())
+            keyTypes.add(k.name());
+        r.setProperty("keyTypes", keyTypes);
 
+        r.setProperty("unique", index.isUnique());
+        r.setProperty("automatic", index.isAutomatic());
+        r.setProperty("compacting", ((IndexInternal) index).isCompacting());
+        // Exposed here too (it was only on schema:index:<name>) so a listing can be rendered from this single query, without
+        // one detail query per index (issue #5469).
+        r.setProperty("valid", ((IndexInternal) index).isValid());
+        // Advisory only, and absent on a healthy index: the reason this one should be rebuilt (see
+        // IndexInternal#getUpgradeWarning). Studio flags the row on it.
+        final String upgradeWarning = ((IndexInternal) index).getUpgradeWarning();
+        if (upgradeWarning != null) {
+          r.setProperty("upgradeWarning", upgradeWarning);
+          // The listing shows one row per BUCKET sub-index; the name a user acts on (REBUILD INDEX, DROP INDEX)
+          // is the type index that owns them all.
+          final TypeIndex typeIndex = ((IndexInternal) index).getTypeIndex();
+          r.setProperty("typeIndexName", typeIndex != null ? typeIndex.getName() : index.getName());
+        }
+
+        if (fileId > -1) {
+          r.setProperty("fileId", fileId);
           try {
-            final int fileId = ((IndexInternal) index).getFileId();
-
-            r.setProperty("name", index.getName());
-            r.setProperty("indexType", index.getType());
-            r.setProperty("typeName", index.getTypeName());
-            // A manual index is bound to no type and no properties, and IndexMetadata coerces the missing list to an empty one, so
-            // the key must be omitted on emptiness - a null check is never false (issue #6005).
-            if (!index.getPropertyNames().isEmpty())
-              r.setProperty("properties", Collections.singletonList(index.getPropertyNames()));
-
-            // KEY TYPES
-            final List<String> keyTypes = new ArrayList<>();
-            if (((IndexInternal) index).getKeyTypes() != null)
-              for (final Type k : ((IndexInternal) index).getKeyTypes())
-                keyTypes.add(k.name());
-            r.setProperty("keyTypes", keyTypes);
-
-            r.setProperty("unique", index.isUnique());
-            r.setProperty("automatic", index.isAutomatic());
-            r.setProperty("compacting", ((IndexInternal) index).isCompacting());
-            // Exposed here too (it was only on schema:index:<name>) so a listing can be rendered from this single query, without
-            // one detail query per index (issue #5469).
-            r.setProperty("valid", ((IndexInternal) index).isValid());
-            // Advisory only, and absent on a healthy index: the reason this one should be rebuilt (see
-            // IndexInternal#getUpgradeWarning). Studio flags the row on it.
-            final String upgradeWarning = ((IndexInternal) index).getUpgradeWarning();
-            if (upgradeWarning != null) {
-              r.setProperty("upgradeWarning", upgradeWarning);
-              // The listing shows one row per BUCKET sub-index; the name a user acts on (REBUILD INDEX, DROP INDEX)
-              // is the type index that owns them all.
-              final TypeIndex typeIndex = ((IndexInternal) index).getTypeIndex();
-              r.setProperty("typeIndexName", typeIndex != null ? typeIndex.getName() : index.getName());
-            }
-
-            if (fileId > -1) {
-              r.setProperty("fileId", fileId);
-              try {
-                r.setProperty("size", FileUtils.getSizeAsString(context.getDatabase().getFileManager().getFile(((IndexInternal) index).getFileId()).getSize()));
-              } catch (final IOException e) {
-                // IGNORE IT, NO SIZE AVAILABLE
-              }
-            }
-            r.setProperty("supportsOrderedIterations", index.supportsOrderedIterations());
-            if (index.getAssociatedBucketId() > -1)
-              r.setProperty("associatedBucketId", index.getAssociatedBucketId());
-            r.setProperty("nullStrategy", index.getNullStrategy());
-          } catch (Exception e) {
-            LogManager.instance().log(this, Level.WARNING, "Requested information for index, but the index '%s' is not valid", e, index.getName());
+            r.setProperty("size", FileUtils.getSizeAsString(context.getDatabase().getFileManager().getFile(((IndexInternal) index).getFileId()).getSize()));
+          } catch (final IOException e) {
+            // IGNORE IT, NO SIZE AVAILABLE
           }
         }
-      } finally {
-        if( context.isProfiling() ) {
-          cost += System.nanoTime() - begin;
-        }
+        r.setProperty("supportsOrderedIterations", index.supportsOrderedIterations());
+        if (index.getAssociatedBucketId() > -1)
+          r.setProperty("associatedBucketId", index.getAssociatedBucketId());
+        r.setProperty("nullStrategy", index.getNullStrategy());
+      } catch (Exception e) {
+        LogManager.instance().log(this, Level.WARNING, "Requested information for index, but the index '%s' is not valid", e, index.getName());
       }
     }
-    return new ResultSet() {
-      @Override
-      public boolean hasNext() {
-        return cursor < result.size();
-      }
-
-      @Override
-      public Result next() {
-        return result.get(cursor++);
-      }
-
-      @Override
-      public void close() {
-        result.clear();
-      }
-
-      @Override
-      public void reset() {
-        cursor = 0;
-      }
-    };
   }
 
   private static SecurityDatabaseUser currentUser(final CommandContext context) {

@@ -74,6 +74,20 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
    */
   public       boolean               reclaimUnreferencedFiles = false;
   /**
+   * #7952: {@code DELETE INVALID RECORDS}. Removes the records that do not satisfy their own type's existence
+   * constraints ({@code MANDATORY}, {@code NOTNULL}) - what an openCypher statement that died between a provisional
+   * {@code CREATE}/{@code MERGE} and its end-of-statement check leaves behind, what a pre-validation {@code RESTORE}
+   * left (#6127), and what a schema change makes of every record a populated type already held
+   * ({@code ALTER PROPERTY ... MANDATORY TRUE}, or renaming a {@code MANDATORY} property).
+   * <p>
+   * A CLAUSE OF ITS OWN, on the same pattern as the two above and for the sharpest reason of the three: that last
+   * route is entirely legitimate, so a {@code FIX} that deleted by default would answer a DDL by destroying the
+   * type's contents. The full argument is on
+   * {@link DatabaseChecker#setDeleteInvalidRecords(boolean)}. Reporting the finding needs no clause at all - it is
+   * on for every run, under the {@code constraintViolatingRecords} key.
+   */
+  public       boolean               deleteInvalidRecords = false;
+  /**
    * #6360: {@code DEEP}. Opts into the checks that DECODE the data instead of reconciling what describes it - see
    * {@link DatabaseChecker#setDeep(boolean)}. Independent of {@code FIX}: nothing this tier finds is repairable,
    * since a block whose declared statistics disagree with its own values was written that way.
@@ -84,6 +98,11 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
   public static final String DELETE_ORPHANS_WITHOUT_FIX_ERROR =
       "CHECK DATABASE DELETE ORPHANS removes records, so it requires FIX: write CHECK DATABASE FIX DELETE ORPHANS. "
           + "Without it the orphan edge records are still reported, under the unreachableEdgeRecords key";
+  /** Shared with the grammar's own diagnostics: {@code DELETE INVALID RECORDS} is a repair and needs FIX too. */
+  public static final String DELETE_INVALID_RECORDS_WITHOUT_FIX_ERROR =
+      "CHECK DATABASE DELETE INVALID RECORDS removes records, so it requires FIX: write CHECK DATABASE FIX DELETE "
+          + "INVALID RECORDS. Without it the records violating their type's existence constraints are still "
+          + "reported, under the constraintViolatingRecords key";
   /** Shared with the grammar's own diagnostics: {@code RECLAIM UNREFERENCED FILES} is a repair and needs FIX too. */
   public static final String RECLAIM_UNREFERENCED_FILES_WITHOUT_FIX_ERROR =
       "CHECK DATABASE RECLAIM UNREFERENCED FILES removes files, so it requires FIX: write CHECK DATABASE FIX "
@@ -112,6 +131,10 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
       // only wanted the finding already has it without any clause at all.
       throw new IllegalArgumentException(DELETE_ORPHANS_WITHOUT_FIX_ERROR);
 
+    if (deleteInvalidRecords && !fix)
+      // Same refusal, same reason: DELETE INVALID RECORDS removes records and must say so explicitly.
+      throw new IllegalArgumentException(DELETE_INVALID_RECORDS_WITHOUT_FIX_ERROR);
+
     if (reclaimUnreferencedFiles && !fix)
       // Same refusal, same reason: RECLAIM UNREFERENCED FILES removes files and must say so explicitly.
       throw new IllegalArgumentException(RECLAIM_UNREFERENCED_FILES_WITHOUT_FIX_ERROR);
@@ -130,6 +153,7 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
     checker.setFix(fix);
     checker.setDeep(deep);
     checker.setDeleteOrphanEdgeRecords(deleteOrphans);
+    checker.setDeleteInvalidRecords(deleteInvalidRecords);
     checker.setReclaimUnreferencedFiles(reclaimUnreferencedFiles);
     checker.setCompress(compress);
 
@@ -201,6 +225,9 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
     if (deleteOrphans)
       builder.append(" DELETE ORPHANS");
 
+    if (deleteInvalidRecords)
+      builder.append(" DELETE INVALID RECORDS");
+
     if (reclaimUnreferencedFiles)
       builder.append(" RECLAIM UNREFERENCED FILES");
 
@@ -223,6 +250,7 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
     result.fix = fix;
     result.compress = compress;
     result.deleteOrphans = deleteOrphans;
+    result.deleteInvalidRecords = deleteInvalidRecords;
     result.reclaimUnreferencedFiles = reclaimUnreferencedFiles;
     result.deep = deep;
     return result;
@@ -230,7 +258,8 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
 
   @Override
   protected Object[] getIdentityElements() {
-    return new Object[] { buckets, types, records, fix, compress, deleteOrphans, reclaimUnreferencedFiles, deep };
+    return new Object[] { buckets, types, records, fix, compress, deleteOrphans, deleteInvalidRecords,
+        reclaimUnreferencedFiles, deep };
   }
 }
 /* ParserGeneratorCC - OriginalChecksum=8b4b56a95655bca6baea744bc4c6aedd (do not edit this line) */

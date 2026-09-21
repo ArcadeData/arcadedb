@@ -66,6 +66,19 @@ public interface HAServerPlugin extends ServerPlugin {
     READY, NOT_READY
   }
 
+  /**
+   * The three cluster-replicated security documents, named as {@code ServerSecurity.seedSecurityStateClusterWide}
+   * names them so a seed failure reads the same whichever admission path reports it.
+   * <p>
+   * Reported whole by an admission whose seed could not be run at all, where which of them landed is exactly what
+   * is not known. Lives on this interface because all three admission paths need it and this is the one thing
+   * they all already have: {@code ServerControlPlane.connectCluster}, {@code PostAddPeerHandler} and
+   * {@link #addPeerAndReportSeed} (issues #7532, #7521, #7820). It sits up here rather than beside that last one,
+   * which is its newest consumer, because a field declared after a method is a static-analysis finding on this
+   * repository's Codacy configuration.
+   */
+  List<String> ALL_SEEDED_SECURITY_DOCUMENTS = List.of("users", "groups", "API tokens");
+
   boolean isLeader();
 
   String getLeaderName();
@@ -390,6 +403,42 @@ public interface HAServerPlugin extends ServerPlugin {
    */
   default void addPeer(final String peerId, final String address, final String name) {
     addPeer(peerId, address);
+  }
+
+  /**
+   * {@link #addPeer(String, String, String)} for a caller that needs the outcome of the cluster security seed,
+   * and not only the membership change (issue #7820).
+   * <p>
+   * The two operator-facing admission paths have carried that outcome since issues #7521 and #7532:
+   * {@code POST /api/v1/cluster/peer} answers 503 with a {@code failedSeeds} array, and {@code connect cluster}
+   * returns it in {@code ServerControlPlane.ConnectClusterResult}. This embedded API is the third admission path
+   * and returned {@code void}, so an embedding application had no signal at all - and an embedding application
+   * is where nobody is watching a SEVERE line go by. {@code server-users.jsonl}, {@code server-groups.json} and
+   * {@code server-api-tokens.json} live under {@code <server-root>/config/}, outside the database directory, so
+   * a peer holding stale ones is a committed cluster member enforcing them until the next cluster-wide change of
+   * each kind.
+   * <p>
+   * <b>The peer is a member whenever this returns</b>, failing documents or not. A non-empty result is not a
+   * failed join and must not be retried as one; re-issuing the same admission is idempotent on the membership
+   * change and reissues the seed, which is the remediation. A membership change that did <i>not</i> happen
+   * leaves by an exception instead, exactly as {@link #addPeer(String, String, String)} always has.
+   * <p>
+   * The default admits the peer through {@link #addPeer(String, String, String)} and reports nothing failing,
+   * which is honest for an implementation that has no cluster-replicated security documents: there is nothing
+   * that could have failed to seed. An implementation that does have them overrides this - and if it also makes
+   * {@code addPeer} delegate here, so that an embedder gets the seed either way, it must override <b>both</b>:
+   * overriding only {@code addPeer} that way leaves this default calling back into it.
+   *
+   * @param peerId  the identifier of the peer to admit
+   * @param address the address to admit it at
+   * @param name    an optional human-readable name for logs and Studio, or {@code null}
+   *
+   * @return the names of the security documents that could not be seeded to the new peer, in the order
+   * {@code ServerSecurity.seedSecurityStateClusterWide} reports them; empty for a clean admission
+   */
+  default List<String> addPeerAndReportSeed(final String peerId, final String address, final String name) {
+    addPeer(peerId, address, name);
+    return List.of();
   }
 
   /**

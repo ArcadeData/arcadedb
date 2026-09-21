@@ -37,7 +37,7 @@ import java.util.Set;
 import java.util.stream.Stream;
 
 /**
- * Procedure: refactor.mergeNodes(nodes, config)
+ * Procedure: refactor.mergeNodes(nodes, config = {})
  * <p>
  * Merges a list of nodes into the first one (the survivor). Every incoming and outgoing edge of the
  * other nodes (the absorbed nodes) is rewired onto the survivor - an edge that connected two nodes
@@ -48,7 +48,9 @@ import java.util.stream.Stream;
  * {@code config.properties} controls how a property present on both the survivor and an absorbed node
  * is resolved: {@code "overwrite"} (the absorbed node's value wins, the default), {@code "discard"}
  * (the survivor's original value is kept) or {@code "combine"} (both values are kept as a list). A
- * property present only on an absorbed node is always copied onto the survivor.
+ * property present only on an absorbed node is always copied onto the survivor. The whole {@code config} argument
+ * is optional and defaults to an empty map - hence to the {@code "overwrite"} policy - matching APOC's
+ * {@code apoc.refactor.mergeNodes(nodes :: LIST<NODE>, config = {} :: MAP)} (issue #7427).
  * </p>
  * <p>
  * Example:
@@ -72,9 +74,14 @@ public class RefactorMergeNodes implements CypherProcedure {
     return NAME;
   }
 
+  /**
+   * One, not two: APOC declares the trailing {@code config} with a default, so a call that omits it is a call this
+   * procedure has to accept (issue #7427). {@link RefactorProcedureArgs#extractOptionalConfig} supplies the empty
+   * map in its place.
+   */
   @Override
   public int getMinArgs() {
-    return 2;
+    return 1;
   }
 
   @Override
@@ -105,7 +112,7 @@ public class RefactorMergeNodes implements CypherProcedure {
     if (nodes.size() < 2)
       throw new CommandSemanticException(getName() + "(): at least two distinct nodes are required to merge");
 
-    final Map<String, Object> config = RefactorProcedureArgs.extractConfig(getName(), args[1]);
+    final Map<String, Object> config = RefactorProcedureArgs.extractOptionalConfig(getName(), args);
     final String globalPolicy = extractPropertiesPolicy(config);
 
     final Database database = context.getDatabase();

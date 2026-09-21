@@ -363,7 +363,7 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
     connect("Cite", works[0], works[2]);
     connect("Cite", works[1], works[2]);
 
-    database.command("sql", "truncate type Cite").close();
+    database.command("sql", "truncate type Cite unsafe").close();
 
     assertThat(query("select from Cite")).as("TRUNCATE must actually reach the edges now").isEmpty();
     database.transaction(() -> {
@@ -380,7 +380,7 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
     final RID[] works = newWorks(2);
     connect("Cite", works[0], works[1]);
 
-    database.transaction(() -> database.command("sql", "truncate type Cite").close());
+    database.transaction(() -> database.command("sql", "truncate type Cite unsafe").close());
 
     assertThat(query("select from Cite")).isEmpty();
   }
@@ -392,7 +392,7 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
     connect("Cite", works[0], works[1]);
 
     database.begin();
-    database.command("sql", "truncate type Cite").close();
+    database.command("sql", "truncate type Cite unsafe").close();
     assertThat(query("select from Cite")).isEmpty();
     database.rollback();
 
@@ -420,12 +420,12 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
     connect("Mentions", works[0], works[1]);
     connect("Quotes", works[0], works[2]);
 
-    database.command("sql", "truncate type Mentions").close();
+    database.command("sql", "truncate type Mentions unsafe").close();
     assertThat(query("select from Mentions"))
         .as("only the root's own bucket is cleared; the lightweight subtype's edge was not in scope")
         .hasSize(1);
 
-    database.command("sql", "truncate type Mentions polymorphic").close();
+    database.command("sql", "truncate type Mentions polymorphic unsafe").close();
     assertThat(query("select from Mentions")).isEmpty();
   }
 
@@ -454,7 +454,7 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
     final RID[] works = newWorks(2);
     connect("Cite", works[0], works[1]);
 
-    database.command("sql", "truncate type Cite polymorphic").close();
+    database.command("sql", "truncate type Cite polymorphic unsafe").close();
 
     assertThat(query("select from Cite")).isEmpty();
   }
@@ -487,7 +487,7 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
 
     assertThat(query("select from `SELECT`")).hasSize(1);
 
-    database.command("sql", "truncate type `SELECT`").close();
+    database.command("sql", "truncate type `SELECT` unsafe").close();
 
     assertThat(query("select from `SELECT`")).isEmpty();
   }
@@ -509,7 +509,7 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
 
       assertThat(query("select from Cite")).hasSize(works.length - 1);
 
-      database.command("sql", "truncate type Cite").close();
+      database.command("sql", "truncate type Cite unsafe").close();
 
       assertThat(query("select from Cite")).isEmpty();
       database.transaction(() -> assertThat(database.lookupByRID(works[0], true).asVertex()
@@ -524,9 +524,13 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
    * {@code Database.countType()} sums bucket record counts, and a LIGHTWEIGHT edge allocates none - so it answers 0
    * for such a type no matter how many edges it holds ({@link #theCountAgreesWithTheScan} pins exactly this). The
    * "not empty, needs UNSAFE" guard in {@code TruncateTypeStatement} reads that same count, so a LIGHTWEIGHT edge
-   * type under a real {@code E} hierarchy (unlike this class's other fixtures, none of which extend {@code E} or
-   * {@code V} and so never exercise this guard at all) must not be able to bypass it just because the count it
-   * relies on lies for this storage shape (review finding on #7481).
+   * type must not be able to bypass it just because the count it relies on lies for this storage shape (review
+   * finding on #7481).
+   * <p>
+   * The {@code E} super type this fixture builds is a leftover from when the guard asked
+   * {@code isSubTypeOf("E")} by name and this hierarchy was the only way to reach it at all. Every other truncate
+   * in this class needs UNSAFE now, which is the same finding seen from the other side (issue #8042). The super
+   * type is kept because it costs nothing and pins that the explicit hierarchy does not CHANGE the answer either.
    */
   @Test
   void truncateOnALightweightEdgeTypeUnderARealEHierarchyStillRequiresUnsafeWhenNotEmpty() {

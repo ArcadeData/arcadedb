@@ -223,9 +223,79 @@ public class LocalDocumentType implements DocumentType {
         return null;
 
       unlinkSuperType((LocalDocumentType) superType);
+      dropSubIndexesNoLongerCovered((LocalDocumentType) superType);
       return null;
     });
     return this;
+  }
+
+  /**
+   * Drops every sub-index that the linkage created over a bucket the former super type - or an ancestor of it - no
+   * longer reaches, which is the INDEX half of what {@link #removeSuperType(DocumentType)} has to undo.
+   * <p>
+   * Linking propagates the super type's indexes (its own AND the ones it inherits, {@code getAllIndexes(true)}) over
+   * this type's buckets, and every one of those components is attached to the ANCESTOR's {@link TypeIndex} by
+   * {@link #addIndexInternal}. Unlinking used to undo only the polymorphic BUCKET side (issue #6935), so the
+   * ancestor's wrapper kept fanning out over the detached subtree: {@code lookupByKey} handed back records of a
+   * foreign type, {@code countEntries()} counted them, and the ancestor's UNIQUE constraint stayed enforced across
+   * them, refusing a key that was genuinely free. {@code SELECT} was spared only because the planner filters index
+   * results by type downstream (issue #7892).
+   * <p>
+   * Dropped rather than merely detached, which is what makes it the exact mirror of {@link #addSuperType}: the
+   * components exist BECAUSE of the linkage, they index a property the subtype no longer even has, and a detachment
+   * alone would leave them on disk, invisible to the schema and resurrected by the next reload - which re-reads the
+   * attachment from {@code schema.json} and would put the ancestor's wrapper straight back over them.
+   * <p>
+   * Which buckets are "no longer reached" is read from the polymorphic caches {@link #unlinkSuperType} has just
+   * recomputed, never subtracted from the detached subtree. That is the same rule and the same reason as there: in a
+   * diamond, a bucket the former super type still reaches through another surviving path must keep its sub-index.
+   */
+  private void dropSubIndexesNoLongerCovered(final LocalDocumentType formerSuperType) {
+    if (schema.isTypeBeingDropped())
+      // A dropType cascade severs this link only to re-parent the surviving sub types onto the same super type a
+      // few lines later, re-linking them with createIndexes=false because their components are still attached. The
+      // relationship is mid-rewrite, so "no longer reached" is not yet true of anything; see LocalSchema
+      // #isTypeBeingDropped. The doomed type's own components are dropped by that cascade itself.
+      return;
+
+    final List<String> orphans = new ArrayList<>();
+    // BY IDENTITY: TypeIndex.equals() is content-based and asks an empty wrapper for its property names, which is
+    // exactly the state the wrappers in here are about to be left in.
+    final Set<TypeIndex> affectedWrappers = Collections.newSetFromMap(new IdentityHashMap<>());
+    collectSubIndexesNoLongerCovered(formerSuperType, new HashSet<>(), orphans, affectedWrappers);
+
+    for (final String indexName : orphans)
+      schema.dropIndex(indexName);
+
+    // A wrapper whose LAST sub-index was one of the orphans has to leave its owner's index list too, or the next
+    // schema serialization asks an empty TypeIndex for its property names and fails. LocalSchema's own leaf-drop
+    // cleanup cannot do it here: it looks the wrapper up from the SUB-type the component belonged to and walks that
+    // type's super types, and the link that would have led it to the owner is exactly the one just severed.
+    for (final TypeIndex wrapper : affectedWrappers)
+      if (wrapper.countIndexesOnBuckets() == 0) {
+        final LocalDocumentType owner = schema.getType(wrapper.getTypeName());
+        owner.removeTypeIndexInternal(wrapper);
+        schema.removeIndexDuringLoad(wrapper.getName());
+      }
+  }
+
+  /** Walks {@code type} and its super types, collecting the sub-indexes sitting on buckets the type no longer reaches. */
+  private static void collectSubIndexesNoLongerCovered(final LocalDocumentType type, final Set<String> visited,
+      final List<String> orphans, final Set<TypeIndex> affectedWrappers) {
+    if (!visited.add(type.getName()))
+      // A DIAMOND REACHES THE SAME ANCESTOR THROUGH MORE THAN ONE PATH
+      return;
+
+    final Set<Integer> stillCovered = new HashSet<>(type.getBucketIds(true));
+    for (final TypeIndex typeIndex : type.indexesByProperties.values())
+      for (final IndexInternal subIndex : typeIndex.getIndexesOnBuckets())
+        if (!stillCovered.contains(subIndex.getAssociatedBucketId())) {
+          orphans.add(subIndex.getName());
+          affectedWrappers.add(typeIndex);
+        }
+
+    for (final LocalDocumentType superType : type.superTypes)
+      collectSubIndexesNoLongerCovered(superType, visited, orphans, affectedWrappers);
   }
 
   /**
@@ -466,29 +536,70 @@ public class LocalDocumentType implements DocumentType {
 
   /**
    * Sets the list of aliases for the type. Any previous configuration will be lost.
+   * <p>
+   * Every check and both map passes run inside the single {@link #recordFileChanges} callback, i.e. under the
+   * database write lock, for the same two reasons {@link #createProperty} and {@link #dropProperty} spell out and
+   * this method used to violate (issue #8064). {@code checkForSchemaMutation()} is a precondition check, not a
+   * lock, and it was the only thing here:
+   * <ul>
+   *   <li><b>Check-then-put.</b> The refusal consulted {@code schema.existsType(alias)} and the install happened
+   *   several statements later, so two concurrent {@code ALTER TYPE ... ALIASES} on different types could both
+   *   pass the check and the second {@code put} silently won, leaving two types believing they owned one name.
+   *   The reservation is now an atomic {@code putIfAbsent} under the write lock, the same shape {@link #rename}
+   *   uses, so the check and the install are one step.</li>
+   *   <li><b>Unconditional deregistration.</b> EVERY previous alias was removed from the type map before the new
+   *   set was installed, so a concurrent reader resolving a name the new set still carries saw it disappear. Only
+   *   the aliases the new set drops are removed now, and the install runs first, so a surviving name never leaves
+   *   the map at all.</li>
+   * </ul>
+   * A refusal part way through unwinds what this call had already reserved: the aliases are all-or-nothing, never
+   * a half-installed set left behind by a rejected {@code ALTER TYPE}.
+   * <p>
+   * {@code recordFileChanges} saves {@code schema.json} itself, which is why the explicit
+   * {@code schema.saveConfiguration()} this method used to end with is gone.
    */
   public LocalDocumentType setAliases(final Set<String> aliases) {
     checkForSchemaMutation();
-    final Set<String> newAliases = new HashSet<>(aliases);
-    newAliases.removeAll(this.aliases);
-    for (String alias : newAliases) {
-      if (schema.existsType(alias))
-        throw new SchemaException("Cannot set alias '" + alias + "' for type '" + name + "' because it is already used by type '"
-            + schema.getType(alias).getName() + "'");
-    }
 
-    // DEREGISTER ALL PREVIOUS ALIASES
-    for (String alias : this.aliases)
-      schema.typeMap().remove(alias);
+    return recordFileChanges(() -> {
+      final Set<String> previousAliases = this.aliases;
 
-    for (String alias : aliases)
-      schema.typeMap().put(alias, this);
+      // ONLY THE GENUINELY NEW NAMES ARE RESERVED: AN ALIAS THIS TYPE ALREADY ANSWERS TO IS ALREADY IN THE MAP
+      // POINTING AT US, AND putIfAbsent WOULD REPORT IT AS TAKEN - BY OURSELVES
+      final Set<String> addedAliases = new HashSet<>(aliases);
+      addedAliases.removeAll(previousAliases);
 
-    // A copy, and an unmodifiable one: the parameter belongs to the caller. Published last so a lock-free
-    // instanceOf() either sees the whole previous set or the whole new one.
-    this.aliases = Set.copyOf(aliases);
-    schema.saveConfiguration();
-    return this;
+      final List<String> reserved = new ArrayList<>(addedAliases.size());
+      try {
+        for (final String alias : addedAliases) {
+          final LocalDocumentType owner = schema.typeMap().putIfAbsent(alias, this);
+          if (owner != null)
+            // OWNED BY US MEANS IT IS THIS TYPE'S OWN NAME: EVERY ALIAS IT ALREADY CARRIES WAS FILTERED OUT ABOVE.
+            // SAYING "ALREADY USED BY TYPE 'X'" WITH X NAMED TWICE READS AS AN ENGINE BUG RATHER THAN AS THE
+            // REFUSAL IT IS, SO SAY WHICH OF THE TWO REFUSALS THIS IS
+            throw new SchemaException(owner == this ?
+                "Cannot set alias '" + alias + "' for type '" + name + "' because it is the name of the type itself" :
+                "Cannot set alias '" + alias + "' for type '" + name + "' because it is already used by type '"
+                    + owner.getName() + "'");
+          reserved.add(alias);
+        }
+      } catch (final RuntimeException e) {
+        // UNWIND ONLY WHAT THIS CALL RESERVED, AND ONLY WHILE IT STILL POINTS AT US
+        for (final String alias : reserved)
+          schema.typeMap().remove(alias, this);
+        throw e;
+      }
+
+      // DEREGISTER ONLY THE PREVIOUS ALIASES THE NEW SET NO LONGER CARRIES, AFTER THE NEW ONES ARE IN
+      for (final String alias : previousAliases)
+        if (!aliases.contains(alias))
+          schema.typeMap().remove(alias, this);
+
+      // A copy, and an unmodifiable one: the parameter belongs to the caller. Published last so a lock-free
+      // instanceOf() either sees the whole previous set or the whole new one.
+      this.aliases = Set.copyOf(aliases);
+      return this;
+    });
   }
 
   /**

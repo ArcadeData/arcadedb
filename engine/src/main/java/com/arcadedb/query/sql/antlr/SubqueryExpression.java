@@ -102,6 +102,16 @@ public class SubqueryExpression extends BaseExpression {
     return sb.toString();
   }
 
+  /**
+   * The grammar's {@code LPAREN statement RPAREN modifier*} alternative carries a modifier tail of its own, and this
+   * node renders its own parentheses, so a pair of parentheses WRITTEN around it is the redundant kind that an
+   * unaliased projection must not be renamed by (issue #7896).
+   */
+  @Override
+  protected boolean carriesItsOwnModifierTail() {
+    return true;
+  }
+
   @Override
   public SubqueryExpression copy() {
     final SubqueryExpression copy = new SubqueryExpression(statement);

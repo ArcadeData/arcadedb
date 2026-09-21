@@ -40,7 +40,6 @@ import com.arcadedb.utility.FileUtils;
 
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.Locale;
 import java.util.Map;
@@ -282,9 +281,15 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
           if (neighborRid == null)
             continue;
           try {
-            result.put(neighborRid.asVertex(), weights[i]);
+            // merge-on-MINIMUM, not put: ArcadeDB is a multigraph, so the same ordered pair of vertices can be
+            // joined by several edges of the same type, each with its own weight, and the CSR adjacency lists one
+            // entry per EDGE. A plain put() kept whichever edge the iteration reached last, which priced the
+            // neighbour by creation order and let the search return a genuinely more expensive path while calling
+            // it the shortest one (issue #8031). Among parallel edges only the cheapest can appear in an optimal
+            // path, so collapsing on the minimum loses nothing this algorithm could have used.
+            result.merge(neighborRid.asVertex(), weights[i], Math::min);
           } catch (final Exception e) {
-            // deleted vertex — skip
+            // deleted vertex - skip
           }
         }
         return result;
@@ -296,7 +301,8 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
       try {
         final Vertex neighbor = getNeighbor(node, edge, ctx.getDatabase());
         if (neighbor != null)
-          result.put(neighbor, getDistance(edge));
+          // Same multigraph reduction as the CSR arm above (issue #8031).
+          result.merge(neighbor, getDistance(edge), Math::min);
       } catch (final RecordNotFoundException e) {
         GhostEdgeReporter.reportSkipped(e);
       }
@@ -372,31 +378,38 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
     return getPath();
   }
 
+  /**
+   * The weight of the CHEAPEST edge from {@code node} to {@code target}, not of the first one adjacency happens to
+   * list.
+   * <p>
+   * The mirror image of the neighbourhood assembly in {@link #getNeighborWeightsCSR}: on a multigraph several
+   * edges may join the same pair, and this used to {@code break} on the first match, so the distance it reported
+   * depended on the order the edges were created in (issue #8031). Every candidate is now weighed and the minimum
+   * kept, which is the only one an optimal path can use.
+   * <p>
+   * The edge-type filter travels with it, which it did not before (PR #8093 review): the neighbourhood assembly
+   * restricts itself to {@code paramEdgeTypeNames} and this did not, so with an {@code edgeTypeNames} option in
+   * play the heuristic could price a step off an edge of a type the search is forbidden to walk. The empty array
+   * the option defaults to means "every type", which is how every other call site here already reads it.
+   */
   @Override
   protected double getDistance(final Vertex node, final Vertex parent, final Vertex target) {
-    final Iterator<Edge> edges = node.getEdges(paramDirection).iterator();
-    Edge e = null;
-    while (edges.hasNext()) {
-      final Edge next = edges.next();
+    double cheapest = Double.POSITIVE_INFINITY;
+    for (final Edge next : node.getEdges(paramDirection, paramEdgeTypeNames)) {
       try {
         if (next.getOut().equals(target.getIdentity()) || next.getIn().equals(target.getIdentity())) {
-          e = next;
-          break;
+          // getDistance(Edge), the same extraction the neighbourhood assembly uses, so an edge with no weight
+          // property costs MIN here too rather than being priced by a second, drifting copy of the rule.
+          final double weight = getDistance(next);
+          if (weight < cheapest)
+            cheapest = weight;
         }
-      } catch (final RecordNotFoundException rnf) {  // 'rnf' not 'e' here: 'e' is the Edge loop variable in this scope
+      } catch (final RecordNotFoundException rnf) {
         GhostEdgeReporter.reportSkipped(rnf);
       }
     }
-    if (e != null) {
-      final Object fieldValue = e.get(paramWeightFieldName);
-      if (fieldValue != null)
-        if (fieldValue instanceof Float)
-          return (Float) fieldValue;
-        else if (fieldValue instanceof Number)
-          return ((Number) fieldValue).doubleValue();
-    }
 
-    return MIN;
+    return cheapest == Double.POSITIVE_INFINITY ? MIN : cheapest;
   }
 
   protected double getDistance(final Edge edge) {

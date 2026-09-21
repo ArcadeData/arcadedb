@@ -59,6 +59,22 @@ final class RefactorProcedureArgs {
     return new ArrayList<>(byIdentity.values());
   }
 
+  /**
+   * Returns the {@code config} of a {@code (nodes, config = {})} call, defaulting to an empty map when the caller
+   * omitted the trailing argument.
+   * <p>
+   * APOC declares the config with a default - {@code apoc.refactor.cloneNodesWithRelationships(nodes :: LIST<NODE>,
+   * config = {} :: MAP)}, and the same for {@code apoc.refactor.mergeNodes} - so Cypher migrated from Neo4j calls
+   * them without it. Both procedures therefore declare {@code getMinArgs() == 1}, which is what makes the slot
+   * possibly absent here (issue #7427). Both of this method's call sites run {@code validateArgs} first, so
+   * {@code args} is non-null and carries at least the nodes.
+   * <p>
+   * An explicitly passed {@code null} resolves to the same empty map, via {@link #extractConfig}.
+   */
+  static Map<String, Object> extractOptionalConfig(final String procedureName, final Object[] args) {
+    return args.length < 2 ? Collections.emptyMap() : extractConfig(procedureName, args[1]);
+  }
+
   @SuppressWarnings("unchecked")
   static Map<String, Object> extractConfig(final String procedureName, final Object arg) {
     if (arg == null)

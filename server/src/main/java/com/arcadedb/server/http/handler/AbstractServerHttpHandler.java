@@ -41,6 +41,7 @@ import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.HttpSessionException;
 import com.arcadedb.server.http.HttpSessionManager;
 import com.arcadedb.server.http.IdempotencyCache;
+import com.arcadedb.server.http.RequestBodyTooLargeException;
 import com.arcadedb.server.http.ResultSetTooLargeException;
 import com.arcadedb.server.security.ApiTokenConfiguration;
 import com.arcadedb.server.ServerControlPlane;
@@ -817,9 +818,11 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // all. This arm is what makes the cap mean the same thing for a chunked or HTTP/2 body as for a
     // Content-Length one (issue #7772). A 4xx and not a 5xx: the server is working exactly as configured, and
     // repeating the request unchanged can only be refused again.
-    final RequestTooBigException bodyTooLarge = firstOf(e, cause, RequestTooBigException.class);
-    if (bodyTooLarge != null) {
-      logUserError(bodyTooLarge);
+    // Named for the bytes ON THE WIRE, to keep it apart from the decoded-size arm below: the two caps are
+    // different settings refusing at different points, and both are reachable on the same request.
+    final RequestTooBigException wireBodyTooLarge = firstOf(e, cause, RequestTooBigException.class);
+    if (wireBodyTooLarge != null) {
+      logUserError(wireBodyTooLarge);
       // The setting name goes in the label, not only in 'detail': detail is concealed in production mode, and a
       // caller that cannot see WHICH knob refused it has been told nothing it can act on. Same treatment as the
       // ResultSetTooLargeException arm below, for the same reason.
@@ -827,7 +830,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
           .getValueAsLong(GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE);
       sendErrorResponse(exchange, 413,
           "Request body too large (" + GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE.getKey() + ")",
-          bodyTooLarge, String.valueOf(maxBodySize));
+          wireBodyTooLarge, String.valueOf(maxBodySize));
       return;
     }
 
@@ -845,6 +848,19 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       sendErrorResponse(exchange, 413,
           "Result set too large for a single response (" + GlobalConfiguration.SERVER_HTTP_QUERY_MAX_RESULT_ROWS.getKey()
               + ")", tooLarge, String.valueOf(tooLarge.getMaxResultRows()));
+      return;
+    }
+
+    // 413 Content Too Large, the REQUEST side of the pair above: a body that declared a Content-Encoding decoded
+    // past arcadedb.server.httpBodyContentDecompressedMaxSize (issue #8084). Independent of every other arm for
+    // the reason the response-side one is, and 4xx for the same reason: the request is answerable, just not as
+    // written, and the caller fixes it by sending less or by compressing less.
+    final RequestBodyTooLargeException bodyTooLarge = firstOf(e, cause, RequestBodyTooLargeException.class);
+    if (bodyTooLarge != null) {
+      logUserError(bodyTooLarge);
+      sendErrorResponse(exchange, 413,
+          "Request body too large once decoded (" + GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_DECOMPRESSED_MAX_SIZE.getKey()
+              + ")", bodyTooLarge, String.valueOf(bodyTooLarge.getMaxSize()));
       return;
     }
 

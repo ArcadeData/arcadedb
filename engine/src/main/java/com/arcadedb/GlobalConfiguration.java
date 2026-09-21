@@ -1545,8 +1545,27 @@ public enum GlobalConfiguration {
       Integer.class, 100),
 
   SERVER_HTTP_BODY_CONTENT_MAX_SIZE("arcadedb.server.httpBodyContentMaxSize", SCOPE.SERVER,
-      "Maximum size in bytes for HTTP request body content. Set to -1 for unlimited size (WARNING: removes DoS protection). Default is 100MB",
+      """
+      Maximum size in bytes for HTTP request body content, measured ON THE WIRE. Set to -1 for unlimited size \
+      (WARNING: removes DoS protection). A request that declares a `Content-Encoding` is additionally bounded by \
+      'arcadedb.server.httpBodyContentDecompressedMaxSize' once decoded, because this value alone would otherwise \
+      be a compression-ratio multiplier rather than a bound (issue #8084). Default is 100MB""",
       Long.class, 100L * 1024 * 1024), // 100MB DEFAULT
+
+  SERVER_HTTP_BODY_CONTENT_DECOMPRESSED_MAX_SIZE("arcadedb.server.httpBodyContentDecompressedMaxSize", SCOPE.SERVER,
+      """
+      Maximum size in bytes an HTTP request body may expand to once its `Content-Encoding` has been decoded \
+      (issue #8084). 'arcadedb.server.httpBodyContentMaxSize' bounds only the bytes that arrive, so on a route \
+      that decodes gzip (the InfluxDB line-protocol ingest) or Snappy (the Prometheus remote_write and \
+      remote_read endpoints) a client that compresses turns that cap into a ratio multiplier: line protocol is \
+      highly repetitive text and ratios in the hundreds are ordinary, so an accepted 100MB body is worth tens of \
+      GB of heap. A body that decodes past this value is refused with HTTP 413 before the decoded bytes are \
+      materialized. Set to a NEGATIVE value (-1 is the default) to follow 'arcadedb.server.httpBodyContentMaxSize', \
+      which is what an administrator raising a single knob expects - including its own -1, meaning unlimited. Set \
+      to 0 for unlimited without following that setting, the same way 0 means unlimited there. Any other value \
+      overrides it, so a legitimately large compressed payload can be allowed without also widening what may \
+      arrive uncompressed""",
+      Long.class, -1L),
 
   SERVER_HTTP_QUERY_DEFAULT_LIMIT("arcadedb.server.httpQueryDefaultLimit", SCOPE.SERVER,
       """
@@ -1654,11 +1673,15 @@ public enum GlobalConfiguration {
 
   SERVER_WS_MAX_CONTROL_FRAME_SIZE("arcadedb.server.wsMaxControlFrameSize", SCOPE.SERVER, """
       Maximum size in bytes of a single text frame accepted on /ws before an insert session has been started on \
-      that connection (issue #7403). Undertow's AbstractReceiveListener defaults to -1, unbounded, so every text \
-      frame used to be accumulated whole on the heap with no way for the server to say 'not that big'. A \
+      that connection (issue #7403), and of every binary frame whatever the connection's session state (issue \
+      #8065). Undertow's AbstractReceiveListener defaults to -1, unbounded, so a frame used to be accumulated \
+      whole on the heap with no way for the server to say 'not that big'. A \
       subscribe/unsubscribe/start/commit/rollback frame is a few hundred bytes, so this bound is deliberately \
       tight; the accumulation is aborted with a 1009 TOO_BIG close as soon as it crosses the cap, not after the \
-      frame has been buffered. 0 or a negative value restores the unbounded behaviour.""", Long.class, 64 * 1024L),
+      frame has been buffered. Binary frames carry no /ws protocol meaning at all - one inside the budget is \
+      answered with an error frame and discarded - so they are never granted the larger 'wsMaxInsertFrameSize' \
+      budget, not even on a connection that has an insert session open. 0 or a negative value restores the \
+      unbounded behaviour, for text and binary alike.""", Long.class, 64 * 1024L),
 
   SERVER_WS_MAX_INSERT_FRAME_SIZE("arcadedb.server.wsMaxInsertFrameSize", SCOPE.SERVER, """
       Maximum size in bytes of a single text frame accepted on a /ws connection that has started a duplex insert \
@@ -2971,7 +2994,14 @@ public enum GlobalConfiguration {
       out.print("  + ");
       out.print(v.key);
       out.print(" = ");
-      out.println(v.isHidden() ? "<hidden>" : String.valueOf((Object) v.getValue()));
+      // Redaction is publishableValue's, the single rule the settings reports already publish under
+      // (GET /api/v1/server, the MCP get_server_settings tool, SELECT FROM schema:database). isHidden() alone
+      // masks a setting that IS a secret and says nothing about one that CONTAINS a secret, so the credentials
+      // embedded in arcadedb.server.defaultDatabases were printed here in clear by an operator who turned
+      // arcadedb.dumpConfigAtStartup on to record what the server booted with (issue #8038).
+      // The "<hidden>" spelling a wholly hidden setting has always printed is kept, rather than publishableValue's
+      // "*****": this dump is read by people, not parsed, and nothing gains from renaming it here.
+      out.println(v.isHidden() ? "<hidden>" : String.valueOf(v.publishableValue(v.getValue())));
     }
     out.flush();
   }

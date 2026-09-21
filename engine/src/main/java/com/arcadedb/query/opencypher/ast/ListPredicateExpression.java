@@ -20,10 +20,10 @@ package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -180,22 +180,22 @@ public class ListPredicateExpression implements Expression {
     return null;
   }
 
+  /**
+   * Boxes any array by its actual component type. The hand-rolled ladder this replaced covered only
+   * {@code Object[]}, {@code int[]}, {@code long[]} and {@code double[]}, so an {@code ARRAY_OF_FLOATS} or
+   * {@code ARRAY_OF_SHORTS} property - or any other component type - produced an empty element list, which
+   * turns {@code all()} into vacuous truth and {@code any()} into false with no error (issue #8036).
+   * <p>
+   * A {@code byte[]} is boxed here one byte at a time, which is what {@code ListComprehensionExpression},
+   * {@code ReduceExpression} and {@code AllReduceExpression} already do through the explicit {@code byte[]} arm
+   * in each of their own ladders. It is deliberately NOT the rule {@code UnwindStep} takes, which excludes a
+   * {@code byte[]} through {@code MultiValue.isSequenceArray()} so that a {@code BINARY} property stays one
+   * opaque value, as it is in SQL. Issue #8098 is where that disagreement gets settled for every clause at
+   * once; until then the behaviour here is pinned by
+   * {@code CypherUnwindArrayComponentTypeIssue8036Test.listPredicatesOverABinaryPropertyEvaluateOncePerByteUntilIssue8098IsSettled}.
+   */
   private List<Object> arrayToList(final Object array) {
-    final List<Object> list = new ArrayList<>();
-    if (array instanceof Object[]) {
-      for (final Object o : (Object[]) array)
-        list.add(o);
-    } else if (array instanceof int[]) {
-      for (final int i : (int[]) array)
-        list.add(i);
-    } else if (array instanceof long[]) {
-      for (final long l : (long[]) array)
-        list.add(l);
-    } else if (array instanceof double[]) {
-      for (final double d : (double[]) array)
-        list.add(d);
-    }
-    return list;
+    return MultiValue.getMultiValueAsList(array);
   }
 
   @Override

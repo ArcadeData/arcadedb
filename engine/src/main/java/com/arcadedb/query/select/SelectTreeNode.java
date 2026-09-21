@@ -66,6 +66,14 @@ public class SelectTreeNode {
     if (this.parent == newParent)
       return;
 
+    // #8047: BELT AND BRACES. A SELF-PARENTED NODE IS NOT MERELY REDUNDANT, IT IS CORRUPTING: THE REWIRING BELOW
+    // TESTS this.parent.left/right == this, WHICH ON SUCH A NODE COMPARES IT AGAINST ITS OWN CHILDREN AND SILENTLY
+    // SKIPS THE GRANDPARENT UPDATE - THAT IS HOW Select.setLogic() LOST EVERY CONDITION AFTER THE FOURTH. IT ALSO
+    // MAKES ANY getParent() WALK NON-TERMINATING, WHICH SelectExecutor's OR/NOT ANCESTOR CHECK (#8048) NOW DOES.
+    // THE GUARD ON THE LINE ABOVE PROTECTS AGAINST setParent(this.parent), NOT AGAINST setParent(this)
+    if (newParent == this)
+      throw new IllegalArgumentException("A condition node cannot be its own parent");
+
     if (this.parent != null) {
       if (this.parent.left == this) {
         this.parent.left = newParent;

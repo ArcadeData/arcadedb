@@ -37,6 +37,7 @@ public final class AggregationMetrics {
   private int  fastPathBlocks;
   private int  slowPathBlocks;
   private int  skippedBlocks;
+  private int  vanishedBlocks;
   private int  scannedPages;
   private int  skippedPages;
   private long materializedRows;
@@ -68,6 +69,20 @@ public final class AggregationMetrics {
 
   public void addSkippedBlock() {
     skippedBlocks++;
+  }
+
+  /**
+   * A block the walk held a directory entry for and could no longer find in the store (issue #8043).
+   * <p>
+   * NOT a variant of {@link #addSkippedBlock()}: a skipped block was examined and declined - its declared range
+   * or its declared tag values ruled it out - so the rows it holds are not part of the answer. A vanished block
+   * was going to be read and is no longer there, because a retention pass deleted its rows or a downsampling
+   * pass replaced it with a coarser block while the walk was between two blocks. The answer is therefore SHORT,
+   * and counting it is what keeps that distinguishable from "no row matched" by a caller that cares - an
+   * {@code EXPORT DATABASE} above all.
+   */
+  public void addVanishedBlock() {
+    vanishedBlocks++;
   }
 
   /**
@@ -125,6 +140,10 @@ public final class AggregationMetrics {
     return slowPathBlocks;
   }
 
+  public int getVanishedBlocks() {
+    return vanishedBlocks;
+  }
+
   public int getSkippedBlocks() {
     return skippedBlocks;
   }
@@ -156,6 +175,7 @@ public final class AggregationMetrics {
     fastPathBlocks += other.fastPathBlocks;
     slowPathBlocks += other.slowPathBlocks;
     skippedBlocks += other.skippedBlocks;
+    vanishedBlocks += other.vanishedBlocks;
     scannedPages += other.scannedPages;
     skippedPages += other.skippedPages;
     materializedRows += other.materializedRows;
@@ -167,9 +187,10 @@ public final class AggregationMetrics {
     final long totalNanos = ioNanos + decompTsNanos + decompValNanos + accumNanos;
     return String.format(
         "AggMetrics[io=%dms decompTs=%dms decompVal=%dms accum=%dms total=%dms | blocks: fast=%d slow=%d skipped=%d"
-            + " | pages: scanned=%d skipped=%d | rows: materialized=%d | buckets: overflow=%d]",
+            + " vanished=%d | pages: scanned=%d skipped=%d | rows: materialized=%d | buckets: overflow=%d]",
         ioNanos / 1_000_000, decompTsNanos / 1_000_000, decompValNanos / 1_000_000,
         accumNanos / 1_000_000, totalNanos / 1_000_000,
-        fastPathBlocks, slowPathBlocks, skippedBlocks, scannedPages, skippedPages, materializedRows, overflowBuckets);
+        fastPathBlocks, slowPathBlocks, skippedBlocks, vanishedBlocks, scannedPages, skippedPages, materializedRows,
+        overflowBuckets);
   }
 }

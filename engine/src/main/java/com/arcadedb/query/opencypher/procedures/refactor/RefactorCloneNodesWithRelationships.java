@@ -43,7 +43,7 @@ import java.util.logging.Level;
 import java.util.stream.Stream;
 
 /**
- * Procedure: refactor.cloneNodesWithRelationships(nodes, config)
+ * Procedure: refactor.cloneNodesWithRelationships(nodes, config = {})
  * <p>
  * Clones each given node - a new vertex of the same type carrying the same properties - together with
  * every relationship touching it in either direction. A relationship whose other endpoint is also being
@@ -60,7 +60,10 @@ import java.util.stream.Stream;
  * ArcadeDB defers uniqueness checking to commit time, so it still fails the whole transaction.
  * </p>
  * <p>
- * {@code config.skipProperties}, when given, is a list of property names excluded from the clone.
+ * {@code config.skipProperties}, when given, is a list of property names excluded from the clone. The whole
+ * {@code config} argument is optional and defaults to an empty map, matching APOC's
+ * {@code apoc.refactor.cloneNodesWithRelationships(nodes :: LIST<NODE>, config = {} :: MAP)} - Cypher written
+ * against Neo4j routinely omits it (issue #7427).
  * </p>
  * <p>
  * Example:
@@ -82,9 +85,14 @@ public class RefactorCloneNodesWithRelationships implements CypherProcedure {
     return NAME;
   }
 
+  /**
+   * One, not two: APOC declares the trailing {@code config} with a default, so a call that omits it is a call this
+   * procedure has to accept (issue #7427). {@link RefactorProcedureArgs#extractOptionalConfig} supplies the empty
+   * map in its place.
+   */
   @Override
   public int getMinArgs() {
-    return 2;
+    return 1;
   }
 
   @Override
@@ -112,7 +120,7 @@ public class RefactorCloneNodesWithRelationships implements CypherProcedure {
     validateArgs(args);
 
     final List<Vertex> nodes = RefactorProcedureArgs.extractVertices(getName(), args[0]);
-    final Map<String, Object> config = RefactorProcedureArgs.extractConfig(getName(), args[1]);
+    final Map<String, Object> config = RefactorProcedureArgs.extractOptionalConfig(getName(), args);
     final Set<String> skipProperties = extractSkipProperties(config);
     final Database database = context.getDatabase();
 

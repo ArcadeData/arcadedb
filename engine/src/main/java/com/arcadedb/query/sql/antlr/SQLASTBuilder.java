@@ -2929,6 +2929,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    */
   @Override
   public BaseExpression visitMapLit(final SQLParser.MapLitContext ctx) {
+    // The BaseExpression WRAP around it is load-bearing beyond this method: it is how
+    // BaseExpression#carriesItsOwnModifierTail() recognises this atom as one the grammar gives a modifier* tail,
+    // and so how a redundant pair of written parentheses around it is kept out of an unaliased projection's name
+    // (issue #7896). Attaching the node raw would slip past that and rename the column.
     final Json json = (Json) visit(ctx.mapLiteral());
 
     // Wrap in Expression
@@ -3519,6 +3523,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    */
   @Override
   public BaseExpression visitArrayLit(final SQLParser.ArrayLitContext ctx) {
+    // The BaseExpression WRAP around it is load-bearing beyond this method: it is how
+    // BaseExpression#carriesItsOwnModifierTail() recognises this atom as one the grammar gives a modifier* tail,
+    // and so how a redundant pair of written parentheses around it is kept out of an unaliased projection's name
+    // (issue #7896). Attaching the node raw would slip past that and rename the column.
     final ArrayLiteralExpression arrayLiteral = new ArrayLiteralExpression();
 
     // Visit each expression in the array literal
@@ -4043,6 +4051,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * Grammar: caseAlternative : WHEN whereClause THEN expression
    */
   public BaseExpression visitCaseExpr(final SQLParser.CaseExprContext ctx) {
+    // The BaseExpression WRAP around it is load-bearing beyond this method: it is how
+    // BaseExpression#carriesItsOwnModifierTail() recognises this atom as one the grammar gives a modifier* tail,
+    // and so how a redundant pair of written parentheses around it is kept out of an unaliased projection's name
+    // (issue #7896). Attaching the node raw would slip past that and rename the column.
     final SQLParser.CaseExpressionContext caseCtx = ctx.caseExpression();
 
     // Build list of alternatives
@@ -4082,6 +4094,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * Grammar: extendedCaseAlternative : WHEN expression THEN expression
    */
   public BaseExpression visitExtendedCaseExpr(final SQLParser.ExtendedCaseExprContext ctx) {
+    // The BaseExpression WRAP around it is load-bearing beyond this method: it is how
+    // BaseExpression#carriesItsOwnModifierTail() recognises this atom as one the grammar gives a modifier* tail,
+    // and so how a redundant pair of written parentheses around it is kept out of an unaliased projection's name
+    // (issue #7896). Attaching the node raw would slip past that and rename the column.
     final SQLParser.ExtendedCaseExpressionContext caseCtx = ctx.extendedCaseExpression();
 
     // Get the case expression (the value being tested) - first expression in the list
@@ -7564,7 +7580,8 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   /**
    * Visit CHECK DATABASE statement.
    * Grammar: CHECK DATABASE (TYPE ident (COMMA ident)*)? (BUCKET (ident|int) (COMMA (ident|int))*)?
-   * (RECORD rid (COMMA rid)*)? (FIX)? (DELETE ORPHANS)? (RECLAIM UNREFERENCED FILES)? (DEEP)? (COMPRESS)?
+   * (RECORD rid (COMMA rid)*)? (FIX)? (DELETE ORPHANS)? (DELETE INVALID RECORDS)? (RECLAIM UNREFERENCED FILES)?
+   * (DEEP)? (COMPRESS)?
    */
   @Override
   public CheckDatabaseStatement visitCheckDatabaseStmt(final SQLParser.CheckDatabaseStmtContext ctx) {
@@ -7623,6 +7640,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // ORPHANS alone identifies the clause - it is the only place the token appears in this statement.
     if (checkCtx.ORPHANS() != null) {
       stmt.deleteOrphans = true;
+    }
+
+    // Parse DELETE INVALID RECORDS flag (#7952): opt-in removal of records that do not satisfy their own type's
+    // existence constraints. INVALID alone identifies the clause - it is the only place the token appears here.
+    if (checkCtx.INVALID() != null) {
+      stmt.deleteInvalidRecords = true;
     }
 
     // Parse RECLAIM UNREFERENCED FILES flag (#6189): opt-in reclaim of files no schema component was ever built
