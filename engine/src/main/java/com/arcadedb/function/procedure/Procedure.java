@@ -24,6 +24,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Stream;
 
 /**
@@ -111,6 +112,35 @@ public interface Procedure {
    * @return stream of results, each containing the yield fields
    */
   Stream<Result> execute(Object[] args, Result inputRow, CommandContext context);
+
+  /**
+   * Executes the procedure telling it which of its {@link #getYieldFields()} the caller is actually going to read.
+   * <p>
+   * A procedure whose fields cost different amounts to produce can skip the ones nobody asked for: {@code
+   * path.subgraphAll} declares {@code nodes} and {@code relationships}, and building {@code relationships} means
+   * materialising one edge record per edge in the component - work that is pure waste under a plain
+   * {@code YIELD nodes} (issue #7976). The set is advisory: a procedure is free to ignore it and produce
+   * everything, and a result still carries whatever fields the procedure put in it, because the {@code YIELD}
+   * projection happens downstream in {@code CallStep} either way.
+   * <p>
+   * {@code requestedYieldFields} is a subset of {@link #getYieldFields()}: a {@code CALL}
+   * with no {@code YIELD}, or with {@code YIELD *}, asks for every declared field. It is empty only for a procedure
+   * that declares no yield fields at all, which is the one case where there is nothing to ask for - so a procedure
+   * decides what to build by asking whether its own field is IN the set, never by reading emptiness as "everything".
+   * The {@code CALL} path never passes {@code null}; an implementation that is also reachable from a direct caller
+   * may still want to treat {@code null} as "everything", the way the three-argument overload does.
+   *
+   * @param args                 the procedure arguments (already evaluated)
+   * @param inputRow             the current input row (may be null for standalone CALL)
+   * @param context              the command execution context
+   * @param requestedYieldFields the declared yield fields the caller will read
+   *
+   * @return stream of results, each containing the yield fields
+   */
+  default Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context,
+      final Set<String> requestedYieldFields) {
+    return execute(args, inputRow, context);
+  }
 
   /**
    * Rejects a call whose argument count falls outside {@link #getMinArgs()}..{@link #getMaxArgs()}.

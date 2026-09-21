@@ -18,24 +18,17 @@
  */
 package com.arcadedb.query.opencypher.procedures.path;
 
-import com.arcadedb.database.RID;
-import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
-import com.arcadedb.graph.EdgeIdentitySet;
-import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
 import com.arcadedb.utility.NumberUtils;
-import com.arcadedb.utility.RidHashSet;
 
-import java.util.ArrayDeque;
-import java.util.HashSet;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Queue;
 import java.util.Set;
 import java.util.stream.Stream;
 
@@ -59,7 +52,9 @@ import java.util.stream.Stream;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class PathSubgraphAll extends AbstractPathProcedure {
-  public static final String NAME = "path.subgraphall";
+  public static final  String       NAME             = "path.subgraphall";
+  private static final List<String> YIELD_FIELDS     = List.of("nodes", "relationships");
+  private static final Set<String>  ALL_YIELD_FIELDS = Set.copyOf(YIELD_FIELDS);
 
   @Override
   public String getName() {
@@ -83,11 +78,21 @@ public class PathSubgraphAll extends AbstractPathProcedure {
 
   @Override
   public List<String> getYieldFields() {
-    return List.of("nodes", "relationships");
+    return YIELD_FIELDS;
   }
 
   @Override
   public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context) {
+    return execute(args, inputRow, context, ALL_YIELD_FIELDS);
+  }
+
+  /**
+   * Under a plain {@code YIELD nodes} - which is how a reachable-component query is written - {@code relationships}
+   * is not built at all, so not one edge record of the component is materialised (issue #7976).
+   */
+  @Override
+  public Stream<Result> execute(final Object[] args, final Result inputRow, final CommandContext context,
+      final Set<String> requestedYieldFields) {
     validateArgs(args);
 
     final Vertex startNode = extractVertex(args[0], "startNode");
@@ -97,67 +102,20 @@ public class PathSubgraphAll extends AbstractPathProcedure {
     final String[] labelFilter = extractLabels(config.get("labelFilter"));
     final int maxLevel = config.containsKey("maxLevel") ? NumberUtils.saturateToInt((Number) config.get("maxLevel")) : Integer.MAX_VALUE;
 
-    // BFS to find all reachable nodes and relationships
-    final Set<Vertex> reachableNodes = new HashSet<>();
-    final Set<Edge> reachableEdges = new HashSet<>();
-    final RidHashSet visitedNodes = new RidHashSet();
-    final EdgeIdentitySet visitedEdges = new EdgeIdentitySet();
-    final Queue<VertexLevel> queue = new ArrayDeque<>();
+    final boolean withRelationships = requestedYieldFields == null || requestedYieldFields.contains("relationships");
 
-    queue.add(new VertexLevel(startNode, 0));
-    visitedNodes.add(startNode.getIdentity());
-    reachableNodes.add(startNode);
+    final List<Vertex> reachableNodes = new ArrayList<>();
+    final List<Edge> reachableEdges = withRelationships ? new ArrayList<>() : null;
 
-    while (!queue.isEmpty()) {
-      final VertexLevel current = queue.poll();
-
-      if (current.level >= maxLevel) {
-        continue;
-      }
-
-      // Expand in both directions
-      for (final Vertex.DIRECTION direction : new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN }) {
-        final Iterable<Edge> edges = relTypes != null && relTypes.length > 0
-            ? current.vertex.getEdges(direction, relTypes)
-            : current.vertex.getEdges(direction);
-
-        for (final Edge edge : edges) {
-          try {
-            final Vertex neighbor = direction == Vertex.DIRECTION.OUT ? edge.getInVertex() : edge.getOutVertex();
-            final RID neighborId = neighbor.getIdentity();
-
-            final RID edgeId = edge.getIdentity();
-            if (!visitedEdges.contains(edgeId)) {
-              visitedEdges.add(edgeId);
-              reachableEdges.add(edge);
-            }
-
-            if (!visitedNodes.contains(neighborId) && matchesLabels(neighbor, labelFilter)) {
-              visitedNodes.add(neighborId);
-              reachableNodes.add(neighbor);
-              queue.add(new VertexLevel(neighbor, current.level + 1));
-            }
-          } catch (final RecordNotFoundException e) {
-            GhostEdgeReporter.reportSkipped(e);
-          }
-        }
-      }
-    }
+    collectReachableComponent(startNode, relTypes, labelFilter, maxLevel, reachableNodes, reachableEdges);
 
     final ResultInternal result = new ResultInternal();
-    result.setProperty("nodes", List.copyOf(reachableNodes));
-    result.setProperty("relationships", List.copyOf(reachableEdges));
+    result.setProperty("nodes", reachableNodes);
+    // An empty list rather than nothing when the field was not asked for: the YIELD projection in CallStep drops it
+    // before anyone can read it, and a declared field that is absent altogether reads as null to any path that skips
+    // that projection, which is a worse answer than "none collected"
+    result.setProperty("relationships", withRelationships ? reachableEdges : List.of());
 
     return Stream.of(result);
-  }
-
-  private static class VertexLevel {
-    final Vertex vertex;
-    final int level;
-
-    VertexLevel(final Vertex vertex, final int level) {
-      this.vertex = vertex;
-      this.level = level;
-    }
   }
 }
