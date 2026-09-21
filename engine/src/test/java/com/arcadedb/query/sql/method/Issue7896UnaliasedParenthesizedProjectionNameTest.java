@@ -23,6 +23,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -45,7 +46,7 @@ class Issue7896UnaliasedParenthesizedProjectionNameTest extends TestHelper {
   @Override
   protected void beginTest() {
     database.getSchema().createDocumentType("T7896");
-    database.transaction(() -> database.newDocument("T7896").set("name", "bob").set("tags", java.util.List.of("a", "b")).save());
+    database.transaction(() -> database.newDocument("T7896").set("name", "bob").set("tags", List.of("a", "b")).save());
   }
 
   @Test
