@@ -110,6 +110,23 @@ public class Issue8041BigIntegerDivisionTest extends TestHelper {
     assertThat(third.precision()).isGreaterThan(30);
   }
 
+  /**
+   * A negative operand on either side, or both. The exact divide and the scale floor are both sign-agnostic, but
+   * the rounding mode is not - HALF_UP rounds away from zero - so the sign belongs in the test rather than in an
+   * assumption (PR #8093 review).
+   */
+  @Test
+  void signIsCarriedThroughTheQuotient() {
+    assertThat(divide(BigInteger.valueOf(-7), BigInteger.TWO)).isEqualByComparingTo("-3.5");
+    assertThat(divide(BigInteger.valueOf(7), BigInteger.valueOf(-2))).isEqualByComparingTo("-3.5");
+    assertThat(divide(BigInteger.valueOf(-7), BigInteger.valueOf(-2))).isEqualByComparingTo("3.5");
+    assertThat(divide(BigInteger.valueOf(-1), BigInteger.TWO)).isEqualByComparingTo("-0.5");
+    assertThat(divide(new BigDecimal("-10.00"), new BigDecimal("2.00")).toPlainString()).isEqualTo("-5.00");
+    // The non-terminating fallback, mirrored about zero: -1/3 must be the negation of 1/3 to the last digit.
+    assertThat(divide(BigInteger.valueOf(-1), BigInteger.valueOf(3)))
+        .isEqualByComparingTo(divide(BigInteger.ONE, BigInteger.valueOf(3)).negate());
+  }
+
   /** The other operators were never affected, and must not become so. */
   @Test
   void theOtherOperatorsAreUnchanged() {
