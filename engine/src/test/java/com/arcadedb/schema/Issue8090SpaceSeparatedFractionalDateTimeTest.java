@@ -450,6 +450,38 @@ class Issue8090SpaceSeparatedFractionalDateTimeTest extends TestHelper {
   }
 
   /**
+   * A {@code DATE} property refuses an unreadable string exactly as a {@code DATETIME_MICROS} one does. Both target
+   * classes behind it changed error path in this fix - {@code LocalDate}'s no-database branch used to fall off the
+   * end and answer the original String, and {@code convertToDate} used to guess by length and give up - so the
+   * refusal is pinned for each rather than assumed to follow from the datetime case.
+   */
+  @Test
+  void aDatePropertyAlsoRefusesAnUnreadableString() {
+    database.getSchema().createDocumentType("Ev8090Date").createProperty("d", Type.DATE);
+
+    database.transaction(() -> {
+      assertThatThrownBy(() -> database.newDocument("Ev8090Date").set("d", "not-a-date").save())//
+          .isInstanceOf(IllegalArgumentException.class)//
+          .rootCause().hasMessageContaining("not-a-date");
+
+      assertThat(database.countType("Ev8090Date", false)).isZero();
+
+      // ...and it still reads the spellings it should, including the one this issue is about.
+      assertThat(database.newDocument("Ev8090Date").set("d", "2024-02-29 13:45:10.123456").get("d")).isEqualTo(
+          LocalDate.of(2024, 2, 29));
+    });
+
+    // Both target classes directly, since the property type only exercises whichever one is configured.
+    assertThatThrownBy(() -> Type.convert(database, "not-a-date", LocalDate.class))//
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(database, "not-a-date", Date.class))//
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convert(null, "not-a-date", LocalDate.class))//
+        .as("no database in scope: used to answer the original String, now refuses")
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  /**
    * {@code java.util.Date} is the other target class fed by the same literal shape.
    */
   @Test
