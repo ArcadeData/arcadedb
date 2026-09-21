@@ -572,4 +572,73 @@ class RefactorMergeNodesTest {
 
     assertThat(tag).isEqualTo(List.of());
   }
+
+  /**
+   * Issue #8099, follow-up to #7428: a property whose value is a Java array - the shape a vector embedding takes -
+   * is not a {@code List}, so the de-duplication above never saw it; array {@code equals} is identity, so two
+   * nodes carrying the "same" embedding as two distinct {@code float[]} instances used to produce a two-element
+   * list of duplicates instead of collapsing like every other equal contribution does.
+   */
+  @Test
+  void combinePolicyCollapsesEqualFloatArraysToTheArray() {
+    database.begin();
+    database.newVertex("Person").set("name", "A").set("vec", new float[] { 1f, 2f }).save();
+    database.newVertex("Person").set("name", "B").set("vec", new float[] { 1f, 2f }).save();
+    database.commit();
+
+    database.begin();
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (a:Person {name:'A'}), (b:Person {name:'B'}) "
+            + "CALL apoc.refactor.mergeNodes([a,b], {properties: 'combine'}) YIELD node RETURN node.vec AS vec");
+    final Object vec = rs.next().getProperty("vec");
+    database.commit();
+
+    assertThat(vec).isInstanceOf(float[].class);
+    assertThat((float[]) vec).containsExactly(1f, 2f);
+  }
+
+  /**
+   * Two genuinely different arrays are kept as two separate entries, each the single array it was - not
+   * flattened element-by-element the way a {@code List} property is, since concatenating two embeddings would
+   * not be a merge a caller could make sense of.
+   */
+  @Test
+  void combinePolicyKeepsDistinctFloatArraysAsSeparateListElements() {
+    database.begin();
+    database.newVertex("Person").set("name", "A").set("vec", new float[] { 1f, 2f }).save();
+    database.newVertex("Person").set("name", "B").set("vec", new float[] { 3f, 4f }).save();
+    database.commit();
+
+    database.begin();
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (a:Person {name:'A'}), (b:Person {name:'B'}) "
+            + "CALL apoc.refactor.mergeNodes([a,b], {properties: 'combine'}) YIELD node RETURN node.vec AS vec");
+    final Object vec = rs.next().getProperty("vec");
+    database.commit();
+
+    assertThat(vec).isInstanceOf(List.class);
+    final List<?> combined = (List<?>) vec;
+    assertThat(combined).hasSize(2);
+    assertThat((float[]) combined.get(0)).containsExactly(1f, 2f);
+    assertThat((float[]) combined.get(1)).containsExactly(3f, 4f);
+  }
+
+  /** Same content-equality collapse, on a different element type, to pin that the fix is not float[]-specific. */
+  @Test
+  void combinePolicyCollapsesEqualIntArraysToTheArray() {
+    database.begin();
+    database.newVertex("Person").set("name", "A").set("vec", new int[] { 1, 2, 3 }).save();
+    database.newVertex("Person").set("name", "B").set("vec", new int[] { 1, 2, 3 }).save();
+    database.commit();
+
+    database.begin();
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (a:Person {name:'A'}), (b:Person {name:'B'}) "
+            + "CALL apoc.refactor.mergeNodes([a,b], {properties: 'combine'}) YIELD node RETURN node.vec AS vec");
+    final Object vec = rs.next().getProperty("vec");
+    database.commit();
+
+    assertThat(vec).isInstanceOf(int[].class);
+    assertThat((int[]) vec).containsExactly(1, 2, 3);
+  }
 }
