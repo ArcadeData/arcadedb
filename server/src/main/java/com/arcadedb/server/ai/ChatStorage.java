@@ -35,9 +35,12 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Level;
+import java.util.regex.Pattern;
 
 /**
  * File-based storage for AI chat conversations.
@@ -52,7 +55,21 @@ public class ChatStorage {
   private static final int            LOCK_STRIPES = 64;
   private final        ReentrantLock[] writeLocks   = new ReentrantLock[LOCK_STRIPES];
 
+  // Names emitted by hashUsername(): a legacy directory matching this shape is somebody's live
+  // hashed store, never a pre-hash directory, so the migration must not touch it. Matched
+  // case-insensitively because NTFS and the default macOS APFS/HFS+ configuration are: there,
+  // "chats/ABC...DEF" and "chats/abc...def" are one directory, so an upper-case spelling of a
+  // digest would otherwise pass this test and still resolve onto the victim's store.
+  private static final Pattern HASHED_DIR_NAME = Pattern.compile("[0-9a-fA-F]{64}");
+
   private final String rootPath;
+
+  // Legacy directory NAMES whose refused migration has already been reported, so the operator gets
+  // the message once per name instead of once per request. Names only, and never cleared: if an
+  // operator resolves a flagged directory and a later one sanitizes to the same name, that one is
+  // refused silently until the next restart. The refusal itself is always re-evaluated - this set
+  // gates only the logging - so resolving a directory still takes effect immediately.
+  private final Set<String> reportedLegacyDirectories = ConcurrentHashMap.newKeySet();
 
   public ChatStorage(final String rootPath) {
     this.rootPath = rootPath;
@@ -193,18 +210,60 @@ public class ChatStorage {
    * a release that predates the hash keeps serving each user's existing chat history instead of
    * silently orphaning it under the old directory name.
    *
-   * <p>This cannot reproduce the collision the hash was introduced to fix: two usernames that used
-   * to sanitize to the same legacy directory raced to READ that shared, ambiguous directory forever.
-   * Here the first of the two to be looked up after the upgrade claims the legacy directory by
-   * renaming it away, so the second one finds nothing left to migrate and starts a fresh, private,
-   * empty hashed directory - it can no longer see the first user's history.
+   * <p>The legacy directory name is derived from user-controlled text, so before moving anything
+   * this checks that the name identifies exactly one user and is not already somebody's live store.
+   * Two directories are refused (see #7620), and a refusal is not an error: the directory stays
+   * where it is, intact, and the user simply starts with an empty store under their hash.
+   *
+   * <ol>
+   * <li><b>A name with the shape of a hashed store</b> ({@code [0-9a-fA-F]{64}}) is never moved.
+   * {@link #sanitizeFilename(String)} leaves hex digits alone, and {@link #hashUsername(String)}
+   * emits exactly 64 lowercase hex characters, so a user who names themselves another user's digest
+   * would otherwise have the victim's current, live directory moved into their own on first access.
+   * This needs no legacy layout to have ever existed - it is reachable on a fresh install. Matched
+   * case-insensitively on purpose: an upper-case spelling of a digest is a different string but, on
+   * a case-insensitive filesystem, the same directory.</li>
+   * <li><b>A name more than one username could have produced</b> is never moved. Because
+   * {@code sanitizeFilename} only ever rewrites a character <i>to</i> {@code '_'}, a name containing
+   * no {@code '_'} has exactly one preimage - itself - and is safe to claim; a name containing one
+   * has infinitely many ({@code user@corp.com}, {@code user.corp.com} and {@code user_corp_com} all
+   * produced {@code user_corp_com}). Awarding such a shared directory to whichever of them is looked
+   * up first would hand that user read and delete access to the others' chats, which is the
+   * cross-user access #7113 set out to remove rather than a fix for it.</li>
+   * </ol>
+   *
+   * <p>Resolving an ambiguous directory needs to know which chat belonged to whom, which is not
+   * recoverable from the file tree, so it is left to an operator and reported once per directory.
    */
   private void migrateLegacyDirectoryIfPresent(final String username, final File hashedDir) {
     if (hashedDir.exists())
       return;
-    final File legacyDir = Paths.get(rootPath, "chats", sanitizeFilename(username)).toFile();
+    final String legacyName = sanitizeFilename(username);
+    final File legacyDir = Paths.get(rootPath, "chats", legacyName).toFile();
     if (!legacyDir.exists() || legacyDir.equals(hashedDir))
       return;
+
+    if (HASHED_DIR_NAME.matcher(legacyName).matches()) {
+      warnOncePerLegacyDirectory(legacyName,
+          "Refusing to migrate legacy chat directory '%s': the name has the shape of a hashed chat store, so it is or could become another "
+              + "user's live directory. The account using this name starts with an empty chat store.");
+      return;
+    }
+
+    if (legacyName.indexOf('_') >= 0) {
+      warnOncePerLegacyDirectory(legacyName,
+          "Refusing to migrate legacy chat directory '%s': more than one user name maps onto it, so its chats cannot be attributed to a "
+              + "single user. It has been left untouched - move each chat under the owner's hashed directory by hand to restore it.");
+      return;
+    }
+
+    if (!isSpelledExactlyOnDisk(legacyDir, legacyName)) {
+      warnOncePerLegacyDirectory(legacyName,
+          "Refusing to migrate legacy chat directory '%s': the directory that name resolves to is spelled differently on disk, so on this "
+              + "case-insensitive filesystem it belongs to a different user name. It has been left untouched.");
+      return;
+    }
+
     try {
       Files.move(legacyDir.toPath(), hashedDir.toPath());
     } catch (final IOException e) {
@@ -213,6 +272,56 @@ public class ChatStorage {
       // directory is left standing is authoritative and the caller just proceeds with hashedDir.
       LogManager.instance().log(this, Level.FINE, "Could not migrate legacy chat directory: %s", e.getMessage());
     }
+  }
+
+  /**
+   * Whether {@code legacyDir} is really the entry named {@code legacyName}, rather than one whose
+   * name merely matches it under the filesystem's own comparison.
+   *
+   * <p>{@link File#exists()} asks the filesystem, and NTFS and the default macOS APFS/HFS+
+   * configuration compare names case-insensitively, so {@code chats/Alice} "exists" whenever
+   * {@code chats/alice} does. Two user names differing only in case hash to two different, correct
+   * directories, but sanitize to two spellings of one legacy directory - and whichever of them is
+   * looked up first would otherwise migrate the other's chats. Comparing against the parent's own
+   * listing is the only portable way to ask what the entry is actually called.
+   *
+   * <p>It is O(entries in {@code chats/}) rather than O(1), which is why it is placed last of the
+   * three checks: only a candidate that has already passed the other two reaches it. Where the
+   * migration then succeeds the cost is paid once, because the hashed directory now exists and every
+   * later lookup returns at the top of {@code migrateLegacyDirectoryIfPresent}. Where this check is
+   * what refuses the move, though, nothing changes on disk, so it runs again on every request from
+   * that user until an operator resolves the directory - a flat per-server listing each time, not a
+   * one-off.
+   *
+   * <p>Package-private rather than private so the comparison can be exercised directly: reaching it
+   * through the migration needs a case-insensitive filesystem, and CI runs on a case-sensitive one.
+   */
+  static boolean isSpelledExactlyOnDisk(final File legacyDir, final String legacyName) {
+    final String[] entries = legacyDir.getParentFile().list();
+    if (entries == null)
+      return false;
+    for (final String entry : entries)
+      if (entry.equals(legacyName))
+        return true;
+    return false;
+  }
+
+  /**
+   * Reports a refused migration once per legacy directory name rather than once per request: the
+   * refusal is re-evaluated on every read for a user who never writes, and an operator needs the
+   * message once, not in a loop.
+   *
+   * <p>The set's SIZE is bounded - an entry is only ever added for a directory that exists on disk,
+   * and every directory this class creates is hash-named, so an API caller cannot grow it. That
+   * bound assumes nothing else writes arbitrary directory names under {@code chats/}, which is true
+   * today; a feature that let an admin or an import job create named directories there would have to
+   * revisit it. Its CONTENTS go
+   * stale: entries are never removed, so a name whose directory an operator has since resolved stays
+   * marked as reported for the life of the server. That costs a log line, not a decision.
+   */
+  private void warnOncePerLegacyDirectory(final String legacyName, final String message) {
+    if (reportedLegacyDirectories.add(legacyName))
+      LogManager.instance().log(this, Level.WARNING, message, legacyName);
   }
 
   private File getChatFile(final String username, final String chatId) {
