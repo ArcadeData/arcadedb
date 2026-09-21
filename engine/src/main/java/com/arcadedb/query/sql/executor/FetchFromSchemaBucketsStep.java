@@ -22,11 +22,9 @@ import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
-import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.security.SecurityDatabaseUser;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -35,81 +33,45 @@ import java.util.stream.Collectors;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class FetchFromSchemaBucketsStep extends AbstractExecutionStep {
-
-  private final List<ResultInternal> result = new ArrayList<>();
-
-  private int cursor = 0;
+public class FetchFromSchemaBucketsStep extends AbstractFetchFromSchemaListStep {
 
   public FetchFromSchemaBucketsStep(final CommandContext context) {
     super(context);
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    pullPrevious(context, nRecords);
+  protected void fetchListing(final CommandContext context) {
+    final Schema schema = context.getDatabase().getSchema();
 
-    if (cursor == 0) {
-      final long begin = context.isProfiling() ? System.nanoTime() : 0;
-      try {
-        final Schema schema = context.getDatabase().getSchema();
+    final SecurityDatabaseUser currentUser = currentUser(context);
 
-        final SecurityDatabaseUser currentUser = currentUser(context);
+    final List<String> orderedBuckets = schema.getBuckets().stream().map(x -> x.getName()).sorted(String::compareToIgnoreCase)
+        .collect(Collectors.toList());
+    for (final String bucketName : orderedBuckets) {
+      final Bucket bucket = schema.getBucketByName(bucketName);
 
-        final List<String> orderedBuckets = schema.getBuckets().stream().map(x -> x.getName()).sorted(String::compareToIgnoreCase)
-            .collect(Collectors.toList());
-        for (final String bucketName : orderedBuckets) {
-          final Bucket bucket = schema.getBucketByName(bucketName);
+      // Hide buckets the current user cannot read instead of throwing, the same way schema:types hides
+      // restricted types (issue #4238): countBucket() below checks the same permission and throws on the
+      // first denied bucket, which aborted the whole listing - and with it every remote-client call that
+      // goes through it - for a user allowed to see all the others. A null user (embedded usage, or no
+      // security context) sees everything, and so does a bucket the security map does not cover.
+      if (currentUser != null && !currentUser.requestAccessOnFile(bucket.getFileId(),
+          SecurityDatabaseUser.ACCESS.READ_RECORD))
+        continue;
 
-          // Hide buckets the current user cannot read instead of throwing, the same way schema:types hides
-          // restricted types (issue #4238): countBucket() below checks the same permission and throws on the
-          // first denied bucket, which aborted the whole listing - and with it every remote-client call that
-          // goes through it - for a user allowed to see all the others. A null user (embedded usage, or no
-          // security context) sees everything, and so does a bucket the security map does not cover.
-          if (currentUser != null && !currentUser.requestAccessOnFile(bucket.getFileId(),
-              SecurityDatabaseUser.ACCESS.READ_RECORD))
-            continue;
+      final ResultInternal r = new ResultInternal(context.getDatabase());
+      result.add(r);
 
-          final ResultInternal r = new ResultInternal(context.getDatabase());
-          result.add(r);
+      r.setProperty("name", bucket.getName());
+      r.setProperty("fileId", bucket.getFileId());
+      r.setProperty("records", context.getDatabase().countBucket(bucketName));
+      // The bucket's purpose lets tooling (Studio etc.) hide or label internal buckets like paired
+      // external-property buckets. Filter via `WHERE purpose = 'PRIMARY'` to see only user-targetable ones.
+      if (bucket instanceof LocalBucket lb)
+        r.setProperty("purpose", lb.getPurpose().name());
 
-          r.setProperty("name", bucket.getName());
-          r.setProperty("fileId", bucket.getFileId());
-          r.setProperty("records", context.getDatabase().countBucket(bucketName));
-          // The bucket's purpose lets tooling (Studio etc.) hide or label internal buckets like paired
-          // external-property buckets. Filter via `WHERE purpose = 'PRIMARY'` to see only user-targetable ones.
-          if (bucket instanceof LocalBucket lb)
-            r.setProperty("purpose", lb.getPurpose().name());
-
-          context.setVariable("current", r);
-        }
-      } finally {
-        if (context.isProfiling()) {
-          cost += System.nanoTime() - begin;
-        }
-      }
+      context.setVariable("current", r);
     }
-    return new ResultSet() {
-      @Override
-      public boolean hasNext() {
-        return cursor < result.size();
-      }
-
-      @Override
-      public Result next() {
-        return result.get(cursor++);
-      }
-
-      @Override
-      public void close() {
-        result.clear();
-      }
-
-      @Override
-      public void reset() {
-        cursor = 0;
-      }
-    };
   }
 
   private static SecurityDatabaseUser currentUser(final CommandContext context) {

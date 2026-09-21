@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.MaterializedView;
 
 import java.util.ArrayList;
@@ -30,83 +29,47 @@ import java.util.stream.Collectors;
 /**
  * Returns an Result containing metadata regarding the materialized views.
  */
-public class FetchFromSchemaMaterializedViewsStep extends AbstractExecutionStep {
-
-  private final List<ResultInternal> result = new ArrayList<>();
-
-  private int cursor = 0;
+public class FetchFromSchemaMaterializedViewsStep extends AbstractFetchFromSchemaListStep {
 
   public FetchFromSchemaMaterializedViewsStep(final CommandContext context) {
     super(context);
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    pullPrevious(context, nRecords);
+  protected void fetchListing(final CommandContext context) {
+    final MaterializedView[] views = context.getDatabase().getSchema().getMaterializedViews();
 
-    if (cursor == 0) {
-      final long begin = context.isProfiling() ? System.nanoTime() : 0;
-      try {
-        final MaterializedView[] views = context.getDatabase().getSchema().getMaterializedViews();
+    final List<MaterializedView> orderedViews = Arrays.stream(views)
+        .sorted(Comparator.comparing(MaterializedView::getName, String::compareToIgnoreCase))
+        .collect(Collectors.toList());
 
-        final List<MaterializedView> orderedViews = Arrays.stream(views)
-            .sorted(Comparator.comparing(MaterializedView::getName, String::compareToIgnoreCase))
-            .collect(Collectors.toList());
+    for (final MaterializedView view : orderedViews) {
+      final ResultInternal r = new ResultInternal(context.getDatabase());
+      result.add(r);
 
-        for (final MaterializedView view : orderedViews) {
-          final ResultInternal r = new ResultInternal(context.getDatabase());
-          result.add(r);
+      r.setProperty("name", view.getName());
+      r.setProperty("query", view.getQuery());
+      r.setProperty("backingType", view.getBackingType().getName());
+      r.setProperty("refreshMode", view.getRefreshMode().name());
+      r.setProperty("simpleQuery", view.isSimpleQuery());
+      r.setProperty("lastRefreshTime", view.getLastRefreshTime());
+      r.setProperty("status", view.getStatus());
+      r.setProperty("sourceTypes", new ArrayList<>(view.getSourceTypeNames()));
 
-          r.setProperty("name", view.getName());
-          r.setProperty("query", view.getQuery());
-          r.setProperty("backingType", view.getBackingType().getName());
-          r.setProperty("refreshMode", view.getRefreshMode().name());
-          r.setProperty("simpleQuery", view.isSimpleQuery());
-          r.setProperty("lastRefreshTime", view.getLastRefreshTime());
-          r.setProperty("status", view.getStatus());
-          r.setProperty("sourceTypes", new ArrayList<>(view.getSourceTypeNames()));
+      r.setProperty("refreshInterval", view.getRefreshInterval());
 
-          r.setProperty("refreshInterval", view.getRefreshInterval());
+      // Runtime metrics
+      r.setProperty("refreshCount", view.getRefreshCount());
+      r.setProperty("refreshTotalTimeMs", view.getRefreshTotalTimeMs());
+      r.setProperty("refreshMinTimeMs", view.getRefreshMinTimeMs());
+      r.setProperty("refreshMaxTimeMs", view.getRefreshMaxTimeMs());
+      final long count = view.getRefreshCount();
+      r.setProperty("refreshAvgTimeMs", count > 0 ? view.getRefreshTotalTimeMs() / count : 0L);
+      r.setProperty("errorCount", view.getErrorCount());
+      r.setProperty("lastRefreshDurationMs", view.getLastRefreshDurationMs());
 
-          // Runtime metrics
-          r.setProperty("refreshCount", view.getRefreshCount());
-          r.setProperty("refreshTotalTimeMs", view.getRefreshTotalTimeMs());
-          r.setProperty("refreshMinTimeMs", view.getRefreshMinTimeMs());
-          r.setProperty("refreshMaxTimeMs", view.getRefreshMaxTimeMs());
-          final long count = view.getRefreshCount();
-          r.setProperty("refreshAvgTimeMs", count > 0 ? view.getRefreshTotalTimeMs() / count : 0L);
-          r.setProperty("errorCount", view.getErrorCount());
-          r.setProperty("lastRefreshDurationMs", view.getLastRefreshDurationMs());
-
-          context.setVariable("current", r);
-        }
-      } finally {
-        if (context.isProfiling()) {
-          cost += System.nanoTime() - begin;
-        }
-      }
+      context.setVariable("current", r);
     }
-    return new ResultSet() {
-      @Override
-      public boolean hasNext() {
-        return cursor < result.size();
-      }
-
-      @Override
-      public Result next() {
-        return result.get(cursor++);
-      }
-
-      @Override
-      public void close() {
-        // nothing to release — backing data is schema metadata held in memory
-      }
-
-      @Override
-      public void reset() {
-        cursor = 0;
-      }
-    };
   }
 
   @Override

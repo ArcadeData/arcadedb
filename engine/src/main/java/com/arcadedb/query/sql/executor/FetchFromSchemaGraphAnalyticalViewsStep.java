@@ -19,7 +19,6 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.graph.olap.GraphAnalyticalViewPersistence;
 import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
@@ -33,89 +32,53 @@ import java.util.List;
 /**
  * Returns an Result containing metadata regarding the graph analytical views.
  */
-public class FetchFromSchemaGraphAnalyticalViewsStep extends AbstractExecutionStep {
-
-  private final List<ResultInternal> result = new ArrayList<>();
-
-  private int cursor = 0;
+public class FetchFromSchemaGraphAnalyticalViewsStep extends AbstractFetchFromSchemaListStep {
 
   public FetchFromSchemaGraphAnalyticalViewsStep(final CommandContext context) {
     super(context);
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    pullPrevious(context, nRecords);
+  protected void fetchListing(final CommandContext context) {
+    final Database database = context.getDatabase();
+    final JSONObject extension = database.getSchema().getExtension(GraphAnalyticalViewPersistence.EXTENSION_KEY);
+    if (extension != null) {
+      final List<String> names = new ArrayList<>(extension.keySet());
+      Collections.sort(names, String::compareToIgnoreCase);
 
-    if (cursor == 0) {
-      final long begin = context.isProfiling() ? System.nanoTime() : 0;
-      try {
-        final Database database = context.getDatabase();
-        final JSONObject extension = database.getSchema().getExtension(GraphAnalyticalViewPersistence.EXTENSION_KEY);
-        if (extension != null) {
-          final List<String> names = new ArrayList<>(extension.keySet());
-          Collections.sort(names, String::compareToIgnoreCase);
+      for (final String name : names) {
+        final JSONObject gavDef = extension.getJSONObject(name);
+        final ResultInternal r = new ResultInternal(database);
+        result.add(r);
 
-          for (final String name : names) {
-            final JSONObject gavDef = extension.getJSONObject(name);
-            final ResultInternal r = new ResultInternal(database);
-            result.add(r);
+        r.setProperty("name", gavDef.getString("name"));
+        r.setProperty("vertexTypes", jsonArrayToList(gavDef.getJSONArray("vertexTypes", null)));
+        r.setProperty("edgeTypes", jsonArrayToList(gavDef.getJSONArray("edgeTypes", null)));
+        r.setProperty("propertyFilter", jsonArrayToList(gavDef.getJSONArray("propertyFilter", null)));
+        r.setProperty("edgePropertyFilter", jsonArrayToList(gavDef.getJSONArray("edgePropertyFilter", null)));
+        r.setProperty("updateMode", gavDef.getString("updateMode", "OFF"));
+        r.setProperty("compactionThreshold", gavDef.getInt("compactionThreshold", 10000));
 
-            r.setProperty("name", gavDef.getString("name"));
-            r.setProperty("vertexTypes", jsonArrayToList(gavDef.getJSONArray("vertexTypes", null)));
-            r.setProperty("edgeTypes", jsonArrayToList(gavDef.getJSONArray("edgeTypes", null)));
-            r.setProperty("propertyFilter", jsonArrayToList(gavDef.getJSONArray("propertyFilter", null)));
-            r.setProperty("edgePropertyFilter", jsonArrayToList(gavDef.getJSONArray("edgePropertyFilter", null)));
-            r.setProperty("updateMode", gavDef.getString("updateMode", "OFF"));
-            r.setProperty("compactionThreshold", gavDef.getInt("compactionThreshold", 10000));
-
-            // Enrich with live stats from in-memory registry
-            final GraphAnalyticalView liveView = GraphAnalyticalViewRegistry.get(database, name);
-            if (liveView != null && liveView.isBuilt()) {
-              r.setProperty("status", liveView.getStatus().name());
-              r.setProperty("nodeCount", liveView.getNodeCount());
-              r.setProperty("edgeCount", liveView.getEdgeCount());
-              r.setProperty("memoryUsageBytes", liveView.getMemoryUsageBytes());
-              r.setProperty("buildTimestamp", liveView.getBuildTimestamp());
-              r.setProperty("buildDurationMs", liveView.getBuildDurationMs());
-            } else {
-              r.setProperty("status", liveView != null ? liveView.getStatus().name() : "NOT_BUILT");
-              r.setProperty("nodeCount", 0);
-              r.setProperty("edgeCount", 0);
-              r.setProperty("memoryUsageBytes", 0L);
-              r.setProperty("buildDurationMs", 0L);
-            }
-
-            context.setVariable("current", r);
-          }
+        // Enrich with live stats from in-memory registry
+        final GraphAnalyticalView liveView = GraphAnalyticalViewRegistry.get(database, name);
+        if (liveView != null && liveView.isBuilt()) {
+          r.setProperty("status", liveView.getStatus().name());
+          r.setProperty("nodeCount", liveView.getNodeCount());
+          r.setProperty("edgeCount", liveView.getEdgeCount());
+          r.setProperty("memoryUsageBytes", liveView.getMemoryUsageBytes());
+          r.setProperty("buildTimestamp", liveView.getBuildTimestamp());
+          r.setProperty("buildDurationMs", liveView.getBuildDurationMs());
+        } else {
+          r.setProperty("status", liveView != null ? liveView.getStatus().name() : "NOT_BUILT");
+          r.setProperty("nodeCount", 0);
+          r.setProperty("edgeCount", 0);
+          r.setProperty("memoryUsageBytes", 0L);
+          r.setProperty("buildDurationMs", 0L);
         }
-      } finally {
-        if (context.isProfiling()) {
-          cost += System.nanoTime() - begin;
-        }
+
+        context.setVariable("current", r);
       }
     }
-    return new ResultSet() {
-      @Override
-      public boolean hasNext() {
-        return cursor < result.size();
-      }
-
-      @Override
-      public Result next() {
-        return result.get(cursor++);
-      }
-
-      @Override
-      public void close() {
-        // nothing to release — backing data is schema metadata held in memory
-      }
-
-      @Override
-      public void reset() {
-        cursor = 0;
-      }
-    };
   }
 
   private static List<String> jsonArrayToList(final JSONArray array) {

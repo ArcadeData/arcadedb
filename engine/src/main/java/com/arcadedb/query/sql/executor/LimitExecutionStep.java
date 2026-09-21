@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.Limit;
 
+import java.util.NoSuchElementException;
 import java.util.Optional;
 
 /**
@@ -54,11 +55,17 @@ public class LimitExecutionStep extends AbstractExecutionStep {
     return new ResultSet() {
       @Override
       public boolean hasNext() {
-        return upstream.hasNext();
+        // APPLY the limit, do not merely count towards it: a source step is free to hand back more rows than the
+        // nextBlockSize it was asked for, and the whole FetchFromSchema* family used to hand back its entire
+        // listing in one batch, so `LIMIT 2` over six types answered six rows (issue #7898). #7799 fixed what this
+        // step COUNTS; this is the cut-off it was still inheriting from whatever upstream chose to send.
+        return loaded < limitVal && upstream.hasNext();
       }
 
       @Override
       public Result next() {
+        if (loaded >= limitVal)
+          throw new NoSuchElementException();
         final Result result = upstream.next();
         loaded++;
         return result;

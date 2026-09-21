@@ -19,14 +19,12 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Trigger;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityHelper;
 
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
@@ -48,13 +46,7 @@ import java.util.List;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class FetchFromSchemaTriggersStep extends AbstractExecutionStep {
-
-  /** The whole listing, materialised on the first pull. */
-  private final List<ResultInternal> result = new ArrayList<>();
-
-  /** How far {@link #result} has been handed out. */
-  private int cursor = 0;
+public class FetchFromSchemaTriggersStep extends AbstractFetchFromSchemaListStep {
 
   /**
    * Builds the step. The listing itself is not read until the first pull.
@@ -66,66 +58,34 @@ public class FetchFromSchemaTriggersStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
-    pullPrevious(context, nRecords);
+  protected void fetchListing(final CommandContext context) {
+    final DatabaseInternal database = context.getDatabase();
+    final Schema           schema   = database.getSchema();
 
-    if (cursor == 0) {
-      final long begin = context.isProfiling() ? System.nanoTime() : 0;
-      try {
-        final DatabaseInternal database = context.getDatabase();
-        final Schema           schema   = database.getSchema();
+    final List<Trigger> ordered = Arrays.stream(schema.getTriggers())
+        .sorted(Comparator.comparing(Trigger::getName, String::compareToIgnoreCase))
+        .toList();
 
-        final List<Trigger> ordered = Arrays.stream(schema.getTriggers())
-            .sorted(Comparator.comparing(Trigger::getName, String::compareToIgnoreCase))
-            .toList();
+    for (final Trigger trigger : ordered) {
+      final String typeName = trigger.getTypeName();
+      final DocumentType type = typeName != null && schema.existsType(typeName) ? schema.getType(typeName) : null;
+      // The DatabaseInternal overload, which resolves the bound user itself, rather than a fourth private copy
+      // of the currentUser(context) helper the sibling steps each carry.
+      if (type != null && !SecurityHelper.canAccessType(database, type, SecurityDatabaseUser.ACCESS.READ_RECORD))
+        continue;
 
-        for (final Trigger trigger : ordered) {
-          final String typeName = trigger.getTypeName();
-          final DocumentType type = typeName != null && schema.existsType(typeName) ? schema.getType(typeName) : null;
-          // The DatabaseInternal overload, which resolves the bound user itself, rather than a fourth private copy
-          // of the currentUser(context) helper the sibling steps each carry.
-          if (type != null && !SecurityHelper.canAccessType(database, type, SecurityDatabaseUser.ACCESS.READ_RECORD))
-            continue;
+      final ResultInternal r = new ResultInternal(database);
+      result.add(r);
 
-          final ResultInternal r = new ResultInternal(database);
-          result.add(r);
+      r.setProperty("name", trigger.getName());
+      r.setProperty("typeName", typeName);
+      r.setProperty("timing", trigger.getTiming().name());
+      r.setProperty("event", trigger.getEvent().name());
+      r.setProperty("actionType", trigger.getActionType().name());
+      r.setProperty("actionCode", trigger.getActionCode());
 
-          r.setProperty("name", trigger.getName());
-          r.setProperty("typeName", typeName);
-          r.setProperty("timing", trigger.getTiming().name());
-          r.setProperty("event", trigger.getEvent().name());
-          r.setProperty("actionType", trigger.getActionType().name());
-          r.setProperty("actionCode", trigger.getActionCode());
-
-          context.setVariable("current", r);
-        }
-      } finally {
-        if (context.isProfiling())
-          cost += System.nanoTime() - begin;
-      }
+      context.setVariable("current", r);
     }
-
-    return new ResultSet() {
-      @Override
-      public boolean hasNext() {
-        return cursor < result.size();
-      }
-
-      @Override
-      public Result next() {
-        return result.get(cursor++);
-      }
-
-      @Override
-      public void close() {
-        // Nothing to release: the whole listing is already in memory by the time this result set exists.
-      }
-
-      @Override
-      public void reset() {
-        cursor = 0;
-      }
-    };
   }
 
   @Override
