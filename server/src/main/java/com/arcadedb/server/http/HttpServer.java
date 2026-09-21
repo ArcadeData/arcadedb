@@ -124,7 +124,6 @@ import static com.arcadedb.server.http.ssl.KeystoreType.PKCS12;
 import static io.undertow.UndertowOptions.SHUTDOWN_TIMEOUT;
 
 public class HttpServer implements ServerPlugin {
-
   private final    ArcadeDBServer         server;
   private final    HttpSessionManager     sessionManager;
   private final    HttpAuthSessionManager authSessionManager;
