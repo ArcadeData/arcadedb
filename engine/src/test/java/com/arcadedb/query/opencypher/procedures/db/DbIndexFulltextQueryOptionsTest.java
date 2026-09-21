@@ -31,6 +31,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -138,9 +140,9 @@ class DbIndexFulltextQueryOptionsTest {
    * the {@code skip: 1, limit: 2} case answers with the second and third live rows, which a search bounded at 2
    * could not have produced.
    * <p>
-   * It does <b>not</b> reach {@code page()}'s {@code RecordNotFoundException} arm, and no test here does - the
-   * delete removes the index posting along with the record, so a posting that outlives its record cannot be
-   * produced through the public API.
+   * It does <b>not</b> reach {@code page()}'s {@code RecordNotFoundException} arm, and no test here does - a delete
+   * removes the index posting along with the record, so a single-threaded caller cannot stage a posting that
+   * outlives its record. A concurrent one can, which is why that arm and {@code rows()}'s retry exist.
    */
   @Test
   void deletingTheTopScoringRecordDoesNotShortenABoundedPage() {
@@ -217,6 +219,35 @@ class DbIndexFulltextQueryOptionsTest {
   void aVeryLargeWholeLimitIsClampedRatherThanRejected() {
     assertThat(titles("{limit: 9007199254740993}")).containsExactly("A", "B", "C", "D");
     assertThat(titles("{skip: 9007199254740993}")).isEmpty();
+  }
+
+  /**
+   * Straight at {@link FullTextQueryOptions#parse} rather than through Cypher, because Cypher's own literal and
+   * parameter evaluation produces {@code Long} and {@code Double} and cannot hand the procedure a {@code BigInteger}
+   * or a {@code BigDecimal}. The parser is public to its package and takes any {@link Number}, so its arithmetic has
+   * to hold for the ones a future evaluator could hand it: a {@code BigInteger} past {@code Long.MAX_VALUE} must
+   * clamp rather than wrap through {@code longValue()} into a small positive bound, and a {@code BigDecimal} with a
+   * fraction must still be refused.
+   */
+  @Test
+  void anOutOfLongRangeOptionClampsRatherThanWrapping() {
+    final BigInteger huge = BigInteger.valueOf(Long.MAX_VALUE).multiply(BigInteger.TWO);
+    assertThat(huge.longValue()).as("this is the wraparound the parser must not take").isNegative();
+
+    assertThat(parse(Map.of("limit", huge)).limit()).isEqualTo(Integer.MAX_VALUE);
+    assertThat(parse(Map.of("skip", huge)).skip()).isEqualTo(Integer.MAX_VALUE);
+
+    assertThat(parse(Map.of("limit", new BigDecimal("3"))).limit()).isEqualTo(3);
+    assertThatThrownBy(() -> parse(Map.of("limit", new BigDecimal("1.5"))))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("must be an integer");
+    assertThatThrownBy(() -> parse(Map.of("skip", huge.negate())))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("must not be negative");
+  }
+
+  private static FullTextQueryOptions parse(final Map<String, Object> options) {
+    return FullTextQueryOptions.parse("db.index.fulltext.queryNodes", new Object[] { "Article[content]", "java", options });
   }
 
   @Test

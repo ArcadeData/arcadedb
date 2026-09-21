@@ -119,10 +119,18 @@ final class FullTextQueryOptions {
   /**
    * Reads one non-negative integer option.
    * <p>
-   * Cypher integer literals arrive as {@code Long}, parameters can arrive as {@code Integer}, and both are accepted;
-   * a fractional value is not, because silently truncating {@code limit: 1.5} would answer a question the caller did
-   * not ask. A value beyond {@code Integer.MAX_VALUE} is clamped to it rather than refused: the search limit is an
-   * {@code int}, and no result set this side of that bound is affected by the difference.
+   * A fractional value is refused rather than truncated, because answering {@code limit: 1.5} with {@code limit: 1}
+   * answers a question the caller did not ask. A whole number beyond {@code Integer.MAX_VALUE} is clamped to it
+   * rather than refused: the search bound is an {@code int}, and no result set this side of that bound is affected
+   * by the difference.
+   * <p>
+   * The order of the three checks is what makes them exact for every {@link Number} implementation, rather than for
+   * the {@code Long} and {@code Integer} the Cypher runtime happens to produce today. {@code doubleValue()} decides
+   * sign and magnitude for all of them - including a {@code BigInteger}, whose {@code longValue()} would otherwise
+   * wrap around silently into a small positive bound. Only once the value is known to sit within {@code int} range
+   * is {@code longValue()} read, and there the {@code double} round-trip is lossless, so it tells a whole number
+   * from a fractional one exactly. Testing that round-trip first instead would have rejected a {@code Long} above
+   * 2^53, which is a whole number this clamps.
    */
   private static int intOption(final String procedureName, final Map<?, ?> options, final String name,
       final int defaultValue) {
@@ -134,18 +142,20 @@ final class FullTextQueryOptions {
       throw new CommandSemanticException(
           procedureName + "(): option '" + name + "' must be an integer, got " + value.getClass().getSimpleName());
 
-    // Long and Integer are what the Cypher runtime produces for an integer literal or parameter and neither can carry
-    // a fraction, so only the other Number implementations - a Double such as 1.5 - need the round-trip through
-    // double that tells a whole number from a fractional one. Running that round-trip unconditionally would reject a
-    // Long above 2^53, which is a whole number the clamp below already handles.
-    final long asLong = number.longValue();
-    if (!(number instanceof Long || number instanceof Integer) && number.doubleValue() != asLong)
+    final double asDouble = number.doubleValue();
+    if (Double.isNaN(asDouble))
       throw new CommandSemanticException(procedureName + "(): option '" + name + "' must be an integer, got " + number);
-    if (asLong < 0)
+    if (asDouble < 0)
       throw new CommandSemanticException(
-          procedureName + "(): option '" + name + "' must not be negative, got " + asLong);
+          procedureName + "(): option '" + name + "' must not be negative, got " + number);
+    if (asDouble > Integer.MAX_VALUE)
+      return Integer.MAX_VALUE;
 
-    return asLong > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) asLong;
+    final long asLong = number.longValue();
+    if (asDouble != asLong)
+      throw new CommandSemanticException(procedureName + "(): option '" + name + "' must be an integer, got " + number);
+
+    return (int) asLong;
   }
 
   int skip() {
@@ -186,8 +196,13 @@ final class FullTextQueryOptions {
    * stale posting inside the bounded window would otherwise cost the page a row that a live match further down could
    * have filled. When that happens - the page came back short although the bounded search came back full - the
    * search is repeated unbounded and re-paged, which is the only way to recover a posting the bound excluded. The
-   * retry is reachable only when a stale posting lands inside the window, so the bound still pays for itself on
+   * retry is reachable only when such a posting lands inside the window, so the bound still pays for itself on
    * every other call.
+   * <p>
+   * A single-threaded caller does not produce one: a delete removes the index posting along with the record, which
+   * is why no test here executes this arm. A concurrent one can - another session's delete landing between this
+   * search and the record load behind {@code loader} - so the arm is a live path under concurrency rather than
+   * dead code, just not one a deterministic test can stage.
    *
    * @param search     runs the underlying search for a given limit ({@link #UNBOUNDED} for all matches)
    * @param yieldField the name of the record column this procedure yields ({@code node} or {@code relationship})
