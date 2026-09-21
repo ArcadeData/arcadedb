@@ -64,8 +64,11 @@ public class ChatStorage {
 
   private final String rootPath;
 
-  // Legacy directories whose refused migration has already been reported, so the operator gets the
-  // message once per directory instead of once per request.
+  // Legacy directory NAMES whose refused migration has already been reported, so the operator gets
+  // the message once per name instead of once per request. Names only, and never cleared: if an
+  // operator resolves a flagged directory and a later one sanitizes to the same name, that one is
+  // refused silently until the next restart. The refusal itself is always re-evaluated - this set
+  // gates only the logging - so resolving a directory still takes effect immediately.
   private final Set<String> reportedLegacyDirectories = ConcurrentHashMap.newKeySet();
 
   public ChatStorage(final String rootPath) {
@@ -299,10 +302,14 @@ public class ChatStorage {
   }
 
   /**
-   * Reports a refused migration once per legacy directory rather than once per request: the refusal
-   * is re-evaluated on every read for a user who never writes, and an operator needs the message
-   * once, not in a loop. The set is bounded by the number of legacy directories that exist on disk -
-   * nothing creates one any more, so it cannot be grown by a caller.
+   * Reports a refused migration once per legacy directory name rather than once per request: the
+   * refusal is re-evaluated on every read for a user who never writes, and an operator needs the
+   * message once, not in a loop.
+   *
+   * <p>The set's SIZE is bounded - an entry is only ever added for a directory that exists on disk,
+   * and nothing creates a legacy directory any more, so a caller cannot grow it. Its CONTENTS go
+   * stale: entries are never removed, so a name whose directory an operator has since resolved stays
+   * marked as reported for the life of the server. That costs a log line, not a decision.
    */
   private void warnOncePerLegacyDirectory(final String legacyName, final String message) {
     if (reportedLegacyDirectories.add(legacyName))
