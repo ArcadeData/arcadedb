@@ -456,7 +456,7 @@ public class Neo4jImporter {
               try {
                 database.commit();
               } catch (final RuntimeException | Error commitFailure) {
-                txOpen[0] = true;
+                txOpen[0] = database.isTransactionActive();
                 throw commitFailure;
               }
               committedVertices[0] = context.createdVertices.get();
@@ -491,7 +491,7 @@ public class Neo4jImporter {
           try {
             database.commit();
           } catch (final RuntimeException | Error commitFailure) {
-            txOpen[0] = true;
+            txOpen[0] = database.isTransactionActive();
             throw commitFailure;
           }
         }
