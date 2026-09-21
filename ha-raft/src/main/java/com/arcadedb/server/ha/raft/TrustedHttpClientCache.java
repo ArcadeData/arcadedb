@@ -142,18 +142,26 @@ final class TrustedHttpClientCache {
    * Safe to call more than once, and safe to call on a cache that never built anything. One-way: a closed cache
    * refuses to build again, since whoever asked after this has no one left to close what it would get.
    * <p>
-   * Unlike the rebuild path above, this one can run while a probe is in flight: {@code stopCapabilityMonitor()}
+   * Unlike the rebuild path above, this one can run while a peer dial is in flight: {@code stopCapabilityMonitor()}
    * ends the refresh with {@code shutdownNow()} and does not wait for the round to unwind, and the request is
-   * sent outside this object's monitor. So a straggling probe either delays this close until it finishes - bounded
-   * by {@link PeerCapabilityRegistry#PROBE_TIMEOUT_MS} - or fails on the closed client. Both are benign and both
-   * are on a server that is shutting down: the failure lands in {@code refreshPeerCapabilities}' own catch and is
-   * recorded as unanswered, and the registry's generation stamp drops that write anyway.
+   * sent outside this object's monitor. So a straggler either delays this close or fails on the closed client.
+   * Both are benign and both are on a server that is shutting down: the failure lands in
+   * {@code refreshPeerCapabilities}' own catch and is recorded as unanswered, and the registry's generation stamp
+   * drops that write anyway.
+   * <p>
+   * <b>The delay is bounded here rather than by the straggler</b> (issue #7985). {@code HttpClient.close()} used
+   * to do this, and it waits for every submitted operation to complete. That reads as harmless for the
+   * capability probe, whose round is bounded by {@link PeerCapabilityRegistry#PROBE_TIMEOUT_MS} - but
+   * {@code RaftHAServer} holds this class TWICE, and the second instance carries the HTTPS half of the leader
+   * forwards, whose bound is {@code arcadedb.ha.proxyCommandTimeout}: one hour at its default. This method is
+   * {@code synchronized}, so that wait was held under the monitor as well. {@link LeaderDial#releaseBounded}
+   * cancels what is in flight and waits seconds, not deadlines, for the termination.
    */
   synchronized void close() {
     closed = true;
     if (client == null)
       return;
-    client.close();
+    LeaderDial.releaseBounded(client);
     client = null;
     material = null;
   }

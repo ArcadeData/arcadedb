@@ -99,6 +99,86 @@ public record LeaderDial(String address, boolean https, HttpClient client, Strin
   }
 
   /**
+   * How long a server's shutdown path waits for an {@link HttpClient} it is releasing to finish unwinding
+   * before it abandons the wait and carries on (issue #7985).
+   * <p>
+   * Seconds rather than the in-flight request's own deadline, and that difference is the whole point.
+   * {@link HttpClient#close()} is an orderly shutdown that waits for every submitted operation to complete, so
+   * on the forward clients the wait it really signs up for is
+   * {@link GlobalConfiguration#HA_PROXY_COMMAND_TIMEOUT} - one hour at its default - or
+   * {@link GlobalConfiguration#HA_PROXY_READ_TIMEOUT}/{@link GlobalConfiguration#HA_PROXY_LONG_COMMAND_TIMEOUT}
+   * for a forward issued through {@code LeaderCommandForwarder}. A follower with one forward parked on a leader
+   * that accepted the connection and went silent would hold its own shutdown for that long, and in Kubernetes
+   * {@code terminationGracePeriodSeconds} expires first and SIGKILL takes the rest of the shutdown with it.
+   * <p>
+   * A forward whose answer this node will never read is not worth holding a shutdown for, so the release
+   * cancels it instead of waiting it out. Five seconds is a ceiling, not a sleep: the wait ends as soon as the
+   * client reports itself terminated, which for a client with nothing in flight is immediate.
+   */
+  public static final long CLIENT_RELEASE_GRACE_MS = 5_000L;
+
+  /**
+   * Releases {@code client} promptly and without blocking the caller for longer than
+   * {@link #CLIENT_RELEASE_GRACE_MS} (issue #7985).
+   *
+   * @see #releaseBounded(HttpClient, long)
+   */
+  public static boolean releaseBounded(final HttpClient client) {
+    return releaseBounded(client, CLIENT_RELEASE_GRACE_MS);
+  }
+
+  /**
+   * Releases {@code client} so that it has <b>terminated</b> by the time this returns, waiting at most
+   * {@code graceMs} for that (issue #7985).
+   * <p>
+   * The two halves are what a shutdown path needs and what neither JDK call gives on its own:
+   * <ul>
+   * <li>{@code shutdownNow()} is prompt - it cancels the in-flight exchanges rather than waiting them out - but
+   * it only <em>requests</em> the shutdown: the selector thread and the executor unwind after it returns, so
+   * {@code isTerminated()} read straight afterwards is a race (issue #7677, the intermittently red
+   * {@code Issue7507ForwarderClientLifecycleTest});</li>
+   * <li>{@code close()} does leave the client terminated, but it waits for every submitted operation to
+   * complete first, with no bound of its own (issue #7739).</li>
+   * </ul>
+   * So: {@code shutdownNow()} for promptness, then a bounded {@code awaitTermination} for the guarantee.
+   * <p>
+   * The grace expiring is reported and not thrown: it means one selector thread outlives this call, which is a
+   * smaller problem than a shutdown that does not finish, and every caller is already on its way down.
+   *
+   * @param client  the client to release; {@code null} is accepted, for a caller whose client was never built
+   * @param graceMs how long to wait for termination, floored at {@link #MIN_FORWARD_TIMEOUT_MS} the way every
+   *                other bound in this class is - a floor, never a ceiling: a caller asking for longer than
+   *                {@link #CLIENT_RELEASE_GRACE_MS} gets what it asked for
+   *
+   * @return whether the client terminated within the grace
+   */
+  public static boolean releaseBounded(final HttpClient client, final long graceMs) {
+    if (client == null)
+      return true;
+
+    // Cancels what is in flight instead of waiting for it. An exchange this node is shutting down on is one
+    // whose answer it will never read.
+    client.shutdownNow();
+
+    final long grace = Math.max(graceMs, MIN_FORWARD_TIMEOUT_MS);
+    try {
+      if (client.awaitTermination(Duration.ofMillis(grace)))
+        return true;
+    } catch (final InterruptedException e) {
+      // Shutdown is already interrupt-driven (RaftHAServer.stop() interrupts the auto-join thread, the
+      // executors are ended with shutdownNow). Restore the flag and report what the client actually is rather
+      // than waiting again on a thread that has been told to stop.
+      Thread.currentThread().interrupt();
+      return client.isTerminated();
+    }
+
+    LogManager.instance().log(LeaderDial.class, Level.WARNING,
+        "An HTTP client did not finish shutting down within %,d ms; its selector thread is abandoned so that the "
+            + "rest of the shutdown can proceed.", grace);
+    return false;
+  }
+
+  /**
    * Said once per JVM: a cluster that names an HTTPS leader endpoint but cannot hand out a client for it has a
    * configuration fault worth naming in the log of the node that found it, not only in the answer its client gets.
    * One latch per JVM rather than per server, matching {@code PLAIN_HTTP_FALLBACK_WARNED} in
