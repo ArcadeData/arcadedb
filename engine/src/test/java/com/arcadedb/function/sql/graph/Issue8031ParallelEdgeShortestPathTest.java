@@ -19,6 +19,7 @@
 package com.arcadedb.function.sql.graph;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
@@ -89,6 +90,28 @@ public class Issue8031ParallelEdgeShortestPathTest extends TestHelper {
   }
 
   /**
+   * The edge-type filter has to reach the heuristic step cost too (PR #8093 review).
+   * <p>
+   * With an {@code edgeTypeNames} option naming only E8031, a second edge type joining the same pair must not be
+   * priced into the answer at all. The decoy below is a free (weight 0) F8031 edge straight from A to B: if the
+   * heuristic weighed it, it would report the A-to-B step as costing nothing.
+   */
+  @Test
+  void anEdgeOfAnotherTypeIsNotWeighedWhenEdgeTypeNamesExcludesIt() {
+    buildGraph(true);
+    database.transaction(() -> {
+      database.command("sql", "CREATE EDGE TYPE F8031");
+      database.command("sql", "CREATE PROPERTY F8031.weight DOUBLE");
+      // A decoy of a type the search is told to ignore, cheaper than anything it is allowed to walk.
+      database.command("sql", "CREATE EDGE F8031 FROM " + a + " TO " + c + " SET weight = 0.0");
+    });
+
+    // Restricted to E8031, the cheapest A-to-B route is still the direct parallel edge at cost 1.
+    assertThat(path("astar", ", {direction:'OUT', edgeTypeNames:['E8031']}")).containsExactly(a, b);
+    assertThat(path("dijkstra", ", {direction:'OUT', edgeTypeNames:['E8031']}")).containsExactly(a, b);
+  }
+
+  /**
    * @param cheapFirst whether the weight-1 edge is created before the weight-100 one. The only difference between
    *                   the two fixtures, and the whole of the non-determinism the issue reports.
    */
@@ -129,7 +152,7 @@ public class Issue8031ParallelEdgeShortestPathTest extends TestHelper {
         "SELECT " + function + "(" + a + ", " + b + ", 'weight'" + extraArgs + ") AS p")) {
       final Result row = rs.next();
       for (final Object each : row.<List<Object>>getProperty("p"))
-        rids.add(each instanceof RID rid ? rid : ((com.arcadedb.database.Identifiable) each).getIdentity());
+        rids.add(each instanceof RID rid ? rid : ((Identifiable) each).getIdentity());
     }
     return rids;
   }

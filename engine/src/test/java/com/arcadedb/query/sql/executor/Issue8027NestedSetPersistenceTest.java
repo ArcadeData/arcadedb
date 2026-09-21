@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Document;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -146,7 +147,7 @@ public class Issue8027NestedSetPersistenceTest extends TestHelper {
 
   private Object embeddedX() {
     final Object embedded = read("emb");
-    return embedded instanceof com.arcadedb.database.Document doc ? doc.get("x") : ((Map<?, ?>) embedded).get("x");
+    return embedded instanceof Document doc ? doc.get("x") : ((Map<?, ?>) embedded).get("x");
   }
 
   private <T> T read(final String property) {
