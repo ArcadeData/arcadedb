@@ -190,6 +190,37 @@ class RDFImporterFormatRowErrorPolicyTest {
   }
 
   /**
+   * Same failure, but with {@code commitEvery} higher than the row count so the periodic commit inside the loop
+   * never fires: the proxy's single interception lands on the TRAILING commit instead, a distinct code path from
+   * {@link #commitFailureDuringSkipOnRowErrorIsNotAbsorbedAsARowError()} above.
+   */
+  @Test
+  void trailingCommitFailureLeavesNoTransactionDangling() throws Exception {
+    final RDFImporterFormat format = new RDFImporterFormat();
+    final ImporterContext context = new ImporterContext();
+    final ImporterSettings settings = settings();
+    // Default settings() already sets commitEvery = 1_000, well above the 2 rows below - kept explicit here so
+    // the test does not silently stop exercising the trailing commit if that default ever changes.
+    settings.commitEvery = 1_000;
+
+    final RuntimeException commitFailure = new RuntimeException("simulated trailing commit failure");
+    final DatabaseInternal failingOnCommit = commitFailsOnFirstCall((DatabaseInternal) database, commitFailure);
+
+    final Parser parser = rdfParser("""
+        v1,rel,v2
+        v3,rel,v4
+        """);
+
+    assertThatThrownBy(() -> format.load(null, null, parser, failingOnCommit, context, settings))
+        .as("a trailing commit failure must propagate, not be swallowed")
+        .isSameAs(commitFailure);
+
+    assertThat(database.isTransactionActive())
+        .as("the transaction the trailing commit failed on must have been rolled back, not left dangling")
+        .isFalse();
+  }
+
+  /**
    * Wraps a real {@link DatabaseInternal} so its very first {@code commit()} call throws {@code failure} instead of
    * committing, and every other call - including every later {@code commit()} - passes straight through to the real
    * database. A JDK dynamic proxy rather than a hand-rolled subclass because {@link DatabaseInternal} is a large
