@@ -62,8 +62,15 @@ public class DropTypeStatement extends DDLStatement {
       typeName = String.valueOf(nameParam.getValue(context.getInputParameters()));
     }
 
-    if (ifExists && !schema.existsType(typeName))
-      return new InternalResultSet();
+    if (ifExists && !schema.existsType(typeName)) {
+      final InternalResultSet rs = new InternalResultSet();
+      final ResultInternal result = new ResultInternal(context.getDatabase());
+      result.setProperty("operation", "drop type");
+      result.setProperty("typeName", typeName);
+      result.setProperty("dropped", false);
+      rs.add(result);
+      return rs;
+    }
 
     final DocumentType typez = schema.getType(typeName);
     if (typez == null) {
@@ -91,6 +98,7 @@ public class DropTypeStatement extends DDLStatement {
     final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("operation", "drop type");
     result.setProperty("typeName", typeName);
+    result.setProperty("dropped", true);
     rs.add(result);
     return rs;
   }

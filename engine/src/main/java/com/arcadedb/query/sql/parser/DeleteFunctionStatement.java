@@ -48,8 +48,8 @@ public class DeleteFunctionStatement extends SimpleExecStatement {
   }
 
   @Override
-  public DefineFunctionStatement copy() {
-    final DefineFunctionStatement result = new DefineFunctionStatement();
+  public DeleteFunctionStatement copy() {
+    final DeleteFunctionStatement result = new DeleteFunctionStatement();
     result.libraryName = libraryName == null ? null : libraryName.copy();
     result.functionName = functionName == null ? null : functionName.copy();
     return result;
@@ -62,7 +62,7 @@ public class DeleteFunctionStatement extends SimpleExecStatement {
     if (o == null || getClass() != o.getClass())
       return false;
 
-    final DefineFunctionStatement that = (DefineFunctionStatement) o;
+    final DeleteFunctionStatement that = (DeleteFunctionStatement) o;
 
     if (!Objects.equals(libraryName, that.libraryName))
       return false;

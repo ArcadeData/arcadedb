@@ -195,12 +195,13 @@ public class ArraySingleValuesSelector extends SimpleNode {
       }
     } else if (currentValue instanceof Set set) {
       final Iterator iterator = set.iterator();
-      final int count = 0;
+      int count = 0;
       while (iterator.hasNext()) {
         final Object item = iterator.next();
         if (values.contains(count) || values.contains(item)) {
           iterator.remove();
         }
+        count++;
       }
     } else if (currentValue instanceof Map) {
       for (final Object val : values) {

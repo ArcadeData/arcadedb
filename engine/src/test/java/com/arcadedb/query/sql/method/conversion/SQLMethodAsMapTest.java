@@ -121,4 +121,18 @@ class SQLMethodAsMapTest {
     final Object result = function.execute(Integer.valueOf(4), null, null, null);
     assertThat(result).isNull();
   }
+
+  @Test
+  void array() {
+    // Issue #7877: an array receiver (split(), a JSON array parameter) must pair up like a List/Iterable does,
+    // not answer null.
+    final Object[] anArray = new Object[] { "p1", 1, "p2", 2 };
+
+    final Object result = function.execute(anArray, null, null, null);
+
+    final HashMap<Object, Object> expected = new HashMap<Object, Object>();
+    expected.put("p1", 1);
+    expected.put("p2", 2);
+    assertThat(expected).isEqualTo(result);
+  }
 }

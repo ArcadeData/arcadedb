@@ -61,8 +61,16 @@ public class DropPropertyStatement extends DDLStatement {
     if (sourceClass == null)
       throw new CommandExecutionException("Source class '" + typeName + "' not found");
 
-    if (sourceClass.getProperty(propertyName.getStringValue()) == null) {
+    // getPropertyIfExists(), NOT getProperty(): the latter throws SchemaException instead of returning null when the
+    // property is missing, which made the IF EXISTS no-op branch below unreachable dead code (issue #7871).
+    if (sourceClass.getPropertyIfExists(propertyName.getStringValue()) == null) {
       if (ifExists) {
+        final ResultInternal result = new ResultInternal(database);
+        result.setProperty("operation", "drop property");
+        result.setProperty("typeName", typeName.getStringValue());
+        result.setProperty("propertyName", propertyName.getStringValue());
+        result.setProperty("dropped", false);
+        rs.add(result);
         return rs;
       }
       throw new CommandExecutionException("Property '" + propertyName + "' not found on class " + typeName);
@@ -103,6 +111,7 @@ public class DropPropertyStatement extends DDLStatement {
     result.setProperty("operation", "drop property");
     result.setProperty("typeName", typeName.getStringValue());
     result.setProperty("propertyName", propertyName.getStringValue());
+    result.setProperty("dropped", true);
     rs.add(result);
     return rs;
   }

@@ -43,6 +43,7 @@ public class CreateMaterializedViewStatement extends DDLStatement {
   public ResultSet executeDDL(final CommandContext context) {
     final Database database = context.getDatabase();
     final String viewName = name.getStringValue();
+    final boolean existedBefore = database.getSchema().existsMaterializedView(viewName);
 
     final MaterializedViewRefreshMode mode;
     if (refreshMode == null || "MANUAL".equalsIgnoreCase(refreshMode))
@@ -76,6 +77,7 @@ public class CreateMaterializedViewStatement extends DDLStatement {
     final ResultInternal r = new ResultInternal();
     r.setProperty("operation", "create materialized view");
     r.setProperty("name", viewName);
+    r.setProperty("created", !existedBefore);
     result.add(r);
     return result;
   }
