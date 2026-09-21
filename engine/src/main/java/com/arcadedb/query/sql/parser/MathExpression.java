@@ -189,16 +189,29 @@ public class MathExpression extends SimpleNode {
        * ({@code 1 / 3}). That is the one case that HAS to round, and it rounds at {@code DECIMAL128} - 34
        * significant digits, the same precision the IEEE 754 decimal128 format carries - rather than at whatever
        * scale the left operand happens to have.
+       * <p>
+       * The left operand's scale is then reinstated as a FLOOR, which is what keeps this a pure bug fix rather
+       * than a formatting change for everyone (PR #8093 review). {@code 10.00 / 2.00} answered {@code 5.00}
+       * before, because HALF_UP at the left scale pads as well as rounds, and the exact quotient is {@code 5} at
+       * scale 0 - numerically the same, but {@code toString()} differs, and code that displays money reads that
+       * difference. Taking the wider of the two scales reproduces the old answer EXACTLY wherever the old answer
+       * was exact, and only widens where it used to round, which is the whole of issue #8041.
        */
       @Override
       public Number apply(final BigDecimal left, final BigDecimal right) {
         checkDivisorNotZero(this, right.signum() == 0);
+
+        BigDecimal quotient;
         try {
-          return left.divide(right);
+          quotient = left.divide(right);
         } catch (final ArithmeticException e) {
           // Non-terminating decimal expansion: there is no exact answer to give, so bound the precision.
-          return left.divide(right, MathContext.DECIMAL128);
+          quotient = left.divide(right, MathContext.DECIMAL128);
         }
+
+        // Never narrower than the left operand, never rounded to reach it: setScale() here only ever pads with
+        // zeros, because it runs only when the quotient already has fewer fractional digits than the target.
+        return quotient.scale() < left.scale() ? quotient.setScale(left.scale()) : quotient;
       }
 
       @Override
