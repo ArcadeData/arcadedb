@@ -88,9 +88,10 @@ public abstract class AbstractFetchFromSchemaListStep extends AbstractExecutionS
       materialized = true;
     }
 
-    // The end of THIS batch, fixed when the batch is created: nRecords is what the caller asked for, and a caller
-    // that keeps pulling gets the next slice. A non-positive nRecords means "no bound" - the same reading every
-    // other source step in this package gives it.
+    // The bounds of THIS batch, fixed when the batch is created: nRecords is what the caller asked for, and a
+    // caller that keeps pulling gets the next slice. A non-positive nRecords means "no bound" - the same reading
+    // every other source step in this package gives it.
+    final int batchStart = cursor;
     final int batchEnd = nRecords > 0 ? Math.min(result.size(), cursor + nRecords) : result.size();
 
     return new ResultSet() {
@@ -111,9 +112,16 @@ public abstract class AbstractFetchFromSchemaListStep extends AbstractExecutionS
         // Nothing to release: the whole listing is already in memory by the time this result set exists.
       }
 
+      /**
+       * Back to the start of THIS batch, not of the whole listing. {@code cursor} is one field shared by every
+       * batch the step hands out, so rewinding it to zero would roll an older batch's reset under a newer
+       * batch's feet - speculative today, since the pipeline consumes a batch before pulling the next, but the
+       * per-batch answer is the faithful one anyway: an {@code InternalResultSet} resets to the start of its own
+       * contents, and a batch's contents are its own slice (PR #8093 review).
+       */
       @Override
       public void reset() {
-        cursor = 0;
+        cursor = batchStart;
       }
     };
   }
