@@ -25,6 +25,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.IndexKeyEquality;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 
@@ -35,7 +36,6 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
 import java.util.function.Consumer;
 
@@ -544,27 +544,23 @@ public class DocumentIndexer {
   /**
    * The one equality every "did this key change?" decision in this class goes through: two tuples are the same key when
    * every element is {@link #sameKeyValue(Object, Object) the same key value}. Kept as the single policy so a new update
-   * path cannot pick a third notion of equality (issue #7109).
+   * path cannot pick a third notion of equality (issue #7109), and shared with the transaction-side overlay through
+   * {@link IndexKeyEquality} (issue #7881).
    */
   private static boolean sameKeyTuple(final Object[] a, final Object[] b) {
-    if (a.length != b.length)
-      return false;
-    for (int i = 0; i < a.length; i++)
-      if (!sameKeyValue(a[i], b[i]))
-        return false;
-    return true;
+    return IndexKeyEquality.sameTuple(a, b);
   }
 
   /**
    * Content-aware equality for a single key value: array-typed keys (the {@code float[]} of a vector index, a
    * {@code BINARY} property) do not override {@code Object.equals()}, so two independently deserialized-but-identical
    * arrays would compare unequal and trigger a spurious remove()+put() on every record update (issues #5318 and #7109).
-   * {@link Objects#deepEquals} uses {@code Object.equals()} for scalar keys, the element-wise {@code Arrays.equals()}
-   * overload of the matching primitive array type ({@code float[]}, {@code byte[]}, ...) for primitive arrays, and
-   * {@code Arrays.deepEquals()} for {@code Object[]}.
+   * <p>
+   * Delegated to {@link IndexKeyEquality}, which is where the transaction-side overlay reads the same policy from -
+   * the two used to have their own copies of it and disagreed on exactly these keys (issue #7881).
    */
   private static boolean sameKeyValue(final Object a, final Object b) {
-    return Objects.deepEquals(a, b);
+    return IndexKeyEquality.sameValue(a, b);
   }
 
   /**
