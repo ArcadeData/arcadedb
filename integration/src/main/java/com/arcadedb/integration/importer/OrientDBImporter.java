@@ -488,7 +488,12 @@ public class OrientDBImporter {
 
       if (pushedTransaction)
         database.commit();
-    } catch (final RuntimeException | Error e) {
+      // Also catches IOException, not just RuntimeException/Error: this loop reads directly off reader (a Gson
+      // JsonReader) via peek()/parseRecord()/skipValue(), whose malformed-input or truncated-source failures
+      // (MalformedJsonException, EOFException) are IOException subtypes, not wrapped the way executeBatch()'s own
+      // IOException is - and a truncated/corrupted export is a real-world way to reach this catch, not just the
+      // batch-execution failures the RuntimeException/Error branch already covered.
+    } catch (final IOException | RuntimeException | Error e) {
       if (pushedTransaction && database.isTransactionActive()) {
         try {
           database.rollback();
@@ -610,16 +615,31 @@ public class OrientDBImporter {
           context.updatedDocuments.incrementAndGet();
 
           if (pushedTransaction && context.updatedDocuments.get() > 0 && context.updatedDocuments.get() % batchSize == 0) {
+            // Restored on failure: DatabaseContext#popIfNotLastTransaction() does not pop the outermost
+            // transaction, so a commit() that fails here can leave it still active rather than popped, and the
+            // finally block below needs txOpen true again to roll it back instead of leaking it (issue #8116
+            // review: the same class of bug RDFImporterFormat.load()'s periodic/trailing commits were fixed for).
             txOpen = false;
-            database.commit();
+            try {
+              database.commit();
+            } catch (final RuntimeException | Error commitFailure) {
+              txOpen = database.isTransactionActive();
+              throw commitFailure;
+            }
             committedDocuments = context.updatedDocuments.get();
             database.begin();
             txOpen = true;
           }
         }
         if (pushedTransaction) {
+          // Same restore-on-failure as the periodic commit above.
           txOpen = false;
-          database.commit();
+          try {
+            database.commit();
+          } catch (final RuntimeException | Error commitFailure) {
+            txOpen = database.isTransactionActive();
+            throw commitFailure;
+          }
         }
         completed = true;
         logger.logLine(1, "- Updated LINKs in %,d records", context.updatedDocuments.get());

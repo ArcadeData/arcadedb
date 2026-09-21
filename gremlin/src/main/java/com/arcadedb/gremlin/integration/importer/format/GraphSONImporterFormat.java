@@ -312,6 +312,11 @@ public class GraphSONImporterFormat extends CSVImporterFormat {
 
       edge.save();
       context.createdEdges.incrementAndGet();
+      // createVertices() above already counts context.parsed per source line (one vertex each), so this pass adds
+      // one per edge actually created, matching the TinkerPop-reader route's context.parsed = createdVertices +
+      // createdEdges - without this, parsedRecords on this route counted vertices only, understating the report
+      // for a source whose lines embed outgoing edges (issue #8116 review).
+      context.parsed.incrementAndGet();
     }
   }
 
