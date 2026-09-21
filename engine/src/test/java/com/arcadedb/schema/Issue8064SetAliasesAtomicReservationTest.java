@@ -149,6 +149,20 @@ public class Issue8064SetAliasesAtomicReservationTest extends TestHelper {
   }
 
   @Test
+  void anAliasEqualToTheTypesOwnNameIsRefusedWithoutBlamingItself() {
+    // The type map holds the type's own name too, so putIfAbsent hands back THIS type - and the generic wording
+    // would name it on both sides of the sentence, which reads as an engine bug rather than as a refusal.
+    final LocalDocumentType order = (LocalDocumentType) database.getSchema().createDocumentType("Order");
+
+    assertThatThrownBy(() -> order.setAliases(Set.of("Order"))).isInstanceOf(SchemaException.class)
+        .hasMessageContaining("is the name of the type itself")
+        .hasMessageNotContaining("already used by type");
+
+    assertThat(order.getAliases()).isEmpty();
+    assertThat(database.getSchema().getType("Order").getName()).isEqualTo("Order");
+  }
+
+  @Test
   void aRefusedCallKeepsThePreviousAliasesIntact() {
     final LocalDocumentType order = (LocalDocumentType) database.getSchema().createDocumentType("Order");
     order.setAliases(Set.of("PO"));
