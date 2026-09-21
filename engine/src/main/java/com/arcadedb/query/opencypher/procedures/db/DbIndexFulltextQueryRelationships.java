@@ -110,6 +110,7 @@ public class DbIndexFulltextQueryRelationships implements CypherProcedure {
     if (options.returnsNothing())
       return Stream.empty();
 
-    return options.rows(limit -> FullTextSearch.search(typeIndex, queryText, limit), "relationship", rid -> rid.asEdge(true)).stream();
+    return options.rows(limit -> FullTextSearch.search(typeIndex, queryText, limit), "relationship",
+        rid -> rid.asEdge(true)).stream();
   }
 }

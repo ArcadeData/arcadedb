@@ -241,6 +241,14 @@ class DbIndexFulltextQueryOptionsTest {
     assertThatThrownBy(() -> parse(Map.of("limit", new BigDecimal("1.5"))))
         .isInstanceOf(CommandSemanticException.class)
         .hasMessageContaining("must be an integer");
+
+    // Both out of range and fractional: the clamp wins, deliberately. Pinned so the precedence is a decision
+    // rather than a consequence of the order the checks happen to sit in.
+    assertThat(parse(Map.of("limit", 2147483647.5d)).limit()).isEqualTo(Integer.MAX_VALUE);
+    assertThatThrownBy(() -> parse(Map.of("limit", 2147483646.5d)))
+        .as("in range, so the fraction is refused rather than clamped")
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("must be an integer");
     assertThatThrownBy(() -> parse(Map.of("skip", huge.negate())))
         .isInstanceOf(CommandSemanticException.class)
         .hasMessageContaining("must not be negative");

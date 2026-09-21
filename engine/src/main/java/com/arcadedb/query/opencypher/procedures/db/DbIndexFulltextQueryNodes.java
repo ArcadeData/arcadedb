@@ -115,6 +115,7 @@ public class DbIndexFulltextQueryNodes implements CypherProcedure {
     if (options.returnsNothing())
       return Stream.empty();
 
-    return options.rows(limit -> FullTextSearch.search(typeIndex, queryText, limit), "node", rid -> rid.asDocument(true)).stream();
+    return options.rows(limit -> FullTextSearch.search(typeIndex, queryText, limit), "node",
+        rid -> rid.asDocument(true)).stream();
   }
 }

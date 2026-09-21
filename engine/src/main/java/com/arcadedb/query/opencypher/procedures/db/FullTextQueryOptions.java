@@ -148,6 +148,10 @@ final class FullTextQueryOptions {
     if (asDouble < 0)
       throw new CommandSemanticException(
           procedureName + "(): option '" + name + "' must not be negative, got " + number);
+    // Deliberately before the fractional check, so the clamp wins for a value that is both out of range and
+    // fractional: 2147483647.5 rows is the same page as every other bound past Integer.MAX_VALUE, and refusing it
+    // for its fraction would be pedantry about a digit that cannot change the answer. Within range the fraction is
+    // refused, because there it can.
     if (asDouble > Integer.MAX_VALUE)
       return Integer.MAX_VALUE;
 
