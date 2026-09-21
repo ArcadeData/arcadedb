@@ -157,6 +157,43 @@ class Issue7772ChunkedBodySizeLimitTest extends BaseGraphServerTest {
    * Offers {@code bodyBytes} as a chunked body and never terminates it, so only a server that enforces the cap on
    * the bytes it has read can answer at all.
    */
+  /**
+   * Raising {@code arcadedb.server.httpBodyContentMaxSize} at runtime has to raise the whole enforcement, not
+   * just the half of it that is re-read per request.
+   * <p>
+   * The cap is consulted on every request. An earlier revision of this fix also placed Undertow's own
+   * entity-size ceiling just above it as a backstop, and that ceiling is frozen at the value read when the
+   * server is built: a body inside the NEW cap but past the OLD ceiling was terminated inside the request
+   * conduit, which closes the connection before any handler runs, so the caller saw a connection reset with no
+   * status at all rather than either the documented 413 or the answer it asked for. Nothing can repair that from
+   * a handler - {@code HttpServerExchange.setMaxEntitySize} calls {@code maxEntitySizeUpdated}, which is an empty
+   * method for HTTP/1.1 - so the ceiling is off and the per-request readers are the enforcement. This test is
+   * what keeps it off. Sized past where that ceiling used to sit, the old cap plus a 1 MB allowance.
+   */
+  @Test
+  void raisingTheLimitAtRuntimeRaisesTheUndertowCeilingWithIt() throws Exception {
+    getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE, 8L * 1024L * 1024L);
+    try {
+      final Response response = postChunkedBody("/api/v1/command/" + getDatabaseName(), "application/json",
+          paddedCommand(3 * 1024 * 1024));
+      assertThat(response.statusCode)
+          .as("a body inside the raised cap must be answered, not cut off by a ceiling left at the old value")
+          .isNotEqualTo(-1);
+      assertThat(response.statusCode).as("and not refused as too large either").isNotEqualTo(413);
+    } finally {
+      getServer(0).getConfiguration().setValue(GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE, SMALL_LIMIT_BYTES);
+    }
+  }
+
+  /** A well-formed command whose payload is padded out to roughly {@code totalBytes}. */
+  private static byte[] paddedCommand(final int totalBytes) {
+    final StringBuilder padding = new StringBuilder(totalBytes);
+    while (padding.length() < totalBytes)
+      padding.append('x');
+    return ("{\"language\":\"sql\",\"command\":\"SELECT '" + padding + "' AS pad\"}")
+        .getBytes(StandardCharsets.UTF_8);
+  }
+
   private Response postChunked(final String path, final String contentType, final long bodyBytes) throws Exception {
     final byte[] filler = new byte[8192];
     Arrays.fill(filler, (byte) 'x');

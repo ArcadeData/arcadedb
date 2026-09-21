@@ -298,8 +298,9 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * is the cap plus one read buffer, whatever the client sends. Refusing here rather than letting Undertow's
    * {@code MAX_ENTITY_SIZE} do it is what makes the refusal answerable: that ceiling is enforced inside the
    * request conduit, which terminates the exchange and closes the connection at the instant it is crossed, so a
-   * handler reached afterwards has nothing left to write a response on. It remains configured above this cap as
-   * the backstop - see {@code HttpServer.buildUndertowServer}.
+   * handler reached afterwards has nothing left to write a response on. It is also frozen at the value read when
+   * the server was built, while this one is re-read per request - so it is left off entirely and this is the
+   * enforcement, not a second line behind one. See the note in {@code HttpServer.buildUndertowServer}.
    *
    * @return the body, or {@code null} when it could not be read and a 500 has already been sent
    *

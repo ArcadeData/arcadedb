@@ -124,18 +124,6 @@ import static com.arcadedb.server.http.ssl.KeystoreType.PKCS12;
 import static io.undertow.UndertowOptions.SHUTDOWN_TIMEOUT;
 
 public class HttpServer implements ServerPlugin {
-  /**
-   * How far above {@code arcadedb.server.httpBodyContentMaxSize} Undertow's own entity-size ceiling is placed.
-   * <p>
-   * It is the lingering-close allowance: once
-   * {@code AbstractServerHttpHandler.readRequestBody} has refused the body, the exchange still has to drain
-   * whatever the peer is pushing before the connection can be closed gracefully, and a connection closed with
-   * unread bytes still queued is reset rather than finished - which discards the 413 the client is waiting for.
-   * These bytes are read and dropped, never buffered, so the heap bound is the cap itself and this is a bound on
-   * socket reads only. A peer that overshoots by more than this still gets its connection cut, which is the right
-   * answer for one that keeps pushing after being told to stop (issue #7772).
-   */
-  private static final long BODY_SIZE_DRAIN_HEADROOM = 1024L * 1024L;
 
   private final    ArcadeDBServer         server;
   private final    HttpSessionManager     sessionManager;
@@ -385,38 +373,27 @@ public class HttpServer implements ServerPlugin {
 
   private Undertow buildUndertowServer(final ContextConfiguration configuration, final String host, final PathHandler routes,
       int httpsPortListening) throws Exception {
-    // Undertow's own entity-size ceiling, set ABOVE arcadedb.server.httpBodyContentMaxSize rather than at it.
-    // The cap itself is enforced by AbstractServerHttpHandler.readRequestBody, which stops reading at the
-    // configured value and leaves the exchange alive so the request can be answered with the documented JSON
-    // 413; this option is the backstop under it, and the headroom is what buys the answer a chance to be
-    // delivered (issue #7772).
+    // Undertow's own entity-size ceiling stays OFF, and arcadedb.server.httpBodyContentMaxSize is enforced by
+    // AbstractServerHttpHandler.readRequestBody and PostBatchHandler's CountingInputStream instead - the two
+    // readers every body on this server now goes through (issue #7772).
     //
-    // It cannot be set AT the cap. Undertow enforces MAX_ENTITY_SIZE inside the request conduit, and
-    // ChunkedStreamSourceConduit's MaxEntitySizeChecker terminates the request AND CLOSES THE CONNECTION at the
-    // point the limit is crossed - before the worker thread is back in any handler. By the time the exception
-    // surfaces the exchange reports complete=true and the connection reports open=false, so nothing can be sent
-    // on it. That is precisely why this line used to read Long.MAX_VALUE with a comment about answering a proper
-    // 413 from the handler chain instead. The defect was never the intent, it was that the handler chain decided
-    // on getRequestContentLength(), which is -1 for a body that declares no length.
+    // Setting this option to the cap looks like the obvious backstop and cannot be one, for two independent
+    // reasons. First, Undertow enforces MAX_ENTITY_SIZE inside the request conduit: ChunkedStreamSourceConduit's
+    // MaxEntitySizeChecker terminates the request AND CLOSES THE CONNECTION at the point the limit is crossed,
+    // before the worker thread is back in any handler, so by the time anything can react the exchange reports
+    // complete=true and the connection open=false and the documented JSON 413 cannot be sent at all. Second, the
+    // ceiling would be frozen at the value read here while the cap it mirrors is re-read on every request: after
+    // 'SET SERVER SETTING arcadedb.server.httpBodyContentMaxSize' raises the limit, a body inside the NEW cap
+    // still crosses the OLD ceiling, and the caller gets a connection reset with no status rather than the answer
+    // it asked for. Measured: with the cap raised from 1 KB to 8 MB at runtime, a 3 MB chunked body is cut with no
+    // response while the same body sent with a Content-Length is answered normally.
     //
-    // The headroom also bounds the lingering drain: after readRequestBody refuses, HttpServerExchange.endExchange
-    // drains what the client is still sending so the connection closes gracefully instead of with an RST that
-    // would discard the 413 - and that drain runs through the same conduit, so it can never exceed this ceiling.
-    // Heap stays bounded by the cap itself: the bytes read beyond it are discarded, never buffered.
-    //
-    // Long.MAX_VALUE only when the deployment turned the cap off with a value <= 0, which is the documented
-    // "WARNING: removes DoS protection" setting of arcadedb.server.httpBodyContentMaxSize.
-    final long maxBodyContentSize = configuration.getValueAsLong(GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE);
-    // Saturating, not Math.addExact: a cap configured close to Long.MAX_VALUE is a strange thing to write but it
-    // must not be a reason the HTTP server refuses to start, and the headroom is meaningless at that magnitude
-    // anyway.
-    final long maxEntitySize = maxBodyContentSize <= 0 || maxBodyContentSize > Long.MAX_VALUE - BODY_SIZE_DRAIN_HEADROOM
-        ? Long.MAX_VALUE
-        : maxBodyContentSize + BODY_SIZE_DRAIN_HEADROOM;
-
+    // Per-exchange repair does not work either: HttpServerExchange.setMaxEntitySize is available, but
+    // AbstractServerConnection.maxEntitySizeUpdated - the hook it calls - is an empty method for HTTP/1.1, and by
+    // the time any handler runs the conduit has already captured the old value.
     final Undertow.Builder builder = Undertow.builder()//
         .setServerOption(UndertowOptions.ENABLE_HTTP2, true)
-        .setServerOption(UndertowOptions.MAX_ENTITY_SIZE, maxEntitySize)
+        .setServerOption(UndertowOptions.MAX_ENTITY_SIZE, Long.MAX_VALUE)
         .addHttpListener(httpPortListening, host)//
         .setHandler(createBodySizeLimitHandler(routes, configuration))//
         .setSocketOption(Options.READ_TIMEOUT, configuration.getValueAsInteger(GlobalConfiguration.NETWORK_SOCKET_TIMEOUT))
@@ -439,10 +416,12 @@ public class HttpServer implements ServerPlugin {
    * request so a change through {@code SET SERVER SETTING} takes effect immediately.
    * <p>
    * It is not the whole enforcement and never could be. {@code HttpServerExchange.getRequestContentLength()}
-   * answers {@code -1} for a body that declares no length, so the bytes actually read are bounded by
-   * {@code UndertowOptions.MAX_ENTITY_SIZE} in {@link #buildUndertowServer} instead - see the note there -
-   * and the resulting {@code RequestTooBigException} is mapped to the same 413 by
-   * {@code AbstractServerHttpHandler} (issue #7772).
+   * answers {@code -1} for a body that declares no length, so the bytes actually read are bounded further down,
+   * by {@code AbstractServerHttpHandler.readRequestBody} and by {@code PostBatchHandler}'s
+   * {@code CountingInputStream} for the route that streams instead of buffering. The
+   * {@code RequestTooBigException} they raise is mapped to the same 413 by {@code AbstractServerHttpHandler}
+   * (issue #7772). This check remains because it is the cheap one: it costs a header read and refuses before a
+   * single body byte is taken off the socket.
    */
   private HttpHandler createBodySizeLimitHandler(final HttpHandler next, final ContextConfiguration configuration) {
     return exchange -> {
