@@ -18,15 +18,24 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.engine.PaginatedComponent;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.File;
+import java.io.FileFilter;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class SnapshotManagerTest {
 
@@ -181,6 +190,140 @@ class SnapshotManagerTest {
     assertThat(SnapshotManager.computeFileChecksums(follower.toFile()))
         .as("node-local scratch must not make a follower disagree with its leader")
         .isEqualTo(SnapshotManager.computeFileChecksums(leader.toFile()));
+  }
+
+  /**
+   * #7955: the one scratch file in a database directory that is a fully REGISTERED component file. An index
+   * compaction builds its output under {@code PaginatedComponent.TEMP_EXT} - {@code LSMTreeIndexAbstract} line 178
+   * and {@code LSMVectorIndex} line 662 are the two producers - so the directory holds e.g.
+   * {@code MyIdx_0.5.65536.v1.temp_umtidx} for as long as the compaction runs, which on a large index is minutes.
+   * <p>
+   * It is node-local by definition: only the node that happens to be compacting has one, so reporting it makes
+   * {@code /api/v1/cluster/checksums} call a key the peer cannot have a divergence in the data. And because
+   * {@code LocalDatabase.SUPPORTED_FILE_EXT} does not contain {@code temp_umtidx}, the post-t0 page-file guard that
+   * would otherwise have covered it never fires, so on the live path it was CRC'd WHILE COMPACTION WAS WRITING IT.
+   * Skipping it by name fixes both at once, before either branch is reached.
+   */
+  @Test
+  void indexCompactionTemporariesAreNotChecksummed(@TempDir final Path tempDir) throws Exception {
+    Files.writeString(tempDir.resolve("database.json"), "{}");
+    // LSMTreeIndexAbstract -> PaginatedComponent: filePath + "." + id + "." + pageSize + ".v" + version + "." + ext
+    Files.writeString(tempDir.resolve("MyIdx_0.5.65536.v1." + PaginatedComponent.TEMP_EXT + "umtidx"), "half a compaction");
+    Files.writeString(tempDir.resolve("MyIdx_1.6.65536.v1." + PaginatedComponent.TEMP_EXT + "numtidx"), "half a compaction");
+    Files.writeString(tempDir.resolve("MyIdx_2.7.65536.v1." + PaginatedComponent.TEMP_EXT + "uctidx"), "half a compaction");
+    // LSMVectorIndex.compact() -> TEMP_EXT + LSMVectorIndexMutable.FILE_EXT
+    Files.writeString(tempDir.resolve("Vec_16f3a9b2c1.8.65536.v1." + PaginatedComponent.TEMP_EXT + "lsmvecidx"), "half a compaction");
+    // THE COMPACTION OUTPUT AFTER removeTempSuffix(): the same index, now part of the database, MUST be reported
+    Files.writeString(tempDir.resolve("MyIdx_0.5.65536.v1.umtidx"), "a real index file");
+
+    final Map<String, Long> checksums = SnapshotManager.computeFileChecksums(tempDir.toFile());
+
+    assertThat(checksums).containsOnlyKeys("database.json", "MyIdx_0.5.65536.v1.umtidx");
+  }
+
+  /**
+   * #7955, the discrimination that keeps the skip from being a substring match: the temporary is recognised by its
+   * EXTENSION - what follows the last dot, the same way {@code LocalDatabase.isComponentFileName} takes it - so a
+   * file that merely contains {@code temp_} somewhere else in its name is still part of the answer. Without this a
+   * user file or a bucket whose type is called {@code temp_readings} would silently vanish from the comparison,
+   * which is the failure mode that matters: a checksum map that is short is read as agreement.
+   */
+  @Test
+  void onlyTheExtensionDecidesWhetherAFileIsACompactionTemporary(@TempDir final Path tempDir) throws Exception {
+    Files.writeString(tempDir.resolve("temp_readings_0.1.65536.v1.bucket"), "a bucket of a type named temp_readings");
+    Files.writeString(tempDir.resolve("notes.temp_draft.txt"), "temp_ in the middle, not the extension");
+    Files.writeString(tempDir.resolve("MyIdx_0.5.65536.v1." + PaginatedComponent.TEMP_EXT + "umtidx"), "the real thing");
+
+    final Map<String, Long> checksums = SnapshotManager.computeFileChecksums(tempDir.toFile());
+
+    assertThat(checksums).containsOnlyKeys("temp_readings_0.1.65536.v1.bucket", "notes.temp_draft.txt");
+  }
+
+  /**
+   * #7955 stated as the property it protects, on the same shape as the #7459 test above: the leader is compacting an
+   * index and the follower is not, which is the normal state of a cluster at any given moment, and the two must
+   * still be reported as holding the same database.
+   */
+  @Test
+  void aCompactionInFlightOnOneNodeDoesNotMakeItDifferFromItsPeer(@TempDir final Path tempDir) throws Exception {
+    final Path leader = Files.createDirectory(tempDir.resolve("leader"));
+    final Path follower = Files.createDirectory(tempDir.resolve("follower"));
+
+    for (final Path node : new Path[] { leader, follower }) {
+      Files.writeString(node.resolve("database.json"), "{}");
+      Files.writeString(node.resolve("MyIdx_0.5.65536.v1.umtidx"), "a real index file");
+    }
+
+    // Only the leader is compacting right now, and its temporary is a REGISTERED component file.
+    Files.writeString(leader.resolve("MyIdx_9.5.65536.v1." + PaginatedComponent.TEMP_EXT + "uctidx"), "half a compaction");
+
+    assertThat(SnapshotManager.computeFileChecksums(follower.toFile()))
+        .as("a compaction in flight on one node must not be reported as a divergence")
+        .isEqualTo(SnapshotManager.computeFileChecksums(leader.toFile()));
+  }
+
+  /**
+   * #7956: the listing-then-open race. {@code listFiles} produces a name and the {@code FileInputStream} a moment
+   * later finds nothing there, which the database READ lock this scan holds does not prevent - a TimeSeries sealed
+   * store dropped by retention is unregistered raw-channel I/O that takes no write lock, and on the
+   * {@code pageSnapshotEnabled=false} fallback so is a component file dropped by index compaction.
+   * <p>
+   * The old code let the {@code IOException} out of the loop, so {@code GET /.../checksums} answered 500 and the
+   * cluster comparison reported the node as ERROR - the whole answer lost to one file that no longer exists, at
+   * exactly the moment an operator is using it to decide whether a follower has diverged. The answer now survives
+   * and NAMES what it could not cover, because a map that is silently short reads as agreement (the trap
+   * {@code PostVerifyDatabaseHandler.collectSealedStores} documents and avoids for the same reason, #7338).
+   * <p>
+   * The gap is entered for real rather than simulated: the override lists the directory with the JDK's own call and
+   * then deletes one of the files it is about to hand back, which is precisely what retention does in that window.
+   */
+  @Test
+  void aFileThatDisappearsBetweenTheListingAndTheReadIsNamedRatherThanFatal(@TempDir final Path tempDir)
+      throws Exception {
+    Files.writeString(tempDir.resolve("database.json"), "{}");
+    Files.writeString(tempDir.resolve("weather_shard_0.ts.sealed"), "dropped by retention in the gap");
+
+    final File directory = new File(tempDir.toString()) {
+      @Override
+      public File[] listFiles(final FileFilter filter) {
+        final File[] listed = super.listFiles(filter);
+        assertThat(new File(this, "weather_shard_0.ts.sealed").delete())
+            .as("the fixture must really enter the gap, or this test proves nothing").isTrue();
+        return listed;
+      }
+    };
+
+    final List<String> unreadable = new ArrayList<>();
+    final Map<String, Long> checksums = SnapshotManager.computeFileChecksums(directory, null, unreadable);
+
+    assertThat(checksums).as("the rest of the answer survives the one file that vanished")
+        .containsOnlyKeys("database.json");
+    assertThat(unreadable).as("and the answer says which file it does not cover")
+        .containsExactly("weather_shard_0.ts.sealed");
+  }
+
+  /**
+   * #7956, the other half of the same decision: a file that is still THERE and still cannot be read is a genuine
+   * error - a permission problem, a failing disk - and must keep failing the endpoint with a 500 whose body names
+   * it. Degrading that to "answered 200, did not cover this one" would hide a broken node behind a diagnostic whose
+   * job is to find broken nodes. Only the vanished file is survivable, because a file that is gone is gone on the
+   * next scan too.
+   */
+  @Test
+  void aFileThatIsStillThereAndStillUnreadableStillFailsTheScan(@TempDir final Path tempDir) throws Exception {
+    Files.writeString(tempDir.resolve("database.json"), "{}");
+    final Path unreadableFile = Files.writeString(tempDir.resolve("locked.ts.sealed"), "cannot be opened");
+    assumeTrue(unreadableFile.toFile().setReadable(false, false),
+        "this filesystem cannot take away read permission, so the distinction cannot be driven here");
+    assumeTrue(!Files.isReadable(unreadableFile), "running as root: an unreadable file is still readable");
+
+    try {
+      assertThatThrownBy(() -> SnapshotManager.computeFileChecksums(tempDir.toFile(), null, new ArrayList<>()))
+          .as("a file that is still present and unreadable is a real error, not the listing race")
+          .isInstanceOf(IOException.class);
+    } finally {
+      unreadableFile.toFile().setReadable(true, false);
+    }
   }
 
   /**

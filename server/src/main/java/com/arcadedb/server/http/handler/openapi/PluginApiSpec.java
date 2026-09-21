@@ -463,9 +463,19 @@ public class PluginApiSpec implements OpenApiContributor {
     // was declared as an un-named object here, so a generated client got an empty model (issue #7577).
     final ApiResponse checksums = new ApiResponse();
     checksums.setDescription("Per-file checksums, keyed by file name. No envelope: the map IS the body");
-    checksums.setContent(new Content().addMediaType(SpecBuilders.JSON,
-        new MediaType().schema(SpecBuilders.mapOf(SpecBuilders.integer("CRC of the file's contents"),
-            "File name to checksum"))));
+    final Schema<Object> checksumMap = SpecBuilders.mapOf(SpecBuilders.integer("CRC of the file's contents"),
+        "File name to checksum");
+    // The one key that is not a file name (issue #7956). A file that disappears between the directory listing and
+    // the read - a TimeSeries sealed store dropped by retention, a component file dropped by index compaction -
+    // used to take the whole answer down as a 500; it is now left out and NAMED here, so a comparison can say "this
+    // answer does not cover these" instead of reading a silently short map as agreement. Absent when there are
+    // none. It cannot collide with a file name because the map is keyed by File.getName(), which never contains a
+    // path separator. Spelled as a literal rather than shared from SnapshotHttpHandler.UNREADABLE_FILES_KEY because
+    // this module does not depend on ha-raft, exactly as the route strings above are.
+    checksumMap.addProperty("/unreadableFiles", SpecBuilders.arrayOf(SpecBuilders.string("File name"),
+        "Files listed in the database directory that were gone by the time this answer tried to read them, so it "
+            + "does not cover them. Absent when the answer is complete."));
+    checksums.setContent(new Content().addMediaType(SpecBuilders.JSON, new MediaType().schema(checksumMap)));
     get.setResponses(SpecBuilders.standardResponses("200", checksums,
         "400", "401", "403", "404", "500", "503"));
 

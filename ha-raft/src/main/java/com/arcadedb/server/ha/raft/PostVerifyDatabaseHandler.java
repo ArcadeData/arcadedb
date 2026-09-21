@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.PageSnapshot;
+import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.timeseries.TimeSeriesCompactionPause;
 import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
 import com.arcadedb.exception.PageSnapshotException;
@@ -585,6 +586,13 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
    * <p>
    * A pause that cannot be taken degrades rather than failing the verify - the page half of the answer is still
    * worth having - but it is reported as incomplete sealed-store coverage rather than passed off as a full one.
+   * <p>
+   * Both page-file enumerations skip an index-compaction temporary (#7955). This handler reads the REGISTERED files
+   * rather than the directory, so none of the scratch families {@code SnapshotManager.isNodeLocalScratchFileName}
+   * excludes can reach it - a {@code .tmp} or a {@code .ts.sealed.incoming} is never a {@code ComponentFile}. A
+   * {@code temp_*} compaction output is the one exception: {@code PaginatedComponent}'s constructor registers it,
+   * so it is in {@code getFiles()} and in every window opened while the compaction runs, and only on the node doing
+   * the compacting. Left in, it is a key the peer cannot have, which this handler reports as INCONSISTENT.
    *
    * @return {@code false} when the sealed stores are not fully covered by this answer
    */
@@ -620,12 +628,21 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
         try (final PageSnapshot snapshot = db.getPageManager().openSnapshot(db)) {
           for (final PageSnapshot.SnapshotFile file : snapshot.getFiles())
             try {
+              // #7955: AN INDEX COMPACTION IN FLIGHT HAS A REGISTERED temp_* COMPONENT FILE, SO THE WINDOW CARRIES
+              // IT - AND ONLY THE NODE THAT HAPPENS TO BE COMPACTING HAS ONE. SEE isTemporaryFileName
+              if (PaginatedComponent.isTemporaryFileName(file.fileName()))
+                continue;
               collectFileInfo(snapshotChecksums, snapshotFiles, file.fileName(), snapshot.calculateChecksum(file.fileId()),
                   file.size());
             } catch (final PageSnapshotException e) {
               throw e;
             } catch (final Exception e) {
               // skip files that cannot be checksummed (e.g. in-flight creation)
+              // NOT NAMED IN THE ANSWER, UNLIKE /checksums' unreadableFiles (#7956). THAT ENDPOINT SCANS THE
+              // DIRECTORY, SO IT RACES A FILE DROPPED BETWEEN THE LISTING AND THE READ AND HAS TO SAY WHICH ONE
+              // IT MISSED; THIS ONE ENUMERATES THE REGISTRY, WHERE A FILE THAT IS ABSENT IS ABSENT ON EVERY
+              // NODE. THE FILES THAT ARE NOT IN THE REGISTRY - THE SEALED STORES - ARE REPORTED, BY
+              // collectSealedStores (#7338)
             }
 
           if (compactionPaused)
@@ -645,11 +662,16 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
 
       db.getPageManager().suspendFlushAndExecute(db, () -> {
         for (final var file : db.getFileManager().getFiles())
-          if (file != null) {
+          if (file != null && !PaginatedComponent.isTemporaryFileName(file.getFileName())) {
             try {
               collectFileInfo(localChecksums, localFiles, file.getFileName(), file.calculateChecksum(), file.getSize());
             } catch (final Exception e) {
               // skip files that cannot be checksummed (e.g. in-flight creation)
+              // NOT NAMED IN THE ANSWER, UNLIKE /checksums' unreadableFiles (#7956). THAT ENDPOINT SCANS THE
+              // DIRECTORY, SO IT RACES A FILE DROPPED BETWEEN THE LISTING AND THE READ AND HAS TO SAY WHICH ONE
+              // IT MISSED; THIS ONE ENUMERATES THE REGISTRY, WHERE A FILE THAT IS ABSENT IS ABSENT ON EVERY
+              // NODE. THE FILES THAT ARE NOT IN THE REGISTRY - THE SEALED STORES - ARE REPORTED, BY
+              // collectSealedStores (#7338)
             }
           }
         if (compactionPaused)
