@@ -66,6 +66,19 @@ public interface HAServerPlugin extends ServerPlugin {
     READY, NOT_READY
   }
 
+  /**
+   * The three cluster-replicated security documents, named as {@code ServerSecurity.seedSecurityStateClusterWide}
+   * names them so a seed failure reads the same whichever admission path reports it.
+   * <p>
+   * Reported whole by an admission whose seed could not be run at all, where which of them landed is exactly what
+   * is not known. Lives on this interface because all three admission paths need it and this is the one thing
+   * they all already have: {@code ServerControlPlane.connectCluster}, {@code PostAddPeerHandler} and
+   * {@link #addPeerAndReportSeed} (issues #7532, #7521, #7820). It sits up here rather than beside that last one,
+   * which is its newest consumer, because a field declared after a method is a static-analysis finding on this
+   * repository's Codacy configuration.
+   */
+  List<String> ALL_SEEDED_SECURITY_DOCUMENTS = List.of("users", "groups", "API tokens");
+
   boolean isLeader();
 
   String getLeaderName();
@@ -391,17 +404,6 @@ public interface HAServerPlugin extends ServerPlugin {
   default void addPeer(final String peerId, final String address, final String name) {
     addPeer(peerId, address);
   }
-
-  /**
-   * The three cluster-replicated security documents, named as {@code ServerSecurity.seedSecurityStateClusterWide}
-   * names them so a seed failure reads the same whichever admission path reports it.
-   * <p>
-   * Reported whole by an admission whose seed could not be run at all, where which of them landed is exactly what
-   * is not known. Lives here because all three admission paths need it and this interface is the one thing they
-   * all already have: {@code ServerControlPlane.connectCluster}, {@code PostAddPeerHandler} and
-   * {@link #addPeerAndReportSeed} (issues #7532, #7521, #7820).
-   */
-  List<String> ALL_SEEDED_SECURITY_DOCUMENTS = List.of("users", "groups", "API tokens");
 
   /**
    * {@link #addPeer(String, String, String)} for a caller that needs the outcome of the cluster security seed,
