@@ -322,6 +322,20 @@ public class LocalSchema implements Schema {
    * suppression has to cross that public-API boundary; save/restore around the cascade, matching {@link #multipleUpdate}.
    */
   private             String                                 typeBeingDropped              = null;
+
+  /**
+   * Whether a {@link #dropType} cascade is in flight, which is the one caller that severs a super-type link WITHOUT
+   * meaning the subtree to stop being indexed by the ancestor (issue #7892 follow-up).
+   * <p>
+   * {@code dropType} unlinks the doomed type from each of its super types only so it can re-parent the SURVIVING
+   * sub types onto those same super types a few lines later, and it re-links them with {@code createIndexes=false}
+   * precisely because the propagated components are still on disk and still attached. A drop of "the components the
+   * ancestor no longer reaches" in between is therefore reading a relationship the schema is halfway through
+   * rewriting, and it takes the surviving grandchildren's components with it, with nothing to put them back.
+   */
+  boolean isTypeBeingDropped() {
+    return typeBeingDropped != null;
+  }
   /** Nesting depth of {@link #recordFileChanges} frames. Read and written under the database write lock only. */
   private             int                                    recordingDepth                = 0;
   private final       AtomicLong                             versionSerial                 = new AtomicLong();
