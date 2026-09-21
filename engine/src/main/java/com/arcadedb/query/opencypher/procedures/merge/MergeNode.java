@@ -228,13 +228,16 @@ public class MergeNode implements CypherProcedure {
   }
 
   /**
-   * The map at {@code index}, or {@code null} when the caller stopped short of that argument - which
-   * {@link #execute} applies exactly as it applies an explicitly passed {@code null}, by setting no property from
-   * it. {@code validateArgs} has already run, so a shorter array means the argument is one APOC declares with a
-   * default and not a malformed call (issue #8102).
+   * The map at {@code index}, or the empty map when the caller stopped short of that argument - the value APOC
+   * declares as its default, so the absent slot carries the default itself rather than a {@code null} that only
+   * happens to behave like one downstream. {@code validateArgs} has already run, so a shorter array means the
+   * argument is one APOC declares with a default and not a malformed call (issue #8102).
+   * <p>
+   * An explicitly passed {@code null} still resolves to {@code null}, via {@link #extractMap}; {@link #execute}
+   * sets no property from either.
    */
   private Map<String, Object> extractOptionalMap(final Object[] args, final int index, final String paramName) {
-    return index < args.length ? extractMap(args[index], paramName) : null;
+    return index < args.length ? extractMap(args[index], paramName) : Map.of();
   }
 
   @SuppressWarnings("unchecked")
