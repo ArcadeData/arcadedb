@@ -19,13 +19,16 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -173,7 +176,7 @@ class Issue7892RemoveSuperTypeDetachesIndexesTest extends TestHelper {
     database.command("sql", "CREATE PROPERTY A5_7892.n INTEGER");
     database.command("sql", "CREATE DOCUMENT TYPE B5_7892 EXTENDS A5_7892");
     database.command("sql", "CREATE INDEX ON A5_7892 (n) UNIQUE");
-    for (final com.arcadedb.engine.Bucket bucket : database.getSchema().getType("A5_7892").getBuckets(false))
+    for (final Bucket bucket : database.getSchema().getType("A5_7892").getBuckets(false))
       database.getSchema().getType("A5_7892").removeBucket(bucket);
 
     database.getSchema().getType("B5_7892").removeSuperType("A5_7892");
@@ -183,13 +186,13 @@ class Issue7892RemoveSuperTypeDetachesIndexesTest extends TestHelper {
     assertThat(database.getSchema().existsType("A5_7892")).isTrue();
   }
 
-  private java.util.List<Integer> coveredBuckets(final String typeIndexName) {
+  private List<Integer> coveredBuckets(final String typeIndexName) {
     final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName(typeIndexName);
     return Arrays.stream(index.getIndexesOnBuckets()).map(IndexInternal::getAssociatedBucketId).toList();
   }
 
-  private java.util.List<String> indexNames() {
-    return Arrays.stream(database.getSchema().getIndexes()).map(com.arcadedb.index.Index::getName).toList();
+  private List<String> indexNames() {
+    return Arrays.stream(database.getSchema().getIndexes()).map(Index::getName).toList();
   }
 
   private long count(final String typeName) {
