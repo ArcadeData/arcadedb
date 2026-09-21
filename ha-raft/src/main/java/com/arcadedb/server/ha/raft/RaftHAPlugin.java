@@ -938,6 +938,14 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
    * Kept {@code void}, and therefore reporting a residual seed failure only to the log. A caller that has to act
    * on one - which an embedding application does, since nothing else is watching this server's log - calls
    * {@link #addPeerAndReportSeed} instead (issue #7820).
+   * <p>
+   * <b>Timing change in 26.10.1, for an embedder upgrading.</b> This used to return as soon as the membership
+   * change committed. It now also waits for the leader to report the security seed, which is what gives the
+   * admission the same outcome the two operator-facing paths have reported since issues #7521 and #7532. The
+   * wait is bounded - {@code ClusterSecuritySeedQuery} gives the request
+   * {@code arcadedb.ha.securitySeedRetryTimeout} plus a fixed margin as its deadline and re-resolves the leader
+   * at most a fixed number of times - but its worst case is seconds rather than the previous near-immediate
+   * return, so an embedder calling this from a latency-sensitive thread should know that before upgrading.
    */
   @Override
   public void addPeer(final String peerId, final String address, final String name) {

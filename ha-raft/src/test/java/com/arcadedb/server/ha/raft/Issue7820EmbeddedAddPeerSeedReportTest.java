@@ -215,6 +215,21 @@ class Issue7820EmbeddedAddPeerSeedReportTest {
     assertThat(plugin.steps).as("the admission and the seed both ran").hasSize(2);
   }
 
+  /**
+   * The two-argument overload specifically, which is the one an embedder written before names existed calls.
+   * It is a one-line delegation, and a one-line delegation that forgot to pass the seed on is exactly the shape
+   * of the defect this issue reported, so it is asserted rather than assumed (review on PR #8089).
+   */
+  @Test
+  void theTwoArgumentOverloadAdmitsWithNoNameAndStillAsksForTheSeed() {
+    final RecordingPlugin plugin = new RecordingPlugin();
+    plugin.failedSeeds = List.of("API tokens");
+
+    plugin.addPeer("arcadedb-3", "localhost:2447");
+
+    assertThat(plugin.steps).containsExactly("admit arcadedb-3 at localhost:2447 as null", "seed arcadedb-3");
+  }
+
   /** And it seeds too, which is the half that used to be missing entirely from every embedded call. */
   @Test
   void theVoidOverloadAsksForTheSeedAsWell() {
