@@ -379,6 +379,33 @@ public class ResultInternal implements Result {
   }
 
   /**
+   * Flags the record this row wraps as modified, for a mutation that reached INSIDE one of its values instead of
+   * going through {@link MutableDocument#set}.
+   * <p>
+   * A nested {@code UPDATE ... SET m.k = v} / {@code SET l[0] = v} and a nested {@code UPDATE ... REMOVE m.k} all
+   * mutate the {@code Map} or {@code List} the record already holds, in place. {@code MutableDocument.dirty} is
+   * set by {@code set()} and by nothing else, so the owning record never learns that one of its values changed,
+   * and {@code SaveElementStep} - which deliberately skips the save of a record that is not dirty, to avoid a
+   * needless MVCC version bump - drops the write on the floor. The statement still reports {@code count: 1} and
+   * {@code RETURN AFTER} still shows the new value, because both read the in-memory row that WAS mutated, so
+   * nothing tells the caller the write is gone (issues #4730, #8027).
+   * <p>
+   * This lives here, rather than as a private helper on one statement node, because it is the rule for every
+   * statement that mutates a nested container and not for one of them: {@code REMOVE} carried a private copy of
+   * it and {@code SET} did not, which is the whole of #8027.
+   *
+   * @return {@code true} when a mutable record was flagged, {@code false} when this row wraps no record or wraps
+   * an immutable one - in which case there was nothing to persist in the first place.
+   */
+  public boolean markElementDirty() {
+    if (element instanceof MutableDocument mutable) {
+      mutable.markDirty();
+      return true;
+    }
+    return false;
+  }
+
+  /**
    * Returns {@code true} when this result carries explicitly projected properties (set via
    * {@link #setProperty}), as opposed to being a bare wrapper around the backing {@link #element}.
    * Used by DISTINCT to decide whether the cheap RID-based deduplication is still semantically

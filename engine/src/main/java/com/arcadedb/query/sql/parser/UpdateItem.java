@@ -118,6 +118,12 @@ public class UpdateItem extends SimpleNode {
     } else {
       final Object val = doc.getProperty(left.getStringValue());
       leftModifier.setValue(doc, val, rightValue, context);
+      // SET m.k = v / SET l[0] = v reach into the Map or List the record already holds and write into it, without
+      // ever going through MutableDocument.set() - so the owner never learns it changed and SaveElementStep skips
+      // a record it believes clean, losing the write while the statement still reports count 1 and RETURN AFTER
+      // still shows the new value (issue #8027). The same call the REMOVE side has made since #4730; it is here
+      // and not inside the Modifier chain because this is the one place that knows the mutation is finished.
+      doc.markElementDirty();
     }
   }
 
