@@ -43,6 +43,11 @@ public abstract class AbstractImporterFormat implements FormatImporter {
    * before and after snapshot, is indistinguishable from one this read made and pollutes the delta. Fine for the
    * common case of a freshly created database nobody else touches during the import, but not fine if the import
    * is joining a caller-owned transaction (issue #8073) against a database the caller keeps using concurrently.
+   * <p>
+   * Also undercounts a {@code LIGHTWEIGHT} edge type: {@code countType(name, false)} sums bucket entries, and a
+   * lightweight edge has none - {@code GraphEngine.newEdge}'s lightweight branch never calls {@code edge.save()}.
+   * An import that creates edges of a type already declared (or later made) {@code LIGHTWEIGHT} undercounts them
+   * in the delta this method feeds.
    */
   protected static long countRecordsOfKind(final Database database, final Class<? extends DocumentType> kind) {
     long total = 0;

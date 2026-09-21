@@ -431,41 +431,73 @@ public class OrientDBImporter {
 
     final List<Map<String, Object>> batch = new ArrayList<>(batchSize);
 
-    while (reader.peek() == BEGIN_OBJECT) {
-      for (int i = 0; i < batchSize && reader.peek() == BEGIN_OBJECT; i++) {
-        final Map<String, Object> attributes = parseRecord(reader, false);
-        batch.add(attributes);
-        context.parsed.incrementAndGet();
+    // Whether this call pushed a transaction of its own because none was active despite ownsTransaction answering
+    // false - the same invariant-violation fallback Neo4jImporter.parseVertices()/
+    // OrientDBImporter.updateDocumentLinks()/RDFImporterFormat.load() all have. Checked per batch rather than
+    // once up front: ownsTransaction is read once at the top of run(), before ANALYZE/CREATE_SCHEMA/CREATE_EDGES
+    // all run, leaving a real window for a caller's transaction to be resolved out from under this call before
+    // parseRecords() itself gets here. Once pushed, every later batch in this call reuses the same transaction
+    // (no periodic commit - this path exists only to keep the rare, invariant-violation case correct, not fast).
+    boolean pushedTransaction = false;
 
-        if (reader.peek() == NULL)
-          // FIX A BUG ON ORIENTDB EXPORTER WHEN GENERATE AN EMPTY RECORD
-          reader.skipValue();
-      }
+    try {
+      while (reader.peek() == BEGIN_OBJECT) {
+        for (int i = 0; i < batchSize && reader.peek() == BEGIN_OBJECT; i++) {
+          final Map<String, Object> attributes = parseRecord(reader, false);
+          batch.add(attributes);
+          context.parsed.incrementAndGet();
 
-      // Only wrapped in database.transaction() when this run owns the transaction: a fresh nested transaction per
-      // batch, committed as soon as the batch is written, retried on a retryable failure. When a caller-owned
-      // transaction predates the import, executeBatch() is called directly instead of joining it through
-      // database.transaction(joinCurrentTx=true): that wrapper's generic-Throwable handler rolls back whatever
-      // transaction is active without checking which one it is, so joining would let a batch failure roll back
-      // work the caller did before the import ever started. Calling it directly leaves the caller's transaction
-      // exactly as the caller left it - to commit, retry or roll back on their own terms (issue #8073).
-      if (ownsTransaction) {
-        database.transaction(() -> {
+          if (reader.peek() == NULL)
+            // FIX A BUG ON ORIENTDB EXPORTER WHEN GENERATE AN EMPTY RECORD
+            reader.skipValue();
+        }
+
+        // Only wrapped in database.transaction() when this run owns the transaction: a fresh nested transaction per
+        // batch, committed as soon as the batch is written, retried on a retryable failure. When a caller-owned
+        // transaction predates the import, executeBatch() is called directly instead of joining it through
+        // database.transaction(joinCurrentTx=true): that wrapper's generic-Throwable handler rolls back whatever
+        // transaction is active without checking which one it is, so joining would let a batch failure roll back
+        // work the caller did before the import ever started. Calling it directly leaves the caller's transaction
+        // exactly as the caller left it - to commit, retry or roll back on their own terms (issue #8073).
+        if (ownsTransaction) {
+          database.transaction(() -> {
+            try {
+              executeBatch(processedItems, batch);
+            } catch (IOException e) {
+              throw new ImportException("Error on importing batch of records", e);
+            }
+          }, false, CONCURRENT_MAX_RETRY);
+        } else {
+          if (!pushedTransaction && !database.isTransactionActive()) {
+            logger.errorLine(
+                "- WARNING: importOwnsTransaction() answered false but no transaction was active on entry to "
+                    + "parseRecords(): the invariant it documents did not hold. Proceeding as if this import owns "
+                    + "the transaction it is about to push.");
+            database.begin();
+            pushedTransaction = true;
+          }
           try {
             executeBatch(processedItems, batch);
           } catch (IOException e) {
             throw new ImportException("Error on importing batch of records", e);
           }
-        }, false, CONCURRENT_MAX_RETRY);
-      } else {
-        try {
-          executeBatch(processedItems, batch);
-        } catch (IOException e) {
-          throw new ImportException("Error on importing batch of records", e);
         }
+
+        batch.clear();
       }
 
-      batch.clear();
+      if (pushedTransaction)
+        database.commit();
+    } catch (final RuntimeException | Error e) {
+      if (pushedTransaction && database.isTransactionActive()) {
+        try {
+          database.rollback();
+        } catch (final Exception rollbackFailure) {
+          logger.errorLine("- Could not roll back after the record import failed: the transaction it opened may "
+              + "still be on the stack: %s", rollbackFailure.getMessage());
+        }
+      }
+      throw e;
     }
 
     final long elapsedInSecs = (System.currentTimeMillis() - beginTime) / 1000;

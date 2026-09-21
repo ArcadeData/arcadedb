@@ -29,6 +29,8 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
+import java.io.InputStream;
+import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
@@ -99,11 +101,11 @@ class Neo4jImporterCallerOwnedTransactionTest {
   private Neo4jImporter importerFor(final ImporterContext context, final String jsonl) throws Exception {
     final Neo4jImporter importer = new Neo4jImporter(database, context) {
       @Override
-      public java.io.InputStream openInputStream() {
+      public InputStream openInputStream() {
         return new ByteArrayInputStream(jsonl.getBytes(StandardCharsets.UTF_8));
       }
     };
-    final java.lang.reflect.Field field = Neo4jImporter.class.getDeclaredField("batchSize");
+    final Field field = Neo4jImporter.class.getDeclaredField("batchSize");
     field.setAccessible(true);
     field.set(importer, 1_000);
     return importer;
