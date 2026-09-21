@@ -563,7 +563,11 @@ public class Neo4jImporter {
       batch = null;
       edgeCreator = (fromRID, type, toRID, propsArray) -> {
         final Vertex fromVertex = database.lookupByRID(fromRID, true).asVertex();
-        fromVertex.newEdge(type, toRID, true, propsArray);
+        // The 3-arg overload, not the deprecated 4-arg one that takes an explicit bidirectional flag: bidirectional
+        // is now defined at the edge type's schema level, and a literal true here never triggers the deprecated
+        // overload's only extra behavior (throwing when !bidirectional && type.isBidirectional()), so the two calls
+        // are exactly equivalent - no reason to add a new call site for the deprecated one.
+        fromVertex.newEdge(type, toRID, propsArray);
       };
     }
 
