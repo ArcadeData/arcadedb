@@ -355,7 +355,12 @@ public enum Type {
   public static Object convertOrKeep(final Database database, final Object value, final Class<?> targetClass,
       final Property property) {
     try {
-      return convert(database, value, targetClass, property);
+      final Object converted = convert(database, value, targetClass, property);
+      // A null out of a non-null in means convert() gave up internally - its blanket handler still answers null for
+      // the failures that are neither IllegalArgumentException nor DateTimeException. Keeping the original there too
+      // is what this method promises; letting that null through would discard a value that arrived intact by a route
+      // this method cannot see.
+      return converted == null && value != null ? value : converted;
     } catch (final IllegalArgumentException e) {
       LogManager.instance().log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, value, targetClass);
       return value;
@@ -747,7 +752,7 @@ public enum Type {
       } else if (targetClass.equals(LocalDateTime.class)) {
         if (value instanceof LocalDateTime time) {
           if (property != null)
-            return time.truncatedTo(DateUtils.getPrecisionFromType(property.getType()));
+            return truncateToPropertyPrecision(time, property);
         } else if (value instanceof Number number) {
           return DateUtils.date(database, number.longValue(), LocalDateTime.class);
         } else if (value instanceof Date date)
@@ -778,7 +783,7 @@ public enum Type {
       } else if (targetClass.equals(ZonedDateTime.class)) {
         if (value instanceof ZonedDateTime time) {
           if (property != null)
-            return time.truncatedTo(DateUtils.getPrecisionFromType(property.getType()));
+            return truncateToPropertyPrecision(time, property);
         } else if (value instanceof Number number)
           return DateUtils.dateTime(database, number.longValue(), ChronoUnit.MILLIS, ZonedDateTime.class,
               property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
@@ -800,7 +805,7 @@ public enum Type {
         switch (value) {
         case Instant instant -> {
           if (property != null)
-            return instant.truncatedTo(DateUtils.getPrecisionFromType(property.getType()));
+            return truncateToPropertyPrecision(instant, property);
         }
         case Number number -> {
           return DateUtils.dateTime(database, number.longValue(), ChronoUnit.MILLIS, Instant.class,
@@ -829,7 +834,7 @@ public enum Type {
             // carries has to survive. The wall-clock chain drops it - deliberately, for LocalDateTime (issue #4125) -
             // and re-anchoring what is left to the database's zone lands on a different moment than the value named.
             final Instant parsed = DateUtils.parseZonedDateTime(database, valueAsString).toInstant();
-            return property != null ? parsed.truncatedTo(DateUtils.getPrecisionFromType(property.getType())) : parsed;
+            return truncateToPropertyPrecision(parsed, property);
           }
         }
         default -> {
@@ -1968,6 +1973,10 @@ public enum Type {
   }
 
   private static ZonedDateTime truncateToPropertyPrecision(final ZonedDateTime value, final Property property) {
+    return property == null ? value : value.truncatedTo(DateUtils.getPrecisionFromType(property.getType()));
+  }
+
+  private static Instant truncateToPropertyPrecision(final Instant value, final Property property) {
     return property == null ? value : value.truncatedTo(DateUtils.getPrecisionFromType(property.getType()));
   }
 }

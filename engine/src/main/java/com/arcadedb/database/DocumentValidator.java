@@ -270,9 +270,8 @@ public class DocumentValidator {
         throwValidationException(document.getType(), p, "contains more characters than " + max + " requested");
     }
     case DATE, DATETIME -> {
-      final Database database = document.getDatabase();
-      final Date maxAsDate = (Date) Type.convert(database, max, Date.class);
-      final Date fieldValueAsDate = (Date) Type.convert(database, fieldValue, Date.class);
+      final Date maxAsDate = boundAsDate(document, p, max, "max");
+      final Date fieldValueAsDate = boundAsDate(document, p, fieldValue, "value");
       if (fieldValueAsDate.compareTo(maxAsDate) > 0)
         throwValidationException(document.getType(), p,
             "contains the date " + fieldValue + " which is after the last acceptable date (" + max + ")");
@@ -352,9 +351,8 @@ public class DocumentValidator {
         yield new ValidationResult(false, null);
       }
       case DATE, DATETIME -> {
-        final Database database = document.getDatabase();
-        final Date minAsDate = (Date) Type.convert(database, min, Date.class);
-        final Date fieldValueAsDate = (Date) Type.convert(database, fieldValue, Date.class);
+        final Date minAsDate = boundAsDate(document, p, min, "min");
+        final Date fieldValueAsDate = boundAsDate(document, p, fieldValue, "value");
         if (fieldValueAsDate.compareTo(minAsDate) < 0)
           yield new ValidationResult(true,
               "contains the date " + fieldValue + " which precedes the first acceptable date (" + min + ")");
@@ -499,6 +497,25 @@ public class DocumentValidator {
       }
     }
     break;
+    }
+  }
+
+  /**
+   * Reads one side of a DATE/DATETIME {@code min}/{@code max} comparison, reporting a value neither side can read as
+   * the schema layer's own {@link ValidationException} rather than letting the conversion's
+   * {@link IllegalArgumentException} escape validation.
+   * <p>
+   * This is a write-time check, so the STRICT conversion is the right one - a bound or a value that cannot be read
+   * must not be quietly treated as absent. What issue #8090 changed is only how that failure is reported: the
+   * conversion used to answer {@code null} here, which then became an NPE on the comparison below. Naming the side
+   * that could not be read turns that into something the caller can act on.
+   */
+  private static Date boundAsDate(final Document document, final Property p, final Object value, final String side) {
+    try {
+      return (Date) Type.convert(document.getDatabase(), value, Date.class);
+    } catch (final IllegalArgumentException e) {
+      throwValidationException(document.getType(), p, "has a " + side + " that is not a readable date: " + value);
+      return null; // unreachable: throwValidationException always throws
     }
   }
 

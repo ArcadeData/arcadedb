@@ -20,6 +20,7 @@ package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.DateUtils;
 import org.junit.jupiter.api.Test;
@@ -32,6 +33,7 @@ import java.time.ZonedDateTime;
 import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoUnit;
 import java.util.Date;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -508,6 +510,66 @@ class Issue8090SpaceSeparatedFractionalDateTimeTest extends TestHelper {
       // else. Pinned here so the difference reads as the policy it is rather than as the bug just fixed.
       assertThat(database.query("sql", "SELECT '" + literal + "'.convert('datetime') AS d").next()
           .<Object>getProperty("d")).isEqualTo(Date.from(OffsetDateTime.parse(literal).toInstant()));
+    });
+  }
+
+  /**
+   * The same contract change the {@code LocalDate} branch got, for its two siblings: with no database in scope these
+   * used to fall off the end and answer the ORIGINAL String when the string-length guess matched nothing, and now
+   * refuse. {@code Type.convert} is public, so this is pinned for each rather than left to be discovered.
+   */
+  @Test
+  void everyNoDatabaseStringBranchRefusesRatherThanPassingTheValueThrough() {
+    for (final Class<?> target : new Class<?>[] { LocalDateTime.class, ZonedDateTime.class, LocalDate.class,
+        Instant.class, Date.class })
+      assertThatThrownBy(() -> Type.convert(null, "not-a-timestamp", target))//
+          .as("target %s", target.getSimpleName())//
+          .isInstanceOf(IllegalArgumentException.class);
+
+    // The lenient policies are what a caller reaches for when it wants the old shape back.
+    assertThat(Type.convertOrNull(null, "not-a-timestamp", LocalDateTime.class)).isNull();
+    assertThat(Type.convertOrKeep(null, "not-a-timestamp", LocalDateTime.class)).isEqualTo("not-a-timestamp");
+  }
+
+  /**
+   * {@code convertOrKeep} promises the ORIGINAL value back, so it has to answer one even where {@code convert}
+   * gave up through its blanket handler rather than by throwing - otherwise a value that reached the remote client
+   * intact would be discarded there, which is this issue's own failure moved to the client.
+   */
+  @Test
+  void convertOrKeepNeverAnswersNullForANonNullValue() {
+    // A shape no branch can convert and none throws for: the blanket handler answers null inside convert().
+    assertThat(Type.convertOrKeep(null, List.of("x"), Integer.class)).isEqualTo(List.of("x"));
+    assertThat(Type.convertOrKeep(null, "not-a-timestamp", LocalDateTime.class)).isEqualTo("not-a-timestamp");
+
+    // null in is still null out: there is no original to keep.
+    assertThat(Type.convertOrKeep(null, null, LocalDateTime.class)).isNull();
+  }
+
+  /**
+   * The MIN/MAX date constraint was the one conversion site the audit had not reached. It is a write-time check, so
+   * it keeps the strict conversion - but a bound nothing can read now reports the schema layer's own
+   * ValidationException naming which side failed, where it used to convert to null and then NPE on the comparison.
+   */
+  @Test
+  void anUnreadableDateBoundIsAValidationErrorRatherThanAnNPE() {
+    final DocumentType type = database.getSchema().createDocumentType("Ev8090Bound");
+    type.createProperty("d", Type.DATETIME).setMax("not-a-date");
+
+    database.transaction(() -> assertThatThrownBy(
+        () -> database.newDocument("Ev8090Bound").set("d", "2024-02-29 13:45:10").save())//
+        .isInstanceOf(ValidationException.class)//
+        .hasMessageContaining("max")//
+        .hasMessageContaining("not-a-date"));
+
+    // A readable bound still validates normally, in the SQL-timestamp spelling this issue added.
+    final DocumentType ok = database.getSchema().createDocumentType("Ev8090BoundOk");
+    ok.createProperty("d", Type.DATETIME).setMax("2024-02-29 13:45:10");
+
+    database.transaction(() -> {
+      database.newDocument("Ev8090BoundOk").set("d", "2024-02-28 10:00:00").save();
+      assertThatThrownBy(() -> database.newDocument("Ev8090BoundOk").set("d", "2024-03-01 10:00:00").save())//
+          .isInstanceOf(ValidationException.class);
     });
   }
 
