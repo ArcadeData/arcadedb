@@ -523,6 +523,12 @@ class DeltaOverlay {
    * deleted and its slot reused in between - at which point it is a DIFFERENT edge (issue #6777) and counting it as
    * one is the right answer, not a replay to be absorbed. An addition that does reach the overlay is deduped by RID
    * there, which is what absorbs a replay on the ordinary (non-compaction) path.
+   * <p>
+   * Which of a pair's buffered additions this skips is therefore arbitrary - the first {@code capturable} of them in
+   * arrival order, not the ones the scan actually saw, because the base CSR is a run of neighbour ids and cannot say.
+   * Deliberately so, and harmless: an edge the base run holds has no RID there to be told apart from another
+   * occurrence of the same pair until the next compaction rebuilds the mapping, so the only thing any reader of the
+   * two can observe is the pair's total multiplicity - which is what the count is chosen to make right.
    */
   private static boolean capturedByFreshScan(final TxDelta.EdgeDelta ed, final int srcId, final int tgtId,
       final long packed, final CSRAdjacencyIndex csr, final PreCompactionPairCount preCount,
