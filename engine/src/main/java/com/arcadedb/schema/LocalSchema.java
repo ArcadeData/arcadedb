@@ -288,6 +288,46 @@ public class LocalSchema implements Schema {
   private final       Map<String, LocalBucket>               stagedBucketMap               = new HashMap<>();
 
   /**
+   * The FILE-ID half of the same barrier (issue #7962).
+   * <p>
+   * #7213 staged the by-name maps and left the file-id array published at once, because {@code readConfiguration()}
+   * and the load hooks resolve SIBLING components through it while the load runs - an LSM mutable index reads its
+   * compacted sub-index by file id in {@code onAfterLoad()}, and the dictionary has to be file-id-resolvable before
+   * it may write a missing header page. So {@code getFileById()} kept handing a concurrent caller a component whose
+   * {@code onAfterSchemaLoad()} had not run: on {@link #loadIncremental} that is a freshly built LSM vector index
+   * with no vectors loaded, reachable the instant it took over the slot.
+   * <p>
+   * This map is that overlay. Reads go through {@link #lookupFile}, which resolves it FIRST and only for
+   * {@link #stagingThread} - so the load sees the components it has just built, exactly as it did when they went
+   * straight into {@code files}, and every other thread keeps seeing the slot's previous occupant until
+   * {@link #commitStagedPublication()} moves the overlay into the array.
+   * <p>
+   * Filled on the {@link #loadIncremental} path ONLY, which is the path the issue is about and the only one where
+   * a slot HAS a previous occupant to keep serving. The full {@link #load(ComponentFile.MODE, boolean)} empties
+   * the array first and rebuilds every component, so staging there would answer "not found" for the length of the
+   * load rather than "the previous instance" - and that breaks a guarantee #7961 established: the previous type
+   * graph stays published across a reload precisely so a query resolving its index through a type keeps working,
+   * and reading a record through it resolves its bucket BY FILE ID. Withholding the array would make that read
+   * fail, trading a window nobody can reach for an outage everybody can. What the full load may hand out in that
+   * window is a component built but not hooked, and by then it is reachable by no other route: the by-name maps
+   * are empty, the published type graph carries the PREVIOUS index instances, and the only callers that resolve a
+   * raw file id from another thread - the page manager and the transaction commit - want the paginated file, whose
+   * name, page size and file handle the constructor has already set.
+   * <p>
+   * Plain {@link HashMap}, for the same reason and with the same proof as the two maps above: only the thread that
+   * won {@link #stagingThread} ever touches it, and that reference's release/acquire orders one load's last write
+   * before the next load's first read.
+   */
+  private final       Map<Integer, Component>                stagedFiles                   = new HashMap<>();
+
+  /**
+   * Whether the load holding {@link #stagingThread} routes its file-id registrations through {@link #stagedFiles}.
+   * True for {@link #loadIncremental} and false for the full load; see {@link #stagedFiles} for why the two paths
+   * differ.
+   */
+  private             boolean                                stagingFileIds;
+
+  /**
    * The thread whose load owns {@link #stagedIndexMap}/{@link #stagedBucketMap}, or {@code null} when nothing is
    * staging. Read by threads other than the loading one - every staged-aware lookup tests it, and the
    * external-bucket restore in {@link LocalDocumentType} reaches one from DDL threads too - and claimed with a
@@ -401,7 +441,10 @@ public class LocalSchema implements Schema {
     // that overlaps another, and a refusal has to leave the schema exactly as it found it: clearing first would
     // mean a refused load empties the live schema for everyone, including the load legitimately in flight on the
     // other thread - a worse outcome than the one the refusal exists to prevent.
-    beginStagedPublication();
+    // stageFileIds=false: this path empties the file-id array anyway and rebuilds every component into it, so
+    // withholding the slots would only take the array away from the previous type graph that stays published
+    // (issue #7962, and see the field's javadoc).
+    beginStagedPublication(false);
     try {
       files.clear();
       // types is NOT cleared: the graph a load replaces stays served, whole, until the new one is published at the
@@ -450,10 +493,9 @@ public class LocalSchema implements Schema {
 
       readConfiguration();
 
-      final List<Component> snapshot;
-      synchronized (files) {
-        snapshot = new ArrayList<>(files);
-      }
+      // filesDuringLoad(), not `files`: the components this load built live in the staged file-id overlay until
+      // the barrier below, so the live array is still the empty one the clear above left (issue #7962).
+      final List<Component> snapshot = filesDuringLoad();
       for (final Component f : snapshot)
         if (f != null)
           f.onAfterSchemaLoad();
@@ -486,17 +528,23 @@ public class LocalSchema implements Schema {
   }
 
   /**
-   * Same as {@link #registerLoadedComponent} for a file id that ALREADY has a component: the new instance takes the
-   * old one's slot in a single set, so a concurrent {@link #getFileById} never observes the slot empty.
+   * Same as {@link #registerLoadedComponent} for a file id that ALREADY has a component: the new instance takes
+   * the old one's slot in a single write, so a concurrent {@link #getFileById} never observes the slot empty.
    * <p>
-   * The by-name registration goes through {@link #registerInLookupMaps}, which stages it while a load is in flight
-   * (issue #7213), so {@link #getIndexByName} keeps answering with the component the previous load published until
-   * every schema hook of this one has run. The file-id slot is still taken over immediately, because
-   * {@link #readConfiguration()} and the load hooks resolve sibling components through it while the load runs; that
-   * half of the window is tracked by issue #7962.
+   * Both registrations are staged while a load is in flight - the by-name one through
+   * {@link #registerInLookupMaps} (issue #7213), the file-id one through {@link #stagedFiles} (issue #7962) - so
+   * {@link #getIndexByName} AND {@link #getFileById} keep answering with the component the previous load published
+   * until every schema hook of this one has run. The loading thread itself resolves the new one through
+   * {@link #lookupFile}, which is what the sibling lookups inside {@code readConfiguration()} and the load hooks
+   * need.
    */
   private void replaceLoadedComponent(final Component component) {
     registerInLookupMaps(component);
+
+    if (isStagingFileIds()) {
+      stagedFiles.put(component.getFileId(), component);
+      return;
+    }
 
     synchronized (files) {
       files.set(component.getFileId(), component);
@@ -522,6 +570,11 @@ public class LocalSchema implements Schema {
     return stagingThread.get() == Thread.currentThread();
   }
 
+  /** Whether THIS thread's load stages its file-id registrations - the incremental path only (issue #7962). */
+  private boolean isStagingFileIds() {
+    return stagingFileIds && isStagingPublication();
+  }
+
   /**
    * The factory that turns a {@link ComponentFile} into its {@link Component}. Package-visible so the regression
    * test for issue #7213 can register a handler whose {@code onAfterSchemaLoad()} blocks: holding a load inside the
@@ -536,7 +589,7 @@ public class LocalSchema implements Schema {
    * Paired with {@link #commitStagedPublication()} on the way out, and with {@link #endStagedPublication()} in a
    * {@code finally} so a load that throws leaves nothing staged behind.
    */
-  private void beginStagedPublication() {
+  private void beginStagedPublication(final boolean stageFileIds) {
     // ONE load at a time per schema, and the refusal is loud on purpose. Two loads sharing these maps would have the
     // second clear the first one's staged components and take `stagingThread` from under it, so the first would
     // commit nothing and the schema would come up missing whatever it had staged - silently, on a database that
@@ -553,8 +606,10 @@ public class LocalSchema implements Schema {
               + (other == current ? " (this one)" : "") + ": loads of the same schema cannot overlap");
     }
 
+    stagingFileIds = stageFileIds;
     stagedIndexMap.clear();
     stagedBucketMap.clear();
+    stagedFiles.clear();
     // The graph the load is about to assemble, and the one it is replacing (issue #7961). The superseded one is
     // remembered rather than dropped: its TimeSeries types own engines that have to be closed, and closing them
     // before the replacement is published would close them under readers still holding the old graph.
@@ -571,6 +626,19 @@ public class LocalSchema implements Schema {
   private void commitStagedPublication() {
     if (!isStagingPublication())
       return;
+
+    // The file-id slots first of all (issue #7962): a component resolvable by NAME whose file id still answers with
+    // the previous generation - or with nothing - is the mismatch this ordering exists to rule out. Nothing
+    // resolves the other way round, so no reader can be caught between the two.
+    if (!stagedFiles.isEmpty())
+      synchronized (files) {
+        for (final Map.Entry<Integer, Component> entry : stagedFiles.entrySet()) {
+          final int fileId = entry.getKey();
+          while (files.size() < fileId + 1)
+            files.add(null);
+          files.set(fileId, entry.getValue());
+        }
+      }
 
     // Buckets first, and the order is not arbitrary: a published index names the bucket it is associated with, so
     // publishing indexes first would let a reader resolve an index by name a few instructions before the bucket it
@@ -655,6 +723,11 @@ public class LocalSchema implements Schema {
 
     stagedIndexMap.clear();
     stagedBucketMap.clear();
+    // Dropping the overlay IS the file-id rollback for the incremental path (issue #7962): nothing it built ever
+    // reached the live array, so an aborted refresh leaves the slots exactly as it found them with no undo
+    // bookkeeping. The full load has no slots to put back - it emptied the array on the way in.
+    stagedFiles.clear();
+    stagingFileIds = false;
     // Only when the graph was NOT published: after a successful commit these very instances are the live ones
     // (PR #8001 review). A load that dies after readConfiguration() has initialised a TimeSeries engine per type
     // would otherwise leak one engine, and its file handles, per failed reload.
@@ -926,25 +999,16 @@ public class LocalSchema implements Schema {
     // mutate-never-after - which is exactly why LSMTreeIndexAbstract#splitIndex() builds a new instance and swaps
     // the volatile reference instead of updating the old one in place. Re-running the hooks on an instance a
     // follower's query threads are already reading could let one observe a torn combination of those fields. This
-    // way the component's construction is finished before anything can reach it, and the swap is the single
-    // synchronized set in replaceLoadedComponent - which is also what the full load() would have produced for
-    // that file.
+    // way the component's construction is finished before anything can reach it, and the swap is the single write
+    // in replaceLoadedComponent - which, since #7962, does not even reach the live array until every hook has run:
+    // a concurrent reader sees the previous instance throughout, and the new one only whole.
     final List<Component> loaded = new ArrayList<>(toInstantiate.size() + toReplace.size());
-
-    // What to undo in the file-id array if this load dies before its commit. replaceLoadedComponent() and
-    // registerLoadedComponent() take those slots immediately - the load hooks and readConfiguration() resolve
-    // sibling components through them while the load runs - so unlike the staged name maps they are not rolled back
-    // by simply dropping them. Leaving them would hand a file-id lookup a half-built component while
-    // getIndexByName() still answered with the previous, fully built one.
-    final Map<Integer, Component> replacedSlots = new HashMap<>();
-    final List<Integer> addedSlots = new ArrayList<>();
-    boolean committed = false;
 
     // Nothing instantiated below reaches the by-name lookup maps until every schema hook has run (issue #7213).
     // On this path that is a stronger guarantee than on the full load: every index this entry did not touch keeps
     // its published instance throughout, and a REPLACED index keeps answering with the instance the previous load
     // published until its replacement has finished loading itself.
-    beginStagedPublication();
+    beginStagedPublication(true);
     try {
       for (final ComponentFile file : toInstantiate) {
         final Component component = componentFactory.createComponent(file, mode);
@@ -952,7 +1016,6 @@ public class LocalSchema implements Schema {
           continue;
 
         registerLoadedComponent(component);
-        addedSlots.add(component.getFileId());
         loaded.add(component);
       }
 
@@ -961,9 +1024,7 @@ public class LocalSchema implements Schema {
         if (component == null)
           continue;
 
-        final Component previous = getFileByIdIfExists(component.getFileId());
         replaceLoadedComponent(component);
-        replacedSlots.put(component.getFileId(), previous);
         loaded.add(component);
       }
 
@@ -980,7 +1041,6 @@ public class LocalSchema implements Schema {
         component.onAfterSchemaLoad();
 
       commitStagedPublication();
-      committed = true;
 
       // attachBloomFilters() is not called: it acts only on LSMTreeIndexCompacted, and a compacted index can never
       // be in `loaded` - the entry is refused instead, by NON_INCREMENTAL_COMPONENT_EXTENSIONS in the first pass and
@@ -996,27 +1056,10 @@ public class LocalSchema implements Schema {
 
       return true;
     } finally {
-      if (!committed)
-        rollbackFileSlots(replacedSlots, addedSlots);
-
+      // No file-id rollback to do: every slot this load took is in the staged overlay, and endStagedPublication()
+      // drops it (issue #7962). Before the overlay existed the slots were taken immediately and had to be put back
+      // by hand, which is the bookkeeping this replaces.
       endStagedPublication();
-    }
-  }
-
-  /**
-   * Puts the file-id array back the way an aborted {@link #loadIncremental} found it. The array is written directly
-   * rather than through {@link #removeFile}: this runs while an exception is on its way out, and {@code removeFile}
-   * would also rewrite the migrated-file map and touch the transaction, neither of which this load changed.
-   */
-  private void rollbackFileSlots(final Map<Integer, Component> replacedSlots, final List<Integer> addedSlots) {
-    synchronized (files) {
-      for (final Map.Entry<Integer, Component> slot : replacedSlots.entrySet())
-        if (slot.getKey() < files.size())
-          files.set(slot.getKey(), slot.getValue());
-
-      for (final Integer fileId : addedSlots)
-        if (fileId < files.size())
-          files.set(fileId, null);
     }
   }
 
@@ -1130,34 +1173,80 @@ public class LocalSchema implements Schema {
 
   @Override
   public Component getFileById(final int id) {
-    synchronized (files) {
-      if (id >= files.size())
-        throw new SchemaException("File with id '" + id + "' was not found");
-
-      final Component p = files.get(id);
-      if (p == null)
-        throw new SchemaException("File with id '" + id + "' was not found");
-      return p;
-    }
+    final Component p = lookupFile(id);
+    if (p == null)
+      throw new SchemaException("File with id '" + id + "' was not found");
+    return p;
   }
 
   @Override
   public Component getFileByIdIfExists(final int id) {
-    synchronized (files) {
-      if (id >= files.size())
-        return null;
-
-      return files.get(id);
-    }
+    return lookupFile(id);
   }
 
   public Component getFileByName(final String name) {
+    if (name == null)
+      return null;
+
+    // The staged overlay wins, so it is scanned first - a replacement carries the name of the component whose slot
+    // it takes, and the loading thread must resolve its own (issue #7962). Scanned rather than merged into a
+    // snapshot: this runs on ordinary lookups, and off a load it must not allocate a copy of the whole array.
+    if (isStagingPublication())
+      for (final Component f : stagedFiles.values())
+        if (f != null && name.equals(f.getName()))
+          return f;
+
     synchronized (files) {
       for (final Component f : files)
         if (f != null && name.equals(f.getName()))
           return f;
-      return null;
     }
+    return null;
+  }
+
+  /**
+   * The component in file-id slot {@code id} AS THIS THREAD SEES IT: the twin of {@link #lookupIndex} on the
+   * file-id side (issue #7962).
+   * <p>
+   * A load in flight resolves what it has staged - the sibling lookups in {@code readConfiguration()} and in the
+   * load hooks depend on that - while every other thread sees only the slot's published occupant, so no caller can
+   * obtain a component whose {@code onAfterSchemaLoad()} has not run.
+   */
+  private Component lookupFile(final int id) {
+    if (id < 0)
+      return null;
+
+    if (isStagingPublication()) {
+      final Component staged = stagedFiles.get(id);
+      if (staged != null)
+        return staged;
+    }
+
+    synchronized (files) {
+      return id < files.size() ? files.get(id) : null;
+    }
+  }
+
+  /**
+   * Every component this thread can see, published plus this thread's staged ones, as a snapshot indexed by file
+   * id. The file-id counterpart of {@link #bucketsDuringLoad()}; the load's own passes - the hooks, the bloom
+   * filter attach, the orphan sweep - iterate this rather than {@code files}, which during a full load is empty.
+   */
+  private List<Component> filesDuringLoad() {
+    final List<Component> snapshot;
+    synchronized (files) {
+      snapshot = new ArrayList<>(files);
+    }
+
+    if (isStagingPublication() && !stagedFiles.isEmpty())
+      for (final Map.Entry<Integer, Component> entry : stagedFiles.entrySet()) {
+        final int fileId = entry.getKey();
+        while (snapshot.size() < fileId + 1)
+          snapshot.add(null);
+        snapshot.set(fileId, entry.getValue());
+      }
+
+    return snapshot;
   }
 
   public void removeFile(final int fileId) {
@@ -1231,22 +1320,15 @@ public class LocalSchema implements Schema {
   }
 
   public LocalBucket getBucketById(final int id, final boolean throwExceptionIfNotFound) {
-    synchronized (files) {
-      if (id < 0 || id >= files.size())
-        if (throwExceptionIfNotFound)
-          throw new SchemaException("Bucket with id '" + id + "' was not found");
-        else
-          return null;
+    // Through lookupFile, like every other file-id accessor: a load in flight resolves what it has staged, and
+    // readConfiguration() is itself such a caller - it saves the schema, and serialising an index asks for the
+    // bucket its file id names (issue #7962).
+    if (lookupFile(id) instanceof LocalBucket bucket)
+      return bucket;
 
-      final Component p = files.get(id);
-      if (!(p instanceof LocalBucket)) {
-        if (throwExceptionIfNotFound)
-          throw new SchemaException("Bucket with id '" + id + "' was not found");
-        else
-          return null;
-      }
-      return (LocalBucket) p;
-    }
+    if (throwExceptionIfNotFound)
+      throw new SchemaException("Bucket with id '" + id + "' was not found");
+    return null;
   }
 
   @Override
@@ -3487,8 +3569,27 @@ public class LocalSchema implements Schema {
     typeMap().put(type.getName(), type);
   }
 
+  /**
+   * Takes the file-id slot for a component that has none yet.
+   * <p>
+   * Staged while a load is in flight (issue #7962): the component is resolvable by file id to the loading thread
+   * at once - which is what the dictionary's header page write and the load hooks' sibling lookups need - and to
+   * everyone else only once {@link #commitStagedPublication()} has run every {@code onAfterSchemaLoad()}. The
+   * occupied-slot refusal weighs the staged overlay and the published array together, so a load cannot quietly
+   * hand the same id to two components.
+   */
   public void registerFile(final Component file) {
     final int fileId = file.getFileId();
+
+    if (isStagingFileIds()) {
+      final Component previous = lookupFile(fileId);
+      if (previous != null)
+        throw new SchemaException(
+            "File with id '" + fileId + "' already exists (previous=" + previous + " new=" + file + ")");
+
+      stagedFiles.put(fileId, file);
+      return;
+    }
 
     synchronized (files) {
       while (files.size() < fileId + 1)
@@ -3503,11 +3604,7 @@ public class LocalSchema implements Schema {
   }
 
   public void initComponents() {
-    final List<Component> snapshot;
-    synchronized (files) {
-      snapshot = new ArrayList<>(files);
-    }
-    for (final Component f : snapshot)
+    for (final Component f : filesDuringLoad())
       if (f != null)
         f.onAfterLoad();
   }
