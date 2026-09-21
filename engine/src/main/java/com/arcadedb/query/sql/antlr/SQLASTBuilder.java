@@ -2929,6 +2929,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    */
   @Override
   public BaseExpression visitMapLit(final SQLParser.MapLitContext ctx) {
+    // The BaseExpression WRAP around it is load-bearing beyond this method: it is how
+    // BaseExpression#carriesItsOwnModifierTail() recognises this atom as one the grammar gives a modifier* tail,
+    // and so how a redundant pair of written parentheses around it is kept out of an unaliased projection's name
+    // (issue #7896). Attaching the node raw would slip past that and rename the column.
     final Json json = (Json) visit(ctx.mapLiteral());
 
     // Wrap in Expression
@@ -3519,6 +3523,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    */
   @Override
   public BaseExpression visitArrayLit(final SQLParser.ArrayLitContext ctx) {
+    // The BaseExpression WRAP around it is load-bearing beyond this method: it is how
+    // BaseExpression#carriesItsOwnModifierTail() recognises this atom as one the grammar gives a modifier* tail,
+    // and so how a redundant pair of written parentheses around it is kept out of an unaliased projection's name
+    // (issue #7896). Attaching the node raw would slip past that and rename the column.
     final ArrayLiteralExpression arrayLiteral = new ArrayLiteralExpression();
 
     // Visit each expression in the array literal
@@ -4043,6 +4051,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * Grammar: caseAlternative : WHEN whereClause THEN expression
    */
   public BaseExpression visitCaseExpr(final SQLParser.CaseExprContext ctx) {
+    // The BaseExpression WRAP around it is load-bearing beyond this method: it is how
+    // BaseExpression#carriesItsOwnModifierTail() recognises this atom as one the grammar gives a modifier* tail,
+    // and so how a redundant pair of written parentheses around it is kept out of an unaliased projection's name
+    // (issue #7896). Attaching the node raw would slip past that and rename the column.
     final SQLParser.CaseExpressionContext caseCtx = ctx.caseExpression();
 
     // Build list of alternatives
@@ -4082,6 +4094,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
    * Grammar: extendedCaseAlternative : WHEN expression THEN expression
    */
   public BaseExpression visitExtendedCaseExpr(final SQLParser.ExtendedCaseExprContext ctx) {
+    // The BaseExpression WRAP around it is load-bearing beyond this method: it is how
+    // BaseExpression#carriesItsOwnModifierTail() recognises this atom as one the grammar gives a modifier* tail,
+    // and so how a redundant pair of written parentheses around it is kept out of an unaliased projection's name
+    // (issue #7896). Attaching the node raw would slip past that and rename the column.
     final SQLParser.ExtendedCaseExpressionContext caseCtx = ctx.extendedCaseExpression();
 
     // Get the case expression (the value being tested) - first expression in the list
