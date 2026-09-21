@@ -341,4 +341,192 @@ class RefactorMergeNodesTest {
         .isInstanceOf(CommandSemanticException.class)
         .hasMessageContaining("expects 1-2 arguments but got 3");
   }
+
+  /**
+   * Issue #7428: APOC's contract for the 'combine' strategy is "if the values are the same, keep one;
+   * otherwise merge into a list". Two nodes that agree on a property must therefore leave the survivor
+   * with the scalar it already had, not with a two-element list of duplicates.
+   */
+  @Test
+  void combinePolicyCollapsesTwoEqualScalarValuesToTheScalar() {
+    database.begin();
+    database.newVertex("Person").set("name", "A").set("tag", "Review").save();
+    database.newVertex("Person").set("name", "B").set("tag", "Review").save();
+    database.commit();
+
+    database.begin();
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (a:Person {name:'A'}), (b:Person {name:'B'}) "
+            + "CALL apoc.refactor.mergeNodes([a,b], {properties: 'combine'}) YIELD node RETURN node.tag AS tag");
+    final Object tag = rs.next().getProperty("tag");
+    database.commit();
+
+    assertThat(tag).isEqualTo("Review");
+  }
+
+  /**
+   * Issue #7428, verbatim reporter shape: the node list arrives from collect() rather than as a literal,
+   * and the config map carries an extra key the procedure does not read.
+   */
+  @Test
+  void combinePolicyCollapsesEqualValuesWhenTheNodeListComesFromCollect() {
+    database.begin();
+    database.newVertex("Person").set("name", "Review").save();
+    database.newVertex("Person").set("name", "Review").save();
+    database.commit();
+
+    database.begin();
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (s:Person {name:'Review'}) WITH collect(s) AS nodes "
+            + "CALL apoc.refactor.mergeNodes(nodes, {properties:'combine', mergeRels:true}) YIELD node RETURN node.name AS name");
+    final Object name = rs.next().getProperty("name");
+    database.commit();
+
+    assertThat(name).isEqualTo("Review");
+  }
+
+  /**
+   * Three absorbed nodes that all agree: the collapse has to survive every iteration of the merge loop,
+   * not just the first, so the survivor never grows a list at all.
+   */
+  @Test
+  void combinePolicyCollapsesThreeEqualScalarValuesToTheScalar() {
+    database.begin();
+    database.newVertex("Person").set("name", "A").set("tag", "x").save();
+    database.newVertex("Person").set("name", "B").set("tag", "x").save();
+    database.newVertex("Person").set("name", "C").set("tag", "x").save();
+    database.commit();
+
+    database.begin();
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (a:Person {name:'A'}), (b:Person {name:'B'}), (c:Person {name:'C'}) "
+            + "CALL apoc.refactor.mergeNodes([a,b,c], {properties: 'combine'}) YIELD node RETURN node.tag AS tag");
+    final Object tag = rs.next().getProperty("tag");
+    database.commit();
+
+    assertThat(tag).isEqualTo("x");
+  }
+
+  /**
+   * The survivor already holds the list an earlier iteration accumulated, so the repeated value has to be
+   * matched against that list - and the first-seen order is what survives.
+   */
+  @Test
+  void combinePolicySkipsAValueTheAccumulatedListAlreadyHolds() {
+    database.begin();
+    database.newVertex("Person").set("name", "A").set("tag", "x").save();
+    database.newVertex("Person").set("name", "B").set("tag", "y").save();
+    database.newVertex("Person").set("name", "C").set("tag", "x").save();
+    database.commit();
+
+    database.begin();
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (a:Person {name:'A'}), (b:Person {name:'B'}), (c:Person {name:'C'}) "
+            + "CALL apoc.refactor.mergeNodes([a,b,c], {properties: 'combine'}) YIELD node RETURN node.tag AS tag");
+    final Object tag = rs.next().getProperty("tag");
+    database.commit();
+
+    assertThat(tag).isEqualTo(List.of("x", "y"));
+  }
+
+  /** The survivor's property is a list the user stored, and the absorbed scalar is already one of its elements. */
+  @Test
+  void combinePolicySkipsAnAbsorbedScalarAlreadyInTheSurvivorList() {
+    database.begin();
+    database.newVertex("Person").set("name", "A").set("tag", List.of("x", "y")).save();
+    database.newVertex("Person").set("name", "B").set("tag", "x").save();
+    database.commit();
+
+    database.begin();
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (a:Person {name:'A'}), (b:Person {name:'B'}) "
+            + "CALL apoc.refactor.mergeNodes([a,b], {properties: 'combine'}) YIELD node RETURN node.tag AS tag");
+    final Object tag = rs.next().getProperty("tag");
+    database.commit();
+
+    assertThat(tag).isEqualTo(List.of("x", "y"));
+  }
+
+  /** The absorbed node's property is itself a list that overlaps the survivor's scalar. */
+  @Test
+  void combinePolicySkipsAbsorbedListElementsAlreadyPresent() {
+    database.begin();
+    database.newVertex("Person").set("name", "A").set("tag", "x").save();
+    database.newVertex("Person").set("name", "B").set("tag", List.of("x", "z")).save();
+    database.commit();
+
+    database.begin();
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (a:Person {name:'A'}), (b:Person {name:'B'}) "
+            + "CALL apoc.refactor.mergeNodes([a,b], {properties: 'combine'}) YIELD node RETURN node.tag AS tag");
+    final Object tag = rs.next().getProperty("tag");
+    database.commit();
+
+    assertThat(tag).isEqualTo(List.of("x", "z"));
+  }
+
+  /**
+   * Deliberate consequence of the APOC contract, pinned here so it is a decision and not a surprise: when the
+   * merge leaves exactly one distinct value the property becomes that value, even where both contributions
+   * were single-element lists.
+   */
+  @Test
+  void combinePolicyCollapsesEqualSingleElementListsToTheScalar() {
+    database.begin();
+    database.newVertex("Person").set("name", "A").set("tag", List.of("x")).save();
+    database.newVertex("Person").set("name", "B").set("tag", List.of("x")).save();
+    database.commit();
+
+    database.begin();
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (a:Person {name:'A'}), (b:Person {name:'B'}) "
+            + "CALL apoc.refactor.mergeNodes([a,b], {properties: 'combine'}) YIELD node RETURN node.tag AS tag");
+    final Object tag = rs.next().getProperty("tag");
+    database.commit();
+
+    assertThat(tag).isEqualTo("x");
+  }
+
+  /**
+   * A property only the absorbed node carries never reaches the combine branch: it is copied across verbatim,
+   * so a list stays the list it was and is not collapsed by the new de-duplication.
+   */
+  @Test
+  void combinePolicyCopiesAPropertyOnlyTheAbsorbedNodeCarriesVerbatim() {
+    database.begin();
+    database.newVertex("Person").set("name", "A").save();
+    database.newVertex("Person").set("name", "B").set("tag", List.of("x")).save();
+    database.commit();
+
+    database.begin();
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (a:Person {name:'A'}), (b:Person {name:'B'}) "
+            + "CALL apoc.refactor.mergeNodes([a,b], {properties: 'combine'}) YIELD node RETURN node.tag AS tag");
+    final Object tag = rs.next().getProperty("tag");
+    database.commit();
+
+    assertThat(tag).isEqualTo(List.of("x"));
+  }
+
+  /**
+   * A property both nodes carry as null reaches the combine branch like any other: one distinct value, so the
+   * survivor keeps the null rather than the two-element list of nulls the branch used to build. Pinned because
+   * the de-duplication's membership test has to stay null-safe and the collapsed null has to survive save().
+   */
+  @Test
+  void combinePolicyCollapsesAPropertyBothNodesCarryAsNull() {
+    database.begin();
+    database.newVertex("Person").set("name", "A").set("tag", null).save();
+    database.newVertex("Person").set("name", "B").set("tag", null).save();
+    database.commit();
+
+    database.begin();
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (a:Person {name:'A'}), (b:Person {name:'B'}) "
+            + "CALL apoc.refactor.mergeNodes([a,b], {properties: 'combine'}) YIELD node RETURN node.tag AS tag");
+    final Object tag = rs.next().getProperty("tag");
+    database.commit();
+
+    assertThat(tag).isNull();
+  }
 }
