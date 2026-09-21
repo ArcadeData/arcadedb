@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import com.arcadedb.server.http.handler.ExecutionResponse;
@@ -124,7 +125,7 @@ public class PostAddPeerHandler extends AbstractServerHttpHandler {
           "Peer '%s' was added but the leader could not be asked to seed the security documents: %s. It is a "
               + "cluster member serving requests against its own copy of them; re-POST the peer to retry the seed",
           e, peerId, e.getMessage());
-      return addPeerResponse(peerId, List.of("users", "groups", "API tokens"));
+      return addPeerResponse(peerId, HAServerPlugin.ALL_SEEDED_SECURITY_DOCUMENTS);
     }
 
     if (!failedSeeds.isEmpty())

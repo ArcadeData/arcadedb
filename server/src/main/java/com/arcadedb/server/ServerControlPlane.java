@@ -105,12 +105,6 @@ import java.util.logging.Level;
 public class ServerControlPlane {
   private static final IPAddressBlocklist RESERVED_ADDRESSES = IPAddressBlocklist.defaultReservedRanges();
 
-  /**
-   * The three cluster-replicated security documents, named as {@code ServerSecurity.seedSecurityStateClusterWide}
-   * names them so every report of a seed failure reads the same whichever path produced it.
-   */
-  private static final List<String> ALL_SEEDED_SECURITY_DOCUMENTS = List.of("users", "groups", "API tokens");
-
   private final ArcadeDBServer server;
 
   /**
@@ -314,7 +308,7 @@ public class ServerControlPlane {
       // The seed did not run, so no document is known to have landed: report all three rather than none. An
       // empty list here would be the silence this issue exists to remove, and it would be a lie of exactly the
       // useful kind - the caller would read "joined, everything seeded" from a path where nothing was seeded.
-      return new ConnectClusterResult(serverAddress, ALL_SEEDED_SECURITY_DOCUMENTS);
+      return new ConnectClusterResult(serverAddress, HAServerPlugin.ALL_SEEDED_SECURITY_DOCUMENTS);
     }
   }
 
