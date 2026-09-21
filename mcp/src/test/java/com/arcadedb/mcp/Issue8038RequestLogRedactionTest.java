@@ -130,6 +130,32 @@ class Issue8038RequestLogRedactionTest {
     assertThat(MCPDispatcher.formatArgs("set_server_setting", args)).contains("value=\"plain\"");
   }
 
+  /**
+   * The embedded-credential rule is defined on the value's TEXT, so an argument that arrives as another JSON type
+   * has to be redacted through that text: the renderer reaches it with toString() either way. Raised in the
+   * PR #8080 review as the one shape of this argument the first patch left uncovered.
+   */
+  @Test
+  void aDefaultDatabasesValueArrivingAsAnObjectIsRedactedThroughItsText() {
+    final JSONObject args = new JSONObject()
+        .put("key", GlobalConfiguration.SERVER_DEFAULT_DATABASES.getKey())
+        .put("value", new JSONObject().put("databases", DEFAULT_DATABASES));
+
+    final String logged = MCPDispatcher.formatArgs("set_server_setting", args);
+
+    assertThat(logged).doesNotContain("einstein").doesNotContain("Miner").doesNotContain("Tramiel");
+  }
+
+  /** A wholly hidden setting was already covered whatever the type, because isHidden() is checked first. */
+  @Test
+  void aHiddenSettingValueArrivingAsAnObjectIsStillMasked() {
+    final JSONObject args = new JSONObject()
+        .put("key", GlobalConfiguration.SERVER_ROOT_PASSWORD.getKey())
+        .put("value", new JSONObject().put("password", "s3cr3t"));
+
+    assertThat(MCPDispatcher.formatArgs("set_server_setting", args)).doesNotContain("s3cr3t");
+  }
+
   /** A non-string argument must not start being rendered differently just because the redactor resolved a key. */
   @Test
   void aNonStringValueArgumentIsStillRenderedAsBefore() {

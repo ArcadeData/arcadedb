@@ -487,7 +487,7 @@ public class MCPDispatcher {
       final Object raw = args.get(key);
       // publishableValue leaves a value carrying no secret exactly as it was, so this neither blanks nor reshapes
       // an ordinary setting's value, and a non-String argument stays the type the branches below render.
-      final Object value = redacted != null && "value".equals(key) ? redacted.publishableValue(raw) : raw;
+      final Object value = redacted != null && "value".equals(key) ? publishableArgument(redacted, raw) : raw;
       if (value instanceof String s) {
         final String sanitized = sanitizeForLog(s);
         if (sanitized.length() > 100)
@@ -536,6 +536,27 @@ public class MCPDispatcher {
     if (key == null || key.isEmpty())
       return null;
     return GlobalConfiguration.findByKey(key);
+  }
+
+  /**
+   * The {@code value} argument as this log line may carry it. {@link GlobalConfiguration#publishableValue(Object)}
+   * masks a WHOLLY hidden setting whatever type the argument arrived as, but its EMBEDDED-credential rule is
+   * defined on the text and so only fires for a {@code String}. An argument of another JSON type still reaches the
+   * log through {@code toString()} in the renderer above, so it is that text which has to be redacted, or
+   * {@code {"key":"arcadedb.server.defaultDatabases","value":{...}}} would be logged verbatim - the one shape of
+   * this argument the rest of this change does not cover (PR #8080 review).
+   * <p>
+   * A {@link JSONArray} needs none of it: the renderer prints its element COUNT and none of its content. The
+   * redacted text is returned only when it differs from the original, so an ordinary setting's numeric argument is
+   * still logged as {@code value=8} rather than becoming a quoted string.
+   */
+  private static Object publishableArgument(final GlobalConfiguration setting, final Object raw) {
+    if (raw == null || raw instanceof String || raw instanceof JSONArray)
+      return setting.publishableValue(raw);
+
+    final String asText = String.valueOf(raw);
+    final Object published = setting.publishableValue(asText);
+    return asText.equals(published) ? raw : published;
   }
 
   private static String sanitizeForLog(final String value) {
