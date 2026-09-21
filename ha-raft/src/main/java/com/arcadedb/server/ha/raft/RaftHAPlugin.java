@@ -999,12 +999,17 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
    * repairs it either way, and an empty list would read as "joined, everything seeded" from a path where
    * possibly nothing was.
    * <p>
-   * The catch is {@code Exception} rather than the {@code IOException | IllegalStateException} pair
-   * {@code PostAddPeerHandler} names, and for the reason {@code ServerControlPlane.connectCluster} gives for the
-   * same width: those two are what the seed request is <i>known</i> to raise, while the rule is that nothing
-   * raised while seeding may escape. The handler has an HTTP layer behind it that turns an escape into a 500,
-   * which at least is not a clean 200; an embedded caller has nothing, and would read the exception as a join
-   * that did not happen.
+   * The catch is wider than the {@code IOException | IllegalStateException} pair {@code PostAddPeerHandler}
+   * names, for the reason {@code ServerControlPlane.connectCluster} gives for its own width: those two are what
+   * the seed request is <i>known</i> to raise, while the rule here is that nothing raised while seeding may
+   * escape. The handler has an HTTP layer behind it that turns an escape into a 500, which at least is not a
+   * clean 200; an embedded caller has nothing, and would read the exception as a join that did not happen.
+   * <p>
+   * {@code IOException | RuntimeException} rather than {@code Exception}, because that pair is already
+   * exhaustive: {@link #seedSecurityStateForAdmission} declares {@code IOException} as its only checked
+   * exception, so nothing else checked can arrive here. An {@link Error} is deliberately left to propagate -
+   * the membership change is committed either way, and a JVM in that state must not be told it merely failed
+   * to seed three documents.
    */
   private List<String> seedReportForAdmission(final String admittedPeer) {
     try {
@@ -1014,9 +1019,10 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
       return seedSecurityStateForAdmission(admittedPeer)
           .orElseGet(() -> server.getSecurity().seedSecurityStateClusterWide(
               configuration.getValueAsLong(GlobalConfiguration.HA_SECURITY_SEED_RETRY_TIMEOUT)));
-    } catch (final Exception e) {
+    } catch (final IOException | RuntimeException e) {
       // The two named cases: an IOException is the leader being unreachable, an IllegalStateException is the seed
       // not having run or its outcome not having been readable, which is what the local path raises on the leader.
+      // Any other unchecked failure lands here too, which is the point - see this method's javadoc.
       LogManager.instance().log(this, Level.SEVERE,
           "Peer '%s' was added but the leader could not be asked to seed the security documents: %s. It is a "
               + "cluster member serving requests against its own copy of them; re-issue the admission to retry "
