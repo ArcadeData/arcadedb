@@ -216,11 +216,13 @@ public class ChatStorage {
    * where it is, intact, and the user simply starts with an empty store under their hash.
    *
    * <ol>
-   * <li><b>A name with the shape of a hashed store</b> ({@code [0-9a-f]{64}}) is never moved.
+   * <li><b>A name with the shape of a hashed store</b> ({@code [0-9a-fA-F]{64}}) is never moved.
    * {@link #sanitizeFilename(String)} leaves hex digits alone, and {@link #hashUsername(String)}
    * emits exactly 64 lowercase hex characters, so a user who names themselves another user's digest
    * would otherwise have the victim's current, live directory moved into their own on first access.
-   * This needs no legacy layout to have ever existed - it is reachable on a fresh install.</li>
+   * This needs no legacy layout to have ever existed - it is reachable on a fresh install. Matched
+   * case-insensitively on purpose: an upper-case spelling of a digest is a different string but, on
+   * a case-insensitive filesystem, the same directory.</li>
    * <li><b>A name more than one username could have produced</b> is never moved. Because
    * {@code sanitizeFilename} only ever rewrites a character <i>to</i> {@code '_'}, a name containing
    * no {@code '_'} has exactly one preimage - itself - and is safe to claim; a name containing one
@@ -283,10 +285,13 @@ public class ChatStorage {
    * looked up first would otherwise migrate the other's chats. Comparing against the parent's own
    * listing is the only portable way to ask what the entry is actually called.
    *
-   * <p>Runs only for a candidate that has already passed the other two checks and is about to be
-   * moved, so the listing is off the hot path: a successful migration makes the hashed directory
-   * exist, and every later lookup returns before reaching here. It is O(entries in {@code chats/})
-   * rather than O(1), which is why it is placed last of the three checks.
+   * <p>It is O(entries in {@code chats/}) rather than O(1), which is why it is placed last of the
+   * three checks: only a candidate that has already passed the other two reaches it. Where the
+   * migration then succeeds the cost is paid once, because the hashed directory now exists and every
+   * later lookup returns at the top of {@code migrateLegacyDirectoryIfPresent}. Where this check is
+   * what refuses the move, though, nothing changes on disk, so it runs again on every request from
+   * that user until an operator resolves the directory - a flat per-server listing each time, not a
+   * one-off.
    *
    * <p>Package-private rather than private so the comparison can be exercised directly: reaching it
    * through the migration needs a case-insensitive filesystem, and CI runs on a case-sensitive one.
