@@ -77,21 +77,15 @@ public class SQLFunctionDate extends SQLFunctionAbstract {
         }
 
         if (format == null) {
-          final String databaseDateFormat = context.getDatabase().getSchema().getDateFormat();
-          if (dateAsString.length() == databaseDateFormat.length())
-            format = databaseDateFormat;
-          else {
-            final String databaseDateTimeFormat = context.getDatabase().getSchema().getDateTimeFormat();
-            if (dateAsString.length() == databaseDateTimeFormat.length())
-              format = databaseDateTimeFormat;
-            else
-              return null;
-          }
-        }
-
-        final DateTimeFormatter formatter = formatterFor(format, timezone, context);
-
-        date = LocalDateTime.parse(dateAsString, formatter);
+          // No format named by the caller: the shared write-path chain decides, so date() reads every spelling an
+          // INSERT accepts - including the SQL timestamp with a fractional second. This used to guess the pattern
+          // from the string's LENGTH and answer null for anything that matched neither, which is how
+          // date('2024-02-29 13:45:10.123456') became an empty result (issue #8090). The `timezone` option keeps
+          // the effect it had here before: none, since neither this chain nor a zone-less pattern reads a zone out
+          // of the text - it applies to a pattern that carries zone fields, which is the explicit-format path below.
+          date = DateUtils.parseDateTime(context.getDatabase(), dateAsString);
+        } else
+          date = LocalDateTime.parse(dateAsString, formatterFor(format, timezone, context));
       } catch (final DateTimeParseException e) {
         // THE VALUE DOES NOT MATCH THE FORMAT: NOT AN ERROR, THE DOCUMENTED ANSWER IS NULL. THE ARGUMENTS THEMSELVES
         // BEING WRONG IS A DIFFERENT STORY AND IS RAISED BY formatterFor() BELOW.

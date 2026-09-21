@@ -582,7 +582,11 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       if (keys[i] == null)
         continue;
 
-      convertedKeys[i] = Type.convert(database, keys[i], BinaryTypes.getClassFromType(keyTypes[i]));
+      // convertOrNull(), not convert(): the keys reaching here are whatever the records hold, and on a schemaless
+      // property (a Cypher label, say) that can include a value of an entirely different shape than the type the
+      // index settled on. Such a row indexes under a null key and the build carries on; refusing it would make one
+      // heterogeneous record fail CREATE INDEX outright (issue #8090, which made convert() itself strict).
+      convertedKeys[i] = Type.convertOrNull(database, keys[i], BinaryTypes.getClassFromType(keyTypes[i]));
 
       if (convertedKeys[i] instanceof String string && caseInsensitiveKeys != null && i < caseInsensitiveKeys.length
           && caseInsensitiveKeys[i])

@@ -55,9 +55,14 @@ public class SQLMethodAsDateTime extends AbstractSQLMethod {
     else if (value instanceof Number number)
       return DateUtils.getDate(value, dateTimeImpl);
 
-    final String format = params.length > 0 ? params[0].toString() : context.getDatabase().getSchema().getDateTimeFormat();
-    final Object date = DateUtils.parse(value.toString(), format);
+    // With an explicit format the caller has said exactly how to read the string, so that pattern alone applies.
+    // Without one, the shared chain applies - the same one the write path uses - so `asDatetime()` accepts every
+    // spelling an INSERT accepts, including the SQL timestamp with a fractional second (issue #8090), instead of
+    // only the schema's single dateTimeFormat pattern.
+    final Object date = params.length > 0 ?
+        DateUtils.parse(value.toString(), params[0].toString()) :
+        DateUtils.parseDateTime(context.getDatabase(), value.toString());
 
-    return DateUtils.getDate(date, context.getDatabase().getSerializer().getDateTimeImplementation());
+    return DateUtils.getDate(date, dateTimeImpl);
   }
 }
