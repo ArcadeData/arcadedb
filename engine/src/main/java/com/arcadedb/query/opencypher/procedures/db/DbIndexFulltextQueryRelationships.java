@@ -20,28 +20,28 @@ package com.arcadedb.query.opencypher.procedures.db;
 
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandSQLParsingException;
-import com.arcadedb.exception.RecordNotFoundException;
-import com.arcadedb.graph.Edge;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.fulltext.FullTextSearch;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 
 /**
- * Neo4j-compatible procedure: db.index.fulltext.queryRelationships(indexName, queryString)
+ * Neo4j-compatible procedure: db.index.fulltext.queryRelationships(indexName, queryString, options = {})
  * <p>
  * Searches a BM25 full-text index declared on an edge type and returns matching relationships ranked by relevance.
  * The relationship counterpart of {@link DbIndexFulltextQueryNodes}, mirroring Neo4j's
  * {@code db.index.fulltext.queryRelationships()}.
+ * </p>
+ * <p>
+ * The trailing {@code options} map is optional and carries {@code skip} and {@code limit}, exactly as on
+ * {@link DbIndexFulltextQueryNodes}; see {@link FullTextQueryOptions} (issue #8103).
  * </p>
  * <p>
  * Example (Neo4j-compatible):
@@ -58,6 +58,8 @@ import java.util.stream.Stream;
  */
 public class DbIndexFulltextQueryRelationships implements CypherProcedure {
   public static final String NAME = "db.index.fulltext.queryrelationships";
+  /** {@link #NAME} is lower-cased for registry lookup; error messages quote the call the way the caller wrote it. */
+  private static final String DISPLAY_NAME = "db.index.fulltext.queryRelationships";
 
   @Override
   public String getName() {
@@ -69,9 +71,14 @@ public class DbIndexFulltextQueryRelationships implements CypherProcedure {
     return 2;
   }
 
+  /**
+   * Three, not two: Neo4j declares {@code options = {}} as a third parameter and ArcadeDB now implements it, so the
+   * full-arity call is one this procedure accepts (issue #8103). It stays optional - {@link #getMinArgs()} is
+   * unchanged - and an omitted map means no skip and no limit, exactly what the two-argument form has always done.
+   */
   @Override
   public int getMaxArgs() {
-    return 2;
+    return 3;
   }
 
   @Override
@@ -90,34 +97,23 @@ public class DbIndexFulltextQueryRelationships implements CypherProcedure {
 
     final String indexName = args[0].toString();
     final String queryText = args[1].toString();
+    final FullTextQueryOptions options = FullTextQueryOptions.parse(DISPLAY_NAME, args);
 
     final TypeIndex typeIndex = FullTextSearch.resolveFullTextIndex(context.getDatabase(), indexName);
 
     final DocumentType type = context.getDatabase().getSchema().getType(typeIndex.getTypeName());
     if (!(type instanceof EdgeType))
       throw new CommandSQLParsingException(
-          "db.index.fulltext.queryRelationships(): index '" + indexName + "' is a full-text index on node type '"
+          DISPLAY_NAME + "(): index '" + indexName + "' is a full-text index on node type '"
               + type.getName() + "', use db.index.fulltext.queryNodes() instead");
 
-    final Map<RID, Float> matches = FullTextSearch.search(typeIndex, queryText, -1);
+    // Asked for no rows: the index name and the query string have still been validated above, but there is nothing
+    // left for the search itself to contribute.
+    if (options.returnsNothing())
+      return Stream.empty();
 
-    final List<Map.Entry<RID, Float>> sorted = new ArrayList<>(matches.entrySet());
-    sorted.sort((a, b) -> Float.compare(b.getValue(), a.getValue()));
+    final Map<RID, Float> matches = FullTextSearch.search(typeIndex, queryText, options.searchLimit());
 
-    final List<Result> results = new ArrayList<>(sorted.size());
-    for (final Map.Entry<RID, Float> entry : sorted) {
-      try {
-        final Edge relationship = entry.getKey().asEdge(true);
-        final ResultInternal r = new ResultInternal();
-        r.setProperty("relationship", relationship);
-        r.setProperty("score", entry.getValue());
-        results.add(r);
-      } catch (final RecordNotFoundException e) {
-        // Stale posting: the record was deleted since the index was last updated, skip it (same handling as the
-        // SEARCH_INDEX() SQL function's searchFromTarget()).
-      }
-    }
-
-    return results.stream();
+    return options.page(matches, "relationship", rid -> rid.asEdge(true)).stream();
   }
 }

@@ -1,0 +1,226 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.query.opencypher.procedures.db;
+
+import com.arcadedb.database.RID;
+import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
+
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.function.Function;
+
+/**
+ * The trailing {@code options} map shared by {@code db.index.fulltext.queryNodes} and
+ * {@code db.index.fulltext.queryRelationships}.
+ * <p>
+ * Neo4j declares both as {@code (indexName :: STRING, queryString :: STRING, options = {} :: MAP)} and documents
+ * three keys: {@code skip}, {@code limit} and {@code analyzer}. ArcadeDB accepted two arguments and rejected the
+ * three-argument form outright (issue #8103). {@code skip} and {@code limit} are honoured here; {@code analyzer}
+ * and any other key are refused <b>by name</b>, because ArcadeDB resolves the analyzer from the metadata written
+ * when the index was created and has no query-time override - accepting the call and ignoring the key would run
+ * the search under an analyzer the caller did not ask for and report success, which is worse than the arity error
+ * this replaces.
+ */
+final class FullTextQueryOptions {
+  static final String SKIP      = "skip";
+  static final String LIMIT     = "limit";
+  /** A Neo4j key ArcadeDB cannot honour; called out separately so its refusal can say why rather than "unknown". */
+  static final String ANALYZER  = "analyzer";
+
+  private static final Set<String> SUPPORTED_KEYS = Set.of(SKIP, LIMIT);
+
+  /** Means "no limit", the same sentinel {@code FullTextSearch.search} takes. */
+  static final int UNBOUNDED = -1;
+
+  private static final FullTextQueryOptions NONE = new FullTextQueryOptions(0, UNBOUNDED);
+
+  /**
+   * Descending score, ties broken by RID.
+   * <p>
+   * The tie-break is what makes {@code skip}/{@code limit} paginate: the scores come back in a
+   * {@code Map<RID, Float>}, so equally-scoring records used to be ordered by hash iteration, and two pages of the
+   * same query could have shown the same record twice or not at all (issue #8103). Records that do not tie are
+   * unaffected, which is every assertion the pre-existing ranking tests make.
+   */
+  private static final Comparator<Map.Entry<RID, Float>> BY_SCORE_THEN_RID =
+      Comparator.<Map.Entry<RID, Float>, Float>comparing(Map.Entry::getValue, Comparator.reverseOrder())
+          .thenComparing(Map.Entry::getKey);
+
+  private final int skip;
+  private final int limit;
+
+  private FullTextQueryOptions(final int skip, final int limit) {
+    this.skip = skip;
+    this.limit = limit;
+  }
+
+  /**
+   * Reads the options out of a call's argument array, defaulting to "no skip, no limit" when the trailing slot was
+   * omitted or passed as {@code null}.
+   * <p>
+   * Every call site runs {@code validateArgs} first, so {@code args} is non-null and carries at least the index name
+   * and the query string; the slot is possibly absent only because {@code getMinArgs()} stays at 2.
+   */
+  static FullTextQueryOptions parse(final String procedureName, final Object[] args) {
+    if (args.length < 3 || args[2] == null)
+      return NONE;
+
+    if (!(args[2] instanceof final Map<?, ?> options))
+      throw new CommandSemanticException(
+          procedureName + "(): options must be a map, got " + args[2].getClass().getSimpleName());
+
+    if (options.isEmpty())
+      return NONE;
+
+    for (final Object key : options.keySet()) {
+      final String name = key == null ? "null" : key.toString();
+      if (ANALYZER.equals(name))
+        throw new CommandSemanticException(procedureName + "(): the 'analyzer' option is not supported - the analyzer "
+            + "is fixed by the index metadata at index-creation time, so it cannot be overridden per query. "
+            + "Supported options: " + SKIP + ", " + LIMIT);
+      if (!SUPPORTED_KEYS.contains(name))
+        throw new CommandSemanticException(procedureName + "(): unsupported option '" + name + "'. Supported options: "
+            + SKIP + ", " + LIMIT);
+    }
+
+    final int skip = intOption(procedureName, options, SKIP, 0);
+    final int limit = intOption(procedureName, options, LIMIT, UNBOUNDED);
+
+    return skip == 0 && limit == UNBOUNDED ? NONE : new FullTextQueryOptions(skip, limit);
+  }
+
+  /**
+   * Reads one non-negative integer option.
+   * <p>
+   * Cypher integer literals arrive as {@code Long}, parameters can arrive as {@code Integer}, and both are accepted;
+   * a fractional value is not, because silently truncating {@code limit: 1.5} would answer a question the caller did
+   * not ask. A value beyond {@code Integer.MAX_VALUE} is clamped to it rather than refused: the search limit is an
+   * {@code int}, and no result set this side of that bound is affected by the difference.
+   */
+  private static int intOption(final String procedureName, final Map<?, ?> options, final String name,
+      final int defaultValue) {
+    final Object value = options.get(name);
+    if (value == null)
+      return defaultValue;
+
+    if (!(value instanceof final Number number))
+      throw new CommandSemanticException(
+          procedureName + "(): option '" + name + "' must be an integer, got " + value.getClass().getSimpleName());
+
+    // Long and Integer are what the Cypher runtime produces for an integer literal or parameter and neither can carry
+    // a fraction, so only the other Number implementations - a Double such as 1.5 - need the round-trip through
+    // double that tells a whole number from a fractional one. Running that round-trip unconditionally would reject a
+    // Long above 2^53, which is a whole number the clamp below already handles.
+    final long asLong = number.longValue();
+    if (!(number instanceof Long || number instanceof Integer) && number.doubleValue() != asLong)
+      throw new CommandSemanticException(procedureName + "(): option '" + name + "' must be an integer, got " + number);
+    if (asLong < 0)
+      throw new CommandSemanticException(
+          procedureName + "(): option '" + name + "' must not be negative, got " + asLong);
+
+    return asLong > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) asLong;
+  }
+
+  int skip() {
+    return skip;
+  }
+
+  /** {@link #UNBOUNDED} when the caller set no limit. */
+  int limit() {
+    return limit;
+  }
+
+  /** A {@code limit} of zero asks for no rows at all, so the search itself can be skipped. */
+  boolean returnsNothing() {
+    return limit == 0;
+  }
+
+  /**
+   * How many top-scoring matches the search has to produce for {@link #skip()}/{@link #limit()} to be applied to
+   * them: {@code skip + limit}, saturating, or {@link #UNBOUNDED} when there is no limit.
+   * <p>
+   * Pushing the bound down is sound however many bucket indexes back the type index. A document in the global top-K
+   * is necessarily in its own bucket's top-K - at most {@code K - 1} documents outscore it anywhere, so at most
+   * {@code K - 1} outscore it within one bucket - so the union of the per-bucket top-K sets that
+   * {@code FullTextSearch.search} returns always contains the global top-K, whatever the similarity in use.
+   */
+  int searchLimit() {
+    if (limit == UNBOUNDED)
+      return UNBOUNDED;
+    final long total = (long) skip + limit;
+    return total > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) total;
+  }
+
+  /**
+   * Ranks {@code matches}, drops the postings whose record is gone, then applies {@code skip} and {@code limit} to
+   * what is left, yielding one row per surviving record carrying {@code yieldField} and {@code score}.
+   * <p>
+   * Skip and limit are counted over the <b>live</b> records rather than over the raw postings, so a stale posting
+   * inside the skipped prefix cannot shift the page by one. The loop stops as soon as the limit is reached, which is
+   * what keeps a small page from materializing the whole match set; it is also why the ordering above has to be
+   * total.
+   * <p>
+   * The caller has already bounded the search with {@link #searchLimit()}, so a stale posting among those top
+   * {@code skip + limit} matches can still make a page shorter than {@code limit} even though further live matches
+   * exist. That is the pre-existing behaviour of this path - the two-argument form drops the same postings from an
+   * unbounded search - traded here for not scanning the whole index to fill a page.
+   *
+   * @param loader turns a matched RID into the record to yield ({@code asDocument} or {@code asEdge}), throwing
+   *               {@link RecordNotFoundException} when the posting is stale
+   */
+  List<Result> page(final Map<RID, Float> matches, final String yieldField, final Function<RID, Object> loader) {
+    final List<Map.Entry<RID, Float>> sorted = new ArrayList<>(matches.entrySet());
+    sorted.sort(BY_SCORE_THEN_RID);
+
+    final List<Result> results = new ArrayList<>(limit == UNBOUNDED ? sorted.size() : Math.min(limit, sorted.size()));
+    int skipped = 0;
+
+    for (final Map.Entry<RID, Float> entry : sorted) {
+      final Object record;
+      try {
+        record = loader.apply(entry.getKey());
+      } catch (final RecordNotFoundException e) {
+        // Stale posting: the record was deleted since the index was last updated, skip it (same handling as the
+        // SEARCH_INDEX() SQL function's searchFromTarget()).
+        continue;
+      }
+
+      if (skipped < skip) {
+        ++skipped;
+        continue;
+      }
+
+      final ResultInternal row = new ResultInternal();
+      row.setProperty(yieldField, record);
+      row.setProperty("score", entry.getValue());
+      results.add(row);
+
+      if (limit != UNBOUNDED && results.size() >= limit)
+        break;
+    }
+
+    return results;
+  }
+}
