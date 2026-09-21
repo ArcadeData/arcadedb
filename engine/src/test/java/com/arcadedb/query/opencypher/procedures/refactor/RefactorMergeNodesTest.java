@@ -641,4 +641,30 @@ class RefactorMergeNodesTest {
     assertThat(vec).isInstanceOf(int[].class);
     assertThat((int[]) vec).containsExactly(1, 2, 3);
   }
+
+  /**
+   * Deliberate consequence flagged in code review, pinned here so it is a decision and not a surprise: a
+   * pre-existing duplicate WITHIN one node's own list-valued property is also collapsed, because the survivor's
+   * list is flattened into the same accumulator that de-duplicates cross-node contributions - there is no
+   * "already deduplicated" flag to tell an original duplicate apart from one the merge itself would have created.
+   * This matches upstream APOC's "distinct union of contributed values" semantics for 'combine'.
+   */
+  @Test
+  void combinePolicyCollapsesADuplicateThatWasAlreadyInOneNodesOwnList() {
+    // B must also carry 'tag', or mergeProperties never visits the property at all - it iterates the ABSORBED
+    // node's property names, so a property only the survivor has is left untouched, not run through combine.
+    database.begin();
+    database.newVertex("Person").set("name", "A").set("tag", List.of("x", "x", "y")).save();
+    database.newVertex("Person").set("name", "B").set("tag", "x").save();
+    database.commit();
+
+    database.begin();
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (a:Person {name:'A'}), (b:Person {name:'B'}) "
+            + "CALL apoc.refactor.mergeNodes([a,b], {properties: 'combine'}) YIELD node RETURN node.tag AS tag");
+    final Object tag = rs.next().getProperty("tag");
+    database.commit();
+
+    assertThat(tag).isEqualTo(List.of("x", "y"));
+  }
 }

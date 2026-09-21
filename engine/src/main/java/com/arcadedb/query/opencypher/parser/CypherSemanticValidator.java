@@ -694,19 +694,29 @@ public class CypherSemanticValidator {
           }
           break;
         case FOREACH:
-          final ForeachClause foreachClause = entry.getTypedClause();
-          if (foreachClause != null) {
-            checkExpressionScope(foreachClause.getListExpression(), scope);
-            // The loop variable and whatever the body itself binds (a CREATE/MERGE pattern, a nested
-            // FOREACH's own loop variable) live only inside the loop: a copy of the outer scope keeps
-            // the outer clauses from seeing them once this FOREACH is done (issue #8105).
-            final Set<String> bodyScope = new HashSet<>(scope);
-            bodyScope.add(foreachClause.getVariable());
-            validateForeachBodyScope(foreachClause, bodyScope, shadowed);
-          }
+          validateForeachClauseScope(entry.getTypedClause(), scope, shadowed);
           break;
       }
     }
+  }
+
+  /**
+   * Validates one {@code FOREACH} clause against {@code outerScope}: its list expression is checked against the
+   * outer scope, then its body is walked with a copy of that scope plus the loop variable. Shared by the top-level
+   * switch and by {@link #validateForeachBodyScope}'s own nested-{@code FOREACH} case, which used to repeat these
+   * same three steps (issue #8105).
+   */
+  private void validateForeachClauseScope(final ForeachClause foreachClause, final Set<String> outerScope,
+      final Set<String> shadowed) {
+    if (foreachClause == null)
+      return;
+    checkExpressionScope(foreachClause.getListExpression(), outerScope);
+    // The loop variable and whatever the body itself binds (a CREATE/MERGE pattern, a nested FOREACH's own
+    // loop variable) live only inside the loop: a copy of the outer scope keeps the outer clauses from seeing
+    // them once this FOREACH is done.
+    final Set<String> bodyScope = new HashSet<>(outerScope);
+    bodyScope.add(foreachClause.getVariable());
+    validateForeachBodyScope(foreachClause, bodyScope, shadowed);
   }
 
   /**
@@ -725,15 +735,7 @@ public class CypherSemanticValidator {
         case DELETE -> validateDeleteClauseScope(entry.getTypedClause(), scope);
         case CREATE -> validateCreateClauseScope(entry.getTypedClause(), scope, shadowed);
         case MERGE -> validateMergeClauseScope(entry.getTypedClause(), scope, shadowed);
-        case FOREACH -> {
-          final ForeachClause nested = entry.getTypedClause();
-          if (nested != null) {
-            checkExpressionScope(nested.getListExpression(), scope);
-            final Set<String> nestedScope = new HashSet<>(scope);
-            nestedScope.add(nested.getVariable());
-            validateForeachBodyScope(nested, nestedScope, shadowed);
-          }
-        }
+        case FOREACH -> validateForeachClauseScope(entry.getTypedClause(), scope, shadowed);
         default -> {
           // The parser rejects any other clause kind inside a FOREACH body before this runs.
         }
@@ -1091,6 +1093,24 @@ public class CypherSemanticValidator {
       checkSubqueryExpressionScope(count.getParsedSubquery(), scope);
     } else if (expr instanceof CollectExpression collect) {
       checkSubqueryExpressionScope(collect.getParsedSubquery(), scope);
+    } else if (expr instanceof ReduceExpression reduce) {
+      checkExpressionScope(reduce.getInitialValue(), scope);
+      checkExpressionScope(reduce.getListExpression(), scope);
+      // The accumulator and iterator variables introduce a new scope binding for the reduce expression
+      final Set<String> innerScope = new HashSet<>(scope);
+      innerScope.add(reduce.getAccumulatorVariable());
+      innerScope.add(reduce.getIteratorVariable());
+      checkExpressionScope(reduce.getReduceExpression(), innerScope);
+    } else if (expr instanceof AllReduceExpression allReduce) {
+      checkExpressionScope(allReduce.getInitialValue(), scope);
+      checkExpressionScope(allReduce.getListExpression(), scope);
+      // Same binding as ReduceExpression above; the predicate is evaluated in the same inner scope, since
+      // it references the accumulator/iterator by name, not by the value the reduce step gives them.
+      final Set<String> innerScope = new HashSet<>(scope);
+      innerScope.add(allReduce.getAccumulatorVariable());
+      innerScope.add(allReduce.getIteratorVariable());
+      checkExpressionScope(allReduce.getReduceExpression(), innerScope);
+      checkExpressionScope(allReduce.getPredicateExpression(), innerScope);
     }
     // LiteralExpression, ParameterExpression, StarExpression — no variables to check
   }

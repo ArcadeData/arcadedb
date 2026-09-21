@@ -70,6 +70,30 @@ class Issue8104RemoveScopeTest extends TestHelper {
         .hasMessageContaining("'f'");
   }
 
+  /**
+   * The dynamic-key form (REMOVE n[keyExpr]): the target variable `f` is in scope, but the key expression itself
+   * references one that is not - the walk validateRemoveClauseScope gives item.getKeyExpression() (issue #8104).
+   */
+  @Test
+  void removeDynamicPropertyKeyReferencingUnboundVariableThrows() {
+    assertThatThrownBy(() -> database.command("opencypher", "MATCH (f:Function) REMOVE f[missing]").close())
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("UndefinedVariable")
+        .hasMessageContaining("'missing'");
+  }
+
+  /**
+   * The Cypher 25 dynamic-label form (REMOVE n:$(expr)): same shape, but for item.getLabelExpressions() instead of
+   * the key expression.
+   */
+  @Test
+  void removeDynamicLabelExpressionReferencingUnboundVariableThrows() {
+    assertThatThrownBy(() -> database.command("opencypher", "MATCH (f:Function) REMOVE f:$(missing)").close())
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("UndefinedVariable")
+        .hasMessageContaining("'missing'");
+  }
+
   /** Control: REMOVE on a variable that is genuinely in scope still works and takes effect. */
   @Test
   void removePropertyOnInScopeVariableSucceeds() {
