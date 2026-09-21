@@ -38,7 +38,6 @@ import com.arcadedb.utility.MultiIterator;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
-import java.text.ParseException;
 import java.text.ParsePosition;
 import java.text.SimpleDateFormat;
 import java.time.*;
@@ -112,6 +111,15 @@ public enum Type {
       new Class<?>[] { double[].class, Double[].class }),
   ;
 
+  /**
+   * The three built-in date/time patterns, kept as public API because callers outside the engine format with them.
+   * <p>
+   * They no longer drive any PARSING. Each write path used to pick one of them by comparing the input string's
+   * LENGTH against theirs, which is how a literal one character longer than a pattern - anything with a fractional
+   * second - matched nothing and was silently stored as {@code null} (issue #8090). Parsing now goes through
+   * {@link com.arcadedb.utility.DateUtils#parseDateTime}, whose SQL-timestamp format subsumes all three, so adding
+   * a constant here will not widen what the engine accepts.
+   */
   public static final  String              DATE_FORMAT_DAYS    = "yyyy-MM-dd";
   public static final  String              DATE_FORMAT_SECONDS = "yyyy-MM-dd HH:mm:ss";
   public static final  String              DATE_FORMAT_MILLIS  = "yyyy-MM-dd HH:mm:ss.SSS";
@@ -330,6 +338,32 @@ public enum Type {
    */
   public static Object convertOrNull(final Database database, final Object value, final Class<?> targetClass) {
     return convertOrNull(database, value, targetClass, null);
+  }
+
+  /**
+   * Best-effort {@link #convert} that keeps the ORIGINAL value when it cannot be converted, rather than refusing it
+   * or answering {@code null}.
+   * <p>
+   * This is the third of the three policies, and the one a client materializing a record it did not write needs. The
+   * remote client runs with no {@link Database} in scope, so it cannot consult the schema's date patterns: a value
+   * the server formatted with a custom pattern is simply not readable on that side. Handing back what the server
+   * sent lets the caller deal with it; {@code null} would discard a value that arrived intact, and refusing would
+   * fail the whole read over one column. {@code convert()} answered the original value here by falling off the end
+   * of its branches, which issue #8090 turned into a refusal - this restores it as a stated contract rather than as
+   * a side effect of where the branches happened to stop.
+   */
+  public static Object convertOrKeep(final Database database, final Object value, final Class<?> targetClass,
+      final Property property) {
+    try {
+      return convert(database, value, targetClass, property);
+    } catch (final IllegalArgumentException e) {
+      LogManager.instance().log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, value, targetClass);
+      return value;
+    }
+  }
+
+  public static Object convertOrKeep(final Database database, final Object value, final Class<?> targetClass) {
+    return convertOrKeep(database, value, targetClass, null);
   }
 
   /**
@@ -750,17 +784,12 @@ public enum Type {
           return DateUtils.dateTime(database, calendar.getTimeInMillis(), ChronoUnit.MILLIS, ZonedDateTime.class,
               property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
         if (value instanceof String valueAsString) {
-          if (!FileUtils.isLong(valueAsString)) {
-            try {
-              return truncateToPropertyPrecision(ZonedDateTime.parse(valueAsString), property);
-            } catch (final DateTimeParseException ignore) {
-              // No zone in the string: parse it as a local datetime through the shared chain - which accepts the
-              // SQL-timestamp spelling with a fraction (issue #8090) - and anchor it to the database's zone, rather
-              // than failing and letting the blanket handler below answer NULL.
-              return truncateToPropertyPrecision(
-                  DateUtils.parseDateTimeKeepingWallClock(database, valueAsString).atZone(zoneIdOf(database)), property);
-            }
-          }
+          if (!FileUtils.isLong(valueAsString))
+            // parseZonedDateTime keeps an offset the input carries rather than dropping it, so the same moment
+            // denotes the same instant whether it arrives ISO- or space-separated, and anchors an offset-free input
+            // to the database's zone. Before issue #8090 this branch answered NULL for every string: the schema
+            // patterns it tried carry no zone, so a ZonedDateTime could never be resolved from one.
+            return truncateToPropertyPrecision(DateUtils.parseZonedDateTime(database, valueAsString), property);
         }
       } else if (targetClass.equals(Instant.class)) {
         switch (value) {
@@ -828,12 +857,16 @@ public enum Type {
     } catch (final IllegalArgumentException e) {
       // PASS THROUGH
       throw e;
-    } catch (final DateTimeException | ParseException e) {
-      // A date/time value that cannot be parsed must fail the write, not empty the column. These two are the
-      // date/time family's equivalent of the NumberFormatException the arm above already lets through, and they were
-      // the only reason a well-formed INSERT could report success while storing NULL: DateTimeParseException extends
-      // DateTimeException -> RuntimeException, ParseException is checked, so neither reached the pass-through arm and
-      // both landed here, where the only trace left was a Level.FINE line that is off by default (issue #8090).
+    } catch (final DateTimeException e) {
+      // A date/time value that cannot be parsed must fail the write, not empty the column. This is the date/time
+      // family's equivalent of the NumberFormatException the arm above already lets through, and it was the reason a
+      // well-formed INSERT could report success while storing NULL: DateTimeParseException extends DateTimeException
+      // -> RuntimeException, not IllegalArgumentException, so it missed the pass-through arm and landed in the
+      // blanket one below, where the only trace left was a Level.FINE line that is off by default (issue #8090).
+      //
+      // ParseException is deliberately NOT caught here: the SimpleDateFormat paths now report a non-match by
+      // answering null through parseFully(), so nothing under this try can raise one, and naming it would suggest
+      // a path that no longer exists.
       throw new IllegalArgumentException(
           "Error in conversion of value '" + value + "' to type '" + targetClass.getSimpleName() + "': " + e.getMessage(), e);
     } catch (final Exception e) {
@@ -1838,7 +1871,7 @@ public enum Type {
     return convert(null, value, javaDefaultType);
   }
 
-  private static Date convertToDate(final Database database, final Object value) throws ParseException {
+  private static Date convertToDate(final Database database, final Object value) {
     if (value instanceof Date date)
       return date;
     if (value instanceof Number number)
