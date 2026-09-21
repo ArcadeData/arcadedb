@@ -48,10 +48,13 @@ import java.util.stream.Stream;
  * <p>
  * {@code config.properties} controls how a property present on both the survivor and an absorbed node
  * is resolved: {@code "overwrite"} (the absorbed node's value wins, the default), {@code "discard"}
- * (the survivor's original value is kept) or {@code "combine"} (the distinct values are kept, in
- * first-seen order, as a list - or as the value itself when the merged nodes all agree on it). A
- * property present only on an absorbed node is always copied onto the survivor. The whole {@code config} argument
- * is optional and defaults to an empty map - hence to the {@code "overwrite"} policy - matching APOC's
+ * (the survivor's original value is kept) or {@code "combine"} (the distinct values contributed by
+ * either node are kept, in first-seen order, as a list - flattening a {@code List}-valued contribution
+ * into that list rather than nesting it - or as the sole value itself when only one distinct value
+ * survives, whether that is because both nodes agreed on it or because de-duplication collapsed the
+ * property to one entry). A property present only on an absorbed node is always copied onto the survivor.
+ * The whole {@code config} argument is optional and defaults to an empty map - hence to the
+ * {@code "overwrite"} policy - matching APOC's
  * {@code apoc.refactor.mergeNodes(nodes :: LIST<NODE>, config = {} :: MAP)} (issue #7427).
  * </p>
  * <p>
