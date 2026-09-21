@@ -219,6 +219,11 @@ ORPHANS: O R P H A N S;
 RECLAIM: R E C L A I M;
 UNREFERENCED: U N R E F E R E N C E D;
 FILES: F I L E S;
+// Issue #7952: CHECK DATABASE ... FIX DELETE INVALID RECORDS. Also listed among the keywords usable as an
+// identifier, so a schema that already has a type or property by one of these names keeps parsing - and RECORDS in
+// particular has to be, since the singular RECORD has been usable as one all along.
+INVALID: I N V A L I D;
+RECORDS: R E C O R D S;
 // Issue #6360: CHECK DATABASE ... DEEP. Also listed among the keywords usable as an identifier, so a schema that
 // already has a type or property called "deep" keeps parsing.
 DEEP: D E E P;
