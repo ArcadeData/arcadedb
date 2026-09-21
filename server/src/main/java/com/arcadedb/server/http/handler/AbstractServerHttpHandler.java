@@ -322,8 +322,14 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // allocating whatever a client asserts is a way to be made to reserve the whole cap per request by a caller
     // that then sends one byte.
     final long declaredLength = e.getRequestContentLength();
+    // Clamped by the cap as well as by MAX_PRESIZED_REQUEST_BODY: a deployment whose cap is under 1 MB would
+    // otherwise reserve up to 1 MB for a declared length it is about to refuse anyway (PR #8092 review). Never
+    // below one read buffer, so a very small cap does not turn the first write into a grow-and-copy.
+    final long presizeCeiling = maxBodySize > 0
+        ? Math.max(Math.min(maxBodySize, MAX_PRESIZED_REQUEST_BODY), REQUEST_BODY_READ_BUFFER_SIZE)
+        : MAX_PRESIZED_REQUEST_BODY;
     final ByteArrayOutputStream buffered = new ByteArrayOutputStream(declaredLength > 0
-        ? (int) Math.min(declaredLength, MAX_PRESIZED_REQUEST_BODY)
+        ? (int) Math.min(declaredLength, presizeCeiling)
         : REQUEST_BODY_READ_BUFFER_SIZE);
     final byte[] chunk = new byte[REQUEST_BODY_READ_BUFFER_SIZE];
     long total = 0;
