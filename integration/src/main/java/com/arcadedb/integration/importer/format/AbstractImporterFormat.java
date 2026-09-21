@@ -38,6 +38,11 @@ public abstract class AbstractImporterFormat implements FormatImporter {
    * <p>
    * {@code countType(name, false)}, not polymorphic: a polymorphic count would add a subtype's records into both
    * its own total and its supertype's, double-counting them.
+   * <p>
+   * Assumes single-writer: a write to the same kind of record from outside this import, landing between the
+   * before and after snapshot, is indistinguishable from one this read made and pollutes the delta. Fine for the
+   * common case of a freshly created database nobody else touches during the import, but not fine if the import
+   * is joining a caller-owned transaction (issue #8073) against a database the caller keeps using concurrently.
    */
   protected static long countRecordsOfKind(final Database database, final Class<? extends DocumentType> kind) {
     long total = 0;
