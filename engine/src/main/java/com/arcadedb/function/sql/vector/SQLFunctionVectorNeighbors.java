@@ -34,6 +34,7 @@ import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.Pair;
@@ -346,8 +347,17 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       final String idProperty = lsmIndex.getIdPropertyName();
 
       Object stored = null;
+      // The same three schema names, spliced into SQL text the same way, as the Neo4j-compatible
+      // db.index.vector.queryNodes procedure - the two are the SQL and the Cypher entry point onto one lookup, and
+      // they were both raw. A type name is a label and openCypher creates a type for whatever label the query
+      // spells, so a vector index on `Person Node` made this read `... FROM Person Node WHERE ...`. Each position
+      // failed in its own way: the type name truncated at the space, the id property raised a parse error, and the
+      // vector property parsed as a column plus an alias and yielded a row with no vector in it - reported below as
+      // "could not find vertex" for a vertex that exists. Identifier.quote is the helper #7858 standardised on and
+      // the one merge.node uses since #8072 (issue #8097).
       try (final ResultSet rs = context.getDatabase().query("sql",
-          "SELECT " + vectorProperty + " FROM " + typeName + " WHERE " + idProperty + " = ? LIMIT 1", keyStr)) {
+          "SELECT " + Identifier.quote(vectorProperty) + " FROM " + Identifier.quote(typeName) + " WHERE "
+              + Identifier.quote(idProperty) + " = ? LIMIT 1", keyStr)) {
         if (rs.hasNext()) {
           final var result = rs.next();
           stored = result.getProperty(vectorProperty);

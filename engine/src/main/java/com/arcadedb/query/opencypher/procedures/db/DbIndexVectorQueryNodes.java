@@ -31,6 +31,7 @@ import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.NumberUtils;
 import com.arcadedb.utility.Pair;
@@ -286,8 +287,19 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
     final String vectorProperty = lsmIndex.getPropertyNames().getFirst();
     final String idProperty = lsmIndex.getIdPropertyName();
 
+    // The three names come from the index metadata rather than from the procedure's arguments, but that is not the
+    // same as them being SQL-safe: a type name is a Cypher label and openCypher creates a type for whatever label
+    // the query spells, so `CREATE (:`Person Node` ...)` produced `... FROM Person Node WHERE ...`. Each position
+    // failed differently - the type name truncated at the space and reported the wrong type missing, the id
+    // property raised a parse error, and the vector property parsed as a column plus an alias and returned a row
+    // with no vector in it, which surfaced as the "could not find vertex" message below on a vertex that exists.
+    // Emitted through Identifier.quote for the same reason merge.node is (#8072) and the Postgres COPY path is
+    // (#7858): one helper owns the escaping. SQLFunctionVectorNeighbors.extractQueryVector is the SQL entry point
+    // onto this same by-id lookup and held a byte-for-byte copy of the raw splice - it is quoted alongside this
+    // one, because a contract with two copies is a contract that drifts (issue #8097).
     try (final var rs = context.getDatabase().query("sql",
-        "SELECT " + vectorProperty + " FROM " + typeName + " WHERE " + idProperty + " = ? LIMIT 1", keyStr)) {
+        "SELECT " + Identifier.quote(vectorProperty) + " FROM " + Identifier.quote(typeName) + " WHERE "
+            + Identifier.quote(idProperty) + " = ? LIMIT 1", keyStr)) {
       if (rs.hasNext()) {
         final float[] queryVector = rs.next().getProperty(vectorProperty);
         if (queryVector != null)
