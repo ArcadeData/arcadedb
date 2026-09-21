@@ -237,6 +237,39 @@ class Issue8090SpaceSeparatedFractionalDateTimeTest extends TestHelper {
   }
 
   /**
+   * Making {@code Type.convert} strict must not reach the paths that merely COERCE values they did not write.
+   * An index on a schemaless property sees whatever the records hold, so one row of an entirely different shape
+   * has to index under a null key rather than abort the build - for EVERY index family, not just the LSM one
+   * (the hash index carries its own copy of the key conversion; it was missed in the first cut of this fix).
+   */
+  @Test
+  void aHeterogeneousRowDoesNotFailCreateIndex() {
+    for (final Schema.INDEX_TYPE indexType : new Schema.INDEX_TYPE[] { Schema.INDEX_TYPE.LSM_TREE,
+        Schema.INDEX_TYPE.HASH }) {
+      final String typeName = "Het8090" + indexType.name();
+      database.getSchema().createDocumentType(typeName);
+
+      database.transaction(() -> {
+        database.newDocument(typeName).set("ts", "2024-02-29 13:45:10.123456").save();
+        database.newDocument(typeName).set("ts", "not a date").save();
+      });
+
+      // The property type is only settled now, by the index: the rows above were written while it had none.
+      database.getSchema().getType(typeName).createProperty("ts", Type.DATETIME_MICROS);
+      database.getSchema().buildTypeIndex(typeName, new String[] { "ts" }).withType(indexType).withUnique(false)
+          .create();
+
+      // ...and an ordinary write of an unindexable value afterwards is refused by the WRITE path, loudly, rather
+      // than indexing a null key: that is the half of the split that must stay strict.
+      database.transaction(() -> assertThatThrownBy(
+          () -> database.newDocument(typeName).set("ts", "still not a date").save()).isInstanceOf(
+          IllegalArgumentException.class));
+
+      assertThat(database.countType(typeName, false)).as("index type %s", indexType).isEqualTo(2);
+    }
+  }
+
+  /**
    * {@code java.util.Date} is the other target class fed by the same literal shape.
    */
   @Test
