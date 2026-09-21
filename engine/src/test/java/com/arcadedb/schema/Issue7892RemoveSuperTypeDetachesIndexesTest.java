@@ -151,6 +151,35 @@ class Issue7892RemoveSuperTypeDetachesIndexesTest extends TestHelper {
   }
 
   @Test
+  void droppingAMiddleTypeLeavesTheSurvivingGrandchildIndexedByTheAncestor() {
+    // DROP TYPE is the one caller that severs a super-type link without meaning the subtree to stop being indexed:
+    // LocalSchema.dropType unlinks the doomed type from each super type only to re-parent the SURVIVING sub types
+    // onto those same super types a few lines later, and re-links them with createIndexes=false because their
+    // components are still attached. Dropping "what the ancestor no longer reaches" in that window reads a
+    // relationship the schema is halfway through rewriting and takes the grandchild's component with it, with
+    // nothing to put it back (PR #8091: caught as a regression of the fix on this page).
+    database.command("sql", "CREATE DOCUMENT TYPE A7_7892");
+    database.command("sql", "CREATE PROPERTY A7_7892.n INTEGER");
+    database.command("sql", "CREATE INDEX ON A7_7892 (n) UNIQUE");
+    database.command("sql", "CREATE DOCUMENT TYPE B7_7892 EXTENDS A7_7892");
+    database.command("sql", "CREATE DOCUMENT TYPE C7_7892 EXTENDS B7_7892");
+    database.transaction(() -> database.command("sql", "INSERT INTO C7_7892 SET n = 1"));
+
+    assertThat(database.lookupByKey("A7_7892", "n", 1).hasNext()).isTrue();
+
+    database.getSchema().dropType("B7_7892");
+
+    assertThat(database.getSchema().getType("C7_7892").getSuperTypes()).extracting("name").containsExactly("A7_7892");
+    assertThat(database.lookupByKey("A7_7892", "n", 1).hasNext())
+        .as("C7 is still an A7 after B7 is dropped, so A7's index must still cover C7's bucket").isTrue();
+    assertThat(coveredBuckets("A7_7892[n]"))
+        .containsAll(database.getSchema().getType("C7_7892").getBucketIds(false));
+    assertThatThrownBy(() -> database.transaction(() -> database.command("sql", "INSERT INTO C7_7892 SET n = 1")))
+        .as("and the ancestor's UNIQUE constraint is still enforced over it")
+        .isInstanceOf(DuplicatedKeyException.class);
+  }
+
+  @Test
   void relinkingTheSuperTypeBringsTheIndexBack() {
     database.command("sql", "CREATE DOCUMENT TYPE A4_7892");
     database.command("sql", "CREATE PROPERTY A4_7892.n INTEGER");

@@ -251,6 +251,13 @@ public class LocalDocumentType implements DocumentType {
    * diamond, a bucket the former super type still reaches through another surviving path must keep its sub-index.
    */
   private void dropSubIndexesNoLongerCovered(final LocalDocumentType formerSuperType) {
+    if (schema.isTypeBeingDropped())
+      // A dropType cascade severs this link only to re-parent the surviving sub types onto the same super type a
+      // few lines later, re-linking them with createIndexes=false because their components are still attached. The
+      // relationship is mid-rewrite, so "no longer reached" is not yet true of anything; see LocalSchema
+      // #isTypeBeingDropped. The doomed type's own components are dropped by that cascade itself.
+      return;
+
     final List<String> orphans = new ArrayList<>();
     // BY IDENTITY: TypeIndex.equals() is content-based and asks an empty wrapper for its property names, which is
     // exactly the state the wrappers in here are about to be left in.
