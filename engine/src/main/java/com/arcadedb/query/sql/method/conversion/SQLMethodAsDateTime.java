@@ -62,6 +62,11 @@ public class SQLMethodAsDateTime extends AbstractSQLMethod {
     // spelling an INSERT accepts, including the SQL timestamp with a fractional second (issue #8090), instead of
     // only the schema's single dateTimeFormat pattern.
     //
+    // ...KeepingWallClock, the SAME overload Type.convert uses, so reading a literal answers what writing it would
+    // have stored. The rebasing overload would make an offset-bearing literal read back shifted by the database's
+    // zone here while an INSERT of that same literal kept its wall-clock - one string, two answers, from two
+    // entry points that share this chain. date() and asDate() take the same overload for the same reason.
+    //
     // A value that matches nothing answers null, as this method's contract has always promised and as the sibling
     // date() function already does. That is the READ side of the split issue #8090 drew: a write must refuse a
     // value it cannot store, because silently emptying the column is the data loss being fixed, while a conversion
@@ -70,7 +75,7 @@ public class SQLMethodAsDateTime extends AbstractSQLMethod {
     try {
       date = params.length > 0 ?
           DateUtils.parse(value.toString(), params[0].toString()) :
-          DateUtils.parseDateTime(context.getDatabase(), value.toString());
+          DateUtils.parseDateTimeKeepingWallClock(context.getDatabase(), value.toString());
     } catch (final DateTimeParseException e) {
       return null;
     }

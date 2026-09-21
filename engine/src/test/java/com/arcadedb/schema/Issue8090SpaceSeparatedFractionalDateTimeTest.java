@@ -482,6 +482,36 @@ class Issue8090SpaceSeparatedFractionalDateTimeTest extends TestHelper {
   }
 
   /**
+   * Reading a literal answers what writing it would have stored, for an offset-bearing one too. The read-side
+   * surfaces reached the shared chain through its REBASING overload while {@code Type.convert} used the
+   * wall-clock-preserving one, so the same string had two answers depending on which entry point saw it - and
+   * offset-bearing literals are exactly what these functions became newly able to read in this fix.
+   */
+  @Test
+  void theReadSideAnswersWhatTheWriteSideWouldStore() {
+    final String literal = "2026-01-01T00:00:00+01:00";
+    final LocalDateTime expected = LocalDateTime.of(2026, 1, 1, 0, 0);
+
+    // The write path, and the SQL surfaces that read the same string, must not disagree.
+    assertThat(Type.convert(database, literal, LocalDateTime.class)).as("write path").isEqualTo(expected);
+
+    database.transaction(() -> {
+      for (final String projection : new String[] { "'" + literal + "'.asDatetime()", "date('" + literal + "')" })
+        assertThat(database.query("sql", "SELECT " + projection + " AS d").next().<Object>getProperty("d"))//
+            .as(projection).isEqualTo(expected);
+
+      assertThat(database.query("sql", "SELECT '" + literal + "'.asDate() AS d").next().<Object>getProperty("d"))//
+          .isEqualTo(LocalDate.of(2026, 1, 1));
+
+      // convert('datetime') is NOT in that list on purpose: DATETIME's default Java type is java.util.Date, an
+      // INSTANT, so it keeps the offset rather than the wall-clock - the same split this fix draws everywhere
+      // else. Pinned here so the difference reads as the policy it is rather than as the bug just fixed.
+      assertThat(database.query("sql", "SELECT '" + literal + "'.convert('datetime') AS d").next()
+          .<Object>getProperty("d")).isEqualTo(Date.from(OffsetDateTime.parse(literal).toInstant()));
+    });
+  }
+
+  /**
    * {@code java.util.Date} is the other target class fed by the same literal shape.
    */
   @Test

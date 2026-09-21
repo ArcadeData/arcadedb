@@ -522,6 +522,13 @@ public class DateUtils {
    * the resolved value. Resolution can still fail on a structurally-matching string (a pattern admitting month 13,
    * say), which is why the real parse keeps its own guard.
    * <p>
+   * The string is walked twice on a match - {@code parseUnresolved} to ask whether the pattern claimed all of it,
+   * then the real parse for the value - because {@code parseUnresolved} deliberately stops before RESOLUTION: it
+   * applies no {@code parseDefaulting}, runs no chronology, and would leave this method reimplementing what the
+   * formatter already does. The second pass is the cost of not doing that, and it is paid only where the pattern
+   * matched; a non-match, which is the common case for the formats that do not apply, still costs one pass and
+   * no exception.
+   * <p>
    * Answers an {@link OffsetDateTime} when the PATTERN captured an offset ({@code XXX} and friends) and a
    * {@link LocalDateTime} otherwise, so the offset a schema pattern read out of the value survives to the caller
    * and each policy can decide what to do with it. Resolving with {@code LocalDateTime.parse} here instead would

@@ -68,7 +68,8 @@ public class SQLMethodAsDate extends AbstractSQLMethod {
     try {
       date = params.length > 0 ?
           DateUtils.parse(value.toString(), params[0].toString()) :
-          DateUtils.parseDateTime(context.getDatabase(), value.toString()).toLocalDate().atStartOfDay();
+          DateUtils.parseDateTimeKeepingWallClock(context.getDatabase(), value.toString()).toLocalDate()
+              .atStartOfDay();
     } catch (final DateTimeParseException e) {
       return null;
     }

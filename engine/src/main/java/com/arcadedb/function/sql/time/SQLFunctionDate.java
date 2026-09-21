@@ -83,7 +83,7 @@ public class SQLFunctionDate extends SQLFunctionAbstract {
           // date('2024-02-29 13:45:10.123456') became an empty result (issue #8090). The `timezone` option keeps
           // the effect it had here before: none, since neither this chain nor a zone-less pattern reads a zone out
           // of the text - it applies to a pattern that carries zone fields, which is the explicit-format path below.
-          date = DateUtils.parseDateTime(context.getDatabase(), dateAsString);
+          date = DateUtils.parseDateTimeKeepingWallClock(context.getDatabase(), dateAsString);
         } else
           date = LocalDateTime.parse(dateAsString, formatterFor(format, timezone, context));
       } catch (final DateTimeParseException e) {
