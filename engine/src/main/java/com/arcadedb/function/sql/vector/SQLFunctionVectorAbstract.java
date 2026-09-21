@@ -26,6 +26,7 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.utility.IntHashSet;
 
 import java.util.ArrayList;
@@ -141,6 +142,33 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
     if (params == null || params.length != expectedCount) {
       throw new CommandSQLParsingException(getSyntax());
     }
+  }
+
+  /**
+   * The SQL that resolves a vertex-identifier key to the vector stored on that vertex: the one statement behind
+   * both entry points onto that lookup, {@code vector.neighbors} here and the Neo4j-compatible
+   * {@code db.index.vector.queryNodes} procedure. It binds the key as a parameter and emits all three schema names
+   * through {@link Identifier#quote}.
+   * <p>
+   * The names come from the index metadata rather than from a caller's arguments, which is not the same as their
+   * being SQL-safe: a type name is a Cypher label and openCypher creates a type for whatever label the query
+   * spells, so a vector index on {@code `Person Node`} produced {@code ... FROM Person Node WHERE ...}. Each
+   * position failed in its own way - the type name truncated at the space, the id property raised a parse error,
+   * and the vector property parsed as a column plus an alias and yielded a row carrying no vector, which surfaced
+   * as "could not find vertex" for a vertex that exists and is indexed.
+   * <p>
+   * It lives here, on the shared base of the SQL vector functions, because the two callers previously held
+   * byte-for-byte copies of it and had to be fixed in lockstep - the drift a single owner of the escaping is meant
+   * to prevent, and the same argument #7858 and #8072 are built on (issue #8097, raised in review of that fix).
+   *
+   * @param typeName       the indexed type's name, unquoted
+   * @param vectorProperty the indexed vector property's name, unquoted
+   * @param idProperty     the index's id property name, unquoted
+   */
+  public static String buildVectorByIdLookup(final String typeName, final String vectorProperty,
+      final String idProperty) {
+    return "SELECT " + Identifier.quote(vectorProperty) + " FROM " + Identifier.quote(typeName) + " WHERE "
+        + Identifier.quote(idProperty) + " = ? LIMIT 1";
   }
 
   /**
