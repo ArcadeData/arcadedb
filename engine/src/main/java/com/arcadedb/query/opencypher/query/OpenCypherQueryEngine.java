@@ -522,22 +522,32 @@ public class OpenCypherQueryEngine implements QueryEngine {
     return poly != null && poly.isUnique();
   }
 
+  /**
+   * Creates the type a DDL statement names when it does not exist yet, since Cypher does not require types to be
+   * pre-declared.
+   * <p>
+   * This is the one place a DDL statement reaches the schema with a label, and it does so without going through
+   * {@link Labels#ensureCompositeType}, so it carries that method's separator guard itself: a label containing
+   * {@link Labels#LABEL_SEPARATOR} would otherwise occupy the very name that the ordinary label set spelling out
+   * its parts computes (issue #8100). The guard deliberately sits behind the existence check - a name containing
+   * the separator is exactly what an existing composite type is called, so indexing or constraining one has to
+   * keep working. Relationship type names are not validated here; that is issue #8118.
+   */
+  private static void autoCreateDDLType(final Schema schema, final CypherDDLStatement ddl, final String typeName) {
+    if (schema.existsType(typeName))
+      return;
+
+    if (ddl.isForRelationship())
+      schema.getOrCreateEdgeType(typeName);
+    else
+      schema.getOrCreateVertexType(Labels.requireUsableLabelName(typeName, "a label in this statement"));
+  }
+
   private void executeCreateConstraint(final CypherDDLStatement ddl, final Schema schema, final QueryStatistics stats) {
     final String typeName = ddl.getLabelName();
     final String[] propertyNames = ddl.getPropertyNames().toArray(new String[0]);
 
-    // Auto-create the type if it doesn't exist (Cypher does not require types to be pre-declared)
-    if (!schema.existsType(typeName)) {
-      if (ddl.isForRelationship())
-        schema.getOrCreateEdgeType(typeName);
-      else
-        // The DDL auto-create reaches the schema without going through Labels.ensureCompositeType, so it carries
-        // the separator guard itself: a label containing it would otherwise occupy the very name the ordinary
-        // label set that spells out its parts computes (issue #8100). The check sits inside the auto-create
-        // branch on purpose - a name containing the separator is what an existing composite type is legitimately
-        // called, so indexing one must keep working.
-        schema.getOrCreateVertexType(Labels.requireUsableLabelName(typeName, "a label in this statement"));
-    }
+    autoCreateDDLType(schema, ddl, typeName);
 
     // For TYPED constraints, resolve the target type first so properties are created with the correct type
     final boolean isTyped = ddl.getConstraintKind() == CypherDDLStatement.ConstraintKind.TYPED;
@@ -923,18 +933,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
     final String typeName = ddl.getLabelName();
     final String[] propertyNames = ddl.getPropertyNames().toArray(new String[0]);
 
-    // Auto-create the type if it doesn't exist (Cypher does not require types to be pre-declared)
-    if (!schema.existsType(typeName)) {
-      if (ddl.isForRelationship())
-        schema.getOrCreateEdgeType(typeName);
-      else
-        // The DDL auto-create reaches the schema without going through Labels.ensureCompositeType, so it carries
-        // the separator guard itself: a label containing it would otherwise occupy the very name the ordinary
-        // label set that spells out its parts computes (issue #8100). The check sits inside the auto-create
-        // branch on purpose - a name containing the separator is what an existing composite type is legitimately
-        // called, so indexing one must keep working.
-        schema.getOrCreateVertexType(Labels.requireUsableLabelName(typeName, "a label in this statement"));
-    }
+    autoCreateDDLType(schema, ddl, typeName);
 
     // Cypher properties are dynamically typed and travel over Bolt with their actual Java type
     // (e.g. {@code Long} for numeric literals). Hard-coding {@link Type#STRING} when the property
