@@ -609,6 +609,12 @@ public class CypherSemanticValidator {
                 continue;
               checkExpressionScope(item.getExpression(), scope);
             }
+            // WITH * keeps every variable, so its ORDER BY is held to the incoming scope widened with
+            // the extra aliases - the same rule as the projecting form below. Nothing narrows here, so
+            // the only way to fail it is to name a variable no clause ever bound, which used to sort on
+            // nothing instead of reporting (found by the #7426 sweep).
+            if (withClause.getOrderByClause() != null)
+              validatePlainOrderByScope(withClause.getItems(), withClause.getOrderByClause(), scope);
             // Then add extra aliases to scope for subsequent clauses
             for (final ReturnClause.ReturnItem item : withClause.getItems()) {
               final String alias = item.getAlias();
@@ -627,19 +633,9 @@ public class CypherSemanticValidator {
               // matching RETURN form does (issues #5286, #5287)
               validateCollapsedOrderByScope(withClause.getItems(), withClause.getOrderByClause(),
                   withClause.hasAggregations());
-            } else {
+            } else
               // Non-aggregating WITH: ORDER BY can reference both original scope + aliases
-              final Set<String> orderByScope = new HashSet<>(scope);
-              for (final ReturnClause.ReturnItem item : withClause.getItems()) {
-                if (item.getAlias() != null)
-                  orderByScope.add(item.getAlias());
-                else if (item.getExpression() instanceof VariableExpression)
-                  orderByScope.add(((VariableExpression) item.getExpression()).getVariableName());
-              }
-              for (final OrderByClause.OrderByItem item : withClause.getOrderByClause().getItems())
-                if (item.getExpressionAST() != null)
-                  checkExpressionScope(item.getExpressionAST(), orderByScope);
-            }
+              validatePlainOrderByScope(withClause.getItems(), withClause.getOrderByClause(), scope);
           }
           // Reset scope to only projected aliases
           scope.clear();
@@ -687,6 +683,13 @@ public class CypherSemanticValidator {
                 // Likewise after aggregation: what the projection did not keep, ORDER BY cannot sort
                 // on. Reporting it beats the sort silently doing nothing (issue #5286).
                 validateCollapsedOrderByScope(statement.getReturnClause().getReturnItems(), statement.getOrderByClause(), true);
+              } else {
+                // A plain RETURN keeps its input rows, so its ORDER BY sees the scope that reached the
+                // RETURN plus the columns the RETURN projects - the same rule the non-aggregating WITH
+                // above applies. A variable a preceding WITH dropped is in neither set, and without this
+                // check the sort key resolved to nothing and the rows came back unsorted with no error
+                // (issue #7426).
+                validatePlainOrderByScope(statement.getReturnClause().getReturnItems(), statement.getOrderByClause(), scope);
               }
             }
           }
@@ -896,6 +899,44 @@ public class CypherSemanticValidator {
         }
         checkExpressionScopeSkipAggArgs(item.getExpressionAST(), aggregationScope);
       } else
+        checkExpressionScope(item.getExpressionAST(), orderByScope);
+    }
+  }
+
+  /**
+   * Validates the ORDER BY of a non-collapsing projection, shared by the plain forms of RETURN (issue
+   * #7426) and WITH.
+   * <p>
+   * Such a projection keeps its input rows one for one, so its ORDER BY resolves against the scope that
+   * reached the clause <i>widened</i> with the columns the clause projects. That is a strictly larger
+   * scope than the collapsing form's, which is why {@link #validateCollapsedOrderByScope} cannot stand in
+   * for this: there the feeding variables no longer have one value per surviving row, here they still do.
+   * <p>
+   * A variable in neither set has nothing to sort on. Before issue #7426 the plain RETURN form ran no
+   * check at all and such a sort key silently resolved to nothing, so {@code WITH f.Name AS BusinessFunction
+   * RETURN BusinessFunction ORDER BY f.Name} returned the rows in storage order with a 200 - wrong results
+   * rather than the error openCypher and Neo4j raise.
+   *
+   * @param scope the variables live where the clause begins, which this method does not modify
+   */
+  private void validatePlainOrderByScope(final List<ReturnClause.ReturnItem> items, final OrderByClause orderBy,
+      final Set<String> scope) {
+    final Set<String> projectedNames = new HashSet<>();
+    final Set<String> orderByScope = new HashSet<>(scope);
+    for (final ReturnClause.ReturnItem item : items) {
+      projectedNames.add(item.getOutputName());
+      if (item.getAlias() != null)
+        orderByScope.add(item.getAlias());
+      else if (item.getExpression() instanceof VariableExpression)
+        orderByScope.add(((VariableExpression) item.getExpression()).getVariableName());
+    }
+
+    for (final OrderByClause.OrderByItem item : orderBy.getItems()) {
+      // An item naming a projected output column resolves against the projected row, whatever the column
+      // name looks like (an un-aliased projection is named after its own expression text)
+      if (item.getExpression() != null && projectedNames.contains(item.getExpression()))
+        continue;
+      if (item.getExpressionAST() != null)
         checkExpressionScope(item.getExpressionAST(), orderByScope);
     }
   }
