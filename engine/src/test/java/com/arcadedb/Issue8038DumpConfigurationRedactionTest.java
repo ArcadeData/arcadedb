@@ -68,6 +68,7 @@ class Issue8038DumpConfigurationRedactionTest {
   void aWhollyHiddenSettingStillPrintsAsHidden() {
     final GlobalConfiguration setting = GlobalConfiguration.SERVER_ROOT_PASSWORD;
     final Object previous = setting.getValue();
+    final boolean wasChanged = setting.isChanged();
     try {
       setting.setValue("s3cr3t-root-password");
 
@@ -76,7 +77,7 @@ class Issue8038DumpConfigurationRedactionTest {
       assertThat(dump).contains(setting.getKey() + " = <hidden>");
       assertThat(dump).doesNotContain("s3cr3t-root-password");
     } finally {
-      setting.setValue(previous);
+      restore(setting, previous, wasChanged);
     }
   }
 
@@ -89,12 +90,27 @@ class Issue8038DumpConfigurationRedactionTest {
   private static String dumpWithDefaultDatabases(final String value) {
     final GlobalConfiguration setting = GlobalConfiguration.SERVER_DEFAULT_DATABASES;
     final Object previous = setting.getValue();
+    final boolean wasChanged = setting.isChanged();
     try {
       setting.setValue(value);
       return dump();
     } finally {
-      setting.setValue(previous);
+      restore(setting, previous, wasChanged);
     }
+  }
+
+  /**
+   * Puts a process-wide setting back exactly as it was, {@link GlobalConfiguration#isChanged()} included, the way
+   * {@code Issue7262ConfigurationFileBooleanStrictTest} already does. Neither half alone is that: {@code setValue}
+   * marks a setting that was UNSET as explicitly configured, which the whole suite shares and
+   * {@code GlobalConfigurationTest} asserts on, while {@code reset()} restores the COMPILED-IN default and would
+   * discard a {@code -D} the surrounding run was given.
+   */
+  private static void restore(final GlobalConfiguration setting, final Object value, final boolean wasChanged) {
+    if (wasChanged)
+      setting.setValue(value);
+    else
+      setting.reset();
   }
 
   private static String dump() {
