@@ -78,6 +78,26 @@ class Issue7881TransactionIndexArrayKeyEqualityTest extends TestHelper {
     assertThat(k1.hashCode()).isEqualTo(k2.hashCode());
   }
 
+  @Test
+  void theNonUniqueBranchOfTheKeyComparesItsArrayValuesByContentToo() {
+    // The unique branch above keys on the tuple alone; a non-unique index keys on the tuple AND the RID, and it is
+    // the SAME helper doing the tuple half. Pinned so a future edit to one branch cannot silently leave the other
+    // on a shallow comparison (PR #8091 review).
+    final Object[] a = { new byte[] { 1, 2, 3 } };
+    final Object[] b = { new byte[] { 1, 2, 3 } };
+    final RID rid = new RID(1, 1);
+    final RID otherRid = new RID(1, 2);
+
+    final IndexKey k1 = new IndexKey(false, IndexKey.IndexKeyOperation.ADD, a, rid);
+    final IndexKey sameRid = new IndexKey(false, IndexKey.IndexKeyOperation.ADD, b, rid);
+    final IndexKey otherRidSameKey = new IndexKey(false, IndexKey.IndexKeyOperation.ADD, b, otherRid);
+
+    assertThat(k1).isEqualTo(sameRid);
+    assertThat(k1.hashCode()).isEqualTo(sameRid.hashCode());
+    assertThat(k1).as("a non-unique index keeps one entry per RID, so the RID still separates them")
+        .isNotEqualTo(otherRidSameKey);
+  }
+
   /** The invariant the per-key duplicate check exists for, kept under a content-aware equality. */
   @Test
   void twoRecordsWithTheSameBinaryKeyInOneTransactionAreRefused() {

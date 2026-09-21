@@ -1638,6 +1638,12 @@ public class LocalSchema implements Schema {
                 // A TypeIndex with no remaining bucket children must not stay in indexesByProperties:
                 // schema serialization (toJSON) calls TypeIndex.getPropertyNames(), which fails on an
                 // empty wrapper.
+                //
+                // The lookup walks UP from `type`, the subtype that owned the bucket component, to find whichever
+                // type declares the wrapper. LocalDocumentType#dropSubIndexesNoLongerCovered calls in here with that
+                // walk deliberately broken - it drops components precisely because the link was just severed - so it
+                // repeats this cleanup itself against the wrapper's real owner, and depends on this one being a
+                // harmless no-op rather than on it succeeding. Keep the two in step if this ever stops walking up.
                 if (parentTypeIndex != null && parentTypeIndex.countIndexesOnBuckets() == 0) {
                   type.removeTypeIndexInternal(parentTypeIndex);
                   removeIndexDuringLoad(parentTypeIndex.getName());
