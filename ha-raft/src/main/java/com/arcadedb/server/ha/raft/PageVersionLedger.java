@@ -209,18 +209,39 @@ final class PageVersionLedger {
    * Releases the reservations of an entry once it has been applied on this node. A page whose reservation moved on to
    * a later entry is left alone. The pages are decoded from the entry only when there is something to release, so a
    * follower, whose ledger is empty, never pays the decode.
+   * <p>
+   * <b>Total over the payload</b> (issue #7984): a WAL payload this node cannot decode releases nothing and reports
+   * nothing. The release runs in {@code ArcadeStateMachine.applyTxEntry}'s {@code finally}, where an exception
+   * replaces the failure the apply is really failing with - and a payload {@code parse()} rejects is exactly the
+   * state that apply has just failed on, so what it would replace is the {@link RaftLogEntryDecodeException} that
+   * routes the database to the per-database quarantine and a targeted snapshot resync (issues #7495, #7678). There
+   * is nothing to report from here anyway: every reservation in this ledger was put there by
+   * {@link #validateAndReserve}, whose only two callers ({@link ArcadeStateMachine#startTransaction} and
+   * {@code ArcadeStateMachine.validateBeforeAppend(DatabaseInternal, byte[], EntryId)}) parse the very same bytes
+   * before they call it, so bytes {@code parse()} rejects are bytes no reservation was ever taken from. The release
+   * is bookkeeping; the apply result is not.
    */
   void release(final String databaseName, final Pages pagesOrNull, final byte[] walData) {
     final DatabaseLedger ledger = byDatabase.get(databaseName);
     if (ledger == null)
       return;
-    // Counted even when nothing is reserved: an apply moves the local copy on whether or not this ledger (possibly a
-    // fresh one, after a clear) still holds the entry's reservation, and a validation that read the local copy early
-    // must learn about it either way.
+    // Counted even when nothing is reserved, and counted BEFORE the decode below can give up: an apply moves the
+    // local copy on whether or not this ledger (possibly a fresh one, after a clear) still holds the entry's
+    // reservation, and a validation that read the local copy early must learn about it either way.
     ledger.releases.incrementAndGet();
     if (ledger.pages.isEmpty())
       return;
-    final Pages pages = pagesOrNull != null ? pagesOrNull : parse(walData);
+    final Pages pages;
+    if (pagesOrNull != null)
+      pages = pagesOrNull;
+    else {
+      try {
+        pages = parse(walData);
+      } catch (final RuntimeException e) {
+        // No reservation was taken from these bytes, so there is nothing here to release - see the javadoc.
+        return;
+      }
+    }
     for (int i = 0; i < pages.count(); i++) {
       final long key = pageKey(pages.fileIds()[i], pages.pageNumbers()[i]);
       final Reservation reserved = ledger.pages.get(key);
