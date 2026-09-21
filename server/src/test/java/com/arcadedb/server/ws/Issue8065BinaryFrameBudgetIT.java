@@ -138,6 +138,25 @@ class Issue8065BinaryFrameBudgetIT extends BaseGraphServerTest {
     }
   }
 
+  /**
+   * A binary frame with no payload at all. {@link #onFullBinaryMessage} hands the pooled buffer back before it
+   * does anything else, and freeing an empty one has to be as safe as freeing a full one - raised in review of
+   * #8065 as the edge case the other tests do not reach, since every one of them sends bytes.
+   */
+  @Test
+  void aZeroLengthBinaryFrameIsAnsweredAndFreedLikeAnyOther() throws Throwable {
+    try (final var client = new WebSocketClientHelper(wsUrl(), "root", DEFAULT_PASSWORD_FOR_TESTS)) {
+      client.sendBinaryWithoutWaiting(new byte[0]);
+
+      final String answer = client.popMessage();
+      assertThat(answer).as("a zero-length binary frame must be answered like any other").isNotNull();
+      assertThat(new JSONObject(answer).getString("result", "")).isEqualTo("error");
+
+      // Nothing was broken by freeing an empty payload: the connection still serves text frames.
+      assertThat(new JSONObject(client.send(subscribe("V1"))).getString("result", "")).isEqualTo("ok");
+    }
+  }
+
   // ---------------------------------------------------------------------------------------------------------
 
   /**
