@@ -121,6 +121,21 @@ public class OrientDBImporter {
   private              JsonReader                 reader;
   private              boolean                    error                           = false;
   private              ImporterContext            context                         = new ImporterContext();
+  /**
+   * Whether this run owns the transaction it writes records and edges into, as opposed to a caller-owned one
+   * predating the import - and so whether {@link #parseRecords()} may commit its batches piecemeal and
+   * {@link #updateDocumentLinks()} may commit and roll back its own transaction. Computed once, at the top of
+   * {@link #run()}, the same way every row loop elsewhere in the importer tree reads
+   * {@link ImporterContext#importOwnsTransaction} - before either method might begin a transaction of its own
+   * (issue #8073).
+   * <p>
+   * Defaults to {@code true} - own the transaction, today's behaviour - rather than to the {@code boolean} default
+   * of {@code false}: a caller that invokes {@link #parseRecords()} or {@link #updateDocumentLinks()} directly,
+   * without going through {@link #run()}, gets the same "I own this" behaviour {@link ImporterContext#importOwnsTransaction}
+   * would answer for a fresh {@link ImporterContext} in any case, since {@link ImporterContext#callerTransactionActiveOnEntry}
+   * itself defaults to {@code false}.
+   */
+  private              boolean                    ownsTransaction                 = true;
 
   private enum Phase {OFF, ANALYZE, CREATE_SCHEMA, CREATE_RECORDS, CREATE_EDGES}
 
@@ -218,6 +233,8 @@ public class OrientDBImporter {
     }
 
     beginTime = System.currentTimeMillis();
+
+    ownsTransaction = context.importOwnsTransaction(database);
 
     if (settings.expectedVertices < 1) {
       // COUNT RECORDS FIRST
@@ -425,13 +442,18 @@ public class OrientDBImporter {
           reader.skipValue();
       }
 
+      // joinCurrentTx=false when this run owns the transaction: today's behaviour, a fresh nested transaction per
+      // batch, committed as soon as the batch is written. joinCurrentTx=true when a caller-owned transaction
+      // predates the import: joins whatever transaction is already active (begin() nests, and each nested commit
+      // is independently durable) and never commits it itself, so nothing here is published ahead of the caller
+      // resolving it (issue #8073).
       database.transaction(() -> {
         try {
           executeBatch(processedItems, batch);
         } catch (IOException e) {
           throw new ImportException("Error on importing batch of records", e);
         }
-      }, false, CONCURRENT_MAX_RETRY);
+      }, !ownsTransaction, CONCURRENT_MAX_RETRY);
 
       batch.clear();
     }
@@ -491,11 +513,24 @@ public class OrientDBImporter {
     if (!documentsWithLinksToUpdate.isEmpty()) {
       logger.logLine(1, "Updating LINKs in %,d documents...", documentsWithLinksToUpdate.size());
 
-      database.begin();
+      // Owning the transaction ALWAYS begins a fresh one, unconditionally, exactly as before this method gained
+      // the ownsTransaction distinction - identity isolation from whatever might already be active. Only a
+      // caller-owned transaction joins whatever is already active rather than nesting a new one: begin() nests,
+      // and a nested commit below is independently durable, so a caller who wrapped this import in a transaction
+      // to commit or discard it as a unit used to find the links already updated on disk and a later rollback()
+      // taking nothing back (issue #8073). The `else if` is defensive - importOwnsTransaction() already
+      // guarantees a transaction is active whenever it answers false - for a caller that resolved its own
+      // transaction between that check and this call.
+      if (ownsTransaction)
+        database.begin();
+      else if (!database.isTransactionActive())
+        database.begin();
       // Whether the transaction just opened (or the one begun after a periodic commit below) is still the current
       // one. Cleared right before every commit - which pops it in a finally even if it throws - so a rollback below
-      // can never pop a transaction this method has already committed away (issue #7272).
-      boolean txOpen = true;
+      // can never pop a transaction this method has already committed away (issue #7272). Initialised to
+      // ownsTransaction rather than unconditionally true, so a caller-owned transaction is never the one this
+      // method's commit/rollback resolves (issue #8073).
+      boolean txOpen = ownsTransaction;
 
       // Documents an intermediate commit already made durable. context.updatedDocuments counts every document
       // touched, the ones still inside the transaction a failure rolls back included.
@@ -519,7 +554,7 @@ public class OrientDBImporter {
 
           context.updatedDocuments.incrementAndGet();
 
-          if (context.updatedDocuments.get() > 0 && context.updatedDocuments.get() % batchSize == 0) {
+          if (ownsTransaction && context.updatedDocuments.get() > 0 && context.updatedDocuments.get() % batchSize == 0) {
             txOpen = false;
             database.commit();
             committedDocuments = context.updatedDocuments.get();
@@ -527,8 +562,10 @@ public class OrientDBImporter {
             txOpen = true;
           }
         }
-        txOpen = false;
-        database.commit();
+        if (ownsTransaction) {
+          txOpen = false;
+          database.commit();
+        }
         completed = true;
         logger.logLine(1, "- Updated LINKs in %,d records", context.updatedDocuments.get());
       } finally {
@@ -546,8 +583,10 @@ public class OrientDBImporter {
         }
 
         // Outside the txOpen branch above, because a commit() that threw has already popped its own transaction
-        // and would otherwise leave the batch it failed to write counted as if it had survived.
-        if (!completed) {
+        // and would otherwise leave the batch it failed to write counted as if it had survived. Gated on
+        // ownsTransaction for the same reason the rollback above is: the documents touched inside a caller's own
+        // transaction are the caller's to commit or discard, so their fate is not this method's to report on.
+        if (!completed && ownsTransaction) {
           // What the report calls "updated" has to be what survived: leaving the counter at the number of documents
           // touched would credit the import with the ones the rollback just took away.
           final long readDocuments = context.updatedDocuments.get();
