@@ -84,8 +84,12 @@ public class Issue8064SetAliasesAtomicReservationTest extends TestHelper {
       }
 
       start.countDown();
-      for (final Thread thread : threads)
+      for (final Thread thread : threads) {
         thread.join(TimeUnit.SECONDS.toMillis(30));
+        // ASSERTED, NOT ASSUMED: A join() THAT TIMED OUT LEAVES THE CLAIMANT STILL RUNNING, AND EVERY ASSERTION
+        // BELOW WOULD THEN BE READING A HALF-FINISHED RESERVATION AND BLAMING IT ON THE FIX
+        assertThat(thread.isAlive()).as("claimant thread did not finish on attempt " + attempt).isFalse();
+      }
 
       assertThat(unexpected.get()).as("unexpected failure on attempt " + attempt).isNull();
       assertThat(succeeded.get()).as("exactly one claimant may take '" + contested + "'").isEqualTo(1);
