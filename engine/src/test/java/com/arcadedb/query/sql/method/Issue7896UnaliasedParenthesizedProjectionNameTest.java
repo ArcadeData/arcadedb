@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.method;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
@@ -84,6 +85,17 @@ class Issue7896UnaliasedParenthesizedProjectionNameTest extends TestHelper {
   }
 
   @Test
+  void redundantParenthesesAroundASubqueryDoNotRenameTheColumn() {
+    // The grammar's `LPAREN statement RPAREN modifier*` alternative, reached through the two BaseExpression
+    // subclasses that render their own parentheses. A second, WRITTEN pair around one of those is the redundant
+    // kind, so it must not survive into the column name either (PR #8091 review asked whether that override was
+    // reachable at all - it is, and this is the path).
+    assertThat(renderOf("SELECT ((SELECT 1 AS v)).v FROM T7896")).isEqualTo("SELECT (SELECT 1 AS v).v FROM T7896");
+    assertThat(renderOf("SELECT ((SELECT FROM T7896))[0] FROM T7896"))
+        .isEqualTo("SELECT (SELECT FROM T7896)[0] FROM T7896");
+  }
+
+  @Test
   void parenthesesAroundACompoundArithmeticExpressionStillSurvive() {
     // Unchanged by this fix and by #7774 before it: dropping these re-associates the operators (issue #6359).
     assertThat(valueOf("SELECT (1 + 2) * 3 AS r FROM T7896", "r")).isEqualTo(9);
@@ -93,6 +105,13 @@ class Issue7896UnaliasedParenthesizedProjectionNameTest extends TestHelper {
   @Test
   void parenthesesWithNoModifierAtAllAreStillDropped() {
     assertThat(columnOf("SELECT (name) FROM T7896")).isEqualTo("name");
+  }
+
+  /** The text a parsed statement renders back to, which is what an unaliased projection is named after. */
+  private String renderOf(final String query) {
+    final StringBuilder builder = new StringBuilder();
+    new SQLAntlrParser(null).parse(query).toString(null, builder);
+    return builder.toString();
   }
 
   /** The name of the single (unaliased) column the query projects. */
