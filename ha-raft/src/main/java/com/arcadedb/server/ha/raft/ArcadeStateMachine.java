@@ -304,6 +304,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private final SecurityCatchUp securityCatchUp = new SecurityCatchUp();
 
   /**
+   * The catch-up this node's own triggers drive. Package-private so a test in this package can put it in the
+   * state a restart during a failover leaves it in and then watch what the real leader change does with it
+   * (issue #8034); nothing in production reaches it any other way than through the two callbacks below.
+   */
+  SecurityCatchUp getSecurityCatchUp() {
+    return securityCatchUp;
+  }
+
+  /**
    * Removes dropped database directories away from the apply loop. Deliberately not the lifecycleExecutor: a
    * deletion is unbounded in the size of the database and would delay the snapshot-download triggers that
    * executor carries.
