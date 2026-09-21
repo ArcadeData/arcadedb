@@ -207,6 +207,34 @@ class CallStepWriteProcedureAutoCommitTest {
   }
 
   /**
+   * Issue #7427: the write classification that drives this auto-commit runs over the call's literal arguments
+   * ({@code SimpleCypherStatement.isWriteProcedureCall}), so the one-argument form - legal since the trailing
+   * {@code config} became optional - has to reach the same auto-committing path as the two-argument one. Were it
+   * classified read-only instead, the statement would be routed to {@code Database.query} and rejected as
+   * non-idempotent rather than committing.
+   */
+  @Test
+  void refactorCloneNodesWithRelationshipsAutoCommitsWithTheConfigArgumentOmitted() {
+    database.begin();
+    database.newVertex("Person").set("name", "A").save();
+    database.commit();
+
+    assertThat(database.isTransactionActive()).isFalse();
+
+    try (final ResultSet rs = database.command("opencypher",
+        "MATCH (a:Person {name:'A'}) CALL apoc.refactor.cloneNodesWithRelationships([a]) YIELD output RETURN output")) {
+      final Result result = rs.next();
+      final Vertex clone = result.getProperty("output");
+      assertThat(clone.get("name")).isEqualTo("A");
+    }
+
+    assertThat(database.isTransactionActive()).isFalse();
+    try (final ResultSet check = database.query("sql", "SELECT count(*) AS c FROM Person")) {
+      assertThat(check.next().<Long>getProperty("c")).isEqualTo(2L);
+    }
+  }
+
+  /**
    * {@code do.when} takes a materially different path from the other write procedures: instead of mutating
    * directly, it dispatches its write sub-query to a nested {@code database.command(...)} call. Confirms that
    * indirection still works correctly with no explicit transaction wrapping the outer {@code CALL}.
