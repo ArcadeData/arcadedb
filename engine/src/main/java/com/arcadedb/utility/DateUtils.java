@@ -476,12 +476,17 @@ public class DateUtils {
   }
 
   /**
-   * True when the character where a date-time separator belongs is a space rather than ISO's {@code 'T'}. The date
-   * part of every format in this chain is the fixed-width {@code yyyy-MM-dd}, so position 10 is the separator
-   * whenever there is one - a cheap read that lets {@link #parseDateTime} skip the steps that cannot match.
+   * True when the value is space-separated rather than ISO {@code 'T'}-separated, which is what lets
+   * {@link #parseDateTime} skip the steps that cannot match: no ISO format admits a space anywhere, and
+   * {@link #SPACE_SEPARATED_DATE_TIME} requires one.
+   * <p>
+   * The test is "contains a space at all" rather than "the character at index 10", because the latter assumes the
+   * date part is exactly {@code yyyy-MM-dd} and mis-reads ISO's extended year forms, where the separator does not
+   * sit at 10. Mis-reading only ever cost a guaranteed-to-fail attempt rather than a wrong answer, but this costs
+   * no more and cannot be wrong.
    */
   private static boolean hasSpaceDateTimeSeparator(final String string) {
-    return string.length() > 10 && string.charAt(10) == ' ';
+    return string.indexOf(' ') >= 0;
   }
 
   /**

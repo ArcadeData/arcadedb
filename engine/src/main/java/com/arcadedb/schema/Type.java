@@ -813,6 +813,12 @@ public enum Type {
           // This branch had no String case at all, so `arcadedb.dateTimeImplementation=java.time.Instant` left a
           // datetime literal in the record as the raw String it arrived as. It now goes through the same shared
           // chain as every other datetime target (issue #8090).
+          //
+          // isLong: an all-digits string falls through to the original value, as it already does in the
+          // LocalDateTime and ZonedDateTime branches above. Only the LocalDate branch reads such a string as an
+          // epoch count, so the three disagree about what a numeric string means for a datetime target. That
+          // predates this issue and is left alone here rather than settled in passing - it is a question about
+          // epoch semantics, not about which spellings parse, which is what #8090 is.
           if (!FileUtils.isLong(valueAsString)) {
             // parseZonedDateTime, not parseDateTime().atZone(): an Instant IS an instant, so an offset the value
             // carries has to survive. The wall-clock chain drops it - deliberately, for LocalDateTime (issue #4125) -
