@@ -46,9 +46,21 @@ public interface TimeSeriesRowVisitor {
    * @return {@code false} to stop the scan, which stops it for good - no further block is read and no further
    * shard is opened. {@code true} to continue.
    *
-   * @implSpec Called while the scan holds the shard's compaction read lock and the sealed store's directory read
-   * lock - that is what lets the rows be produced as the file is read. Fold, do not compute: the locks are shared,
-   * so no other reader is blocked, but a writer waiting for one waits for the whole scan.
+   * @implSpec <b>Called with NO lock held</b> (issue #7897, corrected here by issue #8052). This used to say the
+   * opposite - that the scan holds the shard's compaction read lock and the sealed store's directory read lock
+   * across the call - and inverting exactly that is what #7897 was: {@code TimeSeriesShard.forEachRow} and
+   * {@code forEachTagCombination} release the compaction lock once they have taken their snapshot, and
+   * {@code TimeSeriesSealedStore.walkBlocks} decodes a block's columns under the directory read lock, releases it,
+   * and only then builds the rows and hands them over. The visitor is the caller's code and its cost is therefore
+   * unbounded from the engine's side, which is precisely why no lock is held across it.
+   * <p>
+   * Fold, do not compute - the advice is unchanged and the reason is not. It is no longer "you are blocking a
+   * writer"; it is that the walk is reading a DIRECTORY SNAPSHOT that is going stale under it. Between two blocks
+   * the store may be compacted, truncated, downsampled or (on an HA follower) replaced wholesale by the leader's
+   * sealed file, and every block the walk has not reached yet is re-resolved against the live directory before it
+   * is read. A block that still exists is read wherever it now lives; one that a retention pass really did delete
+   * resolves to nothing, is skipped, and is counted in {@code AggregationMetrics.vanishedBlocks} (issue #8043). A
+   * slow visitor does not block anyone - it widens that window.
    */
   boolean visit(Object[] row);
 }

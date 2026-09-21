@@ -28,6 +28,7 @@ import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.http.RequestBodyTooLargeException;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.Label;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.LabelMatcher;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.MatchType;
@@ -100,10 +101,15 @@ public class PostPrometheusReadHandler extends AbstractBinaryHttpHandler {
     if (rawBytes == null || rawBytes.length == 0)
       return new ExecutionResponse(400, "{ \"error\" : \"Request body is empty\"}");
 
-    // Snappy decompress
+    // Snappy decompress, under the decoded-body budget (issue #8084): the read side decodes a body exactly as the
+    // write side does, so it carries the same exposure and takes the same bound. See PostPrometheusWriteHandler for
+    // why the 413 is rethrown past the 400 below.
     final byte[] decompressed;
     try {
-      decompressed = Snappy.uncompress(rawBytes);
+      decompressed = CompressedBodyDecoder.snappyUncompress(rawBytes,
+          CompressedBodyDecoder.maxDecompressedSize(httpServer.getServer().getConfiguration()));
+    } catch (final RequestBodyTooLargeException e) {
+      throw e;
     } catch (final Exception e) {
       return new ExecutionResponse(400, "{ \"error\" : \"Invalid Snappy-compressed data\"}");
     }

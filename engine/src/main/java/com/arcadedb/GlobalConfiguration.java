@@ -1545,8 +1545,27 @@ public enum GlobalConfiguration {
       Integer.class, 100),
 
   SERVER_HTTP_BODY_CONTENT_MAX_SIZE("arcadedb.server.httpBodyContentMaxSize", SCOPE.SERVER,
-      "Maximum size in bytes for HTTP request body content. Set to -1 for unlimited size (WARNING: removes DoS protection). Default is 100MB",
+      """
+      Maximum size in bytes for HTTP request body content, measured ON THE WIRE. Set to -1 for unlimited size \
+      (WARNING: removes DoS protection). A request that declares a `Content-Encoding` is additionally bounded by \
+      'arcadedb.server.httpBodyContentDecompressedMaxSize' once decoded, because this value alone would otherwise \
+      be a compression-ratio multiplier rather than a bound (issue #8084). Default is 100MB""",
       Long.class, 100L * 1024 * 1024), // 100MB DEFAULT
+
+  SERVER_HTTP_BODY_CONTENT_DECOMPRESSED_MAX_SIZE("arcadedb.server.httpBodyContentDecompressedMaxSize", SCOPE.SERVER,
+      """
+      Maximum size in bytes an HTTP request body may expand to once its `Content-Encoding` has been decoded \
+      (issue #8084). 'arcadedb.server.httpBodyContentMaxSize' bounds only the bytes that arrive, so on a route \
+      that decodes gzip (the InfluxDB line-protocol ingest) or Snappy (the Prometheus remote_write and \
+      remote_read endpoints) a client that compresses turns that cap into a ratio multiplier: line protocol is \
+      highly repetitive text and ratios in the hundreds are ordinary, so an accepted 100MB body is worth tens of \
+      GB of heap. A body that decodes past this value is refused with HTTP 413 before the decoded bytes are \
+      materialized. Set to a NEGATIVE value (-1 is the default) to follow 'arcadedb.server.httpBodyContentMaxSize', \
+      which is what an administrator raising a single knob expects - including its own -1, meaning unlimited. Set \
+      to 0 for unlimited without following that setting, the same way 0 means unlimited there. Any other value \
+      overrides it, so a legitimately large compressed payload can be allowed without also widening what may \
+      arrive uncompressed""",
+      Long.class, -1L),
 
   SERVER_HTTP_QUERY_DEFAULT_LIMIT("arcadedb.server.httpQueryDefaultLimit", SCOPE.SERVER,
       """

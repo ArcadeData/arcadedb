@@ -35,13 +35,11 @@ import io.undertow.server.HttpServerExchange;
 import io.undertow.util.Headers;
 import io.undertow.util.StatusCodes;
 
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.util.Deque;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
-import java.util.zip.GZIPInputStream;
 
 /**
  * HTTP handler for InfluxDB Line Protocol ingestion.
@@ -158,9 +156,18 @@ public class PostTimeSeriesWriteHandler extends DatabaseAbstractHandler {
 
     final var contentEncoding = e.getRequestHeaders().get(Headers.CONTENT_ENCODING);
     if (contentEncoding != null && !contentEncoding.isEmpty() && "gzip".equalsIgnoreCase(contentEncoding.getFirst())) {
-      try (final GZIPInputStream gzip = new GZIPInputStream(new ByteArrayInputStream(rawBytes))) {
-        return new String(gzip.readAllBytes(), DatabaseFactory.getDefaultCharset());
+      try {
+        // Under the decoded-body budget, NOT under the wire cap alone (issue #8084). The wire cap bounds the bytes
+        // that arrived; line protocol is repetitive text, so without this the cap is a compression-ratio
+        // multiplier and an accepted body is worth orders of magnitude more heap than it looks like.
+        return CompressedBodyDecoder.gunzip(rawBytes,
+            CompressedBodyDecoder.maxDecompressedSize(httpServer.getServer().getConfiguration()),
+            DatabaseFactory.getDefaultCharset());
       } catch (final IOException ex) {
+        // A body that is not valid gzip. NOT a body that is too large: RequestBodyTooLargeException is unchecked
+        // and this arm names IOException, so the refusal passes through to the 413 mapping at the request
+        // boundary rather than being reported as a malformed body (review of PR #8095). The two Prometheus
+        // handlers need an explicit rethrow for the same effect only because their arm names Exception.
         throw new IllegalArgumentException("Failed to decompress gzip body: " + ex.getMessage(), ex);
       }
     }
