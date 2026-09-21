@@ -61,18 +61,26 @@ public final class CompressedBodyDecoder {
   }
 
   /**
-   * The budget for a decoded body, or a negative value for "unlimited".
+   * The budget for a decoded body, or a value of zero or less for "unlimited".
    * <p>
-   * {@code arcadedb.server.httpBodyContentDecompressedMaxSize} when it is set to a positive value, and otherwise
-   * {@code arcadedb.server.httpBodyContentMaxSize} - including ITS -1, so an administrator who declares the wire
-   * cap unlimited is not silently given a decoded cap. Read off the {@link ContextConfiguration} the server was
-   * started with and never off the enum's own value, so {@code SET SERVER SETTING} and a per-server override are
-   * both honoured (issue #7233).
+   * {@code arcadedb.server.httpBodyContentDecompressedMaxSize} whenever it is set at all, and
+   * {@code arcadedb.server.httpBodyContentMaxSize} only when it is NEGATIVE - the documented "follow the wire cap"
+   * sentinel. The fallback carries that setting's own value through unchanged, its {@code -1} included, so an
+   * administrator who declares the wire cap unlimited is not silently given a decoded cap.
+   * <p>
+   * The test is {@code >= 0} and not {@code > 0} deliberately (review of PR #8095). Zero is not "unset" here: it
+   * is what {@code httpBodyContentMaxSize} itself spells "unlimited" with, next to {@code -1}, in
+   * {@code HttpServer.createBodySizeLimitHandler}'s own {@code maxEntitySize > 0} gate. Folding it into the
+   * fallback would make an explicit {@code 0} mean the wire cap - a different number, quietly - on the one
+   * setting whose whole purpose is to be set independently of it.
+   * <p>
+   * Read off the {@link ContextConfiguration} the server was started with and never off the enum's own value, so
+   * {@code SET SERVER SETTING} and a per-server override are both honoured (issue #7233).
    */
   public static long maxDecompressedSize(final ContextConfiguration configuration) {
     final long explicit = configuration.getValueAsLong(
         GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_DECOMPRESSED_MAX_SIZE);
-    if (explicit > 0)
+    if (explicit >= 0)
       return explicit;
     return configuration.getValueAsLong(GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE);
   }

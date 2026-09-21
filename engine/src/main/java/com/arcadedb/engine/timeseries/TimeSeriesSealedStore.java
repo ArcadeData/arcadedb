@@ -188,6 +188,46 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     return id;
   }
 
+  /**
+   * The {@link BlockEntry#blockId} of a block read from a file written before issue #8043, DERIVED from what that
+   * file records rather than invented (review of PR #8095).
+   * <p>
+   * A legacy block carries no id, and minting a random one for it would be the very defect #8043 fixes, narrowed
+   * to the blocks that predate the fix: {@link #loadDirectory} would hand the same block a different id on every
+   * load, so a walk crossing an HA install of a file that still holds un-rewritten legacy blocks would resolve
+   * none of them and drop its tail silently - exactly the window a rolling upgrade opens, before the leader's
+   * maintenance has rewritten those blocks even once.
+   * <p>
+   * Derived, it closes that window with no migration and no rewrite. The inputs are the block's own record -
+   * where it starts, and what its header declares - so the id is the same on every load of the same file, and,
+   * because a follower's sealed file is byte-for-byte the leader's, the same on every node holding a copy. It is
+   * unique within a file because no two blocks start at the same offset. And it survives the leader's next
+   * compaction the way any other id does: {@link #writeRetainedBlock} carries it into the "TSB3" record it
+   * writes, so the derived value is what gets persisted and the block never goes back to being derived.
+   * <p>
+   * It is deliberately NOT derived for a block that already carries one. An id in the file is the block's
+   * identity even when a rewrite moves it, and re-deriving would throw that away at the first change of offset.
+   */
+  private static long legacyBlockId(final long blockStartOffset, final long minTs, final long maxTs,
+      final int sampleCount, final int[] colSizes) {
+    long id = mix64(blockStartOffset);
+    id = mix64(id ^ minTs);
+    id = mix64(id ^ maxTs);
+    id = mix64(id ^ sampleCount);
+    for (final int size : colSizes)
+      id = mix64(id ^ size);
+    // Zero is the "no identity" marker, so the one input that would produce it is nudged rather than returned.
+    return id == BlockEntry.NO_BLOCK_ID ? 0x9E3779B97F4A7C15L : id;
+  }
+
+  /** The SplitMix64 finalizer: avalanche over 64 bits, a handful of instructions, no state. */
+  private static long mix64(final long value) {
+    long z = value + 0x9E3779B97F4A7C15L;
+    z = (z ^ (z >>> 30)) * 0xBF58476D1CE4E5B9L;
+    z = (z ^ (z >>> 27)) * 0x94D049BB133111EBL;
+    return z ^ (z >>> 31);
+  }
+
   static final class BlockEntry {
     final long     minTimestamp;
     final long     maxTimestamp;
@@ -217,9 +257,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     // only thing keeping that from being read was crcValidated short-circuiting the two readers below.
     final long     blockStartOffset; // file offset where the block's metadata begins
     /**
-     * The id a block read from a file written before issue #8043 has, because that file records none: it forces
-     * {@link #loadDirectory} to mint a fresh one, which is exactly the pre-#8043 behaviour for exactly the blocks
-     * that cannot do better. {@link #newBlockId()} never returns it.
+     * "This record carries no id", which is what a block written before issue #8043 looks like: {@link
+     * #loadDirectory} sees it and derives one through {@link #legacyBlockId} instead. Never the id of a live
+     * entry - neither {@link #newBlockId()} nor {@link #legacyBlockId} returns it.
      */
     static final long NO_BLOCK_ID = 0L;
 
@@ -249,6 +289,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
      * DATABASE} or a PromQL range crossing that install therefore returned the blocks before it and silently
      * nothing after it. Recorded on disk, the id survives the reload, survives a restart, and is the same id on
      * every node holding a copy of the shard.
+     * <p>
+     * A block in a pre-#8043 record has none to read, and {@link #legacyBlockId} DERIVES one from what that
+     * record does carry rather than inventing it, so the window between an upgrade and the first rewrite of those
+     * blocks is closed too (review of PR #8095).
      */
     final long     blockId;
     int            storedCRC;        // CRC32 over metadata + compressed columns, as stored after the data
@@ -3508,14 +3552,21 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       final long minTs = metaBuf.getLong();
       final long maxTs = metaBuf.getLong();
       final int sampleCount = metaBuf.getInt();
-      // A file written before #8043 records no identity, so this is the one path that still invents one - for
-      // exactly the blocks that cannot do better. The next rewrite of such a block (compaction, downsampling,
-      // truncation) writes TSB3 and the id becomes stable from then on.
-      final long blockId = carriesBlockId ? metaBuf.getLong() : newBlockId();
+      // Read here because the record puts it here, kept until the column sizes are in: a file written before
+      // #8043 records no identity and the one derived for it takes them as an input (see legacyBlockId).
+      final long persistedBlockId = carriesBlockId ? metaBuf.getLong() : BlockEntry.NO_BLOCK_ID;
 
       final int[] colSizes = new int[colCount];
       for (int c = 0; c < colCount; c++)
         colSizes[c] = metaBuf.getInt();
+
+      // DERIVED for a legacy block, never invented: an id this method made up afresh on every load would be the
+      // #8043 defect again, narrowed to the blocks that predate the fix. The next rewrite of such a block
+      // (compaction, downsampling, truncation) writes TSB3 carrying this same value, so it is persisted from
+      // then on rather than re-derived.
+      final long blockId = carriesBlockId
+          ? persistedBlockId
+          : legacyBlockId(pos, minTs, maxTs, sampleCount, colSizes);
 
       // Read stats section: numericColCount(4) + [min(8) + max(8) + sum(8)] * numericColCount (schema order)
       long statsPos = pos + baseMetaSize;
