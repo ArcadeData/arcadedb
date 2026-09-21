@@ -150,25 +150,29 @@ public class TruncateTypeStatement extends DDLStatement {
     }
 
     final InternalResultSet rs = new InternalResultSet();
-    final Collection<DocumentType> subTypes = typez.getSubTypes();
-    if (polymorphic && !unsafe) {// for multiple inheritance
-      for (final DocumentType subType : subTypes) {
-        // subType, not the root (issue #7919). This counted typeName on every iteration, so the loop never looked
-        // at a subtype at all: a polymorphic TRUNCATE of an EMPTY root with non-empty subtypes sailed past the
-        // check that exists to refuse it, and an empty subtype under a non-empty root was named as the reason for
-        // a refusal it had nothing to do with. Counted polymorphically so a non-empty grandchild is reported
-        // against the direct subtype it hangs from rather than escaping the loop, and through the count(*)
-        // push-down where the subtree holds lightweight edges, for the same reason the root's own count above does.
-        final long subTypeRecs = EdgeType.holdsLightweightEdges(subType)
-            ? countRecordsIncludingLightweightEdges(db, subType.getName())
-            : context.getDatabase().countType(subType.getName(), true);
-        if (subTypeRecs > 0) {
+    if (polymorphic && !unsafe) {
+      // EVERY DESCENDANT, NOT ONLY THE DIRECT ONES (found by CodeRabbit on PR #8094). getSubTypes() answers direct
+      // children, so a guard that walks one level down is blind to a graph type sitting behind a non-graph
+      // intermediate: for DocRoot -> DocMiddle -> VLeaf neither the root's own guard above nor a direct-children
+      // loop names a reason to refuse - DocRoot and DocMiddle are plain DocumentTypes - while the polymorphic
+      // scanType() below deletes VLeaf's records all the same. The scope of a POLYMORPHIC truncate is the whole
+      // subtree, so the guard has to read the whole subtree. The type that actually holds the records is the one
+      // named in the message, which is strictly more useful than #7919's "report a grandchild against the direct
+      // subtype it hangs from" - that phrasing existed only because a grandchild could not be reached from here.
+      for (final DocumentType descendant : collectPolymorphicDescendants(typez)) {
+        // Counted polymorphically, and through the count(*) push-down where the subtree holds lightweight edges,
+        // for the same reason the root's own count above does: Database.countType() reads bucket record counts and
+        // answers 0 for a lightweight edge type however many edges it holds (issue #7477).
+        final long descendantRecs = EdgeType.holdsLightweightEdges(descendant)
+            ? countRecordsIncludingLightweightEdges(db, descendant.getName())
+            : context.getDatabase().countType(descendant.getName(), true);
+        if (descendantRecs > 0) {
           // instanceof, not isSubTypeOf("V")/("E") - see the root's own guard above (issue #8042)
-          if (subType instanceof VertexType) {
-            throw new CommandExecutionException("'TRUNCATE TYPE' command cannot be used on not empty vertex classes (" + subType.getName()
+          if (descendant instanceof VertexType) {
+            throw new CommandExecutionException("'TRUNCATE TYPE' command cannot be used on not empty vertex classes (" + descendant.getName()
                 + "). Apply the 'UNSAFE' keyword to force it (at your own risk)");
-          } else if (subType instanceof EdgeType) {
-            throw new CommandExecutionException("'TRUNCATE TYPE' command cannot be used on not empty edge classes (" + subType.getName()
+          } else if (descendant instanceof EdgeType) {
+            throw new CommandExecutionException("'TRUNCATE TYPE' command cannot be used on not empty edge classes (" + descendant.getName()
                 + "). Apply the 'UNSAFE' keyword to force it (at your own risk)");
           }
         }
@@ -290,6 +294,31 @@ public class TruncateTypeStatement extends DDLStatement {
    *
    * @return whether at least one type in the scope is record-backed (not a lightweight edge type)
    */
+  /**
+   * Every type strictly below {@code root}, breadth-first, deduplicated (found by CodeRabbit on PR #8094).
+   * <p>
+   * A {@link LinkedHashSet}, not a List, for the reason {@link #collectTruncationScope} spells out: ArcadeDB
+   * supports multiple inheritance, so a diamond hierarchy reaches the same type through two different parent
+   * branches and would otherwise be counted - and reported - twice. Insertion-ordered so the refusal names the
+   * same type on every run rather than whichever one a hash bucket happened to yield first.
+   * <p>
+   * The root itself is deliberately excluded: its own guard runs above this loop, with its own message that does
+   * not name a type.
+   */
+  private static Set<DocumentType> collectPolymorphicDescendants(final DocumentType root) {
+    final Set<DocumentType> descendants = new LinkedHashSet<>();
+    collectPolymorphicDescendants(root, descendants);
+    return descendants;
+  }
+
+  private static void collectPolymorphicDescendants(final DocumentType type, final Set<DocumentType> target) {
+    for (final DocumentType subType : type.getSubTypes())
+      // The add() guard is what terminates the walk on a diamond, and it also means each type's own subtypes are
+      // visited exactly once however many parents lead to it.
+      if (target.add(subType))
+        collectPolymorphicDescendants(subType, target);
+  }
+
   private static boolean collectTruncationScope(final DocumentType type, final boolean polymorphic,
       final Set<String> lightweightTypeNames) {
     boolean hasRecordBackedType;

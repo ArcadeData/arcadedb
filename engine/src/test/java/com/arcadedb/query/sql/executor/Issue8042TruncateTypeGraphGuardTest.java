@@ -149,6 +149,66 @@ public class Issue8042TruncateTypeGraphGuardTest extends TestHelper {
   }
 
   @Test
+  void aGraphLeafIsFoundBehindADocumentTypeIntermediateNode() {
+    // getSubTypes() answers DIRECT children only, so a guard that walks one level down is blind to
+    // DocRoot -> DocMiddle -> VLeaf: neither the root nor DocMiddle is a graph type, so neither names a reason to
+    // refuse, while the polymorphic scanType() below happily deletes VLeaf's records. The scope of a POLYMORPHIC
+    // truncate is the whole subtree, so the guard has to read the whole subtree (CodeRabbit on PR #8094).
+    database.command("sql", "CREATE DOCUMENT TYPE DocRoot").close();
+    database.command("sql", "CREATE DOCUMENT TYPE DocMiddle EXTENDS DocRoot").close();
+    database.command("sql", "CREATE VERTEX TYPE VLeaf EXTENDS DocMiddle").close();
+    database.transaction(() -> database.command("sql", "INSERT INTO VLeaf SET x = 1").close());
+
+    assertThatThrownBy(() -> database.command("sql", "TRUNCATE TYPE DocRoot POLYMORPHIC").close())
+        .isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("not empty vertex classes")
+        .hasMessageContaining("VLeaf");
+
+    assertThat(count("VLeaf")).isEqualTo(1);
+
+    database.command("sql", "TRUNCATE TYPE DocRoot POLYMORPHIC UNSAFE").close();
+    assertThat(count("VLeaf")).isZero();
+  }
+
+  @Test
+  void anEdgeLeafIsFoundBehindTwoDocumentTypeIntermediateNodes() {
+    // The same shape one level deeper, and on the edge arm, so the recursion is pinned rather than a single extra
+    // getSubTypes() hop.
+    database.command("sql", "CREATE DOCUMENT TYPE DocRoot").close();
+    database.command("sql", "CREATE DOCUMENT TYPE DocMiddle EXTENDS DocRoot").close();
+    database.command("sql", "CREATE DOCUMENT TYPE DocLower EXTENDS DocMiddle").close();
+    database.command("sql", "CREATE EDGE TYPE ELeaf EXTENDS DocLower").close();
+    database.command("sql", "CREATE VERTEX TYPE Person").close();
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO Person SET name = 'a'").close();
+      database.command("sql", "INSERT INTO Person SET name = 'b'").close();
+      database.command("sql",
+          "CREATE EDGE ELeaf FROM (SELECT FROM Person WHERE name = 'a') TO (SELECT FROM Person WHERE name = 'b')").close();
+    });
+
+    assertThatThrownBy(() -> database.command("sql", "TRUNCATE TYPE DocRoot POLYMORPHIC").close())
+        .isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("not empty edge classes")
+        .hasMessageContaining("ELeaf");
+
+    assertThat(count("ELeaf")).isEqualTo(1);
+  }
+
+  @Test
+  void anEmptyGraphLeafBehindADocumentIntermediateIsNotBlamed() {
+    // The recursion must not start refusing a subtree that holds nothing: only a non-empty graph descendant is a
+    // reason to demand UNSAFE.
+    database.command("sql", "CREATE DOCUMENT TYPE DocRoot").close();
+    database.command("sql", "CREATE DOCUMENT TYPE DocMiddle EXTENDS DocRoot").close();
+    database.command("sql", "CREATE VERTEX TYPE VLeaf EXTENDS DocMiddle").close();
+    database.transaction(() -> database.command("sql", "INSERT INTO DocRoot SET x = 1").close());
+
+    database.command("sql", "TRUNCATE TYPE DocRoot POLYMORPHIC").close();
+
+    assertThat(count("DocRoot")).isZero();
+  }
+
+  @Test
   void truncateTypeAndTruncateBucketNowAgreeOnTheSameVertexType() {
     // THE SHORTEST STATEMENT OF THE WHOLE FINDING: TRUNCATE BUCKET REFUSED WHERE TRUNCATE TYPE DID NOT, ON THE SAME
     // DATA, WITH THE SAME MESSAGE TEMPLATE
