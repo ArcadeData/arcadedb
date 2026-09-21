@@ -27,6 +27,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.parser.Identifier;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -136,13 +137,20 @@ public class MergeNode implements CypherProcedure {
 
   /**
    * Finds an existing vertex with the given type/labels that matches all the specified properties.
+   * <p>
+   * The type name and every match-property key are caller-supplied - {@code merge.node(labels, matchProps, ...)}
+   * takes them straight from the procedure arguments - so both are emitted through {@link Identifier#quote}
+   * rather than spliced between raw back-ticks. Inside a back-tick quoted identifier a backslash escapes the
+   * character after it, so a raw splice of {@code a\b} named the property {@code ab} (a lookup that matches
+   * nothing, hence a duplicate node) and a raw splice of {@code a\} swallowed the closing back-tick and ran the
+   * rest of the statement into the identifier. Same defect and same helper as the Postgres COPY path in #7858
+   * (issue #8072).
    */
   private Vertex findMatchingNode(final Database database, final String typeName,
                                   final List<String> labels, final Map<String, Object> matchProps) {
     // Build query to find matching node
-    final StringBuilder query = new StringBuilder("SELECT FROM `");
-    query.append(typeName);
-    query.append("`");
+    final StringBuilder query = new StringBuilder("SELECT FROM ");
+    query.append(Identifier.quote(typeName));
 
     final List<Object> queryParams = new ArrayList<>();
 
@@ -153,7 +161,7 @@ public class MergeNode implements CypherProcedure {
         if (!first) {
           query.append(" AND ");
         }
-        query.append("`").append(entry.getKey()).append("` = ?");
+        query.append(Identifier.quote(entry.getKey())).append(" = ?");
         queryParams.add(entry.getValue());
         first = false;
       }
