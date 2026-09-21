@@ -34,6 +34,7 @@ import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.TypeIndexBuilder;
+import com.arcadedb.schema.VertexType;
 
 import java.util.*;
 
@@ -125,11 +126,24 @@ public class TruncateTypeStatement extends DDLStatement {
     final long recs = scopeHoldsLightweightEdges
         ? (unsafe ? 0 : countRecordsIncludingLightweightEdges(db, typeName.getStringValue()))
         : context.getDatabase().countType(typeName.getStringValue(), polymorphic);
+    // Asked of the TYPE, not of its NAME (issue #8042). This used to be typez.isSubTypeOf("V")/isSubTypeOf("E"),
+    // and LocalDocumentType.isSubTypeOf(String) matches by name - this type's own, then recursively its super
+    // types' - while ArcadeDB has no implicit root types called V and E: CREATE VERTEX TYPE Person builds a
+    // VertexType with an EMPTY super-type list (the V/E roots are an OrientDB inheritance, not an ArcadeDB one).
+    // So for every vertex and edge type a user actually creates both tests answered false, this block fell through
+    // with nothing to throw, and a plain TRUNCATE TYPE <vertexType> emptied a live type and detached every edge on
+    // it while the "Apply the 'UNSAFE' keyword" the message promises was never actually demanded. The sibling
+    // TruncateBucketStatement carries the identical guard with the identical wording and has always asked
+    // instanceof VertexType/EdgeType; DropTypeStatement, the third statement with an UNSAFE guard of this shape,
+    // asks getType() == Vertex.RECORD_TYPE - so TRUNCATE TYPE was the only one of the three asking by name.
+    // It also means the #7919 fix did not close what its own comment says it closes: that commit corrected the
+    // per-subtype COUNT below, and the check the count feeds was dead. Its regression test passed only because the
+    // hierarchy it builds hangs off a type it creates called `E`.
     if (recs > 0 && !unsafe) {
-      if (typez.isSubTypeOf("V")) {
+      if (typez instanceof VertexType) {
         throw new CommandExecutionException(
             "'TRUNCATE TYPE' command cannot be used on not empty vertex classes. Apply the 'UNSAFE' keyword to force it (at your own risk)");
-      } else if (typez.isSubTypeOf("E")) {
+      } else if (typez instanceof EdgeType) {
         throw new CommandExecutionException(
             "'TRUNCATE TYPE' command cannot be used on not empty edge classes. Apply the 'UNSAFE' keyword to force it (at your own risk)");
       }
@@ -149,10 +163,11 @@ public class TruncateTypeStatement extends DDLStatement {
             ? countRecordsIncludingLightweightEdges(db, subType.getName())
             : context.getDatabase().countType(subType.getName(), true);
         if (subTypeRecs > 0) {
-          if (subType.isSubTypeOf("V")) {
+          // instanceof, not isSubTypeOf("V")/("E") - see the root's own guard above (issue #8042)
+          if (subType instanceof VertexType) {
             throw new CommandExecutionException("'TRUNCATE TYPE' command cannot be used on not empty vertex classes (" + subType.getName()
                 + "). Apply the 'UNSAFE' keyword to force it (at your own risk)");
-          } else if (subType.isSubTypeOf("E")) {
+          } else if (subType instanceof EdgeType) {
             throw new CommandExecutionException("'TRUNCATE TYPE' command cannot be used on not empty edge classes (" + subType.getName()
                 + "). Apply the 'UNSAFE' keyword to force it (at your own risk)");
           }

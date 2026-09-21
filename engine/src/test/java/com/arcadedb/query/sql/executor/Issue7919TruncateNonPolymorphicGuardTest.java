@@ -145,17 +145,22 @@ class Issue7919TruncateNonPolymorphicGuardTest extends TestHelper {
   }
 
   /**
-   * The per-subtype loop (line :122 of the issue). Reaching it needs a root that is NOT itself under {@code E} while
-   * a subtype is - the "multiple inheritance" case the loop's own comment names - because otherwise the whole-subtree
-   * check above it throws first. With the root counted instead of the subtype, the loop saw the root's zero and let a
-   * polymorphic truncate of a non-empty subtype through without the UNSAFE keyword it was written to demand.
+   * The per-subtype loop (line :122 of the issue). Reaching it needs a root whose OWN guard does not throw first,
+   * which means a root that is neither a vertex nor an edge type - a DOCUMENT root with a graph subtype under it,
+   * the "multiple inheritance" case the loop's own comment names. With the root counted instead of the subtype, the
+   * loop saw the root's zero and let a polymorphic truncate of a non-empty subtype through without the UNSAFE
+   * keyword it was written to demand.
+   * <p>
+   * This fixture used to build the hierarchy around a type it created called {@code E}, because the root guard
+   * asked {@code isSubTypeOf("E")} by NAME and that was the only way to make it fire at all. It fires on the type
+   * now (issue #8042), so the arrangement that used to be a way IN to the loop became a way past it: the root's own
+   * guard answers first for a graph root, whatever its subtypes hold.
    */
   @Test
   void thePerSubtypeSafetyCountLooksAtTheSubtypeNotTheRoot() {
     database.command("sql", "CREATE VERTEX TYPE Person");
-    database.command("sql", "CREATE EDGE TYPE E");
-    database.command("sql", "CREATE EDGE TYPE Base");
-    database.command("sql", "CREATE EDGE TYPE Sub EXTENDS Base, E");
+    database.command("sql", "CREATE DOCUMENT TYPE Base");
+    database.command("sql", "CREATE EDGE TYPE Sub EXTENDS Base");
 
     final RID p1, p2;
     database.begin();
@@ -183,30 +188,21 @@ class Issue7919TruncateNonPolymorphicGuardTest extends TestHelper {
 
   /**
    * The other half of the same typo: an EMPTY subtype under a non-empty root was reported BY NAME as the reason for
-   * a refusal, because the count that triggered it was the root's.
+   * a refusal, because the count that triggered it was the root's. Same document-root shape as the test above, for
+   * the same reason (issue #8042).
    */
   @Test
   void anEmptySubtypeIsNotBlamedForTheRootsRecords() {
-    database.command("sql", "CREATE VERTEX TYPE Person");
-    database.command("sql", "CREATE EDGE TYPE E");
-    database.command("sql", "CREATE EDGE TYPE Base");
-    database.command("sql", "CREATE EDGE TYPE Sub EXTENDS Base, E");
+    database.command("sql", "CREATE DOCUMENT TYPE Base");
+    database.command("sql", "CREATE EDGE TYPE Sub EXTENDS Base");
 
-    final RID p1, p2;
-    database.begin();
-    try {
-      p1 = database.newVertex("Person").set("name", "p1").save().getIdentity();
-      p2 = database.newVertex("Person").set("name", "p2").save().getIdentity();
-      database.lookupByRID(p1, true).asVertex().modify().newEdge("Base", p2).save();
-    } finally {
-      database.commit();
-    }
+    database.transaction(() -> database.command("sql", "INSERT INTO Base SET name = 'b1'").close());
 
     assertThat(database.countType("Base", false)).isEqualTo(1);
     assertThat(database.countType("Sub", false)).isZero();
 
-    // Base is not under E, so the whole-subtree check does not refuse; the loop must not refuse on Sub's behalf
-    // either, because Sub is empty.
+    // Base is a document type, so its own guard does not refuse; the loop must not refuse on Sub's behalf either,
+    // because Sub is empty.
     database.command("sql", "TRUNCATE TYPE Base POLYMORPHIC").close();
 
     assertThat(database.countType("Base", true)).isZero();
