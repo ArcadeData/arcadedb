@@ -18,14 +18,10 @@
  */
 package com.arcadedb.server.http.handler;
 
-import com.arcadedb.log.LogManager;
 import com.arcadedb.server.http.HttpServer;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.AttachmentKey;
-import io.undertow.util.StatusCodes;
 
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.logging.Level;
 
 /**
  * Base handler for database-scoped endpoints that receive binary (non-JSON) request bodies.
@@ -107,16 +103,10 @@ public abstract class AbstractBinaryHttpHandler extends DatabaseAbstractHandler 
     if (!e.isInIoThread() && !e.isBlocking())
       e.startBlocking();
 
-    final AtomicReference<byte[]> result = new AtomicReference<>();
-    e.getRequestReceiver().receiveFullBytes(
-        (exchange, data) -> result.set(data),
-        (exchange, err) -> {
-          LogManager.instance().log(this, Level.SEVERE, "receiveFullBytes completed with an error: %s", err, err.getMessage());
-          exchange.setStatusCode(StatusCodes.INTERNAL_SERVER_ERROR);
-          exchange.getResponseSender().send("Invalid Request");
-        });
-
-    final byte[] body = result.get();
+    // The shared bounded reader, so arcadedb.server.httpBodyContentMaxSize bounds this route's body too - it
+    // used to be read through Receiver.receiveFullBytes, which enforces no cap on a body that declares no
+    // length (issue #7772).
+    final byte[] body = readRequestBody(e);
     if (body != null)
       e.putAttachment(RAW_BINARY_PAYLOAD, body);
     return null; // no string payload needed

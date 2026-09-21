@@ -33,13 +33,11 @@ import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.Headers;
-import io.undertow.util.StatusCodes;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.util.Deque;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 import java.util.zip.GZIPInputStream;
 
@@ -143,16 +141,10 @@ public class PostTimeSeriesWriteHandler extends DatabaseAbstractHandler {
     if (!e.isInIoThread() && !e.isBlocking())
       e.startBlocking();
 
-    final AtomicReference<byte[]> bytesRef = new AtomicReference<>();
-    e.getRequestReceiver().receiveFullBytes(
-        (exchange, data) -> bytesRef.set(data),
-        (exchange, err) -> {
-          LogManager.instance().log(this, Level.SEVERE, "receiveFullBytes completed with an error: %s", err, err.getMessage());
-          exchange.setStatusCode(StatusCodes.INTERNAL_SERVER_ERROR);
-          exchange.getResponseSender().send("Invalid Request");
-        });
-
-    final byte[] rawBytes = bytesRef.get();
+    // The shared bounded reader, so arcadedb.server.httpBodyContentMaxSize bounds this route's body too - it
+    // used to be read through Receiver.receiveFullBytes, which enforces no cap on a body that declares no
+    // length (issue #7772).
+    final byte[] rawBytes = readRequestBody(e);
     if (rawBytes == null)
       return null;
 
