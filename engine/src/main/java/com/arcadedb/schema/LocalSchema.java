@@ -153,7 +153,82 @@ public class LocalSchema implements Schema {
       LSMTreeIndexBloomFilter.FILE_EXT);
 
   final               IndexFactory                           indexFactory                  = new IndexFactory();
-  final               Map<String, LocalDocumentType>         types                         = new ConcurrentHashMap<>();
+  /**
+   * The published schema state: the logical type graph and the two bucket-id maps derived from it, in ONE
+   * immutable holder behind ONE volatile field (issue #7961, then PR #8001's review).
+   * <p>
+   * A REFERENCE and not a fixed map, because a load publishes a whole new graph at one instant rather than tearing
+   * this one down and refilling it in place. And one holder rather than three fields, because three assigned one
+   * after another left two problems a reader could hit: it could see the new graph through {@code getType()} while
+   * {@code getTypeByBucketId()} still answered from the previous maps - two generations in one query - and the
+   * maps were plain fields, so the contents of the {@code HashMap}s a load built were not safely published at all.
+   * One volatile write of one holder settles both: a reader sees all three of the previous generation or all three
+   * of the new one, and everything reachable from the holder is published with it.
+   * <p>
+   * The graph inside is read through {@link #typeMap()} by everything that can run while a load is in flight -
+   * which includes the load itself, and {@link LocalDocumentType}/{@link TypeBuilder}, whose writes reach the graph
+   * the rebuild is assembling rather than the one still being served.
+   */
+  private volatile    SchemaState                            published                     = SchemaState.empty();
+
+  /**
+   * One generation of the schema's published state. A record, so nothing in it can be swapped out from under a
+   * reader that has taken the reference: the maps are replaced wholesale by a load, never edited in place by one.
+   * <p>
+   * The type map itself stays mutable - ordinary DDL adds and removes types through {@link #typeMap()} without
+   * going near a load - so what this makes immutable is WHICH maps a generation consists of, not their contents.
+   */
+  private record SchemaState(Map<String, LocalDocumentType> types, Map<Integer, LocalDocumentType> bucketId2TypeMap,
+                             Map<Integer, LocalDocumentType> bucketId2InvolvedTypeMap) {
+    private static SchemaState empty() {
+      return new SchemaState(new ConcurrentHashMap<>(), new HashMap<>(), new HashMap<>());
+    }
+  }
+
+  /**
+   * The type graph a load is assembling, reachable only by {@link #stagingThread} until it is published (issue
+   * #7961).
+   * <p>
+   * #7213 staged the by-NAME component maps; this is the other half of the same window. {@code readConfiguration()}
+   * used to open with {@code types.clear()} and rebuild the {@link LocalDocumentType} objects in place, and
+   * {@code LocalDocumentType.addIndexInternal()} binds an index into its type WHILE that runs - which is by
+   * construction before the {@code onAfterSchemaLoad()} pass. So a reader resolving an index through its TYPE
+   * rather than by name - {@code getType(t).getAllIndexes()}, {@code getPolymorphicIndexByProperties()}, which is
+   * what SQL query planning uses to pick an index for a {@code WHERE} clause - could still obtain an
+   * {@code LSMVectorIndex} whose vectors had not been loaded: a search that silently finds nothing. The same reader
+   * could also see a type whose properties or buckets were only half restored, on every {@code load()} and every
+   * {@code loadIncremental()}.
+   * <p>
+   * Held as a separate map and swapped in whole, rather than merged the way the component maps are: a load REBUILDS
+   * the graph from {@code schema.json}, so a type the new one does not carry is a type that must be gone, which a
+   * merge cannot express.
+   */
+  private final       Map<String, LocalDocumentType>         stagedTypes                   = new ConcurrentHashMap<>();
+
+  /**
+   * The graph {@link #stagedTypes} is replacing, kept from the moment the staging window opens so the
+   * {@code TimeSeries} types it holds can be closed once the new graph is published - never before, which is what
+   * {@code readConfiguration()} used to do to types a concurrent reader could still be holding.
+   */
+  private             Map<String, LocalDocumentType>         supersededTypes;
+
+  /**
+   * The bucket-id maps a load has derived from {@link #stagedTypes}, held back with it (PR #8001 review).
+   * <p>
+   * {@code readConfiguration()} rebuilds these from the graph it has just assembled, and it does so BEFORE the
+   * barrier. Assigning them to the live fields there would let {@code getTypeByBucketId()} hand out a
+   * new-generation type - carrying indexes whose {@code onAfterSchemaLoad()} has not run - while {@code getType()}
+   * still answers with the previous graph, and would publish the involved-bucket map security reads through a
+   * generation early. They are published in the same step as the graph they describe instead.
+   */
+  private             Map<Integer, LocalDocumentType>        stagedBucketId2TypeMap;
+  private             Map<Integer, LocalDocumentType>        stagedBucketId2InvolvedTypeMap;
+
+  /**
+   * The graph {@link #commitStagedPublication()} published, so {@link #endStagedPublication()} can tell an abort
+   * from a commit and close only what an abort leaves behind.
+   */
+  private             Map<String, LocalDocumentType>         publishedFromStaging;
   private             String                                 encoding                      = DEFAULT_ENCODING;
   private final       DatabaseInternal                       database;
   private final       SecurityManager                        security;
@@ -166,8 +241,6 @@ public class LocalSchema implements Schema {
   // (issue #7213). Null keys and values never reach it: every put passes a component's own name, and the accessors
   // below (existsBucket, getBucketByName, getBucketByNameIfExists) null-guard the one name a caller supplies.
   final               Map<String, LocalBucket>               bucketMap                     = new ConcurrentHashMap<>();
-  private             Map<Integer, LocalDocumentType>        bucketId2TypeMap              = new HashMap<>();
-  private             Map<Integer, LocalDocumentType>        bucketId2InvolvedTypeMap      = new HashMap<>();
   // Concurrent, not because the map is written often, but because it is written from threads that are not the ones
   // reading it and the reads are on the correctness path. DDL (CREATE/DROP INDEX) has always mutated it from
   // arbitrary user threads while queries resolve index names; since #6105 a compaction re-keys it too
@@ -331,7 +404,9 @@ public class LocalSchema implements Schema {
     beginStagedPublication();
     try {
       files.clear();
-      types.clear();
+      // types is NOT cleared: the graph a load replaces stays served, whole, until the new one is published at the
+      // barrier below (issue #7961). The rebuild assembles its own in stagedTypes, which beginStagedPublication()
+      // has just emptied.
       bucketMap.clear();
       indexMap.clear();
       dictionary = null;
@@ -480,6 +555,11 @@ public class LocalSchema implements Schema {
 
     stagedIndexMap.clear();
     stagedBucketMap.clear();
+    // The graph the load is about to assemble, and the one it is replacing (issue #7961). The superseded one is
+    // remembered rather than dropped: its TimeSeries types own engines that have to be closed, and closing them
+    // before the replacement is published would close them under readers still holding the old graph.
+    stagedTypes.clear();
+    supersededTypes = published.types();
   }
 
   /**
@@ -498,6 +578,70 @@ public class LocalSchema implements Schema {
     bucketMap.putAll(stagedBucketMap);
     indexMap.putAll(stagedIndexMap);
 
+    // The type graph goes last and goes whole (issue #7961). A reader that resolves an index through its type
+    // reaches it only from here on, by which point every component's onAfterSchemaLoad() has run - and it sees
+    // either the previous graph entire or the new one entire, never a type mid-rebuild, because what changes is
+    // one reference and not the contents of a map somebody may be walking.
+    //
+    // Last, and therefore AFTER the two maps above, which leaves a window where getIndexByName() answers with a
+    // new-generation index while getType() still answers with the old-generation type. That window is harmless in
+    // the one direction it could matter (PR #8001 review): a LocalDocumentType holds its own TypeIndex references
+    // in indexesByProperties and never resolves an index through indexMap, so no reader that goes THROUGH a type
+    // can observe the mismatch. The reverse order would not be harmless - it would publish a type graph pointing
+    // at indexes whose names do not resolve yet - which is why this order and not the other one.
+    final Map<String, LocalDocumentType> publishedTypes = new ConcurrentHashMap<>(stagedTypes);
+    final Map<String, LocalDocumentType> superseded = supersededTypes;
+
+    // A COPY of the staged graph, not a merge with the live one - so a type written to the previous generation
+    // while this load ran is discarded the instant this publishes (PR #8001 review asked for this to be stated
+    // rather than assumed). Before the graph was staged at all, readConfiguration() cleared and refilled the same
+    // map instance, so such a write was at least landing in the map that survived; the failure mode has changed
+    // from "racy, might survive" to "deterministically lost", which is only acceptable because no such write
+    // exists:
+    //
+    //   - load() runs from LocalDatabase.open(), before the database is open for business. There is no session to
+    //     issue DDL yet;
+    //   - loadIncremental(), and the load() it falls back to, run from ArcadeStateMachine.applySchemaEntry on the
+    //     single Ratis apply thread, where the entry being applied IS the DDL. A follower does not execute local
+    //     DDL of its own - it forwards it to the leader and receives it back as an entry - so there is nothing to
+    //     race with, and entries are applied one at a time in log order.
+    //
+    // beginStagedPublication() already refuses a second overlapping LOAD. What is written down here is the other
+    // half: that nothing else is concurrently mutating the graph either. A caller that breaks that has to publish
+    // by merge instead, and nothing here would raise to tell it so.
+    //
+    // ONE volatile write, carrying the graph and both maps derived from it. getType(), getTypeByBucketId() and
+    // getInvolvedTypeByBucketId() therefore cannot be caught answering from two different generations, and the
+    // maps the load built are safely published rather than handed over through a plain field (PR #8001 review).
+    final SchemaState previous = published;
+    published = new SchemaState(publishedTypes,
+        stagedBucketId2TypeMap != null ? stagedBucketId2TypeMap : previous.bucketId2TypeMap(),
+        stagedBucketId2InvolvedTypeMap != null ? stagedBucketId2InvolvedTypeMap : previous.bucketId2InvolvedTypeMap());
+    publishedFromStaging = publishedTypes;
+
+    // Only now, with nothing able to reach them through the schema any more. A TimeSeries type owns an engine with
+    // open files; the rebuild has already opened a fresh one per type, so leaving these behind would leak them.
+    // Never the types the new graph carries: a rebuild that reused an instance would otherwise close the live one.
+    if (superseded != null && !superseded.isEmpty()) {
+      // The survivors as an identity SET, built once. containsValue() is itself a scan, so asking it per superseded
+      // type made this O(superseded x published) - and a follower rebuilds its schema once per applied entry, on
+      // schemas that reach four figures of types (issue #6982 reported 1209). By identity because what must not be
+      // closed is the very INSTANCE the new graph is serving, whatever it calls itself (PR #8001 review).
+      final Set<LocalDocumentType> survivors = Collections.newSetFromMap(new IdentityHashMap<>(publishedTypes.size()));
+      survivors.addAll(publishedTypes.values());
+
+      for (final LocalDocumentType type : superseded.values())
+        if (type instanceof final LocalTimeSeriesType tsType && !survivors.contains(tsType)) {
+          try {
+            tsType.close();
+          } catch (final Exception e) {
+            LogManager.instance().log(this, Level.WARNING,
+                "Error closing TimeSeries type '%s' superseded by a schema reload: %s", null, tsType.getName(),
+                e.getMessage());
+          }
+        }
+    }
+
     endStagedPublication();
   }
 
@@ -511,6 +655,16 @@ public class LocalSchema implements Schema {
 
     stagedIndexMap.clear();
     stagedBucketMap.clear();
+    // Only when the graph was NOT published: after a successful commit these very instances are the live ones
+    // (PR #8001 review). A load that dies after readConfiguration() has initialised a TimeSeries engine per type
+    // would otherwise leak one engine, and its file handles, per failed reload.
+    if (published.types() != publishedFromStaging)
+      closeTimeSeriesTypesOf(stagedTypes);
+    publishedFromStaging = null;
+    stagedTypes.clear();
+    stagedBucketId2TypeMap = null;
+    stagedBucketId2InvolvedTypeMap = null;
+    supersededTypes = null;
     stagingThread.set(null);
   }
 
@@ -531,6 +685,35 @@ public class LocalSchema implements Schema {
         return staged;
     }
     return indexMap.get(name);
+  }
+
+  /**
+   * The type graph AS THIS THREAD SEES IT: the one a load in flight is assembling for that load's own thread, the
+   * published one for everybody else (issue #7961).
+   * <p>
+   * Every read AND every write of the graph goes through this, which is what makes the barrier invisible to the
+   * load - the rebuild resolves and mutates the types it has just built, exactly as it did when they went straight
+   * into the live map - while a concurrent reader keeps seeing the previous graph, whole, until the new one is
+   * published in one reference swap.
+   * <p>
+   * Package-visible because {@link LocalDocumentType} and {@link TypeBuilder} reach the graph directly, and two of
+   * those reaches happen DURING a load: {@code setAliases} registers a type's aliases as it is restored, and
+   * {@code addSuperType} resolves the parents the rebuild wires up.
+   */
+  Map<String, LocalDocumentType> typeMap() {
+    return isStagingPublication() ? stagedTypes : published.types();
+  }
+
+  /** Closes the TimeSeries engines of a graph that is about to be discarded. */
+  private void closeTimeSeriesTypesOf(final Map<String, LocalDocumentType> graph) {
+    for (final DocumentType type : graph.values())
+      if (type instanceof final LocalTimeSeriesType tsType)
+        try {
+          tsType.close();
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Error closing TimeSeries type '%s' during schema reload: %s", null, tsType.getName(), e.getMessage());
+        }
   }
 
   /**
@@ -1746,7 +1929,9 @@ public class LocalSchema implements Schema {
    * Register a trigger as an event listener on the appropriate type.
    */
   private void registerTriggerListener(final Trigger trigger) {
-    final LocalDocumentType type = types.get(trigger.getTypeName());
+    // typeMap(): triggers are restored from inside readConfiguration(), so during a load the type they bind to is
+    // one of the graph being assembled, not one of the graph still being served (issue #7961).
+    final LocalDocumentType type = typeMap().get(trigger.getTypeName());
     if (type == null) {
       throw new SchemaException("Type '" + trigger.getTypeName() + "' not found");
     }
@@ -1802,7 +1987,7 @@ public class LocalSchema implements Schema {
     }
 
     final Trigger trigger = adapter.getTrigger();
-    final LocalDocumentType type = types.get(trigger.getTypeName());
+    final LocalDocumentType type = typeMap().get(trigger.getTypeName());
     if (type != null) {
       final RecordEventsRegistry events = (RecordEventsRegistry) type.getEvents();
 
@@ -1971,15 +2156,14 @@ public class LocalSchema implements Schema {
     continuousAggregates.clear();
     extensions.clear();
     files.clear();
-    for (final DocumentType type : types.values()) {
+    for (final DocumentType type : published.types().values()) {
       if (type instanceof LocalTimeSeriesType tsType)
         tsType.close();
     }
-    types.clear();
+    published = SchemaState.empty();
     bucketMap.clear();
     indexMap.clear();
     dictionary = null;
-    bucketId2TypeMap.clear();
   }
 
   public synchronized MaterializedViewScheduler getMaterializedViewScheduler() {
@@ -2063,11 +2247,11 @@ public class LocalSchema implements Schema {
   public Collection<DocumentType> getTypes() {
     // Use a LinkedHashSet to deduplicate: aliases map to the same DocumentType object in the types map,
     // so values() can contain the same instance multiple times
-    return new ArrayList<>(new LinkedHashSet<>(types.values()));
+    return new ArrayList<>(new LinkedHashSet<>(typeMap().values()));
   }
 
   public LocalDocumentType getType(final String typeName) {
-    final LocalDocumentType t = types.get(typeName);
+    final LocalDocumentType t = typeMap().get(typeName);
     if (t == null)
       throw new SchemaException("Type with name '" + typeName + "' was not found");
     return t;
@@ -2075,7 +2259,7 @@ public class LocalSchema implements Schema {
 
   @Override
   public LocalDocumentType getTypeOrNull(final String typeName) {
-    return types.get(typeName);
+    return typeMap().get(typeName);
   }
 
   @Override
@@ -2086,21 +2270,21 @@ public class LocalSchema implements Schema {
 
   @Override
   public DocumentType getTypeByBucketId(final int bucketId) {
-    return bucketId2TypeMap.get(bucketId);
+    return published.bucketId2TypeMap().get(bucketId);
   }
 
   @Override
   public DocumentType getInvolvedTypeByBucketId(final int bucketId) {
-    return bucketId2InvolvedTypeMap.get(bucketId);
+    return published.bucketId2InvolvedTypeMap().get(bucketId);
   }
 
   @Override
   public DocumentType getTypeByBucketName(final String bucketName) {
-    return bucketId2TypeMap.get(getBucketByName(bucketName).getFileId());
+    return published.bucketId2TypeMap().get(getBucketByName(bucketName).getFileId());
   }
 
   public boolean existsType(final String typeName) {
-    return types.containsKey(typeName);
+    return typeMap().containsKey(typeName);
   }
 
   public void dropType(final String typeName) {
@@ -2176,7 +2360,7 @@ public class LocalSchema implements Schema {
         if (type instanceof LocalTimeSeriesType tsType)
           tsType.drop();
 
-        if (types.remove(typeName) == null)
+        if (typeMap().remove(typeName) == null)
           throw new SchemaException("Type '" + typeName + "' not found");
       } finally {
         typeBeingDropped = previousTypeBeingDropped;
@@ -2201,7 +2385,7 @@ public class LocalSchema implements Schema {
         multipleUpdate = true;
 
       try {
-        for (final LocalDocumentType type : types.values()) {
+        for (final LocalDocumentType type : typeMap().values()) {
           if (type.buckets.contains(bucket))
             throw new SchemaException(
                 "Error on dropping bucket '" + bucketName + "' because it is assigned to type '" + type.getName()
@@ -2381,17 +2565,20 @@ public class LocalSchema implements Schema {
   }
 
   protected synchronized void readConfiguration() {
-    for (final DocumentType type : types.values()) {
-      if (type instanceof LocalTimeSeriesType tsType) {
-        try {
-          tsType.close();
-        } catch (final Exception e) {
-          LogManager.instance().log(this, Level.WARNING, "Error closing TimeSeries type '%s' during schema reload: %s", null,
-              tsType.getName(), e.getMessage());
-        }
-      }
-    }
-    types.clear();
+    // The graph this rebuild produces goes into the map typeMap() resolves to, which for a load in flight is the
+    // staged one - so the published graph is neither emptied nor mutated here, and the TimeSeries types it holds
+    // are closed by commitStagedPublication() once the replacement is live rather than before it exists (issue
+    // #7961). A readConfiguration() outside a staging window still writes straight into the live map and is
+    // responsible for its own tear-down, which is what the arm below does.
+    //
+    // That arm is unreachable today - both callers, load() and loadIncremental(), run inside a
+    // beginStagedPublication()/endStagedPublication() bracket - and is kept for the same reason the setKeys
+    // fallback in TransactionIndexContext.getIndexKeyLanes is: a third caller must not silently inherit the
+    // staging assumption. It is NOT covered by a test, so anything relying on it needs to bring one.
+    final Map<String, LocalDocumentType> graph = typeMap();
+    if (graph == published.types())
+      closeTimeSeriesTypesOf(graph);
+    graph.clear();
 
     loadInRamCompleted = false;
     readingFromFile = true;
@@ -2505,7 +2692,7 @@ public class LocalSchema implements Schema {
           case null, default -> throw new ConfigurationException("Type '" + kind + "' is not supported");
         };
 
-        this.types.put(typeName, type);
+        graph.put(typeName, type);
 
         final Set<String> aliases = !schemaType.isNull("aliases") ?
             new HashSet<>(schemaType.getJSONArray("aliases").toListOfStrings()) :
@@ -2718,7 +2905,7 @@ public class LocalSchema implements Schema {
                 final String bucketNameIndex = entry.getKey().substring(0, pos2);
 
                 if (bucketName.equals(bucketNameIndex)) {
-                  final LocalDocumentType type = this.types.get(entry.getValue().getString("type"));
+                  final LocalDocumentType type = graph.get(entry.getValue().getString("type"));
                   if (type != null) {
                     final JSONArray schemaIndexProperties = entry.getValue().getJSONArray("properties");
 
@@ -3245,7 +3432,7 @@ public class LocalSchema implements Schema {
     final JSONObject types = new JSONObject();
     root.put("types", types);
 
-    for (final DocumentType t : this.types.values())
+    for (final DocumentType t : typeMap().values())
       types.put(t.getName(), t.toJSON());
 
     final JSONObject triggersJson = new JSONObject();
@@ -3297,7 +3484,7 @@ public class LocalSchema implements Schema {
   }
 
   void registerType(final LocalDocumentType type) {
-    types.put(type.getName(), type);
+    typeMap().put(type.getName(), type);
   }
 
   public void registerFile(final Component file) {
@@ -3737,18 +3924,25 @@ public class LocalSchema implements Schema {
    */
   private void rebuildBucketTypeMap() {
     final Map<Integer, LocalDocumentType> newBucketId2TypeMap = new HashMap<>();
-    for (final LocalDocumentType t : types.values()) {
+    for (final LocalDocumentType t : typeMap().values()) {
       for (final Bucket b : t.getBuckets(false))
         newBucketId2TypeMap.put(b.getFileId(), t);
     }
-    bucketId2TypeMap = newBucketId2TypeMap;
 
     // COMPUTE INVOLVED BUCKETS FOR SECURITY
     final Map<Integer, LocalDocumentType> newBucketId2InvolvedTypeMap = new HashMap<>();
-    for (final LocalDocumentType t : types.values()) {
+    for (final LocalDocumentType t : typeMap().values()) {
       for (final Bucket b : t.getInvolvedBuckets())
         newBucketId2InvolvedTypeMap.put(b.getFileId(), t);
     }
-    bucketId2InvolvedTypeMap = newBucketId2InvolvedTypeMap;
+
+    if (isStagingPublication()) {
+      // Derived from the staged graph, so they belong to it and are published with it (PR #8001 review).
+      stagedBucketId2TypeMap = newBucketId2TypeMap;
+      stagedBucketId2InvolvedTypeMap = newBucketId2InvolvedTypeMap;
+      return;
+    }
+
+    published = new SchemaState(published.types(), newBucketId2TypeMap, newBucketId2InvolvedTypeMap);
   }
 }

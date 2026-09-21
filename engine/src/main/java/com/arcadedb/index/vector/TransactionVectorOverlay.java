@@ -31,6 +31,7 @@ import io.github.jbellis.jvector.vector.types.VectorFloat;
 import io.github.jbellis.jvector.vector.types.VectorTypeSupport;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -109,9 +110,19 @@ final class TransactionVectorOverlay {
    * into existence on a thread that has none. The status gate is {@code BEGUN} alone, matching
    * {@code LSMTreeIndex.get()}: from {@code COMMIT_1ST_PHASE} onwards the queue is being drained into the index
    * itself, so merging it again would double-count every row.
+   * <p>
+   * <b>Built once per version of the lanes, not once per search (issue #7967).</b> The overlay is a pure function
+   * of what the transaction has queued, so {@code TransactionIndexContext} holds the answer - including the
+   * {@code null} one - until the lanes change. Before this, a transaction that ingested and queried in turn paid
+   * a walk of its whole write set, plus a {@link VectorFloat} conversion per pending row, on EVERY query; now it
+   * pays that once per batch it writes. The cache cannot go stale: the version it is keyed on moves on every
+   * change to the lanes, removals included.
+   *
+   * @param payloadBudget how many pending rows may keep a converted {@link VectorFloat}; past it the row keeps
+   *                      only its id and RID and is read back on demand. See {@link #pendingPayloadsDeclined}.
    */
   static TransactionVectorOverlay open(final DatabaseInternal database, final IndexInternal index,
-      final VectorTypeSupport vts) {
+      final VectorTypeSupport vts, final int payloadBudget) {
     final TransactionContext tx = database.getTransactionIfExists();
     if (tx == null || tx.getStatus() != TransactionContext.STATUS.BEGUN)
       return null;
@@ -120,6 +131,17 @@ final class TransactionVectorOverlay {
     if (changes == null)
       return null;
 
+    final Object cached = changes.cachedIndexView(index);
+    if (cached != null)
+      return cached == TransactionIndexContext.NO_VIEW ? null : (TransactionVectorOverlay) cached;
+
+    final TransactionVectorOverlay built = build(changes, index, vts, payloadBudget);
+    changes.cacheIndexView(index, built);
+    return built;
+  }
+
+  private static TransactionVectorOverlay build(final TransactionIndexContext changes, final IndexInternal index,
+      final VectorTypeSupport vts, final int payloadBudget) {
     // Every lane this index owns, in replay order. More than one is possible: a compaction that renames the index
     // mid-transaction makes the next write open a second lane under the new name, and commit() replays both, so a
     // reader that took only one would answer with part of this transaction's own writes missing.
@@ -131,6 +153,17 @@ final class TransactionVectorOverlay {
     // iteration order is the lanes' own, which is the order commit() replays them in.
     LinkedHashMap<RID, DeltaVectorEntry> pending = null;
     Set<RID> superseded = null;
+    // How many rows actually HOLD a payload, not how many rows there are. The two differ once the budget starts
+    // declining, and gating on the wrong one is how the budget leaks - see where it is read below.
+    int residentPayloads = 0;
+    // The write order of the entry each pending RID is currently represented by, so a RID written in more than one
+    // lane keeps the one written LAST rather than the one encountered last (PR #8001 review). Lane order is replay
+    // order, so the two usually agree - but an index that renamed itself mid-transaction owns two lanes, and a
+    // record rewritten either side of that rename has an entry in each. The commit picks by write order; so must
+    // this, or a search inside the transaction ranks the record by an embedding the commit is about to discard.
+    Map<RID, Integer> pendingSequence = null;
+    /** Per RID, the write order of the LAST removal seen. See where it is applied after the walk. */
+    Map<RID, Integer> lastRemove = null;
 
     for (final TreeMap<ComparableKey, Map<IndexKey, IndexKey>> lane : lanes)
       for (final Map<IndexKey, IndexKey> bucket : lane.values()) {
@@ -142,6 +175,14 @@ final class TransactionVectorOverlay {
             if (superseded == null)
               superseded = new HashSet<>();
             superseded.add(entry.rid);
+
+            // ...and remember WHEN, so a removal that came after the row this overlay contributes can drop it once
+            // the whole lane has been read (PR #8001 review). Recorded rather than acted on here because a lane is
+            // walked in ComparableKey order, not write order: the REMOVE is as likely to be seen before the ADD it
+            // retires as after it, and only the sequence says which actually happened first.
+            if (lastRemove == null)
+              lastRemove = new HashMap<>();
+            lastRemove.merge(entry.rid, entry.sequence, Math::max);
             continue;
           }
 
@@ -173,15 +214,78 @@ final class TransactionVectorOverlay {
 
           if (pending == null)
             pending = new LinkedHashMap<>();
-          pending.put(entry.rid, new DeltaVectorEntry(PENDING_VECTOR_ID, entry.rid, vts.createFloatVector(vector)));
+
+          // Past the budget the row keeps only its id and RID, exactly the way the committed buffer's own entries
+          // do past `arcadedb.vectorIndex.deltaCacheSize` (issue #7357) - and for the same reason (issue #7967).
+          // A converted VectorFloat is a SECOND copy of the transaction's whole write set on the heap, on top of
+          // the float[] the queued key already holds, and nothing about a transaction bounds how large that set
+          // is. A declined row is never a dropped row: the vector is still in the record this transaction saved,
+          // and the delta scan reads it back from there on demand - which is a lookup in the transaction's own
+          // record cache, not a page read, because the record is one this transaction is holding.
+          //
+          // Worked example, budget 2, four RIDs written once each and then A rewritten (PR #8001 review):
+          //   A -> resident (1 of 2)   B -> resident (2 of 2)   C -> declined   D -> declined
+          //   A again -> already resident, so it refreshes its payload for free and the count stays 2
+          //   C again -> NOT resident, and the count is at the budget, so it stays declined
+          // The count is what the budget bounds; the map's size is not, because a declined row costs 32 bytes.
+          //
+          // Gated on how many rows HOLD a payload, never on how many rows there are (PR #8001 review). Refreshing
+          // a row that already holds one is free - it replaces a copy rather than adding one - but a row that was
+          // DECLINED earlier and is written again is not, and counting it as free let a transaction that outran
+          // the budget and then rewrote its declined rows creep back over it, one row at a time, which is the one
+          // thing the budget exists to stop. The sibling counter on the committed side (deltaResidentPayloads)
+          // counts the same thing for the same reason.
+          if (pendingSequence == null)
+            pendingSequence = new HashMap<>();
+          final Integer heldSequence = pendingSequence.get(entry.rid);
+          if (heldSequence != null && entry.sequence <= heldSequence)
+            // An earlier write of a RID this overlay already represents by a later one. Nothing to contribute.
+            continue;
+          pendingSequence.put(entry.rid, entry.sequence);
+
+          final DeltaVectorEntry previous = pending.get(entry.rid);
+          final boolean alreadyResident = previous != null && previous.vector != null;
+          final boolean keepPayload = alreadyResident || residentPayloads < payloadBudget;
+          if (keepPayload && !alreadyResident)
+            ++residentPayloads;
+
+          pending.put(entry.rid, keepPayload ?
+              new DeltaVectorEntry(PENDING_VECTOR_ID, entry.rid, vts.createFloatVector(vector)) :
+              new DeltaVectorEntry(PENDING_VECTOR_ID, entry.rid, null));
         }
       }
+
+    // A RID whose last word was a removal contributes no row: the transaction added it and then deleted it. The
+    // commit reaches the same answer by dropping a RID whose last entry is a REMOVE, and the two have to agree, or
+    // a search inside the transaction returns a record the commit is about to leave out (PR #8001 review). It
+    // stays in `superseded` either way, which is what keeps its committed copy out of the answer too.
+    if (pending != null && lastRemove != null)
+      for (final Map.Entry<RID, Integer> removal : lastRemove.entrySet()) {
+        final Integer heldSequence = pendingSequence.get(removal.getKey());
+        if (heldSequence != null && removal.getValue() > heldSequence)
+          pending.remove(removal.getKey());
+      }
+
+    if (pending != null && pending.isEmpty())
+      pending = null;
 
     if (pending == null && superseded == null)
       return null;
 
     return new TransactionVectorOverlay(pending == null ? List.of() : new ArrayList<>(pending.values()),
         superseded == null ? Set.of() : superseded);
+  }
+
+  /**
+   * How many of {@link #pending} were declined a converted payload by the budget, i.e. how many rows a scan has to
+   * read back from their record. Zero on everything but a transaction whose write set outgrew the budget.
+   */
+  int pendingPayloadsDeclined() {
+    int declined = 0;
+    for (int i = 0; i < pending.size(); i++)
+      if (pending.get(i).vector == null)
+        ++declined;
+    return declined;
   }
 
   /** The queued key, as the float array {@code LSMVectorIndex.put()} wrapped it in, or {@code null}. */

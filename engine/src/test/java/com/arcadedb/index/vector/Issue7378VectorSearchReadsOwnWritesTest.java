@@ -247,34 +247,96 @@ class Issue7378VectorSearchReadsOwnWritesTest extends TestHelper {
   }
 
   /**
-   * The same record's embedding rewritten twice before the search. Both rewrites queue their own {@code ADD}, and
-   * {@code TransactionIndexContext.commit()} replays every one of them, so what the committed index ends up
-   * holding for that RID is whatever those two adds make of it. The overlay is a model of that replay and must
-   * therefore give the same answer as the commit here too - which is the only claim this test makes.
+   * The same record's embedding rewritten twice before the search. The overlay is a model of what
+   * {@code TransactionIndexContext.commit()} replays, so it must give the same answer the commit does - and, since
+   * issue #7971, that answer is pinned down rather than merely agreed on: <b>the LAST rewrite is the one that
+   * survives</b>, and the record ends up with exactly ONE vector.
    * <p>
-   * It deliberately does not assert WHICH of the two rewrites survives. Both adds stay in the lane under their own
-   * {@code ComparableKey} - a queued {@code REMOVE} carries a placeholder zero vector, so it never coalesces with
-   * the add it retires - and the survivor is whichever the replay reaches last in that map's order, which is a
-   * hash of the vector rather than the order the statements ran in. That is a property of the commit path, it
-   * predates the overlay, and it is filed as #7971; the overlay reproduces it on purpose so the two agree. When
-   * #7971 is fixed this test is what will notice if only one of the two sides moves.
+   * This test used to stop at the agreement, because it could not say more. Both adds stayed in the lane under
+   * their own {@code ComparableKey} - a queued {@code REMOVE} carried a placeholder zero vector, so it never
+   * coalesced with the add it retired - and the survivor was whichever the replay reached last in that map's
+   * order, i.e. a hash of the vector rather than the order the statements ran in. #7971 made the {@code REMOVE}
+   * carry the vector it retires and gave the commit replay the write order to pick by, so both halves of the claim
+   * below now hold.
    */
   @Test
-  void twoRewritesOfOneRowAgreeWithWhatTheCommitLeavesBehind() {
+  void twoRewritesOfOneRowLeaveTheLastOneBehind() {
     seedAndBuildGraph();
     final LSMVectorIndex index = vectorIndex();
 
+    // The first rewrite aims the row somewhere else entirely; the second aims it at the query. Whichever survives
+    // is therefore visible in the ranking, which is what makes "the last one wins" an assertion and not a wish.
+    final float[] firstRewrite = seedVector(99);
+
     database.begin();
-    database.command("sql", "UPDATE Doc SET embedding = ? WHERE id = 'doc0'", (Object) seedVector(99));
+    database.command("sql", "UPDATE Doc SET embedding = ? WHERE id = 'doc0'", (Object) firstRewrite);
     database.command("sql", "UPDATE Doc SET embedding = ? WHERE id = 'doc0'", (Object) PENDING_DIRECTION);
     final List<String> inTx = idsOf(index.findNeighborsFromVector(PENDING_DIRECTION, 5));
+    final List<String> inTxAtFirst = idsOf(index.findNeighborsFromVector(firstRewrite, 5));
     database.commit();
 
     assertThat(idsOf(index.findNeighborsFromVector(PENDING_DIRECTION, 5)))
         .as("two rewrites in one transaction must look the same before and after the commit")
         .isEqualTo(inTx);
-    assertThat(inTx).as("and the row the second rewrite aimed at the query must lead either way")
+    assertThat(inTx).as("the row the second rewrite aimed at the query must lead")
         .isNotEmpty().first().isEqualTo("doc0");
+    assertThat(inTx).as("and appear once, not once per rewrite").containsOnlyOnce("doc0");
+
+    assertThat(idsOf(index.findNeighborsFromVector(firstRewrite, 5)))
+        .as("a query aimed at the SUPERSEDED embedding must rank the row the same way before and after the commit")
+        .isEqualTo(inTxAtFirst);
+
+    assertThat(index.countEntries())
+        .as("the record carries one embedding, so the commit must leave one live vector for it - not one per rewrite")
+        .isEqualTo(SEEDED);
+  }
+
+  /**
+   * A row added and then deleted inside one transaction is gone from that transaction's own search, and from the
+   * answer after the commit - even when the removal could not be keyed on the vector it retires, so the two never
+   * collapsed in the queue. Raised in the review of PR #8001; the overlay and the commit reach the same answer by
+   * the same rule (the last entry for a RID decides), and this is what holds them to it.
+   */
+  @Test
+  void aRowAddedAndThenDeletedInTheSameTransactionIsGoneFromBothSides() {
+    seedAndBuildGraph();
+    final LSMVectorIndex index = vectorIndex();
+
+    database.begin();
+    final String pendingId;
+    try {
+      insertPendingRow();
+      pendingId = "created-in-tx";
+      assertThat(idsOf(index.findNeighborsFromVector(PENDING_DIRECTION, 5)))
+          .as("precondition: the transaction can see its own row before it deletes it")
+          .contains(pendingId);
+
+      // Delete it through the index with a key it cannot convert, so the REMOVE rides the placeholder and shares
+      // no ComparableKey with the ADD it retires.
+      final RID rid = ridOf(index.findNeighborsFromVector(PENDING_DIRECTION, 5), pendingId);
+      index.remove(new Object[] { "not a vector" }, rid);
+
+      assertThat(idsOf(index.findNeighborsFromVector(PENDING_DIRECTION, 5)))
+          .as("a row this transaction deleted must be gone from its own search")
+          .doesNotContain(pendingId);
+
+      database.commit();
+    } catch (final RuntimeException e) {
+      database.rollback();
+      throw e;
+    }
+
+    assertThat(idsOf(index.findNeighborsFromVector(PENDING_DIRECTION, 5)))
+        .as("...and must not come back after the commit either")
+        .doesNotContain(pendingId);
+  }
+
+  /** The RID the search returned for {@code id}. */
+  private RID ridOf(final List<Pair<RID, Float>> results, final String id) {
+    for (final Pair<RID, Float> r : results)
+      if (id.equals(r.getFirst().asDocument(true).get("id")))
+        return r.getFirst();
+    throw new IllegalStateException("no result for id " + id);
   }
 
   /**

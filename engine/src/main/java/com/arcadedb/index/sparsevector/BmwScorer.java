@@ -219,6 +219,23 @@ public final class BmwScorer {
   public static List<RidScore> topKGrouped(final int[] queryDims, final float[] queryWeights, final DimCursor[] cursors,
       final int limit, final int groupSize, final Function<RID, Object> groupKeyResolver, final Set<RID> allowedRIDs)
       throws IOException {
+    return topKGrouped(queryDims, queryWeights, cursors, limit, groupSize, groupKeyResolver, allowedRIDs, null);
+  }
+
+  /**
+   * {@link #topKGrouped(int[], float[], DimCursor[], int, int, Function, Set)} with a set of RIDs the traversal
+   * must skip (issue #7966).
+   * <p>
+   * A caller reading its own uncommitted writes scores those records itself, from what its transaction has queued,
+   * and needs the committed - and therefore stale - copy of each of them left out. Applied here rather than by
+   * filtering the result because a grouped traversal counts admissions per group as it goes: a row removed
+   * afterwards leaves its group one short of a cap that another candidate could have filled.
+   *
+   * @param excludedRIDs RIDs to skip, or {@code null}/empty for none
+   */
+  public static List<RidScore> topKGrouped(final int[] queryDims, final float[] queryWeights, final DimCursor[] cursors,
+      final int limit, final int groupSize, final Function<RID, Object> groupKeyResolver, final Set<RID> allowedRIDs,
+      final Set<RID> excludedRIDs) throws IOException {
     validate(queryDims, queryWeights, cursors);
     if (groupKeyResolver == null)
       throw new IllegalArgumentException("groupKeyResolver must not be null");
@@ -229,7 +246,7 @@ public final class BmwScorer {
     if (terms.length == 0)
       return List.of();
 
-    final GroupedCollector collector = new GroupedCollector(limit, groupSize, groupKeyResolver, allowedRIDs);
+    final GroupedCollector collector = new GroupedCollector(limit, groupSize, groupKeyResolver, allowedRIDs, excludedRIDs);
     scan(terms, collector, null);
     return collector.drain();
   }
@@ -837,17 +854,22 @@ public final class BmwScorer {
     private final Function<RID, Object>                      groupKeyResolver;
     private final Set<RID>                                   allowedRIDs;
     private final boolean                                    filterActive;
+    /** RIDs whose committed copy the caller is superseding with its own uncommitted one (issue #7966). */
+    private final Set<RID>                                   excludedRIDs;
+    private final boolean                                    exclusionActive;
     private final HashMap<Object, GroupState>                groups;
     private int                                              filledGroups;
     private float                                            threshold = Float.NEGATIVE_INFINITY;
 
     GroupedCollector(final int limit, final int groupSize, final Function<RID, Object> groupKeyResolver,
-        final Set<RID> allowedRIDs) {
+        final Set<RID> allowedRIDs, final Set<RID> excludedRIDs) {
       this.limit = limit;
       this.groupSize = groupSize;
       this.groupKeyResolver = groupKeyResolver;
       this.allowedRIDs = allowedRIDs;
       this.filterActive = allowedRIDs != null && !allowedRIDs.isEmpty();
+      this.excludedRIDs = excludedRIDs;
+      this.exclusionActive = excludedRIDs != null && !excludedRIDs.isEmpty();
       this.groups = new HashMap<>(limit);
     }
 
@@ -858,7 +880,9 @@ public final class BmwScorer {
 
     @Override
     public boolean accepts(final RID rid) {
-      return !filterActive || allowedRIDs.contains(rid);
+      if (filterActive && !allowedRIDs.contains(rid))
+        return false;
+      return !exclusionActive || !excludedRIDs.contains(rid);
     }
 
     @Override
