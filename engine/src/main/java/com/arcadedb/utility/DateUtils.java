@@ -36,6 +36,7 @@ import java.time.format.DateTimeFormatterBuilder;
 import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoField;
 import java.time.temporal.ChronoUnit;
+import java.time.temporal.Temporal;
 import java.time.temporal.TemporalAccessor;
 import java.util.Calendar;
 import java.util.Date;
@@ -71,9 +72,11 @@ public class DateUtils {
    * after the strict ISO formats and after the schema's own patterns, so it can widen what is accepted but never
    * reinterpret a string that already parsed.
    * <p>
-   * The fraction is nested INSIDE the optional seconds section rather than beside it, so the grammar is exactly
-   * "date, optional time, and a fractional second only where there is a second to qualify": a stray
-   * {@code '2024-02-29 13:45.123456'} is refused rather than quietly read as 13:45:00.123456.
+   * The fraction is nested INSIDE the optional seconds section, and the offset inside the optional time, rather than
+   * beside them, so the grammar is exactly what the sentence above says: a fractional second only where there is a
+   * second to qualify, and an offset only where there is a time for it to offset. A stray
+   * {@code '2024-02-29 13:45.123456'} is refused rather than quietly read as 13:45:00.123456, and a bare
+   * {@code '2024-02-29+01:00'} rather than as midnight in that offset.
    */
   private static final DateTimeFormatter                            SPACE_SEPARATED_DATE_TIME = new DateTimeFormatterBuilder()//
       .append(DateTimeFormatter.ISO_LOCAL_DATE)//
@@ -84,8 +87,8 @@ public class DateUtils {
       .appendValue(ChronoField.MINUTE_OF_HOUR, 2)//
       .optionalStart().appendLiteral(':').appendValue(ChronoField.SECOND_OF_MINUTE, 2)//
       .appendFraction(ChronoField.NANO_OF_SECOND, 0, 9, true).optionalEnd()//
-      .optionalEnd()//
       .optionalStart().appendPattern("[XXX][XX][X]").optionalEnd()//
+      .optionalEnd()//
       .parseDefaulting(ChronoField.HOUR_OF_DAY, 0)//
       .parseDefaulting(ChronoField.MINUTE_OF_HOUR, 0)//
       .parseDefaulting(ChronoField.SECOND_OF_MINUTE, 0)//
@@ -462,13 +465,11 @@ public class DateUtils {
     if (database != null) {
       // getFormatter(), not DateTimeFormatter.ofPattern(): the latter binds the JVM default locale, so a schema
       // pattern with a textual field parsed here but not through format()/parse() (issue #7144)
-      final LocalDateTime fromSchema = parseWithPattern(string, database.getSchema().getDateTimeFormat());
+      final Temporal fromSchema = parseWithSchemaPatterns(database, string);
       if (fromSchema != null)
-        return fromSchema;
-
-      final LocalDateTime fromDateFormat = parseWithPattern(string, database.getSchema().getDateFormat());
-      if (fromDateFormat != null)
-        return fromDateFormat;
+        return fromSchema instanceof OffsetDateTime offset ?
+            dropZone(database, offset.toZonedDateTime(), rebaseOffset) :
+            (LocalDateTime) fromSchema;
     }
 
     return parseSqlTimestamp(database, string, isoFailure, rebaseOffset);
@@ -491,8 +492,14 @@ public class DateUtils {
    * predicate: it says whether the pattern consumed the WHOLE string, and only then is the real parse run to get
    * the resolved value. Resolution can still fail on a structurally-matching string (a pattern admitting month 13,
    * say), which is why the real parse keeps its own guard.
+   * <p>
+   * Answers an {@link OffsetDateTime} when the PATTERN captured an offset ({@code XXX} and friends) and a
+   * {@link LocalDateTime} otherwise, so the offset a schema pattern read out of the value survives to the caller
+   * and each policy can decide what to do with it. Resolving with {@code LocalDateTime.parse} here instead would
+   * discard it before anyone could: a caller wanting the instant would then anchor a wall-clock that had already
+   * lost its offset, and land on a different moment than the value named.
    */
-  private static LocalDateTime parseWithPattern(final String string, final String pattern) {
+  private static Temporal parseWithPattern(final String string, final String pattern) {
     final DateTimeFormatter formatter = getFormatter(pattern);
 
     final ParsePosition position = new ParsePosition(0);
@@ -500,7 +507,7 @@ public class DateUtils {
       return null;
 
     try {
-      return LocalDateTime.parse(string, formatter);
+      return (Temporal) formatter.parseBest(string, OffsetDateTime::from, LocalDateTime::from);
     } catch (final DateTimeParseException ignore) {
       return null;
     }
@@ -526,6 +533,14 @@ public class DateUtils {
     return parsed instanceof OffsetDateTime offset ?
         dropZone(database, offset.toZonedDateTime(), rebaseOffset) :
         (LocalDateTime) parsed;
+  }
+
+  /**
+   * The schema's two patterns, in order, as a {@link Temporal} that still carries any offset they captured.
+   */
+  private static Temporal parseWithSchemaPatterns(final Database database, final String string) {
+    final Temporal fromDateTimeFormat = parseWithPattern(string, database.getSchema().getDateTimeFormat());
+    return fromDateTimeFormat != null ? fromDateTimeFormat : parseWithPattern(string, database.getSchema().getDateFormat());
   }
 
   /**
@@ -557,6 +572,11 @@ public class DateUtils {
         // Fall through: the shared chain below is what reports a value nothing can read.
       }
     }
+
+    // A schema pattern can capture an offset too ('yyyy-MM-dd HH:mm:ss XXX'), and it is the value's own offset just
+    // as much as an ISO one is, so it is kept rather than replaced by the database's zone.
+    if (database != null && parseWithSchemaPatterns(database, string) instanceof OffsetDateTime offset)
+      return offset.toZonedDateTime();
 
     return parseDateTimeKeepingWallClock(database, string).atZone(zoneOf(database));
   }

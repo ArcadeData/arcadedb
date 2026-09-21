@@ -193,7 +193,7 @@ public class Issue5045GrpcDatetimeStringPrecisionIT extends BaseGraphServerTest 
   @Test
   void malformedStringSurfacesAnErrorInsteadOfSilentlyStoringNull() {
     // Documents the decision for point 2 of the #5196 review: a string that is neither numeric nor a
-    // parseable datetime is surfaced as a loud gRPC error (DateUtils.parseIsoDateTime throws
+    // parseable datetime is surfaced as a loud gRPC error (DateUtils.parseDateTime throws
     // DateTimeParseException, which propagates), not silently coerced to null and stored.
     executeCommand("CREATE DOCUMENT TYPE NanosBad5045 IF NOT EXISTS");
     executeCommand("CREATE PROPERTY NanosBad5045.t IF NOT EXISTS DATETIME_NANOS");

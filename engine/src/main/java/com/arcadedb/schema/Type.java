@@ -814,8 +814,10 @@ public enum Type {
           // datetime literal in the record as the raw String it arrived as. It now goes through the same shared
           // chain as every other datetime target (issue #8090).
           if (!FileUtils.isLong(valueAsString)) {
-            final Instant parsed = DateUtils.parseDateTime(database, valueAsString).atZone(zoneIdOf(database))
-                .toInstant();
+            // parseZonedDateTime, not parseDateTime().atZone(): an Instant IS an instant, so an offset the value
+            // carries has to survive. The wall-clock chain drops it - deliberately, for LocalDateTime (issue #4125) -
+            // and re-anchoring what is left to the database's zone lands on a different moment than the value named.
+            final Instant parsed = DateUtils.parseZonedDateTime(database, valueAsString).toInstant();
             return property != null ? parsed.truncatedTo(DateUtils.getPrecisionFromType(property.getType())) : parsed;
           }
         }
@@ -1935,20 +1937,9 @@ public enum Type {
    * hold them.
    */
   private static Date dateFromSharedChain(final Database database, final String valueAsString) {
-    return Date.from(DateUtils.parseDateTime(database, valueAsString).atZone(zoneIdOf(database)).toInstant());
-  }
-
-  /**
-   * The database's configured zone, falling back to the JVM's when there is no database in scope - the same anchor
-   * {@code SimpleDateFormat} and {@link java.util.Calendar} use by default.
-   */
-  private static ZoneId zoneIdOf(final Database database) {
-    if (database != null) {
-      final ZoneId zoneId = database.getSchema().getZoneId();
-      if (zoneId != null)
-        return zoneId;
-    }
-    return ZoneId.systemDefault();
+    // parseZonedDateTime for the same reason as the Instant branch: a Date is an instant, so an offset the value
+    // carries is kept rather than swapped for the database's zone.
+    return Date.from(DateUtils.parseZonedDateTime(database, valueAsString).toInstant());
   }
 
   /**
