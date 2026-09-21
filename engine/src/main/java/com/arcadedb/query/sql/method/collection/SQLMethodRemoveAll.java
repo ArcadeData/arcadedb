@@ -43,7 +43,13 @@ public class SQLMethodRemoveAll extends AbstractSQLMethod {
 
   @Override
   public Object execute(Object value, final Identifiable currentRecord, final CommandContext context, final Object[] params) {
-    if (params != null && params.length > 0 && params[0] != null) {
+    // Guarded on there being an argument at all, NOT on the FIRST one being non-null: the loop below honours a null
+    // wherever else it appears (a null element really can be removed from a collection), so gating on params[0]
+    // made the same argument mean two different things by position - `[1,2,3].removeAll(null,2)` silently dropped the
+    // 2 and reported success while `[1,2,3].removeAll(2,null)` acted on the null (and, before MultiValue was made
+    // null-safe, raised an NPE doing so). The sibling append() lost the same contradiction under issue #7028; this
+    // is issue #7889.
+    if (params != null && params.length > 0) {
       final Object[] arguments = MultiValue.array(params, Object.class, iArgument -> {
         if (iArgument instanceof String string && string.startsWith("$")) {
           return context.getVariable(string);
