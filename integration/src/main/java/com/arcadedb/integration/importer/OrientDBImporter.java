@@ -442,18 +442,28 @@ public class OrientDBImporter {
           reader.skipValue();
       }
 
-      // joinCurrentTx=false when this run owns the transaction: today's behaviour, a fresh nested transaction per
-      // batch, committed as soon as the batch is written. joinCurrentTx=true when a caller-owned transaction
-      // predates the import: joins whatever transaction is already active (begin() nests, and each nested commit
-      // is independently durable) and never commits it itself, so nothing here is published ahead of the caller
-      // resolving it (issue #8073).
-      database.transaction(() -> {
+      // Only wrapped in database.transaction() when this run owns the transaction: a fresh nested transaction per
+      // batch, committed as soon as the batch is written, retried on a retryable failure. When a caller-owned
+      // transaction predates the import, executeBatch() is called directly instead of joining it through
+      // database.transaction(joinCurrentTx=true): that wrapper's generic-Throwable handler rolls back whatever
+      // transaction is active without checking which one it is, so joining would let a batch failure roll back
+      // work the caller did before the import ever started. Calling it directly leaves the caller's transaction
+      // exactly as the caller left it - to commit, retry or roll back on their own terms (issue #8073).
+      if (ownsTransaction) {
+        database.transaction(() -> {
+          try {
+            executeBatch(processedItems, batch);
+          } catch (IOException e) {
+            throw new ImportException("Error on importing batch of records", e);
+          }
+        }, false, CONCURRENT_MAX_RETRY);
+      } else {
         try {
           executeBatch(processedItems, batch);
         } catch (IOException e) {
           throw new ImportException("Error on importing batch of records", e);
         }
-      }, !ownsTransaction, CONCURRENT_MAX_RETRY);
+      }
 
       batch.clear();
     }
