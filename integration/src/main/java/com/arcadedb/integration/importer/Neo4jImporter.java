@@ -442,10 +442,11 @@ public class Neo4jImporter {
               context.errors.incrementAndGet();
             }
 
-            // Gated on ownsTransaction the same way RDFImporterFormat.load() gates its own periodic commit: a
-            // transaction that predates this import is never this method's to commit piecemeal, only to
-            // accumulate into and hand back to whoever owns it (issue #8073).
-            if (ownsTransaction && context.createdVertices.get() > 0 && context.createdVertices.get() % batchSize == 0) {
+            // Gated on pushedTransaction, not ownsTransaction: a transaction that predates this import is never
+            // this method's to commit piecemeal, only to accumulate into and hand back to whoever owns it (issue
+            // #8073), and gating on ownsTransaction alone would also skip this for a transaction the defensive
+            // branch above pushed, which this method is nonetheless the only one able to commit or roll back.
+            if (pushedTransaction && context.createdVertices.get() > 0 && context.createdVertices.get() % batchSize == 0) {
               txOpen[0] = false;
               database.commit();
               committedVertices[0] = context.createdVertices.get();
@@ -497,9 +498,9 @@ public class Neo4jImporter {
 
         // Outside the txOpen branch above, because a commit() that threw has already popped its own transaction
         // and would otherwise leave the batch it failed to write counted as if it had survived. Gated on
-        // ownsTransaction for the same reason the rollback above is: the vertices accumulated into a caller's own
+        // pushedTransaction for the same reason the rollback above is: the vertices accumulated into a caller's own
         // transaction are the caller's to commit or discard, so their fate is not this method's to report on.
-        if (!completed && ownsTransaction) {
+        if (!completed && pushedTransaction) {
           // What the report calls "created" has to be what survived: leaving the counter at the number of
           // vertices read would credit the import with the ones the rollback just took away.
           final long readVertices = context.createdVertices.get();
