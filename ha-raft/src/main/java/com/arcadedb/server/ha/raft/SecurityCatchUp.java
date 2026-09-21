@@ -38,6 +38,18 @@ import java.util.logging.Level;
  * when this node leads - see the note there for why that is accepted rather than closed, and why it is now
  * logged.
  * <p>
+ * <b>The once-per-start request is spent by asking, not by trying</b> (issue #8034). The latch is taken when a
+ * request is submitted, but every exit that answers without having put the question to a peer releases it
+ * again through {@link #settle}, so the request survives to be made at the first moment somebody can answer
+ * it. The arm that makes this matter is the one where this node leads by the time the task runs: the window
+ * between taking the latch on the REPLICA branch and running the task is the jitter plus
+ * {@code RaftHAServer.waitForLocalApply()} plus the transport backoffs, and a node that restarts during a
+ * failover and then wins the election lands in it routinely. Leading is not an answer, because nothing about
+ * winning an election pushes this node's {@code <server-root>/config/} documents at its peers: a seed of them
+ * is always something somebody ASKED for - an admission route, a configuration change that adds a peer, or
+ * another node's own catch-up - and a step-down is none of those. So without the release that node stayed the
+ * odd one out until the next cluster-wide security change of each kind.
+ * <p>
  * Issue #7531 closed the case where a pod is ABSENT from the committed configuration and adds itself: the
  * leader notices the configuration change and seeds. A pod that restarts while it is still a member issues no
  * configuration change at all - {@code KubernetesAutoJoin} answers {@code Outcome.ALREADY_MEMBER} and no
@@ -130,7 +142,9 @@ final class SecurityCatchUp implements AutoCloseable {
    * <p>
    * Called from the REPLICA branch of the leader-change callback, so a node that restarts and immediately wins
    * the election never asks. That is the same case {@link #run} describes when it finds this node leading, and
-   * it has the same answer: there is nobody to ask.
+   * while it leads it has the same answer: there is nobody to ask. It is not the same answer afterwards, which
+   * is why that arm releases the request again (issue #8034) - and this method is the trigger that then makes
+   * it, on the leader change that puts this node back under somebody who can answer.
    */
   void onFirstLeaderObserved(final ArcadeDBServer server, final RaftHAServer raft) {
     if (requestedSinceStart.compareAndSet(false, true))
@@ -141,12 +155,70 @@ final class SecurityCatchUp implements AutoCloseable {
   /**
    * Re-arms the once-per-start request, so the NEXT leader this node observes asks again.
    * <p>
-   * Called when the request could not be completed for a transient reason after its own retries are spent. The
-   * latch exists to stop a re-election on a healthy node from dialling, not to make one unlucky moment
-   * permanent.
+   * Called when the request could not be completed for a transient reason after its own retries are spent, and
+   * from {@link #settle} for every attempt that ended without asking anybody. The latch exists to stop a
+   * re-election on a healthy node from dialling, not to make one unlucky moment permanent.
    */
   private void rearm() {
     requestedSinceStart.set(false);
+  }
+
+  /**
+   * What one attempt did, as the once-per-start latch sees it (issue #8034).
+   * <p>
+   * The distinction the latch needs is not success versus failure - a leader that answers "you are three
+   * documents behind, and two of them would not commit" has answered - but <b>asked</b> versus <b>did not
+   * ask</b>. Only {@link #ASKED} spends the request.
+   */
+  enum Outcome {
+    /**
+     * A peer answered, whether it seeded anything or reported failures. The request is spent: retrying it here
+     * would submit the same documents again.
+     */
+    ASKED,
+    /**
+     * Nothing was asked, so nothing was answered: this node leads and is itself the reference, there is no Raft
+     * plugin to ask through, or the attempt was interrupted before it dialled. The request is released, so the
+     * next leader this node observes makes it.
+     */
+    NOBODY_TO_ASK,
+    /**
+     * The dial failed for a reason a later attempt might not hit. The latch is left alone here - {@link #run}
+     * owns it across the retry budget and releases it once the budget is spent.
+     */
+    TRANSIENT_FAILURE
+  }
+
+  /**
+   * Applies an attempt's outcome to the once-per-start latch, and answers whether the attempt is finished.
+   * <p>
+   * Package-private rather than private so the latch discipline can be driven without a cluster.
+   *
+   * @return {@code true} when there is nothing left to retry, {@code false} when the caller should back off and
+   * try again
+   */
+  boolean settle(final Outcome outcome) {
+    if (outcome == Outcome.TRANSIENT_FAILURE)
+      return false;
+    if (outcome == Outcome.NOBODY_TO_ASK)
+      // Nothing was asked, so the once-per-start request was not made. Releasing it here is what stops a node
+      // that led through its own catch-up from staying out of step for good (issue #8034).
+      rearm();
+    return true;
+  }
+
+  /** Whether the once-per-start request has been made and not released. Visible for testing. */
+  boolean hasRequestedSinceStart() {
+    return requestedSinceStart.get();
+  }
+
+  /**
+   * Puts the latch back to its at-start value, so a test can drive a trigger from a known state rather than
+   * from whatever the server's own startup left behind. Same shape, and the same reason, as
+   * {@code PlainHttpFallbackNotice.rearmForTests()}.
+   */
+  void rearmForTests() {
+    rearm();
   }
 
   /**
@@ -155,7 +227,10 @@ final class SecurityCatchUp implements AutoCloseable {
    */
   void afterSnapshotInstall(final ArcadeDBServer server, final RaftHAServer raft) {
     // It also counts as the once-per-start request: a node that has just been reinstalled from a snapshot has
-    // no earlier state left worth asking about separately.
+    // no earlier state left worth asking about separately. Taken here rather than after the answer, for the
+    // same reason onFirstLeaderObserved takes it at submit time - it is what stops a second trigger dialling
+    // while this one is in flight - and it is safe to take up front because every arm of the attempt that ends
+    // without asking anybody releases it again (issue #8034), this trigger's own leader arm included.
     requestedSinceStart.set(true);
     submit(server, raft, "a snapshot install, which carries no security document", false);
   }
@@ -171,7 +246,7 @@ final class SecurityCatchUp implements AutoCloseable {
       final boolean waitForCatchUp) {
     long backoffMs = TRANSIENT_BACKOFF_MS;
     for (int attempt = 1; ; attempt++) {
-      if (attemptOnce(server, raft, reason, waitForCatchUp && attempt == 1))
+      if (settle(attemptOnce(server, raft, reason, waitForCatchUp && attempt == 1)))
         return;
 
       if (attempt >= TRANSIENT_ATTEMPTS) {
@@ -197,10 +272,10 @@ final class SecurityCatchUp implements AutoCloseable {
   }
 
   /**
-   * One attempt. {@code true} when the question was answered - including "this node leads, so there is nobody
-   * to ask" - and {@code false} when it failed for a reason a later attempt might not hit.
+   * One attempt, classified for {@link #settle}: did it put the question to a peer, find nobody to put it to,
+   * or fail for a reason a later attempt might not hit?
    */
-  private boolean attemptOnce(final ArcadeDBServer server, final RaftHAServer raft, final String reason,
+  private Outcome attemptOnce(final ArcadeDBServer server, final RaftHAServer raft, final String reason,
       final boolean waitForCatchUp) {
     try {
       if (waitForCatchUp) {
@@ -218,27 +293,40 @@ final class SecurityCatchUp implements AutoCloseable {
 
       final HAServerPlugin ha = server.getHA();
       if (!(ha instanceof final RaftHAPlugin plugin))
-        return true;
+        // No Raft plugin to ask through, so nothing was asked. Both triggers are called from the Raft state
+        // machine itself, so this is the plugin being torn down or swapped under a task already queued.
+        return Outcome.NOBODY_TO_ASK;
       if (plugin.isLeader()) {
         // The leader IS the reference this request compares against, so there is nobody to ask - including in
         // the window this catches: a node that finished a snapshot install, or restarted, and then won the
-        // election before this task ran. Its documents become the cluster's by fiat.
+        // election before this task ran.
         //
-        // That is a residual risk rather than an oversight, and it is not closable from here: asking a FOLLOWER
-        // would invert the trust model, and the documents this node holds are the ones a Raft election
-        // guarantees nothing about, since they live outside the log and outside the snapshot. What the design
-        // relies on is that its state came from the same replicated entries everyone else applied - which holds
-        // unless it was restored out of band (a hand-edited or backup-restored config directory).
+        // For as long as it leads, that is a residual risk rather than an oversight, and it is not closable
+        // from here: asking a FOLLOWER would invert the trust model, and the documents this node holds are the
+        // ones a Raft election guarantees nothing about, since they live outside the log and outside the
+        // snapshot. What the design relies on is that its state came from the same replicated entries everyone
+        // else applied - which holds unless it was restored out of band (a hand-edited or backup-restored
+        // config directory).
         //
         // So it is said out loud rather than skipped silently (code review on PR #7854): an operator who DID
-        // restore that directory by hand has one line in the log naming the node whose copy the cluster is now
-        // about to converge on.
+        // restore that directory by hand has one line in the log naming the node that was not checked.
+        //
+        // What is NOT accepted is the risk outliving the leadership (issue #8034), and the line used to say
+        // the opposite - that these documents were "the cluster's reference from here", as though leading
+        // published them. It does not: a cluster-wide seed of the three only ever runs because something asked
+        // for one - MembershipSecuritySeeder on a configuration change that ADDS a peer, an admission route, or
+        // another node's own catch-up request - and simply leading asks for none of them. The peers keep
+        // theirs, which in the scenario this class exists for are the NEWER ones. So the outcome is
+        // NOBODY_TO_ASK rather than ASKED: the request is kept, and made on the leader change that puts this
+        // node back under somebody who can answer it.
         LogManager.instance().log(this, Level.INFO,
-            "This node leads the cluster by the time its security catch-up ran (after %s), so there is no peer to "
-                + "validate its %s, %s and %s against - they are the cluster's reference from here. Re-issue the "
-                + "security changes if this node's config directory was restored out of band", reason,
+            "This node leads the cluster by the time its security catch-up ran (after %s), so there was no peer "
+                + "to validate its %s, %s and %s against and none was asked. Leading does not publish this "
+                + "node's copies to the cluster, so the check is kept and made again the next time this node "
+                + "observes a different leader. Re-issue the security changes if this node's config directory "
+                + "was restored out of band", reason,
             "server-users.jsonl", "server-groups.json", "server-api-tokens.json");
-        return true;
+        return Outcome.NOBODY_TO_ASK;
       }
 
       final List<String> failed = ClusterSecuritySeedQuery.seedForCatchUp(server, plugin, reason);
@@ -253,17 +341,19 @@ final class SecurityCatchUp implements AutoCloseable {
                 + "node to %s on any member to retry", reason, String.join(", ", failed), "/api/v1/cluster/peer");
       // Answered, whether or not every document committed: a partial failure is the leader's report, not a
       // transport failure, and retrying it here would submit the same documents again.
-      return true;
+      return Outcome.ASKED;
     } catch (final InterruptedException e) {
+      // Interrupted in the jitter or in the catch-up wait, so the dial never happened. Nothing is retried on a
+      // thread that is being shut down, but the request must not be recorded as made either (issue #8034).
       Thread.currentThread().interrupt();
-      return true;
+      return Outcome.NOBODY_TO_ASK;
     } catch (final Exception e) {
       // Transient by assumption - an unresolvable leader, a refused connection, a timeout - so the caller
       // retries. What is NOT retried is a leader that answered: see the return above.
       LogManager.instance().log(this, Level.FINE,
           "Could not ask the leader to bring this node's security documents back in step after %s: %s", reason,
           e.getMessage());
-      return false;
+      return Outcome.TRANSIENT_FAILURE;
     }
   }
 
