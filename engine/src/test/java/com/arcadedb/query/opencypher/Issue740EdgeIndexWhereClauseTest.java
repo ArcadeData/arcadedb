@@ -71,8 +71,10 @@ class Issue740EdgeIndexWhereClauseTest {
       // clearly distinguishable from a single-key index lookup by the profiled row counts.
       for (int i = 0; i < 500; i++) {
         final MutableVertex c = database.newVertex("Account").set("name", "N" + i).save();
-        a.newEdge("TRANSFER", c).set("transactionId", "T" + i).set("date", "2026-01-" + (1 + (i % 28))).save();
-        c.newEdge("TRANSFER", b).set("transactionId", "S" + i).set("date", "2026-03-" + (1 + (i % 28))).save();
+        // %02d: a single-digit day ("2026-01-1") is not a valid ISO date, and until issue #8090 it was silently
+        // stored as NULL instead of being refused, so a third of this noise carried no date at all.
+        a.newEdge("TRANSFER", c).set("transactionId", "T" + i).set("date", "2026-01-%02d".formatted(1 + (i % 28))).save();
+        c.newEdge("TRANSFER", b).set("transactionId", "S" + i).set("date", "2026-03-%02d".formatted(1 + (i % 28))).save();
       }
     });
   }

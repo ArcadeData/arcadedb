@@ -55,6 +55,37 @@ public class DateUtils {
    */
   private static final int                                          MAX_CACHED_FORMATTERS     = 1_000;
 
+  /**
+   * Last-resort parser for the SQL-timestamp spelling that none of the strict ISO formats accept: an ISO date, a
+   * <em>space</em> separator, a time, and - the part that made issue #8090 a silent data loss - an arbitrary
+   * fractional-second field. That is exactly what {@code psqlodbc} renders a bound timestamp in and what PostgreSQL
+   * itself prints, so every PostgreSQL-wire client binding a timestamp against a sub-second-precision property used
+   * to write nothing at all: no strict format matched, the schema's default {@code yyyy-MM-dd HH:mm:ss} left the
+   * {@code .123456} unparsed, and the resulting exception degraded to {@code null}.
+   * <p>
+   * The whole time part, the seconds, the fraction and a trailing offset are each optional, and the offset is
+   * accepted in all three widths PostgreSQL emits ({@code +01}, {@code +0100}, {@code +01:00}, plus {@code Z}), so
+   * one formatter covers a bare {@code date}, a {@code timestamp} and a {@code timestamptz} rendering - which is
+   * also why it subsumes the string-length guessing the no-database paths used to do. It is only ever consulted
+   * after the strict ISO formats and after the schema's own patterns, so it can widen what is accepted but never
+   * reinterpret a string that already parsed.
+   */
+  private static final DateTimeFormatter                            SPACE_SEPARATED_DATE_TIME = new DateTimeFormatterBuilder()//
+      .append(DateTimeFormatter.ISO_LOCAL_DATE)//
+      .optionalStart()//
+      .appendLiteral(' ')//
+      .appendValue(ChronoField.HOUR_OF_DAY, 2)//
+      .appendLiteral(':')//
+      .appendValue(ChronoField.MINUTE_OF_HOUR, 2)//
+      .optionalStart().appendLiteral(':').appendValue(ChronoField.SECOND_OF_MINUTE, 2).optionalEnd()//
+      .appendFraction(ChronoField.NANO_OF_SECOND, 0, 9, true)//
+      .optionalEnd()//
+      .optionalStart().appendPattern("[XXX][XX][X]").optionalEnd()//
+      .parseDefaulting(ChronoField.HOUR_OF_DAY, 0)//
+      .parseDefaulting(ChronoField.MINUTE_OF_HOUR, 0)//
+      .parseDefaulting(ChronoField.SECOND_OF_MINUTE, 0)//
+      .toFormatter(Locale.ENGLISH);
+
   public static Object dateTime(final Database database, final long timestamp, final ChronoUnit sourcePrecision,
       final Class dateTimeImplementation, final ChronoUnit destinationPrecision) {
     final long convertedTimestamp = convertTimestamp(timestamp, sourcePrecision, destinationPrecision);
@@ -261,7 +292,7 @@ public class DateUtils {
       if (FileUtils.isLong(string))
         timestamp = Long.parseLong(string);
       else
-        return dateTimeToTimestamp(database, parseIsoDateTime(database, string), precisionToUse);
+        return dateTimeToTimestamp(database, parseDateTime(database, string), precisionToUse);
     } else
       // UNSUPPORTED
       return null;
@@ -356,9 +387,10 @@ public class DateUtils {
   }
 
   /**
-   * Mirrors the vertex string-to-{@link LocalDateTime} fallback chain in {@code Type.convert}
-   * so the GraphBatch edge bulk path (which bypasses {@code Type.convert}) accepts the same
-   * set of inputs - issue #4142. Tries, in order:
+   * The single string-to-{@link LocalDateTime} entry point for the whole engine. {@code Type.convert} used to carry
+   * its own copy of this chain and the two drifted (issue #4142 added this one so the GraphBatch bulk path, which
+   * bypasses {@code Type.convert}, would accept the same inputs); both now call here, so a format accepted by one
+   * write path is accepted by every write path. Tries, in order:
    * <ol>
    *   <li>{@link LocalDateTime#parse(CharSequence)} (ISO without zone);</li>
    *   <li>{@link ZonedDateTime#parse(CharSequence)} for ISO inputs ending in {@code Z} or
@@ -366,24 +398,43 @@ public class DateUtils {
    *   configured zone (default {@link ZoneId#systemDefault()}) before stripping the offset,
    *   so the stored wall-clock follows the database's locale rather than the input's;</li>
    *   <li>the schema's {@code dateTimeFormat};</li>
-   *   <li>the schema's {@code dateFormat}.</li>
+   *   <li>the schema's {@code dateFormat};</li>
+   *   <li>{@link #SPACE_SEPARATED_DATE_TIME}, the SQL-timestamp spelling with an optional fraction and offset
+   *   (issue #8090). Last so that it can only widen what is accepted, never reinterpret a string one of the
+   *   schema's own patterns already claimed.</li>
    * </ol>
-   * When {@code database} is {@code null} only the ISO formats are tried and offset-bearing
-   * inputs keep their wall-clock without rebasing, matching legacy parsing behavior in
-   * scopes without a schema.
+   * When {@code database} is {@code null} the schema patterns are skipped - there is no schema to read them from -
+   * but the ISO and SQL-timestamp formats are still tried, and offset-bearing inputs keep their wall-clock without
+   * rebasing, matching legacy parsing behavior in scopes without a schema.
+   *
+   * @throws DateTimeParseException when no format matches. Never answers {@code null}: a datetime that cannot be
+   *                                parsed has to fail the write rather than empty the column.
    */
-  private static LocalDateTime parseIsoDateTime(final Database database, final String string) {
+  public static LocalDateTime parseDateTime(final Database database, final String string) {
+    return parseDateTime(database, string, true);
+  }
+
+  /**
+   * {@link #parseDateTime} with the offset of an offset-bearing input DROPPED rather than rebased: the wall-clock
+   * written is the wall-clock read.
+   * <p>
+   * The two callers of this chain disagree about that, and each disagreement is pinned by its own tests. The bulk
+   * path rebases, so a client in another zone stores the instant it meant. {@code Type.convert} strips, because
+   * Cypher's {@code datetime('2026-01-01T00:00:00')} renders itself as {@code 2026-01-01T00:00Z} and
+   * {@code SET n.t = datetime(...)} has to read back the wall-clock the query named (issue #4125) rather than one
+   * shifted by the server's zone. Reconciling the two changes what existing databases store and is its own issue;
+   * issue #8090 unified only WHICH FORMATS are accepted, which is what was losing data.
+   */
+  public static LocalDateTime parseDateTimeKeepingWallClock(final Database database, final String string) {
+    return parseDateTime(database, string, false);
+  }
+
+  private static LocalDateTime parseDateTime(final Database database, final String string, final boolean rebaseOffset) {
     try {
       return LocalDateTime.parse(string);
     } catch (final DateTimeParseException e) {
       try {
-        final ZonedDateTime parsed = ZonedDateTime.parse(string);
-        if (database != null) {
-          final ZoneId zoneId = database.getSchema().getZoneId();
-          if (zoneId != null)
-            return parsed.withZoneSameInstant(zoneId).toLocalDateTime();
-        }
-        return parsed.toLocalDateTime();
+        return dropZone(database, ZonedDateTime.parse(string), rebaseOffset);
       } catch (final DateTimeParseException e2) {
         if (database != null) {
           // getFormatter(), not DateTimeFormatter.ofPattern(): the latter binds the JVM default locale, so a schema
@@ -391,12 +442,49 @@ public class DateUtils {
           try {
             return LocalDateTime.parse(string, getFormatter(database.getSchema().getDateTimeFormat()));
           } catch (final DateTimeParseException ignore) {
-            return LocalDateTime.parse(string, getFormatter(database.getSchema().getDateFormat()));
+            try {
+              return LocalDateTime.parse(string, getFormatter(database.getSchema().getDateFormat()));
+            } catch (final DateTimeParseException ignore2) {
+              return parseSqlTimestamp(database, string, e2, rebaseOffset);
+            }
           }
         }
-        throw e2;
+        return parseSqlTimestamp(database, string, e2, rebaseOffset);
       }
     }
+  }
+
+  /**
+   * Final step of {@link #parseDateTime}: {@link #SPACE_SEPARATED_DATE_TIME}, with an offset in the input treated
+   * exactly as the ISO zoned branch treats it. {@code firstFailure} is rethrown when this format does not match
+   * either, so the caller sees the error for the format the input most resembled rather than for the last one tried.
+   */
+  private static LocalDateTime parseSqlTimestamp(final Database database, final String string,
+      final DateTimeParseException firstFailure, final boolean rebaseOffset) {
+    final TemporalAccessor parsed;
+    try {
+      parsed = SPACE_SEPARATED_DATE_TIME.parseBest(string, OffsetDateTime::from, LocalDateTime::from);
+    } catch (final DateTimeParseException ignore) {
+      throw firstFailure;
+    }
+    return parsed instanceof OffsetDateTime offset ?
+        dropZone(database, offset.toZonedDateTime(), rebaseOffset) :
+        (LocalDateTime) parsed;
+  }
+
+  /**
+   * Turns an offset-bearing value into the local datetime that gets stored. With {@code rebaseOffset} the instant is
+   * moved onto the database's configured zone first, so the stored wall-clock denotes the same moment the client
+   * sent; without it the wall-clock is kept exactly as written. Without a database there is no zone to consult and
+   * the wall-clock is kept either way.
+   */
+  private static LocalDateTime dropZone(final Database database, final ZonedDateTime parsed, final boolean rebaseOffset) {
+    if (rebaseOffset && database != null) {
+      final ZoneId zoneId = database.getSchema().getZoneId();
+      if (zoneId != null)
+        return parsed.withZoneSameInstant(zoneId).toLocalDateTime();
+    }
+    return parsed.toLocalDateTime();
   }
 
   public static ChronoUnit parsePrecision(final String precision) {
