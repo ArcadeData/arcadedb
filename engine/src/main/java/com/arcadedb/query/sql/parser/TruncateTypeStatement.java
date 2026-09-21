@@ -169,13 +169,16 @@ public class TruncateTypeStatement extends DDLStatement {
         // descendant instead of O(1).
         //
         // isLightweight(), not holdsLightweightEdges(): a LIGHTWEIGHT type allocates no record, so countType()
-        // answers 0 for it however many edges it holds (issue #7477) and only the count(*) walk can see them. A
+        // answers 0 for it however many edges it holds (issue #7477) and only a count(*) walk can see them. A
         // RECORD-BACKED type that merely has a lightweight descendant is not in that position - its own buckets are
         // exactly what countType() reads - and its lightweight descendant is visited by this same loop in its own
-        // right. Reading holdsLightweightEdges() here would put such a type back on the polymorphic count(*) and
-        // reintroduce the misattribution above for that one shape.
+        // right. Reading holdsLightweightEdges() here would put such a type back on a count(*) it does not need.
+        //
+        // And the lightweight branch counts the type's OWN edges, not the subtree's: a plain count(*) is
+        // unconditionally polymorphic, so an empty LIGHTWEIGHT ancestor with a non-empty lightweight subtype was
+        // misattributed exactly as the record-backed case above was (found by CodeRabbit on PR #8094).
         final long descendantRecs = descendant instanceof EdgeType edgeType && edgeType.isLightweight()
-            ? countRecordsIncludingLightweightEdges(db, descendant.getName())
+            ? countLightweightEdgesOfExactType(db, descendant.getName())
             : context.getDatabase().countType(descendant.getName(), false);
         if (descendantRecs > 0) {
           // instanceof, not isSubTypeOf("V")/("E") - see the root's own guard above (issue #8042)
@@ -355,6 +358,29 @@ public class TruncateTypeStatement extends DDLStatement {
     // Quoted here rather than by the caller: the name arrives from the schema (a subtype's own name) as well as
     // from the parsed statement, so the one place that embeds it in SQL text is the one place that quotes it.
     try (final ResultSet rs = db.query("sql", "SELECT count(*) AS c FROM " + Identifier.quote(typeName))) {
+      return rs.hasNext() ? ((Number) rs.next().getProperty("c")).longValue() : 0L;
+    }
+  }
+
+  /**
+   * The same count restricted to the edges of EXACTLY {@code typeName}, excluding its subtypes' (found by CodeRabbit
+   * on PR #8094).
+   * <p>
+   * {@code SELECT count(*)} is unconditionally polymorphic, which is what the root's own guard wants and what the
+   * per-descendant loop must not have: that loop already visits every descendant individually, so a polymorphic
+   * count charges a subtype's edges to the LIGHTWEIGHT ancestor above it too, and since the walk is pre-order the
+   * empty ancestor is the one reached first and named in the refusal. This is the lightweight twin of the
+   * {@code countType(name, false)} switch in the same loop - {@code countType()} cannot stand in for it, because a
+   * lightweight edge allocates no record and it answers 0 however many edges the type holds (issue #7477).
+   * <p>
+   * {@code @type} is bound as a PARAMETER rather than embedded: the name reaches this method from the schema, and a
+   * type name is free-form enough (back-tick quoting exists precisely because it can carry spaces and reserved
+   * words) that building the comparison by string concatenation would be the one place in this statement where a
+   * schema-supplied name lands inside a SQL literal.
+   */
+  private static long countLightweightEdgesOfExactType(final Database db, final String typeName) {
+    try (final ResultSet rs = db.query("sql",
+        "SELECT count(*) AS c FROM " + Identifier.quote(typeName) + " WHERE @type = ?", typeName)) {
       return rs.hasNext() ? ((Number) rs.next().getProperty("c")).longValue() : 0L;
     }
   }

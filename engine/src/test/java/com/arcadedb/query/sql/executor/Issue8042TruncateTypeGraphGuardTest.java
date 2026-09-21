@@ -215,6 +215,56 @@ public class Issue8042TruncateTypeGraphGuardTest extends TestHelper {
   }
 
   @Test
+  void anEmptyLightweightAncestorIsNotBlamedForItsSubtypesEdges() {
+    // The lightweight twin of the case above. A LIGHTWEIGHT edge allocates no record, so countType() answers 0 for
+    // it however many edges it holds (#7477) and only a count(*) walk can see them - but count(*) is
+    // unconditionally polymorphic, so the empty LWAnc absorbed LWSub's edge and, being reached first, was named
+    // (CodeRabbit on PR #8094). A record-backed sibling is in the same subtree to pin that the two count paths
+    // agree on which type to blame.
+    database.command("sql", "CREATE DOCUMENT TYPE DocRoot").close();
+    database.command("sql", "CREATE VERTEX TYPE Person").close();
+    database.command("sql", "CREATE EDGE TYPE LWAnc EXTENDS DocRoot LIGHTWEIGHT").close();
+    database.command("sql", "CREATE EDGE TYPE LWSub EXTENDS LWAnc LIGHTWEIGHT").close();
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO Person SET name = 'a'").close();
+      database.command("sql", "INSERT INTO Person SET name = 'b'").close();
+      database.command("sql",
+          "CREATE EDGE LWSub FROM (SELECT FROM Person WHERE name = 'a') TO (SELECT FROM Person WHERE name = 'b')").close();
+    });
+
+    assertThat(count("LWAnc")).as("polymorphically the ancestor sees its subtype's edge").isEqualTo(1);
+
+    assertThatThrownBy(() -> database.command("sql", "TRUNCATE TYPE DocRoot POLYMORPHIC").close())
+        .isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("not empty edge classes")
+        .hasMessageContaining("LWSub")
+        .hasMessageNotContaining("LWAnc");
+  }
+
+  @Test
+  void anEmptyLightweightAncestorWithARecordBackedSubtypeNamesTheRecordBackedOne() {
+    // Same shape, but the non-empty subtype is RECORD-BACKED under a lightweight ancestor: a type's own LIGHTWEIGHT
+    // flag is independent of its parent's, so this is a legal hierarchy and the two count paths have to agree on
+    // which type to name.
+    database.command("sql", "CREATE DOCUMENT TYPE DocRoot").close();
+    database.command("sql", "CREATE VERTEX TYPE Person").close();
+    database.command("sql", "CREATE EDGE TYPE LWAnc EXTENDS DocRoot LIGHTWEIGHT").close();
+    database.command("sql", "CREATE EDGE TYPE HeavySub EXTENDS LWAnc").close();
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO Person SET name = 'a'").close();
+      database.command("sql", "INSERT INTO Person SET name = 'b'").close();
+      database.command("sql",
+          "CREATE EDGE HeavySub FROM (SELECT FROM Person WHERE name = 'a') TO (SELECT FROM Person WHERE name = 'b')").close();
+    });
+
+    assertThatThrownBy(() -> database.command("sql", "TRUNCATE TYPE DocRoot POLYMORPHIC").close())
+        .isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("not empty edge classes")
+        .hasMessageContaining("HeavySub")
+        .hasMessageNotContaining("LWAnc");
+  }
+
+  @Test
   void anEmptyGraphLeafBehindADocumentIntermediateIsNotBlamed() {
     // The recursion must not start refusing a subtree that holds nothing: only a non-empty graph descendant is a
     // reason to demand UNSAFE.
