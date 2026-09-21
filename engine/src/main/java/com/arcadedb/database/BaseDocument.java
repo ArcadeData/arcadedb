@@ -108,29 +108,38 @@ public abstract class BaseDocument extends BaseRecord implements Document, Docum
     return (BigDecimal) Type.convert(database, get(propertyName), BigDecimal.class);
   }
 
+  // convertOrNull(), not convert(), for the date/time accessors below: these READ a value the record already holds,
+  // so a stored value this accessor cannot express keeps answering null rather than throwing, exactly as it did
+  // before issue #8090 made convert() strict. That change is aimed at the WRITE path, where answering null silently
+  // empties a column the caller meant to fill; a reader asking for one shape and finding another loses nothing,
+  // since the value is still there under get(). The numeric accessors are deliberately left on convert(): they have
+  // always raised NumberFormatException for an unreadable value, and this is not the change to flip that.
+
   @Override
   public Date getDate(final String propertyName) {
-    return (Date) Type.convert(database, get(propertyName), Date.class);
+    return (Date) Type.convertOrNull(database, get(propertyName), Date.class);
   }
 
   public Calendar getCalendar(final String propertyName) {
-    return (Calendar) Type.convert(database, get(propertyName), Calendar.class);
+    return (Calendar) Type.convertOrNull(database, get(propertyName), Calendar.class);
   }
 
   public LocalDate getLocalDate(final String propertyName) {
-    return (LocalDate) Type.convert(database, get(propertyName), LocalDate.class, type.getPropertyIfExists(propertyName));
+    return (LocalDate) Type.convertOrNull(database, get(propertyName), LocalDate.class, type.getPropertyIfExists(propertyName));
   }
 
   public LocalDateTime getLocalDateTime(final String propertyName) {
-    return (LocalDateTime) Type.convert(database, get(propertyName), LocalDateTime.class, type.getPropertyIfExists(propertyName));
+    return (LocalDateTime) Type.convertOrNull(database, get(propertyName), LocalDateTime.class,
+        type.getPropertyIfExists(propertyName));
   }
 
   public ZonedDateTime getZonedDateTime(final String propertyName) {
-    return (ZonedDateTime) Type.convert(database, get(propertyName), ZonedDateTime.class, type.getPropertyIfExists(propertyName));
+    return (ZonedDateTime) Type.convertOrNull(database, get(propertyName), ZonedDateTime.class,
+        type.getPropertyIfExists(propertyName));
   }
 
   public Instant getInstant(final String propertyName) {
-    return (Instant) Type.convert(database, get(propertyName), Instant.class, type.getPropertyIfExists(propertyName));
+    return (Instant) Type.convertOrNull(database, get(propertyName), Instant.class, type.getPropertyIfExists(propertyName));
   }
 
   @Override
