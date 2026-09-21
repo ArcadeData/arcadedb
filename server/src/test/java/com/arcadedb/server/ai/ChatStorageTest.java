@@ -299,7 +299,13 @@ class ChatStorageTest {
   @Test
   void legacyMigrationCannotReproduceTheSanitizeFilenameCollision() throws Exception {
     // Two usernames that used to collide under sanitizeFilename must not both end up reading the
-    // migrated legacy directory: only the first one looked up after the upgrade may claim it.
+    // migrated legacy directory.
+    //
+    // Updated for #7620: the original assertion here was that the FIRST of the two looked up after
+    // the upgrade claims the shared directory by renaming it away. That is not a fix, it is a
+    // one-directional version of the same cross-user access #7113 reported - the winner gains read
+    // and delete access to every chat the loser ever wrote. An ambiguous legacy directory is now
+    // claimed by nobody and left on disk for an operator to split by hand.
     final String sharedLegacyName = ChatStorage.sanitizeFilename("user@corp.com");
     assertThat(sharedLegacyName).isEqualTo(ChatStorage.sanitizeFilename("user.corp.com"));
 
@@ -308,10 +314,172 @@ class ChatStorageTest {
     final JSONObject chat = ChatStorage.createNewChat("db", "Whoever migrates first owns this");
     FileUtils.writeFile(new File(legacyDir, ChatStorage.sanitizeFilename(chat.getString("id")) + ".json"), chat.toString());
 
-    // "user@corp.com" is looked up first and claims the legacy directory.
-    assertThat(chatStorage.listChats("user@corp.com")).hasSize(1);
-    // "user.corp.com" finds nothing left to migrate: a fresh, private, empty store instead of the
-    // other user's history.
+    // Neither colliding user may read the other's history through the migration.
+    assertThat(chatStorage.listChats("user@corp.com")).isEmpty();
     assertThat(chatStorage.listChats("user.corp.com")).isEmpty();
+    // ...and neither may destroy it: the ambiguous directory is still on disk, untouched.
+    assertThat(legacyDir).exists();
+    assertThat(chatStorage.getChat("user@corp.com", chat.getString("id"))).isNull();
+    assertThat(chatStorage.getChat("user.corp.com", chat.getString("id"))).isNull();
+  }
+
+  @Test
+  void anAmbiguousLegacyDirectoryIsNeverClaimedByAnyOfTheUsersThatCouldHaveProducedIt() throws Exception {
+    // Regression test for #7620, finding 1. sanitizeFilename turns every character outside
+    // [a-zA-Z0-9_-] into '_', so any legacy directory name containing an underscore has an infinite
+    // preimage: "user_corp_com" could have been written by "user@corp.com", "user.corp.com",
+    // "user_corp_com" and countless others. Awarding it to whoever is looked up first hands that
+    // user the others' chats.
+    final String sharedLegacyName = ChatStorage.sanitizeFilename("user@corp.com");
+    final File legacyDir = Paths.get(TEST_ROOT, "chats", sharedLegacyName).toFile();
+    assertThat(legacyDir.mkdirs()).isTrue();
+    final JSONObject chat = ChatStorage.createNewChat("db", "Belongs to one of them, we cannot tell which");
+    FileUtils.writeFile(new File(legacyDir, ChatStorage.sanitizeFilename(chat.getString("id")) + ".json"), chat.toString());
+
+    // Even the user whose name is byte-identical to the legacy directory name gets nothing: that
+    // name is still the image of every other username that sanitizes onto it.
+    for (final String username : new String[] { "user@corp.com", "user.corp.com", "user_corp_com" }) {
+      assertThat(chatStorage.listChats(username)).as("chats visible to %s", username).isEmpty();
+      assertThat(chatStorage.deleteChat(username, chat.getString("id"))).as("%s can delete", username).isFalse();
+    }
+
+    // Nothing was moved and nothing was deleted: the history is intact for an operator to resolve.
+    assertThat(legacyDir).exists();
+    assertThat(legacyDir.listFiles()).hasSize(1);
+  }
+
+  @Test
+  void aUsernameShapedLikeAHashCannotListAnotherUsersLiveChatStore() {
+    // Regression test for #7620, finding 2. A 64-character lowercase hex username passes through
+    // sanitizeFilename byte-identical, and hashUsername emits exactly that shape, so the legacy
+    // directory the migration looks for IS the victim's current, live hashed directory. This needs
+    // no legacy layout to have ever existed: it is reachable on a fresh install.
+    final String victim = "victim@corp.com";
+    final String attacker = ChatStorage.hashUsername(victim);
+    assertThat(attacker).matches("[0-9a-f]{64}");
+    assertThat(ChatStorage.sanitizeFilename(attacker)).isEqualTo(attacker);
+
+    final JSONObject victimChat = ChatStorage.createNewChat("db", "Private");
+    chatStorage.saveChat(victim, victimChat);
+    final File victimDir = Paths.get(TEST_ROOT, "chats", attacker).toFile();
+    assertThat(victimDir).exists();
+
+    assertThat(chatStorage.listChats(attacker)).isEmpty();
+    // The victim's store was not moved out from under them.
+    assertThat(victimDir).exists();
+    assertThat(chatStorage.listChats(victim)).hasSize(1);
+  }
+
+  @Test
+  void aUsernameShapedLikeAHashCannotReadAnotherUsersChatById() {
+    // #7620 finding 2, driven through getChat() rather than listChats(): getChat resolves the user
+    // directory through the same getUserDir() choke point, so it is its own entry point into the
+    // migration and gets its own test.
+    final String victim = "victim@corp.com";
+    final String attacker = ChatStorage.hashUsername(victim);
+
+    final JSONObject victimChat = ChatStorage.createNewChat("db", "Private");
+    chatStorage.saveChat(victim, victimChat);
+
+    assertThat(chatStorage.getChat(attacker, victimChat.getString("id"))).isNull();
+    assertThat(chatStorage.getChat(victim, victimChat.getString("id"))).isNotNull();
+  }
+
+  @Test
+  void aUsernameShapedLikeAHashCannotDeleteAnotherUsersChat() {
+    // #7620 finding 2, driven through deleteChat(). Pre-fix this both moved the victim's whole
+    // store into the attacker's and then deleted a file out of it.
+    final String victim = "victim@corp.com";
+    final String attacker = ChatStorage.hashUsername(victim);
+
+    final JSONObject victimChat = ChatStorage.createNewChat("db", "Private");
+    chatStorage.saveChat(victim, victimChat);
+
+    assertThat(chatStorage.deleteChat(attacker, victimChat.getString("id"))).isFalse();
+    assertThat(chatStorage.getChat(victim, victimChat.getString("id"))).isNotNull();
+  }
+
+  @Test
+  void aUsernameShapedLikeAHashWritesIntoItsOwnStoreNotTheVictimsOne() {
+    // #7620 finding 2, driven through saveChat(). The attacker must still get a working, private
+    // chat store of their own - refusing the migration may not break the hash-shaped username.
+    final String victim = "victim@corp.com";
+    final String attacker = ChatStorage.hashUsername(victim);
+
+    final JSONObject victimChat = ChatStorage.createNewChat("db", "Victim private");
+    chatStorage.saveChat(victim, victimChat);
+
+    final JSONObject attackerChat = ChatStorage.createNewChat("db", "Attacker own");
+    chatStorage.saveChat(attacker, attackerChat);
+
+    assertThat(chatStorage.listChats(attacker)).hasSize(1);
+    assertThat(chatStorage.listChats(attacker).getFirst().getString("title")).isEqualTo("Attacker own");
+    assertThat(chatStorage.listChats(victim)).hasSize(1);
+    assertThat(chatStorage.listChats(victim).getFirst().getString("title")).isEqualTo("Victim private");
+    // The two stores are distinct directories: the attacker's own hash, not the name they chose.
+    assertThat(Paths.get(TEST_ROOT, "chats", ChatStorage.hashUsername(attacker)).toFile()).exists();
+  }
+
+  @Test
+  void aUsernameSpellingAnotherUsersHashInUpperCaseCannotTakeTheirLiveChatStore() {
+    // #7620, the case-insensitive-filesystem variant of finding 2, found while reviewing the fix for
+    // it. hashUsername emits lower-case hex, so an UPPER-case spelling of a victim's digest is not
+    // itself a hash-shaped name under a case-sensitive test and carries no underscore - it clears
+    // both of the other two guards. On NTFS and on the default macOS APFS/HFS+ configuration
+    // "chats/ABC..." and "chats/abc..." are the same directory, so exists() would find the victim's
+    // live store and Files.move would take it.
+    final String victim = "victim@corp.com";
+    final String attacker = ChatStorage.hashUsername(victim).toUpperCase();
+    assertThat(ChatStorage.sanitizeFilename(attacker)).isEqualTo(attacker);
+    assertThat(attacker).doesNotContain("_");
+
+    final JSONObject victimChat = ChatStorage.createNewChat("db", "Private");
+    chatStorage.saveChat(victim, victimChat);
+    final File victimDir = Paths.get(TEST_ROOT, "chats", ChatStorage.hashUsername(victim)).toFile();
+    assertThat(victimDir).exists();
+
+    // Holds on both kinds of filesystem: where the lookup resolves onto the victim's directory the
+    // guards refuse it, and where it does not there was never anything to migrate.
+    assertThat(chatStorage.listChats(attacker)).isEmpty();
+    assertThat(chatStorage.getChat(attacker, victimChat.getString("id"))).isNull();
+    assertThat(chatStorage.deleteChat(attacker, victimChat.getString("id"))).isFalse();
+    assertThat(victimDir).exists();
+    assertThat(chatStorage.listChats(victim)).hasSize(1);
+  }
+
+  @Test
+  void aLegacyDirectorySpelledDifferentlyOnDiskIsNotMigrated() throws Exception {
+    // #7620: two user names differing only in case hash to two different, correct directories, but
+    // sanitize to two spellings of ONE legacy directory. On a case-insensitive filesystem whichever
+    // is looked up first would otherwise migrate the other's chats away.
+    final File legacyDir = Paths.get(TEST_ROOT, "chats", "alice").toFile();
+    assertThat(legacyDir.mkdirs()).isTrue();
+    final JSONObject chat = ChatStorage.createNewChat("db", "alice's pre-upgrade chat");
+    FileUtils.writeFile(new File(legacyDir, ChatStorage.sanitizeFilename(chat.getString("id")) + ".json"), chat.toString());
+
+    // "Alice" is a different user from "alice" and must not receive alice's history, however the
+    // filesystem happens to compare the two names.
+    assertThat(chatStorage.listChats("Alice")).isEmpty();
+    assertThat(Paths.get(TEST_ROOT, "chats", "alice").toFile().list()).hasSize(1);
+
+    // ...while "alice" herself, whose spelling does match the entry on disk, still migrates.
+    assertThat(chatStorage.listChats("alice")).hasSize(1);
+  }
+
+  @Test
+  void anUnderscoreFreeLegacyDirectoryStillMigratesBecauseOnlyOneUsernameCouldHaveProducedIt() throws Exception {
+    // The complement of the #7620 fix: sanitizeFilename only ever rewrites a character TO '_', so a
+    // legacy name with no underscore is the image of exactly one string - itself. Those migrations
+    // are unambiguous and must keep working, or the fix would orphan every ordinary user's history.
+    final String username = "legacyuser";
+    assertThat(ChatStorage.sanitizeFilename(username)).doesNotContain("_");
+
+    final File legacyDir = Paths.get(TEST_ROOT, "chats", ChatStorage.sanitizeFilename(username)).toFile();
+    assertThat(legacyDir.mkdirs()).isTrue();
+    final JSONObject chat = ChatStorage.createNewChat("db", "Pre-upgrade chat");
+    FileUtils.writeFile(new File(legacyDir, ChatStorage.sanitizeFilename(chat.getString("id")) + ".json"), chat.toString());
+
+    assertThat(chatStorage.listChats(username)).hasSize(1);
+    assertThat(legacyDir).doesNotExist();
   }
 }
