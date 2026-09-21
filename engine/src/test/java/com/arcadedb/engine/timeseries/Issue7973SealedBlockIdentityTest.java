@@ -120,27 +120,34 @@ class Issue7973SealedBlockIdentityTest {
         assertThat(after.blocks().get(i))
             .as("entry %d is a fresh object after the rewrite", i)
             .isNotSameAs(before.blocks().get(i));
-        assertThat(after.blocks().get(i).sequence)
-            .as("a block copied verbatim keeps the sequence number it was born with")
-            .isEqualTo(before.blocks().get(i).sequence);
+        assertThat(after.blocks().get(i).blockId)
+            .as("a block copied verbatim keeps the id it was born with")
+            .isEqualTo(before.blocks().get(i).blockId);
       }
     }
   }
 
-  /** Every block ever built gets its own number, whichever path built it. */
+  /**
+   * Every block ever built gets its own id, whichever path built it.
+   * <p>
+   * Uniqueness and nothing more: the ids stopped being a monotone sequence with issue #8043, which put them in the
+   * file so they survive a directory reload. Nothing ORDERS blocks by this field - the directory is ordered by
+   * {@code minTimestamp} and {@code resolveLiveBlock} tests it for equality - so an ordering assertion would only
+   * pin the way they happen to be generated.
+   */
   @Test
-  void everyBlockIsBornWithItsOwnSequence() throws Exception {
+  void everyBlockIsBornWithItsOwnId() throws Exception {
     try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(TEST_PATH, columns)) {
       appendBlock(store, "A", 1.0, 2.0);
       appendBlock(store, "B", 3.0, 4.0);
       appendBlock(store, "C", 5.0, 6.0);
 
-      final List<Long> sequences = new ArrayList<>();
+      final List<Long> blockIds = new ArrayList<>();
       for (final TimeSeriesSealedStore.BlockEntry entry :
           store.snapshotBlockDirectory(Long.MIN_VALUE, Long.MAX_VALUE).blocks())
-        sequences.add(entry.sequence);
+        blockIds.add(entry.blockId);
 
-      assertThat(sequences).doesNotHaveDuplicates().isSorted();
+      assertThat(blockIds).doesNotHaveDuplicates().doesNotContain(0L);
     }
   }
 

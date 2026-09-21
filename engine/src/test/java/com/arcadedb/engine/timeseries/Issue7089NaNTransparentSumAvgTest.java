@@ -424,7 +424,8 @@ class Issue7089NaNTransparentSumAvgTest extends TestHelper {
 
     try (final RandomAccessFile raf = new RandomAccessFile(path + ".ts.sealed", "r")) {
       raf.seek(4);
-      assertThat(raf.readByte()).as("a rewritten file carries the current version").isEqualTo((byte) 1);
+      assertThat(raf.readByte()).as("a rewritten file carries the current version")
+          .isEqualTo((byte) TimeSeriesSealedStore.CURRENT_VERSION);
     }
 
     try (final TimeSeriesSealedStore store = new TimeSeriesSealedStore(path, columns)) {
@@ -497,7 +498,7 @@ class Issue7089NaNTransparentSumAvgTest extends TestHelper {
 
     try (final RandomAccessFile raf = new RandomAccessFile(path + ".ts.sealed", "r")) {
       raf.seek(4);
-      assertThat(raf.readByte()).isEqualTo((byte) 1);
+      assertThat(raf.readByte()).isEqualTo((byte) TimeSeriesSealedStore.CURRENT_VERSION);
     }
 
     // Mixed file: the first block is legacy, the second current; both read, both answered from the header.
