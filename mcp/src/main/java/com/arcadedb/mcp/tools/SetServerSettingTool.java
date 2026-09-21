@@ -111,16 +111,37 @@ public class SetServerSettingTool {
     result.put("key", key);
     // A secret is masked on the way out here for the same reason it is masked when read: this response
     // hands the caller the value it just replaced, so echoing it would disclose through the setter what
-    // the getter refuses to disclose. Masking is keyed on the setting, not on whether it held a value,
-    // so an unset secret cannot be distinguished from a set one either.
-    result.put("previousValue",
-        cfg.isHidden() ? "*****" : oldValue != null ? oldValue.toString() : JSONObject.NULL);
+    // the getter refuses to disclose.
+    result.put("previousValue", publishable(cfg, oldValue));
     // the value as STORED, which for a typed setting is the coerced form rather than the text the caller sent -
     // masked for a secret on the same terms as previousValue above, so that a response the caller may log, cache
     // or hand on does not carry a credential this server otherwise refuses to hand back
-    result.put("newValue",
-        cfg.isHidden() ? "*****" : storedValue != null ? storedValue.toString() : JSONObject.NULL);
+    result.put("newValue", publishable(cfg, storedValue));
     result.put("message", "Setting '" + key + "' updated successfully.");
     return result;
+  }
+
+  /**
+   * The form a value of this setting may take in the response. Redaction is
+   * {@link GlobalConfiguration#publishableValue(Object)}, the single rule the settings READERS publish under -
+   * {@code GET /api/v1/server}, the MCP {@code get_server_settings} tool and {@code SELECT FROM schema:database}
+   * all call it - so the setter cannot disclose what the getter conceals.
+   * <p>
+   * It used to redact on {@link GlobalConfiguration#isHidden()} alone, which covers a setting that IS a secret
+   * and says nothing about one that CONTAINS a secret. {@code arcadedb.server.defaultDatabases} is the second
+   * kind, so a single call handed the caller the passwords of every configured database - and {@code oldValue}
+   * in particular is the PRE-EXISTING configured value, which the caller did not supply and cannot read back
+   * through any getter (issue #8038).
+   * <p>
+   * A missing value is still reported as masked rather than as absent for a wholly hidden setting, because
+   * masking is keyed on the setting and not on whether it held a value: an unset secret must not be
+   * distinguishable from a set one. A setting whose secret is only EMBEDDED needs no such care - what it
+   * publishes keeps the database names either way, so "set" and "unset" are already told apart by the report
+   * the readers return.
+   */
+  private static Object publishable(final GlobalConfiguration cfg, final Object value) {
+    if (value == null)
+      return cfg.isHidden() ? "*****" : JSONObject.NULL;
+    return cfg.publishableValue(value.toString());
   }
 }
