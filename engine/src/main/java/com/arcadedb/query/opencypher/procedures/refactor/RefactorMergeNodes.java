@@ -47,7 +47,8 @@ import java.util.stream.Stream;
  * <p>
  * {@code config.properties} controls how a property present on both the survivor and an absorbed node
  * is resolved: {@code "overwrite"} (the absorbed node's value wins, the default), {@code "discard"}
- * (the survivor's original value is kept) or {@code "combine"} (both values are kept as a list). A
+ * (the survivor's original value is kept) or {@code "combine"} (the distinct values are kept, in
+ * first-seen order, as a list - or as the value itself when the merged nodes all agree on it). A
  * property present only on an absorbed node is always copied onto the survivor. The whole {@code config} argument
  * is optional and defaults to an empty map - hence to the {@code "overwrite"} policy - matching APOC's
  * {@code apoc.refactor.mergeNodes(nodes :: LIST<NODE>, config = {} :: MAP)} (issue #7427).
@@ -157,17 +158,14 @@ public class RefactorMergeNodes implements CypherProcedure {
           // keep the survivor's original value
         }
         case "combine" -> {
-          final Object survivorValue = survivor.get(propertyName);
           final List<Object> combined = new ArrayList<>();
-          if (survivorValue instanceof List<?> list)
-            combined.addAll(list);
-          else
-            combined.add(survivorValue);
-          if (absorbedValue instanceof List<?> list)
-            combined.addAll(list);
-          else
-            combined.add(absorbedValue);
-          survivor.set(propertyName, combined);
+          addDistinct(combined, survivor.get(propertyName));
+          addDistinct(combined, absorbedValue);
+          // APOC's contract for 'combine' is "if the values are the same, keep one; otherwise merge into a
+          // list", so a list appears only once a second distinct value has actually turned up. Merging nodes
+          // that agree - the common case - therefore leaves every scalar the scalar it was, instead of the
+          // two-element list of duplicates this branch used to produce (issue #7428).
+          survivor.set(propertyName, combined.size() == 1 ? combined.getFirst() : combined);
         }
         // unreachable in practice - extractPropertiesPolicy validates policy against VALID_POLICIES
         // before mergeProperties is ever called; kept as a defensive fallback against the two drifting
@@ -175,6 +173,25 @@ public class RefactorMergeNodes implements CypherProcedure {
         default -> throw new CommandSemanticException(getName() + "(): unknown properties policy '" + policy + "'");
       }
     }
+  }
+
+  /**
+   * Appends {@code value} to {@code combined}, skipping anything already there under {@link Object#equals} so
+   * that equal contributions collapse to one entry and the first-seen order is the order that survives.
+   * <p>
+   * A list is flattened rather than nested, because by the second iteration of the merge loop the survivor's
+   * value is whatever this method last accumulated, and because an absorbed node may legitimately carry a list
+   * of its own. The membership test is a linear scan on purpose: the list holds one entry per <i>distinct</i>
+   * value across the merged nodes, which is small, and a scan costs no hash set allocation per property.
+   * </p>
+   */
+  private static void addDistinct(final List<Object> combined, final Object value) {
+    if (value instanceof List<?> list) {
+      for (final Object element : list)
+        if (!combined.contains(element))
+          combined.add(element);
+    } else if (!combined.contains(value))
+      combined.add(value);
   }
 
   private void rewireEdges(final Vertex absorbed, final MutableVertex survivor) {
