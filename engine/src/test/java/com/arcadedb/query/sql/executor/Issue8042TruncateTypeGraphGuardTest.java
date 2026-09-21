@@ -195,6 +195,26 @@ public class Issue8042TruncateTypeGraphGuardTest extends TestHelper {
   }
 
   @Test
+  void anEmptyGraphAncestorIsNotBlamedForItsDescendantsRecords() {
+    // A chain of TWO graph levels under a non-graph root. Counting each descendant polymorphically charged VLeaf's
+    // record to the empty VMiddle above it, and the walk reaches VMiddle first, so the refusal named the one type
+    // in the subtree that holds nothing (CodeRabbit on PR #8094). Refusing was right; naming VMiddle was not.
+    database.command("sql", "CREATE DOCUMENT TYPE DocRoot").close();
+    database.command("sql", "CREATE VERTEX TYPE VMiddle EXTENDS DocRoot").close();
+    database.command("sql", "CREATE VERTEX TYPE VLeaf EXTENDS VMiddle").close();
+    database.transaction(() -> database.command("sql", "INSERT INTO VLeaf SET x = 1").close());
+
+    assertThat(count("VMiddle")).as("the intermediate holds nothing of its own").isEqualTo(1);
+    assertThat(database.countType("VMiddle", false)).isZero();
+
+    assertThatThrownBy(() -> database.command("sql", "TRUNCATE TYPE DocRoot POLYMORPHIC").close())
+        .isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("not empty vertex classes")
+        .hasMessageContaining("VLeaf")
+        .hasMessageNotContaining("VMiddle");
+  }
+
+  @Test
   void anEmptyGraphLeafBehindADocumentIntermediateIsNotBlamed() {
     // The recursion must not start refusing a subtree that holds nothing: only a non-empty graph descendant is a
     // reason to demand UNSAFE.

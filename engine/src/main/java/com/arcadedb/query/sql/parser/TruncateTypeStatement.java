@@ -160,12 +160,23 @@ public class TruncateTypeStatement extends DDLStatement {
       // named in the message, which is strictly more useful than #7919's "report a grandchild against the direct
       // subtype it hangs from" - that phrasing existed only because a grandchild could not be reached from here.
       for (final DocumentType descendant : collectPolymorphicDescendants(typez)) {
-        // Counted polymorphically, and through the count(*) push-down where the subtree holds lightweight edges,
-        // for the same reason the root's own count above does: Database.countType() reads bucket record counts and
-        // answers 0 for a lightweight edge type however many edges it holds (issue #7477).
-        final long descendantRecs = EdgeType.holdsLightweightEdges(descendant)
+        // Each descendant is counted on its OWN records, NOT polymorphically, because the walk above already visits
+        // every one of them individually. Counting polymorphically here would charge a descendant's records to every
+        // graph-type ancestor between it and the root, and since the walk is pre-order that EMPTY ancestor is
+        // reached first - so an empty VMiddle in DocRoot -> VMiddle -> VLeaf was named as the reason for a refusal
+        // VLeaf's record caused (found by CodeRabbit on PR #8094). The truncate was refused either way, but the
+        // message pointed at the wrong type, which is the one thing this loop is for. It is also O(subtree) work per
+        // descendant instead of O(1).
+        //
+        // isLightweight(), not holdsLightweightEdges(): a LIGHTWEIGHT type allocates no record, so countType()
+        // answers 0 for it however many edges it holds (issue #7477) and only the count(*) walk can see them. A
+        // RECORD-BACKED type that merely has a lightweight descendant is not in that position - its own buckets are
+        // exactly what countType() reads - and its lightweight descendant is visited by this same loop in its own
+        // right. Reading holdsLightweightEdges() here would put such a type back on the polymorphic count(*) and
+        // reintroduce the misattribution above for that one shape.
+        final long descendantRecs = descendant instanceof EdgeType edgeType && edgeType.isLightweight()
             ? countRecordsIncludingLightweightEdges(db, descendant.getName())
-            : context.getDatabase().countType(descendant.getName(), true);
+            : context.getDatabase().countType(descendant.getName(), false);
         if (descendantRecs > 0) {
           // instanceof, not isSubTypeOf("V")/("E") - see the root's own guard above (issue #8042)
           if (descendant instanceof VertexType) {
@@ -294,31 +305,6 @@ public class TruncateTypeStatement extends DDLStatement {
    *
    * @return whether at least one type in the scope is record-backed (not a lightweight edge type)
    */
-  /**
-   * Every type strictly below {@code root}, breadth-first, deduplicated (found by CodeRabbit on PR #8094).
-   * <p>
-   * A {@link LinkedHashSet}, not a List, for the reason {@link #collectTruncationScope} spells out: ArcadeDB
-   * supports multiple inheritance, so a diamond hierarchy reaches the same type through two different parent
-   * branches and would otherwise be counted - and reported - twice. Insertion-ordered so the refusal names the
-   * same type on every run rather than whichever one a hash bucket happened to yield first.
-   * <p>
-   * The root itself is deliberately excluded: its own guard runs above this loop, with its own message that does
-   * not name a type.
-   */
-  private static Set<DocumentType> collectPolymorphicDescendants(final DocumentType root) {
-    final Set<DocumentType> descendants = new LinkedHashSet<>();
-    collectPolymorphicDescendants(root, descendants);
-    return descendants;
-  }
-
-  private static void collectPolymorphicDescendants(final DocumentType type, final Set<DocumentType> target) {
-    for (final DocumentType subType : type.getSubTypes())
-      // The add() guard is what terminates the walk on a diamond, and it also means each type's own subtypes are
-      // visited exactly once however many parents lead to it.
-      if (target.add(subType))
-        collectPolymorphicDescendants(subType, target);
-  }
-
   private static boolean collectTruncationScope(final DocumentType type, final boolean polymorphic,
       final Set<String> lightweightTypeNames) {
     boolean hasRecordBackedType;
@@ -333,6 +319,31 @@ public class TruncateTypeStatement extends DDLStatement {
         hasRecordBackedType |= collectTruncationScope(subType, true, lightweightTypeNames);
 
     return hasRecordBackedType;
+  }
+
+  /**
+   * Every type strictly below {@code root}, depth-first in declaration order, deduplicated (found by CodeRabbit on
+   * PR #8094).
+   * <p>
+   * A {@link LinkedHashSet}, not a List, for the reason {@link #collectTruncationScope} spells out: ArcadeDB
+   * supports multiple inheritance, so a diamond hierarchy reaches the same type through two different parent
+   * branches and would otherwise be counted - and reported - twice. The {@code add()} guard is also what terminates
+   * the walk on such a diamond. Insertion-ordered so the refusal names the same type on every run rather than
+   * whichever one a hash bucket happened to yield first.
+   * <p>
+   * The root itself is deliberately excluded: its own guard runs before this one, with its own message that names
+   * no type.
+   */
+  private static Set<DocumentType> collectPolymorphicDescendants(final DocumentType root) {
+    final Set<DocumentType> descendants = new LinkedHashSet<>();
+    collectPolymorphicDescendants(root, descendants);
+    return descendants;
+  }
+
+  private static void collectPolymorphicDescendants(final DocumentType type, final Set<DocumentType> target) {
+    for (final DocumentType subType : type.getSubTypes())
+      if (target.add(subType))
+        collectPolymorphicDescendants(subType, target);
   }
 
   /**
