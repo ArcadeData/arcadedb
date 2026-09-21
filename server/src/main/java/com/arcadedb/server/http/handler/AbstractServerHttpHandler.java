@@ -330,7 +330,11 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     try {
       final InputStream in = e.getInputStream();
       int read;
-      while ((read = in.read(chunk)) > 0) {
+      // != -1, not > 0: only -1 means end of body. A zero-length read would otherwise be taken for the end and
+      // a partial body handed back as though it were whole - on a request the cap is supposed to decide about.
+      // InputStream.read(byte[]) cannot return 0 for a non-empty buffer, so this costs nothing and removes the
+      // silent-truncation hazard for any stream implementation that ever sits here (PR #8092 review).
+      while ((read = in.read(chunk)) != -1) {
         total += read;
         if (maxBodySize > 0 && total > maxBodySize)
           throw new UncheckedIOException(new RequestTooBigException(
