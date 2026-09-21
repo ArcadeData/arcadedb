@@ -528,9 +528,9 @@ class Issue7477LightweightEdgeScanTest extends TestHelper {
    * finding on #7481).
    * <p>
    * The {@code E} super type this fixture builds is a leftover from when the guard asked
-   * {@code isSubTypeOf("E")} and was therefore the only way to reach it at all - the every-other-truncate-in-this-
-   * class-needs-UNSAFE-now situation is the same finding seen from the other side (issue #8042). It is kept
-   * because it costs nothing and pins that the explicit hierarchy does not CHANGE the answer either.
+   * {@code isSubTypeOf("E")} by name and this hierarchy was the only way to reach it at all. Every other truncate
+   * in this class needs UNSAFE now, which is the same finding seen from the other side (issue #8042). The super
+   * type is kept because it costs nothing and pins that the explicit hierarchy does not CHANGE the answer either.
    */
   @Test
   void truncateOnALightweightEdgeTypeUnderARealEHierarchyStillRequiresUnsafeWhenNotEmpty() {
