@@ -307,7 +307,10 @@ public class ChatStorage {
    * message once, not in a loop.
    *
    * <p>The set's SIZE is bounded - an entry is only ever added for a directory that exists on disk,
-   * and nothing creates a legacy directory any more, so a caller cannot grow it. Its CONTENTS go
+   * and every directory this class creates is hash-named, so an API caller cannot grow it. That
+   * bound assumes nothing else writes arbitrary directory names under {@code chats/}, which is true
+   * today; a feature that let an admin or an import job create named directories there would have to
+   * revisit it. Its CONTENTS go
    * stale: entries are never removed, so a name whose directory an operator has since resolved stays
    * marked as reported for the life of the server. That costs a log line, not a decision.
    */

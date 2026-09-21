@@ -416,8 +416,13 @@ class ChatStorageTest {
     assertThat(chatStorage.listChats(attacker).getFirst().getString("title")).isEqualTo("Attacker own");
     assertThat(chatStorage.listChats(victim)).hasSize(1);
     assertThat(chatStorage.listChats(victim).getFirst().getString("title")).isEqualTo("Victim private");
-    // The two stores are distinct directories: the attacker's own hash, not the name they chose.
-    assertThat(Paths.get(TEST_ROOT, "chats", ChatStorage.hashUsername(attacker)).toFile()).exists();
+    // The two stores are distinct directories: the attacker's own hash, not the name they chose -
+    // which is the name of the victim's directory, so assert the two paths really do differ.
+    final File attackerDir = Paths.get(TEST_ROOT, "chats", ChatStorage.hashUsername(attacker)).toFile();
+    final File victimDir = Paths.get(TEST_ROOT, "chats", ChatStorage.hashUsername(victim)).toFile();
+    assertThat(attackerDir).exists();
+    assertThat(victimDir).exists();
+    assertThat(attackerDir).isNotEqualTo(victimDir);
   }
 
   @Test
