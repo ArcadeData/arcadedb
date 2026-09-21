@@ -23,6 +23,7 @@ import com.arcadedb.exception.SerializationException;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryTypes;
 
+import java.text.ParsePosition;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -69,6 +70,10 @@ public class DateUtils {
    * also why it subsumes the string-length guessing the no-database paths used to do. It is only ever consulted
    * after the strict ISO formats and after the schema's own patterns, so it can widen what is accepted but never
    * reinterpret a string that already parsed.
+   * <p>
+   * The fraction is nested INSIDE the optional seconds section rather than beside it, so the grammar is exactly
+   * "date, optional time, and a fractional second only where there is a second to qualify": a stray
+   * {@code '2024-02-29 13:45.123456'} is refused rather than quietly read as 13:45:00.123456.
    */
   private static final DateTimeFormatter                            SPACE_SEPARATED_DATE_TIME = new DateTimeFormatterBuilder()//
       .append(DateTimeFormatter.ISO_LOCAL_DATE)//
@@ -77,8 +82,8 @@ public class DateUtils {
       .appendValue(ChronoField.HOUR_OF_DAY, 2)//
       .appendLiteral(':')//
       .appendValue(ChronoField.MINUTE_OF_HOUR, 2)//
-      .optionalStart().appendLiteral(':').appendValue(ChronoField.SECOND_OF_MINUTE, 2).optionalEnd()//
-      .appendFraction(ChronoField.NANO_OF_SECOND, 0, 9, true)//
+      .optionalStart().appendLiteral(':').appendValue(ChronoField.SECOND_OF_MINUTE, 2)//
+      .appendFraction(ChronoField.NANO_OF_SECOND, 0, 9, true).optionalEnd()//
       .optionalEnd()//
       .optionalStart().appendPattern("[XXX][XX][X]").optionalEnd()//
       .parseDefaulting(ChronoField.HOUR_OF_DAY, 0)//
@@ -406,6 +411,9 @@ public class DateUtils {
    * When {@code database} is {@code null} the schema patterns are skipped - there is no schema to read them from -
    * but the ISO and SQL-timestamp formats are still tried, and offset-bearing inputs keep their wall-clock without
    * rebasing, matching legacy parsing behavior in scopes without a schema.
+   * <p>
+   * A step whose format provably cannot match the input is not attempted at all - the order is unchanged, only the
+   * wasted work is gone. See {@link #parseDateTime(Database, String, boolean)}.
    *
    * @throws DateTimeParseException when no format matches. Never answers {@code null}: a datetime that cannot be
    *                                parsed has to fail the write rather than empty the column.
@@ -430,42 +438,90 @@ public class DateUtils {
   }
 
   private static LocalDateTime parseDateTime(final Database database, final String string, final boolean rebaseOffset) {
-    try {
-      return LocalDateTime.parse(string);
-    } catch (final DateTimeParseException e) {
+    // The order below is the contract; what varies is only whether a step is ATTEMPTED, and a step is skipped only
+    // when it provably cannot match. This matters because the chain is now on the hot path: before issue #8090 the
+    // literal it exists for never parsed at all, so no client could have been writing at volume through here, and
+    // every failed attempt costs a JDK exception with its stack trace. The target literal now reaches its formatter
+    // without a single throw.
+    final boolean spaceSeparated = hasSpaceDateTimeSeparator(string);
+
+    DateTimeParseException isoFailure = null;
+    if (!spaceSeparated) {
+      // ISO demands a 'T'. With a space at the separator both of these are guaranteed to fail, so they are not run.
       try {
-        return dropZone(database, ZonedDateTime.parse(string), rebaseOffset);
-      } catch (final DateTimeParseException e2) {
-        if (database != null) {
-          // getFormatter(), not DateTimeFormatter.ofPattern(): the latter binds the JVM default locale, so a schema
-          // pattern with a textual field parsed here but not through format()/parse() (issue #7144)
-          try {
-            return LocalDateTime.parse(string, getFormatter(database.getSchema().getDateTimeFormat()));
-          } catch (final DateTimeParseException ignore) {
-            try {
-              return LocalDateTime.parse(string, getFormatter(database.getSchema().getDateFormat()));
-            } catch (final DateTimeParseException ignore2) {
-              return parseSqlTimestamp(database, string, e2, rebaseOffset);
-            }
-          }
+        return LocalDateTime.parse(string);
+      } catch (final DateTimeParseException e) {
+        try {
+          return dropZone(database, ZonedDateTime.parse(string), rebaseOffset);
+        } catch (final DateTimeParseException e2) {
+          isoFailure = e2;
         }
-        return parseSqlTimestamp(database, string, e2, rebaseOffset);
       }
+    }
+
+    if (database != null) {
+      // getFormatter(), not DateTimeFormatter.ofPattern(): the latter binds the JVM default locale, so a schema
+      // pattern with a textual field parsed here but not through format()/parse() (issue #7144)
+      final LocalDateTime fromSchema = parseWithPattern(string, database.getSchema().getDateTimeFormat());
+      if (fromSchema != null)
+        return fromSchema;
+
+      final LocalDateTime fromDateFormat = parseWithPattern(string, database.getSchema().getDateFormat());
+      if (fromDateFormat != null)
+        return fromDateFormat;
+    }
+
+    return parseSqlTimestamp(database, string, isoFailure, rebaseOffset);
+  }
+
+  /**
+   * True when the character where a date-time separator belongs is a space rather than ISO's {@code 'T'}. The date
+   * part of every format in this chain is the fixed-width {@code yyyy-MM-dd}, so position 10 is the separator
+   * whenever there is one - a cheap read that lets {@link #parseDateTime} skip the steps that cannot match.
+   */
+  private static boolean hasSpaceDateTimeSeparator(final String string) {
+    return string.length() > 10 && string.charAt(10) == ' ';
+  }
+
+  /**
+   * Applies a schema pattern, answering {@code null} instead of throwing when it does not match.
+   * <p>
+   * {@code parseUnresolved} is the only entry point in {@link DateTimeFormatter} that reports a non-match by
+   * returning {@code null} rather than by constructing a {@link DateTimeParseException}, so it is used as a
+   * predicate: it says whether the pattern consumed the WHOLE string, and only then is the real parse run to get
+   * the resolved value. Resolution can still fail on a structurally-matching string (a pattern admitting month 13,
+   * say), which is why the real parse keeps its own guard.
+   */
+  private static LocalDateTime parseWithPattern(final String string, final String pattern) {
+    final DateTimeFormatter formatter = getFormatter(pattern);
+
+    final ParsePosition position = new ParsePosition(0);
+    if (formatter.parseUnresolved(string, position) == null || position.getIndex() != string.length())
+      return null;
+
+    try {
+      return LocalDateTime.parse(string, formatter);
+    } catch (final DateTimeParseException ignore) {
+      return null;
     }
   }
 
   /**
    * Final step of {@link #parseDateTime}: {@link #SPACE_SEPARATED_DATE_TIME}, with an offset in the input treated
-   * exactly as the ISO zoned branch treats it. {@code firstFailure} is rethrown when this format does not match
-   * either, so the caller sees the error for the format the input most resembled rather than for the last one tried.
+   * exactly as the ISO zoned branch treats it.
+   *
+   * @param isoFailure the failure from the ISO attempts, rethrown in preference to this format's own when nothing
+   *                   matched, so the caller sees the error for the format the input most resembled. {@code null}
+   *                   when those attempts were skipped because the input is space-separated and could not have
+   *                   matched them, in which case this format's own failure is the only one there is.
    */
   private static LocalDateTime parseSqlTimestamp(final Database database, final String string,
-      final DateTimeParseException firstFailure, final boolean rebaseOffset) {
+      final DateTimeParseException isoFailure, final boolean rebaseOffset) {
     final TemporalAccessor parsed;
     try {
       parsed = SPACE_SEPARATED_DATE_TIME.parseBest(string, OffsetDateTime::from, LocalDateTime::from);
-    } catch (final DateTimeParseException ignore) {
-      throw firstFailure;
+    } catch (final DateTimeParseException e) {
+      throw isoFailure != null ? isoFailure : e;
     }
     return parsed instanceof OffsetDateTime offset ?
         dropZone(database, offset.toZonedDateTime(), rebaseOffset) :

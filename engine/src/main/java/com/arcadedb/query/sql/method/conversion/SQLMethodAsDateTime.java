@@ -23,6 +23,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 import com.arcadedb.utility.DateUtils;
 
+import java.time.format.DateTimeParseException;
+
 /**
  * Transforms a value to datetime. If the conversion is not possible, null is returned.
  *
@@ -59,9 +61,19 @@ public class SQLMethodAsDateTime extends AbstractSQLMethod {
     // Without one, the shared chain applies - the same one the write path uses - so `asDatetime()` accepts every
     // spelling an INSERT accepts, including the SQL timestamp with a fractional second (issue #8090), instead of
     // only the schema's single dateTimeFormat pattern.
-    final Object date = params.length > 0 ?
-        DateUtils.parse(value.toString(), params[0].toString()) :
-        DateUtils.parseDateTime(context.getDatabase(), value.toString());
+    //
+    // A value that matches nothing answers null, as this method's contract has always promised and as the sibling
+    // date() function already does. That is the READ side of the split issue #8090 drew: a write must refuse a
+    // value it cannot store, because silently emptying the column is the data loss being fixed, while a conversion
+    // asked for inside a query is an ordinary miss.
+    final Object date;
+    try {
+      date = params.length > 0 ?
+          DateUtils.parse(value.toString(), params[0].toString()) :
+          DateUtils.parseDateTime(context.getDatabase(), value.toString());
+    } catch (final DateTimeParseException e) {
+      return null;
+    }
 
     return DateUtils.getDate(date, dateTimeImpl);
   }

@@ -24,6 +24,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.DateUtils;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeParseException;
@@ -231,8 +232,11 @@ class Issue8090SpaceSeparatedFractionalDateTimeTest extends TestHelper {
       assertThat(database.query("sql", "SELECT date('29/02/2024', 'dd/MM/yyyy') AS d").next().<Object>getProperty("d"))//
           .isEqualTo(LocalDateTime.of(2024, 2, 29, 0, 0));
 
-      // date() keeps its documented answer for a value it cannot read at all.
+      // Both read-side surfaces keep their documented answer for a value they cannot read at all: null, not an
+      // error. Only the WRITE path refuses - that asymmetry is the whole point of the split.
       assertThat(database.query("sql", "SELECT date('not-a-timestamp') AS d").next().<Object>getProperty("d")).isNull();
+      assertThat(
+          database.query("sql", "SELECT 'not-a-timestamp'.asDatetime() AS d").next().<Object>getProperty("d")).isNull();
     });
   }
 
@@ -267,6 +271,32 @@ class Issue8090SpaceSeparatedFractionalDateTimeTest extends TestHelper {
 
       assertThat(database.countType(typeName, false)).as("index type %s", indexType).isEqualTo(2);
     }
+  }
+
+  /**
+   * The {@code Instant} branch of {@code Type.convert} had no {@code String} case at all, so with
+   * {@code arcadedb.dateTimeImplementation=java.time.Instant} a datetime literal stayed in the record as the raw
+   * {@link String} it arrived as. It now goes through the same shared chain as every other datetime target.
+   */
+  @Test
+  void instantTargetReadsTheSameLiterals() {
+    final Instant expected = LocalDateTime.of(2024, 2, 29, 13, 45, 10, 123_456_000)
+        .atZone(database.getSchema().getZoneId()).toInstant();
+
+    for (final String literal : new String[] { "2024-02-29 13:45:10.123456", "2024-02-29T13:45:10.123456" })
+      assertThat(Type.convert(database, literal, Instant.class)).as("literal '%s'", literal).isEqualTo(expected);
+
+    assertThatThrownBy(() -> Type.convert(database, "not-a-timestamp", Instant.class))//
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  /**
+   * A fractional second only qualifies a second that is actually there: {@code '13:45.123456'} is not a time.
+   */
+  @Test
+  void aFractionWithoutSecondsIsRefused() {
+    assertThatThrownBy(() -> DateUtils.parseDateTime(null, "2024-02-29 13:45.123456"))//
+        .isInstanceOf(DateTimeParseException.class);
   }
 
   /**
