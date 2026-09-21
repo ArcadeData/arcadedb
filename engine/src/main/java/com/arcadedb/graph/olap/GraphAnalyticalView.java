@@ -2594,10 +2594,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
    * sum for the OTHER edge types {@link #countEdgesBetween} adds it to. Issue #7042 closed the one that made
    * this reachable in ordinary use - the deletion side of the post-compaction re-application, which used to
    * budget for edges the freshly scanned base had already dropped - and the deletion side now spends a budget
-   * only for a deletion the fresh run still carries. What is left is #6777's RID reuse, and the add side's
-   * dedup being by presence rather than by multiplicity (a buffered add of a SECOND parallel edge to a pair
-   * the fresh base already holds one of is skipped, which undercounts rather than overspending). The clamp
-   * stays: it costs nothing, and it is the last line between either of those and a corrupted cross-type sum.
+   * only for a deletion the fresh run still carries. Issue #7884 closed the mirror image on the add side, whose
+   * dedup was by presence rather than by multiplicity, so a buffered add of a SECOND parallel edge to a pair the
+   * fresh base already held one of used to be dropped outright. What is left is #6777's RID reuse. The clamp
+   * stays: it costs nothing, and it is the last line between that and a corrupted cross-type sum.
    */
   private long countBetweenForType(final Snapshot snap, final int nodeA, final int nodeB,
       final Vertex.DIRECTION direction, final String edgeType) {

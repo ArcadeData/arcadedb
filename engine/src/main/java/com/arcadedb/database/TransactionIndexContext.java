@@ -24,6 +24,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.IndexKeyEquality;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.vector.LSMVectorIndex;
@@ -240,15 +241,15 @@ public class TransactionIndexContext {
       if (!(o instanceof IndexKey indexKey))
         return false;
       if (unique)
-        return Arrays.equals(keyValues, indexKey.keyValues);
-      return Objects.equals(rid, indexKey.rid) && Arrays.equals(keyValues, indexKey.keyValues);
+        return IndexKeyEquality.sameTuple(keyValues, indexKey.keyValues);
+      return Objects.equals(rid, indexKey.rid) && IndexKeyEquality.sameTuple(keyValues, indexKey.keyValues);
     }
 
     @Override
     public int hashCode() {
       if (unique)
-        return Objects.hash(Arrays.hashCode(keyValues));
-      return Objects.hash(rid, Arrays.hashCode(keyValues));
+        return Objects.hash(IndexKeyEquality.hashTuple(keyValues));
+      return Objects.hash(rid, IndexKeyEquality.hashTuple(keyValues));
     }
 
     @Override
@@ -305,12 +306,12 @@ public class TransactionIndexContext {
       if (o == null || getClass() != o.getClass())
         return false;
       final ComparableKey that = (ComparableKey) o;
-      return Arrays.equals(values, that.values);
+      return IndexKeyEquality.sameTuple(values, that.values);
     }
 
     @Override
     public int hashCode() {
-      return Arrays.hashCode(values);
+      return IndexKeyEquality.hashTuple(values);
     }
 
     @Override
