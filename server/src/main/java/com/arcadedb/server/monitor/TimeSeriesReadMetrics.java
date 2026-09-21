@@ -139,6 +139,7 @@ public final class TimeSeriesReadMetrics {
     final MeterSet meters = meterSet(database, type, surface);
 
     meters.skippedBlocks.increment(metrics.getSkippedBlocks());
+    meters.vanishedBlocks.increment(metrics.getVanishedBlocks());
     meters.fastPathBlocks.increment(metrics.getFastPathBlocks());
     meters.slowPathBlocks.increment(metrics.getSlowPathBlocks());
     meters.scannedPages.increment(metrics.getScannedPages());
@@ -226,11 +227,12 @@ public final class TimeSeriesReadMetrics {
 
   /**
    * The meters of one {@code db|type|surface} tuple, resolved once and reused. Building them per request would
-   * put a {@code Counter.Builder}/{@code Tags}/{@code Meter.Id} allocation and eleven registry lookups on a
+   * put a {@code Counter.Builder}/{@code Tags}/{@code Meter.Id} allocation and twelve registry lookups on a
    * path whose whole point is that it is cheap when the push-downs work.
    */
   private static final class MeterSet {
     final Counter skippedBlocks;
+    final Counter vanishedBlocks;
     final Counter fastPathBlocks;
     final Counter slowPathBlocks;
     final Counter scannedPages;
@@ -245,6 +247,8 @@ public final class TimeSeriesReadMetrics {
     MeterSet(final String database, final String type, final String surface) {
       skippedBlocks = blockCounter(database, type, surface, "skipped",
           "Sealed blocks discarded on their declared range, tag values or statistics, without being read");
+      vanishedBlocks = blockCounter(database, type, surface, "vanished",
+          "Sealed blocks a scan held a directory entry for and could no longer find, so its answer is short");
       fastPathBlocks = blockCounter(database, type, surface, "fast-path",
           "Sealed blocks answered from their declared statistics, without being decompressed");
       slowPathBlocks = blockCounter(database, type, surface, "slow-path",
