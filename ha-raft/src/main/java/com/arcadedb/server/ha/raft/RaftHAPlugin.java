@@ -932,11 +932,103 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     addPeer(peerId, address, null);
   }
 
+  /**
+   * {@inheritDoc}
+   * <p>
+   * Kept {@code void}, and therefore reporting a residual seed failure only to the log. A caller that has to act
+   * on one - which an embedding application does, since nothing else is watching this server's log - calls
+   * {@link #addPeerAndReportSeed} instead (issue #7820).
+   * <p>
+   * <b>Timing change in 26.10.1, for an embedder upgrading.</b> This used to return as soon as the membership
+   * change committed. It now also waits for the leader to report the security seed, which is what gives the
+   * admission the same outcome the two operator-facing paths have reported since issues #7521 and #7532. The
+   * wait is bounded - {@code ClusterSecuritySeedQuery} gives the request
+   * {@code arcadedb.ha.securitySeedRetryTimeout} plus a fixed margin as its deadline and re-resolves the leader
+   * at most a fixed number of times - but its worst case is seconds rather than the previous near-immediate
+   * return, so an embedder calling this from a latency-sensitive thread should know that before upgrading.
+   */
   @Override
   public void addPeer(final String peerId, final String address, final String name) {
+    final List<String> failedSeeds = addPeerAndReportSeed(peerId, address, name);
+    if (!failedSeeds.isEmpty())
+      LogManager.instance().log(this, Level.SEVERE,
+          "Peer '%s' was added but these security documents could not be seeded to it: %s. It is a cluster member "
+              + "serving requests against its own copy of them; re-issue the admission to retry the seed", peerId,
+          String.join(", ", failedSeeds));
+  }
+
+  /**
+   * {@inheritDoc}
+   * <p>
+   * The membership change first, the seed report second, and nothing in between that can turn a committed
+   * membership change back into a failed one.
+   * <p>
+   * The seed itself is the leader's, not this node's (issues #7531 and #7834): the leader seeds every
+   * configuration change that brings in a peer, so the embedded API's DELIVERY has been covered since #7531 and
+   * what this adds is the REPORT the two operator-facing paths already had. Asking rather than seeding is what
+   * keeps the cluster on one seeder - two, under two different {@code ServerSecurity} monitors in two JVMs, is
+   * how a revocation committing mid-seed got resurrected by whichever submit landed second.
+   */
+  @Override
+  public List<String> addPeerAndReportSeed(final String peerId, final String address, final String name) {
+    admitPeer(peerId, address, name);
+    return seedReportForAdmission(peerId);
+  }
+
+  /**
+   * The membership change alone, without the seed report {@link #addPeerAndReportSeed} adds to it.
+   * <p>
+   * Its own method so a test can drive the admission sequence without a live Ratis cluster, the same seam
+   * {@link #setRaftHAServer} is. Package-private for that reason; production reaches it only through the two
+   * {@code addPeer} entry points above.
+   */
+  // @VisibleForTesting
+  void admitPeer(final String peerId, final String address, final String name) {
     if (raftHAServer == null)
       throw new RuntimeException("Raft HA server not started");
     raftHAServer.addPeer(peerId, address, name);
+  }
+
+  /**
+   * What the cluster security seed left uncommitted after {@code admittedPeer} became a member, as
+   * {@code PostAddPeerHandler} and {@code ServerControlPlane.connectCluster} report it.
+   * <p>
+   * <b>Never throws.</b> By the time this runs the peer is a committed member, so nothing here may reach the
+   * caller as a failed admission - it would retry a join that already happened. A seed whose outcome is UNKNOWN
+   * is reported as all three documents failing rather than as none: "re-issue the admission" is the action that
+   * repairs it either way, and an empty list would read as "joined, everything seeded" from a path where
+   * possibly nothing was.
+   * <p>
+   * The catch is wider than the {@code IOException | IllegalStateException} pair {@code PostAddPeerHandler}
+   * names, for the reason {@code ServerControlPlane.connectCluster} gives for its own width: those two are what
+   * the seed request is <i>known</i> to raise, while the rule here is that nothing raised while seeding may
+   * escape. The handler has an HTTP layer behind it that turns an escape into a 500, which at least is not a
+   * clean 200; an embedded caller has nothing, and would read the exception as a join that did not happen.
+   * <p>
+   * {@code IOException | RuntimeException} rather than {@code Exception}, because that pair is already
+   * exhaustive: {@link #seedSecurityStateForAdmission} declares {@code IOException} as its only checked
+   * exception, so nothing else checked can arrive here. An {@link Error} is deliberately left to propagate -
+   * the membership change is committed either way, and a JVM in that state must not be told it merely failed
+   * to seed three documents.
+   */
+  private List<String> seedReportForAdmission(final String admittedPeer) {
+    try {
+      // The orElseGet is the interface's contract for an HA implementation with no leader-side seeder. It is
+      // unreachable from here - this IS the Raft implementation, whose override never answers empty - but
+      // stating it keeps all three admission call sites written the same way.
+      return seedSecurityStateForAdmission(admittedPeer)
+          .orElseGet(() -> server.getSecurity().seedSecurityStateClusterWide(
+              configuration.getValueAsLong(GlobalConfiguration.HA_SECURITY_SEED_RETRY_TIMEOUT)));
+    } catch (final IOException | RuntimeException e) {
+      // The two named cases: an IOException is the leader being unreachable, an IllegalStateException is the seed
+      // not having run or its outcome not having been readable, which is what the local path raises on the leader.
+      // Any other unchecked failure lands here too, which is the point - see this method's javadoc.
+      LogManager.instance().log(this, Level.SEVERE,
+          "Peer '%s' was added but the leader could not be asked to seed the security documents: %s. It is a "
+              + "cluster member serving requests against its own copy of them; re-issue the admission to retry "
+              + "the seed", e, admittedPeer, e.getMessage());
+      return ALL_SEEDED_SECURITY_DOCUMENTS;
+    }
   }
 
   @Override
