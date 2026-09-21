@@ -27,6 +27,7 @@ import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.ws.insert.WebSocketInsertProtocol;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.websockets.core.AbstractReceiveListener;
+import io.undertow.websockets.core.BufferedBinaryMessage;
 import io.undertow.websockets.core.BufferedTextMessage;
 import io.undertow.websockets.core.StreamSourceFrameChannel;
 import io.undertow.websockets.core.WebSocketChannel;
@@ -35,6 +36,7 @@ import java.io.IOException;
 import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.stream.Collectors;
 
@@ -49,6 +51,12 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
    * connection, so this never names two.
    */
   private volatile WebSocketChannel       channel;
+  /**
+   * Whether this connection has already been told that {@code /ws} carries no binary frames. One listener per
+   * connection, so this is per connection - see {@link #onFullBinaryMessage} for why the answer is sent once and
+   * not once per frame.
+   */
+  private final    AtomicBoolean          binaryFrameRefused = new AtomicBoolean();
 
   public enum ACTION {UNKNOWN, SUBSCRIBE, UNSUBSCRIBE}
 
@@ -87,13 +95,71 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
    */
   @Override
   protected long getMaxTextBufferSize() {
-    final GlobalConfiguration setting = insertProtocol.hasInsertFrameBudget(channel) ?
+    return frameBudget(insertProtocol.hasInsertFrameBudget(channel) ?
         GlobalConfiguration.SERVER_WS_MAX_INSERT_FRAME_SIZE :
-        GlobalConfiguration.SERVER_WS_MAX_CONTROL_FRAME_SIZE;
+        GlobalConfiguration.SERVER_WS_MAX_CONTROL_FRAME_SIZE);
+  }
 
+  /**
+   * Bounds what one BINARY frame may accumulate on the heap before {@link #onFullBinaryMessage} sees it (issue
+   * #8065).
+   * <p>
+   * {@link #getMaxTextBufferSize()} bounded the text opcode and this class overrode nothing else, so BINARY kept
+   * {@code AbstractReceiveListener}'s own default of {@code -1}: an authenticated client could open a binary
+   * frame, never send its final fragment, and pin heap without ceiling for as long as the connection lived. Same
+   * denial of service the text caps exist to prevent, through the other opcode.
+   * <p>
+   * Always the CONTROL budget, never the larger insert one, and that asymmetry with the text hook is the point.
+   * The duplex insert protocol is dispatched from {@link #onFullTextMessage} alone, so no binary frame can ever
+   * be a {@code chunk} and the larger budget would be a hole with no legitimate user - not even on a connection
+   * that does have an insert session open. {@code /ws} in fact carries no binary frames at all, which is what
+   * {@link #onFullBinaryMessage} answers; this bound is what keeps the refusal cheap, since
+   * {@code BufferedBinaryMessage} checks the cap as it reads rather than after the frame is whole, and answers a
+   * breach with a {@code 1009 TOO_BIG} close followed by an {@code IOException} that {@link #onError} turns into
+   * a channel close.
+   * <p>
+   * PING, PONG and CLOSE need no override: {@code AbstractReceiveListener} caps those at RFC 6455's 125 bytes
+   * through {@code final} accessors this class cannot widen.
+   */
+  @Override
+  protected long getMaxBinaryBufferSize() {
+    return frameBudget(GlobalConfiguration.SERVER_WS_MAX_CONTROL_FRAME_SIZE);
+  }
+
+  /**
+   * The configured value of {@code setting}, translated into what Undertow's buffered messages want: they treat
+   * anything {@code <= 0} as unbounded, which is what both settings document 0 to mean.
+   */
+  private long frameBudget(final GlobalConfiguration setting) {
     final long max = httpServer.getServer().getConfiguration().getValueAsLong(setting);
-    // BufferedTextMessage treats anything <= 0 as unbounded, which is what the settings document 0 to mean.
     return max > 0 ? max : -1;
+  }
+
+  /**
+   * Answers a binary frame that stayed inside its budget (issue #8065).
+   * <p>
+   * {@code /ws} carries JSON text frames only, so there is nothing to parse here. Undertow's own default frees
+   * the payload and returns, which left a client that picked the wrong opcode waiting on an answer that was
+   * never coming; an error frame names the contract instead, and is the same shape the listener already uses for
+   * a text frame whose {@code action} it does not know. The connection survives it deliberately: a stray binary
+   * frame is a client mistake, not the attack - the attack is the SIZE of one, and that is refused by
+   * {@link #getMaxBinaryBufferSize()} before this method is ever reached.
+   * <p>
+   * Once per connection, not once per frame, and that is a bound and not a convenience. A one-byte binary frame
+   * costs a client six bytes on the wire and would cost the server a ~150-byte frame queued towards a peer that
+   * may never read it - outbound frames are queued on the heap and nothing here charges them against a budget -
+   * so answering every one of them would trade a buffering amplification for a queueing one. The client is told
+   * the contract on its first binary frame; after that they are freed and dropped in silence.
+   * <p>
+   * The payload is pooled, so it is handed back before anything else happens, exactly as the overridden default
+   * does.
+   */
+  @Override
+  protected void onFullBinaryMessage(final WebSocketChannel channel, final BufferedBinaryMessage message) throws IOException {
+    message.getData().free();
+    if (binaryFrameRefused.compareAndSet(false, true))
+      sendError(channel, "Binary frames are not supported",
+          "The /ws protocol carries JSON text frames only. Send this payload as a text frame.", null);
   }
 
   @Override

@@ -1654,11 +1654,15 @@ public enum GlobalConfiguration {
 
   SERVER_WS_MAX_CONTROL_FRAME_SIZE("arcadedb.server.wsMaxControlFrameSize", SCOPE.SERVER, """
       Maximum size in bytes of a single text frame accepted on /ws before an insert session has been started on \
-      that connection (issue #7403). Undertow's AbstractReceiveListener defaults to -1, unbounded, so every text \
-      frame used to be accumulated whole on the heap with no way for the server to say 'not that big'. A \
+      that connection (issue #7403), and of every binary frame whatever the connection's session state (issue \
+      #8065). Undertow's AbstractReceiveListener defaults to -1, unbounded, so a frame used to be accumulated \
+      whole on the heap with no way for the server to say 'not that big'. A \
       subscribe/unsubscribe/start/commit/rollback frame is a few hundred bytes, so this bound is deliberately \
       tight; the accumulation is aborted with a 1009 TOO_BIG close as soon as it crosses the cap, not after the \
-      frame has been buffered. 0 or a negative value restores the unbounded behaviour.""", Long.class, 64 * 1024L),
+      frame has been buffered. Binary frames carry no /ws protocol meaning at all - one inside the budget is \
+      answered with an error frame and discarded - so they are never granted the larger 'wsMaxInsertFrameSize' \
+      budget, not even on a connection that has an insert session open. 0 or a negative value restores the \
+      unbounded behaviour, for text and binary alike.""", Long.class, 64 * 1024L),
 
   SERVER_WS_MAX_INSERT_FRAME_SIZE("arcadedb.server.wsMaxInsertFrameSize", SCOPE.SERVER, """
       Maximum size in bytes of a single text frame accepted on a /ws connection that has started a duplex insert \
