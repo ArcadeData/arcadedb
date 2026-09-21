@@ -2919,6 +2919,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * Installs TimeSeries sealed-store blobs shipped by the leader (issue #4382): for each blob the
    * full {@code .ts.sealed} file is replaced atomically and the in-memory sealed store reopened.
    * Idempotent: re-applying the same blob (crash/restart replay) simply rewrites the identical file.
+   * <p>
+   * <b>A repair that fails raises</b> (issue #8070), after every other blob in the entry has been attempted. See
+   * {@link SealedStoreNotInstalledException} for why it must: a Raft entry is applied once and never re-shipped,
+   * so logging the failure and carrying on consumed the one payload that could have repaired the type and left it
+   * engine-less for good.
    */
   // Package-private rather than private so Issue6839TsSealedBlobRecoveryTest can drive the apply path directly:
   // the recovery it pins is entirely inside this method, and a 3-node IT would only add flakiness to prove it.
@@ -2926,6 +2931,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
       throws IOException {
     if (blobs == null || blobs.isEmpty())
       return;
+    // Accumulated rather than thrown on the spot: the entry may carry blobs for other types, and one unrepairable
+    // type must not stop the ones that CAN be installed from being installed (issue #8070).
+    final List<String> unrepaired = new ArrayList<>();
     for (final RaftLogEntryCodec.TsSealedBlob blob : blobs) {
       final LocalSchema schema = db.getSchema().getEmbedded();
       if (!schema.existsType(blob.typeName())) {
@@ -2950,12 +2958,34 @@ public class ArcadeStateMachine extends BaseStateMachine {
           HALog.log(this, HALog.DETAILED,
               "Repaired TimeSeries type %s shard %d from a replicated sealed blob (%d bytes) on db '%s'",
               blob.typeName(), blob.shardIndex(), blob.bytes().length, decodedDbName(db));
+        else
+          unrepaired.add(blob.typeName() + " shard " + blob.shardIndex());
         continue;
       }
       tsType.getEngine().getShard(blob.shardIndex()).getSealedStore().installSealedFileBytes(blob.bytes());
       HALog.log(this, HALog.DETAILED, "Installed TimeSeries sealed blob for %s shard %d (%d bytes) on db '%s'",
           blob.typeName(), blob.shardIndex(), blob.bytes().length, decodedDbName(db));
     }
+
+    if (!unrepaired.isEmpty())
+      throw sealedStoreNotInstalled(db, unrepaired, "blob");
+  }
+
+  /**
+   * The refusal a consumed-and-unusable sealed payload is reported with (issue #8070).
+   * <p>
+   * Names every (type, shard) the entry could not put in place, because the entry is refused as a whole and an
+   * operator reading one line has to see the whole of what this node is missing. The individual failures have
+   * already been logged at SEVERE with their stack traces by {@code repairEngineWithSealedFile}; this is the
+   * sentence that says what it COSTS, which is the half the per-failure log cannot know.
+   */
+  private static SealedStoreNotInstalledException sealedStoreNotInstalled(final DatabaseInternal db,
+      final List<String> unrepaired, final String shipment) {
+    return new SealedStoreNotInstalledException(
+        "The replicated TimeSeries sealed store shipped as a " + shipment + " could not be installed on database '"
+            + decodedDbName(db) + "' for " + String.join(", ", unrepaired)
+            + ". A Raft entry is applied once and never re-shipped, so this entry must NOT be recorded as applied:"
+            + " quarantining the database and resyncing it from the leader is the only path back (issue #8070)");
   }
 
   /**
@@ -2999,6 +3029,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
       throws IOException {
     if (chunks == null || chunks.isEmpty())
       return;
+    // Same accumulation as applySealedBlobs, for the same reason (issue #8070).
+    final List<String> unrepaired = new ArrayList<>();
     for (final RaftLogEntryCodec.TsSealedChunk chunk : chunks) {
       final LocalSchema schema = db.getSchema().getEmbedded();
       if (!schema.existsType(chunk.typeName())) {
@@ -3077,6 +3109,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
           HALog.log(this, HALog.DETAILED,
               "Repaired TimeSeries type %s shard %d from a %d-byte replicated sealed store shipped in slices on db '%s'",
               chunk.typeName(), chunk.shardIndex(), stagedLength, decodedDbName(db));
+        else
+          unrepaired.add(chunk.typeName() + " shard " + chunk.shardIndex());
         continue;
       }
 
@@ -3085,6 +3119,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
           "Installed TimeSeries sealed store for %s shard %d (%d bytes, shipped in slices) on db '%s'",
           chunk.typeName(), chunk.shardIndex(), stagedLength, decodedDbName(db));
     }
+
+    // The sliced path had the identical defect, and it is the worse half of it: the slices were assembled, the
+    // whole file was verified against the leader's length and CRC, and the last entry of the sequence was then
+    // checkpointed over a repair that did not happen (issue #8070).
+    if (!unrepaired.isEmpty())
+      throw sealedStoreNotInstalled(db, unrepaired, "slice sequence");
   }
 
   /** Where a sealed store shipped in slices is reassembled, beside the file it will replace. */
@@ -3129,9 +3169,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * where a whole one used to be. The target name is derived from the type and shard rather than taken from
    * {@code blob.fileName()}: a path from a replicated payload must not select a file on this node.
    * <p>
-   * A failure here is logged and reported, never thrown: one unrepairable type must not abort the apply of an
+   * A failure here is logged and REPORTED, never thrown: one unrepairable type must not abort the apply of an
    * entry that may carry blobs for others, and the state it leaves behind is the state it started from - still
    * visible, still reported by {@code CHECK DATABASE}, still failing loudly on every read and write.
+   * <p>
+   * Reporting it is not the same as tolerating it. The caller collects what could not be repaired, finishes the
+   * entry's other blobs, and then raises {@link SealedStoreNotInstalledException} so the entry is not checkpointed
+   * as applied over a repair that did not happen (issue #8070) - a Raft entry is applied once and never
+   * re-shipped, so the blob that was the repair would otherwise be consumed with nothing left to resend it.
    */
   private boolean repairEngineWithSealedBlob(final DatabaseInternal db, final LocalTimeSeriesType tsType,
       final RaftLogEntryCodec.TsSealedBlob blob) {
