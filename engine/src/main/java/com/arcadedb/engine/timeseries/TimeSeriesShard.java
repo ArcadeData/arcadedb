@@ -395,12 +395,11 @@ public class TimeSeriesShard implements AutoCloseable {
    * concurrent {@link #compact()} from clearing the mutable bucket and causing
    * stale reads after the lock is released.
    * <p>
-   * What that window no longer freezes is the sealed store's block DIRECTORY. Since issue #7897 the sealed walk
-   * takes {@code directoryLock} one block at a time, and a retention pass ({@code truncateBefore},
-   * {@code downsampleBlocks}) takes only that lock - not this one - so a pass landing between two blocks removes
-   * them from this answer instead of waiting behind the whole walk. The rows concerned are the ones retention is
-   * deleting; what the per-block lock buys in exchange is that a caller's own work can no longer park a
-   * compaction, and with it every append.
+   * The window DOES freeze the sealed store's block directory for this method, and that is what separates it from
+   * {@link #forEachRow} (issue #8052, correcting a paragraph that was on this method and described that one).
+   * {@code sealedStore.iterateRange} materialises its rows into an {@code ArrayList} before it returns, inside the
+   * read lock taken here, so no retention pass and no replicated install can land part-way through its answer. The
+   * price is the one {@code forEachRow} refuses to pay: every matching row of the range is resident at once.
    */
   public Iterator<Object[]> iterateRange(final long fromTs, final long toTs, final int[] columnIndices,
                                          final TagFilter tagFilter) throws IOException {
@@ -510,6 +509,23 @@ public class TimeSeriesShard implements AutoCloseable {
    * <p>
    * The rows arrive sealed-then-mutable, NOT merged by timestamp. Merging is what forces every shard's rows to be
    * resident at once; a folding answer does not need the order, and one that does wants {@code iterateQuery}.
+   * <p>
+   * <b>What the window does NOT freeze is the sealed store's block directory</b> (issue #8052 moved this here from
+   * {@link #iterateRange}, where the hazard cannot occur). The sealed walk takes {@code directoryLock} one block at
+   * a time and holds nothing of this shard's in between, so a pass that rewrites the sealed file - a retention
+   * {@code truncateBefore} or {@code downsampleBlocks}, both of which run under
+   * {@code TimeSeriesEngine.runSealedMaintenanceReplicated} holding this shard's compaction WRITE lock, or an HA
+   * follower installing the leader's sealed file - can land between two of this walk's blocks instead of waiting
+   * behind the whole of it. Taking the compaction write lock does not serialize it against this method, because
+   * this method no longer holds the read lock once the snapshot is taken; that is the trade issue #7897 made, and
+   * what it buys is that a caller's own work can no longer park a compaction, and with it every append.
+   * <p>
+   * A block is therefore re-resolved against the live directory before it is read, by the identity it carries in
+   * the file (issue #8043). A block that still exists is read wherever the rewrite put it, which is what makes a
+   * replicated install lossless: the leader's file holds the same blocks and normally more. A block a retention
+   * pass really did delete resolves to nothing and is skipped - its rows are gone - and counted in
+   * {@code AggregationMetrics.vanishedBlocks}, so a caller that cannot tolerate a short answer can see that it got
+   * one.
    *
    * @param metrics optional counters, may be {@code null}. Every visited row is counted in
    *                {@code materializedRows}, but only the SEALED layer contributes block counts - the mutable
@@ -598,6 +614,11 @@ public class TimeSeriesShard implements AutoCloseable {
    * <p>
    * A caller folding these rows into a set of combinations, each with the earliest timestamp it was observed at,
    * reaches the same answer {@link #forEachRow} would give it - without reading the samples.
+   * <p>
+   * Same exposure as {@link #forEachRow} to a sealed file rewritten mid-walk, and the same answer to it: see the
+   * paragraph there. Both arms of the sealed walk re-resolve a block before they use it, including the one that
+   * answers from the directory entry alone - it used to answer off the snapshot entry instead, which made this
+   * method report a series for a block {@code forEachRow} would have refused to read a row from (issue #8043).
    */
   public boolean forEachTagCombination(final long fromTs, final long toTs, final int[] columnIndices,
       final AggregationMetrics metrics, final TimeSeriesRowVisitor visitor) throws IOException {
