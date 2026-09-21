@@ -534,6 +534,12 @@ public class OpenCypherQueryEngine implements QueryEngine {
    * keep working. Relationship type names are not validated here; that is issue #8118.
    */
   private static void autoCreateDDLType(final Schema schema, final CypherDDLStatement ddl, final String typeName) {
+    // The blank check runs before the existence check, unlike the separator one: a whitespace-only type name is
+    // refused by no layer below this (TypeBuilder.create() tests isEmpty, not isBlank), so such a type can already
+    // exist in a database written by SQL or the Java API, and indexing a label no other openCypher path accepts
+    // would be the one way left to name it.
+    Labels.requireNonBlankLabelName(typeName, "a label in this statement");
+
     if (schema.existsType(typeName))
       return;
 

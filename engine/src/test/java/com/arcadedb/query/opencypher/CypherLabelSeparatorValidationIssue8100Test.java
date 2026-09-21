@@ -222,6 +222,22 @@ class CypherLabelSeparatorValidationIssue8100Test {
     assertThat(rows("MATCH (n:A) RETURN n.id AS r")).containsExactly(1);
   }
 
+  /**
+   * Raised by CodeRabbit on this PR: {@code TypeBuilder.create()} refuses an empty type name but not a
+   * whitespace-only one, so such a type can exist in a database written by SQL or the Java API. The DDL
+   * auto-create therefore checks for a blank label before it checks whether the type exists - otherwise indexing
+   * it would be the one way left to name a label no other openCypher path accepts.
+   */
+  @Test
+  void createIndexRefusesABlankLabelEvenWhenThatTypeAlreadyExists() {
+    database.getSchema().createVertexType("  ");
+    assertThat(typeNames()).contains("  ");
+
+    assertThatThrownBy(() -> command("CREATE INDEX FOR (n:`  `) ON (n.id)"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("blank");
+  }
+
   // ---------------------------------------------------------------------------------------------------------
   // What must keep working
   // ---------------------------------------------------------------------------------------------------------
@@ -252,20 +268,33 @@ class CypherLabelSeparatorValidationIssue8100Test {
   // ---------------------------------------------------------------------------------------------------------
 
   /**
-   * A database written before this fix can hold a type whose name carries the separator. Relabelling such a node
-   * now fails, because the new label set cannot be encoded as a composite name - this is the behaviour change the
-   * issue called out, and it is pinned here rather than left to be discovered.
+   * The boundary of the fix, and the reason it validates introduced labels rather than the resulting label set.
+   * A type created outside openCypher under a name carrying the separator - {@code CREATE VERTEX TYPE `a~b`} in
+   * SQL - is a label a vertex legitimately already answers to, and #6363 requires that openCypher keep reading and
+   * relabelling such a vertex. Validating inside {@code ensureCompositeType}, which is handed the resulting set,
+   * broke exactly that, so the guard moved to the points a statement introduces a label.
    */
   @Test
-  void relabellingANodeThatAlreadyCarriesASeparatorLabelIsRefused() {
+  void relabellingANodeThatAlreadyCarriesASeparatorLabelStillWorks() {
     database.getSchema().createVertexType("E~F");
     database.transaction(() -> database.newVertex("E~F").set("id", 1).save());
 
-    assertThatThrownBy(() -> command("MATCH (n {id: 1}) SET n:Z"))
-        .isInstanceOf(CommandSemanticException.class)
-        .hasMessageContaining("E~F");
+    command("MATCH (n {id: 1}) SET n:Z");
 
-    assertThat(typeNames()).doesNotContain("E~F~Z");
+    assertThat(labelsOf(1)).containsExactly("E~F", "Z");
+  }
+
+  /** Introducing such a label in the same SET is still refused, even on that vertex. */
+  @Test
+  void introducingASeparatorLabelOnSuchANodeIsStillRefused() {
+    database.getSchema().createVertexType("E~F");
+    database.transaction(() -> database.newVertex("E~F").set("id", 1).save());
+
+    assertThatThrownBy(() -> command("MATCH (n {id: 1}) SET n:`G~H`"))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("G~H");
+
+    assertThat(typeNames()).doesNotContain("G~H");
   }
 
   /** Removing the offending label is still possible, which is what makes the data recoverable in place. */
