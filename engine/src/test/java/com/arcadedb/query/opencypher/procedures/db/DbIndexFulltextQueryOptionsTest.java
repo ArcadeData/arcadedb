@@ -20,6 +20,8 @@ package com.arcadedb.query.opencypher.procedures.db;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.Document;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
@@ -31,6 +33,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -128,6 +131,56 @@ class DbIndexFulltextQueryOptionsTest {
   }
 
   /**
+   * Deleting the top-scoring record must not leave a hole in a bounded page: the rows below it move up, so a
+   * {@code limit} of 2 still answers with two rows rather than with the one that survives the old top-2.
+   * <p>
+   * What it actually pins is that the bound pushed into the search is {@code skip + limit} and not {@code limit}:
+   * the {@code skip: 1, limit: 2} case answers with the second and third live rows, which a search bounded at 2
+   * could not have produced.
+   * <p>
+   * It does <b>not</b> reach {@code page()}'s {@code RecordNotFoundException} arm, and no test here does - the
+   * delete removes the index posting along with the record, so a posting that outlives its record cannot be
+   * produced through the public API.
+   */
+  @Test
+  void deletingTheTopScoringRecordDoesNotShortenABoundedPage() {
+    database.transaction(() -> database.command("sql", "DELETE FROM Article WHERE title = 'A'").close());
+
+    assertThat(titles(null)).containsExactly("B", "C", "D");
+    assertThat(titles("{limit: 2}")).containsExactly("B", "C");
+    assertThat(titles("{skip: 1, limit: 2}")).containsExactly("C", "D");
+  }
+
+  /**
+   * Pins the order equally-scoring records come back in, and that the pages partition it: ascending RID.
+   * <p>
+   * Read what this does and does not prove. It pins the <i>direction</i> - reversing the tie-break, or sorting the
+   * page some other way, turns it red. It does not prove the tie-break is load-bearing: deleting
+   * {@code thenComparing(Map.Entry::getKey)} leaves it green, because the {@code Map<RID, Float>} the search
+   * returns happens to iterate these eight consecutive RIDs in RID order anyway. That coincidence is not a
+   * contract - {@code HashMap} iteration order follows hash distribution and table size, neither of which is
+   * promised - which is why the tie-break is there; but no test here can separate the two, and this one should not
+   * be read as if it had.
+   */
+  @Test
+  void equallyScoringRecordsAreOrderedByRid() {
+    database.transaction(() -> {
+      for (int i = 0; i < 8; i++)
+        database.newVertex("Article").set("title", "T" + i).set("content", "kotlin kotlin alpha beta gamma").save();
+    });
+
+    // Sorted with RID's own comparator, not by the string form of elementId(): '#1:10' sorts before '#1:9'
+    // lexicographically, which would make this assert the wrong order as soon as a bucket passes ten records.
+    final List<String> byRid = tiedTitlesSortedByRid();
+    assertThat(byRid).hasSize(8);
+
+    assertThat(tied(null)).containsExactlyElementsOf(byRid);
+    assertThat(tied("{limit: 3}")).containsExactlyElementsOf(byRid.subList(0, 3));
+    assertThat(tied("{skip: 3, limit: 3}")).containsExactlyElementsOf(byRid.subList(3, 6));
+    assertThat(tied("{skip: 6}")).containsExactlyElementsOf(byRid.subList(6, 8));
+  }
+
+  /**
    * The point of rejecting rather than ignoring: {@code analyzer} is a Neo4j key ArcadeDB cannot honour, because
    * the analyzer is resolved from the index metadata written at index-creation time. Accepting the call and
    * ignoring the key would run the query under an analyzer the caller did not ask for and report success.
@@ -220,6 +273,25 @@ class DbIndexFulltextQueryOptionsTest {
 
   private List<String> titles(final String options) {
     return collect("CALL db.index.fulltext.queryNodes('Article[content]', 'java'" + argument(options) + ") "
+        + "YIELD node, score RETURN node.title AS v", "v");
+  }
+
+  /** The titles of the equally-scoring fixture records, ordered by RID - the order the tie-break has to produce. */
+  private List<String> tiedTitlesSortedByRid() {
+    final List<Map.Entry<RID, String>> byRid = new ArrayList<>();
+    try (final ResultSet resultSet = database.query("opencypher",
+        "MATCH (n:Article) WHERE n.content = 'kotlin kotlin alpha beta gamma' RETURN n AS node")) {
+      while (resultSet.hasNext()) {
+        final Document node = (Document) resultSet.next().getProperty("node");
+        byRid.add(Map.entry(node.getIdentity(), node.getString("title")));
+      }
+    }
+    byRid.sort(Map.Entry.comparingByKey());
+    return byRid.stream().map(Map.Entry::getValue).toList();
+  }
+
+  private List<String> tied(final String options) {
+    return collect("CALL db.index.fulltext.queryNodes('Article[content]', 'kotlin'" + argument(options) + ") "
         + "YIELD node, score RETURN node.title AS v", "v");
   }
 

@@ -30,6 +30,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
+import java.util.function.IntFunction;
 
 /**
  * The trailing {@code options} map shared by {@code db.index.fulltext.queryNodes} and
@@ -59,10 +60,14 @@ final class FullTextQueryOptions {
   /**
    * Descending score, ties broken by RID.
    * <p>
-   * The tie-break is what makes {@code skip}/{@code limit} paginate: the scores come back in a
-   * {@code Map<RID, Float>}, so equally-scoring records used to be ordered by hash iteration, and two pages of the
-   * same query could have shown the same record twice or not at all (issue #8103). Records that do not tie are
-   * unaffected, which is every assertion the pre-existing ranking tests make.
+   * The tie-break is what lets {@code skip}/{@code limit} state a contract at all: the scores come back in a
+   * {@code Map<RID, Float>}, so equally-scoring records would otherwise be ordered by hash iteration, which follows
+   * hash distribution and table size and is promised by nothing. In practice today the map does iterate consecutive
+   * RIDs in RID order, so this is a guarantee replacing a coincidence rather than a bug being fixed - no test can
+   * separate the two, and {@code DbIndexFulltextQueryOptionsTest.equallyScoringRecordsAreOrderedByRid} says so
+   * (issue #8103). Records that do not tie are unaffected, which is every assertion the pre-existing ranking tests
+   * make. The direction matches the per-bucket tie-break {@code LSMTreeFullTextIndex.buildScoredCursor} already
+   * applies.
    */
   private static final Comparator<Map.Entry<RID, Float>> BY_SCORE_THEN_RID =
       Comparator.<Map.Entry<RID, Float>, Float>comparing(Map.Entry::getValue, Comparator.reverseOrder())
@@ -174,6 +179,36 @@ final class FullTextQueryOptions {
   }
 
   /**
+   * Runs the search under this options' bound and returns the requested page.
+   * <p>
+   * The bound is {@link #searchLimit()}, which is what keeps a small page from scoring the whole match set. A
+   * posting whose record is gone is dropped by {@link #page}, <b>after</b> that bound has already been applied, so a
+   * stale posting inside the bounded window would otherwise cost the page a row that a live match further down could
+   * have filled. When that happens - the page came back short although the bounded search came back full - the
+   * search is repeated unbounded and re-paged, which is the only way to recover a posting the bound excluded. The
+   * retry is reachable only when a stale posting lands inside the window, so the bound still pays for itself on
+   * every other call.
+   *
+   * @param search     runs the underlying search for a given limit ({@link #UNBOUNDED} for all matches)
+   * @param yieldField the name of the record column this procedure yields ({@code node} or {@code relationship})
+   * @param loader     turns a matched RID into the record to yield
+   */
+  List<Result> rows(final IntFunction<Map<RID, Float>> search, final String yieldField,
+      final Function<RID, Object> loader) {
+    final int bound = searchLimit();
+    final Map<RID, Float> matches = search.apply(bound);
+    final List<Result> page = page(matches, yieldField, loader);
+
+    // matches.size() < bound means the index had nothing more to give, so a short page is the true answer. The
+    // comparison is an over-approximation for a multi-bucket index, whose match set is a union of per-bucket top-K
+    // sets and can exceed the bound; that only ever costs a retry that finds the same rows.
+    if (bound != UNBOUNDED && page.size() < limit && matches.size() >= bound)
+      return page(search.apply(UNBOUNDED), yieldField, loader);
+
+    return page;
+  }
+
+  /**
    * Ranks {@code matches}, drops the postings whose record is gone, then applies {@code skip} and {@code limit} to
    * what is left, yielding one row per surviving record carrying {@code yieldField} and {@code score}.
    * <p>
@@ -182,10 +217,8 @@ final class FullTextQueryOptions {
    * what keeps a small page from materializing the whole match set; it is also why the ordering above has to be
    * total.
    * <p>
-   * The caller has already bounded the search with {@link #searchLimit()}, so a stale posting among those top
-   * {@code skip + limit} matches can still make a page shorter than {@code limit} even though further live matches
-   * exist. That is the pre-existing behaviour of this path - the two-argument form drops the same postings from an
-   * unbounded search - traded here for not scanning the whole index to fill a page.
+   * This method sees only the matches it is handed, so a stale posting inside a bounded window still costs the page
+   * a row here; recovering that row needs a wider search, which is {@link #rows}'s job rather than this one's.
    *
    * @param loader turns a matched RID into the record to yield ({@code asDocument} or {@code asEdge}), throwing
    *               {@link RecordNotFoundException} when the posting is stale

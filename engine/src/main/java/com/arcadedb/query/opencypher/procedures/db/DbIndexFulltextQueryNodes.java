@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.opencypher.procedures.db;
 
-import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.fulltext.FullTextSearch;
@@ -29,7 +28,6 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 
 import java.util.List;
-import java.util.Map;
 import java.util.stream.Stream;
 
 /**
@@ -117,8 +115,6 @@ public class DbIndexFulltextQueryNodes implements CypherProcedure {
     if (options.returnsNothing())
       return Stream.empty();
 
-    final Map<RID, Float> matches = FullTextSearch.search(typeIndex, queryText, options.searchLimit());
-
-    return options.page(matches, "node", rid -> rid.asDocument(true)).stream();
+    return options.rows(limit -> FullTextSearch.search(typeIndex, queryText, limit), "node", rid -> rid.asDocument(true)).stream();
   }
 }
