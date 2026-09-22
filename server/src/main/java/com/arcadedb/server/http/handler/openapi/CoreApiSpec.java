@@ -19,6 +19,7 @@
 package com.arcadedb.server.http.handler.openapi;
 
 import com.arcadedb.server.http.HttpSessionManager;
+import com.arcadedb.server.http.handler.DatabaseAbstractHandler;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.Operation;
 import io.swagger.v3.oas.models.PathItem;
@@ -57,6 +58,12 @@ public class CoreApiSpec implements OpenApiContributor {
   // Grafana and Prometheus operations too.
   private static final String SESSION_EXPIRED_HEADER = SpecBuilders.SESSION_EXPIRED_HEADER;
   private static final String COMMIT_INDEX_HEADER = "X-ArcadeDB-Commit-Index";
+
+  // Issue #8062. Set by DatabaseAbstractHandler on any session-bound request whose transaction published a
+  // commit while it ran - a statement with an explicit BATCH boundary. Declared on the three data-plane
+  // operations that can run one; /commit is excluded at the handler
+  // (DatabaseAbstractHandler.reportsSessionPartialCommit()), so it is not named there either.
+  private static final String SESSION_PARTIAL_COMMIT_HEADER = DatabaseAbstractHandler.SESSION_PARTIAL_COMMIT;
   /**
    * The statuses of the query and command operations that are decided BEFORE the read-your-writes bookmark
    * exists, so they can never carry it. See {@link #addCommitIndexBookmarkHeader}.
@@ -312,6 +319,7 @@ public class CoreApiSpec implements OpenApiContributor {
     getOp.setResponses(createGetQueryResponses());
     addNdJsonAlternative(getOp.getResponses());
     addCommitIndexBookmarkHeader(getOp.getResponses());
+    addSessionPartialCommitHeader(getOp.getResponses());
     pathItem.setGet(getOp);
 
     return pathItem;
@@ -332,6 +340,7 @@ public class CoreApiSpec implements OpenApiContributor {
     postOp.setResponses(createQueryResponses());
     addNdJsonAlternative(postOp.getResponses());
     addCommitIndexBookmarkHeader(postOp.getResponses());
+    addSessionPartialCommitHeader(postOp.getResponses());
     pathItem.setPost(postOp);
 
     return pathItem;
@@ -353,6 +362,7 @@ public class CoreApiSpec implements OpenApiContributor {
     postOp.setResponses(createCommandResponses());
     addNdJsonAlternative(postOp.getResponses());
     addCommitIndexBookmarkHeader(postOp.getResponses());
+    addSessionPartialCommitHeader(postOp.getResponses());
     pathItem.setPost(postOp);
 
     return pathItem;
@@ -891,6 +901,29 @@ public class CoreApiSpec implements OpenApiContributor {
           server had applied when it refused, which is still a valid barrier for the next read. Absent on a \
           standalone database, on a replicated one that has applied nothing yet, and on a failure that happens \
           before the request reaches the database at all.\
+          """));
+    }
+  }
+
+  /**
+   * Declares the {@code arcadedb-session-partial-commit} response header of issue #8062 on every status that can
+   * carry it.
+   * <p>
+   * Same boundary as {@link #addCommitIndexBookmarkHeader}, and for the same reason: the listener that emits it
+   * is registered inside {@link DatabaseAbstractHandler#execute} once the request has been authenticated and
+   * its session resolved, so the two statuses decided before that point - {@code 401}, and the {@code 404} that
+   * means "database not found" or "stale session id" - can never carry it and are left undeclared rather than
+   * promised. Every other status can: the header is emitted on a FAILED response as much as on a successful
+   * one, which is the case it exists for, since a client consults it exactly when the request it just made
+   * went wrong.
+   */
+  private static void addSessionPartialCommitHeader(final ApiResponses responses) {
+    for (final Map.Entry<String, ApiResponse> entry : responses.entrySet()) {
+      if (BOOKMARKLESS_STATUSES.contains(entry.getKey()))
+        continue;
+      // A new Header per response rather than one shared instance, as above (#7425 review).
+      entry.getValue().addHeaderObject(SESSION_PARTIAL_COMMIT_HEADER, SpecBuilders.stringHeader("""
+          Present, with the value 'true', only when this request ran inside a transaction named by           'arcadedb-session-id' AND that transaction published a commit while the request was executing - which           is what a statement carrying an explicit 'BATCH n' boundary does. It says part of the caller's           transaction is already durable and cannot be rolled back, so a client that retries its transaction           block on a conflict must NOT replay it: the replay would apply the durable part a second time. Absent           on every other response, including one from a request that ran outside a session.\
           """));
     }
   }
