@@ -291,16 +291,33 @@ public class TransactionManager {
     final long begin = System.currentTimeMillis();
 
     while (true) {
-      final WALFile file = activeWALFilePool[(int) (Thread.currentThread().threadId() % activeWALFilePool.length)];
+      final WALFile[] pool = activeWALFilePool;
+      final int slot = (int) (Thread.currentThread().threadId() % pool.length);
 
-      if (file != null && file.acquire(() -> {
-        file.writeTransactionToFile(database, pages, sync, file, txId, bufferChanges);
-        return null;
-      }))
+      if (tryWriteTransactionToWALFile(pool[slot], pages, sync, txId, bufferChanges))
+        break;
+
+      // #7768: this thread's own slot refused the write. Before sleeping on it, offer the transaction to the
+      // other files in the pool. Any active WAL file can hold any transaction - recovery reads every
+      // txlog_*.wal and merges them by txId (see checkIntegrity) - so the thread-id hash is a contention
+      // spreader, not a constraint. Without this fallback a single slot that has gone permanently unusable
+      // took down every thread congruent to it for the life of the database, and with the documented
+      // arcadedb.txWalFiles=1 it took down the database's whole commit path.
+      boolean writtenElsewhere = false;
+      for (int i = 0; i < pool.length && !writtenElsewhere; ++i)
+        if (i != slot)
+          writtenElsewhere = tryWriteTransactionToWALFile(pool[i], pages, sync, txId, bufferChanges);
+
+      if (writtenElsewhere)
         break;
 
       if (System.currentTimeMillis() - begin > WRITE_WAL_TIMEOUT)
-        throw new TransactionException("Timeout on writing transaction to WAL");
+        // Name the condition actually observed. "Timeout on writing transaction to WAL" on its own reads as a
+        // slow disk, which is what sent issue #7768 looking at storage latency instead of at a WAL pool whose
+        // files were all refusing writes (#7768).
+        throw new TransactionException(
+            "Timeout on writing transaction " + txId + " to the WAL after " + WRITE_WAL_TIMEOUT
+                + "ms: no file in the pool of " + pool.length + " accepted the write (" + describeWALFilePool(pool) + ")");
 
       try {
         Thread.sleep(10);
@@ -313,6 +330,39 @@ public class TransactionManager {
         throw new TransactionException("Interrupted while writing transaction " + txId + " to the WAL", e);
       }
     }
+  }
+
+  /**
+   * Offers the transaction to one WAL file. Returns false - without writing - when the file is absent, is
+   * being rotated out ({@code !active}) or has been closed; {@link WALFile#acquire} makes that decision under
+   * the file's own monitor so the answer cannot race a concurrent close.
+   */
+  private boolean tryWriteTransactionToWALFile(final WALFile file, final List<MutablePage> pages,
+      final WALFile.FlushType sync, final long txId, final Binary bufferChanges) {
+    return file != null && file.acquire(() -> {
+      file.writeTransactionToFile(database, pages, sync, file, txId, bufferChanges);
+      return null;
+    });
+  }
+
+  /**
+   * Per-slot state of the WAL pool, for the timeout diagnostic in {@link #writeTransactionToWAL} (#7768).
+   * Package-private so the diagnostic can be asserted on directly instead of by waiting out the 30s
+   * {@code WRITE_WAL_TIMEOUT} that produces it.
+   */
+  static String describeWALFilePool(final WALFile[] pool) {
+    final StringBuilder buffer = new StringBuilder();
+    for (int i = 0; i < pool.length; ++i) {
+      if (i > 0)
+        buffer.append(", ");
+      final WALFile file = pool[i];
+      buffer.append(i).append('=');
+      if (file == null)
+        buffer.append("<none>");
+      else
+        buffer.append(file.getFilePath()).append(file.isOpen() ? "[open]" : "[CLOSED]").append(file.isActive() ? "" : "[inactive]");
+    }
+    return buffer.toString();
   }
 
   public void notifyPageFlushed(final MutablePage page) {
@@ -1186,13 +1236,19 @@ public class TransactionManager {
               return;
             }
           }
-        } catch (final ClosedChannelException e) {
-          try {
-            file.close();
-          } catch (IOException ex) {
-            // IGNORE IT
-          }
         } catch (final IOException e) {
+          // #7768: a ClosedChannelException used to be caught HERE, ahead of this branch, and answered with a
+          // bare file.close() - no log line, no fence, no replacement file. ClosedChannelException IS an
+          // IOException, so that narrower catch silently stole the case this branch was written to fence, and
+          // left the pool slot closed for the life of the database: the rotation branch above requires
+          // isOpen(), so it could never fire for that slot again. WALFile now reopens a channel a thread
+          // interrupt closed (see WALFile.reopenChannel), so the only ClosedChannelException that still
+          // reaches here is one the reopen REFUSED. That is either a file closed on purpose concurrently with
+          // this pass - a shutdown racing the housekeeping timer, benign, the pool is going away anyway - or
+          // a file that is gone from disk, which is precisely the #7479 case below.
+          if (e instanceof ClosedChannelException && !file.isOpen())
+            continue;
+
           // #7479: a WAL file this instance still has open just became inaccessible. Under normal
           // single-process operation that never happens - the OS keeps an open file's content reachable
           // through its descriptor even past an unlink - so it means something outside this instance's

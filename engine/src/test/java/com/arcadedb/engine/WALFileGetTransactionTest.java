@@ -129,8 +129,17 @@ class WALFileGetTransactionTest {
   void ioErrorOnChannelThrowsWALException() throws Exception {
     // Close the underlying FileChannel via reflection to induce IOException on the next read.
     // Prior to the fix this returned null (swallowed IOException); the fix must throw WALException.
+    //
+    // #7768: the file is deleted as well, because a closed channel ALONE is no longer an I/O error a
+    // caller ever sees. A thread interrupted inside a commit makes NIO close this channel from under the
+    // WALFile, and that used to kill the pool slot for the life of the database, so WALFile now reopens a
+    // channel that was closed while the file is still logically open and still on disk. Removing the file
+    // is what makes the condition genuinely unrecoverable - the reopen refuses to re-create a WAL file
+    // something else deleted (#7479) - and so still exercises what this test is about: an I/O error must
+    // surface as a WALException and never be swallowed into a null.
     final FileChannel channel = extractChannel(walFile);
     channel.close();
+    assertThat(tempFile.delete()).isTrue();
 
     assertThatThrownBy(() -> walFile.getTransaction(0))
         .isInstanceOf(WALException.class);
