@@ -38,6 +38,7 @@ import org.junit.jupiter.api.TestInfo;
 
 import java.io.File;
 import java.time.Duration;
+import java.util.Map;
 import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -265,8 +266,16 @@ class Issue7357BulkLoadSuspendsRebuildTest {
               .isEqualTo((long) written);
         }
 
-        assertThat(index.getStats().get("deltaVectorsCount"))
-            .as("nothing is left stranded in the buffer after eight rounds of racing the boundary")
+        // A node the last build could not link is re-queued into the buffer on purpose (issue #7190): it is already
+        // IN the graph, so it is not pending work and no rebuild owes anything for it. Random vectors at this corpus
+        // size orphan one about once in thirty runs, which read as a stranded write with a flat zero here (issue
+        // #8115). What this separates is a write the race left behind from a node the build could not wire in, so
+        // only the first is counted.
+        final Map<String, Long> stats = index.getStats();
+        assertThat(stats.get("deltaVectorsCount") - stats.get("unreachableGraphNodes"))
+            .as("nothing is left stranded in the buffer after eight rounds of racing the boundary "
+                + "(deltaVectorsCount=%d, unreachableGraphNodes=%d)", stats.get("deltaVectorsCount"),
+                stats.get("unreachableGraphNodes"))
             .isZero();
       } finally {
         db.drop();
