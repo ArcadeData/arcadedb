@@ -52,8 +52,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Tag("slow")
 class Bolt5002RoutingTableIT extends BaseRaftHATest {
 
-  private static final int    BASE_BOLT_PORT = 57697;
-  private static final String VERTEX_TYPE    = "Bolt5002Route";
+  private static final String VERTEX_TYPE = "Bolt5002Route";
+
+  // One Bolt port per server, drawn free for every test instance from the same ledger as the Raft ports (issue #8203).
+  private final int[] boltPorts = allocateFixturePorts(3);
 
   private Driver driver;
 
@@ -72,9 +74,9 @@ class Bolt5002RoutingTableIT extends BaseRaftHATest {
     for (int i = 0; i < getServerCount(); i++) {
       if (i > 0)
         sb.append(",");
-      sb.append("localhost:{raft:").append(2434 + i)
+      sb.append("localhost:{raft:").append(raftPort(i))
           .append(",http:").append(2480 + i)
-          .append(",bolt:").append(BASE_BOLT_PORT + i).append("}");
+          .append(",bolt:").append(boltPorts[i]).append("}");
     }
     return sb.toString();
   }
@@ -85,7 +87,7 @@ class Bolt5002RoutingTableIT extends BaseRaftHATest {
     final String serverName = config.getValueAsString(GlobalConfiguration.SERVER_NAME);
     final int index = Integer.parseInt(serverName.substring(serverName.lastIndexOf('_') + 1));
     config.setValue(GlobalConfiguration.SERVER_PLUGINS.getKey(), "Bolt:com.arcadedb.bolt.BoltProtocolPlugin");
-    config.setValue(GlobalConfiguration.BOLT_PORT.getKey(), String.valueOf(BASE_BOLT_PORT + index));
+    config.setValue(GlobalConfiguration.BOLT_PORT.getKey(), String.valueOf(boltPorts[index]));
   }
 
   @AfterEach
@@ -102,16 +104,16 @@ class Bolt5002RoutingTableIT extends BaseRaftHATest {
     assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
     waitForAllServers();
 
-    final String leaderBolt = "localhost:" + (BASE_BOLT_PORT + leaderIndex);
+    final String leaderBolt = "localhost:" + boltPorts[leaderIndex];
     final List<String> followerBolt = new ArrayList<>();
     for (int i = 0; i < getServerCount(); i++)
       if (i != leaderIndex)
-        followerBolt.add("localhost:" + (BASE_BOLT_PORT + i));
+        followerBolt.add("localhost:" + boltPorts[i]);
 
     // Ask a follower (not the leader) for its routing table to prove routing is not leader-local. Poll
     // until the follower has learned the leader (a freshly-connected follower may briefly not know it).
     final int askIndex = (leaderIndex + 1) % getServerCount();
-    final Map<String, Object> rt = awaitRoutingTable(BASE_BOLT_PORT + askIndex, leaderBolt);
+    final Map<String, Object> rt = awaitRoutingTable(boltPorts[askIndex], leaderBolt);
 
     assertThat(BoltRouteTestSupport.addressesForRole(rt, "WRITE")).containsExactly(leaderBolt);
     assertThat(BoltRouteTestSupport.addressesForRole(rt, "READ")).containsExactlyInAnyOrderElementsOf(followerBolt);
@@ -124,7 +126,7 @@ class Bolt5002RoutingTableIT extends BaseRaftHATest {
     assertThat(leaderIndex).isGreaterThanOrEqualTo(0);
 
     driver = GraphDatabase.driver(
-        "neo4j://localhost:" + (BASE_BOLT_PORT + leaderIndex),
+        "neo4j://localhost:" + boltPorts[leaderIndex],
         AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
         Config.builder().withoutEncryption().build());
     driver.verifyConnectivity();
@@ -162,8 +164,8 @@ class Bolt5002RoutingTableIT extends BaseRaftHATest {
     }
     assertThat(newLeader).as("A new leader must be elected after the old one stops").isGreaterThanOrEqualTo(0);
 
-    final String newLeaderBolt = "localhost:" + (BASE_BOLT_PORT + newLeader);
-    final Map<String, Object> rt = awaitRoutingTable(BASE_BOLT_PORT + newLeader, newLeaderBolt);
+    final String newLeaderBolt = "localhost:" + boltPorts[newLeader];
+    final Map<String, Object> rt = awaitRoutingTable(boltPorts[newLeader], newLeaderBolt);
     assertThat(BoltRouteTestSupport.addressesForRole(rt, "WRITE")).containsExactly(newLeaderBolt);
   }
 

@@ -46,8 +46,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Tag("slow")
 class BoltFollowerForwardingIT extends BaseRaftHATest {
 
-  private static final int    BASE_BOLT_PORT = 57687;
-  private static final String VERTEX_TYPE    = "BoltFollowerWrite";
+  private static final String VERTEX_TYPE = "BoltFollowerWrite";
+
+  // One Bolt port per server, drawn free for every test instance from the same ledger as the Raft ports (issue #8203).
+  private final int[] boltPorts = allocateFixturePorts(3);
 
   private Driver driver;
 
@@ -59,7 +61,7 @@ class BoltFollowerForwardingIT extends BaseRaftHATest {
     final int index = Integer.parseInt(serverName.substring(serverName.lastIndexOf('_') + 1));
 
     config.setValue(GlobalConfiguration.SERVER_PLUGINS.getKey(), "Bolt:com.arcadedb.bolt.BoltProtocolPlugin");
-    config.setValue(GlobalConfiguration.BOLT_PORT.getKey(), String.valueOf(BASE_BOLT_PORT + index));
+    config.setValue(GlobalConfiguration.BOLT_PORT.getKey(), String.valueOf(boltPorts[index]));
   }
 
   @Override
@@ -99,7 +101,7 @@ class BoltFollowerForwardingIT extends BaseRaftHATest {
 
     // Open the Bolt driver against the follower deliberately.
     driver = GraphDatabase.driver(
-        "bolt://localhost:" + (BASE_BOLT_PORT + followerIndex),
+        "bolt://localhost:" + boltPorts[followerIndex],
         AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
         Config.builder().withoutEncryption().build());
 

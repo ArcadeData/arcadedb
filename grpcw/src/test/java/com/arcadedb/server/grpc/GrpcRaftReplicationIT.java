@@ -52,8 +52,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class GrpcRaftReplicationIT extends BaseRaftHATest {
 
-  // One gRPC port per server, handed out free by the OS for every test instance rather than fixed (issue #7496).
-  private final int[] grpcPorts = allocateFreePorts(2);
+  // One gRPC port per server, drawn free for every test instance rather than fixed (issue #7496), from the same
+  // ledger as the Raft ports so the two can never coincide (issue #8203).
+  private final int[] grpcPorts = allocateFixturePorts(2);
 
   private static final int    ROW_COUNT   = 500;
   private static final String VERTEX_TYPE = "GrpcReplicatedVertex";

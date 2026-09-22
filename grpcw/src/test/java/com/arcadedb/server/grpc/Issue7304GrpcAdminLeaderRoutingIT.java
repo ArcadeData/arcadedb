@@ -50,10 +50,10 @@ import static org.assertj.core.api.Assertions.catchThrowableOfType;
 @Tag("slow")
 class Issue7304GrpcAdminLeaderRoutingIT extends BaseRaftHATest {
 
-  private static final int BASE_RAFT_PORT = 2434;
   private static final int BASE_HTTP_PORT = 2480;
-  // One gRPC port per server, handed out free by the OS for every test instance rather than fixed (issue #7496).
-  private final int[] grpcPorts = allocateFreePorts(3);
+  // One gRPC port per server, drawn free for every test instance rather than fixed (issue #7496), from the same
+  // ledger as the Raft ports so the two can never coincide (issue #8203).
+  private final int[] grpcPorts = allocateFixturePorts(3);
 
   private ManagedChannel channel;
 
@@ -68,7 +68,7 @@ class Issue7304GrpcAdminLeaderRoutingIT extends BaseRaftHATest {
     for (int i = 0; i < getServerCount(); i++) {
       if (i > 0)
         sb.append(",");
-      sb.append("localhost:{raft:").append(BASE_RAFT_PORT + i)
+      sb.append("localhost:{raft:").append(raftPort(i))
           .append(",http:").append(BASE_HTTP_PORT + i)
           .append(",grpc:").append(grpcPorts[i]).append("}");
     }
