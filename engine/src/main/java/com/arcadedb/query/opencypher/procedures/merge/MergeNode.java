@@ -53,6 +53,7 @@ import java.util.stream.Stream;
  * {@code onMatchProps} mirrors APOC's {@code apoc.merge.node(labels, identProps, onCreateProps, onMatchProps)}:
  * a fourth, optional map applied to the node only when it already existed, exactly as {@code createProps} is
  * applied only when the node is newly created (issue #8117).
+ * </p>
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
