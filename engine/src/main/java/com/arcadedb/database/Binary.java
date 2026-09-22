@@ -606,11 +606,12 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
       checkForFetching(length);
       // Bounded by the LIMIT as well as by size: getString() reads the content straight out of the backing array, so
       // this check stands in for the one ByteBuffer.get() used to make, and must not rely on size <= limit holding
-      final int available = Math.min(size, buffer.limit()) - buffer.position();
+      final int readableUpTo = Math.min(size, buffer.limit());
+      final int available = readableUpTo - buffer.position();
       if (length > available)
         throw new SerializationException(
-            "Byte array length " + length + " exceeds the " + available + " bytes available in buffer of size " + size
-                + " (corrupted record or misaligned read)");
+            "Byte array length " + length + " exceeds the " + available + " bytes available in buffer of size "
+                + readableUpTo + " (corrupted record or misaligned read)");
     }
     return length;
   }
