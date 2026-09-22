@@ -63,6 +63,9 @@ async function expectSinglePage(page: Page): Promise<void> {
   const paging = await readPaging(page);
   expect(paging.length, 'the table must be showing every row').toBe(-1);
   expect(paging.pages, 'all rows on one page is one page').toBe(1);
+  // Do not reduce this to the page.info() check above: page.info() and the paging control compute the page
+  // count separately. When a fault made the pager treat -1 as one row per page, page.info().pages still said
+  // 1 while the control drew "1, 2, 3, 4, 5, ..., 500". Only the drawn buttons show the bug the user saw.
   expect(paging.numbers, `paging buttons drawn for "All": ${JSON.stringify(paging)}`).toEqual(['1']);
   expect(paging.ellipsis).toBe(0);
 
