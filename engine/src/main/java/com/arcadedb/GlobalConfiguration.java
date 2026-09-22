@@ -120,6 +120,8 @@ public enum GlobalConfiguration {
         // made this profile drop live vectors from searches (issue #5568).
         VECTOR_INDEX_SEARCH_CACHE_SIZE.setValue(10_000);
         VECTOR_INDEX_DELTA_CACHE_SIZE.setValue(10_000);
+        // Held per shard, so the floor rather than the heap-scaled default: still enough for one block's columns.
+        TIMESERIES_DECODED_BLOCK_CACHE_RAM.setValue(4L);
 
         POLYGLOT_ENGINE_ENABLED.setValue(false);
 
@@ -237,6 +239,28 @@ public enum GlobalConfiguration {
   TIMESERIES_TAG_DICTIONARY_MAX_SIZE("arcadedb.timeSeriesTagDictionaryMaxSize", SCOPE.DATABASE,
       "Maximum number of distinct values one TimeSeries type's tag dictionary may hold. TAG columns are dictionary-encoded in the mutable row so each occupies a 4-byte id instead of a reserved 258-byte slot; the dictionary is kept in RAM, so this caps its footprint and turns a mis-declared high-cardinality TAG into a clear error instead of unbounded growth. Default is 1M distinct values, roughly 100MB",
       Integer.class, 1_000_000),
+
+  TIMESERIES_DECODED_BLOCK_CACHE_RAM("arcadedb.timeSeriesDecodedBlockCacheRAM", SCOPE.DATABASE, """
+      Memory budget, in MEGABYTES and PER SHARD, for caching decoded TimeSeries sealed-block columns. A sealed block \
+      holds up to 65536 samples and is stored one compressed column at a time, so answering the same question twice \
+      used to re-read and re-decode the whole block twice - a tag-filtered "latest point" query decodes 65536 \
+      timestamps to return one row, and pays it again on every poll (issue #8179). Blocks are immutable and carry a \
+      durable id, so a decoded column can be held and reused safely. Caching is per sealed store, i.e. per shard of \
+      a TimeSeries type, so the worst-case footprint of one type is this value times its SHARDS - the budget is only \
+      reached by queries that actually touch that many distinct blocks. One column of a full block costs 512KB, so a \
+      budget below 2MB cannot hold the working set of even a single 3-column query. 0 disables the cache, which \
+      restores the decode-per-read behaviour exactly. When left at the default it auto-scales with the JVM max heap \
+      (heap/512, never below 4MB). A shard sizes its cache when it is OPENED, so changing this on a running database \
+      reaches the shards opened after the change and not those already open; reopen the database to apply it \
+      everywhere.""",
+      Long.class, 4L, null, value -> {
+        final long maxHeap = Runtime.getRuntime().maxMemory();
+        if (maxHeap == Long.MAX_VALUE)
+          // Heap is unbounded (no -Xmx): keep the floor rather than a budget derived from a number that means
+          // "no limit".
+          return 4L;
+        return Math.max(4L, maxHeap / 512 / 1024 / 1024);
+      }),
 
   BUCKET_REUSE_SPACE_MODE("arcadedb.bucketReuseSpaceMode", SCOPE.DATABASE,
       "How to reuse space in pages. 'high' = more space saved, but slower opening and update/delete time. 'medium' to still reuse space without the initial scan at opening time. 'low' for faster performance, but less space reused. Default is 'high'",
@@ -3194,6 +3218,24 @@ public enum GlobalConfiguration {
         ? Long.MAX_VALUE
         : budget * MAX_REPLICATED_SEALED_CHUNKS;
     return Math.min(Integer.MAX_VALUE, Math.max(perEntry, sliced));
+  }
+
+  /**
+   * The decoded-column budget of ONE TimeSeries sealed store, in bytes (issue #8179).
+   * <p>
+   * {@link #TIMESERIES_DECODED_BLOCK_CACHE_RAM} is declared in megabytes and scoped to the database, so the
+   * conversion lives here rather than at the one production call site: a setting read straight off the enum would
+   * ignore a per-database override, which is what {@code SCOPE.DATABASE} promises to honour.
+   *
+   * @param configuration the database's configuration, or {@code null} for the JVM-wide value - which is what a
+   *                      caller holding no database has to settle for
+   */
+  public static long decodedBlockCacheBytes(final ContextConfiguration configuration) {
+    final long megabytes = configuration != null
+        ? configuration.getValueAsLong(TIMESERIES_DECODED_BLOCK_CACHE_RAM)
+        : TIMESERIES_DECODED_BLOCK_CACHE_RAM.getValueAsLong();
+    // Saturating, so a budget declared in megabytes that would overflow bytes disables nothing and caps instead.
+    return megabytes >= Long.MAX_VALUE / (1024L * 1024L) ? Long.MAX_VALUE : Math.max(0L, megabytes) * 1024L * 1024L;
   }
 
   /**
