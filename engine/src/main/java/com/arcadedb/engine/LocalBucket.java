@@ -1760,8 +1760,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         --totals.totalMultiPageRecords;
         ++totals.totalSurrogateRecords;
         ++totals.totalErrors;
-        // The repair moves the head out of the countable categories (a surrogate is not counted, an ambiguous
-        // FIRST_CHUNK head was), which the cached counter predates (#8040).
+        // Unconditionally, fix or not (#8040). The two lines above have already re-classified the head out of the
+        // countable categories - a surrogate is not counted, the ambiguous FIRST_CHUNK head the slot still carries
+        // is - so from here the tally deliberately disagrees with what count() would answer, whether or not the
+        // repair below goes on to make the slot say what the tally now says.
         totals.recordCountComparable = false;
 
         // A repair, never a deletion: the record is intact, only the marker that says whose it is was never written.
