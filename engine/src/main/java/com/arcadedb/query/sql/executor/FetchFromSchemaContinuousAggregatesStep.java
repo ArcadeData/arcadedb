@@ -51,6 +51,8 @@ public class FetchFromSchemaContinuousAggregatesStep extends AbstractFetchFromSc
       r.setProperty("bucketColumn", ca.getBucketColumn());
       r.setProperty("timestampColumn", ca.getTimestampColumn());
       r.setProperty("watermarkTs", ca.getWatermarkTs());
+      // #8152: 0 alone cannot say whether the aggregate has ever been refreshed or is anchored at the epoch.
+      r.setProperty("watermarkSet", ca.isWatermarkSet());
       r.setProperty("lastRefreshTime", ca.getLastRefreshTime());
       r.setProperty("status", ca.getStatus());
 

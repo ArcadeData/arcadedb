@@ -38,6 +38,13 @@ public final class WeightCodec {
   /** Bit pattern used as a tombstone sentinel for fp32 weights. Quiet NaN with a recognizable payload. */
   public static final int FP32_TOMBSTONE_BITS = 0x7FC0DEAD;
 
+  /** Half-precision bit pattern of the largest finite magnitude, 65504. */
+  private static final int FP16_MAX_FINITE = 0x7BFF;
+  /** Half-precision exponent field, all ones: infinity when the significand is zero, NaN otherwise. */
+  private static final int FP16_INFINITY = 0x7C00;
+  /** Half-precision magnitude mask (everything but the sign bit). */
+  private static final int FP16_ABS_MASK = 0x7FFF;
+
   // ---------- int8 ----------
 
   /**
@@ -104,46 +111,37 @@ public final class WeightCodec {
   /**
    * IEEE 754 half-precision float encoding. Returns a 16-bit value packed in a short.
    * Round-to-nearest-even, subnormal-preserving.
+   * <p>
+   * #8157: both directions now delegate to the JDK's own conversions, which have been in {@link Float} since 20 and
+   * are intrinsified. The hand-rolled pair this replaces had TWO disagreements with the format its javadoc claims:
+   * the decoder reconstructed every one of the 2046 subnormal patterns one binade too high, so every stored weight
+   * below 2^-14 read back at exactly TWICE its magnitude - not a rounding error, a factor of two on an ordinary
+   * small term weight, silently wrong scores and wrong top-K order - and this encoder rounded by adding {@code
+   * 0x1000} unconditionally, which is round-half-AWAY-from-zero rather than the round-to-nearest-even promised
+   * above, worth 1 ulp on exact ties.
+   * <p>
+   * Two deliberate departures from {@link Float#floatToFloat16} are kept, because the segment format depends on
+   * them: a FINITE input too large for the format saturates to the largest finite half rather than becoming
+   * infinity, so a weight stays a number that can be summed into a score; and NaN is refused outright, the same rule
+   * {@link #quantizeInt8} and {@link #floatToTombstoneAwareBits} already apply, because a NaN's fp16 image can land
+   * exactly on {@link SegmentFormat#FP16_TOMBSTONE_SENTINEL} and read back as a DELETED posting.
+   *
+   * @throws IllegalArgumentException when {@code f} is NaN
    */
   public static short toFp16(final float f) {
-    final int bits = Float.floatToRawIntBits(f);
-    final int sign = (bits >>> 16) & 0x8000;
-    int val = (bits & 0x7FFFFFFF) + 0x1000;  // round
-    if (val >= 0x47800000) {
-      // Inf or NaN
-      if ((bits & 0x7FFFFFFF) >= 0x7F800000)
-        return (short) (sign | 0x7C00 | ((bits & 0x007FFFFF) >>> 13));
-      return (short) (sign | 0x7BFF);  // saturate to max finite
-    }
-    if (val >= 0x38800000)
-      return (short) (sign | ((val - 0x38000000) >>> 13));
-    if (val < 0x33000000)
-      return (short) sign;  // underflow to zero
-    val = (bits & 0x7FFFFFFF) >>> 23;
-    return (short) (sign | ((((bits & 0x7FFFFF) | 0x800000) + (0x800000 >>> (val - 102))) >>> (126 - val)));
+    if (Float.isNaN(f))
+      throw new IllegalArgumentException("NaN weight is not supported by fp16 quantization (tombstone sentinel collision)");
+
+    final short h = Float.floatToFloat16(f);
+    if ((h & FP16_ABS_MASK) == FP16_INFINITY && !Float.isInfinite(f))
+      // Finite but out of range: saturate to the largest finite half instead of overflowing to infinity.
+      return (short) ((h & 0x8000) | FP16_MAX_FINITE);
+    return h;
   }
 
+  /** Exact inverse of the IEEE 754 half-precision encoding, subnormals included. See {@link #toFp16}. */
   public static float fromFp16(final short fp16) {
-    final int h = fp16 & 0xFFFF;
-    final int sign = (h & 0x8000) << 16;
-    final int exp = (h >>> 10) & 0x1F;
-    final int mant = h & 0x3FF;
-
-    if (exp == 0) {
-      if (mant == 0)
-        return Float.intBitsToFloat(sign);
-      // Subnormal: normalize.
-      int e = -1;
-      int m = mant;
-      do {
-        e++;
-        m <<= 1;
-      } while ((m & 0x400) == 0);
-      return Float.intBitsToFloat(sign | (((-14 - e + 127) << 23) | ((m & 0x3FF) << 13)));
-    }
-    if (exp == 0x1F)
-      return Float.intBitsToFloat(sign | 0x7F800000 | (mant << 13));
-    return Float.intBitsToFloat(sign | ((exp + 112) << 23) | (mant << 13));
+    return Float.float16ToFloat(fp16);
   }
 
   // ---------- fp32 ----------

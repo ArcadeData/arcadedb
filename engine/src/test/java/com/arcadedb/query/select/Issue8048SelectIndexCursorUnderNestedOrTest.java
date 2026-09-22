@@ -111,7 +111,11 @@ public class Issue8048SelectIndexCursorUnderNestedOrTest extends TestHelper {
   void rightNestedOrSiblingIsOnlyIndexedWhenBothOfItsSidesAre() {
     // a = 1 OR (b = 1 OR a = 2). THE FLUENT BUILDER CANNOT PRODUCE A RIGHT-NESTED or, BUT Select.json() CAN.
     // isTheNodeFullyIndexed()'S or ARM USED TO ANSWER left || right, SO THE INNER or CALLED ITSELF FULLY INDEXED ON
-    // THE STRENGTH OF a = 2 ALONE AND THE OUTER a = 1 LEAF GOT ITS CURSOR
+    // THE STRENGTH OF a = 2 ALONE AND THE OUTER a = 1 LEAF GOT ITS CURSOR.
+    // #8167: UNTIL THAT FIX THE JSON BELOW DID NOT ACTUALLY COMPILE TO THE RIGHT-NESTED SHAPE THIS COMMENT NAMES -
+    // Select.json(JSONObject) REPLAYED THE NESTED ARRAY'S LEAVES THROUGH THE PRECEDENCE MACHINE AND PRODUCED THE
+    // LEFT-NESTED (a = 1 or b = 1) or a = 2. THE TEST STAYED VALID EITHER WAY, SINCE THE LEFT-NESTED SIBLING
+    // EXERCISES THE SAME || TO && CHANGE, BUT IT NOW TESTS THE TREE IT CLAIMS TO
     final JSONObject json = new JSONObject(
         "{\"fromType\":\"D\",\"where\":[[\":a\",\"=\",1],\"or\",[[\":b\",\"=\",1],\"or\",[\":a\",\"=\",2]]]}");
 

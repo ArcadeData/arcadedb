@@ -33,6 +33,12 @@ public interface ContinuousAggregate {
 
   long getWatermarkTs();
 
+  /**
+   * {@code true} when {@link #getWatermarkTs()} is a real watermark rather than the "never refreshed yet" default.
+   * #8152: 0 alone cannot tell the two apart, and an aggregate anchored at the epoch is a legitimate one.
+   */
+  boolean isWatermarkSet();
+
   long getBucketIntervalMs();
 
   String getBucketColumn();

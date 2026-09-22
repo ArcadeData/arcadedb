@@ -21,9 +21,12 @@ package com.arcadedb.function.sql.time;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.function.sql.SQLFunctionConfigurableAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.utility.DateUtils;
+
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.time.format.DateTimeParseException;
 import java.util.Date;
 import java.util.Locale;
 
@@ -111,25 +114,19 @@ public class SQLFunctionTimeBucket extends SQLFunctionConfigurableAbstract {
     };
   }
 
+  /**
+   * #8152: was a private near-copy of the same conversion that lives in three other places. It is now one converter
+   * in {@link DateUtils#toEpochMillis}, which this function's own contract is the reason for: the day it started
+   * answering a {@link LocalDateTime} instead of a {@link Date} (#7610), the copies that did not know about
+   * {@code LocalDateTime} started reading every bucket as the epoch.
+   */
   private static long toEpochMs(final Object value) {
-    if (value instanceof Long l)
-      return l;
-    if (value instanceof Date d)
-      return d.getTime();
-    if (value instanceof Instant i)
-      return i.toEpochMilli();
-    if (value instanceof LocalDateTime ldt)
-      return ldt.toInstant(ZoneOffset.UTC).toEpochMilli();
-    if (value instanceof Number n)
-      return n.longValue();
-    if (value instanceof String s) {
-      try {
-        return Instant.parse(s).toEpochMilli();
-      } catch (final Exception e) {
-        throw new IllegalArgumentException("Cannot parse timestamp for time_bucket: '" + s + "'", e);
-      }
+    try {
+      return DateUtils.toEpochMillis(value);
+    } catch (final IllegalArgumentException | DateTimeParseException e) {
+      throw new IllegalArgumentException("Unsupported timestamp for time_bucket: '" + value + "'"
+          + (value != null ? " (" + value.getClass().getName() + ")" : ""), e);
     }
-    throw new IllegalArgumentException("Unsupported timestamp type for time_bucket: " + value.getClass().getName());
   }
 
   @Override

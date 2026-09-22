@@ -76,9 +76,11 @@ class ContinuousAggregateTest extends TestHelper {
           "INSERT INTO SensorReading SET ts = 7201000, sensor_id = 'A', temperature = 32.0");
     });
 
-    // The post-commit callback should have triggered an incremental refresh
+    // The post-commit callback should have triggered an incremental refresh. #8152: this used to be
+    // isGreaterThanOrEqualTo, which a watermark stuck at its initial 0 satisfies just as well - and it was.
     final ContinuousAggregate ca = database.getSchema().getContinuousAggregate("hourly_temps");
-    assertThat(ca.getWatermarkTs()).isGreaterThanOrEqualTo(initialWatermark);
+    assertThat(ca.getWatermarkTs()).isGreaterThan(initialWatermark);
+    assertThat(ca.getWatermarkTs()).isEqualTo(7_200_000L);
     assertThat(ca.getStatus()).isEqualTo("VALID");
 
     // Verify the new bucket data exists
@@ -110,8 +112,10 @@ class ContinuousAggregateTest extends TestHelper {
       database.command("sql",
           "INSERT INTO SensorReading SET ts = 3600000, sensor_id = 'A', temperature = 25.0"));
 
+    // #8152: STRICTLY greater. The old isGreaterThanOrEqualTo held for a watermark that never moved at all.
     final long wm2 = database.getSchema().getContinuousAggregate("hourly_temps").getWatermarkTs();
-    assertThat(wm2).isGreaterThanOrEqualTo(wm1);
+    assertThat(wm2).isGreaterThan(wm1);
+    assertThat(wm2).isEqualTo(3_600_000L);
   }
 
   @Test
