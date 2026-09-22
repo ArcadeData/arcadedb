@@ -60,7 +60,9 @@ the retry succeeds.
 
 Over HTTP the refusal is a **503**, alongside the other retryable failures (`NeedRetryException`,
 `DatabaseIsClosedException`), so a PromQL or Grafana client whose retry policy keys on the status code retries
-rather than seeing an opaque 500 indistinguishable from a server fault.
+rather than seeing an opaque 500 indistinguishable from a server fault. `ErrorCategory` classifies it as `RETRY`
+as well, so gRPC answers `ABORTED` and Bolt, MongoDB and Postgres give their own equivalents rather than a
+server-fault code.
 
 Through `EXPORT DATABASE` it fails only the type it happened to - counted as a skipped record, logged at SEVERE
 naming the type, and the export goes on to the remaining types. The run still ends as a failed outcome, because

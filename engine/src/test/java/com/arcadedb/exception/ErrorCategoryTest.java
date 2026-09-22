@@ -18,6 +18,7 @@
  */
 package com.arcadedb.exception;
 
+import com.arcadedb.engine.timeseries.TimeSeriesWalkCoarsenedException;
 import com.arcadedb.database.RID;
 import com.arcadedb.index.fulltext.FullTextQueryParseException;
 import org.junit.jupiter.api.Test;
@@ -84,6 +85,22 @@ class ErrorCategoryTest {
     assertThat(ErrorCategory.of(new LockTimeoutException("lock"))).isEqualTo(ErrorCategory.RETRY);
     assertThat(ErrorCategory.of(new TransactionException("wrapped", new ConcurrentModificationException("conflict"))))
         .isEqualTo(ErrorCategory.RETRY);
+  }
+
+  /**
+   * A TimeSeries read a downsample overtook is retryable in the sense a driver acts on - the same read re-issued
+   * returns a whole answer at one resolution - even though it is not a transaction conflict and nothing may
+   * auto-retry it inside a commit loop. Named here rather than made a {@code NeedRetryException} subtype for
+   * exactly that reason, so every wire protocol gives it the answer the HTTP handler gives (503) instead of the
+   * gRPC {@code INTERNAL} a retry-driven client reads as a server fault (issue #8166, review of PR #8197).
+   */
+  @Test
+  void aDownsampleOvertakingAReadIsRetryableOnEveryWireProtocol() {
+    assertThat(ErrorCategory.of(new TimeSeriesWalkCoarsenedException("block replaced by a downsample")))
+        .isEqualTo(ErrorCategory.RETRY);
+    assertThat(ErrorCategory.of(
+        new CommandExecutionException("wrapped", new TimeSeriesWalkCoarsenedException("block replaced"))))
+        .as("and through the wrapper the query engines put around an execution failure").isEqualTo(ErrorCategory.RETRY);
   }
 
   @Test
