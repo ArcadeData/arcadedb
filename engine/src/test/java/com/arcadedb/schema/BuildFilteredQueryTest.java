@@ -63,8 +63,74 @@ class BuildFilteredQueryTest {
     final ContinuousAggregateImpl ca = buildCA(
         "SELECT sensor_id, avg(temp) FROM SensorReading WHERE active = true GROUP BY sensor_id");
     final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000);
+    // #8156: the caller's predicate is bracketed. It is redundant for a single comparison and mandatory the moment
+    // the predicate contains an OR, so it is applied unconditionally rather than guessed at.
     assertThat(result).isEqualTo(
-        "SELECT sensor_id, avg(temp) FROM SensorReading WHERE `ts` >= 1000 AND active = true GROUP BY sensor_id");
+        "SELECT sensor_id, avg(temp) FROM SensorReading WHERE `ts` >= 1000 AND (active = true) GROUP BY sensor_id");
+  }
+
+  /**
+   * #8156: the regression. {@code AND} binds tighter than {@code OR}, so without the bracket the second disjunct
+   * escapes the watermark filter entirely and buckets older than the watermark are re-aggregated - on top of rows
+   * the refresh's own DELETE did not touch, because that DELETE only covers buckets at or after the watermark.
+   */
+  @Test
+  void orInExistingWhereStaysGrouped() {
+    final ContinuousAggregateImpl ca = buildCA(
+        "SELECT sensor_id, ts.timeBucket('1h', ts) AS hour, avg(temp) AS avg_temp FROM SensorReading "
+            + "WHERE temp > 100 OR sensor_id = 'A' GROUP BY sensor_id, hour");
+    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 7200000);
+    assertThat(result).isEqualTo(
+        "SELECT sensor_id, ts.timeBucket('1h', ts) AS hour, avg(temp) AS avg_temp FROM SensorReading "
+            + "WHERE `ts` >= 7200000 AND (temp > 100 OR sensor_id = 'A') GROUP BY sensor_id, hour");
+  }
+
+  @Test
+  void orInExistingWhereWithNoTrailingClause() {
+    final ContinuousAggregateImpl ca = buildCA(
+        "SELECT sensor_id FROM SensorReading WHERE temp > 100 OR sensor_id = 'A'");
+    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000);
+    assertThat(result).isEqualTo(
+        "SELECT sensor_id FROM SensorReading WHERE `ts` >= 1000 AND (temp > 100 OR sensor_id = 'A')");
+  }
+
+  @Test
+  void whereClauseEndsAtOrderByNotAtTheEndOfTheString() {
+    final ContinuousAggregateImpl ca = buildCA(
+        "SELECT sensor_id, temp FROM SensorReading WHERE temp > 100 OR sensor_id = 'A' ORDER BY sensor_id LIMIT 10");
+    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000);
+    assertThat(result).isEqualTo(
+        "SELECT sensor_id, temp FROM SensorReading WHERE `ts` >= 1000 AND (temp > 100 OR sensor_id = 'A') "
+            + "ORDER BY sensor_id LIMIT 10");
+  }
+
+  /**
+   * #8156: the clause scan that finds where the WHERE ends is quote-aware, so a clause keyword sitting inside a
+   * string literal does not close the bracket in the middle of the predicate. The old {@code indexOf} scan used for
+   * the no-WHERE branch was not.
+   */
+  @Test
+  void clauseKeywordInsideAStringLiteralIsNotAClause() {
+    final ContinuousAggregateImpl ca = buildCA(
+        "SELECT sensor_id FROM SensorReading WHERE label = 'GROUP BY me' OR temp > 1 GROUP BY sensor_id");
+    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000);
+    assertThat(result).isEqualTo(
+        "SELECT sensor_id FROM SensorReading WHERE `ts` >= 1000 AND (label = 'GROUP BY me' OR temp > 1) "
+            + "GROUP BY sensor_id");
+  }
+
+  /**
+   * #8152: a watermark of 0 that HAS been set is a real watermark - the epoch bucket - and must still be filtered
+   * on. The 2-argument overload keeps the old "0 means unset" reading for callers that have no flag to pass.
+   */
+  @Test
+  void watermarkOfZeroIsFilteredWhenExplicitlySet() {
+    final ContinuousAggregateImpl ca = buildCA(
+        "SELECT sensor_id, avg(temp) FROM SensorReading GROUP BY sensor_id");
+    assertThat(ContinuousAggregateRefresher.buildFilteredQuery(ca, 0, true)).isEqualTo(
+        "SELECT sensor_id, avg(temp) FROM SensorReading WHERE `ts` >= 0 GROUP BY sensor_id");
+    assertThat(ContinuousAggregateRefresher.buildFilteredQuery(ca, 0, false)).isEqualTo(
+        "SELECT sensor_id, avg(temp) FROM SensorReading GROUP BY sensor_id");
   }
 
   @Test
@@ -87,12 +153,14 @@ class BuildFilteredQueryTest {
 
   @Test
   void whereConditionStartsWithParenthesis() {
-    // Regression: WHERE(condition) without a space after WHERE caused "AND(condition)" — missing space
+    // Regression: WHERE(condition) without a space after WHERE caused "AND(condition)" — missing space.
+    // #8156 adds the predicate bracket, so an already-bracketed predicate simply gains a redundant outer pair;
+    // detecting that the existing pair spans the whole predicate is more code than it saves.
     final ContinuousAggregateImpl ca = buildCA(
         "SELECT sensor_id, avg(temp) FROM SensorReading WHERE(active = true) GROUP BY sensor_id");
     final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000);
     assertThat(result).isEqualTo(
-        "SELECT sensor_id, avg(temp) FROM SensorReading WHERE `ts` >= 1000 AND (active = true) GROUP BY sensor_id");
+        "SELECT sensor_id, avg(temp) FROM SensorReading WHERE `ts` >= 1000 AND ((active = true)) GROUP BY sensor_id");
   }
 
   @Test

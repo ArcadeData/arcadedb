@@ -35,6 +35,13 @@ public class ContinuousAggregateImpl implements ContinuousAggregate {
   private final String   bucketColumn;
   private final String   timestampColumn;
   private volatile long                   watermarkTs;
+  /**
+   * #8152: 0 used to mean BOTH "the watermark has never been set" and "the watermark is the epoch". A continuous
+   * aggregate whose newest bucket legitimately IS the epoch therefore never had its incomplete-bucket rows deleted
+   * before being recomputed, so that one bucket accumulated a duplicate on every refresh. The flag separates the two
+   * readings; {@link #getWatermarkTs()} keeps answering 0 while unset, which is what the public API always returned.
+   */
+  private volatile boolean                watermarkSet;
   private volatile long                   lastRefreshTime;
   private volatile MaterializedViewStatus status;
   private final    AtomicBoolean          refreshInProgress = new AtomicBoolean(false);
@@ -59,6 +66,7 @@ public class ContinuousAggregateImpl implements ContinuousAggregate {
     this.bucketColumn = bucketColumn;
     this.timestampColumn = timestampColumn;
     this.watermarkTs = 0;
+    this.watermarkSet = false;
     this.lastRefreshTime = 0;
     this.status = MaterializedViewStatus.VALID;
   }
@@ -123,6 +131,24 @@ public class ContinuousAggregateImpl implements ContinuousAggregate {
 
   public void setWatermarkTs(final long watermarkTs) {
     this.watermarkTs = watermarkTs;
+    this.watermarkSet = true;
+  }
+
+  /**
+   * {@code true} once a refresh has actually read a bucket out of the defining query - see {@link #watermarkSet}.
+   */
+  @Override
+  public boolean isWatermarkSet() {
+    return watermarkSet;
+  }
+
+  /**
+   * Restores the watermark to a previously observed state, flag included. Used to roll back an advance whose
+   * persistence failed, which must leave the aggregate exactly as it was rather than pinned at a spurious epoch.
+   */
+  public void restoreWatermark(final long watermarkTs, final boolean watermarkSet) {
+    this.watermarkTs = watermarkTs;
+    this.watermarkSet = watermarkSet;
   }
 
   public void setLastRefreshTime(final long lastRefreshTime) {
@@ -214,6 +240,7 @@ public class ContinuousAggregateImpl implements ContinuousAggregate {
     json.put("bucketColumn", bucketColumn);
     json.put("timestampColumn", timestampColumn);
     json.put("watermarkTs", watermarkTs);
+    json.put("watermarkSet", watermarkSet);
     json.put("lastRefreshTime", lastRefreshTime);
     json.put("status", status.name());
     return json;
@@ -234,6 +261,9 @@ public class ContinuousAggregateImpl implements ContinuousAggregate {
         json.getString("bucketColumn"),
         json.getString("timestampColumn"));
     ca.watermarkTs = json.getLong("watermarkTs", 0);
+    // A schema written before #8152 carries no flag: fall back to the old reading, where a non-zero watermark is the
+    // only one that counts as set. That is exactly the pre-existing behaviour for every such aggregate.
+    ca.watermarkSet = json.getBoolean("watermarkSet", ca.watermarkTs != 0);
     ca.lastRefreshTime = json.getLong("lastRefreshTime", 0);
     ca.status = MaterializedViewStatus.valueOf(json.getString("status", "VALID"));
     return ca;

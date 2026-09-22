@@ -91,17 +91,16 @@ import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.Pair;
 
-import java.time.Instant;
-import java.time.LocalDate;
-import java.time.ZoneOffset;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -2684,7 +2683,14 @@ public class SelectExecutionPlanner {
       if (timestampColumn.equals(fieldName)) {
         final Object fromVal = between.getSecond().execute((Identifiable) null, context);
         final Object toVal = between.getThird().execute((Identifiable) null, context);
-        return new long[] { toEpochMs(fromVal), toEpochMs(toVal) };
+        final long fromTs = toEpochMs(fromVal);
+        final long toTs = toEpochMs(toVal);
+        // #8152: Long.MIN_VALUE means "not a timestamp", not "the beginning of time". Returning it as the UPPER
+        // bound produced an empty range and a BETWEEN that matched nothing; as the LOWER bound it silently widened
+        // the scan. Either way the correct answer is to decline the push-down and let the generic filter run.
+        if (fromTs == Long.MIN_VALUE || toTs == Long.MIN_VALUE)
+          return null;
+        return new long[] { fromTs, toTs };
       }
     } else if (expr instanceof BinaryCondition binary) {
       // Check if one side is the timestamp column and the other is a value
@@ -2731,26 +2737,27 @@ public class SelectExecutionPlanner {
     return null;
   }
 
+  /**
+   * Epoch milliseconds of a time-range bound, or {@link Long#MIN_VALUE} when the value carries no date/time and the
+   * range therefore cannot be pushed down. Every caller must treat that answer as "no push-down", NOT as a bound.
+   * <p>
+   * #8152: this was a fourth near-copy of the same conversion, and the one that knew the fewest types - a
+   * {@link LocalDateTime}, which is the engine's own DATETIME representation and what a bound supplied as a query
+   * parameter or produced by {@code date()} actually is, fell through to the sentinel. On the BETWEEN path below
+   * that sentinel was not checked at all, so it became the range's UPPER bound and the scan matched NOTHING. The
+   * conversion is now {@link DateUtils#toEpochMillis}'s, shared with the time-bucket function and the
+   * continuous-aggregate refresher, with the sentinel kept only here where a caller acts on it.
+   */
   private static long toEpochMs(final Object value) {
-    if (value instanceof Long l)
-      return l;
-    if (value instanceof Date d)
-      return d.getTime();
-    if (value instanceof Number n)
-      return n.longValue();
-    if (value instanceof String s) {
-      try {
-        return Instant.parse(s).toEpochMilli();
-      } catch (final Exception e) {
-        // Try parsing as ISO date without time (assumes UTC)
-        try {
-          return LocalDate.parse(s).atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli();
-        } catch (final Exception e2) {
-          throw new CommandExecutionException("Cannot parse timestamp: '" + s + "'", e);
-        }
-      }
+    if (value == null)
+      return Long.MIN_VALUE;
+    try {
+      return DateUtils.toEpochMillis(value);
+    } catch (final IllegalArgumentException e) {
+      return Long.MIN_VALUE;
+    } catch (final DateTimeParseException e) {
+      throw new CommandExecutionException("Cannot parse timestamp: '" + value + "'", e);
     }
-    return Long.MIN_VALUE;
   }
 
   /**
