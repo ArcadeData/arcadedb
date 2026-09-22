@@ -269,10 +269,9 @@ public class DocumentValidator {
       if (fieldValue.toString().length() > maxAsInteger)
         throwValidationException(document.getType(), p, "contains more characters than " + max + " requested");
     }
-    case DATE, DATETIME -> {
-      final Database database = document.getDatabase();
-      final Date maxAsDate = (Date) Type.convert(database, max, Date.class);
-      final Date fieldValueAsDate = (Date) Type.convert(database, fieldValue, Date.class);
+    case DATE, DATETIME, DATETIME_SECOND, DATETIME_MICROS, DATETIME_NANOS -> {
+      final Date maxAsDate = boundAsDate(document, p, max, "max");
+      final Date fieldValueAsDate = boundAsDate(document, p, fieldValue, "value");
       if (fieldValueAsDate.compareTo(maxAsDate) > 0)
         throwValidationException(document.getType(), p,
             "contains the date " + fieldValue + " which is after the last acceptable date (" + max + ")");
@@ -351,10 +350,9 @@ public class DocumentValidator {
           yield new ValidationResult(true, "contains fewer characters than " + min + " requested");
         yield new ValidationResult(false, null);
       }
-      case DATE, DATETIME -> {
-        final Database database = document.getDatabase();
-        final Date minAsDate = (Date) Type.convert(database, min, Date.class);
-        final Date fieldValueAsDate = (Date) Type.convert(database, fieldValue, Date.class);
+      case DATE, DATETIME, DATETIME_SECOND, DATETIME_MICROS, DATETIME_NANOS -> {
+        final Date minAsDate = boundAsDate(document, p, min, "min");
+        final Date fieldValueAsDate = boundAsDate(document, p, fieldValue, "value");
         if (fieldValueAsDate.compareTo(minAsDate) < 0)
           yield new ValidationResult(true,
               "contains the date " + fieldValue + " which precedes the first acceptable date (" + min + ")");
@@ -499,6 +497,41 @@ public class DocumentValidator {
       }
     }
     break;
+    }
+  }
+
+  /**
+   * Reads one side of a DATE/DATETIME {@code min}/{@code max} comparison, reporting a value neither side can read as
+   * the schema layer's own {@link ValidationException} rather than letting the conversion's
+   * {@link IllegalArgumentException} escape validation.
+   * <p>
+   * This is a write-time check, so the STRICT conversion is the right one - a bound or a value that cannot be read
+   * must not be quietly treated as absent. What issue #8090 changed is only how that failure is reported: the
+   * conversion used to answer {@code null} here, which then became an NPE on the comparison below. Naming the side
+   * that could not be read turns that into something the caller can act on.
+   * <p>
+   * The precision-bearing types reach here at all now: {@code DATETIME_MICROS} and its siblings used to fall through
+   * to the {@code default} arm, which reports a violation UNCONDITIONALLY, so setting a MIN or a MAX on such a
+   * property failed every subsequent write to it whatever the value was - on the very type issue #8090 was reported
+   * on.
+   * <p>
+   * {@link Date} is the frame deliberately, not for convenience: the two sides arrive by different routes - the
+   * bound is always a String out of the schema, the value is whatever the write path stored - and {@code Date} is
+   * where those routes agree. A stored {@code LocalDateTime} converts back through the same UTC convention that
+   * produced it, and a bound String is read in the database's own zone, so both name the same instant. Reading both
+   * into {@code LocalDateTime} instead does NOT agree: that conversion is a wall clock for one side and a UTC
+   * rendering for the other, and the comparison comes out skewed by the offset.
+   * <p>
+   * The cost is that a bound is compared at millisecond precision even on a {@code DATETIME_MICROS} property.
+   * Tightening that means settling which frame a date bound is written in, which is a question of its own and not
+   * one this fix answers.
+   */
+  private static Date boundAsDate(final Document document, final Property p, final Object value, final String side) {
+    try {
+      return (Date) Type.convert(document.getDatabase(), value, Date.class);
+    } catch (final IllegalArgumentException e) {
+      throwValidationException(document.getType(), p, "has a " + side + " that is not a readable date: " + value);
+      return null; // unreachable: throwValidationException always throws
     }
   }
 

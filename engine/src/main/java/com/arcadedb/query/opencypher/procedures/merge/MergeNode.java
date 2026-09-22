@@ -36,11 +36,12 @@ import java.util.Map;
 import java.util.stream.Stream;
 
 /**
- * Procedure: merge.node(labels, matchProps, createProps)
+ * Procedure: merge.node(labels, matchProps, createProps, onMatchProps)
  * <p>
  * Merges a node with the specified labels. If a node with the given labels
- * and matching properties exists, it returns the existing node. Otherwise,
- * it creates a new node with both matchProps and createProps.
+ * and matching properties exists, it returns the existing node - applying
+ * {@code onMatchProps} to it. Otherwise, it creates a new node with both
+ * matchProps and createProps.
  * </p>
  * <p>
  * Example:
@@ -48,6 +49,11 @@ import java.util.stream.Stream;
  * CALL merge.node(['Person'], {name: 'John'}, {age: 30}) YIELD node
  * RETURN node
  * </pre>
+ * </p>
+ * <p>
+ * {@code onMatchProps} mirrors APOC's {@code apoc.merge.node(labels, identProps, onCreateProps, onMatchProps)}:
+ * a fourth, optional map applied to the node only when it already existed, exactly as {@code createProps} is
+ * applied only when the node is newly created (issue #8117).
  * </p>
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
@@ -67,7 +73,7 @@ public class MergeNode implements CypherProcedure {
 
   @Override
   public int getMaxArgs() {
-    return 3;
+    return 4;
   }
 
   @Override
@@ -94,6 +100,7 @@ public class MergeNode implements CypherProcedure {
     final List<String> labels = extractLabels(args[0]);
     final Map<String, Object> matchProps = extractMap(args[1], "matchProps");
     final Map<String, Object> createProps = extractMap(args[2], "createProps");
+    final Map<String, Object> onMatchProps = args.length > 3 ? extractMap(args[3], "onMatchProps") : null;
 
     if (labels.isEmpty()) {
       throw new IllegalArgumentException(getName() + "(): at least one label is required");
@@ -110,9 +117,19 @@ public class MergeNode implements CypherProcedure {
     // Try to find existing node matching the criteria
     final Vertex existingNode = findMatchingNode(database, typeName, labels, matchProps);
 
-    if (existingNode != null)
+    if (existingNode != null) {
+      // Apply onMatchProps to the existing node, mirroring how createProps is applied on the create branch
+      if (onMatchProps != null && !onMatchProps.isEmpty()) {
+        final MutableVertex mutableNode = existingNode.modify();
+        for (final Map.Entry<String, Object> entry : onMatchProps.entrySet()) {
+          mutableNode.set(entry.getKey(), entry.getValue());
+        }
+        mutableNode.save();
+        return createResultStream(mutableNode);
+      }
       // Return existing node
       return createResultStream(existingNode);
+    }
 
     // Create new node with both matchProps and createProps
     final MutableVertex newNode = database.newVertex(typeName);

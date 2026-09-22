@@ -29,6 +29,7 @@ import java.io.File;
 import java.nio.file.Paths;
 import java.time.Instant;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -513,6 +514,119 @@ class ChatStorageTest {
     // An unreadable/absent parent must not be treated as a match.
     final File missingParent = Paths.get(TEST_ROOT, "chats", "nope", "deeper").toFile();
     assertThat(ChatStorage.isSpelledExactlyOnDisk(missingParent, "deeper")).isFalse();
+  }
+
+  @Test
+  void anAmbiguousLegacyDirectoryMigratesWhenExactlyOneRegisteredAccountMapsOntoIt() throws Exception {
+    // Regression test for #8078: the #7620 fix refused every legacy name containing '_' on the
+    // theoretical preimage alone, even when the server's real user registry proves only one account
+    // could have written it. Here "john_doe" is the only registered user that sanitizes to
+    // "john_doe" - "john.doe" and "john@doe" are not accounts on this server - so the migration must
+    // now proceed instead of leaving the history stranded.
+    final ChatStorage resolvingStorage = new ChatStorage(TEST_ROOT, () -> Set.of("john_doe", "root"));
+
+    final File legacyDir = Paths.get(TEST_ROOT, "chats", "john_doe").toFile();
+    assertThat(legacyDir.mkdirs()).isTrue();
+    final JSONObject chat = ChatStorage.createNewChat("db", "john_doe's pre-upgrade chat");
+    FileUtils.writeFile(new File(legacyDir, ChatStorage.sanitizeFilename(chat.getString("id")) + ".json"), chat.toString());
+
+    final List<JSONObject> chats = resolvingStorage.listChats("john_doe");
+
+    assertThat(chats).hasSize(1);
+    assertThat(legacyDir).doesNotExist();
+    final File hashedDir = Paths.get(TEST_ROOT, "chats", ChatStorage.hashUsername("john_doe")).toFile();
+    assertThat(hashedDir).exists();
+  }
+
+  @Test
+  void anAmbiguousLegacyDirectoryStaysRefusedWhenTwoRegisteredAccountsMapOntoIt() throws Exception {
+    // Companion to the test above: when the real registry shows the ambiguity is NOT just
+    // theoretical - two actual accounts collide - the directory must still be left untouched, exactly
+    // as the #7620 fix did with no registry available at all.
+    final ChatStorage resolvingStorage = new ChatStorage(TEST_ROOT, () -> Set.of("user@corp.com", "user.corp.com"));
+    final String sharedLegacyName = ChatStorage.sanitizeFilename("user@corp.com");
+    assertThat(sharedLegacyName).isEqualTo(ChatStorage.sanitizeFilename("user.corp.com"));
+
+    final File legacyDir = Paths.get(TEST_ROOT, "chats", sharedLegacyName).toFile();
+    assertThat(legacyDir.mkdirs()).isTrue();
+    final JSONObject chat = ChatStorage.createNewChat("db", "Whoever migrates first owns this");
+    FileUtils.writeFile(new File(legacyDir, ChatStorage.sanitizeFilename(chat.getString("id")) + ".json"), chat.toString());
+
+    assertThat(resolvingStorage.listChats("user@corp.com")).isEmpty();
+    assertThat(resolvingStorage.listChats("user.corp.com")).isEmpty();
+    assertThat(legacyDir).exists();
+  }
+
+  @Test
+  void anAmbiguousDirectoryStaysRefusedEvenAfterOneOfTheTwoCollidingAccountsIsDeleted() throws Exception {
+    // Code review on PR #8126: deciding purely from the CURRENT account list is not enough. If
+    // "user@corp.com" and "user.corp.com" are both seen to collide on "user_corp_com" (refused,
+    // correctly), and "user.corp.com" is deleted afterwards, a naive re-check would see only
+    // "user@corp.com" mapping onto the name and migrate the directory - including
+    // "user.corp.com"'s chats - straight into "user@corp.com"'s store. That is the exact cross-user
+    // access #7113 set out to remove, reached through account deletion instead of a name collision.
+    final AtomicReference<Set<String>> registeredAccounts =
+        new AtomicReference<>(Set.of("user@corp.com", "user.corp.com"));
+    final ChatStorage resolvingStorage = new ChatStorage(TEST_ROOT, registeredAccounts::get);
+
+    final String sharedLegacyName = ChatStorage.sanitizeFilename("user@corp.com");
+    final File legacyDir = Paths.get(TEST_ROOT, "chats", sharedLegacyName).toFile();
+    assertThat(legacyDir.mkdirs()).isTrue();
+    final JSONObject chat = ChatStorage.createNewChat("db", "Both accounts existed when this collision was seen");
+    FileUtils.writeFile(new File(legacyDir, ChatStorage.sanitizeFilename(chat.getString("id")) + ".json"), chat.toString());
+
+    // First lookup: both accounts still exist, the collision is real and observed - refused, and the
+    // collision is now recorded on disk, not just refused in the moment.
+    assertThat(resolvingStorage.listChats("user@corp.com")).isEmpty();
+    assertThat(legacyDir).exists();
+
+    // "user.corp.com" is deleted. Taken at face value, the account list now shows exactly one match.
+    registeredAccounts.set(Set.of("user@corp.com"));
+
+    // The directory must STILL be refused: the recorded collision outlives the deleted account, on
+    // this same ChatStorage instance...
+    assertThat(resolvingStorage.listChats("user@corp.com")).isEmpty();
+    assertThat(legacyDir).as("must not have been migrated, taking user.corp.com's chats with it").exists();
+
+    // ...and on a FRESH instance too, e.g. after a server restart, since the record is a file on disk
+    // rather than in-memory state.
+    final ChatStorage afterRestart = new ChatStorage(TEST_ROOT, registeredAccounts::get);
+    assertThat(afterRestart.listChats("user@corp.com")).isEmpty();
+    assertThat(legacyDir).exists();
+  }
+
+  @Test
+  void twoAccountsDifferingOnlyByCaseAreTreatedAsACollisionEvenThoughSanitizeFilenameDoesNotFoldCase() throws Exception {
+    // CodeRabbit review on PR #8126: ServerSecurity keys accounts by EXACT name, so "John_Doe" and
+    // "john_doe" can both be registered - sanitizeFilename does not lowercase either, so a naive
+    // case-sensitive comparison in soleKnownAccountName would not see them as colliding. But
+    // legacyDir.exists() (the check that gets here at all) is case-INSENSITIVE on the filesystems this
+    // class already special-cases (HASHED_DIR_NAME, isSpelledExactlyOnDisk), so "chats/John_Doe" and
+    // "chats/john_doe" name the very same on-disk directory: only one of the two accounts could really
+    // have owned it, and it cannot be told which from the file tree - the migration must be refused.
+    final ChatStorage resolvingStorage = new ChatStorage(TEST_ROOT, () -> Set.of("John_Doe", "john_doe"));
+
+    final File legacyDir = Paths.get(TEST_ROOT, "chats", "john_doe").toFile();
+    assertThat(legacyDir.mkdirs()).isTrue();
+    final JSONObject chat = ChatStorage.createNewChat("db", "Which of the two really wrote this?");
+    FileUtils.writeFile(new File(legacyDir, ChatStorage.sanitizeFilename(chat.getString("id")) + ".json"), chat.toString());
+
+    assertThat(resolvingStorage.listChats("john_doe")).isEmpty();
+    assertThat(legacyDir).as("must be left untouched, not awarded to whichever spelling looked up first").exists();
+  }
+
+  @Test
+  void anAmbiguousLegacyDirectoryStaysRefusedWhenTheKnownUserSupplierIsAbsent() throws Exception {
+    // The default, single-argument constructor (used by every pre-#8078 caller and by every other
+    // test in this class) must keep today's fully conservative behaviour: no known-user set to
+    // consult means the theoretical ambiguity is never resolved.
+    final File legacyDir = Paths.get(TEST_ROOT, "chats", "john_doe").toFile();
+    assertThat(legacyDir.mkdirs()).isTrue();
+    final JSONObject chat = ChatStorage.createNewChat("db", "john_doe's pre-upgrade chat");
+    FileUtils.writeFile(new File(legacyDir, ChatStorage.sanitizeFilename(chat.getString("id")) + ".json"), chat.toString());
+
+    assertThat(chatStorage.listChats("john_doe")).isEmpty();
+    assertThat(legacyDir).exists();
   }
 
   @Test

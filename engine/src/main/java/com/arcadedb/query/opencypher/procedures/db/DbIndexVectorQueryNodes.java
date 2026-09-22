@@ -22,6 +22,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.function.sql.vector.SQLFunctionVectorAbstract;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
@@ -286,8 +287,9 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
     final String vectorProperty = lsmIndex.getPropertyNames().getFirst();
     final String idProperty = lsmIndex.getIdPropertyName();
 
+    // Shared with vector.neighbors, the SQL entry point onto this same lookup (issue #8097).
     try (final var rs = context.getDatabase().query("sql",
-        "SELECT " + vectorProperty + " FROM " + typeName + " WHERE " + idProperty + " = ? LIMIT 1", keyStr)) {
+        SQLFunctionVectorAbstract.buildVectorByIdLookup(typeName, vectorProperty, idProperty), keyStr)) {
       if (rs.hasNext()) {
         final float[] queryVector = rs.next().getProperty(vectorProperty);
         if (queryVector != null)

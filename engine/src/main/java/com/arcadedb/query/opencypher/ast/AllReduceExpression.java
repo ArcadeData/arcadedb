@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
@@ -77,7 +78,9 @@ public class AllReduceExpression implements Expression {
     final Iterable<?> iterable;
     if (listValue instanceof Iterable)
       iterable = (Iterable<?>) listValue;
-    else if (listValue.getClass().isArray())
+    else if (MultiValue.isSequenceArray(listValue))
+      // A byte[] (BINARY) is deliberately excluded: it is one opaque value everywhere in openCypher, the same
+      // rule UNWIND already applies, not a sequence to explode one byte at a time (issue #8098).
       iterable = arrayToList(listValue);
     else
       throw new IllegalArgumentException("allReduce() requires a list, got: " + listValue.getClass().getSimpleName());
@@ -133,9 +136,6 @@ public class AllReduceExpression implements Expression {
         list.add(f);
     } else if (array instanceof boolean[] a) {
       for (final boolean b : a)
-        list.add(b);
-    } else if (array instanceof byte[] a) {
-      for (final byte b : a)
         list.add(b);
     } else if (array instanceof short[] a) {
       for (final short s : a)

@@ -33,6 +33,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Stream;
 
@@ -47,10 +48,13 @@ import java.util.stream.Stream;
  * <p>
  * {@code config.properties} controls how a property present on both the survivor and an absorbed node
  * is resolved: {@code "overwrite"} (the absorbed node's value wins, the default), {@code "discard"}
- * (the survivor's original value is kept) or {@code "combine"} (the distinct values are kept, in
- * first-seen order, as a list - or as the value itself when the merged nodes all agree on it). A
- * property present only on an absorbed node is always copied onto the survivor. The whole {@code config} argument
- * is optional and defaults to an empty map - hence to the {@code "overwrite"} policy - matching APOC's
+ * (the survivor's original value is kept) or {@code "combine"} (the distinct values contributed by
+ * either node are kept, in first-seen order, as a list - flattening a {@code List}-valued contribution
+ * into that list rather than nesting it - or as the sole value itself when only one distinct value
+ * survives, whether that is because both nodes agreed on it or because de-duplication collapsed the
+ * property to one entry). A property present only on an absorbed node is always copied onto the survivor.
+ * The whole {@code config} argument is optional and defaults to an empty map - hence to the
+ * {@code "overwrite"} policy - matching APOC's
  * {@code apoc.refactor.mergeNodes(nodes :: LIST<NODE>, config = {} :: MAP)} (issue #7427).
  * </p>
  * <p>
@@ -176,20 +180,41 @@ public class RefactorMergeNodes implements CypherProcedure {
   }
 
   /**
-   * Appends {@code value} to {@code combined}, skipping anything already there under {@link Object#equals} so
-   * that equal contributions collapse to one entry and the first-seen order is the order that survives.
+   * Appends {@code value} to {@code combined}, skipping anything already there so that equal contributions
+   * collapse to one entry and the first-seen order is the order that survives.
    * <p>
    * A list is flattened rather than nested, because by the second iteration of the merge loop the survivor's
    * value is whatever this method last accumulated, and because an absorbed node may legitimately carry a list
-   * of its own. The membership test is a linear scan on purpose: the list holds one entry per <i>distinct</i>
-   * value across the merged nodes, which is small, and a scan costs no hash set allocation per property.
-   * </p>
+   * of its own. A Java array is deliberately <b>not</b> flattened the same way: it is kept as the single opaque
+   * value it is - matching how ArcadeDB already treats one everywhere else (e.g. {@code UNWIND} on a sequence
+   * type) - because concatenating two array-valued properties element-by-element, or deciding what type the
+   * result should be when two differently-typed arrays meet, is not a merge a caller could make sense of. A
+   * vector embedding carried by both merged nodes is the practical case: it must survive as the single array it
+   * was, not dissolve into a list no vector index can read (issue #8099).
+   * <p>
+   * The membership test is a linear scan on purpose: the list holds one entry per <i>distinct</i> value across
+   * the merged nodes, which is small, and a scan costs no hash set allocation per property.
    */
   private static void addDistinct(final List<Object> combined, final Object value) {
     if (value instanceof List<?> list) {
       for (final Object element : list)
-        if (!combined.contains(element))
-          combined.add(element);
+        addDistinctScalar(combined, element);
+    } else
+      addDistinctScalar(combined, value);
+  }
+
+  /**
+   * The membership test {@link #addDistinct} applies to one non-list value: {@link Object#equals} for
+   * everything except a Java array, whose {@code equals} is identity rather than content, so two equal-looking
+   * {@code float[]}/{@code short[]}/... instances contributed by different nodes would otherwise never collapse
+   * to one entry (issue #8099).
+   */
+  private static void addDistinctScalar(final List<Object> combined, final Object value) {
+    if (value != null && value.getClass().isArray()) {
+      for (final Object existing : combined)
+        if (existing != null && existing.getClass().isArray() && Objects.deepEquals(existing, value))
+          return;
+      combined.add(value);
     } else if (!combined.contains(value))
       combined.add(value);
   }

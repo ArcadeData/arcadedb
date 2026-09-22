@@ -7835,10 +7835,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     } else if (ctx.CLASSPATH_URL() != null) {
       urlString = ctx.CLASSPATH_URL().getText();
     } else if (ctx.STRING_LITERAL() != null) {
-      // DECODED (not just unquoted) SO urlString HOLDS THE ACTUAL TARGET - BackupDatabaseStatement.getUrlString()
-      // USES IT AS THE BACKUP FILE PATH, SO AN UN-DECODED \n WOULD TARGET THE WRONG PATH ON RE-PARSE (ISSUE #7800
-      // REVIEW). SAME CONVENTION AS DefineFunctionStatement.code, WHICH ALSO DECODES ALONGSIDE A codeQuoted CACHE.
-      urlString = BaseExpression.decode(removeQuotes(ctx.STRING_LITERAL().getText()));
+      // NOT decoded, ONLY unquoted: urlString is handed straight to BackupDatabaseStatement/ExportDatabaseStatement/
+      // ImportDatabaseStatement as a filesystem path. Decoding here (issue #7894) ran BaseExpression.decode(), which
+      // resolves the lexer's escape sequences and drops the backslash before any other character, over a Windows
+      // path, so 'C:temp new.zip' (backslash-t, backslash-n) targeted a filename containing a TAB and a LINE FEED
+      // instead. quotedLiteral (below) already carries the verbatim literal for toString(), which is what issue
+      // #7800 needed decoding for; the execution-side value must stay exactly what removeQuotes produces.
+      urlString = removeQuotes(ctx.STRING_LITERAL().getText());
     }
 
     final Url url = new Url(urlString);

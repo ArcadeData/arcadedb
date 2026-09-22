@@ -55,9 +55,14 @@ public class SQLMethodConvert extends AbstractSQLMethod {
 
     final String destType = params[0].toString();
 
+    // convertOrNull(), not convert(): this is a conversion asked for inside a query, so a value that cannot be
+    // expressed in the target type answers null for that row - as this method has always done and its syntax
+    // implies - instead of aborting the whole query at the first row that does not fit. Only a WRITE refuses; see
+    // the strict/lenient split in Type.convertOrNull's Javadoc (issue #8090). An unknown TYPE NAME is a different
+    // thing and still fails loudly below: that is a query to fix, not a row that does not match.
     if (destType.contains(".")) {
       try {
-        return Type.convert(context.getDatabase(), value, Class.forName(destType));
+        return Type.convertOrNull(context.getDatabase(), value, Class.forName(destType));
       } catch (final ClassNotFoundException e) {
         LogManager.instance().log(this, Level.SEVERE, "Type for destination type was not found", e);
       }
@@ -73,7 +78,7 @@ public class SQLMethodConvert extends AbstractSQLMethod {
             "Unknown type '" + destType + "' in convert(): expected one of " + Arrays.toString(Type.values())
                 + " or a fully qualified Java class name", e);
       }
-      return Type.convert(context.getDatabase(), value, arcadeType.getDefaultJavaType());
+      return Type.convertOrNull(context.getDatabase(), value, arcadeType.getDefaultJavaType());
     }
 
     return null;

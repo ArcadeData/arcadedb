@@ -311,10 +311,13 @@ public class WebSocketInsertProtocol {
 
   /**
    * One of several independent senders on a {@code /ws} channel; see {@link WebSocketFrameSender} for why they
-   * need no lock between them (issue #7423).
+   * need no lock between them (issue #7423). Charged against the connection's shared answer-frame budget so a
+   * client that never reads its {@code started}/{@code batchAck}/{@code committed}/error answers cannot pin
+   * them on the server's heap forever (issue #8085).
    */
-  private static void send(final WebSocketChannel channel, final JSONObject message) {
-    WebSocketFrameSender.sendIfOpen(channel, message.toString());
+  private void send(final WebSocketChannel channel, final JSONObject message) {
+    WebSocketFrameSender.sendBudgeted(channel, message.toString(),
+        configuration.getValueAsLong(GlobalConfiguration.SERVER_WS_MAX_PENDING_CONTROL_BYTES));
   }
 
   private void registerCloseHook(final WebSocketChannel channel, final UUID channelId) {

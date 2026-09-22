@@ -312,7 +312,7 @@ public class HttpServer implements ServerPlugin {
 
     // AI routes are always registered; the chat handler checks isConfigured() at request time
     final var aiConfig = server.getAiConfiguration();
-    final var chatStorage = new ChatStorage(server.getRootPath());
+    final var chatStorage = new ChatStorage(server.getRootPath(), () -> server.getSecurity().getUsers());
     final var aiChatsHandler = new AiChatsHandler(this, chatStorage);
     final RouteRecordingRoutingHandler aiRoutes = new RouteRecordingRoutingHandler();
     routes.addPrefixPath("/api/v1/ai", aiRoutes//
@@ -372,10 +372,26 @@ public class HttpServer implements ServerPlugin {
 
   private Undertow buildUndertowServer(final ContextConfiguration configuration, final String host, final PathHandler routes,
       int httpsPortListening) throws Exception {
+    // Undertow's own entity-size ceiling stays OFF, and arcadedb.server.httpBodyContentMaxSize is enforced by
+    // AbstractServerHttpHandler.readRequestBody and PostBatchHandler's CountingInputStream instead - the two
+    // readers every body on this server now goes through (issue #7772).
+    //
+    // Setting this option to the cap looks like the obvious backstop and cannot be one, for two independent
+    // reasons. First, Undertow enforces MAX_ENTITY_SIZE inside the request conduit: ChunkedStreamSourceConduit's
+    // MaxEntitySizeChecker terminates the request AND CLOSES THE CONNECTION at the point the limit is crossed,
+    // before the worker thread is back in any handler, so by the time anything can react the exchange reports
+    // complete=true and the connection open=false and the documented JSON 413 cannot be sent at all. Second, the
+    // ceiling would be frozen at the value read here while the cap it mirrors is re-read on every request: after
+    // 'SET SERVER SETTING arcadedb.server.httpBodyContentMaxSize' raises the limit, a body inside the NEW cap
+    // still crosses the OLD ceiling, and the caller gets a connection reset with no status rather than the answer
+    // it asked for. Measured: with the cap raised from 1 KB to 8 MB at runtime, a 3 MB chunked body is cut with no
+    // response while the same body sent with a Content-Length is answered normally.
+    //
+    // Per-exchange repair does not work either: HttpServerExchange.setMaxEntitySize is available, but
+    // AbstractServerConnection.maxEntitySizeUpdated - the hook it calls - is an empty method for HTTP/1.1, and by
+    // the time any handler runs the conduit has already captured the old value.
     final Undertow.Builder builder = Undertow.builder()//
         .setServerOption(UndertowOptions.ENABLE_HTTP2, true)
-        // Set to Long.MAX_VALUE so Undertow does not reject oversized requests before routing;
-        // the actual limit is enforced in the handler chain to return a proper 413 with JSON body
         .setServerOption(UndertowOptions.MAX_ENTITY_SIZE, Long.MAX_VALUE)
         .addHttpListener(httpPortListening, host)//
         .setHandler(createBodySizeLimitHandler(routes, configuration))//
@@ -393,6 +409,19 @@ public class HttpServer implements ServerPlugin {
     return builder.build();
   }
 
+  /**
+   * The fast path of {@code arcadedb.server.httpBodyContentMaxSize}: a request that DECLARES more than the cap
+   * is refused with a descriptive JSON 413 before a single body byte is read, and the setting is re-read per
+   * request so a change through {@code SET SERVER SETTING} takes effect immediately.
+   * <p>
+   * It is not the whole enforcement and never could be. {@code HttpServerExchange.getRequestContentLength()}
+   * answers {@code -1} for a body that declares no length, so the bytes actually read are bounded further down,
+   * by {@code AbstractServerHttpHandler.readRequestBody} and by {@code PostBatchHandler}'s
+   * {@code CountingInputStream} for the route that streams instead of buffering. The
+   * {@code RequestTooBigException} they raise is mapped to the same 413 by {@code AbstractServerHttpHandler}
+   * (issue #7772). This check remains because it is the cheap one: it costs a header read and refuses before a
+   * single body byte is taken off the socket.
+   */
   private HttpHandler createBodySizeLimitHandler(final HttpHandler next, final ContextConfiguration configuration) {
     return exchange -> {
       final long maxEntitySize = configuration.getValueAsLong(GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE);

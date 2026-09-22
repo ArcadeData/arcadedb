@@ -141,21 +141,32 @@ public class RDFImporterFormat extends CSVImporterFormat {
     // -onRowError skip dropped", with nothing in the report to tell them apart (issue #7488).
     long skipped = 0;
 
-    // Whether the transaction this method is about to use belongs to the import, as opposed to predating it.
-    // Not the same as "this call pushed it": in the CLI pipeline AbstractImporter.openDatabase() ends with a
-    // begin() that is deliberately left open for the whole import, so the begin() below finds one active and
-    // reuses it. Rolling that one back on failure is still right - the import aborts with it either way, and
-    // the alternative is AbstractImporter.closeDatabase() committing a half-finished import. What must never
-    // be rolled back is a transaction that predates the import, which is exactly what
-    // ImporterContext#callerTransactionActiveOnEntry records, and which ImporterContext#importOwnsTransaction()
-    // answers for every row loop in one place rather than five times by hand (issue #7328). Read here, before the
-    // begin() below, because after that begin() a transaction is always active.
+    // The same policy CSVImporterFormat's row loops read once and gate their per-row try/catch on (issue #8069):
+    // whether a row this loop cannot make an edge out of aborts the whole import (the default) or is logged,
+    // counted as an error and skipped.
+    final boolean skipOnError = settings.isSkipOnRowError();
+
+    // Whether the transaction this call is about to use belongs to the import, as opposed to predating it. NOT
+    // the same as "this call pushed it": in the CLI pipeline AbstractImporter.openDatabase() ends with its own
+    // begin() deliberately left open for the whole import, so this method finds a transaction already active and
+    // REUSES it rather than nesting a new one - and that reused transaction is still this import's own to commit
+    // or, on failure, roll back, exactly as one this call pushed itself would be (issue #7272).
     final boolean ownsTransaction = context.importOwnsTransaction(database);
 
     // Whether a transaction this call owns is still the current one. Cleared right before every commit -
     // LocalDatabase#commit() pops the transaction in a finally, so a commit that throws still leaves it off the
     // stack - which keeps the rollback below from popping the caller's instead (issue #7272).
     boolean txOpen = false;
+
+    // Whether THIS call is the one responsible for resolving (committing or rolling back) the transaction it is
+    // about to use - true when the import owns it per the contract above, OR when this call had to push a
+    // transaction of its own because none was active despite importOwnsTransaction() answering false (that
+    // invariant broken between the check above and here). The second half is what ownsTransaction alone misses:
+    // gating txOpen and the commit/rollback decisions below on ownsTransaction alone would leak a transaction
+    // this call pushed but nothing then commits or rolls back (the same class of bug
+    // Neo4jImporter.parseVertices()/OrientDBImporter.updateDocumentLinks() were fixed for elsewhere in this same
+    // change). Read in the finally block below too, so declared here rather than inside the try.
+    boolean resolvesTransaction = ownsTransaction;
 
     // Edges an intermediate commit already made durable. context.createdEdges counts every edge created,
     // the ones still inside the transaction a failure rolls back included.
@@ -177,9 +188,14 @@ public class RDFImporterFormat extends CSVImporterFormat {
     try (final Reader inputFileReader = sourceReader(parser)) {
       csvParser.beginParsing(inputFileReader);
 
-      if (!database.isTransactionActive())
+      // A transaction not active here despite ownsTransaction being false is exactly the invariant violation
+      // resolvesTransaction's declaration above describes - this call must push one of its own and is then the
+      // only one able to resolve it, whatever importOwnsTransaction() answered.
+      final boolean pushedOwnTransaction = !database.isTransactionActive();
+      if (pushedOwnTransaction)
         database.begin();
-      txOpen = ownsTransaction;
+      resolvesTransaction = ownsTransaction || pushedOwnTransaction;
+      txOpen = resolvesTransaction;
 
       String[] row;
       for (long line = 0; (row = csvParser.parseNext()) != null; ++line) {
@@ -197,33 +213,65 @@ public class RDFImporterFormat extends CSVImporterFormat {
           continue;
         }
 
-        final String v1Id = getStringContent(row[0], STRING_CONTENT_SKIP);
-        final String edgeLabel = getStringContent(row[1], STRING_CONTENT_SKIP);
-        final String v2Id = getStringContent(row[2], STRING_CONTENT_SKIP);
+        try {
+          // AN RDF STATEMENT IS EXACTLY SUBJECT, PREDICATE, OBJECT: FEWER FIELDS THAN THAT IS NOT A ROW THIS
+          // FORMAT CAN MAKE AN EDGE OUT OF. CHECKED INSIDE THE PER-ROW try SO -onRowError GOVERNS IT HERE TOO,
+          // THE SAME WAY CSVImporterFormat's OWN ARITY GATE DOES FOR ITS ROW LOOPS (ISSUE #8069). WITHOUT THIS,
+          // row[0]/row[1]/row[2] BELOW THREW ArrayIndexOutOfBoundsException STRAIGHT OUT OF THE LOOP, AND
+          // -onRowError skip WAS NEVER EVEN CONSULTED.
+          if (row.length < 3)
+            throw new ImportException(
+                "Row at line " + line + " has " + row.length + " column(s), fewer than the 3 an RDF statement "
+                    + "requires (subject, predicate, object) - use -onRowError skip to skip such rows and continue");
 
-        // CREATE AN EDGE
-        database.newEdgeByKeys(settings.vertexTypeName,
-            new String[] { typeIdProperty },
-            new Object[] { v1Id },
-            settings.vertexTypeName,
-            new String[] { typeIdProperty },
-            new Object[] { v2Id }, true,
-            settings.edgeTypeName,
-            true,
-            LABEL_PROPERTY,
-            edgeLabel);
+          final String v1Id = getStringContent(row[0], STRING_CONTENT_SKIP);
+          final String edgeLabel = getStringContent(row[1], STRING_CONTENT_SKIP);
+          final String v2Id = getStringContent(row[2], STRING_CONTENT_SKIP);
 
-        context.createdEdges.incrementAndGet();
+          // CREATE AN EDGE
+          database.newEdgeByKeys(settings.vertexTypeName,
+              new String[] { typeIdProperty },
+              new Object[] { v1Id },
+              settings.vertexTypeName,
+              new String[] { typeIdProperty },
+              new Object[] { v2Id }, true,
+              settings.edgeTypeName,
+              true,
+              LABEL_PROPERTY,
+              edgeLabel);
 
-        // Gated on ownsTransaction the same way JsonlImporterFormat.load() gates its own periodic commit: a
-        // transaction that predates this import is never ours to commit piecemeal, only to accumulate into and
-        // hand back to whoever owns it (issue #6561). That guard is also what makes the txOpen below
-        // unconditional - reached only when the begin() above pushed a transaction this call exclusively owns.
-        // txCount is incremented inside the guard rather than beside the counter above so that it cannot run away
-        // on the caller-owned path, where nothing would ever reset it.
-        if (ownsTransaction && ++txCount >= settings.commitEvery) {
+          context.createdEdges.incrementAndGet();
+
+          // Incremented here, inside the guard, so it cannot run away on the caller-owned path, where nothing
+          // would ever reset it - but the commit itself is deliberately OUTSIDE this try/catch, below.
+          if (resolvesTransaction)
+            ++txCount;
+        } catch (final RuntimeException e) {
+          if (!skipOnError)
+            throw e;
+
+          logSkippedRow("RDF statement", line, e);
+          context.errors.incrementAndGet();
+        }
+
+        // Deliberately outside the per-row catch above, the same way CSVImporterFormat.loadEdges() places its own
+        // periodic commit: a commit failure is not a row error. Caught in that catch it would be logged under a
+        // "skipping it" message and the begin() below would never run - turning one infrastructure failure into
+        // one more for every remaining row, all misreported as bad data. Left to escape, it reaches the finally
+        // below instead, which corrects the counter and lets the real cause propagate.
+        if (resolvesTransaction && txCount >= settings.commitEvery) {
+          // txOpen cleared before the call, matching CSVImporterFormat.loadEdges()'s own convention - but
+          // DatabaseContext#popIfNotLastTransaction() does NOT pop the outermost transaction off the stack, only a
+          // nested one, so a commit() that fails on THIS transaction (the common case: nothing predates it when
+          // resolvesTransaction is true) can leave it still active rather than popped. Restored from the live state
+          // on failure so the finally below still rolls it back instead of leaking it.
           txOpen = false;
-          database.commit();
+          try {
+            database.commit();
+          } catch (final RuntimeException | Error commitFailure) {
+            txOpen = database.isTransactionActive();
+            throw commitFailure;
+          }
           committedEdges = context.createdEdges.get();
           database.begin();
           txOpen = true;
@@ -238,13 +286,22 @@ public class RDFImporterFormat extends CSVImporterFormat {
           break;
       }
 
-      txOpen = false;
-      // Same ownsTransaction gate as the periodic commit above and as CSVImporterFormat.loadDocuments()'s own
+      // Same resolvesTransaction gate as the periodic commit above and as CSVImporterFormat.loadDocuments()'s own
       // trailing commit: a transaction that predates the import stays the caller's to commit or discard, and this
       // one used to commit it as a side effect of the import succeeding. The edges are left staged in it instead
       // (issue #7288).
-      if (ownsTransaction)
-        database.commit();
+      if (resolvesTransaction) {
+        // Same restore-on-failure as the periodic commit above, and for the same reason: a failing commit() does
+        // not always pop the outermost transaction, so txOpen cleared unconditionally before the call would leave
+        // a still-active transaction with nothing armed to roll it back.
+        txOpen = false;
+        try {
+          database.commit();
+        } catch (final RuntimeException | Error commitFailure) {
+          txOpen = database.isTransactionActive();
+          throw commitFailure;
+        }
+      }
       completed = true;
 
     } catch (final IOException e) {
@@ -270,9 +327,9 @@ public class RDFImporterFormat extends CSVImporterFormat {
 
       // Outside the txOpen branch above, because a commit() that threw has already popped its own transaction
       // and would otherwise leave the batch it failed to write counted as if it had survived. Gated on
-      // ownsTransaction for the same reason the rollback is: the edges accumulated into a caller's own
+      // resolvesTransaction for the same reason the rollback is: the edges accumulated into a caller's own
       // transaction are the caller's to commit or discard, so their fate is not this method's to report on.
-      if (!completed && ownsTransaction) {
+      if (!completed && resolvesTransaction) {
         // What the report calls "created" has to be what survived: leaving the counter at the number of edges
         // read would credit the import with the ones the rollback just took away.
         final long readEdges = context.createdEdges.get();

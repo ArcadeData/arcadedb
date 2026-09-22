@@ -727,8 +727,14 @@ public class HashIndex implements IndexInternal {
       for (int i = 0; i < keys.length; ++i) {
         if (keys[i] == null)
           continue;
+        // convertIndexKeyOrNull(), not convert(): the twin of LSMTreeIndexAbstract#convertKeysToDeclaredTypes and
+        // for the same reason. The keys reaching here are whatever the records hold, and on a schemaless property
+        // that can include a date the type this index settled on cannot read. Such a row indexes under a null key
+        // and the build carries on; refusing it would make one heterogeneous record fail CREATE INDEX outright -
+        // and, since build() rethrows, would also fail an ordinary INSERT that used to index a null key and
+        // continue (issue #8090, which made convert() itself strict). Every other mismatch still fails the build.
         convertedKeys[i] = BinaryComparator.canonicalizeForByteEquality(
-            Type.convert(getDatabase(), keys[i], BinaryTypes.getClassFromType(keyTypes[i])));
+            Type.convertIndexKeyOrNull(getDatabase(), keys[i], BinaryTypes.getClassFromType(keyTypes[i])));
 
         // Fold CI-collated String components the same way LSMTreeIndexAbstract#convertKeysToDeclaredTypes does, so
         // writes and lookups agree on the same key: HashIndexBucket has no collation concept of its own (#7766).

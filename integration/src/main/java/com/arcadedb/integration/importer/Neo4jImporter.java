@@ -26,6 +26,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.Schema;
@@ -364,8 +365,39 @@ public class Neo4jImporter {
       // durable still has to come back off the counter.
       boolean completed = false;
 
-      database.begin();
-      txOpen[0] = true;
+      // Whether the transaction this method is about to use belongs to the import, as opposed to predating it -
+      // and so whether this method may commit it, roll it back, and correct its own counters against it. Read
+      // once, before the first begin() below, the same way every other row loop in the tree does (see
+      // ImporterContext#importOwnsTransaction): asking again after begin() would always answer "the caller's",
+      // since a transaction is then always active (issue #8073).
+      final boolean ownsTransaction = context.importOwnsTransaction(database);
+
+      // Owning the transaction ALWAYS begins a fresh one, unconditionally, exactly as before: parsingCallback
+      // belongs to the caller and runs inside the loop below, so it can resolve a transaction it can see, and only
+      // a nested transaction pushed here - strictly this method's own - keeps that from reaching up to whatever a
+      // real caller transaction below it holds (issue #7328). Only a caller-owned transaction joins whatever is
+      // already active rather than nesting a new one: begin() nests, and a nested commit below is independently
+      // durable, so a caller who wrapped this import in a transaction to commit or discard it as a unit used to
+      // find the vertices already on disk and a later rollback() taking nothing back (issue #8073). The `else if`
+      // is defensive - importOwnsTransaction() already guarantees a transaction is active whenever it answers
+      // false, for a caller that resolved its own transaction between that check and this call - so txOpen[0] is
+      // set from whether THIS call actually pushed a transaction, not from ownsTransaction directly: were the
+      // defensive branch ever taken, ownsTransaction would stay false while this call is nonetheless the only
+      // one that pushed a transaction and can resolve it, and tying txOpen[0] to ownsTransaction there would leak
+      // it - never committed, never rolled back.
+      final boolean pushedTransaction;
+      if (ownsTransaction) {
+        database.begin();
+        pushedTransaction = true;
+      } else if (!database.isTransactionActive()) {
+        log("- WARNING: importOwnsTransaction() answered false but no transaction was active on entry to "
+            + "parseVertices(): the invariant it documents did not hold. Proceeding as if this import owns the "
+            + "transaction it is about to push.");
+        database.begin();
+        pushedTransaction = true;
+      } else
+        pushedTransaction = false;
+      txOpen[0] = pushedTransaction;
       ownTx[0] = currentTransaction();
 
       try {
@@ -410,9 +442,23 @@ public class Neo4jImporter {
               context.errors.incrementAndGet();
             }
 
-            if (context.createdVertices.get() > 0 && context.createdVertices.get() % batchSize == 0) {
+            // Gated on pushedTransaction, not ownsTransaction: a transaction that predates this import is never
+            // this method's to commit piecemeal, only to accumulate into and hand back to whoever owns it (issue
+            // #8073), and gating on ownsTransaction alone would also skip this for a transaction the defensive
+            // branch above pushed, which this method is nonetheless the only one able to commit or roll back.
+            if (pushedTransaction && context.createdVertices.get() > 0 && context.createdVertices.get() % batchSize == 0) {
+              // Cleared before the call, matching CSVImporterFormat.loadEdges()'s convention - but restored on
+              // failure: DatabaseContext#popIfNotLastTransaction() does not pop the outermost transaction, so a
+              // commit() that fails on this one (the common case here) can leave it still active rather than
+              // popped, and ownTransactionIsResolvable() below needs txOpen[0] true again to notice (issue #8116
+              // review: the same class of bug RDFImporterFormat.load()'s periodic/trailing commits were fixed for).
               txOpen[0] = false;
-              database.commit();
+              try {
+                database.commit();
+              } catch (final RuntimeException | Error commitFailure) {
+                txOpen[0] = database.isTransactionActive();
+                throw commitFailure;
+              }
               committedVertices[0] = context.createdVertices.get();
               database.begin();
               txOpen[0] = true;
@@ -438,8 +484,16 @@ public class Neo4jImporter {
         // resolved it, say - the ambient test sees the CALLER's outer transaction instead and commits that
         // (issue #7328, the same asymmetry #7272 fixed on the four other row loops).
         if (ownTransactionIsResolvable(txOpen[0], ownTx[0])) {
+          // Restored on failure for the same reason the periodic commit above is: a commit() that fails without
+          // popping the outermost transaction must still leave ownTransactionIsResolvable() able to see it, so the
+          // finally block's rollback runs instead of leaking it.
           txOpen[0] = false;
-          database.commit();
+          try {
+            database.commit();
+          } catch (final RuntimeException | Error commitFailure) {
+            txOpen[0] = database.isTransactionActive();
+            throw commitFailure;
+          }
         }
         txOpen[0] = false;
         committedVertices[0] = context.createdVertices.get();
@@ -461,8 +515,10 @@ public class Neo4jImporter {
         txOpen[0] = false;
 
         // Outside the txOpen branch above, because a commit() that threw has already popped its own transaction
-        // and would otherwise leave the batch it failed to write counted as if it had survived.
-        if (!completed) {
+        // and would otherwise leave the batch it failed to write counted as if it had survived. Gated on
+        // pushedTransaction for the same reason the rollback above is: the vertices accumulated into a caller's own
+        // transaction are the caller's to commit or discard, so their fate is not this method's to report on.
+        if (!completed && pushedTransaction) {
           // What the report calls "created" has to be what survived: leaving the counter at the number of
           // vertices read would credit the import with the ones the rollback just took away.
           final long readVertices = context.createdVertices.get();
@@ -484,16 +540,60 @@ public class Neo4jImporter {
     log("- ID mapping mode: %s", useNumericIds ? "numeric (primitive long[])" : "string (HashMap)");
   }
 
+  /**
+   * Creates one edge, however the caller-ownership decision in {@link #parseEdges()} chose to: buffered into a
+   * {@link GraphBatch} for its sorted bulk connect, or straight through {@link Vertex#newEdge} when the transaction
+   * belongs to the caller and nothing here may publish ahead of it (issue #8073).
+   */
+  @FunctionalInterface
+  private interface EdgeCreator {
+    void create(RID fromRID, String type, RID toRID, Object[] propsArray);
+  }
+
   private void parseEdges() throws IOException {
     final AtomicInteger lineNumber = new AtomicInteger();
 
-    try (final GraphBatch batch = database.batch()
-        .withBatchSize(batchSize)
-        .withBidirectional(true)
-        .withWAL(false)
-        .withCommitEvery(batchSize)
-        .build()) {
+    // Whether this call owns the transaction it is about to use. Read once, before either branch below might
+    // begin one, the same way parseVertices() does (issue #8073). GraphBatch's sorted bulk connect algorithm ends
+    // with an unconditional, independently durable commit as part of its own crash-safety design - even with no
+    // periodic commits in between, so it can never simply "join" a caller's transaction the way a plain row loop
+    // can. A caller-owned transaction therefore skips GraphBatch entirely below and creates each edge directly,
+    // one at a time, into whatever transaction is already active: slower, but exact, and only taken on the path a
+    // caller-owned transaction around this import is a shape anyone actually uses.
+    final boolean ownsTransaction = context.importOwnsTransaction(database);
 
+    final EdgeCreator edgeCreator;
+    final GraphBatch batch;
+    if (ownsTransaction) {
+      batch = database.batch()
+          .withBatchSize(batchSize)
+          .withBidirectional(true)
+          .withWAL(false)
+          .withCommitEvery(batchSize)
+          .build();
+      edgeCreator = (fromRID, type, toRID, propsArray) -> {
+        if (propsArray != null)
+          batch.newEdge(fromRID, type, toRID, propsArray);
+        else
+          batch.newEdge(fromRID, type, toRID);
+      };
+    } else {
+      batch = null;
+      edgeCreator = (fromRID, type, toRID, propsArray) -> {
+        final Vertex fromVertex = database.lookupByRID(fromRID, true).asVertex();
+        // The 3-arg overload, not the deprecated 4-arg one that takes an explicit bidirectional flag: bidirectional
+        // is now defined at the edge type's schema level, and a literal true here never triggers the deprecated
+        // overload's only extra behavior (throwing when !bidirectional && type.isBidirectional()), so the two calls
+        // are exactly equivalent - no reason to add a new call site for the deprecated one.
+        fromVertex.newEdge(type, toRID, propsArray);
+      };
+    }
+
+    // Java 9+'s try-with-resources over an already-declared effectively-final variable: null-safe (batch is null on
+    // the caller-owned-transaction path, where try-with-resources skips close() rather than throwing), and unlike
+    // a manual try/finally it attaches a close() failure as SUPPRESSED to a readFileSimple() failure instead of
+    // replacing it, so a double failure does not hide which one happened first.
+    try (batch) {
       readFileSimple(json -> {
         lineNumber.incrementAndGet();
 
@@ -539,21 +639,21 @@ public class Neo4jImporter {
           final RID toRID = unpackRID(toPacked);
 
           try {
+            Object[] propsArray = null;
             if (json.has("properties")) {
               final Map<String, Object> edgeProps = setProperties(json.getJSONObject("properties"), schemaProperties.get(type));
               if (!edgeProps.isEmpty()) {
-                // Flatten map to key-value array for GraphBatch
-                final Object[] propsArray = new Object[edgeProps.size() * 2];
+                // Flatten map to key-value array
+                propsArray = new Object[edgeProps.size() * 2];
                 int i = 0;
                 for (final Map.Entry<String, Object> entry : edgeProps.entrySet()) {
                   propsArray[i++] = entry.getKey();
                   propsArray[i++] = entry.getValue();
                 }
-                batch.newEdge(fromRID, type, toRID, propsArray);
-              } else
-                batch.newEdge(fromRID, type, toRID);
-            } else
-              batch.newEdge(fromRID, type, toRID);
+              }
+            }
+
+            edgeCreator.create(fromRID, type, toRID, propsArray);
 
             context.createdEdges.incrementAndGet();
             incrementEdgesByType(type);

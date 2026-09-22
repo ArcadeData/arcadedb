@@ -531,7 +531,9 @@ public class OpenCypherQueryEngine implements QueryEngine {
    * {@link Labels#LABEL_SEPARATOR} would otherwise occupy the very name that the ordinary label set spelling out
    * its parts computes (issue #8100). The guard deliberately sits behind the existence check - a name containing
    * the separator is exactly what an existing composite type is called, so indexing or constraining one has to
-   * keep working. Relationship type names are not validated here; that is issue #8118.
+   * keep working. The relationship branch carries the matching guard for edge type names, which landed on main
+   * as issue #8118 while this branch was open: vertex and edge types share one namespace, so an edge type named
+   * {@code A~B} permanently blocks the composite vertex type that the label set {@code [A, B]} computes.
    */
   private static void autoCreateDDLType(final Schema schema, final CypherDDLStatement ddl, final String typeName) {
     // The blank check runs before the existence check, unlike the separator one: a whitespace-only type name is
@@ -543,9 +545,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
     if (schema.existsType(typeName))
       return;
 
-    if (ddl.isForRelationship())
+    if (ddl.isForRelationship()) {
+      Labels.requireUsableRelationshipTypeName(typeName);
       schema.getOrCreateEdgeType(typeName);
-    else
+    } else
       schema.getOrCreateVertexType(Labels.requireUsableLabelName(typeName, "a label in this statement"));
   }
 

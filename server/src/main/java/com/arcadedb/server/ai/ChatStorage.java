@@ -39,6 +39,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.regex.Pattern;
 
@@ -64,6 +65,13 @@ public class ChatStorage {
 
   private final String rootPath;
 
+  // The server's registered account names, consulted only to resolve an AMBIGUOUS legacy directory
+  // name (issue #8078) - never to decide whether a request is allowed, which is the security layer's
+  // job and not this class's. Null in the single-argument constructor, which is what every existing
+  // caller (and every test that does not care about this) gets: with no known-user set to consult,
+  // ambiguity is refused exactly as it was before #8078, which is the safe direction to be wrong in.
+  private final Supplier<Set<String>> knownUsernames;
+
   // Legacy directory NAMES whose refused migration has already been reported, so the operator gets
   // the message once per name instead of once per request. Names only, and never cleared: if an
   // operator resolves a flagged directory and a later one sanitizes to the same name, that one is
@@ -72,7 +80,19 @@ public class ChatStorage {
   private final Set<String> reportedLegacyDirectories = ConcurrentHashMap.newKeySet();
 
   public ChatStorage(final String rootPath) {
+    this(rootPath, null);
+  }
+
+  /**
+   * @param knownUsernames Supplies the server's current registered account names, so an ambiguous legacy
+   *                        directory name (see {@link #migrateLegacyDirectoryIfPresent}) can be resolved
+   *                        against who could actually have written it rather than refused on the
+   *                        theoretical preimage alone. May be {@code null}, which keeps the fully
+   *                        conservative behaviour of always refusing an ambiguous name.
+   */
+  public ChatStorage(final String rootPath, final Supplier<Set<String>> knownUsernames) {
     this.rootPath = rootPath;
+    this.knownUsernames = knownUsernames;
     for (int i = 0; i < LOCK_STRIPES; i++)
       writeLocks[i] = new ReentrantLock();
   }
@@ -223,17 +243,34 @@ public class ChatStorage {
    * This needs no legacy layout to have ever existed - it is reachable on a fresh install. Matched
    * case-insensitively on purpose: an upper-case spelling of a digest is a different string but, on
    * a case-insensitive filesystem, the same directory.</li>
-   * <li><b>A name more than one username could have produced</b> is never moved. Because
+   * <li><b>A name more than one username could have produced</b> is never moved, unless the server's
+   * actual registered accounts prove the ambiguity is only theoretical (issue #8078). Because
    * {@code sanitizeFilename} only ever rewrites a character <i>to</i> {@code '_'}, a name containing
    * no {@code '_'} has exactly one preimage - itself - and is safe to claim; a name containing one
-   * has infinitely many ({@code user@corp.com}, {@code user.corp.com} and {@code user_corp_com} all
-   * produced {@code user_corp_com}). Awarding such a shared directory to whichever of them is looked
-   * up first would hand that user read and delete access to the others' chats, which is the
-   * cross-user access #7113 set out to remove rather than a fix for it.</li>
+   * has infinitely many possible preimages in the abstract ({@code user@corp.com},
+   * {@code user.corp.com} and {@code user_corp_com} all produce {@code user_corp_com}). Most of those
+   * preimages are not accounts that exist, so {@link #knownUsernames} is filtered through
+   * {@link #sanitizeFilename(String)} to find how many REAL accounts produced this name: if exactly
+   * one does - necessarily {@code username} itself, since {@code legacyName} was derived from it two
+   * lines above - the migration is unambiguous in practice and proceeds. If none or more than one
+   * does (including when {@link #knownUsernames} is {@code null}, e.g. every caller that does not
+   * supply it), awarding the directory to whoever is looked up first would hand that user read and
+   * delete access to the others' chats, which is the cross-user access #7113 set out to remove rather
+   * than a fix for it - so the migration is refused.
+   * <p>
+   * The moment two REAL accounts are seen to collide on {@code legacyName}, that fact is recorded on
+   * disk as an {@link #ambiguityMarkerFile(String) ambiguity marker} and checked before every later
+   * attempt, so the refusal survives one of those two accounts being deleted afterwards. Deciding
+   * purely from the CURRENT account list would not: if account B is deleted after B and A were both
+   * seen to collide on this name, a later lookup for A would see only one current account mapping
+   * onto it and migrate the directory - including B's chats - into A's store, reopening the very
+   * cross-user access this guard exists to prevent. The marker is the directory's memory of a fact
+   * the current account list alone cannot represent (code review on PR #8126).</li>
    * </ol>
    *
-   * <p>Resolving an ambiguous directory needs to know which chat belonged to whom, which is not
-   * recoverable from the file tree, so it is left to an operator and reported once per directory.
+   * <p>Resolving a directory that stays ambiguous even against the real account list needs to know
+   * which chat belonged to whom, which is not recoverable from the file tree, so it is left to an
+   * operator and reported once per directory.
    */
   private void migrateLegacyDirectoryIfPresent(final String username, final File hashedDir) {
     if (hashedDir.exists())
@@ -251,10 +288,23 @@ public class ChatStorage {
     }
 
     if (legacyName.indexOf('_') >= 0) {
-      warnOncePerLegacyDirectory(legacyName,
-          "Refusing to migrate legacy chat directory '%s': more than one user name maps onto it, so its chats cannot be attributed to a "
-              + "single user. It has been left untouched - move each chat under the owner's hashed directory by hand to restore it.");
-      return;
+      final File ambiguityMarker = ambiguityMarkerFile(legacyName);
+      if (ambiguityMarker.exists() || !soleKnownAccountName(legacyName, username, ambiguityMarker)) {
+        // soleKnownAccountName() may have just created the marker, so this is re-checked rather than reusing
+        // the boolean above: only mention a file in the operator-facing message once it is actually there.
+        if (ambiguityMarker.exists())
+          warnOncePerLegacyDirectory(legacyName,
+              "Refusing to migrate legacy chat directory '%s': more than one user name maps onto it, so its chats cannot be attributed "
+                  + "to a single user. This is recorded at '%s' and will keep refusing the migration even if one of the colliding "
+                  + "accounts is later deleted; delete that file once you have manually moved each chat under the owner's hashed "
+                  + "directory.", ambiguityMarker.getAbsolutePath());
+        else
+          warnOncePerLegacyDirectory(legacyName,
+              "Refusing to migrate legacy chat directory '%s': more than one user name maps onto it, so its chats cannot be attributed "
+                  + "to a single user. It has been left untouched - move each chat under the owner's hashed directory by hand to "
+                  + "restore it.");
+        return;
+      }
     }
 
     if (!isSpelledExactlyOnDisk(legacyDir, legacyName)) {
@@ -271,6 +321,77 @@ public class ChatStorage {
       // the hashed one appeared between the exists() checks above and this move: either way, whatever
       // directory is left standing is authoritative and the caller just proceeds with hashedDir.
       LogManager.instance().log(this, Level.FINE, "Could not migrate legacy chat directory: %s", e.getMessage());
+    }
+  }
+
+  /**
+   * Whether {@code username} is the ONLY one of the server's currently registered accounts whose
+   * {@link #sanitizeFilename(String)} produces {@code legacyName}, which is what makes an otherwise
+   * ambiguous legacy directory name safe to migrate onto {@code username}'s hashed directory (issue
+   * #8078). {@code username} is guaranteed to be one such account, since {@code legacyName} is always
+   * {@code sanitizeFilename(username)} at the one call site - so this really asks "does any OTHER
+   * registered account collide with it", and answers conservatively ({@code false}) whenever that
+   * cannot be determined: no known-user supplier, a supplier that throws or returns {@code null}, or
+   * {@code username} not itself among the accounts it returns.
+   * <p>
+   * The moment a real collision IS found, it is recorded at {@code ambiguityMarker} before answering
+   * {@code false}, so the fact survives the colliding account being deleted later - see the class
+   * javadoc's second migration rule. Two different colliding usernames' first requests can race here and
+   * both attempt the write; harmless, since {@link #markPermanentlyAmbiguous} writes an empty file whose
+   * only meaning is that it exists, so a double write says nothing a single one did not already say.
+   * <p>
+   * A candidate account collides when its sanitized name matches {@code legacyName} CASE-INSENSITIVELY,
+   * not only exactly (code review on PR #8126). {@code ServerSecurity} keys accounts by exact name, so
+   * {@code John_Doe} and {@code john_doe} can both be registered, and {@code sanitizeFilename} does not
+   * fold case - but {@code legacyDir.exists()} at the one call site does, on the case-insensitive
+   * filesystems this class already treats specially ({@link #HASHED_DIR_NAME}'s own case-insensitive
+   * match, {@link #isSpelledExactlyOnDisk}). Comparing case-sensitively here would miss that the two
+   * accounts' sanitized names name the very same on-disk directory and let one of them claim it as if
+   * only it had ever written there.
+   */
+  private boolean soleKnownAccountName(final String legacyName, final String username, final File ambiguityMarker) {
+    if (knownUsernames == null)
+      return false;
+
+    final Set<String> accounts;
+    try {
+      accounts = knownUsernames.get();
+    } catch (final Exception e) {
+      return false;
+    }
+    if (accounts == null || !accounts.contains(username))
+      return false;
+
+    for (final String account : accounts)
+      if (!account.equals(username) && legacyName.equalsIgnoreCase(sanitizeFilename(account))) {
+        markPermanentlyAmbiguous(ambiguityMarker, legacyName);
+        return false;
+      }
+
+    return true;
+  }
+
+  /**
+   * The marker {@link #soleKnownAccountName} writes the instant it proves two real accounts collide on
+   * {@code legacyName}, and {@link #migrateLegacyDirectoryIfPresent} checks before ever consulting the
+   * current account list again. An empty file is enough: its only meaning is that it exists. Named from
+   * {@code legacyName} rather than kept in memory (contrast {@link #reportedLegacyDirectories}, which is
+   * purely a once-per-name log gate) because it has to survive a server restart - the whole point is to
+   * outlive the account whose later deletion would otherwise make the collision invisible again.
+   */
+  private File ambiguityMarkerFile(final String legacyName) {
+    return Paths.get(rootPath, "chats", "." + legacyName + ".ambiguous-migration").toFile();
+  }
+
+  private void markPermanentlyAmbiguous(final File marker, final String legacyName) {
+    if (marker.exists())
+      return;
+    try {
+      FileUtils.writeFile(marker, "");
+    } catch (final IOException e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Could not record legacy chat directory '%s' as permanently ambiguous: %s. A later deletion of one of "
+              + "the colliding accounts could make the collision look resolved.", legacyName, e.getMessage());
     }
   }
 
@@ -318,10 +439,16 @@ public class ChatStorage {
    * revisit it. Its CONTENTS go
    * stale: entries are never removed, so a name whose directory an operator has since resolved stays
    * marked as reported for the life of the server. That costs a log line, not a decision.
+   *
+   * @param extraArgs further {@code %s} arguments beyond {@code legacyName}, which is always the first.
    */
-  private void warnOncePerLegacyDirectory(final String legacyName, final String message) {
-    if (reportedLegacyDirectories.add(legacyName))
-      LogManager.instance().log(this, Level.WARNING, message, legacyName);
+  private void warnOncePerLegacyDirectory(final String legacyName, final String message, final String... extraArgs) {
+    if (!reportedLegacyDirectories.add(legacyName))
+      return;
+    final Object[] args = new Object[extraArgs.length + 1];
+    args[0] = legacyName;
+    System.arraycopy(extraArgs, 0, args, 1, extraArgs.length);
+    LogManager.instance().log(this, Level.WARNING, message, args);
   }
 
   private File getChatFile(final String username, final String chatId) {
