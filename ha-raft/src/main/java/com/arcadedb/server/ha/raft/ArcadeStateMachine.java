@@ -2965,10 +2965,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * full {@code .ts.sealed} file is replaced atomically and the in-memory sealed store reopened.
    * Idempotent: re-applying the same blob (crash/restart replay) simply rewrites the identical file.
    * <p>
-   * <b>A repair that fails raises</b> (issue #8070), after every other blob in the entry has been attempted. See
-   * {@link SealedStoreNotInstalledException} for why it must: a Raft entry is applied once and never re-shipped,
-   * so logging the failure and carrying on consumed the one payload that could have repaired the type and left it
-   * engine-less for good.
+   * <b>A blob this node cannot put in place raises</b> (issues #8070 and #8172), after every other blob in the
+   * entry has been attempted. See {@link SealedStoreNotInstalledException} for why it must: a Raft entry is
+   * applied once and never re-shipped, so logging the failure and carrying on consumed the one payload that could
+   * have repaired the type and left it engine-less for good. That covers all three ways a blob can fail to land -
+   * a failed engine repair (#8070), a type this node does not have, and a type that exists but is not a
+   * TIMESERIES one. The last two are guarded by a Raft-ordering invariant (the type-creation entry carries a
+   * lower index and is applied first), so they should not happen; #8172 is about what it costs when the invariant
+   * does not hold - for example a rolling upgrade shipping a type this node's build cannot construct - which is a
+   * silent, permanent divergence on replicated data against one SEVERE log line.
    */
   // Package-private rather than private so Issue6839TsSealedBlobRecoveryTest can drive the apply path directly:
   // the recovery it pins is entirely inside this method, and a 3-node IT would only add flakiness to prove it.
@@ -2982,16 +2987,20 @@ public class ArcadeStateMachine extends BaseStateMachine {
     for (final RaftLogEntryCodec.TsSealedBlob blob : blobs) {
       final LocalSchema schema = db.getSchema().getEmbedded();
       if (!schema.existsType(blob.typeName())) {
-        // Should not happen: the type-creation entry has a lower Raft index and is applied first.
+        // Should not happen: the type-creation entry has a lower Raft index and is applied first. When it DOES
+        // happen the payload is consumed and never re-shipped, so the entry is refused rather than checkpointed
+        // over a sealed store this node never installed (issue #8172, the rule #7602 wrote down).
         LogManager.instance().log(this, Level.SEVERE,
-            "Received TimeSeries sealed blob for unknown type '%s' (db=%s); skipping", null, blob.typeName(),
-            decodedDbName(db));
+            "Received TimeSeries sealed blob for unknown type '%s' (db=%s); refusing the entry", null,
+            blob.typeName(), decodedDbName(db));
+        addUnrepaired(unrepaired, blob.typeName(), blob.shardIndex(), "unknown type");
         continue;
       }
       if (!(schema.getType(blob.typeName()) instanceof LocalTimeSeriesType tsType)) {
         LogManager.instance().log(this, Level.SEVERE,
-            "Received TimeSeries sealed blob for non-timeseries type '%s' (db=%s); skipping", null,
+            "Received TimeSeries sealed blob for non-timeseries type '%s' (db=%s); refusing the entry", null,
             blob.typeName(), decodedDbName(db));
+        addUnrepaired(unrepaired, blob.typeName(), blob.shardIndex(), "not a TIMESERIES type");
         continue;
       }
       if (tsType.getEngine() == null) {
@@ -3004,7 +3013,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
               "Repaired TimeSeries type %s shard %d from a replicated sealed blob (%d bytes) on db '%s'",
               blob.typeName(), blob.shardIndex(), blob.bytes().length, decodedDbName(db));
         else
-          unrepaired.add(blob.typeName() + " shard " + blob.shardIndex());
+          addUnrepaired(unrepaired, blob.typeName(), blob.shardIndex(), "engine repair failed");
         continue;
       }
       tsType.getEngine().getShard(blob.shardIndex()).getSealedStore().installSealedFileBytes(blob.bytes());
@@ -3014,6 +3023,18 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
     if (!unrepaired.isEmpty())
       throw sealedStoreNotInstalled(db, unrepaired, "blob");
+  }
+
+  /**
+   * Records one (type, shard) the entry could not put in place, tagged with WHY, for the refusal raised after the
+   * loop. De-duplicated because one entry can carry several slices of the same (type, shard) and an operator
+   * reading the refusal needs the list of what is missing, not a list of how many payloads named it.
+   */
+  private static void addUnrepaired(final List<String> unrepaired, final String typeName, final int shardIndex,
+      final String reason) {
+    final String entry = typeName + " shard " + shardIndex + " (" + reason + ")";
+    if (!unrepaired.contains(entry))
+      unrepaired.add(entry);
   }
 
   /**
@@ -3079,16 +3100,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
     for (final RaftLogEntryCodec.TsSealedChunk chunk : chunks) {
       final LocalSchema schema = db.getSchema().getEmbedded();
       if (!schema.existsType(chunk.typeName())) {
-        // Should not happen: the type-creation entry has a lower Raft index and is applied first.
+        // Should not happen: the type-creation entry has a lower Raft index and is applied first. Refused, not
+        // stepped over, for the reason the blob path gives (issue #8172).
         LogManager.instance().log(this, Level.SEVERE,
-            "Received TimeSeries sealed slice for unknown type '%s' (db=%s); skipping", null, chunk.typeName(),
-            decodedDbName(db));
+            "Received TimeSeries sealed slice for unknown type '%s' (db=%s); refusing the entry", null,
+            chunk.typeName(), decodedDbName(db));
+        addUnrepaired(unrepaired, chunk.typeName(), chunk.shardIndex(), "unknown type");
         continue;
       }
       if (!(schema.getType(chunk.typeName()) instanceof LocalTimeSeriesType tsType)) {
         LogManager.instance().log(this, Level.SEVERE,
-            "Received TimeSeries sealed slice for non-timeseries type '%s' (db=%s); skipping", null,
+            "Received TimeSeries sealed slice for non-timeseries type '%s' (db=%s); refusing the entry", null,
             chunk.typeName(), decodedDbName(db));
+        addUnrepaired(unrepaired, chunk.typeName(), chunk.shardIndex(), "not a TIMESERIES type");
         continue;
       }
 
@@ -3155,7 +3179,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
               "Repaired TimeSeries type %s shard %d from a %d-byte replicated sealed store shipped in slices on db '%s'",
               chunk.typeName(), chunk.shardIndex(), stagedLength, decodedDbName(db));
         else
-          unrepaired.add(chunk.typeName() + " shard " + chunk.shardIndex());
+          addUnrepaired(unrepaired, chunk.typeName(), chunk.shardIndex(), "engine repair failed");
         continue;
       }
 

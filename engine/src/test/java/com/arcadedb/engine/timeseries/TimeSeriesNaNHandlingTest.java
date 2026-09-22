@@ -112,16 +112,8 @@ class TimeSeriesNaNHandlingTest extends TestHelper {
     database.commit();
 
     database.begin();
-    // Single bucket (bucketIntervalMs <= 0)
-    final AggregationResult min = engine.aggregate(Long.MIN_VALUE, Long.MAX_VALUE, 0, AggregationType.MIN, 0, null);
-    final AggregationResult max = engine.aggregate(Long.MIN_VALUE, Long.MAX_VALUE, 0, AggregationType.MAX, 0, null);
-
-    assertThat(min.size()).isEqualTo(1);
-    assertThat(min.getValue(0)).as("single-column MIN skips NaN").isEqualTo(5.0);
-    assertThat(max.getValue(0)).as("single-column MAX skips NaN").isEqualTo(20.0);
-
-    // Multi-column path over the same data must agree (columnIndex is the raw row index here,
-    // so the value column is at index 1; 0 would be the timestamp).
+    // Single bucket (bucketIntervalMs <= 0). columnIndex is a position in the ENGINE ROW, so the value column is
+    // at index 1 and 0 would be the timestamp.
     final List<MultiColumnAggregationRequest> requests = List.of(
         new MultiColumnAggregationRequest(1, AggregationType.MIN, "min"),
         new MultiColumnAggregationRequest(1, AggregationType.MAX, "max"));

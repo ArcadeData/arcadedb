@@ -243,14 +243,22 @@ class Issue4416SlicedSealedApplyTest {
         .hasMessageContaining("reassembled to");
   }
 
-  /** A slice naming a type that has no sealed store is logged away, never written: same rule as a whole blob. */
+  /**
+   * A slice naming a type that has no sealed store is never written: same rule as a whole blob.
+   * <p>
+   * It used to be logged away and stepped over, which let the entry be checkpointed over a payload that was
+   * consumed and will never be re-shipped; issue #8172 gave it the accumulate-then-throw #8070 introduced for a
+   * failed engine repair, so the refusal reaches the caller and the database is quarantined and resynced.
+   */
   @Test
   void aSliceForANonTimeSeriesTypeIsRefused() throws Exception {
     follower.getSchema().createDocumentType("NotATimeSeries");
 
-    new ArcadeStateMachine().applySealedChunks(follower, List.of(
+    assertThatThrownBy(() -> new ArcadeStateMachine().applySealedChunks(follower, List.of(
         new TsSealedChunk("NotATimeSeries", 0, "NotATimeSeries_shard_0.ts.sealed", 3L, 0L, 0L,
-            new byte[] { 1, 2, 3 }, true)));
+            new byte[] { 1, 2, 3 }, true))))
+        .isInstanceOf(SealedStoreNotInstalledException.class)
+        .hasMessageContaining("NotATimeSeries");
 
     assertThat(new File(followerPath, "NotATimeSeries_shard_0.ts.sealed"))
         .as("nothing may be written for a type that has no sealed store").doesNotExist();

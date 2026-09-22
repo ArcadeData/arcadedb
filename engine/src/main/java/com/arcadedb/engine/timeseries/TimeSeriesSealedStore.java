@@ -163,9 +163,45 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   private volatile long             globalMinTs    = Long.MAX_VALUE;  // volatile: read without write lock
   private volatile long             globalMaxTs    = Long.MIN_VALUE;  // volatile: read without write lock
   private          boolean          headerDirty;
-  // Counts how many times downsampleBlocks actually rewrote the sealed file (i.e., selected at least one
-  // block to downsample). Used by tests to assert idempotency: a steady-state cycle must not rewrite.
-  private          long             downsampleRewriteCount;
+  /**
+   * Counts how many times {@link #downsampleBlocks} actually rewrote the sealed file - i.e. selected at least one
+   * block to coarsen. Written under the directory WRITE lock and read under the read lock, so a walk that is
+   * between two blocks cannot see a torn value.
+   * <p>
+   * It answers two questions. Tests read it through {@link #getDownsampleRewriteCount()} to assert idempotency:
+   * a steady-state maintenance cycle, with nothing new old enough to reduce, must not rewrite (issue #4599). And
+   * {@link BlockDirectorySnapshot} stamps it, so {@link #walkBlocks} can tell a block a retention truncate DROPPED
+   * from one a downsample REPLACED with coarser rows - the first leaves the walk correctly short, the second
+   * leaves it unable to produce a consistent answer at all (issue #8166).
+   */
+  private          long             downsampleEpoch;
+  /**
+   * The cutoff RETENTION has provably swept past, so a vanished block can be attributed to the pass that actually
+   * removed it rather than to whichever maintenance pass happened to run (issue #8166, review of PR #8197).
+   * <p>
+   * {@link #downsampleEpoch} alone answers "did ANY downsample run since the snapshot", not "was THIS block
+   * coarsened". A long walk - an {@code EXPORT DATABASE} over a large series - can span both a retention pass
+   * that legitimately drops one of its blocks AND an unrelated downsample cycle elsewhere in the store, and
+   * would then refuse an answer it could have given honestly. This closes it: {@link #truncateBefore} drops every
+   * block OLDER than its cutoff, so a block with {@code maxTimestamp < retentionRemovedBelowTs} is gone because
+   * of retention, whatever else ran.
+   * <p>
+   * <b>It is monotonic, and only a LOWER boundary can be.</b> A retention cutoff is permanent and forward-only,
+   * and time moves forward, so no legitimate later write lands below one already swept and the claim cannot
+   * become false. The mirror boundary - for a truncate that drops the NEWEST blocks - cannot have that property,
+   * and was removed after the review of PR #8197: the store goes on compacting blocks past any such line by
+   * design, so it would pin itself near "now" and excuse every later block as retired. Its only producer made
+   * that certain, because {@code truncateToBlockCount} is not a retention decision at all - both its callers are
+   * ROLLBACK paths in {@code TimeSeriesShard} (crash recovery of an interrupted compaction, and a failed
+   * {@code compact()}), undoing the store's own speculative state rather than retiring a time range, after which
+   * the shard resumes compacting above the line just drawn. A walk crossing one now takes the ordinary route:
+   * refused if a downsample also ran, counted if not.
+   * <p>
+   * Written under the directory WRITE lock, and only AFTER the rewrite that moves it has actually landed - see
+   * {@link #truncateBefore}. Recording it first left the store permanently believing a range had been retired
+   * when a failed atomic move had dropped nothing, which is the same silently-short answer in a new disguise.
+   */
+  private          long             retentionRemovedBelowTs = Long.MIN_VALUE;
 
   /**
    * A fresh {@link BlockEntry#blockId} (issue #8043).
@@ -707,7 +743,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       if (first >= end)
         return BlockDirectorySnapshot.EMPTY;
 
-      return new BlockDirectorySnapshot(new ArrayList<>(blockDirectory.subList(first, end)), first);
+      return new BlockDirectorySnapshot(new ArrayList<>(blockDirectory.subList(first, end)), first, downsampleEpoch);
     } finally {
       directoryLock.readLock().unlock();
     }
@@ -720,9 +756,16 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * {@code firstIndex} is what lets {@link #resolveLiveBlock} try reference identity at the entry's own position
    * in the live directory before falling back to a search: without it the slice's own indices would name the
    * wrong blocks.
+   * <p>
+   * {@code downsampleEpoch} is what lets {@link #walkBlocks} tell the two reasons a block can fail to resolve
+   * apart (issue #8166). A block that is simply GONE - dropped by a retention {@code truncateBefore} - leaves a
+   * walk correctly short, and it is counted and stepped over. A block replaced by a DOWNSAMPLE has not gone
+   * anywhere: its rows are in the store, coarsened, and no answer that mixes them with the fine rows this walk
+   * has already emitted is a consistent one. Comparing the epoch the snapshot was taken at against the store's
+   * current one says whether a downsample can have been the cause, without keeping per-block state for it.
    */
-  record BlockDirectorySnapshot(List<BlockEntry> blocks, int firstIndex) {
-    static final BlockDirectorySnapshot EMPTY = new BlockDirectorySnapshot(List.of(), 0);
+  record BlockDirectorySnapshot(List<BlockEntry> blocks, int firstIndex, long downsampleEpoch) {
+    static final BlockDirectorySnapshot EMPTY = new BlockDirectorySnapshot(List.of(), 0, 0L);
   }
 
   /**
@@ -849,16 +892,22 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       int end = 0;
       Object[] combination = null;
       boolean vanished = false;
+      boolean coarsened = false;
       directoryLock.readLock().lock();
       try {
         final BlockEntry live = resolveLiveBlock(entry, directorySnapshot.firstIndex() + blockIdx);
-        // A null live entry means the block was truncated or downsampled away while this walk was between two
-        // blocks: the rows it held are no longer in the store, so there is nothing to hand over and nothing to
-        // read through a stale offset. It no longer means "a sealed file was installed under this walk" - since
-        // issue #8043 the block's identity is in the file, so a block the leader's copy still holds resolves.
-        if (live == null)
+        // A null live entry means the block left the directory while this walk was between two blocks. It no
+        // longer means "a sealed file was installed under this walk" - since issue #8043 the block's identity is
+        // in the file, so a block the leader's copy still holds resolves - and the two causes that remain are
+        // NOT the same answer (issue #8166), which is what the epoch below separates.
+        if (live == null) {
           vanished = true;
-        else {
+          // Retention is asked FIRST, and it answers definitively: a truncate removed every block past the
+          // boundary it moved, so a block inside that range is gone whatever else ran in the meantime. Only a
+          // block retention cannot account for is attributed to a REPLACEMENT, which is what keeps a walk that
+          // meets BOTH passes from refusing an answer it could have given (review of PR #8197).
+          coarsened = !removedByRetention(entry) && downsampleEpoch != directorySnapshot.downsampleEpoch();
+        } else {
           // The whole point of issue #7710: one row off the directory entry, with no file read and no decode.
           if (combinationsOnly)
             combination = declaredSingleCombination(live, combinationColumns, combinationWidth, tsColIdx, fromTs, toTs);
@@ -887,9 +936,21 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         directoryLock.readLock().unlock();
       }
 
+      // Raised rather than counted when a DOWNSAMPLE is what moved the store (issue #8166). Downsampling does
+      // not remove these rows, it replaces them with coarser ones, so the rows already handed to the visitor and
+      // the rows still to come are at two different resolutions and no walk can join them into one answer. See
+      // TimeSeriesWalkCoarsenedException for why no hand-over fixes that, only hides it.
+      if (coarsened)
+        throw new TimeSeriesWalkCoarsenedException(
+            "Sealed block [" + entry.minTimestamp + ".." + entry.maxTimestamp + "] of '" + getSealedFileName()
+                + "' was replaced by a downsample while this read was in flight, so no answer it can still produce"
+                + " mixes one resolution: the rows already returned are the fine ones and the rows remaining are"
+                + " their coarser replacements. Run the read again to get a whole answer at one resolution");
+
       // Counted, not merely skipped (issue #8043): a walk whose answer is SHORT because the store moved under it
       // is otherwise indistinguishable from one that simply matched no row, and a silently short answer to an
-      // EXPORT DATABASE is the worst available outcome.
+      // EXPORT DATABASE is the worst available outcome. This arm is now a RETENTION truncate alone, for which a
+      // short answer is the correct one: those rows really are gone.
       if (vanished) {
         if (metrics != null)
           metrics.addVanishedBlock();
@@ -959,6 +1020,15 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * @param hintIdx the index the block occupied in the snapshot, which is still its index unless the directory was
    *                rewritten
    */
+  /**
+   * Whether a retention truncate provably removed this block, read against the two boundaries
+   * {@link #retentionRemovedBelowTs} records. Called under the directory read lock, which is what makes reading
+   * it a consistent view of what retention has done.
+   */
+  private boolean removedByRetention(final BlockEntry snapshotEntry) {
+    return snapshotEntry.maxTimestamp < retentionRemovedBelowTs;
+  }
+
   private BlockEntry resolveLiveBlock(final BlockEntry snapshotEntry, final int hintIdx) {
     final int liveSize = blockDirectory.size();
     if (hintIdx < liveSize && blockDirectory.get(hintIdx) == snapshotEntry)
@@ -1441,45 +1511,6 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   /**
-   * Push-down aggregation on sealed blocks.
-   */
-  public AggregationResult aggregate(final long fromTs, final long toTs, final int columnIndex,
-      final AggregationType type, final long bucketIntervalMs) throws IOException {
-    final AggregationResult result = new AggregationResult();
-    final int tsColIdx = findTimestampColumnIndex();
-    final int targetColSchemaIdx = findNonTsColumnSchemaIndex(columnIndex);
-
-    final long singleBucketTs = TimeSeriesEngine.singleBucketAnchor(fromTs);
-
-    // Hold the read lock for the entire scan including file I/O to prevent stale offsets
-    // after atomic file replacement by concurrent writers (truncate/downsample).
-    directoryLock.readLock().lock();
-    try {
-      for (final BlockEntry entry : blockDirectory) {
-        if (entry.maxTimestamp < fromTs || entry.minTimestamp > toTs)
-          continue;
-
-        final long[] timestamps = decompressTimestamps(entry, tsColIdx);
-        final double[] values = decompressDoubleColumn(entry, targetColSchemaIdx);
-
-        for (int i = 0; i < timestamps.length; i++) {
-          if (timestamps[i] < fromTs || timestamps[i] > toTs)
-            continue;
-
-          final long bucketTs = bucketIntervalMs > 0
-              ? Math.floorDiv(timestamps[i], bucketIntervalMs) * bucketIntervalMs
-              : singleBucketTs;
-
-          accumulateSample(result, bucketTs, values[i], type);
-        }
-      }
-      return result;
-    } finally {
-      directoryLock.readLock().unlock();
-    }
-  }
-
-  /**
    * Push-down multi-column aggregation on sealed blocks.
    * Processes compressed blocks directly without creating Object[] row arrays.
    * When a block fits entirely within a single time bucket, uses block-level
@@ -1796,6 +1827,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         if (e.minTimestamp < globalMinTs) globalMinTs = e.minTimestamp;
         if (e.maxTimestamp > globalMaxTs) globalMaxTs = e.maxTimestamp;
       }
+      // HERE, and not beside the decision at the top of the method (review of PR #8197). The boundary is a claim
+      // that a range of timestamps is GONE, and until the move above lands nothing has gone: a failed write or a
+      // failed swap leaves the live file and this directory intact, and the method rethrows. Advancing it first
+      // left the store permanently believing a range had been retired when it had not - and because the claim is
+      // monotonic there is no path back, so a later downsample inside that range would be excused as retention
+      // and a walk crossing it answered silently short, which is the defect issue #8166 exists to close.
+      retentionRemovedBelowTs = Math.max(retentionRemovedBelowTs, timestamp);
 
       indexFile = new RandomAccessFile(oldFile, "rw");
       indexChannel = indexFile.getChannel();
@@ -1996,7 +2034,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     }
 
     // Rewrite sealed file: toKeep blocks (raw copy) + new downsampled blocks
-    downsampleRewriteCount++;
+    downsampleEpoch++;
     rewriteWithBlocks(toKeep, newBlocksCompressed, newBlocksMeta, newBlocksStats, newBlocksTagDV, granularityMs);
     } finally {
       directoryLock.writeLock().unlock();
@@ -3139,7 +3177,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   long getDownsampleRewriteCount() {
     directoryLock.readLock().lock();
     try {
-      return downsampleRewriteCount;
+      return downsampleEpoch;
     } finally {
       directoryLock.readLock().unlock();
     }
@@ -3334,6 +3372,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       indexFile = new RandomAccessFile(target, "rw");
       indexChannel = indexFile.getChannel();
 
+      // What this node held a moment ago, so the image can be compared against it below.
+      final Set<Long> previousBlockIds = new HashSet<>(blockDirectory.size());
+      for (final BlockEntry entry : blockDirectory)
+        previousBlockIds.add(entry.blockId);
+
       blockDirectory.clear();
       decodedColumnCache.clear();
       globalMinTs = Long.MAX_VALUE;
@@ -3343,9 +3386,90 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         loadDirectory();
       else
         writeEmptyHeader();
+
+      adoptRewriteHistoryOf(previousBlockIds);
     } finally {
       directoryLock.writeLock().unlock();
     }
+  }
+
+  /**
+   * Reads, off the image this node has just adopted, what the LEADER did to it - so a walk in flight over the
+   * blocks it replaces gets the same answer it would have got had the rewrite happened here (review of PR #8197).
+   * <p>
+   * <b>Why the install needs this at all.</b> {@link #downsampleEpoch} only ever sees a downsample THIS process
+   * ran, and the one that matters most happens on another node: a follower adopts the leader's sealed file
+   * wholesale, so if the leader downsampled between a walk's snapshot and that install, the image arrives
+   * carrying coarse blocks with new ids while this node's epoch has not moved. Its snapshot entries then resolve
+   * to nothing, the walk counts them as retention loss and answers short - issue #8166 exactly, reached through
+   * the one path where this process did no downsampling at all.
+   * <p>
+   * <b>Why the directory's geometry cannot answer it instead.</b> The obvious test - "does the live directory
+   * still span this block's range?" - looks right and is not: downsampling MOVES timestamps, folding each row
+   * onto its bucket floor, so the coarse blocks can sit entirely BELOW the fine ones they replaced. A store whose
+   * rows span 1000..6000 downsampled to ten-second buckets holds one block at timestamp 0. Containment, overlap
+   * and every other range test answer "outside" for a block that was replaced rather than removed.
+   * <p>
+   * <b>What the image does say.</b> Two things, neither needing a byte of new file format:
+   * <ul>
+   *   <li>Nothing below the new directory's first block, and nothing above its last, exists any more. That is a
+   *       statement about the live store whatever caused it, so it is recorded as a retention boundary - and it
+   *       is what keeps an install of a leader-RETIRED image from being mistaken for a coarsening one, since the
+   *       blocks it dropped all lie below the new first block.</li>
+   *   <li>Ids that went away WHILE OTHERS ARRIVED mean the leader rewrote those blocks rather than retiring
+   *       them: compaction, truncation and a plain re-install all preserve the ids of what they keep (issues
+   *       #7973 and #8043), so the only way an id disappears and a new one takes its place is that the rows
+   *       behind it were rebuilt. The epoch moves and those blocks are refused. Ids that went away with nothing
+   *       arriving are a retirement, and take the boundary above instead.</li>
+   * </ul>
+   * An image that only ADDS blocks - the ordinary case, a leader shipping its latest compaction - loses no id
+   * and moves neither, so nothing changes and a walk crossing it reads straight through, which is what issue
+   * #8043 fixed and what {@code Issue8043SealedWalkAcrossInstallTest} pins.
+   * <p>
+   * <b>The precondition, which lives in another module.</b> Telling the two apart by what replaced the lost ids
+   * needs ONE install to carry ONE rewrite session per shard. {@code RaftReplicatedDatabase} ships a
+   * {@code TsSealedBlob} or slice sequence per rewrite and Raft applies them in log order, so a retirement and a
+   * downsample never arrive coalesced into a single image. The one place a follower does adopt a coalesced file
+   * is a full snapshot resync, which copies it directly and never reaches this method - it closes and reopens
+   * the whole database instead, which invalidates any walk far more bluntly. If a future path ever installs a
+   * coalesced image here, this method would read it as a rewrite and refuse a walk that could have been answered
+   * short: conservative, but worth knowing about (review of PR #8197).
+   */
+  private void adoptRewriteHistoryOf(final Set<Long> previousBlockIds) {
+    boolean gainedNewIds = false;
+    for (final BlockEntry entry : blockDirectory)
+      if (!previousBlockIds.remove(entry.blockId))
+        gainedNewIds = true;
+    // Whatever is left is a block this node held and the image does not.
+    final boolean lostIds = !previousBlockIds.isEmpty();
+
+    if (lostIds && gainedNewIds) {
+      // Blocks went away AND blocks arrived in their place: the leader REWROTE them, and the rows behind them
+      // are still in the store under ids this node's snapshots have never seen. The epoch moves, so a walk
+      // holding one of the old ids is refused rather than answered short.
+      //
+      // No retention boundary is recorded for this case, and that is the whole reason the two are told apart
+      // here rather than by the bounds alone: downsampling FOLDS each row onto its bucket floor, so the coarse
+      // blocks can sit entirely below the fine ones and "nothing above the new last block exists any more" -
+      // true of timestamps - would excuse every replaced block as retired.
+      downsampleEpoch++;
+      return;
+    }
+
+    // Nothing arrived in their place, so ids that went away were RETIRED. Where the image now starts is then a
+    // permanent, forward-only claim of the same shape truncateBefore makes, and recording it is what keeps an
+    // install of a leader-RETIRED image from being mistaken for a coarsening one.
+    //
+    // Only when ids actually went away: an image that merely APPENDS retires nothing, and its first block is
+    // wherever this shard's history happens to begin rather than a line retention swept past.
+    if (!lostIds)
+      return;
+
+    retentionRemovedBelowTs = blockDirectory.isEmpty()
+        // The image holds nothing, so nothing this node held survives it - and "removed" is the honest word for
+        // every one of those blocks, not "replaced".
+        ? Long.MAX_VALUE
+        : Math.max(retentionRemovedBelowTs, blockDirectory.getFirst().minTimestamp);
   }
 
   /**
@@ -4117,29 +4241,4 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     }
     throw new IllegalArgumentException("Column index " + nonTsIndex + " out of range");
   }
-
-  private void accumulateSample(final AggregationResult result, final long bucketTs, final double value,
-      final AggregationType type) {
-    final int idx = result.findBucketIndex(bucketTs);
-    if (idx >= 0) {
-      final double existing = result.getValue(idx);
-      final long count = result.getCount(idx);
-      // NaN policy (issue #7089): SUM/AVG skip an absent sample the way MIN/MAX below do, and the count kept
-      // alongside is of the samples that contributed - what the AVG is divided by once the scan is over.
-      final double merged = switch (type) {
-        case SUM, AVG -> TimeSeriesNaN.sum(existing, count, value);
-        case COUNT -> existing + 1;
-        // NaN policy (issue #4596): NaN is treated as absent and skipped, so a real value always
-        // wins over a NaN running value (consistent with the row-iter, merge and SIMD paths).
-        case MIN -> Double.isNaN(value) ? existing : Double.isNaN(existing) ? value : Math.min(existing, value);
-        case MAX -> Double.isNaN(value) ? existing : Double.isNaN(existing) ? value : Math.max(existing, value);
-      };
-      result.updateValue(idx, merged);
-      result.updateCount(idx, type == AggregationType.COUNT ? count + 1 : TimeSeriesNaN.countIfPresent(count, value));
-    } else {
-      result.addBucket(bucketTs, type == AggregationType.COUNT ? 1 : value,
-          type == AggregationType.COUNT ? 1 : TimeSeriesNaN.countIfPresent(0, value));
-    }
-  }
-
 }

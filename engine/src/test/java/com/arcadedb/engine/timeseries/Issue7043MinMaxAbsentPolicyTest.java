@@ -32,7 +32,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>
  * {@code isUnusedMinMax} keyed off the raw sample count, and a NaN sample increments that count, so a bucket whose
  * samples were all NaN looked "touched" while its accumulator still held the untouched {@code ±Double.MAX_VALUE}.
- * The single-column path seeds its bucket with NaN and answered NaN over the same data, so the two paths disagreed.
+ * The single-column path seeded its bucket with NaN and answered NaN over the same data, so the two paths
+ * disagreed - which is how the defect was found. That path is gone (issue #8189: it carried a second
+ * column-index convention and had no production caller), so what is asserted here is the one remaining answer.
  * <p>
  * The fix removes the sentinel rather than guarding it: MIN/MAX start at {@link TimeSeriesNaN#ABSENT} and fold
  * through the one NaN policy of the subsystem, so "no real sample arrived" is the value itself.
@@ -46,10 +48,10 @@ class Issue7043MinMaxAbsentPolicyTest extends TestHelper {
       new ColumnDefinition("value", Type.DOUBLE, ColumnDefinition.ColumnRole.FIELD));
 
   /**
-   * The issue's own repro: identical all-NaN data, two code paths, two different answers.
+   * The issue's own repro: an all-NaN bucket must be ABSENT and not the MIN/MAX init sentinel.
    */
   @Test
-  void anAllNaNBucketIsAbsentOnBothTheSingleAndTheMultiColumnPath() throws Exception {
+  void anAllNaNBucketIsAbsent() throws Exception {
     database.begin();
     final TimeSeriesEngine engine = new TimeSeriesEngine((DatabaseInternal) database, "ts7043_allnan", COLUMNS, 1);
     engine.appendSamples(new long[] { 1000L, 2000L }, new Object[] { Double.NaN, Double.NaN });
@@ -57,11 +59,6 @@ class Issue7043MinMaxAbsentPolicyTest extends TestHelper {
 
     try {
       database.begin();
-      assertThat(engine.aggregate(Long.MIN_VALUE, Long.MAX_VALUE, 0, AggregationType.MIN, 0, null).getValue(0))
-          .as("single-column MIN over an all-NaN window").isNaN();
-      assertThat(engine.aggregate(Long.MIN_VALUE, Long.MAX_VALUE, 0, AggregationType.MAX, 0, null).getValue(0))
-          .as("single-column MAX over an all-NaN window").isNaN();
-
       final List<MultiColumnAggregationRequest> requests = List.of(
           new MultiColumnAggregationRequest(1, AggregationType.MIN, "min"),
           new MultiColumnAggregationRequest(1, AggregationType.MAX, "max"));
@@ -100,11 +97,6 @@ class Issue7043MinMaxAbsentPolicyTest extends TestHelper {
 
       assertThat(multi.getValue(bucketTs, 0)).isEqualTo(-Double.MAX_VALUE);
       assertThat(multi.getValue(bucketTs, 1)).isEqualTo(Double.MAX_VALUE);
-
-      assertThat(engine.aggregate(Long.MIN_VALUE, Long.MAX_VALUE, 0, AggregationType.MIN, 0, null).getValue(0))
-          .as("the single-column path must agree").isEqualTo(-Double.MAX_VALUE);
-      assertThat(engine.aggregate(Long.MIN_VALUE, Long.MAX_VALUE, 0, AggregationType.MAX, 0, null).getValue(0))
-          .as("the single-column path must agree").isEqualTo(Double.MAX_VALUE);
       database.commit();
     } finally {
       engine.drop();

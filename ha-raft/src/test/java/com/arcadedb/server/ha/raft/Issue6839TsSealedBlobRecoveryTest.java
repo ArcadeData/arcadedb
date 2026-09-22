@@ -131,15 +131,21 @@ class Issue6839TsSealedBlobRecoveryTest {
 
   /**
    * The repair is attempted for the engine-unavailable state alone. A blob naming a type that is not a TimeSeries
-   * type at all is still refused and logged - there is nothing there an engine could be initialised over, and
-   * writing the payload to a file named after it would be worse than dropping it.
+   * type at all is still refused - there is nothing there an engine could be initialised over, and writing the
+   * payload to a file named after it would be worse than dropping it.
+   * <p>
+   * It used to be refused by being logged and stepped over, which let the entry be checkpointed over a payload
+   * that was consumed and will never be re-shipped; issue #8172 turned that into the same accumulate-then-throw
+   * #8070 gave the failed repair below, so the refusal now reaches the caller.
    */
   @Test
   void aBlobForANonTimeSeriesTypeIsStillRefused() throws Exception {
     database.getSchema().createDocumentType("NotATimeSeries");
 
-    new ArcadeStateMachine().applySealedBlobs(database,
-        List.of(new TsSealedBlob("NotATimeSeries", 0, "NotATimeSeries_shard_0.ts.sealed", new byte[] { 1, 2, 3 })));
+    assertThatThrownBy(() -> new ArcadeStateMachine().applySealedBlobs(database,
+        List.of(new TsSealedBlob("NotATimeSeries", 0, "NotATimeSeries_shard_0.ts.sealed", new byte[] { 1, 2, 3 }))))
+        .isInstanceOf(SealedStoreNotInstalledException.class)
+        .hasMessageContaining("NotATimeSeries");
 
     assertThat(new File(databasePath, "NotATimeSeries_shard_0.ts.sealed"))
         .as("nothing may be written for a type that has no sealed store").doesNotExist();

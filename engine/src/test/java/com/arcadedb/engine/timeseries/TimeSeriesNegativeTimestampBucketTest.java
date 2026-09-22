@@ -64,11 +64,12 @@ class TimeSeriesNegativeTimestampBucketTest extends TestHelper {
     database.commit();
 
     database.begin();
-    final AggregationResult result = engine.aggregate(Long.MIN_VALUE, Long.MAX_VALUE, 0, AggregationType.COUNT, 1000L, null);
+    final MultiColumnAggregationResult result = engine.aggregateMulti(Long.MIN_VALUE, Long.MAX_VALUE,
+        List.of(new MultiColumnAggregationRequest(1, AggregationType.COUNT, "count")), 1000L, null);
 
     final Map<Long, Long> countByBucket = new HashMap<>();
-    for (int i = 0; i < result.size(); i++)
-      countByBucket.put(result.getBucketTimestamp(i), result.getCount(i));
+    for (final long bucketTs : result.getBucketTimestamps())
+      countByBucket.put(bucketTs, (long) result.getValue(bucketTs, 0));
 
     // The buggy truncating division would attribute -1500/-1200 to bucket -1000 (collision with -500/-100).
     assertThat(countByBucket).containsEntry(-3000L, 1L);

@@ -160,25 +160,6 @@ class Issue8140AggregationColumnIndexConventionTest extends TestHelper {
   }
 
   /**
-   * {@code TimeSeriesEngine.aggregate} - the single-column path - counts NON-TIMESTAMP columns instead, and is
-   * documented to. It was already right on both halves; pinned here so the two methods cannot be brought onto
-   * one convention by accident, since with the timestamp declared first nothing else would notice.
-   */
-  @Test
-  void theSingleColumnAggregateKeepsCountingNonTimestampColumns() throws Exception {
-    createSeries();
-
-    final TimeSeriesEngine engine = tsType().getEngine();
-    assertThat(engine.aggregate(Long.MIN_VALUE, Long.MAX_VALUE, 0, AggregationType.SUM, HOUR, null).getValue(0))
-        .as("mutable: ordinal 0 among non-timestamp columns is 'v'").isEqualTo(15.0);
-
-    engine.compactAll();
-
-    assertThat(engine.aggregate(Long.MIN_VALUE, Long.MAX_VALUE, 0, AggregationType.SUM, HOUR, null).getValue(0))
-        .as("sealed: the same ordinal must name the same column").isEqualTo(15.0);
-  }
-
-  /**
    * Row position 0 is the timestamp, so no request that reads a column may carry it - and the sealed half now
    * refuses one by name rather than decoding the timestamp as if it were a measurement. That refusal is only
    * safe because the push-down never builds such a request: a TIMESTAMP column is DELTA_OF_DELTA encoded, so
