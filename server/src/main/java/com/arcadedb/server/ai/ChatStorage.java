@@ -334,9 +334,11 @@ public class ChatStorage {
    * cannot be determined: no known-user supplier, a supplier that throws or returns {@code null}, or
    * {@code username} not itself among the accounts it returns.
    * <p>
-   * The instant a real collision IS found, it is recorded at {@code ambiguityMarker} before answering
+   * The moment a real collision IS found, it is recorded at {@code ambiguityMarker} before answering
    * {@code false}, so the fact survives the colliding account being deleted later - see the class
-   * javadoc's second migration rule.
+   * javadoc's second migration rule. Two different colliding usernames' first requests can race here and
+   * both attempt the write; harmless, since {@link #markPermanentlyAmbiguous} writes an empty file whose
+   * only meaning is that it exists, so a double write says nothing a single one did not already say.
    * <p>
    * A candidate account collides when its sanitized name matches {@code legacyName} CASE-INSENSITIVELY,
    * not only exactly (code review on PR #8126). {@code ServerSecurity} keys accounts by exact name, so

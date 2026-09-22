@@ -127,8 +127,14 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
   }
 
   /**
-   * The configured value of {@code setting}, translated into what Undertow's buffered messages want: they treat
-   * anything {@code <= 0} as unbounded, which is what both settings document 0 to mean.
+   * The configured value of {@code setting}, mapped so anything {@code <= 0} becomes {@code -1} - what
+   * Undertow's buffered messages ({@link #getMaxTextBufferSize()}, {@link #getMaxBinaryBufferSize()}) want
+   * for "unbounded", which is what every setting this is called with documents 0 to mean.
+   * <p>
+   * Reused by {@link #sendAck} and {@link #sendError} for {@code SERVER_WS_MAX_PENDING_CONTROL_BYTES}
+   * (issue #8085) even though that setting is not a buffer size: {@link WebSocketFrameSender#sendBudgeted}'s
+   * own cap check is {@code maxPendingBytes > 0}, so the {@code -1} this produces for a disabled cap is just
+   * as "not positive" as the {@code 0} it was mapped from, and the translation costs nothing to share.
    */
   private long frameBudget(final GlobalConfiguration setting) {
     final long max = httpServer.getServer().getConfiguration().getValueAsLong(setting);
@@ -240,7 +246,7 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
   private void sendAck(final WebSocketChannel channel, final ACTION action) {
     final var json = new JSONObject("{\"result\": \"ok\"}");
     json.put("action", action.toString().toLowerCase(Locale.ENGLISH));
-    WebSocketFrameSender.sendBudgeted(channel, json.toString(), maxPendingControlBytes());
+    WebSocketFrameSender.sendBudgeted(channel, json.toString(), frameBudget(GlobalConfiguration.SERVER_WS_MAX_PENDING_CONTROL_BYTES));
   }
 
   private void sendError(final WebSocketChannel channel, final String error, final String detail, final Throwable exception) {
@@ -250,16 +256,7 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
       json.put("detail", encodeError(detail));
     if (exception != null)
       json.put("exception", exception.getClass().getName());
-    WebSocketFrameSender.sendBudgeted(channel, json.toString(), maxPendingControlBytes());
-  }
-
-  /**
-   * See {@link WebSocketFrameSender#sendBudgeted}: bounds what {@link #sendAck} and {@link #sendError} may leave
-   * outstanding towards a connection that stops reading (issue #8085). Re-read per call, the same reason
-   * {@link #frameBudget} is: an operator raising the setting on a running server does not have to reconnect.
-   */
-  private long maxPendingControlBytes() {
-    return httpServer.getServer().getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_WS_MAX_PENDING_CONTROL_BYTES);
+    WebSocketFrameSender.sendBudgeted(channel, json.toString(), frameBudget(GlobalConfiguration.SERVER_WS_MAX_PENDING_CONTROL_BYTES));
   }
 
   private String encodeError(final String message) {
