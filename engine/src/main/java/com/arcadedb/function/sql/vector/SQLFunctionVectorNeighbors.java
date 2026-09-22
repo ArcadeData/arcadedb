@@ -346,8 +346,9 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       final String idProperty = lsmIndex.getIdPropertyName();
 
       Object stored = null;
+      // Shared with db.index.vector.queryNodes, the Cypher entry point onto this same lookup (issue #8097).
       try (final ResultSet rs = context.getDatabase().query("sql",
-          "SELECT " + vectorProperty + " FROM " + typeName + " WHERE " + idProperty + " = ? LIMIT 1", keyStr)) {
+          buildVectorByIdLookup(typeName, vectorProperty, idProperty), keyStr)) {
         if (rs.hasNext()) {
           final var result = rs.next();
           stored = result.getProperty(vectorProperty);
