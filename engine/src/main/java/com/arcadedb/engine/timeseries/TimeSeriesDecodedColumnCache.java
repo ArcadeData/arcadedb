@@ -50,6 +50,16 @@ import java.util.Set;
  * Eviction is least-recently-used against a byte budget rather than an entry count, because a column's cost depends
  * on the block's sample count: one column of a full 65,536-sample block is half a megabyte, so an entry-counted
  * bound would be a memory bound only by accident.
+ * <p>
+ * <b>Why one monitor rather than a lock-free map,</b> on hot paths this engine usually keeps lock-free (review of PR
+ * #8194). The budget is this cache's only safety property - it is what the configuration setting promises an operator
+ * - and a running byte total that stays exact needs the charge, the map and the eviction to move together. A
+ * {@code ConcurrentHashMap} would buy concurrent lookups at the price of approximating the total, which is the one
+ * thing here that must not be approximate. The critical section it costs is a hash lookup plus an access-order
+ * relink, with no I/O and no decode inside it, against the hundreds of microseconds of codec work a hit replaces; and
+ * it is per store, hence per shard, so shards never contend with each other. Should a single hot shard at high
+ * concurrency ever make this monitor the bottleneck, the shape to reach for is striping by block id rather than
+ * dropping the exact accounting.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -195,11 +205,15 @@ final class TimeSeriesDecodedColumnCache {
   /**
    * Whether a boxed column's elements are references it shares rather than objects it allocated. An all-null column
    * allocated nothing either, so it answers true as well.
+   * <p>
+   * Two types qualify. A STRING column is handed back unchanged by {@link ColumnDefinition#boxString}, and a BOOLEAN
+   * one autoboxes to {@code Boolean.TRUE}/{@code Boolean.FALSE}, which the JVM caches - so a column of either holds
+   * two references per slot and nothing more (review of PR #8194). Every other boxing allocates per value.
    */
   private static boolean holdsSharedReferences(final Object[] values) {
     for (final Object value : values) {
       if (value != null)
-        return value instanceof String;
+        return value instanceof String || value instanceof Boolean;
     }
     return true;
   }
