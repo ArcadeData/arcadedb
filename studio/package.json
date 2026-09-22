@@ -41,7 +41,7 @@
     "datatables.net-select-bs5": "^4.0.1",
     "jquery": "^4.0.0",
     "marked": "^18.0.13",
-    "jszip": "^3.10.1",
+    "jszip": "^3.10.2",
     "pdfmake": "^0.3.11",
     "swagger-ui-dist": "^5.33.0",
     "sweetalert2": "^11.26.25"
