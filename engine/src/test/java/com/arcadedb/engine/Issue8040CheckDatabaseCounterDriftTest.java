@@ -19,6 +19,8 @@
 package com.arcadedb.engine;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Binary;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
@@ -171,6 +173,59 @@ class Issue8040CheckDatabaseCounterDriftTest extends TestHelper {
     } finally {
       database.rollback();
     }
+  }
+
+  /**
+   * The suppression that matters most, and the one nothing pinned directly: a bucket whose counter really IS wrong,
+   * on a run whose own walk cannot answer for the tally. A slot the pass cannot even read leaves the tally short by
+   * an unknown amount, so the comparison would report a number it did not measure - and on a FIX run it would be
+   * accusing the very bucket it is repairing.
+   * <p>
+   * Both directions of the run are checked: read-only, where the walk simply cannot read the slot, and FIX, where it
+   * also repairs it away. The counter is genuinely adrift throughout - the assertion is that the check knows it is
+   * not entitled to say so.
+   */
+  @Test
+  void aRunThatCannotAnswerForItsOwnTallyReportsNoDrift() {
+    bucket().setCachedRecordCount(RECORDS + 4);
+    makeOneSlotUnreadable();
+
+    final Result readOnly = check(false);
+    assertThat((Long) readOnly.getProperty("staleRecordCounters")).as("%s", readOnly.toJSON()).isEqualTo(0L);
+    // The run did find the slot, so it is not silent about the database - only about the counter.
+    assertThat((Long) readOnly.getProperty("totalErrors")).isGreaterThanOrEqualTo(1L);
+    assertThat(bucket().getCachedRecordCount()).as("a read-only run repairs nothing").isEqualTo(RECORDS + 4L);
+
+    final Result fixed = check(true);
+    assertThat((Long) fixed.getProperty("staleRecordCounters")).as("%s", fixed.toJSON()).isEqualTo(0L);
+    assertThat((Long) fixed.getProperty("staleRecordCountersFixed")).isEqualTo(0L);
+
+    // And the counter is right afterwards anyway, through the invalidation every FIX run makes: suppressing the
+    // FINDING never means leaving the drift behind.
+    assertThat(bucket().count()).isEqualTo(RECORDS - 1L);
+  }
+
+  /**
+   * Points one slot's offset past the end of its page, which is the one corruption the bucket walk answers with
+   * "this slot was never read" rather than with a classification - exactly what makes its tally unusable.
+   */
+  private void makeOneSlotUnreadable() {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final LocalBucket bucket = bucket();
+    final int fileId = bucket.getFileId();
+    final int pageSize = ((PaginatedComponentFile) db.getFileManager().getFile(fileId)).getPageSize();
+
+    db.transaction(() -> {
+      try {
+        final MutablePage page = db.getTransaction().getPageToModify(new PageId(db, fileId, 0), pageSize, false);
+        // Slot 0 of page 0: the record table starts right after the short record count. The offset written is the
+        // whole page size, which no page's content can reach - getContentSize() subtracts the header - so the walk
+        // meets it as an offset it cannot read whatever the page happens to hold.
+        page.writeUnsignedInt(Binary.SHORT_SERIALIZED_SIZE, pageSize);
+      } catch (final Exception e) {
+        throw new RuntimeException(e);
+      }
+    });
   }
 
   private Result check(final boolean fix) {
