@@ -19,9 +19,8 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Test;
-
-import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -94,7 +93,7 @@ class CypherRelationshipTypeLabelSeparatorIssue8118Test extends TestHelper {
     database.transaction(() -> database.command("opencypher", "CREATE (n:A:B {id:9}) RETURN n").close());
 
     assertThat(database.getSchema().existsType("A~B")).isTrue();
-    assertThat(database.getSchema().getType("A~B")).isInstanceOf(com.arcadedb.schema.VertexType.class);
+    assertThat(database.getSchema().getType("A~B")).isInstanceOf(VertexType.class);
   }
 
   /**
