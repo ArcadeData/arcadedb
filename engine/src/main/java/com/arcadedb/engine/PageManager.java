@@ -73,8 +73,10 @@ import java.util.function.BiFunction;
  * path takes the FileManager monitor and then this manager's lock, and none takes the registry lock and then
  * anything else - {@code PageSnapshot.close()} unregisters (5) and only then drops its retained files, holding
  * nothing. {@link #beginDatabaseClose} waits on (5) holding nothing else (#7458). {@link #suspendFlushAndExecute}
- * takes 2 then 3, for its own residual drain and suspend acquisition (issue #8111) - the same order
- * {@link #openSnapshot} uses for that pair - and releases both before touching anything past them.
+ * takes only (3), alone, for its fast-path join of an already-suspended database and for the equivalent
+ * check inside its own residual drain; it takes 2 then 3 - the same order {@link #openSnapshot} uses for
+ * that pair - only for the drain-then-acquire sequence that establishes a NEW freeze (issue #8111, then
+ * #8128). Every path releases both before touching anything past them, or before running its callback.
  */
 public class PageManager extends LockContext {
   public static final PageManager INSTANCE = new PageManager();
@@ -522,31 +524,40 @@ public class PageManager extends LockContext {
 
   public void suspendFlushAndExecute(final Database database, final CallableNoReturn callback)
       throws IOException, InterruptedException {
-    // FAST-PATH PROBE (review on PR #8128, round 2): setSuspended(true) IS the atomic acquisition
-    // (suspended.merge under suspendLock), and its return value says whether THIS call turned out to be the
-    // first suspender (true) or joined an already-established freeze (false) - unlike a plain isSuspended()
-    // peek beforehand, which is an unsynchronized read that can be stale in EITHER direction (a nested case
-    // not yet visible, or an already-resumed one that still looks suspended). If the probe unexpectedly
-    // finds us first, back out immediately and fall through to the full sequence below, which has to drain
-    // BEFORE establishing the freeze (issue #8111) - something this quick attempt has no way to have done.
-    if (flushThread.setSuspended(database, true)) {
-      flushThread.setSuspended(database, false);
-    } else {
-      // Genuinely nested: this database was already frozen when the probe landed, so this window is what
-      // an overlapping caller is entitled to (#5068 - "every caller... owns its whole window even when the
-      // windows overlap", e.g. a backup calling into a nested verify) - no drain needed, the same instant
-      // acquisition the unconditional setSuspended(database, true) call always did before this method took
-      // on the #8111 drains. Skipping the drain here is not just an optimization: while ANY suspender holds
-      // the database suspended, a commit's page is DEFERRED rather than written
-      // (flushPagesFromQueueToDisk's isSuspended(db) branch) and stays counted as pending in pageIndex
-      // without ever being removed from it, so a drain run here would see pending() > 0 with no possible
-      // progress until the FIRST suspender releases - hanging for arcadedb.flushAllPagesTimeout and then
-      // failing outright, which is worse than doing nothing.
-      //
-      // The probe call above IS the acquisition - it already incremented the refcount when it returned
-      // false, so this runs on that same reference rather than taking a second one (a bug caught locally
-      // before push: acquiring again here left a permanent extra reference nothing ever released, so the
-      // database could never reach refcount 0 and a deferred backlog could never resume).
+    // FAST PATH (review on PR #8128, round 3): a caller joining an ALREADY established freeze must never
+    // observe (or create) a HALF-established one - two separately-locked calls (an unsynchronized isSuspended
+    // peek, or an isSuspended check followed by its own separately-locked acquire) both leave a window in
+    // which a second thread can join a "freeze" the first thread hasn't actually drained yet, because the
+    // first thread's own probe/acquire was not itself gated on having drained anything. Closed by making the
+    // check AND the join one atomic operation under PageManager's own lock() - the same lock every acquisition
+    // in this method, including step 2's below, is now taken under - so "count > 0" is only ever observable
+    // here once the corresponding drain has actually completed under that same lock.
+    lock();
+    final boolean joinedExisting;
+    try {
+      joinedExisting = flushThread.isSuspended(database);
+      if (joinedExisting) {
+        // trySuspendUntil, not the unbounded setSuspended(database, true): this runs WHILE HOLDING lock(), so
+        // an unbounded wait for a concurrent resume (which does not itself need lock() - resumeFlushing only
+        // calls PageManager.flushPage, which takes no lock here - but can still run for as long as
+        // arcadedb.flushSuspendMaxDeferredRAM takes to write) would stall every OTHER database's commits and
+        // Raft applies behind this one lock for that whole duration. Bounded the same way openSnapshot bounds
+        // its own use of this lock, for the same reason.
+        if (!flushThread.trySuspendUntil(database, System.currentTimeMillis() + SNAPSHOT_BARRIER_MAX_MILLIS))
+          throw new IOException("Cannot freeze the files of database '" + database.getName()
+              + "': the page flush could not be suspended within " + SNAPSHOT_BARRIER_MAX_MILLIS
+              + " ms because another suspender is still resuming");
+      }
+    } finally {
+      unlock();
+    }
+
+    if (joinedExisting) {
+      // Genuinely nested: this database was already frozen - and, by the invariant above, genuinely drained
+      // - so this window is what an overlapping caller is entitled to (#5068 - "every caller... owns its
+      // whole window even when the windows overlap", e.g. a backup calling into a nested verify) - no drain
+      // of this thread's own needed, the same instant acquisition the unconditional
+      // setSuspended(database, true) call always did before this method took on the #8111 drains.
       runAlreadySuspended(database, callback);
       return;
     }
@@ -557,7 +568,7 @@ public class PageManager extends LockContext {
     // in: a full backup taken from the frozen files then archived a bucket at whatever size it had BEFORE the
     // most recent commit, sometimes a bare newly-created file with no data pages in it at all.
     //
-    // The probe above proved nothing was suspended a moment ago, but a DIFFERENT caller can still win the
+    // The check above proved nothing was suspended a moment ago, but a DIFFERENT caller can still win the
     // race to become first while this thread's own step 1 (below, deliberately unlocked and the long part)
     // is running - closed by the re-check inside the lock at step 2, not by anything here.
     //
@@ -590,17 +601,18 @@ public class PageManager extends LockContext {
     try {
       lock();
       try {
-        // RE-CHECKED HERE RATHER THAN TRUSTED FROM STEP 1 (review on PR #8128, round 2): every caller of
-        // trySuspendUntil below - this one and openSnapshot's own - calls it from inside this SAME lock()
-        // critical section, so a positive read here is properly serialized against it by the mutex's own
-        // happens-before guarantee, unlike an unsynchronized peek taken before acquiring this lock would be.
-        // Either this thread observes no one suspended (and is about to become the genuine first suspender
-        // below), or it observes a suspension that fully completed its own trySuspendUntil while holding
-        // this exact lock before releasing it - there is no window in which it can observe a HALF-completed
-        // one, because two callers can never be inside this lock() at once.
-        if (flushThread.isSuspended(database))
+        // RE-CHECKED HERE RATHER THAN TRUSTED FROM STEP 1 (review on PR #8128): every acquisition in this
+        // method - the fast path above, this re-check, and trySuspendUntil below - now happens from inside
+        // PageManager's own lock() critical section, so a positive read here is properly serialized against
+        // all of them by the mutex's own happens-before guarantee. Unlike the fast path above, joining here
+        // uses the bounded trySuspendUntil for the same JVM-wide-stall reason given there.
+        if (flushThread.isSuspended(database)) {
+          if (!flushThread.trySuspendUntil(database, System.currentTimeMillis() + SNAPSHOT_BARRIER_MAX_MILLIS))
+            throw new IOException("Cannot freeze the files of database '" + database.getName()
+                + "': the page flush could not be suspended within " + SNAPSHOT_BARRIER_MAX_MILLIS
+                + " ms because another suspender is still resuming");
           nested = true;
-        else {
+        } else {
           final long deadline = System.currentTimeMillis() + SNAPSHOT_BARRIER_MAX_MILLIS;
 
           // FATAL HERE, UNLIKE openSnapshot's OWN TREATMENT OF THE SAME DRAIN (review on PR #8128): that
@@ -632,10 +644,7 @@ public class PageManager extends LockContext {
     }
 
     if (nested) {
-      // Discovered under the lock above via a pure read (isSuspended), unlike the probe's own
-      // setSuspended(true) - this thread holds no reference yet, so it must acquire one before running,
-      // the same instant acquisition the fast-path probe would have done had it landed a moment later.
-      flushThread.setSuspended(database, true);
+      // Discovered - and joined, via trySuspendUntil - under the lock above.
       runAlreadySuspended(database, callback);
       return;
     }
@@ -659,11 +668,9 @@ public class PageManager extends LockContext {
    * Runs {@code callback} and releases exactly one suspension reference on {@code database} - the whole of
    * what an OVERLAPPING (non-first) suspender needs once it already holds that reference, with no drain: the
    * first suspender already established the frozen window. The CALLER must have already acquired the
-   * reference this releases - via the fast-path probe's own {@code setSuspended(true)} call (which IS the
-   * acquisition when it returns {@code false}), or via an explicit one taken right before calling this for a
-   * reference the probe never took (the under-lock nested case, discovered by a pure {@code isSuspended}
-   * read). Acquiring again in here would double-count that reference and leak it forever, since nothing else
-   * would ever release the second one - the exact bug an earlier version of this fix had.
+   * reference this releases, via {@code trySuspendUntil} - acquiring again in here would double-count that
+   * reference and leak it forever, since nothing else would ever release the second one (a bug an earlier
+   * version of this fix had, caught locally before push by the stress test below).
    */
   private void runAlreadySuspended(final Database database, final CallableNoReturn callback) {
     try {
