@@ -180,7 +180,9 @@ public class WALFile extends LockContext {
       try {
         file.close();
       } catch (final IOException e) {
-        // IGNORE IT: the descriptor is already dead, this only releases what is left of it
+        // Not fatal: the descriptor is already dead and this only releases what is left of it. Logged
+        // rather than dropped so a handle that genuinely refuses to close is still traceable.
+        LogManager.instance().log(this, Level.FINE, "Error on closing the dead handle of WAL file '%s'", e, filePath);
       }
 
     this.file = new RandomAccessFile(filePath, "rw");
@@ -196,15 +198,25 @@ public class WALFile extends LockContext {
    * {@code ClosedByInterruptException} leaves the flag set, and the very next interruptible operation on the
    * fresh channel would close that one too. The restore is mandatory as well, so the cancellation stays
    * observable to the caller that asked for it.
+   * <p>
+   * {@code cause} is the close that triggered the recovery. It is logged with the diagnostic, and attached
+   * as a suppressed exception if the retry fails too, so a refused reopen never hides what closed the
+   * channel in the first place.
    */
-  private <T> T retryAfterReopen(final String operation, final ChannelOperation<T> io) throws IOException {
+  private <T> T retryAfterReopen(final ClosedChannelException cause, final String operation, final ChannelOperation<T> io)
+      throws IOException {
     LogManager.instance().log(this, Level.SEVERE,
-        "WAL file '%s' was closed on %s (interrupted thread?). Reopen it and retry...", null, filePath, operation);
+        "WAL file '%s' was closed on %s (interrupted thread?). Reopen it and retry...", cause, filePath, operation);
 
     final boolean wasInterrupted = Thread.interrupted();
     try {
       reopenChannel();
       return io.run();
+    } catch (final IOException retryFailed) {
+      // Keep the close that started all this attached to whatever the recovery ran into - a refused reopen
+      // reports why it refused, and losing the original leaves no trace of what closed the channel.
+      retryFailed.addSuppressed(cause);
+      throw retryFailed;
     } finally {
       if (wasInterrupted)
         Thread.currentThread().interrupt();
@@ -221,10 +233,18 @@ public class WALFile extends LockContext {
    * the read retried on all of them (issue #7768) rather than only on the commit path.
    */
   private int readChunk(final ByteBuffer buffer, final long pos) throws IOException {
+    // Recorded before the attempt for the same reason append() records its start offset: an interrupted
+    // read may already have transferred bytes into the buffer before throwing, and the retry reads from
+    // the SAME file offset - so without rewinding the buffer to where this attempt began, those bytes
+    // would be written twice and the caller's readPos/position bookkeeping would drift apart.
+    final int positionBeforeAttempt = buffer.position();
     try {
       return channel.read(buffer, pos);
     } catch (final ClosedChannelException e) {
-      return retryAfterReopen("read", () -> channel.read(buffer, pos));
+      return retryAfterReopen(e, "read", () -> {
+        buffer.position(positionBeforeAttempt);
+        return channel.read(buffer, pos);
+      });
     }
   }
 
@@ -236,7 +256,7 @@ public class WALFile extends LockContext {
     try {
       channel.force(metaData);
     } catch (final ClosedChannelException e) {
-      retryAfterReopen("force", () -> {
+      retryAfterReopen(e, "force", () -> {
         channel.force(metaData);
         return null;
       });
@@ -702,7 +722,7 @@ public class WALFile extends LockContext {
     try {
       return channel.size();
     } catch (final ClosedChannelException e) {
-      return retryAfterReopen("getSize", () -> channel.size());
+      return retryAfterReopen(e, "getSize", () -> channel.size());
     }
   }
 
@@ -775,7 +795,7 @@ public class WALFile extends LockContext {
       // #4508 gap detector reports. Rewriting over them is safe: these are positional writes into a region
       // no committed record has ever claimed.
       final long retryFrom = startPos;
-      retryAfterReopen("append", () -> {
+      retryAfterReopen(e, "append", () -> {
         appendAt(buffer, retryFrom >= 0 ? retryFrom : channel.size());
         return null;
       });
