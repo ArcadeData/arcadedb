@@ -290,9 +290,19 @@ public class ChatStorage {
     if (legacyName.indexOf('_') >= 0) {
       final File ambiguityMarker = ambiguityMarkerFile(legacyName);
       if (ambiguityMarker.exists() || !soleKnownAccountName(legacyName, username, ambiguityMarker)) {
-        warnOncePerLegacyDirectory(legacyName,
-            "Refusing to migrate legacy chat directory '%s': more than one user name maps onto it, so its chats cannot be attributed to a "
-                + "single user. It has been left untouched - move each chat under the owner's hashed directory by hand to restore it.");
+        // soleKnownAccountName() may have just created the marker, so this is re-checked rather than reusing
+        // the boolean above: only mention a file in the operator-facing message once it is actually there.
+        if (ambiguityMarker.exists())
+          warnOncePerLegacyDirectory(legacyName,
+              "Refusing to migrate legacy chat directory '%s': more than one user name maps onto it, so its chats cannot be attributed "
+                  + "to a single user. This is recorded at '%s' and will keep refusing the migration even if one of the colliding "
+                  + "accounts is later deleted; delete that file once you have manually moved each chat under the owner's hashed "
+                  + "directory.", ambiguityMarker.getAbsolutePath());
+        else
+          warnOncePerLegacyDirectory(legacyName,
+              "Refusing to migrate legacy chat directory '%s': more than one user name maps onto it, so its chats cannot be attributed "
+                  + "to a single user. It has been left untouched - move each chat under the owner's hashed directory by hand to "
+                  + "restore it.");
         return;
       }
     }
@@ -427,10 +437,16 @@ public class ChatStorage {
    * revisit it. Its CONTENTS go
    * stale: entries are never removed, so a name whose directory an operator has since resolved stays
    * marked as reported for the life of the server. That costs a log line, not a decision.
+   *
+   * @param extraArgs further {@code %s} arguments beyond {@code legacyName}, which is always the first.
    */
-  private void warnOncePerLegacyDirectory(final String legacyName, final String message) {
-    if (reportedLegacyDirectories.add(legacyName))
-      LogManager.instance().log(this, Level.WARNING, message, legacyName);
+  private void warnOncePerLegacyDirectory(final String legacyName, final String message, final String... extraArgs) {
+    if (!reportedLegacyDirectories.add(legacyName))
+      return;
+    final Object[] args = new Object[extraArgs.length + 1];
+    args[0] = legacyName;
+    System.arraycopy(extraArgs, 0, args, 1, extraArgs.length);
+    LogManager.instance().log(this, Level.WARNING, message, args);
   }
 
   private File getChatFile(final String username, final String chatId) {
