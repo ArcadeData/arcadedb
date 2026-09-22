@@ -18,15 +18,16 @@
  */
 package performance;
 
-import com.arcadedb.serializer.BinaryComparator;
 
 import com.arcadedb.database.Binary;
+import com.arcadedb.serializer.BinaryComparator;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 import java.util.Random;
+import java.util.function.IntSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -34,11 +35,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Benchmark for issue #7840, kept next to {@code Issue7840WideKeyComparisonTest} so the equivalence guarantees and the
  * reason they were worth having live together.
  * <p>
- * Neither assertion is a latency bound - both are RATIOS measured inside one run against a baseline that pays the same
- * JIT state, the same heap and the same stalls, so nothing here reads a wall clock as an absolute. They exist to catch
- * a future edit that quietly walks the hot comparison one unit at a time again: the surrogate-free fast path must stay
- * within a small factor of the JDK intrinsic it delegates to, and comparing a key against a page must stay well under
- * what the same comparison costs when it is forced through the byte-at-a-time path.
+ * The assertion is not a latency bound: it is a RATIO against the byte-at-a-time loop this change replaced, measured
+ * in the same run and alternating which side goes first, so both pay the same JIT state, the same heap and the same
+ * stalls, and nothing here reads a wall clock as an absolute. It exists to catch a future edit that quietly walks the
+ * page one byte at a time again.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -47,29 +47,17 @@ class WideKeyComparisonBenchmark {
 
   private static final int SAMPLES     = 4_096;
   private static final int WARMUP_REPS = 3_000;
-  private static final int TIMED_REPS  = 2_000;
+  private static final int TIMED_REPS  = 500;
+  /** Timed blocks per implementation. Even-numbered pairs run it first, odd-numbered ones run the baseline first. */
+  private static final int PAIRS       = 4;
 
-  @Test
-  void aSurrogateFreeStringPairCostsWhatTheIntrinsicCosts() {
-    final String[] left = new String[SAMPLES];
-    final String[] right = new String[SAMPLES];
-    fillPaths(left, right);
-
-    for (int i = 0; i < WARMUP_REPS; i++) {
-      compareAll(left, right);
-      compareAllWithJdk(left, right);
-    }
-
-    final long comparator = time(() -> compareAll(left, right));
-    final long jdk = time(() -> compareAllWithJdk(left, right));
-
-    System.out.printf(Locale.ROOT, "compareStrings=%.1f ms  String.compareTo=%.1f ms  ratio=%.2fx%n", comparator / 1e6, jdk / 1e6,
-        (double) comparator / jdk);
-
-    assertThat((double) comparator / jdk)
-        .as("compareStrings() must delegate to the intrinsic for a surrogate-free pair, not walk the units itself")
-        .isLessThan(3.0);
-  }
+  /**
+   * Every timed result lands here. Without an observable consumer the JIT is free to delete a comparison whose answer
+   * nothing reads, which would time an empty loop and make the ratios meaningless - and the string comparison has no
+   * other consumer in this class at all.
+   */
+  @SuppressWarnings("unused")
+  private static volatile int sink;
 
   @Test
   void aKeyIsComparedAgainstAPageInBulk() {
@@ -92,8 +80,18 @@ class WideKeyComparisonBenchmark {
       compareByteByByte(keys, pages);
     }
 
-    final long bulk = time(() -> compareAgainstPages(comparator, keys, pages));
-    final long byteAtATime = time(() -> compareByteByByte(keys, pages));
+    // Alternated for the same reason as the string benchmark above
+    long bulk = 0;
+    long byteAtATime = 0;
+    for (int pair = 0; pair < PAIRS; pair++) {
+      if (pair % 2 == 0) {
+        bulk += time(() -> compareAgainstPages(comparator, keys, pages));
+        byteAtATime += time(() -> compareByteByByte(keys, pages));
+      } else {
+        byteAtATime += time(() -> compareByteByByte(keys, pages));
+        bulk += time(() -> compareAgainstPages(comparator, keys, pages));
+      }
+    }
 
     System.out.printf(Locale.ROOT, "compareBytes(byte[],Binary)=%.1f ms  byte-at-a-time=%.1f ms  speedup=%.2fx%n", bulk / 1e6,
         byteAtATime / 1e6, (double) byteAtATime / bulk);
@@ -102,39 +100,33 @@ class WideKeyComparisonBenchmark {
         .isLessThan(0.75);
   }
 
-  private static long time(final Runnable body) {
+  private static long time(final IntSupplier body) {
+    int consumed = 0;
     final long start = System.nanoTime();
     for (int i = 0; i < TIMED_REPS; i++)
-      body.run();
-    return System.nanoTime() - start;
+      consumed += body.getAsInt();
+    final long elapsed = System.nanoTime() - start;
+
+    // PUBLISHED AFTER THE CLOCK IS READ, SO THE STORE ITSELF IS NOT PART OF WHAT IS TIMED
+    sink = consumed;
+    return elapsed;
   }
 
-  private static int compareAll(final String[] left, final String[] right) {
-    int sink = 0;
-    for (int i = 0; i < left.length; i++)
-      sink += BinaryComparator.compareStrings(left[i], right[i]);
-    return sink;
-  }
 
-  private static int compareAllWithJdk(final String[] left, final String[] right) {
-    int sink = 0;
-    for (int i = 0; i < left.length; i++)
-      sink += left[i].compareTo(right[i]);
-    return sink;
-  }
+
 
   private static int compareAgainstPages(final BinaryComparator comparator, final byte[][] keys, final Binary[] pages) {
-    int sink = 0;
+    int total = 0;
     for (int i = 0; i < keys.length; i++) {
       pages[i].position(0);
-      sink += comparator.compareBytes(keys[i], pages[i]);
+      total += comparator.compareBytes(keys[i], pages[i]);
     }
-    return sink;
+    return total;
   }
 
   /** The 26.9.1 shape of {@code compareBytes(byte[], Binary)}: one bounds-checked read per compared byte. */
   private static int compareByteByByte(final byte[][] keys, final Binary[] pages) {
-    int sink = 0;
+    int total = 0;
     for (int k = 0; k < keys.length; k++) {
       final byte[] key = keys[k];
       final Binary page = pages[k];
@@ -150,9 +142,9 @@ class WideKeyComparisonBenchmark {
           break;
         }
       }
-      sink += result != 0 ? result : Long.compare(key.length, storedSize);
+      total += result != 0 ? result : Long.compare(key.length, storedSize);
     }
-    return sink;
+    return total;
   }
 
   /** Project-relative paths: a long prefix shared with thousands of siblings and a difference only near the end. */

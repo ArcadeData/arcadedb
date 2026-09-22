@@ -378,8 +378,10 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
 
   /**
    * Index of the first of the next {@code length} bytes, counted from the current position, that differs from the
-   * byte at the same offset of {@code other}; {@code -1} when the two runs are identical. The position is NOT moved,
-   * so the caller decides how far the comparison consumed.
+   * byte at the same offset of {@code other}; {@code -1} when the two runs are identical. The position is left where
+   * the equivalent run of {@link #getByte()} calls would have left it: past the differing byte, or past the whole run
+   * when there is none. It is moved here, inside the method, so that it is always relative to the buffer the
+   * comparison actually read - see the note on fetching below.
    * <p>
    * Exists so a run can be compared in bulk - {@link Arrays#mismatch} is a vectorised JIT intrinsic - rather than one
    * bounds-checked {@link #getByte()} per byte. An LSM index probe compares a STRING key component against the page
@@ -397,8 +399,14 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
       // WHAT THE getByte() RUN THIS REPLACES WOULD THROW ONCE IT WALKED PAST THE LIMIT, JUST RAISED UP FRONT
       throw new BufferUnderflowException();
 
-    final int base = buffer.arrayOffset() + buffer.position();
-    return Arrays.mismatch(other, 0, length, buffer.array(), base, base + length);
+    // READ AFTER checkForFetching(), NEVER BEFORE: a fetch replaces the buffer and rewinds the position, so a
+    // position captured by the caller beforehand would address the buffer that is no longer being read
+    final int position = buffer.position();
+    final int base = buffer.arrayOffset() + position;
+    final int mismatch = Arrays.mismatch(other, 0, length, buffer.array(), base, base + length);
+
+    buffer.position(position + (mismatch < 0 ? length : mismatch + 1));
+    return mismatch;
   }
 
   /**
