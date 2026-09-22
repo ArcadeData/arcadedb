@@ -20,7 +20,6 @@ package com.arcadedb.bolt;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.bolt.message.BoltMessage;
-import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -45,7 +44,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class BoltStateMachineIT extends BaseGraphServerTest {
+public class BoltStateMachineIT extends BaseBoltServerTest {
 
   @Override
   public void setTestConfiguration() {
@@ -67,7 +66,7 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
   @Test
   @SuppressWarnings("unchecked")
   void secondRunInsideATransactionOpensASecondStream() throws Exception {
-    try (final BoltWireConnection bolt = new BoltWireConnection(getDatabaseName())) {
+    try (final BoltWireConnection bolt = new BoltWireConnection(getServerBoltPort(), getDatabaseName())) {
       bolt.begin(getDatabaseName());
 
       bolt.run("UNWIND [1, 2, 3] AS x RETURN x");
@@ -115,7 +114,7 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
    */
   @Test
   void discardByQidClosesOnlyTheNamedStream() throws Exception {
-    try (final BoltWireConnection bolt = new BoltWireConnection(getDatabaseName())) {
+    try (final BoltWireConnection bolt = new BoltWireConnection(getServerBoltPort(), getDatabaseName())) {
       bolt.begin(getDatabaseName());
 
       bolt.run("UNWIND [1, 2, 3] AS x RETURN x");
@@ -144,7 +143,7 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
 
   @Test
   void pullNamingAnUnknownQidFailsInsteadOfHittingAnotherStream() throws Exception {
-    try (final BoltWireConnection bolt = new BoltWireConnection(getDatabaseName())) {
+    try (final BoltWireConnection bolt = new BoltWireConnection(getServerBoltPort(), getDatabaseName())) {
       bolt.begin(getDatabaseName());
 
       bolt.run("UNWIND [1, 2, 3] AS x RETURN x");
@@ -165,7 +164,7 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
   void openingMoreStreamsThanTheLimitAllowsIsRejected() throws Exception {
     final int previousLimit = GlobalConfiguration.BOLT_MAX_OPEN_STREAMS.getValueAsInteger();
     GlobalConfiguration.BOLT_MAX_OPEN_STREAMS.setValue(2);
-    try (final BoltWireConnection bolt = new BoltWireConnection(getDatabaseName())) {
+    try (final BoltWireConnection bolt = new BoltWireConnection(getServerBoltPort(), getDatabaseName())) {
       bolt.begin(getDatabaseName());
 
       // Two streams, each left with rows outstanding so neither is released.
@@ -193,7 +192,7 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
   void anOpenStreamLimitBelowOneStillAllowsASingleStream() throws Exception {
     final int previousLimit = GlobalConfiguration.BOLT_MAX_OPEN_STREAMS.getValueAsInteger();
     GlobalConfiguration.BOLT_MAX_OPEN_STREAMS.setValue(0);
-    try (final BoltWireConnection bolt = new BoltWireConnection(getDatabaseName())) {
+    try (final BoltWireConnection bolt = new BoltWireConnection(getServerBoltPort(), getDatabaseName())) {
       bolt.begin(getDatabaseName());
 
       bolt.run("UNWIND [1, 2, 3] AS x RETURN x");
@@ -216,7 +215,7 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
    */
   @Test
   void pullWithAQidInAutoCommitStillReachesTheOnlyStream() throws Exception {
-    try (final BoltWireConnection bolt = new BoltWireConnection(getDatabaseName())) {
+    try (final BoltWireConnection bolt = new BoltWireConnection(getServerBoltPort(), getDatabaseName())) {
       bolt.run("RETURN 1 AS one");
       assertThat(bolt.readSummary().metadata()).as("an auto-commit RUN publishes no qid").doesNotContainKey("qid");
 
@@ -235,7 +234,7 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
    */
   @Test
   void aMalformedNegativeQidDoesNotFallBackToTheCurrentStream() throws Exception {
-    try (final BoltWireConnection bolt = new BoltWireConnection(getDatabaseName())) {
+    try (final BoltWireConnection bolt = new BoltWireConnection(getServerBoltPort(), getDatabaseName())) {
       bolt.begin(getDatabaseName());
 
       bolt.run("UNWIND [1, 2, 3] AS x RETURN x");
@@ -250,7 +249,7 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
 
   @Test
   void aMalformedNegativeQidOnDiscardIsRejectedToo() throws Exception {
-    try (final BoltWireConnection bolt = new BoltWireConnection(getDatabaseName())) {
+    try (final BoltWireConnection bolt = new BoltWireConnection(getServerBoltPort(), getDatabaseName())) {
       bolt.begin(getDatabaseName());
 
       bolt.run("UNWIND [1, 2, 3] AS x RETURN x");
@@ -269,7 +268,7 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
    */
   @Test
   void runIsStillRejectedInAutoCommitStreaming() throws Exception {
-    try (final BoltWireConnection bolt = new BoltWireConnection(getDatabaseName())) {
+    try (final BoltWireConnection bolt = new BoltWireConnection(getServerBoltPort(), getDatabaseName())) {
       bolt.run("UNWIND [1, 2, 3] AS x RETURN x");
       assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
       bolt.pull(1, -1);
@@ -288,7 +287,7 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
    */
   @Test
   void logoffIsRejectedWhileAStreamAndATransactionAreOpen() throws Exception {
-    try (final BoltWireConnection bolt = new BoltWireConnection(getDatabaseName())) {
+    try (final BoltWireConnection bolt = new BoltWireConnection(getServerBoltPort(), getDatabaseName())) {
       bolt.begin(getDatabaseName());
 
       bolt.run("CREATE (n:Issue6803Logoff {value: 1}) RETURN n");
@@ -326,7 +325,7 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
    */
   @Test
   void runCannotSwitchDatabaseInsideAnOpenTransaction() throws Exception {
-    try (final BoltWireConnection bolt = new BoltWireConnection(getDatabaseName())) {
+    try (final BoltWireConnection bolt = new BoltWireConnection(getServerBoltPort(), getDatabaseName())) {
       bolt.begin(getDatabaseName());
 
       bolt.run("CREATE (n:Issue6804DbSwitch {value: 1}) RETURN n");
@@ -358,7 +357,7 @@ public class BoltStateMachineIT extends BaseGraphServerTest {
    */
   @Test
   void logoffFromReadyStillSucceedsAndAllowsReAuthentication() throws Exception {
-    try (final BoltWireConnection bolt = new BoltWireConnection(getDatabaseName())) {
+    try (final BoltWireConnection bolt = new BoltWireConnection(getServerBoltPort(), getDatabaseName())) {
       bolt.sendNoFields(BoltMessage.LOGOFF);
       assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.SUCCESS);
 

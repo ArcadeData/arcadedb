@@ -22,7 +22,6 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.backup.AutoBackupSchedulerPlugin;
 import com.arcadedb.utility.FileUtils;
 import io.grpc.ManagedChannel;
@@ -62,9 +61,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * fetchable. The one test that needs that flag <i>off</i> lives in
  * {@link Issue7308GrpcRestoreImportUrlGuardIT} instead, since it is fixture-wide.
  */
-public class Issue7308GrpcRestoreImportIT extends BaseGraphServerTest {
+public class Issue7308GrpcRestoreImportIT extends BaseGrpcServerTest {
 
-  private static final int    GRPC_PORT       = 50051;
   private static final String BACKUP_DIR_NAME = "test-backups-7308-grpc";
   private static final String BACKUP_CONFIG   = """
       {
@@ -130,7 +128,7 @@ public class Issue7308GrpcRestoreImportIT extends BaseGraphServerTest {
 
   @BeforeEach
   void setupGrpcClient() {
-    channel = ManagedChannelBuilder.forAddress("localhost", GRPC_PORT).usePlaintext().build();
+    channel = ManagedChannelBuilder.forAddress("localhost", getServerGrpcPort()).usePlaintext().build();
     adminStub = ArcadeDbAdminServiceGrpc.newBlockingStub(channel);
   }
 

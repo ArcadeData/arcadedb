@@ -20,7 +20,6 @@ package com.arcadedb.remote.grpc;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.remote.RemoteException;
-import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -38,7 +37,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * the server's own refusal survives the trip. This fixture runs no HA, so the refusal is that HA is not
  * enabled; the join the verb performs when it is arrived with issue #7401.
  */
-class Issue7400RemoteGrpcConnectClusterIT extends BaseGraphServerTest {
+class Issue7400RemoteGrpcConnectClusterIT extends BaseGrpcClientServerTest {
 
   private RemoteGrpcServer server;
 
@@ -50,7 +49,7 @@ class Issue7400RemoteGrpcConnectClusterIT extends BaseGraphServerTest {
 
   @BeforeEach
   void connect() {
-    server = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    server = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
   }
 
   @AfterEach

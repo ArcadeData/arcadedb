@@ -19,7 +19,6 @@
 package com.arcadedb.mongo;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.mongodb.MongoClient;
 import com.mongodb.MongoClientOptions;
 import com.mongodb.MongoCredential;
@@ -43,9 +42,8 @@ import static com.mongodb.client.model.Filters.lte;
 import static com.mongodb.client.model.Filters.ne;
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class MongoDBServerTest extends BaseGraphServerTest {
+public class MongoDBServerTest extends BaseMongoServerTest {
 
-  private static final int                       DEF_PORT = 27017;
   private              MongoCollection<Document> collection;
   private              MongoClient               client;
   private              Document                  obj;
@@ -63,7 +61,7 @@ public class MongoDBServerTest extends BaseGraphServerTest {
 
     getDatabase(0);
 
-    client = new MongoClient(new ServerAddress("localhost", DEF_PORT), MongoCredential.createPlainCredential("root", getDatabaseName(), DEFAULT_PASSWORD_FOR_TESTS.toCharArray()), MongoClientOptions.builder().serverSelectionTimeout(5000).build());
+    client = new MongoClient(new ServerAddress("localhost", getServerMongoPort()), MongoCredential.createPlainCredential("root", getDatabaseName(), DEFAULT_PASSWORD_FOR_TESTS.toCharArray()), MongoClientOptions.builder().serverSelectionTimeout(5000).build());
     client.getDatabase(getDatabaseName()).createCollection("MongoDBCollection");
 
     collection = client.getDatabase(getDatabaseName()).getCollection("MongoDBCollection");

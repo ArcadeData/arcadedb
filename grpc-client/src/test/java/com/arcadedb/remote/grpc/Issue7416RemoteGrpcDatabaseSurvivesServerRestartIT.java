@@ -20,7 +20,6 @@ package com.arcadedb.remote.grpc;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -38,8 +37,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class Issue7416RemoteGrpcDatabaseSurvivesServerRestartIT extends BaseGraphServerTest {
-  private static final int GRPC_PORT = 50051;
+class Issue7416RemoteGrpcDatabaseSurvivesServerRestartIT extends BaseGrpcClientServerTest {
 
   private RemoteGrpcServer   grpcServer;
   private RemoteGrpcDatabase database;
@@ -61,8 +59,8 @@ class Issue7416RemoteGrpcDatabaseSurvivesServerRestartIT extends BaseGraphServer
 
   @Test
   void theSameDatabaseObjectKeepsWorkingAcrossACloseAndStartOfItsServer() {
-    grpcServer = new RemoteGrpcServer("localhost", GRPC_PORT, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
-    database = new RemoteGrpcDatabase(grpcServer, "localhost", GRPC_PORT, getServer(0).getHttpServer().getPort(),
+    grpcServer = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    database = new RemoteGrpcDatabase(grpcServer, "localhost", getServerGrpcPort(), getServer(0).getHttpServer().getPort(),
         getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
 
     assertThat(countV1()).isGreaterThan(0);
@@ -90,8 +88,8 @@ class Issue7416RemoteGrpcDatabaseSurvivesServerRestartIT extends BaseGraphServer
   /** A second restart is followed the same way: the check is per call, not once. */
   @Test
   void everyRestartIsFollowedNotJustTheFirst() {
-    grpcServer = new RemoteGrpcServer("localhost", GRPC_PORT, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
-    database = new RemoteGrpcDatabase(grpcServer, "localhost", GRPC_PORT, getServer(0).getHttpServer().getPort(),
+    grpcServer = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    database = new RemoteGrpcDatabase(grpcServer, "localhost", getServerGrpcPort(), getServer(0).getHttpServer().getPort(),
         getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
 
     for (int cycle = 0; cycle < 3; cycle++) {

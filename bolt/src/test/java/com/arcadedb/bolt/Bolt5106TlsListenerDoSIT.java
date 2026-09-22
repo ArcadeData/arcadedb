@@ -20,7 +20,6 @@ package com.arcadedb.bolt;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -53,11 +52,10 @@ import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Bolt5106TlsListenerDoSIT extends BaseGraphServerTest {
+public class Bolt5106TlsListenerDoSIT extends BaseBoltServerTest {
 
   private static final String KEYSTORE_PASSWORD   = "testPassword123";
   private static final String TRUSTSTORE_PASSWORD = "testPassword123";
-  private static final int    BOLT_PORT           = 7687;
   private static Path         keystorePath;
   private static Path         truststorePath;
   private static Path         tempDir;
@@ -148,7 +146,7 @@ public class Bolt5106TlsListenerDoSIT extends BaseGraphServerTest {
   void earlyCloseDoesNotWedgeListener() throws Exception {
     for (int i = 0; i < 5; i++) {
       try (final Socket s = new Socket()) {
-        s.connect(new InetSocketAddress("localhost", BOLT_PORT), 2000);
+        s.connect(new InetSocketAddress("localhost", getServerBoltPort()), 2000);
         // Close immediately without sending any byte.
       }
     }
@@ -164,7 +162,7 @@ public class Bolt5106TlsListenerDoSIT extends BaseGraphServerTest {
   @DisplayName("[#5106] Stalled TLS handshake does not block the accept thread")
   void stalledTlsHandshakeDoesNotWedgeListener() throws Exception {
     try (final Socket attacker = new Socket()) {
-      attacker.connect(new InetSocketAddress("localhost", BOLT_PORT), 2000);
+      attacker.connect(new InetSocketAddress("localhost", getServerBoltPort()), 2000);
       final OutputStream out = attacker.getOutputStream();
       // TLS record header (handshake, TLS 1.0 record version) then stall - never finish the ClientHello.
       out.write(new byte[] { 0x16, 0x03, 0x01, 0x00 });
@@ -187,9 +185,9 @@ public class Bolt5106TlsListenerDoSIT extends BaseGraphServerTest {
     final SSLContext defaultCtx = SSLContext.getDefault();
     for (int i = 0; i < 3; i++) {
       try (final Socket raw = new Socket()) {
-        raw.connect(new InetSocketAddress("localhost", BOLT_PORT), 2000);
+        raw.connect(new InetSocketAddress("localhost", getServerBoltPort()), 2000);
         final SSLSocket ssl = (SSLSocket) defaultCtx.getSocketFactory()
-            .createSocket(raw, "localhost", BOLT_PORT, true);
+            .createSocket(raw, "localhost", getServerBoltPort(), true);
         ssl.setUseClientMode(true);
         try {
           ssl.startHandshake();
@@ -207,7 +205,7 @@ public class Bolt5106TlsListenerDoSIT extends BaseGraphServerTest {
   private void assertListenerStillServesClients() {
     assertTimeoutPreemptively(Duration.ofSeconds(25), () -> {
       try (final Driver driver = GraphDatabase.driver(
-          "bolt+ssc://localhost:" + BOLT_PORT,
+          "bolt+ssc://localhost:" + getServerBoltPort(),
           AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
           Config.builder().withConnectionTimeout(5, java.util.concurrent.TimeUnit.SECONDS).build())) {
         try (final Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {

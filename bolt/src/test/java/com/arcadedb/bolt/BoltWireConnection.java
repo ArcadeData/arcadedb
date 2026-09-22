@@ -48,16 +48,17 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class BoltWireConnection implements AutoCloseable {
-  /** The BOLT listener's default port, which the server tests leave at its default. */
-  public static final int DEFAULT_BOLT_PORT = 7687;
-
   private final Socket            socket;
   private final BoltChunkedOutput out;
   private final BoltChunkedInput  in;
 
-  /** Connects to the default BOLT port and authenticates as root. */
-  public BoltWireConnection(final String database) throws IOException {
-    this(DEFAULT_BOLT_PORT, database, "bolt-wire-connection/1.0");
+  /**
+   * Connects to {@code port} and authenticates as root. Pass the port the listener actually bound (see
+   * {@link BaseBoltServerTest#getServerBoltPort()}), never a fixed one: the tests run the listener on an ephemeral port
+   * (issue #8209).
+   */
+  public BoltWireConnection(final int port, final String database) throws IOException {
+    this(port, database, "bolt-wire-connection/1.0");
   }
 
   public BoltWireConnection(final int port, final String database, final String userAgent) throws IOException {

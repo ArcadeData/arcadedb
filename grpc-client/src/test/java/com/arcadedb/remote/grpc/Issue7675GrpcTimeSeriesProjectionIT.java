@@ -23,7 +23,6 @@ import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.remote.timeseries.TimeSeriesPoint;
 import com.arcadedb.remote.timeseries.TimeSeriesQuery;
 import com.arcadedb.remote.timeseries.TimeSeriesQueryResult;
-import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -50,9 +49,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * moved from an inline {@code Status.INVALID_ARGUMENT} to an {@code IllegalArgumentException} that
  * {@code GrpcErrorMapper} classifies to the same code.
  */
-class Issue7675GrpcTimeSeriesProjectionIT extends BaseGraphServerTest {
+class Issue7675GrpcTimeSeriesProjectionIT extends BaseGrpcClientServerTest {
 
-  private static final int    GRPC_PORT = 50051;
   private static final String TYPE      = "projectionweather";
 
   private RemoteGrpcServer   grpcServer;
@@ -143,8 +141,8 @@ class Issue7675GrpcTimeSeriesProjectionIT extends BaseGraphServerTest {
 
   private RemoteGrpcDatabase grpcClient() {
     if (grpc == null) {
-      grpcServer = new RemoteGrpcServer("localhost", GRPC_PORT, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
-      grpc = new RemoteGrpcDatabase(grpcServer, "localhost", GRPC_PORT, httpPort(), getDatabaseName(), "root",
+      grpcServer = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+      grpc = new RemoteGrpcDatabase(grpcServer, "localhost", getServerGrpcPort(), httpPort(), getDatabaseName(), "root",
           DEFAULT_PASSWORD_FOR_TESTS);
     }
     return grpc;

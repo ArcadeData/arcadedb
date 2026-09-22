@@ -22,10 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.server.BaseGraphServerTest;
-import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
@@ -46,7 +43,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * future change to trailer wiring cannot silently break production while both unit suites still pass.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
-class Issue5043GrpcDuplicatedKeyRoundTripTest extends BaseGraphServerTest {
+class Issue5043GrpcDuplicatedKeyRoundTripTest extends BaseGrpcClientServerTest {
 
   static final String TYPE = "PersonUniq";
 
@@ -62,22 +59,15 @@ class Issue5043GrpcDuplicatedKeyRoundTripTest extends BaseGraphServerTest {
   @Override
   public void endTest() {
     GlobalConfiguration.SERVER_PLUGINS.setValue("");
-    super.endTest();
-  }
-
-  @BeforeAll
-  void ensureServer() {
-    grpcServer = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
-  }
-
-  @AfterAll
-  void teardownServer() {
     if (grpcServer != null)
       grpcServer.close();
+    super.endTest();
   }
 
   @BeforeEach
   void createSchema() {
+    // Per test, after the server started: the gRPC port is assigned by the operating system on every start (#8209).
+    grpcServer = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
     try (final RemoteGrpcDatabase db = newConnection()) {
       db.command("sql", "CREATE VERTEX TYPE `" + TYPE + "` IF NOT EXISTS");
       db.command("sql", "CREATE PROPERTY `" + TYPE + "`.email STRING");
@@ -86,7 +76,7 @@ class Issue5043GrpcDuplicatedKeyRoundTripTest extends BaseGraphServerTest {
   }
 
   private RemoteGrpcDatabase newConnection() {
-    return new RemoteGrpcDatabase(grpcServer, "localhost", 50051, 2480, getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
+    return new RemoteGrpcDatabase(grpcServer, "localhost", getServerGrpcPort(), getServerHttpPort(), getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
   }
 
   @Test

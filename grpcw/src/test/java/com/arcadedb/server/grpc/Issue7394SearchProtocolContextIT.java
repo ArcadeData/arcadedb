@@ -26,7 +26,6 @@ import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
-import com.arcadedb.server.BaseGraphServerTest;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
 import io.grpc.ClientCall;
@@ -66,9 +65,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @see <a href="https://github.com/ArcadeData/arcadedb/issues/7394">issue #7394</a>
  */
-public class Issue7394SearchProtocolContextIT extends BaseGraphServerTest {
+public class Issue7394SearchProtocolContextIT extends BaseGrpcServerTest {
 
-  private static final int    GRPC_PORT    = 50051;
   private static final String VECTOR_TYPE  = "Vec7394";
   private static final String VECTOR_INDEX = VECTOR_TYPE + "[embedding]";
 
@@ -145,7 +143,7 @@ public class Issue7394SearchProtocolContextIT extends BaseGraphServerTest {
   @BeforeEach
   void setupGrpcClient() {
     OBSERVED_PROTOCOL.set(null);
-    channel = ManagedChannelBuilder.forAddress("localhost", GRPC_PORT).usePlaintext().build();
+    channel = ManagedChannelBuilder.forAddress("localhost", getServerGrpcPort()).usePlaintext().build();
     stub = ArcadeDbServiceGrpc.newBlockingStub(
         ClientInterceptors.intercept(channel, new AuthClientInterceptor()));
   }

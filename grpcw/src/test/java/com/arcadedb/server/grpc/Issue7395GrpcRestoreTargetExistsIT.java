@@ -21,7 +21,6 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.engine.ComponentFile;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.backup.AutoBackupSchedulerPlugin;
 import com.arcadedb.utility.FileUtils;
 import io.grpc.ManagedChannel;
@@ -57,9 +56,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * @see Issue7308GrpcRestoreImportIT for the fixture this one follows
  */
-public class Issue7395GrpcRestoreTargetExistsIT extends BaseGraphServerTest {
+public class Issue7395GrpcRestoreTargetExistsIT extends BaseGrpcServerTest {
 
-  private static final int    GRPC_PORT       = 50051;
   private static final String BACKUP_DIR_NAME = "test-backups-7395-grpc";
   private static final String ARCHIVE_NAME    = "graph-backup-7395000000.zip";
   private static final String BACKUP_CONFIG   = """
@@ -127,7 +125,7 @@ public class Issue7395GrpcRestoreTargetExistsIT extends BaseGraphServerTest {
 
   @BeforeEach
   void setupGrpcClient() {
-    channel = ManagedChannelBuilder.forAddress("localhost", GRPC_PORT).usePlaintext().build();
+    channel = ManagedChannelBuilder.forAddress("localhost", getServerGrpcPort()).usePlaintext().build();
     adminStub = ArcadeDbAdminServiceGrpc.newBlockingStub(channel);
   }
 

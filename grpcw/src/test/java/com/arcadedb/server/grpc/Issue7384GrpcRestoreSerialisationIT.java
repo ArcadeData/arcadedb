@@ -20,7 +20,6 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.backup.AutoBackupSchedulerPlugin;
 import com.arcadedb.server.backup.BackupCoordinator;
 import com.arcadedb.engine.MaintenanceCoordinator.Operation;
@@ -58,9 +57,8 @@ import static org.assertj.core.api.Assertions.catchThrowableOfType;
  *
  * @author Roberto Franchini (r.franchini@arcadedata.com)
  */
-public class Issue7384GrpcRestoreSerialisationIT extends BaseGraphServerTest {
+public class Issue7384GrpcRestoreSerialisationIT extends BaseGrpcServerTest {
 
-  private static final int    GRPC_PORT       = 50051;
   private static final String BACKUP_DIR_NAME = "test-backups-7384-grpc";
   private static final String BACKUP_CONFIG   = """
       {
@@ -124,7 +122,7 @@ public class Issue7384GrpcRestoreSerialisationIT extends BaseGraphServerTest {
 
   @BeforeEach
   void setupGrpcClient() {
-    channel = ManagedChannelBuilder.forAddress("localhost", GRPC_PORT).usePlaintext().build();
+    channel = ManagedChannelBuilder.forAddress("localhost", getServerGrpcPort()).usePlaintext().build();
     adminStub = ArcadeDbAdminServiceGrpc.newBlockingStub(channel);
   }
 

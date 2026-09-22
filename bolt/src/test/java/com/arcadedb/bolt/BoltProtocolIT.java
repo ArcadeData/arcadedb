@@ -24,7 +24,6 @@ import com.arcadedb.bolt.packstream.PackStreamWriter;
 import com.arcadedb.database.Database;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
-import com.arcadedb.server.BaseGraphServerTest;
 import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -71,7 +70,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * Integration tests for BOLT protocol using Neo4j Java driver.
  */
-public class BoltProtocolIT extends BaseGraphServerTest {
+public class BoltProtocolIT extends BaseBoltServerTest {
 
   @Override
   public void setTestConfiguration() {
@@ -88,7 +87,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
 
   private Driver getDriver() {
     return GraphDatabase.driver(
-        "bolt://localhost:7687",
+        getServerBoltUrl(),
         AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
         Config.builder()
             .withoutEncryption()
@@ -107,7 +106,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   void helloWithoutAuthSchemeIsRejected() throws Exception {
     // A HELLO extra map with no "scheme", "principal", or "credentials" key at all - not
     // even scheme:"none" - must still be rejected rather than treated as authenticated.
-    try (Socket socket = new Socket("localhost", 7687)) {
+    try (Socket socket = new Socket("localhost", getServerBoltPort())) {
       final OutputStream rawOut = socket.getOutputStream();
 
       final ByteBuffer handshake = ByteBuffer.allocate(20);
@@ -146,7 +145,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   @Test
   void routingConnection() {
     try (Driver driver = GraphDatabase.driver(
-        "neo4j://localhost:7687",
+        "neo4j://localhost:" + getServerBoltPort(),
         AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
         Config.builder()
             .withoutEncryption()
@@ -165,7 +164,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   // branch so the HA-aware routing table never regresses standalone deployments.
   @Test
   void routeTableSingleNodeReturnsSelfForAllRoles() throws Exception {
-    try (Socket socket = new Socket("localhost", 7687)) {
+    try (Socket socket = new Socket("localhost", getServerBoltPort())) {
       final OutputStream rawOut = socket.getOutputStream();
 
       final ByteBuffer handshake = ByteBuffer.allocate(20);
@@ -217,7 +216,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   // ROUTE sent before LOGON must be refused rather than disclosing the topology.
   @Test
   void routeBeforeLogonIsRejected() throws Exception {
-    try (Socket socket = new Socket("localhost", 7687)) {
+    try (Socket socket = new Socket("localhost", getServerBoltPort())) {
       final OutputStream rawOut = socket.getOutputStream();
 
       final ByteBuffer handshake = ByteBuffer.allocate(20);
@@ -864,7 +863,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   @Test
   void authenticationFailure() {
     try (Driver driver = GraphDatabase.driver(
-        "bolt://localhost:7687",
+        getServerBoltUrl(),
         AuthTokens.basic("root", "wrong_password"),
         Config.builder().withoutEncryption().build()
     )) {
@@ -1056,7 +1055,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   @Test
   void invalidDatabaseName() {
     try (Driver driver = GraphDatabase.driver(
-        "bolt://localhost:7687",
+        getServerBoltUrl(),
         AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
         Config.builder().withoutEncryption().build()
     )) {
@@ -1228,9 +1227,9 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   @Test
   void httpDiscoveryOnBoltPort() throws Exception {
     // Simulates Neo4j Desktop sending an HTTP GET request to the Bolt port for endpoint discovery
-    try (Socket socket = new Socket("localhost", 7687)) {
+    try (Socket socket = new Socket("localhost", getServerBoltPort())) {
       final OutputStream out = socket.getOutputStream();
-      final String httpRequest = "GET / HTTP/1.1\r\nHost: localhost:7687\r\nAccept: application/json\r\n\r\n";
+      final String httpRequest = "GET / HTTP/1.1\r\nHost: localhost:" + getServerBoltPort() + "\r\nAccept: application/json\r\n\r\n";
       out.write(httpRequest.getBytes(StandardCharsets.UTF_8));
       out.flush();
 
@@ -1276,7 +1275,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   @Test
   void systemDatabaseDbmsComponents() {
     // Neo4j Desktop queries the "system" database for version info
-    try (final Driver driver = GraphDatabase.driver("bolt://localhost:7687",
+    try (final Driver driver = GraphDatabase.driver(getServerBoltUrl(),
         AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS))) {
       try (final Session session = driver.session(SessionConfig.forDatabase("system"))) {
         final var result = session.run("CALL dbms.components()");
@@ -1299,7 +1298,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
 
     final HttpClient client = HttpClient.newHttpClient();
     final WebSocket ws = client.newWebSocketBuilder()
-        .buildAsync(URI.create("ws://localhost:7687/"), new WebSocket.Listener() {
+        .buildAsync(URI.create("ws://localhost:" + getServerBoltPort() + "/"), new WebSocket.Listener() {
           @Override
           public void onOpen(final WebSocket webSocket) {
             openFuture.complete(null);
@@ -1345,13 +1344,13 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   @Test
   void webSocketBoltHandshake() throws Exception {
     // Simulates Neo4j Desktop connecting via WebSocket transport for Bolt protocol
-    try (Socket socket = new Socket("localhost", 7687)) {
+    try (Socket socket = new Socket("localhost", getServerBoltPort())) {
       final OutputStream rawOut = socket.getOutputStream();
 
       // Send WebSocket upgrade request
       final String wsKey = Base64.getEncoder().encodeToString("test-websocket-key!".getBytes());
       final String upgradeRequest = "GET / HTTP/1.1\r\n"
-          + "Host: localhost:7687\r\n"
+          + "Host: localhost:" + getServerBoltPort() + "\r\n"
           + "Upgrade: websocket\r\n"
           + "Connection: Upgrade\r\n"
           + "Sec-WebSocket-Key: " + wsKey + "\r\n"

@@ -20,15 +20,12 @@ package com.arcadedb.redis;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import redis.clients.jedis.Jedis;
 
 import java.io.IOException;
-import java.net.InetSocketAddress;
 import java.net.ServerSocket;
-import java.net.Socket;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -39,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * defaults instead. This meant a custom port configured on the server was silently discarded and the plugin always bound
  * the hardcoded default (6379).
  */
-public class RedisPortConfigurationTest extends BaseGraphServerTest {
+public class RedisPortConfigurationTest extends BaseRedisServerTest {
 
   private static int customPort;
 
@@ -68,20 +65,13 @@ public class RedisPortConfigurationTest extends BaseGraphServerTest {
       assertThat(jedis.ping()).isEqualTo("PONG");
     }
 
-    // ...and must NOT have silently fallen back to the hardcoded default port.
-    final int defaultPort = GlobalConfiguration.REDIS_PORT.getValueAsInteger();
-    assertThat(isListening(defaultPort))
-        .as("Redis plugin must not bind the default port %d when a custom port %d is configured", defaultPort, customPort)
-        .isFalse();
-  }
-
-  private static boolean isListening(final int port) {
-    try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("127.0.0.1", port), 500);
-      return true;
-    } catch (final IOException e) {
-      return false;
-    }
+    // ...and must NOT have silently fallen back to the hardcoded default port. Asked of the plugin rather than probed on
+    // the wire: a developer's own Redis on the default port would answer a probe and fail this test (issue #8209).
+    final int defaultPort = (Integer) GlobalConfiguration.REDIS_PORT.getDefValue();
+    assertThat(getServerRedisPort())
+        .as("Redis plugin must bind the custom port %d, not the default port %d", customPort, defaultPort)
+        .isEqualTo(customPort)
+        .isNotEqualTo(defaultPort);
   }
 
   @Override

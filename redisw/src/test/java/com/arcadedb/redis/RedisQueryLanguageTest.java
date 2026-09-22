@@ -22,7 +22,6 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.AfterEach;
@@ -41,7 +40,7 @@ import static org.assertj.core.api.Assertions.fail;
  * Tests Redis commands as a query language via HTTP API.
  * Issue: https://github.com/ArcadeData/arcadedb/issues/1010
  */
-public class RedisQueryLanguageTest extends BaseGraphServerTest {
+public class RedisQueryLanguageTest extends BaseRedisServerTest {
 
   @Test
   void pingCommand() throws Exception {

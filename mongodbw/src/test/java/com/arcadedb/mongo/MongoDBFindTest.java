@@ -20,7 +20,6 @@ package com.arcadedb.mongo;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.mongodb.MongoClient;
 import com.mongodb.MongoClientOptions;
 import com.mongodb.MongoCredential;
@@ -40,9 +39,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code find()}, did not see collections created after the first connection, and stopped returning data after a
  * client reconnected.
  */
-public class MongoDBFindTest extends BaseGraphServerTest {
+public class MongoDBFindTest extends BaseMongoServerTest {
 
-  private static final int DEF_PORT = 27017;
 
   @Override
   public void setTestConfiguration() {
@@ -60,7 +58,7 @@ public class MongoDBFindTest extends BaseGraphServerTest {
   @Test
   void findWithoutFilterReturnsAllDocuments() {
     getDatabase(0);
-    try (final MongoClient client = new MongoClient(new ServerAddress("localhost", DEF_PORT), MongoCredential.createPlainCredential("root", getDatabaseName(), DEFAULT_PASSWORD_FOR_TESTS.toCharArray()), MongoClientOptions.builder().serverSelectionTimeout(5000).build())) {
+    try (final MongoClient client = new MongoClient(new ServerAddress("localhost", getServerMongoPort()), MongoCredential.createPlainCredential("root", getDatabaseName(), DEFAULT_PASSWORD_FOR_TESTS.toCharArray()), MongoClientOptions.builder().serverSelectionTimeout(5000).build())) {
       client.getDatabase(getDatabaseName()).createCollection("Numbers");
       final MongoCollection<Document> collection = client.getDatabase(getDatabaseName()).getCollection("Numbers");
       for (int i = 0; i < 10; i++)
@@ -76,7 +74,7 @@ public class MongoDBFindTest extends BaseGraphServerTest {
   @Test
   void collectionCreatedAfterConnectionIsVisible() {
     getDatabase(0);
-    try (final MongoClient client = new MongoClient(new ServerAddress("localhost", DEF_PORT), MongoCredential.createPlainCredential("root", getDatabaseName(), DEFAULT_PASSWORD_FOR_TESTS.toCharArray()), MongoClientOptions.builder().serverSelectionTimeout(5000).build())) {
+    try (final MongoClient client = new MongoClient(new ServerAddress("localhost", getServerMongoPort()), MongoCredential.createPlainCredential("root", getDatabaseName(), DEFAULT_PASSWORD_FOR_TESTS.toCharArray()), MongoClientOptions.builder().serverSelectionTimeout(5000).build())) {
       // Force the database wrapper to be created (and its collection cache built) before the new type exists.
       client.getDatabase(getDatabaseName()).createCollection("PreExisting");
       client.getDatabase(getDatabaseName()).getCollection("PreExisting").countDocuments();
@@ -98,7 +96,7 @@ public class MongoDBFindTest extends BaseGraphServerTest {
   void dataStillReturnedAfterClientReconnect() {
     getDatabase(0);
 
-    try (final MongoClient client = new MongoClient(new ServerAddress("localhost", DEF_PORT), MongoCredential.createPlainCredential("root", getDatabaseName(), DEFAULT_PASSWORD_FOR_TESTS.toCharArray()), MongoClientOptions.builder().serverSelectionTimeout(5000).build())) {
+    try (final MongoClient client = new MongoClient(new ServerAddress("localhost", getServerMongoPort()), MongoCredential.createPlainCredential("root", getDatabaseName(), DEFAULT_PASSWORD_FOR_TESTS.toCharArray()), MongoClientOptions.builder().serverSelectionTimeout(5000).build())) {
       client.getDatabase(getDatabaseName()).createCollection("Reconnect");
       final MongoCollection<Document> collection = client.getDatabase(getDatabaseName()).getCollection("Reconnect");
       for (int i = 0; i < 5; i++)
@@ -110,7 +108,7 @@ public class MongoDBFindTest extends BaseGraphServerTest {
     }
 
     // Second, independent connection: data must still be visible.
-    try (final MongoClient client = new MongoClient(new ServerAddress("localhost", DEF_PORT), MongoCredential.createPlainCredential("root", getDatabaseName(), DEFAULT_PASSWORD_FOR_TESTS.toCharArray()), MongoClientOptions.builder().serverSelectionTimeout(5000).build())) {
+    try (final MongoClient client = new MongoClient(new ServerAddress("localhost", getServerMongoPort()), MongoCredential.createPlainCredential("root", getDatabaseName(), DEFAULT_PASSWORD_FOR_TESTS.toCharArray()), MongoClientOptions.builder().serverSelectionTimeout(5000).build())) {
       final List<Document> all = new ArrayList<>();
       client.getDatabase(getDatabaseName()).getCollection("Reconnect").find().into(all);
       assertThat(all).hasSize(5);

@@ -19,7 +19,6 @@
 package com.arcadedb.remote.grpc;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -35,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class RemoteGrpcServerIT extends BaseGraphServerTest {
+class RemoteGrpcServerIT extends BaseGrpcClientServerTest {
 
   private RemoteGrpcServer server;
 
@@ -64,14 +63,14 @@ class RemoteGrpcServerIT extends BaseGraphServerTest {
 
   @Test
   void shouldConnectToServer() {
-    server = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    server = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
 
     assertThat(server).isNotNull();
   }
 
   @Test
   void shouldListDatabases() {
-    server = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    server = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
 
     final List<String> databases = server.listDatabases();
 
@@ -81,7 +80,7 @@ class RemoteGrpcServerIT extends BaseGraphServerTest {
 
   @Test
   void shouldCheckDatabaseExists() {
-    server = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    server = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
 
     assertThat(server.existsDatabase(getDatabaseName())).isTrue();
     assertThat(server.existsDatabase("nonexistent_database")).isFalse();
@@ -90,7 +89,7 @@ class RemoteGrpcServerIT extends BaseGraphServerTest {
   /** Issue #7413: the client's two create flavours map onto the server's strict and idempotent contracts. */
   @Test
   void createIfMissingSaysWhetherItCreatedAndStrictCreateRefusesATakenName() {
-    server = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    server = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
     final String testDb = "test_grpc_if_missing_db";
     try {
       assertThat(server.createDatabaseIfMissing(testDb)).isTrue();
@@ -105,7 +104,7 @@ class RemoteGrpcServerIT extends BaseGraphServerTest {
 
   @Test
   void shouldCreateAndDropDatabase() {
-    server = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    server = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
 
     final String testDb = "test_grpc_db";
 
@@ -121,14 +120,14 @@ class RemoteGrpcServerIT extends BaseGraphServerTest {
   @Test
   void shouldHandleInvalidCredentials() {
     assertThatThrownBy(() -> {
-      server = new RemoteGrpcServer("localhost", 50051, "root", "wrongpassword", true, List.of());
+      server = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", "wrongpassword", true, List.of());
       server.listDatabases();
     }).isInstanceOf(Exception.class);
   }
 
   @Test
   void shouldCloseServerGracefully() {
-    server = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    server = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
 
     server.close();
 
@@ -138,7 +137,7 @@ class RemoteGrpcServerIT extends BaseGraphServerTest {
 
   @Test
   void shouldCreateDatabaseIfNotExists() {
-    server = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    server = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
 
     final String testDb = "test_create_if_not_exists";
 
@@ -161,7 +160,7 @@ class RemoteGrpcServerIT extends BaseGraphServerTest {
 
   @Test
   void shouldHandleDropNonExistentDatabase() {
-    server = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    server = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
 
     // Strict by contract since issue #7413: the same answer the HTTP `drop database` command gives.
     assertThatThrownBy(() -> server.dropDatabase("nonexistent_database_12345")).hasMessageContaining("NOT_FOUND");
@@ -169,7 +168,7 @@ class RemoteGrpcServerIT extends BaseGraphServerTest {
 
   @Test
   void shouldHandleDatabaseNamesWithUnderscores() {
-    server = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    server = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
 
     final String testDb = "test_db_123";
 
@@ -182,7 +181,7 @@ class RemoteGrpcServerIT extends BaseGraphServerTest {
 
   @Test
   void shouldHandleMultipleDatabaseOperations() {
-    server = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    server = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
 
     final String[] testDbs = { "test_db_1", "test_db_2", "test_db_3" };
 
@@ -207,7 +206,7 @@ class RemoteGrpcServerIT extends BaseGraphServerTest {
 
   @Test
   void shouldReconnectAfterClose() {
-    server = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    server = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
 
     // First operation
     final List<String> databases1 = server.listDatabases();
@@ -217,7 +216,7 @@ class RemoteGrpcServerIT extends BaseGraphServerTest {
     server.close();
 
     // Create new connection
-    server = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    server = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
 
     // Second operation
     final List<String> databases2 = server.listDatabases();
@@ -226,17 +225,17 @@ class RemoteGrpcServerIT extends BaseGraphServerTest {
 
   @Test
   void shouldGetEndpoint() {
-    server = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    server = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
 
-    assertThat(server.endpoint()).isEqualTo("localhost:50051");
+    assertThat(server.endpoint()).isEqualTo("localhost:" + getServerGrpcPort());
   }
 
   @Test
   void shouldHaveValidToString() {
-    server = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    server = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
 
     final String toString = server.toString();
-    assertThat(toString).contains("localhost:50051");
+    assertThat(toString).contains("localhost:" + getServerGrpcPort());
     assertThat(toString).contains("root");
   }
 }

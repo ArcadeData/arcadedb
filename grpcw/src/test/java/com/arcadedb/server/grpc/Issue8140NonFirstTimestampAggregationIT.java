@@ -20,7 +20,6 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.schema.LocalTimeSeriesType;
-import com.arcadedb.server.BaseGraphServerTest;
 import io.grpc.Channel;
 import io.grpc.ClientInterceptors;
 import io.grpc.ManagedChannel;
@@ -53,9 +52,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Roberto Franchini (r.franchini@arcadedata.com)
  */
-public class Issue8140NonFirstTimestampAggregationIT extends BaseGraphServerTest {
+public class Issue8140NonFirstTimestampAggregationIT extends BaseGrpcServerTest {
 
-  private static final int    GRPC_PORT = 50051;
   private static final String TYPE_NAME = "grpcagg8140";
   private static final int    SAMPLES   = 5;
   private static final long   BASE_TS   = 1_700_000_000_000L;
@@ -72,7 +70,7 @@ public class Issue8140NonFirstTimestampAggregationIT extends BaseGraphServerTest
 
   @BeforeEach
   void setupGrpcClient() {
-    channel = ManagedChannelBuilder.forAddress("localhost", GRPC_PORT).usePlaintext().build();
+    channel = ManagedChannelBuilder.forAddress("localhost", getServerGrpcPort()).usePlaintext().build();
     final Channel authenticatedChannel = ClientInterceptors.intercept(channel,
         new GrpcTestAuthInterceptor("root", DEFAULT_PASSWORD_FOR_TESTS, getDatabaseName()));
     authenticatedStub = ArcadeDbServiceGrpc.newBlockingStub(authenticatedChannel);

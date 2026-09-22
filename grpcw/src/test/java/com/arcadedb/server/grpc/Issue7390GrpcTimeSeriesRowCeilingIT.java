@@ -19,7 +19,6 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 import io.grpc.Channel;
 import io.grpc.ClientInterceptors;
 import io.grpc.ManagedChannel;
@@ -55,9 +54,8 @@ import static org.assertj.core.api.Assertions.catchThrowableOfType;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue7390GrpcTimeSeriesRowCeilingIT extends BaseGraphServerTest {
+public class Issue7390GrpcTimeSeriesRowCeilingIT extends BaseGrpcServerTest {
 
-  private static final int    GRPC_PORT     = 50051;
   private static final String TYPE_NAME     = "reading";
   private static final int    MAX_TS_ROWS   = 10;
   /** Deliberately far BELOW the time-series ceiling: reading it here is the defect. */
@@ -78,7 +76,7 @@ public class Issue7390GrpcTimeSeriesRowCeilingIT extends BaseGraphServerTest {
 
   @BeforeEach
   void setupGrpcClient() {
-    channel = ManagedChannelBuilder.forAddress("localhost", GRPC_PORT).usePlaintext().build();
+    channel = ManagedChannelBuilder.forAddress("localhost", getServerGrpcPort()).usePlaintext().build();
     final Channel authenticatedChannel = ClientInterceptors.intercept(channel,
         new GrpcTestAuthInterceptor("root", DEFAULT_PASSWORD_FOR_TESTS, getDatabaseName()));
     authenticatedStub = ArcadeDbServiceGrpc.newBlockingStub(authenticatedChannel);

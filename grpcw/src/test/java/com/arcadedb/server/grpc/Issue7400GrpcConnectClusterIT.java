@@ -21,7 +21,6 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.security.ServerSecurity;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
@@ -48,9 +47,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * The pair is driven together throughout, as the issue asks: a test that called connect alone would
  * pass against a service that had lost disconnect.
  */
-public class Issue7400GrpcConnectClusterIT extends BaseGraphServerTest {
+public class Issue7400GrpcConnectClusterIT extends BaseGrpcServerTest {
 
-  private static final int    GRPC_PORT    = 50051;
   private static final String LIMITED_USER = "limited7400";
   private static final String LIMITED_PASS = "limited7400pass";
   private static final String PEER_ADDRESS = "localhost:2425";
@@ -76,7 +74,7 @@ public class Issue7400GrpcConnectClusterIT extends BaseGraphServerTest {
       security.createUser(config);
     }
 
-    channel = ManagedChannelBuilder.forAddress("localhost", GRPC_PORT).usePlaintext().build();
+    channel = ManagedChannelBuilder.forAddress("localhost", getServerGrpcPort()).usePlaintext().build();
     adminStub = ArcadeDbAdminServiceGrpc.newBlockingStub(channel);
   }
 

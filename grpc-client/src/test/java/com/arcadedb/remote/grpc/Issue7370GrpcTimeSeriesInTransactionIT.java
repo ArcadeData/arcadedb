@@ -26,7 +26,6 @@ import com.arcadedb.remote.timeseries.TimeSeriesLatestResult;
 import com.arcadedb.remote.timeseries.TimeSeriesPoint;
 import com.arcadedb.remote.timeseries.TimeSeriesQuery;
 import com.arcadedb.remote.timeseries.TimeSeriesQueryResult;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.http.handler.DatabaseAbstractHandler;
 import com.arcadedb.server.http.handler.GetTimeSeriesLatestHandler;
 import com.arcadedb.server.http.handler.PostTimeSeriesQueryHandler;
@@ -81,9 +80,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * handlers extended {@code AbstractServerHttpHandler}, which never reads {@code arcadedb-session-id}. #7402
  * closed that, and {@link #theHttpTimeSeriesRoutesJoinTheSessionTransaction} now pins the fixed shape.
  */
-class Issue7370GrpcTimeSeriesInTransactionIT extends BaseGraphServerTest {
+class Issue7370GrpcTimeSeriesInTransactionIT extends BaseGrpcClientServerTest {
 
-  private static final int    GRPC_PORT = 50051;
   private static final String TYPE      = "GrpcTx7370";
   private static final String DOC_TYPE  = "GrpcTx7370Doc";
 
@@ -129,8 +127,8 @@ class Issue7370GrpcTimeSeriesInTransactionIT extends BaseGraphServerTest {
 
   private RemoteGrpcDatabase grpcClient() {
     if (grpc == null) {
-      grpcServer = new RemoteGrpcServer("localhost", GRPC_PORT, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
-      grpc = new RemoteGrpcDatabase(grpcServer, "localhost", GRPC_PORT, httpPort(), getDatabaseName(), "root",
+      grpcServer = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+      grpc = new RemoteGrpcDatabase(grpcServer, "localhost", getServerGrpcPort(), httpPort(), getDatabaseName(), "root",
           DEFAULT_PASSWORD_FOR_TESTS);
     }
     return grpc;

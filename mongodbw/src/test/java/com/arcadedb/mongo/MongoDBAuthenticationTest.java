@@ -19,7 +19,6 @@
 package com.arcadedb.mongo;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.mongodb.MongoClient;
 import com.mongodb.MongoClientOptions;
 import com.mongodb.MongoCredential;
@@ -36,9 +35,8 @@ import static org.assertj.core.api.Assertions.catchThrowable;
 /**
  * Verifies SASL PLAIN authentication on the MongoDB wire-protocol plugin (issue #4746).
  */
-public class MongoDBAuthenticationTest extends BaseGraphServerTest {
+public class MongoDBAuthenticationTest extends BaseMongoServerTest {
 
-  private static final int DEF_PORT = 27017;
 
   @Override
   public void setTestConfiguration() {
@@ -58,7 +56,7 @@ public class MongoDBAuthenticationTest extends BaseGraphServerTest {
     final MongoCredential credential = MongoCredential.createPlainCredential("root", getDatabaseName(),
         DEFAULT_PASSWORD_FOR_TESTS.toCharArray());
 
-    try (final MongoClient client = new MongoClient(new ServerAddress("localhost", DEF_PORT), credential,
+    try (final MongoClient client = new MongoClient(new ServerAddress("localhost", getServerMongoPort()), credential,
         MongoClientOptions.builder().serverSelectionTimeout(5000).build())) {
       final MongoDatabase db = client.getDatabase(getDatabaseName());
       final Document result = db.runCommand(new Document("ping", 1));
@@ -71,7 +69,7 @@ public class MongoDBAuthenticationTest extends BaseGraphServerTest {
     final MongoCredential credential = MongoCredential.createPlainCredential("root", getDatabaseName(),
         "wrong-password".toCharArray());
 
-    try (final MongoClient client = new MongoClient(new ServerAddress("localhost", DEF_PORT), credential,
+    try (final MongoClient client = new MongoClient(new ServerAddress("localhost", getServerMongoPort()), credential,
         MongoClientOptions.builder().serverSelectionTimeout(3000).build())) {
       final MongoDatabase db = client.getDatabase(getDatabaseName());
       final Throwable thrown = catchThrowable(() -> db.runCommand(new Document("ping", 1)));

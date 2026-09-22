@@ -383,6 +383,10 @@ public class PostgresNetworkExecutor extends Thread {
       if (database.isTransactionActive())
         database.commit();
     }
+    if (!explicitTransactionStarted)
+      // The implicit block this Sync terminates is over, committed or discarded, and its portals end with it
+      // (issue #8212). Inside an explicit block they live on until COMMIT/ROLLBACK/END: see endTransactionBlockState().
+      dropPortals();
     writeReadyForQueryMessage();
   }
 
@@ -446,7 +450,11 @@ public class PostgresNetworkExecutor extends Thread {
     // same way queryTargetType/aliasToSourceProperty are already memoized per statement.
     final PostgresPortal portal = type == 'S' ? preparedStatements.get(portalName) : getPortal(portalName, false);
     if (portal == null) {
-      writeNoData();
+      // NoData would tell the client the statement/portal exists and returns no rows (issue #8211)
+      if (type == 'S')
+        refuseMissingPreparedStatement(portalName);
+      else
+        refuseMissingPortal(portalName);
       return;
     }
 
@@ -640,11 +648,12 @@ public class PostgresNetworkExecutor extends Thread {
 
       // Do NOT remove the portal here (issue #6458): a limit-hit Execute suspends rather than finishes, and
       // the follow-up Execute the client sends to continue fetching looks this same portal name up again.
-      // The portal is only ever discarded by an explicit Close ('C') message or by a later Bind reusing the
-      // name (closeCommand()/bindCommand()).
+      // The portal is discarded by an explicit Close ('C') message, by a later Bind reusing the name
+      // (closeCommand()/bindCommand()), or with the transaction block it was bound in (issue #8212).
       portal = getPortal(portalName, false);
       if (portal == null) {
-        writeNoData();
+        // Not NoData: that is a Describe-only reply, never a legal answer to Execute (issue #8211)
+        refuseMissingPortal(portalName);
         return;
       }
 
@@ -988,6 +997,10 @@ public class PostgresNetworkExecutor extends Thread {
       setErrorInTx();
       writeError(ERROR_SEVERITY.ERROR, "Error on executing query: " + e.getMessage(), sqlStateFor(e));
     } finally {
+      if (!explicitTransactionStarted)
+        // A simple Query outside an explicit block is a transaction of its own, and the portals bound before it
+        // end with it exactly as they do at a Sync (issue #8212)
+        dropPortals();
       writeReadyForQueryMessage();
       if (query != null)
         recordPostgresProfile(profile, query.language, query.query);
@@ -2460,16 +2473,19 @@ public class PostgresNetworkExecutor extends Thread {
       // statement's own template object (issue #6660 / CodeRabbit review on #6658).
       // This is necessary because EXECUTE looks up portals by portal name, not prepared statement name.
       // PostgreSQL protocol: PARSE creates "prepared statement", BIND creates "portal" from it.
-      // If the source prepared statement was closed or non-existent, invalidate/remove any previously bound
-      // portal under this name so Execute returns NoData.
-      if (preparedStatement != null) {
-        portals.put(portalName, portal);
-        if (DEBUG)
-          LogManager.instance().log(this, Level.INFO, "PSQL: bind stored portal under name '%s' (thread=%s)",
-              portalName, Thread.currentThread().threadId());
-      } else {
+      // If the source prepared statement was closed or non-existent, the Bind is refused (issue #8211) rather than
+      // answered BindComplete for a portal it never registered, and any portal previously bound under this name
+      // goes with it, as PostgreSQL's aborted transaction takes it.
+      if (preparedStatement == null) {
         portals.remove(portalName);
+        refuseMissingPreparedStatement(sourcePreparedStatement);
+        return;
       }
+
+      portals.put(portalName, portal);
+      if (DEBUG)
+        LogManager.instance().log(this, Level.INFO, "PSQL: bind stored portal under name '%s' (thread=%s)",
+            portalName, Thread.currentThread().threadId());
 
       writeMessage("bind complete", null, '2', 4);
 
@@ -3557,6 +3573,40 @@ public class PostgresNetworkExecutor extends Thread {
     explicitTransactionStarted = false;
     errorInTransaction = false;
     skipUntilSync = false;
+    dropPortals();
+  }
+
+  /**
+   * Drops every bound portal, called when the transaction block they were bound in ends (issue #8212). PostgreSQL
+   * portals are transaction-scoped: a non-holdable portal is dropped at the end of its transaction - at Sync for the
+   * implicit block of an autocommit pipeline, at COMMIT/ROLLBACK/END for an explicit block, which is also the only
+   * way out of an aborted one. Keeping them any longer let an Execute in a later round trip run a portal PostgreSQL
+   * would have answered with {@code 34000}, and kept the materialized result of a suspended portal the client
+   * abandoned in memory until the connection closed. Prepared statements are session-scoped and are not touched.
+   */
+  private void dropPortals() {
+    if (!portals.isEmpty())
+      portals.clear();
+  }
+
+  /**
+   * Refuses a Bind or Describe('S') naming a prepared statement that does not exist, with PostgreSQL's own
+   * message and SQLSTATE {@code 26000} (issue #8211).
+   */
+  private void refuseMissingPreparedStatement(final String name) {
+    setExtendedProtocolError();
+    writeError(ERROR_SEVERITY.ERROR,
+        name.isEmpty() ? "unnamed prepared statement does not exist" : "prepared statement \"" + name + "\" does not exist",
+        "26000");
+  }
+
+  /**
+   * Refuses an Execute or Describe('P') naming a portal that does not exist, with PostgreSQL's own message and
+   * SQLSTATE {@code 34000} (issue #8211).
+   */
+  private void refuseMissingPortal(final String name) {
+    setExtendedProtocolError();
+    writeError(ERROR_SEVERITY.ERROR, "portal \"" + name + "\" does not exist", "34000");
   }
 
   private record Query(String language, String query) {

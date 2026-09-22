@@ -20,7 +20,6 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.graph.GraphBatch;
-import com.arcadedb.server.BaseGraphServerTest;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
 import io.grpc.ClientCall;
@@ -56,9 +55,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * for the rest of the server's life. Both assertions run against one long-lived database, which is
  * the only way a leaked slot is visible: a fresh database per test hides it.
  */
-public class Issue5666GrpcBatchGuardIT extends BaseGraphServerTest {
-
-  private static final int GRPC_PORT = 50051;
+public class Issue5666GrpcBatchGuardIT extends BaseGrpcServerTest {
 
   private static final Metadata.Key<String> USER_HEADER     = Metadata.Key.of("x-arcade-user", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> PASSWORD_HEADER = Metadata.Key.of("x-arcade-password", Metadata.ASCII_STRING_MARSHALLER);
@@ -76,7 +73,7 @@ public class Issue5666GrpcBatchGuardIT extends BaseGraphServerTest {
 
   @BeforeEach
   void setupGrpcClient() {
-    channel = ManagedChannelBuilder.forAddress("localhost", GRPC_PORT).usePlaintext().build();
+    channel = ManagedChannelBuilder.forAddress("localhost", getServerGrpcPort()).usePlaintext().build();
     final Channel authenticatedChannel = ClientInterceptors.intercept(channel, new AuthClientInterceptor());
     authenticatedStub = ArcadeDbServiceGrpc.newBlockingStub(authenticatedChannel);
     asyncAuthenticatedStub = ArcadeDbServiceGrpc.newStub(authenticatedChannel);

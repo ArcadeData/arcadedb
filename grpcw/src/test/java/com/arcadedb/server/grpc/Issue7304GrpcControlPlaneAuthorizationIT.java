@@ -21,7 +21,6 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.security.ServerSecurity;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
@@ -54,9 +53,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * {@code PERMISSION_DENIED}) and a caller with an invalid password (must be denied with
  * {@code UNAUTHENTICATED}, by the central interceptor, before the handler runs at all).
  */
-public class Issue7304GrpcControlPlaneAuthorizationIT extends BaseGraphServerTest {
+public class Issue7304GrpcControlPlaneAuthorizationIT extends BaseGrpcServerTest {
 
-  private static final int    GRPC_PORT    = 50051;
   private static final String ALLOWED_DB   = "allowed7304db";
   private static final String LIMITED_USER = "limited7304";
   private static final String LIMITED_PASS = "limited7304pass";
@@ -84,7 +82,7 @@ public class Issue7304GrpcControlPlaneAuthorizationIT extends BaseGraphServerTes
       security.createUser(config);
     }
 
-    channel = ManagedChannelBuilder.forAddress("localhost", GRPC_PORT).usePlaintext().build();
+    channel = ManagedChannelBuilder.forAddress("localhost", getServerGrpcPort()).usePlaintext().build();
     adminStub = ArcadeDbAdminServiceGrpc.newBlockingStub(channel);
   }
 

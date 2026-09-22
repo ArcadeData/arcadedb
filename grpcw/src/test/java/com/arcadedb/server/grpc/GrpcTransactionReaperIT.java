@@ -19,7 +19,6 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.ServerPlugin;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
@@ -44,9 +43,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * disconnects without committing or rolling back) must be reclaimed by the idle reaper, releasing the dedicated
  * executor thread, the open ArcadeDB transaction and the database reference.
  */
-public class GrpcTransactionReaperIT extends BaseGraphServerTest {
-
-  private static final int GRPC_PORT = 50051;
+public class GrpcTransactionReaperIT extends BaseGrpcServerTest {
 
   // Short reaper windows so the test stays fast and deterministic.
   private static final String MAX_IDLE_MS      = "1500";
@@ -73,7 +70,7 @@ public class GrpcTransactionReaperIT extends BaseGraphServerTest {
 
   @BeforeEach
   void setupGrpcClient() {
-    channel = ManagedChannelBuilder.forAddress("localhost", GRPC_PORT).usePlaintext().build();
+    channel = ManagedChannelBuilder.forAddress("localhost", getServerGrpcPort()).usePlaintext().build();
     final Channel authenticatedChannel = ClientInterceptors.intercept(channel, new AuthClientInterceptor());
     authenticatedStub = ArcadeDbServiceGrpc.newBlockingStub(authenticatedChannel);
   }

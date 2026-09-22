@@ -19,7 +19,6 @@
 package com.arcadedb.bolt;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -54,7 +53,7 @@ import org.neo4j.driver.SessionConfig;
  * when it owned its own auto-commit mini-transaction (the normal shape for an unwrapped autocommit
  * caller such as Bolt's {@code handleRun}).
  */
-public class Bolt6367SelfLoopMergeIT extends BaseGraphServerTest {
+public class Bolt6367SelfLoopMergeIT extends BaseBoltServerTest {
 
   @Override
   public void setTestConfiguration() {
@@ -70,7 +69,7 @@ public class Bolt6367SelfLoopMergeIT extends BaseGraphServerTest {
   }
 
   private Driver getDriver() {
-    return GraphDatabase.driver("bolt://localhost:7687", AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
+    return GraphDatabase.driver(getServerBoltUrl(), AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
         Config.builder().withoutEncryption().build());
   }
 

@@ -20,7 +20,6 @@ package com.arcadedb.redis;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -46,9 +45,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class RedisTlsIT extends BaseGraphServerTest {
+public class RedisTlsIT extends BaseRedisServerTest {
 
-  private static final int    DEF_PORT            = GlobalConfiguration.REDIS_PORT.getValueAsInteger();
   private static final String KEYSTORE_PASSWORD   = "testPassword123";
   private static final String TRUSTSTORE_PASSWORD = "testPassword123";
   private static Path         keystorePath;
@@ -95,7 +93,7 @@ public class RedisTlsIT extends BaseGraphServerTest {
         .sslSocketFactory(buildClientSslSocketFactory())
         .build();
 
-    try (final Jedis jedis = new Jedis(new HostAndPort("localhost", DEF_PORT), config)) {
+    try (final Jedis jedis = new Jedis(new HostAndPort("localhost", getServerRedisPort()), config)) {
       assertThat(jedis.auth("root", DEFAULT_PASSWORD_FOR_TESTS)).isEqualTo("OK");
       assertThat(jedis.ping()).isEqualTo("PONG");
 

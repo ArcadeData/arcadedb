@@ -19,6 +19,7 @@
 package com.arcadedb.server.security;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.remote.grpc.BaseGrpcClientServerTest;
 import com.arcadedb.remote.grpc.RemoteGrpcDatabase;
 import com.arcadedb.remote.grpc.RemoteGrpcServer;
 import com.arcadedb.remote.timeseries.TimeSeriesPoint;
@@ -26,7 +27,6 @@ import com.arcadedb.remote.timeseries.TimeSeriesQuery;
 import com.arcadedb.remote.timeseries.TimeSeriesWriteSummary;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -59,9 +59,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * {@code ServerSecurity.getDatabaseGroupsConfiguration}, which is package-visible, exactly as
  * {@code TimeSeriesPerTypeAclIT} does for the HTTP endpoints.
  */
-class Issue7305TimeSeriesGrpcAclIT extends BaseGraphServerTest {
+class Issue7305TimeSeriesGrpcAclIT extends BaseGrpcClientServerTest {
 
-  private static final int    GRPC_PORT       = 50051;
   private static final String SCOPED_USER     = "ts-grpc-scoped-user";
   private static final String SCOPED_PWD      = "tsgrpcscoped1";
   private static final String RESTRICTED_TYPE = "SecretMetrics";
@@ -149,10 +148,10 @@ class Issue7305TimeSeriesGrpcAclIT extends BaseGraphServerTest {
 
   private RemoteGrpcDatabase scopedClient() {
     if (scoped == null) {
-      grpcServer = new RemoteGrpcServer("localhost", GRPC_PORT, SCOPED_USER, SCOPED_PWD, true, List.of());
+      grpcServer = new RemoteGrpcServer("localhost", getServerGrpcPort(), SCOPED_USER, SCOPED_PWD, true, List.of());
       // The port the test server actually bound: the configured range starts at 2480 but a server already
       // listening there pushes this one up.
-      scoped = new RemoteGrpcDatabase(grpcServer, "localhost", GRPC_PORT, getServer(0).getHttpServer().getPort(),
+      scoped = new RemoteGrpcDatabase(grpcServer, "localhost", getServerGrpcPort(), getServer(0).getHttpServer().getPort(),
           getDatabaseName(), SCOPED_USER, SCOPED_PWD);
     }
     return scoped;

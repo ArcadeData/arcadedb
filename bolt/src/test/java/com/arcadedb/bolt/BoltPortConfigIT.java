@@ -19,7 +19,6 @@
 package com.arcadedb.bolt;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -33,7 +32,9 @@ import org.neo4j.driver.SessionConfig;
 import org.neo4j.driver.Record;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.net.ConnectException;
+import java.net.ServerSocket;
 import java.net.Socket;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -43,18 +44,24 @@ import static org.assertj.core.api.Assertions.assertThat;
  * is configurable via {@link GlobalConfiguration#BOLT_PORT}.
  * <p>
  * Regression test for https://github.com/ArcadeData/arcadedb/issues/3809
+ * <p>
+ * The custom port is picked at runtime among the free ones rather than hardcoded, and "not on the default port" is
+ * asserted against the port the plugin actually bound rather than by probing 7687, which a developer's own Neo4j or
+ * a concurrent build may legitimately hold (issue #8209).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class BoltPortConfigIT extends BaseGraphServerTest {
+public class BoltPortConfigIT extends BaseBoltServerTest {
 
-  private static final int CUSTOM_BOLT_PORT = 17687;
+  private int customBoltPort;
 
   @Override
   public void setTestConfiguration() {
     super.setTestConfiguration();
     GlobalConfiguration.SERVER_PLUGINS.setValue("Neo4j-Bolt:com.arcadedb.bolt.BoltProtocolPlugin");
-    GlobalConfiguration.BOLT_PORT.setValue(CUSTOM_BOLT_PORT);
+    // After super.setTestConfiguration(), which sets the ephemeral port 0 this test deliberately overrides
+    customBoltPort = findFreePort();
+    GlobalConfiguration.BOLT_PORT.setValue(customBoltPort);
   }
 
   @AfterEach
@@ -67,20 +74,23 @@ public class BoltPortConfigIT extends BaseGraphServerTest {
 
   @Test
   void boltServerListensOnConfiguredPort() {
-    // Verify the custom port is reachable
-    assertThat(isPortOpen(CUSTOM_BOLT_PORT)).isTrue();
+    // Verify the plugin bound the configured port and that the port is reachable
+    assertThat(getServerBoltPort()).isEqualTo(customBoltPort);
+    assertThat(isPortOpen(customBoltPort)).isTrue();
   }
 
   @Test
   void boltServerDoesNotListenOnDefaultPort() {
-    // Verify the default port 7687 is NOT open (we configured a custom port)
-    assertThat(isPortOpen(7687)).isFalse();
+    // The plugin bound the custom port, not the default: asserted on the bound port rather than by probing the
+    // default one, which anything else on the machine may hold
+    assertThat(customBoltPort).isNotEqualTo(GlobalConfiguration.BOLT_PORT.getDefValue());
+    assertThat(getServerBoltPort()).isNotEqualTo(GlobalConfiguration.BOLT_PORT.getDefValue());
   }
 
   @Test
   void connectionOnConfiguredPort() {
     try (Driver driver = GraphDatabase.driver(
-        "bolt://localhost:" + CUSTOM_BOLT_PORT,
+        "bolt://localhost:" + customBoltPort,
         AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
         Config.builder().withoutEncryption().build())) {
       driver.verifyConnectivity();
@@ -90,7 +100,7 @@ public class BoltPortConfigIT extends BaseGraphServerTest {
   @Test
   void queryOnConfiguredPort() {
     try (Driver driver = GraphDatabase.driver(
-        "bolt://localhost:" + CUSTOM_BOLT_PORT,
+        "bolt://localhost:" + customBoltPort,
         AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
         Config.builder().withoutEncryption().build())) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
@@ -109,7 +119,7 @@ public class BoltPortConfigIT extends BaseGraphServerTest {
     // If the name matching didn't work, the plugin wouldn't load and
     // the connection would fail.
     try (Driver driver = GraphDatabase.driver(
-        "bolt://localhost:" + CUSTOM_BOLT_PORT,
+        "bolt://localhost:" + customBoltPort,
         AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
         Config.builder().withoutEncryption().build())) {
       driver.verifyConnectivity();
@@ -118,6 +128,14 @@ public class BoltPortConfigIT extends BaseGraphServerTest {
         assertThat(result.hasNext()).isTrue();
         assertThat(result.next().get("status").asString()).isEqualTo("port-config-works");
       }
+    }
+  }
+
+  private static int findFreePort() {
+    try (final ServerSocket socket = new ServerSocket(0)) {
+      return socket.getLocalPort();
+    } catch (final IOException e) {
+      throw new UncheckedIOException("Cannot find a free port for the BOLT listener", e);
     }
   }
 

@@ -22,7 +22,6 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.engine.OperationProgress;
 import com.arcadedb.engine.OperationProgressRegistry;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.grpc.OperationProgressInfo;
 import com.arcadedb.server.grpc.SessionInfo;
 import com.arcadedb.server.http.HttpAuthSession;
@@ -46,9 +45,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * thing a gRPC-only deployment does not open. That test hands the database a dead HTTP port, so it can
  * only pass if the poll really travels over gRPC.
  */
-class Issue7310RemoteGrpcServerProgressAndSessionsIT extends BaseGraphServerTest {
+class Issue7310RemoteGrpcServerProgressAndSessionsIT extends BaseGrpcClientServerTest {
 
-  private static final int GRPC_PORT = 50051;
   /** A port deliberately left closed, so any fallback to the inherited HTTP route fails loudly. */
   private static final int DEAD_HTTP_PORT = 59998;
 
@@ -62,7 +60,7 @@ class Issue7310RemoteGrpcServerProgressAndSessionsIT extends BaseGraphServerTest
 
   @BeforeEach
   void connect() {
-    server = new RemoteGrpcServer("localhost", GRPC_PORT, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    server = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
   }
 
   @AfterEach
@@ -105,7 +103,7 @@ class Issue7310RemoteGrpcServerProgressAndSessionsIT extends BaseGraphServerTest
   void progressIsPolledOverGrpcAndNotOverTheInheritedHttpRoute() {
     final OperationProgress operation = OperationProgressRegistry.instance()
         .register(getDatabaseName(), "compact index");
-    try (final RemoteGrpcDatabase database = new RemoteGrpcDatabase(server, "localhost", GRPC_PORT, DEAD_HTTP_PORT,
+    try (final RemoteGrpcDatabase database = new RemoteGrpcDatabase(server, "localhost", getServerGrpcPort(), DEAD_HTTP_PORT,
         getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS)) {
       operation.onProgress("Compacting page 10", 1, 1, 10, 40);
 

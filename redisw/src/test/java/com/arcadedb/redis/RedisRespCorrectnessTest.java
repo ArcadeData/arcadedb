@@ -19,7 +19,6 @@
 package com.arcadedb.redis;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -52,9 +51,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class RedisRespCorrectnessTest extends BaseGraphServerTest {
+public class RedisRespCorrectnessTest extends BaseRedisServerTest {
 
-  private static final int    DEF_PORT = GlobalConfiguration.REDIS_PORT.getValueAsInteger();
   private static final String USER     = "root";
   private static final String PASSWORD = DEFAULT_PASSWORD_FOR_TESTS;
 
@@ -64,7 +62,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
     // which the old `(char) b` per-byte widening corrupted instead of decoding.
     final String valueText = "héllo wörld 日本語 😀";
 
-    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+    try (final Jedis jedis = new Jedis("localhost", getServerRedisPort())) {
       jedis.auth(USER, PASSWORD);
       jedis.set("utf8Key", valueText);
       assertThat(jedis.get("utf8Key")).isEqualTo(valueText);
@@ -77,7 +75,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
     // server sends back rather than however the client library happens to decode them.
     final byte[] payloadValue = "café".getBytes(StandardCharsets.UTF_8); // 5 bytes: c,a,f,e-acute(2 bytes)
 
-    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+    try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
       socket.setSoTimeout(10_000);
 
       sendCommand(socket, "AUTH", USER, PASSWORD);
@@ -104,7 +102,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
     // A RESP2 null bulk string ($-1) as a command argument, immediately followed - on the very same
     // connection - by a normal AUTH/PING pair. Before the fix, the unconditional skipLF() after $-1
     // swallowed the leading byte of the next command, corrupting everything parsed afterward.
-    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+    try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
       socket.setSoTimeout(10_000);
 
       final StringBuilder payload = new StringBuilder();
@@ -129,7 +127,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
     // size the same way (see the comment on that branch) rather than adding a separate protocol-error case
     // for e.g. $-5. Locks in that this is a real, tested decision and not just an artifact of `size < 0`
     // happening to also be true for -1: same parser-resync proof as the $-1 case above, with $-5 instead.
-    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+    try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
       socket.setSoTimeout(10_000);
 
       final StringBuilder payload = new StringBuilder();
@@ -151,7 +149,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
     // as a SET argument, which used to reach ConcurrentHashMap.put() with a null value and NPE deep inside
     // setVariable() instead of getting one clear reply. Must get a clean protocol error instead, and the
     // connection must stay usable afterward.
-    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+    try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
       socket.setSoTimeout(10_000);
 
       sendCommand(socket, "AUTH", USER, PASSWORD);
@@ -177,7 +175,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
     // not be left with an infinite read timeout - otherwise it could be held open forever despite never
     // (currently) holding valid credentials, exactly the resource-exhaustion shape #5912 fixes pre-auth.
     GlobalConfiguration.NETWORK_SOCKET_TIMEOUT.setValue(500);
-    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+    try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
       socket.setSoTimeout(10_000);
 
       sendCommand(socket, "AUTH", USER, PASSWORD);
@@ -196,7 +194,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
     }
 
     // The listener/thread pool must still be healthy: a fresh connection behaves normally.
-    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+    try (final Jedis jedis = new Jedis("localhost", getServerRedisPort())) {
       assertThat(jedis.auth(USER, PASSWORD)).isEqualTo("OK");
       assertThat(jedis.ping()).isEqualTo("PONG");
     }
@@ -207,7 +205,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
   void idleUnauthenticatedConnectionIsClosedInsteadOfHeldOpenIndefinitely() throws Exception {
     GlobalConfiguration.NETWORK_SOCKET_TIMEOUT.setValue(500);
     try {
-      try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
         // Safety bound for the test itself only, well above the lowered server-side timeout: if this
         // fires instead of a clean EOF, the server is still holding the idle connection open.
         socket.setSoTimeout(10_000);
@@ -218,7 +216,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
     }
 
     // The listener/thread pool must still be healthy: a fresh connection behaves normally.
-    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+    try (final Jedis jedis = new Jedis("localhost", getServerRedisPort())) {
       assertThat(jedis.auth(USER, PASSWORD)).isEqualTo("OK");
       assertThat(jedis.ping()).isEqualTo("PONG");
     }
@@ -230,7 +228,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
     // The idle timeout only bounds the pre-authentication window: once authenticated, a RESP connection is
     // expected to sit idle between commands (that is normal client usage, not a hostile pattern).
     GlobalConfiguration.NETWORK_SOCKET_TIMEOUT.setValue(500);
-    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+    try (final Jedis jedis = new Jedis("localhost", getServerRedisPort())) {
       assertThat(jedis.auth(USER, PASSWORD)).isEqualTo("OK");
       Thread.sleep(1_500); // well over the lowered pre-auth timeout
       assertThat(jedis.ping()).isEqualTo("PONG");
@@ -243,7 +241,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
   void incrByAcceptsSigned64BitIncrements() {
     // INCRBY amount was parsed as 32-bit int before #6466: a 64-bit increment threw
     // NumberFormatException -> "-ERR For input string". Real Redis accepts any signed 64-bit value.
-    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+    try (final Jedis jedis = new Jedis("localhost", getServerRedisPort())) {
       jedis.auth(USER, PASSWORD);
       // ArcadeDB Redis wire has no DEL; use SET to initialise the key
       jedis.set("incr64", "0");
@@ -257,7 +255,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
   void incrOverflowReturnsErrorInsteadOfWrapping() throws Exception {
     // (issue #6466): INCR on Long.MAX_VALUE wrapped silently to Long.MIN_VALUE. Real Redis answers
     // with an error; the wire reply must be "-ERR ... overflow" and the stored value must be untouched.
-    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+    try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
       socket.setSoTimeout(10_000);
 
       sendCommand(socket, "AUTH", USER, PASSWORD);
@@ -281,7 +279,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
   void setNxDoesNotOverwriteExistingKey() throws Exception {
     // (issue #6466): SET k v NX on an existing key returned +OK and overwrote it, so a distributed-lock
     // client believed it acquired a lock it did not. Real Redis replies with the RESP2 null bulk string.
-    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+    try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
       socket.setSoTimeout(10_000);
 
       sendCommand(socket, "AUTH", USER, PASSWORD);
@@ -301,7 +299,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
   @Test
   void setXxDoesNotCreateMissingKey() throws Exception {
     // (issue #6466): XX must only set an existing key; on a missing key real Redis replies nil.
-    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+    try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
       socket.setSoTimeout(10_000);
 
       sendCommand(socket, "AUTH", USER, PASSWORD);
@@ -319,7 +317,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
   @Test
   void setGetReturnsPreviousValue() throws Exception {
     // (issue #6466): SET k v GET must return the previous value (bulk string) instead of +OK.
-    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+    try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
       socket.setSoTimeout(10_000);
 
       sendCommand(socket, "AUTH", USER, PASSWORD);
@@ -341,7 +339,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
   void setNxGetReturnsExistingValueOnVetoedWrite() throws Exception {
     // Real Redis: combining GET with NX/XX still returns the pre-existing value when the NX/XX condition
     // vetoes the write (it does not fall back to nil just because nothing was written).
-    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+    try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
       socket.setSoTimeout(10_000);
 
       sendCommand(socket, "AUTH", USER, PASSWORD);
@@ -363,7 +361,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
   void setWithUnsupportedExpiryOptionIsRejectedInsteadOfSilentlyIgnored() throws Exception {
     // (issue #6466): EX/PX were silently dropped, so a client setting EX 10 believed the key would
     // expire. ArcadeDB transient keys have no TTL store, so the honest reply is a clear error.
-    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+    try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
       socket.setSoTimeout(10_000);
 
       sendCommand(socket, "AUTH", USER, PASSWORD);
@@ -382,7 +380,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
     // string ("$3\r\n3.3\r\n"). Jedis parses both forms into the same double, so routing this through the
     // client (as the original version of this test did) would pass whether or not the wire format was
     // fixed; asserting on the raw frame via readReply() is what actually exercises the fix.
-    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+    try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
       socket.setSoTimeout(10_000);
 
       sendCommand(socket, "AUTH", USER, PASSWORD);
@@ -399,7 +397,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
   @Test
   void pingWithoutArgumentRepliesAsSimpleString() throws Exception {
     // Real Redis: PING with no argument is +PONG, not a bulk string.
-    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+    try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
       socket.setSoTimeout(10_000);
 
       sendCommand(socket, "AUTH", USER, PASSWORD);
@@ -414,7 +412,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
   void pingWithMessageRepliesAsBulkString() throws Exception {
     // (issue #6942): PING <message> replied with a RESP simple string ("+hello\r\n") instead of a bulk
     // string ("$5\r\nhello\r\n"). Real Redis always echoes the PING argument as a bulk string.
-    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+    try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
       socket.setSoTimeout(10_000);
 
       sendCommand(socket, "AUTH", USER, PASSWORD);
@@ -432,7 +430,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
     // connection was read one frame early. A length-prefixed bulk-string reply carries the CRLF as payload
     // instead of treating it as a frame terminator, so the next command's reply must still line up.
     final String payload = "a\r\n+INJECTED";
-    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+    try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
       socket.setSoTimeout(10_000);
 
       sendCommand(socket, "AUTH", USER, PASSWORD);
@@ -453,7 +451,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
     // (issue #6942): once INCRBYFLOAT turns a key into a Double, DECR blindly wrote a `:`-prefixed
     // (RESP integer) header in front of a floating-point value, which is not a valid RESP integer. Real
     // Redis rejects DECR/INCR on a non-integer value with "-ERR value is not an integer or out of range".
-    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+    try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
       socket.setSoTimeout(10_000);
 
       sendCommand(socket, "AUTH", USER, PASSWORD);
@@ -478,7 +476,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
   void incrOnFloatKeyReturnsErrorInsteadOfInvalidIntegerReply() throws Exception {
     // (issue #6942): the mirror case for INCR - incrBy's non-decimal branch answered with a RESP simple
     // string ("+3.3") rather than rejecting the non-integer value the way real Redis does.
-    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+    try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
       socket.setSoTimeout(10_000);
 
       sendCommand(socket, "AUTH", USER, PASSWORD);
@@ -504,7 +502,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
     // INCRBYFLOAT) hit a different code path than the Double-typed case above and answered with the
     // generic "Key 'x' is not a number" instead of Redis' exact integer-command error. Same fix, same
     // message, for INCR/INCRBY/DECR/DECRBY, whichever way the non-integral value got there.
-    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+    try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
       socket.setSoTimeout(10_000);
 
       sendCommand(socket, "AUTH", USER, PASSWORD);
@@ -529,7 +527,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
   void incrByFloatOnDirectlySetFractionalStringSucceeds() throws Exception {
     // (issue #6942 code review): INCRBYFLOAT has no integer restriction - it must accept a fractional
     // string exactly like real Redis, not reject it the way INCR/DECR correctly do.
-    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+    try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
       socket.setSoTimeout(10_000);
 
       sendCommand(socket, "AUTH", USER, PASSWORD);
@@ -548,7 +546,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
     // (issue #6942 code review): INCRBY/DECRBY dispatch through the same incrBy()/decrBy() as INCR/DECR
     // (RedisNetworkExecutor's INCR/INCRBY and DECR/DECRBY cases both call the same method), so this locks
     // in that the explicit-amount form goes through requireIntegralValue() exactly like the no-amount form.
-    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+    try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
       socket.setSoTimeout(10_000);
 
       sendCommand(socket, "AUTH", USER, PASSWORD);
@@ -572,7 +570,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
   void incrByOverflowStillReturnsOverflowErrorAfterIntegralValueRefactor() throws Exception {
     // (issue #6942 code review): confirms Math.addExact's ArithmeticException -> "increment or decrement
     // would overflow" still fires for INCRBY after routing the stored value through requireIntegralValue().
-    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+    try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
       socket.setSoTimeout(10_000);
 
       sendCommand(socket, "AUTH", USER, PASSWORD);
@@ -609,7 +607,7 @@ public class RedisRespCorrectnessTest extends BaseGraphServerTest {
       for (int i = 0; i < racers; i++) {
         final int id = i;
         results.add(pool.submit(() -> {
-          try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+          try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
             socket.setSoTimeout(10_000);
             sendCommand(socket, "AUTH", USER, PASSWORD);
             readReply(socket); // +OK

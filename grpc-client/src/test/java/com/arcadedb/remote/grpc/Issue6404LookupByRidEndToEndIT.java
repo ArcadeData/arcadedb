@@ -24,7 +24,6 @@ import com.arcadedb.database.Record;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -53,9 +52,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue6404LookupByRidEndToEndIT extends BaseGraphServerTest {
+public class Issue6404LookupByRidEndToEndIT extends BaseGrpcClientServerTest {
 
-  private static final int    GRPC_PORT   = 50051;
   private static final String VERTEX_TYPE = "Issue6404Vertex";
 
   private RemoteGrpcServer grpcServer;
@@ -68,7 +66,7 @@ public class Issue6404LookupByRidEndToEndIT extends BaseGraphServerTest {
 
   @BeforeEach
   void createServerHandle() {
-    grpcServer = new RemoteGrpcServer("localhost", GRPC_PORT, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    grpcServer = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
   }
 
   @AfterEach
@@ -88,7 +86,7 @@ public class Issue6404LookupByRidEndToEndIT extends BaseGraphServerTest {
   @Test
   void lookupByRidFindsAnExistingVertexOnAFreshConnectionThatNeverLoadedTheSchema() {
     final RID rid;
-    try (RemoteGrpcDatabase setup = new RemoteGrpcDatabase(grpcServer, "localhost", GRPC_PORT, getServerHttpPort(), getDatabaseName(), "root",
+    try (RemoteGrpcDatabase setup = new RemoteGrpcDatabase(grpcServer, "localhost", getServerGrpcPort(), getServerHttpPort(), getDatabaseName(), "root",
         DEFAULT_PASSWORD_FOR_TESTS)) {
       setup.command("sql", "CREATE VERTEX TYPE `" + VERTEX_TYPE + "` IF NOT EXISTS");
       setup.command("sql", "CREATE PROPERTY `" + VERTEX_TYPE + "`.ldapId IF NOT EXISTS STRING");
@@ -98,7 +96,7 @@ public class Issue6404LookupByRidEndToEndIT extends BaseGraphServerTest {
       }
     }
 
-    try (RemoteGrpcDatabase fresh = new RemoteGrpcDatabase(grpcServer, "localhost", GRPC_PORT, getServerHttpPort(), getDatabaseName(), "root",
+    try (RemoteGrpcDatabase fresh = new RemoteGrpcDatabase(grpcServer, "localhost", getServerGrpcPort(), getServerHttpPort(), getDatabaseName(), "root",
         DEFAULT_PASSWORD_FOR_TESTS)) {
 
       try (ResultSet rs = fresh.query("sql", "SELECT FROM `" + VERTEX_TYPE + "` WHERE ldapId = 'heimdall'")) {

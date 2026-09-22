@@ -19,7 +19,6 @@
 package com.arcadedb.bolt;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.neo4j.driver.AuthTokens;
@@ -48,7 +47,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Bolt7149VarLengthDetachDeleteIT extends BaseGraphServerTest {
+public class Bolt7149VarLengthDetachDeleteIT extends BaseBoltServerTest {
   private static final String EDGES = "[[14,126],[72,112],[13,11],[57,54],[2,105],[64,13],[123,26],[60,75],[101,2],[70,51],"
       + "[59,2],[33,113],[73,52],[94,46],[73,93],[93,104],[64,41],[33,38],[27,72],[118,118],[85,24],[85,67],[51,89],[19,38],"
       + "[113,22],[59,78],[0,33],[76,76],[78,64],[15,16],[95,95],[9,38],[2,2],[67,2],[126,87],[42,86],[54,54],[48,101],"
@@ -77,7 +76,7 @@ public class Bolt7149VarLengthDetachDeleteIT extends BaseGraphServerTest {
   }
 
   private Driver getDriver() {
-    return GraphDatabase.driver("bolt://localhost:7687", AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
+    return GraphDatabase.driver(getServerBoltUrl(), AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
         Config.builder().withoutEncryption().build());
   }
 

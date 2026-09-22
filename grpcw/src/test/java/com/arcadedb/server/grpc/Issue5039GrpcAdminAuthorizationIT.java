@@ -21,7 +21,6 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.security.ServerSecurity;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
@@ -46,9 +45,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * mutating admin RPCs ({@code CreateDatabase}, {@code DropDatabase}) are rejected with
  * {@code PERMISSION_DENIED}. A positive control confirms the {@code root} user still succeeds.
  */
-public class Issue5039GrpcAdminAuthorizationIT extends BaseGraphServerTest {
+public class Issue5039GrpcAdminAuthorizationIT extends BaseGrpcServerTest {
 
-  private static final int    GRPC_PORT    = 50051;
   private static final String ALLOWED_DB   = "allowed5039db";
   private static final String LIMITED_USER = "limited5039";
   private static final String LIMITED_PASS = "limited5039pass";
@@ -77,7 +75,7 @@ public class Issue5039GrpcAdminAuthorizationIT extends BaseGraphServerTest {
       security.createUser(config);
     }
 
-    channel = ManagedChannelBuilder.forAddress("localhost", GRPC_PORT).usePlaintext().build();
+    channel = ManagedChannelBuilder.forAddress("localhost", getServerGrpcPort()).usePlaintext().build();
     adminStub = ArcadeDbAdminServiceGrpc.newBlockingStub(channel);
   }
 

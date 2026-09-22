@@ -20,7 +20,6 @@ package com.arcadedb.mongo;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.mongodb.MongoClient;
 import com.mongodb.MongoClientOptions;
 import com.mongodb.MongoCredential;
@@ -30,9 +29,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
-import java.net.InetSocketAddress;
 import java.net.ServerSocket;
-import java.net.Socket;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -42,7 +39,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * bound the static {@link GlobalConfiguration#MONGO_HOST}/{@link GlobalConfiguration#MONGO_PORT} defaults instead. This meant
  * a custom port configured on the server was silently discarded and the plugin always bound the hardcoded default (27017).
  */
-public class MongoDBPortConfigurationTest extends BaseGraphServerTest {
+public class MongoDBPortConfigurationTest extends BaseMongoServerTest {
 
   private static int customPort;
 
@@ -73,20 +70,13 @@ public class MongoDBPortConfigurationTest extends BaseGraphServerTest {
       assertThat(pingResult.getDouble("ok")).isEqualTo(1.0);
     }
 
-    // ...and must NOT have silently fallen back to the hardcoded default port.
-    final int defaultPort = GlobalConfiguration.MONGO_PORT.getValueAsInteger();
-    assertThat(isListening(defaultPort))
-        .as("MongoDB plugin must not bind the default port %d when a custom port %d is configured", defaultPort, customPort)
-        .isFalse();
-  }
-
-  private static boolean isListening(final int port) {
-    try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("127.0.0.1", port), 500);
-      return true;
-    } catch (final IOException e) {
-      return false;
-    }
+    // ...and must NOT have silently fallen back to the hardcoded default port. Asked of the plugin rather than probed on
+    // the wire: a developer's own MongoDB on the default port would answer a probe and fail this test (issue #8209).
+    final int defaultPort = (Integer) GlobalConfiguration.MONGO_PORT.getDefValue();
+    assertThat(getServerMongoPort())
+        .as("MongoDB plugin must bind the custom port %d, not the default port %d", customPort, defaultPort)
+        .isEqualTo(customPort)
+        .isNotEqualTo(defaultPort);
   }
 
   @Override

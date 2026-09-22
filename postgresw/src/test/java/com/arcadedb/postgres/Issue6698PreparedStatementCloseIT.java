@@ -70,23 +70,23 @@ class Issue6698PreparedStatementCloseIT extends PostgresWireProtocolTestBase {
         messages = readUntilReadyForQuery(in);
         assertThat(messageTypesOf(messages)).containsExactly('3', 'Z'); // CloseComplete, ReadyForQuery
 
-        // 4. Describe('S', "S1") after close: statement was pruned, so returns NoData ('n')
+        // 4. Describe('S', "S1") after close: statement was pruned, so it is refused with 26000 (issue #8211)
         sendDescribe(out, 'S', "S1");
         sendSync(out);
         messages = readUntilReadyForQuery(in);
         assertThat(messageTypesOf(messages))
-            .as("Describe on closed statement must return NoData because preparedStatements was pruned")
-            .containsExactly('n', 'Z');
+            .as("Describe on closed statement must be refused because preparedStatements was pruned")
+            .containsExactly('E', 'Z');
 
         // 5. Bind from closed statement "S1": fails to find statement in preparedStatements
         sendBind(out, "P1", "S1");
         sendExecute(out, "P1", 0);
         sendSync(out);
         messages = readUntilReadyForQuery(in);
-        // BindComplete ('2'), then Execute on unbound portal returns NoData ('n'), then ReadyForQuery ('Z')
+        // ErrorResponse for the Bind ('E'), the Execute discarded until Sync, then ReadyForQuery ('Z')
         assertThat(messageTypesOf(messages))
-            .as("Execute on portal bound from closed statement must return NoData")
-            .containsExactly('2', 'n', 'Z');
+            .as("Bind from a closed statement must be refused, not answered BindComplete")
+            .containsExactly('E', 'Z');
       });
     }
   }
@@ -119,13 +119,13 @@ class Issue6698PreparedStatementCloseIT extends PostgresWireProtocolTestBase {
         messages = readUntilReadyForQuery(in);
         assertThat(messageTypesOf(messages)).containsExactly('3', 'Z');
 
-        // 4. Describe('S', "") after close: returns NoData ('n')
+        // 4. Describe('S', "") after close: refused with 26000 (issue #8211)
         sendDescribe(out, 'S', "");
         sendSync(out);
         messages = readUntilReadyForQuery(in);
         assertThat(messageTypesOf(messages))
-            .as("Describe on closed unnamed statement must return NoData")
-            .containsExactly('n', 'Z');
+            .as("Describe on closed unnamed statement must be refused")
+            .containsExactly('E', 'Z');
       });
     }
   }
@@ -140,33 +140,24 @@ class Issue6698PreparedStatementCloseIT extends PostgresWireProtocolTestBase {
       authenticate(out, in);
 
       assertTimeoutPreemptively(Duration.ofSeconds(10), () -> {
-        // 1. Parse statement "S1"
+        // One pipeline, since a portal lives only as long as the implicit block a Sync ends (issue #8212):
+        // 1. Parse statement "S1", 2. bind portal "P1" from it, 3. close statement "S1",
+        // 4. the existing bound portal "P1" still executes successfully
         sendParse(out, "S1", "SELECT 42");
-        // 2. Bind portal "P1" from "S1"
         sendBind(out, "P1", "S1");
-        sendSync(out);
-        List<WireMessage> messages = readUntilReadyForQuery(in);
-        assertThat(messageTypesOf(messages)).containsExactly('1', '2', 'Z'); // ParseComplete, BindComplete, ReadyForQuery
-
-        // 3. Close statement "S1"
         sendClose(out, 'S', "S1");
-        sendSync(out);
-        messages = readUntilReadyForQuery(in);
-        assertThat(messageTypesOf(messages)).containsExactly('3', 'Z');
-
-        // 4. Existing bound portal "P1" still executes successfully
         sendExecute(out, "P1", 0);
         sendSync(out);
-        messages = readUntilReadyForQuery(in);
-        // RowDescription ('T'), DataRow ('D'), CommandComplete ('C'), ReadyForQuery ('Z')
-        assertThat(messageTypesOf(messages)).containsExactly('T', 'D', 'C', 'Z');
+        List<WireMessage> messages = readUntilReadyForQuery(in);
+        // ParseComplete, BindComplete, CloseComplete, RowDescription, DataRow, CommandComplete, ReadyForQuery
+        assertThat(messageTypesOf(messages)).containsExactly('1', '2', '3', 'T', 'D', 'C', 'Z');
 
-        // 5. New portal "P2" bound from closed statement "S1" fails to execute
+        // 5. New portal "P2" bound from closed statement "S1" is refused (issue #8211)
         sendBind(out, "P2", "S1");
         sendExecute(out, "P2", 0);
         sendSync(out);
         messages = readUntilReadyForQuery(in);
-        assertThat(messageTypesOf(messages)).containsExactly('2', 'n', 'Z');
+        assertThat(messageTypesOf(messages)).containsExactly('E', 'Z');
       });
     }
   }
@@ -206,23 +197,15 @@ class Issue6698PreparedStatementCloseIT extends PostgresWireProtocolTestBase {
       authenticate(out, in);
 
       assertTimeoutPreemptively(Duration.ofSeconds(10), () -> {
+        // One pipeline: the Sync would drop the portal on its own (issue #8212), which would hide what Close does
         sendParse(out, "S1", "SELECT 1");
         sendBind(out, "P1", "S1");
-        sendSync(out);
-        List<WireMessage> messages = readUntilReadyForQuery(in);
-        assertThat(messageTypesOf(messages)).containsExactly('1', '2', 'Z');
-
-        // Close portal "P1"
         sendClose(out, 'P', "P1");
-        sendSync(out);
-        messages = readUntilReadyForQuery(in);
-        assertThat(messageTypesOf(messages)).containsExactly('3', 'Z');
-
-        // Execute on closed portal returns NoData
+        // Execute on closed portal is refused with 34000 (issue #8211)
         sendExecute(out, "P1", 0);
         sendSync(out);
-        messages = readUntilReadyForQuery(in);
-        assertThat(messageTypesOf(messages)).containsExactly('n', 'Z');
+        final List<WireMessage> messages = readUntilReadyForQuery(in);
+        assertThat(messageTypesOf(messages)).containsExactly('1', '2', '3', 'E', 'Z');
       });
     }
   }
@@ -237,34 +220,27 @@ class Issue6698PreparedStatementCloseIT extends PostgresWireProtocolTestBase {
       authenticate(out, in);
 
       assertTimeoutPreemptively(Duration.ofSeconds(10), () -> {
-        // 1. Parse statement "S1"
+        // One pipeline, since a portal lives only as long as the implicit block a Sync ends (issue #8212):
+        // 1. Parse statement "S1", 2. bind portal "P1" from it, 3. execute "P1" - returns result,
+        // 4. close statement "S1", 5. rebind portal "P1" naming closed statement "S1": refused (issue #8211), and the
+        // Execute behind it discarded rather than answered by the existing P1
         sendParse(out, "S1", "SELECT 42");
-        // 2. Bind portal "P1" from "S1"
         sendBind(out, "P1", "S1");
+        sendExecute(out, "P1", 0);
+        sendClose(out, 'S', "S1");
+        sendBind(out, "P1", "S1");
+        sendExecute(out, "P1", 0);
         sendSync(out);
         List<WireMessage> messages = readUntilReadyForQuery(in);
-        assertThat(messageTypesOf(messages)).containsExactly('1', '2', 'Z');
-
-        // 3. Execute "P1" before statement close - returns result
-        sendExecute(out, "P1", 0);
-        sendSync(out);
-        messages = readUntilReadyForQuery(in);
-        assertThat(messageTypesOf(messages)).containsExactly('T', 'D', 'C', 'Z');
-
-        // 4. Close statement "S1"
-        sendClose(out, 'S', "S1");
-        sendSync(out);
-        messages = readUntilReadyForQuery(in);
-        assertThat(messageTypesOf(messages)).containsExactly('3', 'Z');
-
-        // 5. Rebind portal "P1" naming closed statement "S1": portal P1 must be invalidated, not cloned from existing P1
-        sendBind(out, "P1", "S1");
-        sendExecute(out, "P1", 0);
-        sendSync(out);
-        messages = readUntilReadyForQuery(in);
         assertThat(messageTypesOf(messages))
-            .as("Execute on portal rebound from closed statement must return NoData")
-            .containsExactly('2', 'n', 'Z');
+            .as("the rebind from a closed statement is refused, and P1 does not answer again")
+            .containsExactly('1', '2', 'T', 'D', 'C', '3', 'E', 'Z');
+
+        // 6. P1 is gone: the refused Bind removed it, and the aborted block would have dropped it anyway
+        sendExecute(out, "P1", 0);
+        sendSync(out);
+        messages = readUntilReadyForQuery(in);
+        assertThat(messageTypesOf(messages)).containsExactly('E', 'Z');
       });
     }
   }

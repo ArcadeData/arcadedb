@@ -19,7 +19,6 @@
 package com.arcadedb.mongo;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.mongodb.MongoClient;
 import com.mongodb.MongoClientOptions;
 import com.mongodb.MongoCredential;
@@ -48,9 +47,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * A value that only ever produced zero matches would pass an injection test for the wrong reason, so every case here pins a
  * positive match against a document seeded with the same awkward text.
  */
-public class MongoDBParameterBindingTest extends BaseGraphServerTest {
+public class MongoDBParameterBindingTest extends BaseMongoServerTest {
 
-  private static final int                       DEF_PORT = 27017;
   private              MongoClient               client;
   private              MongoCollection<Document> collection;
 
@@ -65,7 +63,7 @@ public class MongoDBParameterBindingTest extends BaseGraphServerTest {
   public void beginTest() {
     super.beginTest();
     getDatabase(0);
-    client = new MongoClient(new ServerAddress("localhost", DEF_PORT),
+    client = new MongoClient(new ServerAddress("localhost", getServerMongoPort()),
         MongoCredential.createPlainCredential("root", getDatabaseName(), DEFAULT_PASSWORD_FOR_TESTS.toCharArray()),
         MongoClientOptions.builder().serverSelectionTimeout(5000).build());
     client.getDatabase(getDatabaseName()).createCollection("doc");

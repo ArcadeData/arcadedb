@@ -22,7 +22,6 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.grpc.TransactionProtocol;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
@@ -60,11 +59,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue8134GrpcRetryDoesNotReplayCommittedHalfIT extends BaseGraphServerTest {
+public class Issue8134GrpcRetryDoesNotReplayCommittedHalfIT extends BaseGrpcClientServerTest {
   private static final String ROWS      = "Issue8134Row";
   private static final int    SIZE      = 25;
   private static final int    ATTEMPTS  = 3;
-  private static final int    GRPC_PORT = 50051;
 
   private RemoteGrpcServer   server;
   private RemoteGrpcDatabase database;
@@ -79,8 +77,8 @@ public class Issue8134GrpcRetryDoesNotReplayCommittedHalfIT extends BaseGraphSer
   @Override
   public void beginTest() {
     super.beginTest();
-    server = new RemoteGrpcServer("localhost", GRPC_PORT, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
-    database = new RemoteGrpcDatabase(server, "localhost", GRPC_PORT, getServer(0).getHttpServer().getPort(),
+    server = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    database = new RemoteGrpcDatabase(server, "localhost", getServerGrpcPort(), getServer(0).getHttpServer().getPort(),
         getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
     populate();
   }
@@ -224,9 +222,9 @@ public class Issue8134GrpcRetryDoesNotReplayCommittedHalfIT extends BaseGraphSer
   @Test
   void onlyTheCallsThatPublishedUnderTheCallersTransactionCarryTheTrailer() {
     final TrailerRecorder recorder = new TrailerRecorder();
-    try (final RemoteGrpcServer recorded = new RemoteGrpcServer("localhost", GRPC_PORT, "root",
+    try (final RemoteGrpcServer recorded = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root",
         DEFAULT_PASSWORD_FOR_TESTS, true, List.of(recorder));
-        final RemoteGrpcDatabase db = new RemoteGrpcDatabase(recorded, "localhost", GRPC_PORT,
+        final RemoteGrpcDatabase db = new RemoteGrpcDatabase(recorded, "localhost", getServerGrpcPort(),
             getServer(0).getHttpServer().getPort(), getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS)) {
 
       db.command("sql", "UPDATE " + ROWS + " SET seq = seq + 1 BATCH 10").close();

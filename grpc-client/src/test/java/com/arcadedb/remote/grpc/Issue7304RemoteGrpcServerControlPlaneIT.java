@@ -21,7 +21,6 @@ package com.arcadedb.remote.grpc;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.remote.RemoteException;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.grpc.UserInfo;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -39,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * new client method against a live server, so the proto, the service and the client are proved to
  * agree rather than only to compile.
  */
-class Issue7304RemoteGrpcServerControlPlaneIT extends BaseGraphServerTest {
+class Issue7304RemoteGrpcServerControlPlaneIT extends BaseGrpcClientServerTest {
 
   private RemoteGrpcServer server;
 
@@ -51,7 +50,7 @@ class Issue7304RemoteGrpcServerControlPlaneIT extends BaseGraphServerTest {
 
   @BeforeEach
   void connect() {
-    server = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    server = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
   }
 
   @AfterEach

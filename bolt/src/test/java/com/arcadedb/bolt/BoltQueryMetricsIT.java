@@ -19,7 +19,6 @@
 package com.arcadedb.bolt;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.Timer;
 import org.junit.jupiter.api.AfterEach;
@@ -37,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Verifies that queries executed over a Bolt connection are tagged with protocol="bolt"
  * in the arcadedb.query.duration Micrometer timer.
  */
-public class BoltQueryMetricsIT extends BaseGraphServerTest {
+public class BoltQueryMetricsIT extends BaseBoltServerTest {
 
   @Override
   public void setTestConfiguration() {
@@ -54,7 +53,7 @@ public class BoltQueryMetricsIT extends BaseGraphServerTest {
 
   private Driver getDriver() {
     return GraphDatabase.driver(
-        "bolt://localhost:7687",
+        getServerBoltUrl(),
         AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
         Config.builder()
             .withoutEncryption()

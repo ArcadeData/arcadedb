@@ -22,7 +22,6 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.security.ServerSecurity;
 import com.mongodb.MongoClient;
 import com.mongodb.MongoClientOptions;
@@ -43,16 +42,15 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class MongoDBAuthorizationTest extends BaseGraphServerTest {
+public class MongoDBAuthorizationTest extends BaseMongoServerTest {
 
-  private static final int    DEF_PORT          = 27017;
   private static final String LIMITED_USER      = "limitedMongoUser";
   private static final String LIMITED_PASSWORD  = "limitedPassword1";
 
   @Test
   void unauthenticatedClientCannotWrite() {
     getDatabase(0);
-    try (final MongoClient client = new MongoClient(new ServerAddress("localhost", DEF_PORT),
+    try (final MongoClient client = new MongoClient(new ServerAddress("localhost", getServerMongoPort()),
         MongoClientOptions.builder().serverSelectionTimeout(5000).build())) {
       final MongoCollection<Document> collection = client.getDatabase(getDatabaseName()).getCollection("Victim");
 
@@ -69,7 +67,7 @@ public class MongoDBAuthorizationTest extends BaseGraphServerTest {
   @Test
   void unauthenticatedClientCannotRead() {
     seedVictimData();
-    try (final MongoClient client = new MongoClient(new ServerAddress("localhost", DEF_PORT),
+    try (final MongoClient client = new MongoClient(new ServerAddress("localhost", getServerMongoPort()),
         MongoClientOptions.builder().serverSelectionTimeout(5000).build())) {
       final MongoCollection<Document> collection = client.getDatabase(getDatabaseName()).getCollection("Victim");
 
@@ -93,7 +91,7 @@ public class MongoDBAuthorizationTest extends BaseGraphServerTest {
     final MongoCredential credential = MongoCredential.createPlainCredential(LIMITED_USER, "$external",
         LIMITED_PASSWORD.toCharArray());
 
-    try (final MongoClient client = new MongoClient(new ServerAddress("localhost", DEF_PORT), credential,
+    try (final MongoClient client = new MongoClient(new ServerAddress("localhost", getServerMongoPort()), credential,
         MongoClientOptions.builder().serverSelectionTimeout(5000).build())) {
       final MongoCollection<Document> collection = client.getDatabase(getDatabaseName()).getCollection("Victim");
 
@@ -110,7 +108,7 @@ public class MongoDBAuthorizationTest extends BaseGraphServerTest {
     final MongoCredential credential = MongoCredential.createPlainCredential("root", "$external",
         DEFAULT_PASSWORD_FOR_TESTS.toCharArray());
 
-    try (final MongoClient client = new MongoClient(new ServerAddress("localhost", DEF_PORT), credential,
+    try (final MongoClient client = new MongoClient(new ServerAddress("localhost", getServerMongoPort()), credential,
         MongoClientOptions.builder().serverSelectionTimeout(5000).build())) {
       client.getDatabase(getDatabaseName()).createCollection("RootType");
       final MongoCollection<Document> collection = client.getDatabase(getDatabaseName()).getCollection("RootType");

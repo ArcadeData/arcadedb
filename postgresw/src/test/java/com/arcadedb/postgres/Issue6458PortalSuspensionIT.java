@@ -90,6 +90,10 @@ class Issue6458PortalSuspensionIT extends PostgresWireProtocolTestBase {
       // Parse + Bind only - deliberately NO Describe('P'), so the portal reaches Execute with
       // portal.executed == false and this exercises PostgresNetworkExecutor.executeCommand()'s own
       // first-execution branch directly, exactly as issue #6458 describes.
+      // Resuming a suspended portal across Syncs needs an explicit block, as in PostgreSQL: a portal is dropped with
+      // the transaction it was bound in, and in autocommit that ends at the first Sync (issue #8212). pgjdbc only
+      // opens a fetch-size cursor with autoCommit(false) for exactly this reason.
+      runSimpleQueryToCompletion(out, in, "BEGIN");
       sendParse(out, "SELECT id FROM RawSuspend6458 ORDER BY id");
       assertThat(readOneMessage(in).type).as("ParseComplete").isEqualTo('1');
       sendBind(out, "P1");
@@ -158,6 +162,10 @@ class Issue6458PortalSuspensionIT extends PostgresWireProtocolTestBase {
       for (int i = 0; i < 10; i++)
         runSimpleQueryToCompletion(out, in, "INSERT INTO DescribeThenSuspend6458 SET id = " + i);
 
+      // Resuming a suspended portal across Syncs needs an explicit block, as in PostgreSQL: a portal is dropped with
+      // the transaction it was bound in, and in autocommit that ends at the first Sync (issue #8212). pgjdbc only
+      // opens a fetch-size cursor with autoCommit(false) for exactly this reason.
+      runSimpleQueryToCompletion(out, in, "BEGIN");
       sendParse(out, "SELECT id FROM DescribeThenSuspend6458 ORDER BY id");
       assertThat(readOneMessage(in).type).as("ParseComplete").isEqualTo('1');
       sendBind(out, "P2");
@@ -318,13 +326,9 @@ class Issue6458PortalSuspensionIT extends PostgresWireProtocolTestBase {
       // bindCommand()'s preparedStatements.get(...) lookup misses, so it binds a throwaway portal and removes
       // the already-executed PF1 portal from above instead of resurrecting it.
       sendBind(out, "PF1", "never-parsed-statement-name");
-      assertThat(readOneMessage(in).type).as("BindComplete").isEqualTo('2');
       sendExecute(out, "PF1", 0);
       sendSync(out);
-      assertThat(readOneMessage(in).type)
-          .as("PF1 was removed by the Bind above, not resurrected with its stale first-run result")
-          .isEqualTo('n');
-      assertThat(readOneMessage(in).type).as("ReadyForQuery closes this Sync").isEqualTo('Z');
+      assertMissingStatementThenPortal(out, in, "PF1");
     }
   }
 
@@ -382,13 +386,9 @@ class Issue6458PortalSuspensionIT extends PostgresWireProtocolTestBase {
       // bindCommand()'s preparedStatements.get(...) lookup misses, so it binds a throwaway portal and removes
       // the already-executed PCQ1 catalog-query portal from above instead of resurrecting it.
       sendBindWithOneTextParam(out, "PCQ1", "never-parsed-statement-name", "CatalogFB6458%");
-      assertThat(readOneMessage(in).type).as("BindComplete").isEqualTo('2');
       sendExecute(out, "PCQ1", 0);
       sendSync(out);
-      assertThat(readOneMessage(in).type)
-          .as("PCQ1 was removed by the Bind above, not resurrected with its stale one-row catalog answer")
-          .isEqualTo('n');
-      assertThat(readOneMessage(in).type).as("ReadyForQuery closes this Sync").isEqualTo('Z');
+      assertMissingStatementThenPortal(out, in, "PCQ1");
     }
   }
 
@@ -419,6 +419,10 @@ class Issue6458PortalSuspensionIT extends PostgresWireProtocolTestBase {
       for (int i = 0; i < 10; i++)
         runSimpleQueryToCompletion(out, in, "INSERT INTO AliasedPortals6458 SET id = " + i);
 
+      // Resuming a suspended portal across Syncs needs an explicit block, as in PostgreSQL: a portal is dropped with
+      // the transaction it was bound in, and in autocommit that ends at the first Sync (issue #8212). pgjdbc only
+      // opens a fetch-size cursor with autoCommit(false) for exactly this reason.
+      runSimpleQueryToCompletion(out, in, "BEGIN");
       sendParse(out, "SELECT id FROM AliasedPortals6458 ORDER BY id");
       assertThat(readOneMessage(in).type).as("ParseComplete").isEqualTo('1');
 
@@ -629,6 +633,24 @@ class Issue6458PortalSuspensionIT extends PostgresWireProtocolTestBase {
     final byte[] valueBytes = new byte[len];
     p.readFully(valueBytes);
     return new String(valueBytes, StandardCharsets.UTF_8);
+  }
+
+  /**
+   * The Bind naming a statement that was never parsed is refused with {@code 26000} (issue #8211), the Execute
+   * pipelined behind it is discarded, and an Execute of the portal name in the next round trip finds nothing to
+   * resurrect: {@code 34000}.
+   */
+  private static void assertMissingStatementThenPortal(final DataOutputStream out, final DataInputStream in, final String portalName)
+      throws Exception {
+    assertThat(readOneMessage(in).type).as("the Bind is refused, not answered BindComplete").isEqualTo('E');
+    assertThat(readOneMessage(in).type).as("the Execute behind it is discarded until Sync").isEqualTo('Z');
+
+    sendExecute(out, portalName, 0);
+    sendSync(out);
+    assertThat(readOneMessage(in).type)
+        .as("%s was removed, not resurrected with its stale first-run result", portalName)
+        .isEqualTo('E');
+    assertThat(readOneMessage(in).type).as("ReadyForQuery closes this Sync").isEqualTo('Z');
   }
 
   private static void runSimpleQueryToCompletion(final DataOutputStream out, final DataInputStream in, final String sql) throws Exception {

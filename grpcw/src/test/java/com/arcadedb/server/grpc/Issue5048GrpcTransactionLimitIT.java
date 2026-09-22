@@ -19,7 +19,6 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.ServerPlugin;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
@@ -49,9 +48,8 @@ import static org.assertj.core.api.Assertions.catchThrowableOfType;
  * Once the configured concurrent-transaction limit is reached, further {@code beginTransaction} calls are rejected
  * with {@code RESOURCE_EXHAUSTED} instead of allocating an unbounded number of dedicated executor threads.
  */
-public class Issue5048GrpcTransactionLimitIT extends BaseGraphServerTest {
+public class Issue5048GrpcTransactionLimitIT extends BaseGrpcServerTest {
 
-  private static final int    GRPC_PORT = 50051;
   private static final String MAX_TX    = "3";
 
   private static final Metadata.Key<String> USER_HEADER     =
@@ -74,7 +72,7 @@ public class Issue5048GrpcTransactionLimitIT extends BaseGraphServerTest {
 
   @BeforeEach
   void setupGrpcClient() {
-    channel = ManagedChannelBuilder.forAddress("localhost", GRPC_PORT).usePlaintext().build();
+    channel = ManagedChannelBuilder.forAddress("localhost", getServerGrpcPort()).usePlaintext().build();
     final Channel authenticatedChannel = ClientInterceptors.intercept(channel, new AuthClientInterceptor());
     authenticatedStub = ArcadeDbServiceGrpc.newBlockingStub(authenticatedChannel);
   }

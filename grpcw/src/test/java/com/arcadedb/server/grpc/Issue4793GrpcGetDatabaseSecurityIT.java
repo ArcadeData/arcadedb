@@ -19,7 +19,6 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
 import io.grpc.ClientCall;
@@ -51,9 +50,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * open/create arbitrary on-disk databases. These tests assert that path-traversal database names
  * are rejected before any filesystem access while legitimate, authorized access keeps working.
  */
-public class Issue4793GrpcGetDatabaseSecurityIT extends BaseGraphServerTest {
-
-  private static final int GRPC_PORT = 50051;
+public class Issue4793GrpcGetDatabaseSecurityIT extends BaseGrpcServerTest {
 
   private static final Metadata.Key<String> USER_HEADER     =
       Metadata.Key.of("x-arcade-user", Metadata.ASCII_STRING_MARSHALLER);
@@ -74,7 +71,7 @@ public class Issue4793GrpcGetDatabaseSecurityIT extends BaseGraphServerTest {
 
   @BeforeEach
   void setupGrpcClient() {
-    channel = ManagedChannelBuilder.forAddress("localhost", GRPC_PORT).usePlaintext().build();
+    channel = ManagedChannelBuilder.forAddress("localhost", getServerGrpcPort()).usePlaintext().build();
     final Channel authenticatedChannel = ClientInterceptors.intercept(channel, new AuthClientInterceptor());
     authenticatedStub = ArcadeDbServiceGrpc.newBlockingStub(authenticatedChannel);
   }

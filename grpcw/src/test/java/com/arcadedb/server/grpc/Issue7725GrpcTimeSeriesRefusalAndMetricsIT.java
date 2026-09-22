@@ -20,7 +20,6 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.schema.LocalTimeSeriesType;
-import com.arcadedb.server.BaseGraphServerTest;
 import io.grpc.Channel;
 import io.grpc.ClientInterceptors;
 import io.grpc.ManagedChannel;
@@ -53,9 +52,8 @@ import static org.assertj.core.api.Assertions.catchThrowableOfType;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue7725GrpcTimeSeriesRefusalAndMetricsIT extends BaseGraphServerTest {
+public class Issue7725GrpcTimeSeriesRefusalAndMetricsIT extends BaseGrpcServerTest {
 
-  private static final int    GRPC_PORT = 50051;
   private static final String TYPE_NAME = "grpcreading";
   private static final int    SAMPLES   = 40;
   private static final long   BASE_TS   = 1_700_000_000_000L;
@@ -74,7 +72,7 @@ public class Issue7725GrpcTimeSeriesRefusalAndMetricsIT extends BaseGraphServerT
 
   @BeforeEach
   void setupGrpcClient() {
-    channel = ManagedChannelBuilder.forAddress("localhost", GRPC_PORT).usePlaintext().build();
+    channel = ManagedChannelBuilder.forAddress("localhost", getServerGrpcPort()).usePlaintext().build();
     final Channel authenticatedChannel = ClientInterceptors.intercept(channel,
         new GrpcTestAuthInterceptor("root", DEFAULT_PASSWORD_FOR_TESTS, getDatabaseName()));
     authenticatedStub = ArcadeDbServiceGrpc.newBlockingStub(authenticatedChannel);

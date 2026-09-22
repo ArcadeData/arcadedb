@@ -22,7 +22,6 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.grpc.FullTextSearchRequest;
 import com.arcadedb.server.grpc.FullTextSearchResponse;
 import com.arcadedb.server.grpc.HybridSearchRequest;
@@ -56,7 +55,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * HTTP routes do for the same query - the asymmetry the issue is about would simply have moved one protocol
  * down if the two had been implemented separately.
  */
-public class Issue7306GrpcVectorSearchIT extends BaseGraphServerTest {
+public class Issue7306GrpcVectorSearchIT extends BaseGrpcClientServerTest {
   private static final String DENSE_TYPE  = "GrpcVec7306";
   private static final String DENSE_INDEX = "GrpcVec7306[embedding]";
   private static final String TEXT_INDEX  = "GrpcVec7306[text]";
@@ -97,8 +96,8 @@ public class Issue7306GrpcVectorSearchIT extends BaseGraphServerTest {
   @Override
   public void beginTest() {
     super.beginTest();
-    server = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
-    database = new RemoteGrpcDatabase(server, "localhost", 50051, getServer(0).getHttpServer().getPort(),
+    server = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    database = new RemoteGrpcDatabase(server, "localhost", getServerGrpcPort(), getServer(0).getHttpServer().getPort(),
         getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
   }
 

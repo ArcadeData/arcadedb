@@ -23,7 +23,6 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.log.Logger;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.security.ApiTokenConfiguration;
 import io.grpc.Context;
 import io.grpc.ManagedChannel;
@@ -62,9 +61,7 @@ import static org.assertj.core.api.Assertions.catchThrowableOfType;
  * handler directly because every channel an in-process test can open is loopback, and
  * {@link GrpcTransportSecurityInterceptorTest}, which covers how that verdict is reached.
  */
-class Issue7309GrpcSecurityControlPlaneIT extends BaseGraphServerTest {
-
-  private static final int GRPC_PORT = 51181;
+class Issue7309GrpcSecurityControlPlaneIT extends BaseGrpcServerTest {
 
   private ManagedChannel                                              channel;
   private ArcadeDbAdminServiceGrpc.ArcadeDbAdminServiceBlockingStub   admin;
@@ -73,12 +70,11 @@ class Issue7309GrpcSecurityControlPlaneIT extends BaseGraphServerTest {
   public void setTestConfiguration() {
     super.setTestConfiguration();
     GlobalConfiguration.SERVER_PLUGINS.setValue("GrpcServer:com.arcadedb.server.grpc.GrpcServerPlugin");
-    GlobalConfiguration.GRPC_PORT.setValue(GRPC_PORT);
   }
 
   @BeforeEach
   void openChannel() {
-    channel = ManagedChannelBuilder.forAddress("localhost", GRPC_PORT).usePlaintext().build();
+    channel = ManagedChannelBuilder.forAddress("localhost", getServerGrpcPort()).usePlaintext().build();
     admin = ArcadeDbAdminServiceGrpc.newBlockingStub(channel).withDeadlineAfter(30, TimeUnit.SECONDS);
   }
 

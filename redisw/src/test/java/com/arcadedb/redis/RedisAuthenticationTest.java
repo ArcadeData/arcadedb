@@ -22,7 +22,6 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import redis.clients.jedis.Jedis;
@@ -39,9 +38,8 @@ import static org.assertj.core.api.Assertions.fail;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class RedisAuthenticationTest extends BaseGraphServerTest {
+public class RedisAuthenticationTest extends BaseRedisServerTest {
 
-  private static final int    DEF_PORT = GlobalConfiguration.REDIS_PORT.getValueAsInteger();
   private static final String USER     = "root";
   private static final String PASSWORD = DEFAULT_PASSWORD_FOR_TESTS;
 
@@ -50,7 +48,7 @@ public class RedisAuthenticationTest extends BaseGraphServerTest {
     final DatabaseInternal serverDatabase = (DatabaseInternal) getServerDatabase(0, getDatabaseName());
     serverDatabase.command("sql", "CREATE DOCUMENT TYPE V");
 
-    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+    try (final Jedis jedis = new Jedis("localhost", getServerRedisPort())) {
       // PING before AUTH must be rejected with NOAUTH.
       JedisDataException error = catchThrowableOfType(JedisDataException.class, jedis::ping);
       assertThat(error).isNotNull();
@@ -79,7 +77,7 @@ public class RedisAuthenticationTest extends BaseGraphServerTest {
 
   @Test
   void wrongCredentialsAreRejected() {
-    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+    try (final Jedis jedis = new Jedis("localhost", getServerRedisPort())) {
       final JedisDataException error = catchThrowableOfType(JedisDataException.class, () -> jedis.auth(USER, "wrong-password"));
       assertThat(error).isNotNull();
       assertThat(error.getMessage()).contains("WRONGPASS");
@@ -97,7 +95,7 @@ public class RedisAuthenticationTest extends BaseGraphServerTest {
     // real java.lang.SecurityException that ErrorCategory.of() recognises as SECURITY), so the wire reply came out
     // as "-ERR WRONGPASS ..." - a client branching on the RESP error kind (the token right after '-') saw ERR, not
     // WRONGPASS, even though the message text happened to still mention WRONGPASS further along.
-    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+    try (final Jedis jedis = new Jedis("localhost", getServerRedisPort())) {
       final JedisDataException error = catchThrowableOfType(JedisDataException.class, () -> jedis.auth(USER, "wrong-password"));
       assertThat(error).isNotNull();
       assertThat(error.getMessage()).as("RESP error kind must be WRONGPASS, not masked by a leading ERR")
@@ -108,7 +106,7 @@ public class RedisAuthenticationTest extends BaseGraphServerTest {
 
   @Test
   void authenticatedCommandsSucceed() {
-    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+    try (final Jedis jedis = new Jedis("localhost", getServerRedisPort())) {
       assertThat(jedis.auth(USER, PASSWORD)).isEqualTo("OK");
 
       // Now the normal command flow works.
@@ -125,7 +123,7 @@ public class RedisAuthenticationTest extends BaseGraphServerTest {
 
   @Test
   void singleArgumentAuthIsRejected() {
-    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+    try (final Jedis jedis = new Jedis("localhost", getServerRedisPort())) {
       // ArcadeDB has no anonymous default user: single-argument AUTH must be rejected.
       try {
         jedis.auth(PASSWORD);
@@ -138,7 +136,7 @@ public class RedisAuthenticationTest extends BaseGraphServerTest {
 
   @Test
   void helloWithAuthOptionAuthenticates() {
-    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+    try (final Jedis jedis = new Jedis("localhost", getServerRedisPort())) {
       // HELLO carrying the AUTH option authenticates and negotiates the protocol in one round-trip.
       final Object reply = jedis.sendCommand(Protocol.Command.HELLO, "2", "AUTH", USER, PASSWORD);
       assertThat(reply).isNotNull();
@@ -150,7 +148,7 @@ public class RedisAuthenticationTest extends BaseGraphServerTest {
 
   @Test
   void helloWithoutAuthIsRejectedBeforeAuthentication() {
-    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+    try (final Jedis jedis = new Jedis("localhost", getServerRedisPort())) {
       final JedisDataException error = catchThrowableOfType(JedisDataException.class,
           () -> jedis.sendCommand(Protocol.Command.HELLO, "2"));
       assertThat(error).isNotNull();
@@ -169,7 +167,7 @@ public class RedisAuthenticationTest extends BaseGraphServerTest {
     // own NOAUTH and NOPROTO RedisException.withKind() call sites, so exercise them here too rather than only
     // through the respErrorPrefix() unit test - a future regression in hello()'s dispatch could otherwise slip
     // through with only the classification logic pinned, not the actual wire reply hello() produces.
-    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+    try (final Jedis jedis = new Jedis("localhost", getServerRedisPort())) {
       final JedisDataException error = catchThrowableOfType(JedisDataException.class,
           () -> jedis.sendCommand(Protocol.Command.HELLO, "2"));
       assertThat(error).isNotNull();
@@ -183,7 +181,7 @@ public class RedisAuthenticationTest extends BaseGraphServerTest {
   void helloWithBadProtocolVersionErrorKindIsNotMaskedByErr() {
     // Issue #6560, review follow-up: see helloWithoutAuthErrorKindIsNotMaskedByErr() above. HELLO's protocol-
     // version check runs before the NOAUTH check, so a bad version is reachable on an unauthenticated connection.
-    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+    try (final Jedis jedis = new Jedis("localhost", getServerRedisPort())) {
       final JedisDataException error = catchThrowableOfType(JedisDataException.class,
           () -> jedis.sendCommand(Protocol.Command.HELLO, "9"));
       assertThat(error).isNotNull();
@@ -195,7 +193,7 @@ public class RedisAuthenticationTest extends BaseGraphServerTest {
 
   @Test
   void helloWithWrongCredentialsIsRejected() {
-    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+    try (final Jedis jedis = new Jedis("localhost", getServerRedisPort())) {
       final JedisDataException error = catchThrowableOfType(JedisDataException.class,
           () -> jedis.sendCommand(Protocol.Command.HELLO, "2", "AUTH", USER, "wrong-password"));
       assertThat(error).isNotNull();
@@ -213,7 +211,7 @@ public class RedisAuthenticationTest extends BaseGraphServerTest {
         .put("password", encoded)
         .put("databases", new JSONObject().put("otherdb", new JSONArray().put("admin"))));
 
-    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+    try (final Jedis jedis = new Jedis("localhost", getServerRedisPort())) {
       assertThat(jedis.auth("limited", "limitedPassword1")).isEqualTo("OK");
 
       // Addressing the test database (which this user is NOT authorized for) must be rejected with NOPERM.
