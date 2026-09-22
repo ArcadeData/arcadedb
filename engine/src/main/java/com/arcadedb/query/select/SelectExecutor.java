@@ -737,8 +737,11 @@ public class SelectExecutor {
     if (cursor == null)
       return;
 
+    // BELT AND BRACES: every tree Select builds gives a bare leaf the synthetic `run` root, so a root leaf has a
+    // parent - but a caller assembling SelectTreeNodes directly need not, and a NullPointerException is no way to
+    // find that out (found by CodeRabbit).
     final SelectTreeNode parentNode = node.getParent();
-    if (parentNode.operator == SelectOperator.and && parentNode.left == node) {
+    if (parentNode != null && parentNode.operator == SelectOperator.and && parentNode.left == node) {
       if (!node.index.isUnique()) {
         // CHECK IF THERE IS ANOTHER INDEXED NODE ON THE SIBLING THAT IS UNIQUE (TO PREFER TO THIS)
         final TypeIndex rightIndex = ((SelectTreeNode) parentNode.right).index;

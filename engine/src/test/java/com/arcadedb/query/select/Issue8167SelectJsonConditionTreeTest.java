@@ -21,6 +21,7 @@ package com.arcadedb.query.select;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
@@ -222,8 +223,10 @@ public class Issue8167SelectJsonConditionTreeTest extends TestHelper {
     // '1 < b' over b in 0..3 with 3 documents per value: 6 rows. Routed to the wrong side it reads 'b < 1': 3 rows.
     final JSONObject json = new JSONObject("{\"fromType\":\"D\",\"where\":[\"#p\",\"<\",\":b\"]}");
     assertThat(database.select().json(json).compile().parameter("p", 1).count()).isEqualTo(6);
+    // A bare triple is the non-canonical hand-written form: it canonicalizes to the run-wrapped shape the compiler
+    // itself writes for a single leaf, which is then stable across further round trips.
     assertThat(database.select().json(json).compile().json().getJSONArray("where").toString())
-        .isEqualTo("[\"#p\",\"<\",\":b\"]");
+        .isEqualTo("[[\"#p\",\"<\",\":b\"]]");
   }
 
   /**
@@ -284,6 +287,25 @@ public class Issue8167SelectJsonConditionTreeTest extends TestHelper {
         .json(new JSONObject("{\"fromType\":\"D\",\"where\":[[1,2],\"=\",1]}")))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("must be a property or a parameter");
+  }
+
+  /**
+   * A bare three-element condition at the top level is a ROOT LEAF, with no parent.
+   * {@code SelectExecutor.filterWithIndexesFinalNode()} dereferences {@code node.getParent().operator} the moment a
+   * leaf has a cursor-buildable index, and every tree the fluent builder produces has the synthetic {@code run} root
+   * {@code compile()} adds - so the JSON reader has to produce that root too (found by CodeRabbit).
+   */
+  @Test
+  void aBareRootConditionOnAnIndexedPropertyStillRuns() {
+    database.getSchema().getType("D").createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "a");
+    try {
+      assertThat(database.select().json(new JSONObject("{\"fromType\":\"D\",\"where\":[\":a\",\"=\",1]}")).count())
+          .isEqualTo(4);
+      assertThat(database.select().json(new JSONObject("{\"fromType\":\"D\",\"where\":[[\":a\",\"=\",1]]}")).count())
+          .isEqualTo(4);
+    } finally {
+      database.getSchema().getType("D").getIndexesByProperties("a").forEach(i -> database.getSchema().dropIndex(i.getName()));
+    }
   }
 
   private void assertNativeMatchesSQL(final String where, final String sqlPredicate) {
