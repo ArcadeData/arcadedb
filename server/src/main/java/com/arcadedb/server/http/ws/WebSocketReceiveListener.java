@@ -240,7 +240,7 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
   private void sendAck(final WebSocketChannel channel, final ACTION action) {
     final var json = new JSONObject("{\"result\": \"ok\"}");
     json.put("action", action.toString().toLowerCase(Locale.ENGLISH));
-    WebSocketFrameSender.send(channel, json.toString(), null);
+    WebSocketFrameSender.sendBudgeted(channel, json.toString(), maxPendingControlBytes());
   }
 
   private void sendError(final WebSocketChannel channel, final String error, final String detail, final Throwable exception) {
@@ -250,7 +250,16 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
       json.put("detail", encodeError(detail));
     if (exception != null)
       json.put("exception", exception.getClass().getName());
-    WebSocketFrameSender.send(channel, json.toString(), null);
+    WebSocketFrameSender.sendBudgeted(channel, json.toString(), maxPendingControlBytes());
+  }
+
+  /**
+   * See {@link WebSocketFrameSender#sendBudgeted}: bounds what {@link #sendAck} and {@link #sendError} may leave
+   * outstanding towards a connection that stops reading (issue #8085). Re-read per call, the same reason
+   * {@link #frameBudget} is: an operator raising the setting on a running server does not have to reconnect.
+   */
+  private long maxPendingControlBytes() {
+    return httpServer.getServer().getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_WS_MAX_PENDING_CONTROL_BYTES);
   }
 
   private String encodeError(final String message) {

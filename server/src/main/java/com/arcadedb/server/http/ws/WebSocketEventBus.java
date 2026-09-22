@@ -109,7 +109,7 @@ public class WebSocketEventBus {
     // send buffer is the UTF-8 encoding WebSockets.sendText produces, which is up to 3 bytes per char for CJK and
     // 4 for an emoji. Counting chars would let a non-ASCII change stream hold several times the configured budget.
     // Computed in one pass rather than via getBytes(UTF_8).length, which would copy the whole payload per event.
-    final int messageSize = utf8Length(json);
+    final int messageSize = WebSocketFrameSender.utf8Length(json);
     final long maxPendingBytes = this.arcadeServer != null ?
         this.arcadeServer.getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_WS_EVENT_BUS_MAX_PENDING_BYTES) :
         GlobalConfiguration.SERVER_WS_EVENT_BUS_MAX_PENDING_BYTES.getValueAsLong();
@@ -239,27 +239,6 @@ public class WebSocketEventBus {
       return true;
     final ServerSecurityUser current = security.getUser(connectedUser.getName());
     return current != null && current.canAccessToDatabase(databaseName);
-  }
-
-  /**
-   * The number of bytes {@code s} occupies once UTF-8 encoded, without allocating the encoded copy.
-   */
-  private static int utf8Length(final String s) {
-    int bytes = 0;
-    for (int i = 0; i < s.length(); i++) {
-      final char c = s.charAt(i);
-      if (c < 0x80)
-        bytes += 1;
-      else if (c < 0x800)
-        bytes += 2;
-      else if (Character.isHighSurrogate(c) && i + 1 < s.length() && Character.isLowSurrogate(s.charAt(i + 1))) {
-        // one code point spread over a surrogate pair encodes as 4 bytes, not 3 + 3
-        bytes += 4;
-        i++;
-      } else
-        bytes += 3;
-    }
-    return bytes;
   }
 
   private Object lockFor(final String database) {

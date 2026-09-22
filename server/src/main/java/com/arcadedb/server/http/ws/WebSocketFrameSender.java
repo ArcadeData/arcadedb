@@ -18,9 +18,14 @@
  */
 package com.arcadedb.server.http.ws;
 
+import com.arcadedb.log.LogManager;
 import io.undertow.websockets.core.WebSocketCallback;
 import io.undertow.websockets.core.WebSocketChannel;
 import io.undertow.websockets.core.WebSockets;
+
+import java.io.IOException;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
 /**
  * The one place a {@code /ws} text frame is written from, so what the connection's several senders rely on is
@@ -58,6 +63,12 @@ import io.undertow.websockets.core.WebSockets;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class WebSocketFrameSender {
+  /**
+   * Channel attribute holding the per-connection outstanding-bytes counter {@link #sendBudgeted} charges
+   * against (issue #8085).
+   */
+  private static final String PENDING_BYTES = "arcadedb.ws.pendingBytes";
+
   private WebSocketFrameSender() {
   }
 
@@ -76,5 +87,107 @@ public final class WebSocketFrameSender {
   public static void sendIfOpen(final WebSocketChannel channel, final String text) {
     if (channel.isOpen())
       WebSockets.sendText(text, channel, null);
+  }
+
+  /**
+   * {@link #send(WebSocketChannel, String, WebSocketCallback)}, but first charges {@code text}'s size against a
+   * per-connection pending-bytes budget shared by every sender that answers a request made ON this channel -
+   * {@code WebSocketReceiveListener}'s subscription acknowledgements and errors, and
+   * {@code WebSocketInsertProtocol}'s insert-session answers (issue #8085).
+   * <p>
+   * {@link WebSocketEventBus}'s change-stream fan-out is charged against its own, per-subscription budget
+   * instead (issue #6762, {@code EventWatcherSubscription.reservePending}) and keeps calling {@link #send}
+   * directly: it is a push a client opted into rather than an answer to something it sent, and one connection
+   * can carry several such subscriptions, so accounting per subscription is what lets a slow subscriber on one
+   * database be evicted without punishing its subscription to another.
+   * <p>
+   * A peer that stops reading otherwise accumulates these answer frames in Undertow's send buffer without
+   * bound: an authenticated connection sending malformed requests as fast as its socket allows gets one small
+   * error frame queued per request, forever, which is heap the connection holds until the peer reads it or the
+   * connection dies - and the peer is the one refusing to read. Past the budget the frame is dropped instead of
+   * queued and the channel is closed, which is what the peer would eventually experience anyway.
+   *
+   * @param maxPendingBytes the budget, or {@code 0} (or less) to disable the cap
+   *
+   * @return {@code true} if the frame was queued, {@code false} if the budget was exceeded and the channel was
+   * closed instead
+   */
+  public static boolean sendBudgeted(final WebSocketChannel channel, final String text, final long maxPendingBytes) {
+    if (!channel.isOpen())
+      return false;
+
+    // The UTF-8 BYTE length, not text.length(): see WebSocketEventBus's use of the same method for why chars
+    // would undercount a non-ASCII payload against a cap expressed in bytes.
+    final int messageSize = utf8Length(text);
+    final AtomicLong pending = pendingBytes(channel);
+    final long outstanding = pending.addAndGet(messageSize);
+    if (maxPendingBytes > 0 && outstanding > maxPendingBytes) {
+      pending.addAndGet(-messageSize);
+      LogManager.instance().log(WebSocketFrameSender.class, Level.WARNING,
+          "Closing /ws connection: more than %d bytes of unread answers are still outstanding towards it. Raise "
+              + "arcadedb.server.wsMaxPendingControlBytes if this is a legitimately slow consumer", null, maxPendingBytes);
+      try {
+        channel.close();
+      } catch (final IOException e) {
+        // IGNORE: the channel is already going away, which is the outcome this branch wanted anyway.
+      }
+      return false;
+    }
+
+    WebSockets.sendText(text, channel, new WebSocketCallback<>() {
+      @Override
+      public void complete(final WebSocketChannel webSocketChannel, final Void unused) {
+        pending.addAndGet(-messageSize);
+      }
+
+      @Override
+      public void onError(final WebSocketChannel webSocketChannel, final Void unused, final Throwable throwable) {
+        pending.addAndGet(-messageSize);
+      }
+    });
+    return true;
+  }
+
+  /**
+   * This connection's {@link #sendBudgeted} counter, created on demand. Guarded by a lock on {@code channel}
+   * rather than left to a plain check-then-act: unlike {@code WebSocketInsertProtocol}'s per-connection
+   * attributes, which are only ever created from the single I/O thread Undertow runs one frame of a connection
+   * on at a time, this one can be reached from that I/O thread ({@code WebSocketReceiveListener}) AND from an
+   * Undertow worker thread ({@code WebSocketInsertProtocol.execute}) concurrently, so two racing first sends
+   * could otherwise each create and install their own counter and silently split the budget in two.
+   */
+  private static AtomicLong pendingBytes(final WebSocketChannel channel) {
+    AtomicLong pending = (AtomicLong) channel.getAttribute(PENDING_BYTES);
+    if (pending != null)
+      return pending;
+    synchronized (channel) {
+      pending = (AtomicLong) channel.getAttribute(PENDING_BYTES);
+      if (pending == null) {
+        pending = new AtomicLong();
+        channel.setAttribute(PENDING_BYTES, pending);
+      }
+      return pending;
+    }
+  }
+
+  /**
+   * The number of bytes {@code s} occupies once UTF-8 encoded, without allocating the encoded copy.
+   */
+  static int utf8Length(final String s) {
+    int bytes = 0;
+    for (int i = 0; i < s.length(); i++) {
+      final char c = s.charAt(i);
+      if (c < 0x80)
+        bytes += 1;
+      else if (c < 0x800)
+        bytes += 2;
+      else if (Character.isHighSurrogate(c) && i + 1 < s.length() && Character.isLowSurrogate(s.charAt(i + 1))) {
+        // one code point spread over a surrogate pair encodes as 4 bytes, not 3 + 3
+        bytes += 4;
+        i++;
+      } else
+        bytes += 3;
+    }
+    return bytes;
   }
 }

@@ -1712,6 +1712,16 @@ public enum GlobalConfiguration {
       not to its own. Past this cap the subscription is dropped and the channel closed, which is what the client
       would experience anyway. 0 disables the cap (the pre-26.9.1 behaviour).""", Long.class, 16 * 1024 * 1024L),
 
+  SERVER_WS_MAX_PENDING_CONTROL_BYTES("arcadedb.server.wsMaxPendingControlBytes", SCOPE.SERVER, """
+      Maximum number of bytes of REQUEST-ANSWER frames - a /ws subscription acknowledgement or error, or an
+      insert-session 'started'/'batchAck'/'committed'/error - that may be outstanding towards a single connection
+      before it is closed (issue #8085). 'eventBusMaxPendingBytes' bounds only the change-stream PUSH frames a
+      client opted into by subscribing; every other /ws sender answers something the peer itself sent, and none of
+      them was bounded, so a connection that sends requests as fast as its socket allows and never reads the
+      answers pinned one small queued frame per request on the server's heap forever. Past this cap the frame is
+      dropped and the connection closed, which is what the peer would eventually experience anyway. 0 disables the
+      cap.""", Long.class, 16 * 1024 * 1024L),
+
   // SERVER SECURITY
   SERVER_SECURITY_ALGORITHM("arcadedb.server.securityAlgorithm", SCOPE.SERVER,
       "Default encryption algorithm used for passwords hashing", String.class, "PBKDF2WithHmacSHA256"),
