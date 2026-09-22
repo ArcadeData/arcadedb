@@ -1470,14 +1470,21 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final int tsColIdx = findTimestampColumnIndex();
     final int reqCount = requests.size();
 
-    // Pre-compute schema column indices for each request
+    // Pre-compute schema column indices for each request.
+    //
+    // MultiColumnAggregationRequest.columnIndex() is a position in the ENGINE ROW, not in the schema: this
+    // layer stores a block column per SCHEMA position, so it has to map back (issue #8140). It used to read the
+    // number as a schema index, which the mutable half never did, so the two halves answered different columns
+    // for the same request unless the TIMESTAMP column happened to be declared first.
     final int[] schemaColIndices = new int[reqCount];
     final boolean[] isCount = new boolean[reqCount];
     for (int r = 0; r < reqCount; r++) {
       isCount[r] = requests.get(r).type() == AggregationType.COUNT;
       if (!isCount[r])
-        schemaColIndices[r] = requests.get(r).columnIndex();
+        schemaColIndices[r] = findAggregationSchemaIndex(requests.get(r).columnIndex());
       else
+        // COUNT counts rows without resolving a column, so it needs no schema index - and must not be given
+        // one, since its columnIndex names nothing.
         schemaColIndices[r] = -1;
     }
 
@@ -3998,6 +4005,23 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       if (columns.get(i).getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
         return i;
     return 0;
+  }
+
+  /**
+   * The schema column a {@link MultiColumnAggregationRequest#columnIndex()} names, given that the number is a
+   * position in the ENGINE ROW: {@code [timestamp, non-TIMESTAMP columns in schema order...]} (issue #8140).
+   * <p>
+   * Row position 0 is the timestamp, which no aggregation but COUNT can read - every caller-facing surface
+   * refuses it through {@link TimeSeriesGateway#requireAggregatableColumn}, and the SQL push-down declines
+   * itself for the same reason - so reaching here with it is a caller that skipped that check. It is refused by
+   * name rather than silently decoding the timestamp column as if it were a measurement, which is the shape
+   * of the bug this method exists to close.
+   */
+  private int findAggregationSchemaIndex(final int rowIndex) {
+    if (rowIndex <= 0)
+      throw new IllegalArgumentException("Aggregation row index " + rowIndex
+          + " does not name a value column: position 0 of an engine row is the timestamp");
+    return findNonTsColumnSchemaIndex(rowIndex - 1);
   }
 
   private int findNonTsColumnSchemaIndex(final int nonTsIndex) {

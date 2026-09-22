@@ -20,8 +20,24 @@ package com.arcadedb.engine.timeseries;
 
 /**
  * Describes a single aggregation request within a multi-column push-down aggregation.
+ * <p>
+ * <b>{@code columnIndex} is a ROW index, never a schema index.</b> An engine row is
+ * {@code [timestamp, non-TIMESTAMP columns in schema order...]}, so position 0 is the timestamp and a value
+ * column sits at {@code 1 + <its ordinal among the non-TIMESTAMP columns>}. The two numbers coincide only
+ * while the TIMESTAMP column is declared FIRST, which issue #7702 stopped being a property of every
+ * declaration {@code CREATE TIMESERIES TYPE} can spell; every producer supplied the schema index and only the
+ * sealed half read it that way, so the same samples answered one number before compaction and another after it
+ * (issue #8140). {@link TimeSeriesGateway#aggregationRowIndex} is the conversion, and every surface that
+ * resolves a caller-supplied field name applies it.
+ * <p>
+ * A {@link AggregationType#COUNT} request reads no column at all - both halves count rows - so its
+ * {@code columnIndex} names nothing and is conventionally {@code -1}.
+ * <p>
+ * {@code TimeSeriesEngine#aggregate}, the single-column path, counts NON-TIMESTAMP columns instead (0 = the
+ * first non-timestamp column) and says so in its own javadoc. It is not reachable from any wire protocol or
+ * from the SQL push-down.
  *
- * @param columnIndex index into the row array (0 = timestamp, 1+ = value columns)
+ * @param columnIndex index into the engine row (0 = timestamp, 1+ = value columns in schema order)
  * @param type        the aggregation type (AVG, MAX, MIN, SUM, COUNT)
  * @param alias       the output alias for this aggregation
  */

@@ -550,6 +550,35 @@ public final class TimeSeriesGateway {
   }
 
   /**
+   * The position of a column's value inside an ENGINE ROW, given its SCHEMA index: {@code 0} for the TIMESTAMP
+   * column, and {@code 1 + <ordinal among the non-TIMESTAMP columns>} for every other one. This is the number
+   * {@link MultiColumnAggregationRequest#columnIndex()} carries (issue #8140).
+   * <p>
+   * {@code TimeSeriesBucket.readRow} writes the timestamp into position 0 and then walks the schema SKIPPING
+   * the TIMESTAMP column, so the two numbers coincide only while that column is declared FIRST - which issue
+   * #7702 stopped being a property of every declaration {@code CREATE TIMESERIES TYPE} can spell. All four
+   * surfaces that build an aggregation request resolve the caller's field name to a schema index (to validate
+   * the column with {@link #requireAggregatableColumn}) and then convert it here, so the request they hand the
+   * engine means the same thing on the mutable half, which indexes the row directly, and on the sealed half,
+   * which maps back to the schema column.
+   *
+   * @param schemaIndex the column's index in {@code columns}, as {@link #findColumnIndex} returns it
+   *
+   * @throws IndexOutOfBoundsException if {@code schemaIndex} does not name a column
+   */
+  public static int aggregationRowIndex(final List<ColumnDefinition> columns, final int schemaIndex) {
+    final ColumnDefinition target = columns.get(schemaIndex);
+    if (target.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+      return 0;
+
+    int ordinal = 0;
+    for (int i = 0; i < schemaIndex; i++)
+      if (columns.get(i).getRole() != ColumnDefinition.ColumnRole.TIMESTAMP)
+        ordinal++;
+    return ordinal + 1;
+  }
+
+  /**
    * Refuses an aggregation over a column no storage layer can read as a number, naming the column and saying
    * why (issue #7725).
    * <p>

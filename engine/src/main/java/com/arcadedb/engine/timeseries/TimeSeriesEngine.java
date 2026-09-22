@@ -607,8 +607,10 @@ public class TimeSeriesEngine implements AutoCloseable {
    * {@link #aggregateMulti} - so this note is for whoever adds the first one (issue #7725).
    *
    * @param columnIndex 0-based index among non-timestamp columns (i.e. column 0 = first non-ts column).
-   *                    This differs from {@link MultiColumnAggregationRequest#columnIndex()} which uses
-   *                    the full schema index (including the timestamp column).
+   *                    This differs by one from {@link MultiColumnAggregationRequest#columnIndex()}, which is
+   *                    the position in the ENGINE ROW and therefore reserves 0 for the timestamp. Neither is
+   *                    the SCHEMA index: this javadoc used to say the multi-column path took one, and it does
+   *                    not (issue #8140).
    */
   public AggregationResult aggregate(final long fromTs, final long toTs, final int columnIndex,
       final AggregationType aggType, final long bucketIntervalMs, final TagFilter tagFilter) throws IOException {
@@ -626,8 +628,8 @@ public class TimeSeriesEngine implements AutoCloseable {
 
       // Same unboxing as the multi-column path, for the reason TimeSeriesNaN.asMeasurement gives: the value
       // an aggregate sees must not depend on whether the sample has been compacted yet (issue #7725). Note the
-      // +1 - this method's columnIndex counts non-timestamp columns, unlike
-      // MultiColumnAggregationRequest.columnIndex().
+      // +1 - this method's columnIndex counts non-timestamp columns, so it is one less than the row position
+      // MultiColumnAggregationRequest.columnIndex() carries.
       value = columnIndex + 1 < row.length ? TimeSeriesNaN.asMeasurement(row[columnIndex + 1]) : TimeSeriesNaN.ABSENT;
 
       accumulateToBucket(result, bucketTs, value, aggType);
@@ -909,6 +911,11 @@ public class TimeSeriesEngine implements AutoCloseable {
   /**
    * The value one MUTABLE row contributes to one aggregation request, unboxed the way the sealed layer unboxes
    * the same sample (issue #7725).
+   * <p>
+   * {@code columnIndex} indexes the ROW directly, which is what {@link MultiColumnAggregationRequest} has
+   * always documented itself to carry. The sealed layer maps the same number back to a schema column, so the
+   * two halves answer the same column for the same request whatever position the declaration gives the
+   * TIMESTAMP column (issue #8140).
    * <p>
    * A COUNT contributes one per row without reading the column at all, matching the sealed layer, which does
    * not even resolve a schema index for such a request. Everything else goes through
