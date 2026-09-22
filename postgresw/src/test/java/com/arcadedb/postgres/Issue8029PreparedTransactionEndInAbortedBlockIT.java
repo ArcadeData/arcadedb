@@ -18,7 +18,6 @@
  */
 package com.arcadedb.postgres;
 
-import com.arcadedb.GlobalConfiguration;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -256,9 +255,9 @@ class Issue8029PreparedTransactionEndInAbortedBlockIT extends PostgresWireProtoc
     }
   }
 
-  private static Socket connect() throws Exception {
+  private Socket connect() throws Exception {
     final Socket socket = new Socket();
-    socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+    socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
     return socket;
   }
 
