@@ -373,12 +373,9 @@ public class ChatStorage {
    * no known-user supplier, a supplier that throws or returns {@code null}, or {@code username} not
    * itself among the accounts it returns.
    * <p>
-   * The moment a real collision IS found, it is recorded at {@code ambiguityMarker} before answering
-   * {@link LegacyNameOwnership#COLLISION}, so the fact survives the colliding account being deleted
-   * later - see the class javadoc's second migration rule. Two different colliding usernames' first
-   * requests can race here and both attempt the write; harmless, since {@link #markPermanentlyAmbiguous}
-   * writes an empty file whose only meaning is that it exists, so a double write says nothing a single
-   * one did not already say.
+   * A pure query: {@link #migrationRefusedByAccountList} is what records a
+   * {@link LegacyNameOwnership#COLLISION} on disk, so the fact survives the colliding account being
+   * deleted later - see the class javadoc's second migration rule.
    * <p>
    * A candidate account collides when its sanitized name matches {@code legacyName} CASE-INSENSITIVELY,
    * not only exactly (code review on PR #8126). {@code ServerSecurity} keys accounts by exact name, so
@@ -389,13 +386,20 @@ public class ChatStorage {
    * case-sensitively here would miss that the two accounts' sanitized names name the very same on-disk
    * directory and let one of them claim it as if only it had ever written there.
    * <p>
+   * {@code equalsIgnoreCase} rather than a {@code toLowerCase()} without a {@code Locale}, and the
+   * usual objection to it - that it only approximates a filesystem's Unicode case-folding, so a
+   * dotless i or a sharp s could fold differently - cannot arise here (review on PR #8186): BOTH
+   * operands are outputs of {@link #sanitizeFilename(String)}, which rewrites every character outside
+   * {@code [a-zA-Z0-9_-]} to {@code '_'}. The comparison therefore only ever runs on ASCII, where
+   * {@code equalsIgnoreCase}'s folding is exact and locale-independent.
+   * <p>
    * That comparison is deliberately filesystem-blind, as it has been since #8126: on a case-SENSITIVE
    * filesystem {@code chats/Alice} and {@code chats/alice} really are two directories and the refusal
    * costs each account an automatic migration it could have had. Refusing leaves both directories
    * intact on disk for an operator to move by hand; the other way round leaks one account's chats to
    * the other, so the conservative answer is the one worth being wrong with.
    */
-  private LegacyNameOwnership legacyNameOwnership(final String legacyName, final String username, final File ambiguityMarker) {
+  private LegacyNameOwnership legacyNameOwnership(final String legacyName, final String username) {
     if (knownUsernames == null)
       return LegacyNameOwnership.UNKNOWN;
 
@@ -409,10 +413,8 @@ public class ChatStorage {
       return LegacyNameOwnership.UNKNOWN;
 
     for (final String account : accounts)
-      if (!account.equals(username) && legacyName.equalsIgnoreCase(sanitizeFilename(account))) {
-        markPermanentlyAmbiguous(ambiguityMarker, legacyName);
+      if (!account.equals(username) && legacyName.equalsIgnoreCase(sanitizeFilename(account)))
         return LegacyNameOwnership.COLLISION;
-      }
 
     return LegacyNameOwnership.SOLE;
   }
@@ -438,20 +440,30 @@ public class ChatStorage {
    * only thing that constructs a {@code ChatStorage} outside tests, supplies them.
    */
   private boolean migrationRefusedByAccountList(final String legacyName, final String username, final File ambiguityMarker) {
-    return switch (legacyNameOwnership(legacyName, username, ambiguityMarker)) {
-      case COLLISION -> true;
-      case UNKNOWN -> legacyName.indexOf('_') >= 0;
-      case SOLE -> false;
-    };
+    switch (legacyNameOwnership(legacyName, username)) {
+    case COLLISION:
+      // Recorded here rather than inside the classifier, so the one side effect on this path sits at
+      // the point that acts on the answer instead of hiding behind a query (review on PR #8186).
+      markPermanentlyAmbiguous(ambiguityMarker, legacyName);
+      return true;
+    case UNKNOWN:
+      return legacyName.indexOf('_') >= 0;
+    default:
+      return false;
+    }
   }
 
   /**
-   * The marker {@link #legacyNameOwnership} writes the instant it proves two real accounts collide on
+   * The marker {@link #migrationRefusedByAccountList} writes the instant it proves two real accounts collide on
    * {@code legacyName}, and {@link #migrateLegacyDirectoryIfPresent} checks before ever consulting the
    * current account list again. An empty file is enough: its only meaning is that it exists. Named from
    * {@code legacyName} rather than kept in memory (contrast {@link #reportedLegacyDirectories}, which is
    * purely a once-per-name log gate) because it has to survive a server restart - the whole point is to
    * outlive the account whose later deletion would otherwise make the collision invisible again.
+   * <p>
+   * Two colliding usernames' first requests can race and both attempt the write; harmless, since
+   * {@link #markPermanentlyAmbiguous} writes an empty file whose only meaning is that it exists, so a
+   * double write says nothing a single one did not already say.
    */
   private File ambiguityMarkerFile(final String legacyName) {
     return Paths.get(rootPath, "chats", "." + legacyName + ".ambiguous-migration").toFile();
