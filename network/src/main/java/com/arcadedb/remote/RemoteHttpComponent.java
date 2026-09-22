@@ -375,7 +375,7 @@ public class RemoteHttpComponent extends RWLockContext {
 
         // Capture commit-index from response for read-your-writes consistency.
         if (this instanceof RemoteDatabase remoteDb)
-          remoteDb.captureCommitIndexHeader(response);
+          remoteDb.captureResponseHeaders(response);
 
         if (response.statusCode() != 200) {
           lastException = manageException(response, payloadCommand != null ? payloadCommand : operation);
