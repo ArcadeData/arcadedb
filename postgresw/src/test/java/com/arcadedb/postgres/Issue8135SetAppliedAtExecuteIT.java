@@ -19,6 +19,9 @@
 package com.arcadedb.postgres;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.utility.DateUtils;
 
 import org.junit.jupiter.api.AfterEach;
@@ -60,7 +63,10 @@ import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
  */
 class Issue8135SetAppliedAtExecuteIT extends PostgresWireProtocolTestBase {
 
-  private static final String SET_ISO = "SET datestyle = 'ISO'";
+  private static final String SET_ISO             = "SET datestyle = 'ISO'";
+  private static final String RESTRICTED_USER     = "issue8135noSettings";
+  private static final String RESTRICTED_PASSWORD = "issue8135noSettingsPwd";
+  private static final String RESTRICTED_GROUP    = "issue8135NoSettings";
 
   @AfterEach
   @Override
@@ -195,6 +201,46 @@ class Issue8135SetAppliedAtExecuteIT extends PostgresWireProtocolTestBase {
     }
   }
 
+  @Test
+  @DisplayName("[#8135] a SET refused at Execute is refused again when the same portal is re-executed, not silently skipped")
+  void refusedSetIsRefusedAgainOnReplay() throws Exception {
+    resetDateTimeFormat();
+
+    // A user whose group grants no database-level access, so SET datestyle's LocalSchema.setDateTimeFormat() -
+    // which checks UPDATE_DATABASE_SETTINGS - throws at Execute.
+    final ServerSecurity security = getServer(0).getSecurity();
+    security.saveGroup(getDatabaseName(), RESTRICTED_GROUP, new JSONObject().put("access", new JSONArray())
+        .put("types", new JSONObject().put("*", new JSONObject().put("access", new JSONArray(new String[] { "readRecord" })))));
+    security.createUser(new JSONObject().put("name", RESTRICTED_USER).put("password", security.encodePassword(RESTRICTED_PASSWORD))
+        .put("databases", new JSONObject().put(getDatabaseName(), new JSONArray(new String[] { RESTRICTED_GROUP }))));
+
+    try (final Socket socket = connect()) {
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+      authenticate(out, in, RESTRICTED_USER, RESTRICTED_PASSWORD);
+
+      assertTimeoutPreemptively(Duration.ofSeconds(30), () -> {
+        sendParse(out, "s", SET_ISO);
+        sendBind(out, "p", "s");
+        sendExecute(out, "p");
+        sendSync(out);
+        assertThat(messageTypesOf(readUntilReadyForQuery(in))).as("the SET is refused at Execute").contains('E').doesNotContain('C');
+
+        // Recovered by the Sync, the client retries the SAME bound portal - no new Bind. The refusal must be
+        // repeated: a marker consumed by the failed attempt would answer "CommandComplete SET" having applied nothing.
+        sendExecute(out, "p");
+        sendSync(out);
+        assertThat(messageTypesOf(readUntilReadyForQuery(in))).as("the retried SET is refused again, not reported as applied")
+            .contains('E').doesNotContain('C');
+      });
+    } finally {
+      security.dropUser(RESTRICTED_USER);
+      security.deleteGroup(getDatabaseName(), RESTRICTED_GROUP);
+    }
+
+    assertThat(currentDateTimeFormat()).as("a refused SET changes nothing").isNotEqualTo(DateUtils.DATE_TIME_ISO_8601_FORMAT);
+  }
+
   private static Socket connect() throws Exception {
     final Socket socket = new Socket();
     socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
@@ -210,9 +256,14 @@ class Issue8135SetAppliedAtExecuteIT extends PostgresWireProtocolTestBase {
   }
 
   private void authenticate(final DataOutputStream out, final DataInputStream in) throws Exception {
-    sendStartupMessage(out, "root", getDatabaseName());
+    authenticate(out, in, "root", DEFAULT_PASSWORD_FOR_TESTS);
+  }
+
+  private void authenticate(final DataOutputStream out, final DataInputStream in, final String user, final String password)
+      throws Exception {
+    sendStartupMessage(out, user, getDatabaseName());
     readMessage(in); // AuthenticationCleartextPassword
-    sendPasswordMessage(out, DEFAULT_PASSWORD_FOR_TESTS);
+    sendPasswordMessage(out, password);
     readMessageOfType(in, 'Z'); // drain AuthenticationOk/BackendKeyData/ParameterStatus.../ReadyForQuery
   }
 }

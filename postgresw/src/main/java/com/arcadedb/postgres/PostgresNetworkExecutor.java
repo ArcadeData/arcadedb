@@ -2846,14 +2846,17 @@ public class PostgresNetworkExecutor extends Thread {
    * Applies the {@code SET} a portal carries, at Execute (issue #8135) - {@code parseCommand()} only parses it and
    * records it on the portal. The marker is cleared once applied, like {@code applyTransactionControl()}'s: a new
    * Bind of the prepared statement copies it afresh out of the template, so a cached SET re-executed through a new
-   * Bind applies again, while re-running the same already-executed portal does not.
+   * Bind applies again, while re-running the same already-executed portal does not. Cleared only AFTER it applied:
+   * {@code SET datestyle} can be refused ({@code LocalSchema.setDateTimeFormat()} checks
+   * {@code UPDATE_DATABASE_SETTINGS}), and a marker consumed by the refused attempt would let a retry of the same
+   * portal answer {@code CommandComplete SET} having applied nothing.
    */
   private void applyPendingSetting(final PostgresPortal portal) {
     final String[] setting = portal.setting;
     if (setting == null)
       return;
-    portal.setting = null;
     applySetting(setting[0], setting[1]);
+    portal.setting = null;
   }
 
   private void applySetting(final String paramName, final String value) {
