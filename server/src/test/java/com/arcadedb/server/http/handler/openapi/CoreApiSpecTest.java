@@ -145,8 +145,9 @@ class CoreApiSpecTest {
     final Operation get = openAPI.getPaths().get("/api/v1/health").getGet();
     assertThat(get.getOperationId()).isEqualTo("checkHealth");
     assertThat(get.getResponses().keySet())
-        .as("GetHealthHandler.execute only ever returns 204")
-        .containsExactly("204");
+        .as("GetHealthHandler.execute returns 204, or 503 when ServerControlPlane.isLive() fails "
+            + "liveness for an escalated HA crash loop (issue #7622)")
+        .containsExactlyInAnyOrder("204", "503");
   }
 
   @Test
@@ -167,7 +168,7 @@ class CoreApiSpecTest {
     final Operation healthHead = openAPI.getPaths().get("/api/v1/health").getHead();
     assertThat(healthHead.getOperationId()).isEqualTo("checkHealthHead");
     assertThat(healthHead.getSecurity()).as("HEAD must stay public like GET").isEmpty();
-    assertThat(healthHead.getResponses().keySet()).containsExactly("204");
+    assertThat(healthHead.getResponses().keySet()).containsExactlyInAnyOrder("204", "503");
 
     final Operation readyHead = openAPI.getPaths().get("/api/v1/ready").getHead();
     assertThat(readyHead.getOperationId()).isEqualTo("checkReadyHead");

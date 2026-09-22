@@ -289,10 +289,17 @@ public class CoreApiSpec implements OpenApiContributor {
   private ApiResponses createHealthResponses() {
     final ApiResponses responses = new ApiResponses();
 
-    // Liveness only ever responds with 204 when reachable; it never returns 503 (unlike readiness).
     final ApiResponse liveResponse = new ApiResponse();
     liveResponse.setDescription("Server process and HTTP layer are up");
     responses.addApiResponse("204", liveResponse);
+
+    // ServerControlPlane.isLive() also fails liveness for a crash-loop the HA layer has already
+    // escalated and given up on (issue #7622), so an orchestrator restarts the process instead of an
+    // operator having to notice a SEVERE alert and do it by hand.
+    final ApiResponse notLiveResponse = new ApiResponse();
+    notLiveResponse.setDescription(
+        "The server is in a crash loop the HA layer has given up recovering from automatically; a process restart is required");
+    responses.addApiResponse("503", notLiveResponse);
 
     return responses;
   }
