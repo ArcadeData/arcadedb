@@ -246,8 +246,9 @@ public class TransactionContext implements Transaction {
   // originating commit. See isIndexChangesReplayed().
   private       boolean                              indexChangesReplayed  = true;
   /**
-   * Why this transaction can no longer be published, or {@code null} while it still can. See
-   * {@link #setRollbackOnly}.
+   * Why this transaction can no longer be published, or {@code null} while it still can. Written by
+   * {@link #setRollbackOnly} and read by {@link #commit1stPhase(boolean)} - the one method every commit path
+   * goes through (issue #8053).
    */
   private       String                               rollbackOnlyReason    = null;
   // KEEPS TRACK OF MODIFIED RECORD IN TX. AT 1ST PHASE COMMIT TIME THE RECORD ARE SERIALIZED AND INDEXES UPDATED. THIS DEFERRING IMPROVES SPEED ESPECIALLY
@@ -340,10 +341,8 @@ public class TransactionContext implements Transaction {
     if (status != STATUS.BEGUN)
       throw new TransactionException("Transaction already in commit phase");
 
-    if (rollbackOnlyReason != null)
-      throw new TransactionException("Transaction cannot be committed: " + rollbackOnlyReason
-          + ". Roll it back and retry");
-
+    // The rollback-only refusal is NOT repeated here: it lives in commit1stPhase (issue #8053), which this
+    // method calls next and which every other commit path reaches directly.
     final TransactionPhase1 phase1 = commit1stPhase(true);
     if (phase1 != null) {
       commit2ndPhase(phase1);
@@ -474,6 +473,9 @@ public class TransactionContext implements Transaction {
    * this makes the commit fail instead, and the caller's own error handling reach the rollback that does
    * discard the whole thing.
    * <p>
+   * Read by {@link #commit1stPhase(boolean)} - every commit path reaches that method, {@link #commit()} only
+   * some of them (issue #8053).
+   * <p>
    * The FIRST reason wins, so the message names what went wrong rather than what noticed it last. Cleared by
    * {@link #reset()}, which every conclusion of a transaction routes through, so the context is reusable for the
    * next {@code begin()}.
@@ -483,7 +485,7 @@ public class TransactionContext implements Transaction {
       rollbackOnlyReason = reason;
   }
 
-  /** Why {@link #commit()} will refuse this transaction, or {@code null} when it will not. */
+  /** Why {@link #commit1stPhase(boolean)} will refuse this transaction, or {@code null} when it will not. */
   public String getRollbackOnlyReason() {
     return rollbackOnlyReason;
   }
@@ -1896,6 +1898,15 @@ public class TransactionContext implements Transaction {
 
   /**
    * Locks the files in order, then checks all the pre-conditions.
+   * <p>
+   * <b>Where the rollback-only refusal lives (issue #8053).</b> This method, not {@link #commit()}: it is the
+   * one every commit path converges on, and it is already the method that decides whether there is anything to
+   * publish. {@code commit()} used to hold the only copy, and {@code commit()} is not what an HA node calls -
+   * {@code RaftReplicatedDatabase.commit()} drives phase 1 and phase 2 itself so it can put the WAL bytes on
+   * the wire between them, and so committed the very transaction the marker exists to refuse, on the
+   * deployment where it does not merely land locally but is applied on every follower. Checked BEFORE the
+   * status moves to {@code COMMIT_1ST_PHASE}, so the transaction is still rollback-able by the caller's own
+   * error handling, which is what {@link #setRollbackOnly} expects of it.
    *
    * @param isLeader whether this node is the current Raft leader - no longer consulted for index replay (#6964,
    *                 always replayed below), still consulted further down to gate the edge-append/slot-merge
@@ -1907,6 +1918,10 @@ public class TransactionContext implements Transaction {
 
     if (status != STATUS.BEGUN)
       throw new TransactionException("Transaction in phase " + status);
+
+    if (rollbackOnlyReason != null)
+      throw new TransactionException("Transaction cannot be committed: " + rollbackOnlyReason
+          + ". Roll it back and retry");
 
     // Acquire file locks BEFORE processing updatedRecords so that updateRecordNoLock
     // (which loads pages and follows multi-page record chunk chains) is serialized.
