@@ -317,6 +317,33 @@ public class DateUtils {
   }
 
   /**
+   * THE one converter from any of the engine's date/time representations to epoch milliseconds. Accepts everything
+   * {@link #dateTimeToTimestamp(Object, ChronoUnit)} accepts - {@link Date}, {@link Calendar}, {@link LocalDateTime},
+   * {@link LocalDate}, {@link ZonedDateTime}, {@link OffsetDateTime}, {@link Instant}, {@link Number} and a
+   * {@link String} in any format the engine parses - reading a zone-less value at UTC, which is how the engine's own
+   * DATETIME representation is anchored.
+   * <p>
+   * #8152: three near-copies of this conversion lived in three packages, each covering a different subset of the
+   * types, and a {@code return 0} / {@code return Long.MIN_VALUE} fall-through for the rest. When
+   * {@code ts.timeBucket()} changed its return type from {@link Date} to {@link LocalDateTime} (#7610, #4385) the
+   * change reached only some of them, and the continuous-aggregate refresher silently read every bucket as the epoch
+   * - a value indistinguishable from "no watermark yet" - so its watermark never advanced and every refresh appended
+   * a second copy of the whole aggregate. A SILENT SENTINEL IS WHAT TURNED A TYPE CHANGE INTO A DATA DEFECT, so this
+   * one throws on a type it does not know rather than answering with a number that means something else.
+   *
+   * @throws IllegalArgumentException when {@code value} is {@code null}, or of a type that carries no date/time
+   */
+  public static long toEpochMillis(final Object value) {
+    if (value == null)
+      throw new IllegalArgumentException("Cannot convert a null value to a timestamp");
+    final Long millis = dateTimeToTimestamp(null, value, ChronoUnit.MILLIS);
+    if (millis == null)
+      throw new IllegalArgumentException(
+          "Cannot convert value of type '" + value.getClass().getName() + "' to a timestamp in milliseconds");
+    return millis;
+  }
+
+  /**
    * Like {@link #dateTimeToTimestamp(Object, ChronoUnit)}, except a bare numeric {@link String} has its own epoch
    * precision inferred from its digit count and converted to {@code precisionToUse}, instead of its raw digits
    * being assumed to already be at {@code precisionToUse}.
