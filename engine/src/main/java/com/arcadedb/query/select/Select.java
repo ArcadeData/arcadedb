@@ -213,7 +213,6 @@ public class Select {
       fromBuckets(json.getJSONArray("fromBuckets").toList().stream().map(Object::toString).toArray(String[]::new));
 
     if (json.has("where")) {
-      checkNotCompiled();
       if (rootTreeElement != null)
         throw new IllegalArgumentException("Where has already been set");
       // #8167: BUILD THE TREE THE JSON DESCRIBES INSTEAD OF REPLAYING ITS LEAVES THROUGH THE FLUENT BUILDER. THE
