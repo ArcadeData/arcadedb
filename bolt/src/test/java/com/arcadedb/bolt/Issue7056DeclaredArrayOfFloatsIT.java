@@ -20,7 +20,6 @@ package com.arcadedb.bolt;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
-import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.neo4j.driver.AuthTokens;
@@ -47,7 +46,7 @@ import static org.assertj.core.api.Assertions.offset;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue7056DeclaredArrayOfFloatsIT extends BaseGraphServerTest {
+public class Issue7056DeclaredArrayOfFloatsIT extends BaseBoltServerTest {
 
   private static final List<Double> EMBEDDING = List.of(0.1, 0.2, 0.3, 0.4);
 
@@ -65,7 +64,7 @@ public class Issue7056DeclaredArrayOfFloatsIT extends BaseGraphServerTest {
   }
 
   private Driver getDriver() {
-    return GraphDatabase.driver("bolt://localhost:7687", AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
+    return GraphDatabase.driver(getServerBoltUrl(), AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
         Config.builder().withoutEncryption().build());
   }
 

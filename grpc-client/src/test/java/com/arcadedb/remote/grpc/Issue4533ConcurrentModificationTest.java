@@ -24,10 +24,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
-import com.arcadedb.server.BaseGraphServerTest;
-import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
@@ -44,7 +41,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
-class Issue4533ConcurrentModificationTest extends BaseGraphServerTest {
+class Issue4533ConcurrentModificationTest extends BaseGrpcClientServerTest {
 
   static final String TYPE = "SimpleVertex";
 
@@ -60,29 +57,22 @@ class Issue4533ConcurrentModificationTest extends BaseGraphServerTest {
   @Override
   public void endTest() {
     GlobalConfiguration.SERVER_PLUGINS.setValue("");
-    super.endTest();
-  }
-
-  @BeforeAll
-  void ensureServer() {
-    grpcServer = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
-  }
-
-  @AfterAll
-  void teardownServer() {
     if (grpcServer != null)
       grpcServer.close();
+    super.endTest();
   }
 
   @BeforeEach
   void createSchema() {
+    // Per test, after the server started: the gRPC port is assigned by the operating system on every start (#8209).
+    grpcServer = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
     try (final RemoteGrpcDatabase db = newConnection()) {
       db.command("sql", "CREATE VERTEX TYPE `" + TYPE + "` IF NOT EXISTS");
     }
   }
 
   private RemoteGrpcDatabase newConnection() {
-    return new RemoteGrpcDatabase(grpcServer, "localhost", 50051, 2480, getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
+    return new RemoteGrpcDatabase(grpcServer, "localhost", getServerGrpcPort(), getServerHttpPort(), getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
   }
 
   @Test

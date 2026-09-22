@@ -788,7 +788,7 @@ public enum Type {
         else if (value instanceof Instant instant)
           return instant.atOffset(ZoneOffset.UTC).toLocalDate();
         else if (value instanceof Number number)
-          return DateUtils.date(database, number.longValue(), LocalDate.class);
+          return DateUtils.date(database, DateUtils.numberToEpochUnits(number), LocalDate.class);
         else if (value instanceof Date date)
           // floorDiv, not '/': see DateUtils.dateToEpochDays. This is the DEFAULT coercion for a DATE column
           // (getJavaImplementation answers LocalDate), so a pre-epoch java.util.Date assigned to an ordinary DATE
@@ -819,7 +819,7 @@ public enum Type {
           if (property != null)
             return truncateToPropertyPrecision(time, property);
         } else if (value instanceof Number number) {
-          return DateUtils.date(database, number.longValue(), LocalDateTime.class);
+          return DateUtils.date(database, DateUtils.numberToEpochUnits(number), LocalDateTime.class);
         } else if (value instanceof Date date)
           return DateUtils.dateTime(database, date.getTime(), ChronoUnit.MILLIS, LocalDateTime.class,
               property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
@@ -850,7 +850,7 @@ public enum Type {
           if (property != null)
             return truncateToPropertyPrecision(time, property);
         } else if (value instanceof Number number)
-          return DateUtils.dateTime(database, number.longValue(), ChronoUnit.MILLIS, ZonedDateTime.class,
+          return DateUtils.dateTime(database, DateUtils.numberToEpochUnits(number), ChronoUnit.MILLIS, ZonedDateTime.class,
               property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
         else if (value instanceof Date date)
           return DateUtils.dateTime(database, date.getTime(), ChronoUnit.MILLIS, ZonedDateTime.class,
@@ -873,7 +873,7 @@ public enum Type {
             return truncateToPropertyPrecision(instant, property);
         }
         case Number number -> {
-          return DateUtils.dateTime(database, number.longValue(), ChronoUnit.MILLIS, Instant.class,
+          return DateUtils.dateTime(database, DateUtils.numberToEpochUnits(number), ChronoUnit.MILLIS, Instant.class,
               property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
         }
         case Date date -> {

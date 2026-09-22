@@ -33,7 +33,6 @@ import com.arcadedb.server.grpc.InsertOptions.TransactionMode;
 import com.arcadedb.server.grpc.InsertSummary;
 import com.arcadedb.server.grpc.ProjectionSettings.ProjectionEncoding;
 import com.arcadedb.server.grpc.StreamQueryRequest;
-import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -56,7 +55,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * with ContextConfiguration.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
-class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
+class RemoteGrpcDatabaseCoverageIT extends BaseGrpcClientServerTest {
 
   static final String DOC_TYPE    = "CovDoc";
   static final String VERTEX_TYPE = "CovVertex";
@@ -81,8 +80,8 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
 
   @BeforeEach
   void openAndPrepare() {
-    grpcServer = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
-    grpc = new RemoteGrpcDatabase(grpcServer, "localhost", 50051, getServerHttpPort(), getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
+    grpcServer = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    grpc = new RemoteGrpcDatabase(grpcServer, "localhost", getServerGrpcPort(), getServerHttpPort(), getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
 
     grpc.command("sql", "CREATE DOCUMENT TYPE `" + DOC_TYPE + "` IF NOT EXISTS", Map.of());
     grpc.command("sql", "CREATE PROPERTY `" + DOC_TYPE + "`.name IF NOT EXISTS STRING", Map.of());
@@ -452,8 +451,8 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
 
     // Re-open to verify the insert was rolled back
     grpcServer.close();
-    grpcServer = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
-    grpc = new RemoteGrpcDatabase(grpcServer, "localhost", 50051, getServerHttpPort(), getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
+    grpcServer = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    grpc = new RemoteGrpcDatabase(grpcServer, "localhost", getServerGrpcPort(), getServerHttpPort(), getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
     try (ResultSet rs = grpc.query("sql", "SELECT FROM `" + DOC_TYPE + "` WHERE name = 'autoRollback'", Map.of())) {
       assertThat(rs.hasNext()).isFalse();
     }

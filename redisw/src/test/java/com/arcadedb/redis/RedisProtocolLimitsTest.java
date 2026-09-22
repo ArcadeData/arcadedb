@@ -19,7 +19,6 @@
 package com.arcadedb.redis;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import redis.clients.jedis.Jedis;
@@ -38,9 +37,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class RedisProtocolLimitsTest extends BaseGraphServerTest {
+public class RedisProtocolLimitsTest extends BaseRedisServerTest {
 
-  private static final int    DEF_PORT = GlobalConfiguration.REDIS_PORT.getValueAsInteger();
   private static final String USER     = "root";
   private static final String PASSWORD = DEFAULT_PASSWORD_FOR_TESTS;
 
@@ -54,7 +52,7 @@ public class RedisProtocolLimitsTest extends BaseGraphServerTest {
       payload.append("*1\r\n");
     payload.append("$1\r\nx\r\n");
 
-    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+    try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
       socket.setSoTimeout(10_000);
       socket.getOutputStream().write(payload.toString().getBytes(StandardCharsets.US_ASCII));
       socket.getOutputStream().flush();
@@ -71,7 +69,7 @@ public class RedisProtocolLimitsTest extends BaseGraphServerTest {
     }
 
     // The listener/thread pool must still be healthy: a fresh connection behaves normally.
-    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+    try (final Jedis jedis = new Jedis("localhost", getServerRedisPort())) {
       assertThat(jedis.auth(USER, PASSWORD)).isEqualTo("OK");
       assertThat(jedis.ping()).isEqualTo("PONG");
     }
@@ -83,7 +81,7 @@ public class RedisProtocolLimitsTest extends BaseGraphServerTest {
     // connection thread for as long as the client trickles bytes.
     final String payload = "*2000000000\r\n";
 
-    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+    try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
       socket.setSoTimeout(10_000);
       socket.getOutputStream().write(payload.getBytes(StandardCharsets.US_ASCII));
       socket.getOutputStream().flush();
@@ -97,7 +95,7 @@ public class RedisProtocolLimitsTest extends BaseGraphServerTest {
     }
 
     // The listener/thread pool must still be healthy: a fresh connection behaves normally.
-    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+    try (final Jedis jedis = new Jedis("localhost", getServerRedisPort())) {
       assertThat(jedis.auth(USER, PASSWORD)).isEqualTo("OK");
       assertThat(jedis.ping()).isEqualTo("PONG");
     }
@@ -111,7 +109,7 @@ public class RedisProtocolLimitsTest extends BaseGraphServerTest {
     // the declared bytes, grow the parse buffer without bound.
     final String payload = "$2000000000\r\n";
 
-    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+    try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
       socket.setSoTimeout(10_000);
       socket.getOutputStream().write(payload.getBytes(StandardCharsets.US_ASCII));
       socket.getOutputStream().flush();
@@ -125,7 +123,7 @@ public class RedisProtocolLimitsTest extends BaseGraphServerTest {
     }
 
     // The listener/thread pool must still be healthy: a fresh connection behaves normally.
-    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+    try (final Jedis jedis = new Jedis("localhost", getServerRedisPort())) {
       assertThat(jedis.auth(USER, PASSWORD)).isEqualTo("OK");
       assertThat(jedis.ping()).isEqualTo("PONG");
     }
@@ -137,7 +135,7 @@ public class RedisProtocolLimitsTest extends BaseGraphServerTest {
     // outright instead of getting the same -ERR Protocol error + close treatment as the size-related cases.
     final String payload = "$abc\r\n";
 
-    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+    try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
       socket.setSoTimeout(10_000);
       socket.getOutputStream().write(payload.getBytes(StandardCharsets.US_ASCII));
       socket.getOutputStream().flush();
@@ -151,7 +149,7 @@ public class RedisProtocolLimitsTest extends BaseGraphServerTest {
     }
 
     // The listener/thread pool must still be healthy: a fresh connection behaves normally.
-    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+    try (final Jedis jedis = new Jedis("localhost", getServerRedisPort())) {
       assertThat(jedis.auth(USER, PASSWORD)).isEqualTo("OK");
       assertThat(jedis.ping()).isEqualTo("PONG");
     }
@@ -165,7 +163,7 @@ public class RedisProtocolLimitsTest extends BaseGraphServerTest {
     // RESP error reply relies on.
     final String payload = "$1\nA\r\n";
 
-    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+    try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
       socket.setSoTimeout(10_000);
       socket.getOutputStream().write(payload.getBytes(StandardCharsets.US_ASCII));
       socket.getOutputStream().flush();
@@ -181,7 +179,7 @@ public class RedisProtocolLimitsTest extends BaseGraphServerTest {
     }
 
     // The listener/thread pool must still be healthy: a fresh connection behaves normally.
-    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+    try (final Jedis jedis = new Jedis("localhost", getServerRedisPort())) {
       assertThat(jedis.auth(USER, PASSWORD)).isEqualTo("OK");
       assertThat(jedis.ping()).isEqualTo("PONG");
     }
@@ -195,7 +193,7 @@ public class RedisProtocolLimitsTest extends BaseGraphServerTest {
     // a value to check against. A real RESP length token is always short, so it must be rejected on its own.
     final String payload = "$" + "9".repeat(1000);
 
-    try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+    try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
       socket.setSoTimeout(10_000);
       socket.getOutputStream().write(payload.getBytes(StandardCharsets.US_ASCII));
       socket.getOutputStream().flush();
@@ -209,7 +207,7 @@ public class RedisProtocolLimitsTest extends BaseGraphServerTest {
     }
 
     // The listener/thread pool must still be healthy: a fresh connection behaves normally.
-    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+    try (final Jedis jedis = new Jedis("localhost", getServerRedisPort())) {
       assertThat(jedis.auth(USER, PASSWORD)).isEqualTo("OK");
       assertThat(jedis.ping()).isEqualTo("PONG");
     }
@@ -226,7 +224,7 @@ public class RedisProtocolLimitsTest extends BaseGraphServerTest {
         payload.append("*1\r\n");
       payload.append("$1\r\nx\r\n");
 
-      try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
         socket.setSoTimeout(10_000);
         socket.getOutputStream().write(payload.toString().getBytes(StandardCharsets.US_ASCII));
         socket.getOutputStream().flush();
@@ -240,7 +238,7 @@ public class RedisProtocolLimitsTest extends BaseGraphServerTest {
       }
 
       // A flat command (depth 1) must still be accepted at the lowered limit.
-      try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+      try (final Jedis jedis = new Jedis("localhost", getServerRedisPort())) {
         assertThat(jedis.auth(USER, PASSWORD)).isEqualTo("OK");
         assertThat(jedis.ping()).isEqualTo("PONG");
       }
@@ -266,7 +264,7 @@ public class RedisProtocolLimitsTest extends BaseGraphServerTest {
       // as far as the pre-auth NOAUTH check.
       payload.append("*1\r\n$4\r\nPING\r\n");
 
-      try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
         socket.setSoTimeout(10_000);
         socket.getOutputStream().write(payload.toString().getBytes(StandardCharsets.US_ASCII));
         socket.getOutputStream().flush();
@@ -290,7 +288,7 @@ public class RedisProtocolLimitsTest extends BaseGraphServerTest {
     try {
       final String payload = "*6\r\n";
 
-      try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
         socket.setSoTimeout(10_000);
         socket.getOutputStream().write(payload.getBytes(StandardCharsets.US_ASCII));
         socket.getOutputStream().flush();
@@ -304,7 +302,7 @@ public class RedisProtocolLimitsTest extends BaseGraphServerTest {
       }
 
       // Ordinary traffic (AUTH's 3 elements, PING's 1) is well under the lowered limit and must still work.
-      try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+      try (final Jedis jedis = new Jedis("localhost", getServerRedisPort())) {
         assertThat(jedis.auth(USER, PASSWORD)).isEqualTo("OK");
         assertThat(jedis.ping()).isEqualTo("PONG");
       }
@@ -322,7 +320,7 @@ public class RedisProtocolLimitsTest extends BaseGraphServerTest {
     try {
       final String payload = "$100\r\n";
 
-      try (final Socket socket = new Socket("localhost", DEF_PORT)) {
+      try (final Socket socket = new Socket("localhost", getServerRedisPort())) {
         socket.setSoTimeout(10_000);
         socket.getOutputStream().write(payload.getBytes(StandardCharsets.US_ASCII));
         socket.getOutputStream().flush();
@@ -336,7 +334,7 @@ public class RedisProtocolLimitsTest extends BaseGraphServerTest {
       }
 
       // Ordinary traffic well under the lowered limit must still be accepted.
-      try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+      try (final Jedis jedis = new Jedis("localhost", getServerRedisPort())) {
         assertThat(jedis.auth(USER, PASSWORD)).isEqualTo("OK");
         assertThat(jedis.ping()).isEqualTo("PONG");
       }

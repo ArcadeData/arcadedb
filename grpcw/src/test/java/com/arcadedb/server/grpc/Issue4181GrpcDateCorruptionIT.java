@@ -19,7 +19,6 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.google.protobuf.Timestamp;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
@@ -51,9 +50,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 2. BinarySerializer.serializeValue TYPE_DATE had no else branch for unrecognised types,
  *    so it wrote the type marker byte but no content bytes, corrupting the record layout.
  */
-public class Issue4181GrpcDateCorruptionIT extends BaseGraphServerTest {
-
-  private static final int GRPC_PORT = 50051;
+public class Issue4181GrpcDateCorruptionIT extends BaseGrpcServerTest {
 
   private static final Metadata.Key<String> USER_HEADER =
       Metadata.Key.of("x-arcade-user", Metadata.ASCII_STRING_MARSHALLER);
@@ -77,7 +74,7 @@ public class Issue4181GrpcDateCorruptionIT extends BaseGraphServerTest {
 
   @BeforeEach
   void setupGrpcClient() {
-    channel = ManagedChannelBuilder.forAddress("localhost", GRPC_PORT).usePlaintext().build();
+    channel = ManagedChannelBuilder.forAddress("localhost", getServerGrpcPort()).usePlaintext().build();
     final Channel authenticatedChannel = ClientInterceptors.intercept(channel, new AuthClientInterceptor());
     authenticatedStub = ArcadeDbServiceGrpc.newBlockingStub(authenticatedChannel);
   }

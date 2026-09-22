@@ -32,7 +32,7 @@ import java.util.logging.Level;
 public class RedisNetworkListener extends Thread {
   private final        ArcadeDBServer      server;
   private final        ServerSocketFactory socketFactory;
-  private              ServerSocket        serverSocket;
+  private volatile     ServerSocket        serverSocket;
   private volatile     boolean             active          = true;
   private static final int                 protocolVersion = -1;
   private              ClientConnected     callback;
@@ -122,9 +122,20 @@ public class RedisNetworkListener extends Thread {
     this.callback = callback;
   }
 
+  /**
+   * The local port the server socket is bound to, or -1 when it is not bound (never bound, or closed). Not
+   * necessarily the configured one: {@code 0} asks the operating system for a free port, which is how a test server
+   * avoids colliding with anything already listening (issue #8209).
+   */
+  public int getPort() {
+    final ServerSocket socket = serverSocket;
+    return socket != null && socket.isBound() && !socket.isClosed() ? socket.getLocalPort() : -1;
+  }
+
   @Override
   public String toString() {
-    return serverSocket.getLocalSocketAddress().toString();
+    final ServerSocket socket = serverSocket;
+    return socket != null ? String.valueOf(socket.getLocalSocketAddress()) : getName();
   }
 
   /**

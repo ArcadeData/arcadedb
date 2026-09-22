@@ -70,14 +70,15 @@ class Issue6996DescribeNonSqlLanguagePortalIT extends PostgresWireProtocolTestBa
       runSimpleQuery(out, in, "CREATE VERTEX TYPE V6996 IF NOT EXISTS");
       runSimpleQuery(out, in, "INSERT INTO V6996 SET name = 'alice'");
 
-      // Sync BEFORE Execute, so the Describe's reply cannot be confused with the Execute's own
+      // Flush BEFORE Execute, so the Describe's reply cannot be confused with the Execute's own
       // RowDescription: this is the exchange that makes the missing reply observable at all. Sent in one
       // message batch and read afterwards, the two are indistinguishable - '1','2','T','D','C','Z' either
-      // way - which is exactly the accidental compensation the issue describes.
+      // way - which is exactly the accidental compensation the issue describes. A Flush and not a Sync: a Sync
+      // ends the implicit transaction block, and the portal with it (issue #8212).
       sendParse(out, "{cypher} MATCH (n:V6996) RETURN n.name AS name");
       sendBind(out);
       sendDescribePortal(out);
-      sendSync(out);
+      sendFlush(out);
 
       assertThat(readWireMessage(in).type()).isEqualTo('1'); // ParseComplete
       assertThat(readWireMessage(in).type()).isEqualTo('2'); // BindComplete
@@ -89,7 +90,6 @@ class Issue6996DescribeNonSqlLanguagePortalIT extends PostgresWireProtocolTestBa
       assertThat(fieldNamesOf(describeReply))
           .as("and the shape it announces must be the one the rows actually carry")
           .containsExactly("name");
-      assertThat(readWireMessage(in).type()).isEqualTo('Z'); // ReadyForQuery
 
       // Execute must NOT re-announce the shape: the portal was already described.
       sendExecute(out);
@@ -109,7 +109,7 @@ class Issue6996DescribeNonSqlLanguagePortalIT extends PostgresWireProtocolTestBa
       sendParse(out, "{cypher} MATCH (n:V6996Empty) RETURN n.name AS name");
       sendBind(out);
       sendDescribePortal(out);
-      sendSync(out);
+      sendFlush(out);
 
       assertThat(readWireMessage(in).type()).isEqualTo('1');
       assertThat(readWireMessage(in).type()).isEqualTo('2');
@@ -122,7 +122,6 @@ class Issue6996DescribeNonSqlLanguagePortalIT extends PostgresWireProtocolTestBa
           .as("a query that matched nothing names no column: the columns come from the rows, and the schema "
               + "fallback behind them (issues #6156/#6185) reads the SQL parser, so it cannot answer for {cypher}")
           .isEmpty();
-      assertThat(readWireMessage(in).type()).isEqualTo('Z');
 
       // No rows, so Execute answers with the command tag alone, and the connection stays in sync.
       sendExecute(out);
@@ -141,14 +140,13 @@ class Issue6996DescribeNonSqlLanguagePortalIT extends PostgresWireProtocolTestBa
       sendParse(out, "{cypher} CREATE (n:V6996Write {name: 'once'}) RETURN n.name AS name");
       sendBind(out);
       sendDescribePortal(out);
-      sendSync(out);
+      sendFlush(out);
 
       assertThat(readWireMessage(in).type()).isEqualTo('1');
       assertThat(readWireMessage(in).type()).isEqualTo('2');
       assertThat(readWireMessage(in).type())
           .as("the write is run once, at Describe, and its own rows describe it")
           .isEqualTo('T');
-      assertThat(readWireMessage(in).type()).isEqualTo('Z');
 
       sendExecute(out);
       sendSync(out);
@@ -178,7 +176,7 @@ class Issue6996DescribeNonSqlLanguagePortalIT extends PostgresWireProtocolTestBa
       sendParse(out, "{cypher} CREATE (n:V6996NoReturn {name: 'silent'})");
       sendBind(out);
       sendDescribePortal(out);
-      sendSync(out);
+      sendFlush(out);
 
       assertThat(readWireMessage(in).type()).isEqualTo('1');
       assertThat(readWireMessage(in).type()).isEqualTo('2');
@@ -189,7 +187,6 @@ class Issue6996DescribeNonSqlLanguagePortalIT extends PostgresWireProtocolTestBa
       assertThat(fieldNamesOf(describeReply))
           .as("and it names no column, because the command returns none")
           .isEmpty();
-      assertThat(readWireMessage(in).type()).isEqualTo('Z');
 
       // The Execute that follows answers CommandComplete alone: no rows, and no second RowDescription.
       sendExecute(out);
@@ -345,6 +342,12 @@ class Issue6996DescribeNonSqlLanguagePortalIT extends PostgresWireProtocolTestBa
     out.writeByte('E');
     out.writeInt(4 + bodyBytes.length);
     out.write(bodyBytes);
+    out.flush();
+  }
+
+  private static void sendFlush(final DataOutputStream out) throws Exception {
+    out.writeByte('H');
+    out.writeInt(4);
     out.flush();
   }
 

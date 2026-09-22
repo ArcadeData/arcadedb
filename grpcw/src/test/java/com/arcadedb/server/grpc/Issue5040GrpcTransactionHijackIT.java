@@ -21,7 +21,6 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.security.ServerSecurity;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
@@ -63,9 +62,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * enforced independently of per-database authorization. Finally, transaction ids must be UUID-based
  * (high-entropy, collision-free).
  */
-public class Issue5040GrpcTransactionHijackIT extends BaseGraphServerTest {
+public class Issue5040GrpcTransactionHijackIT extends BaseGrpcServerTest {
 
-  private static final int    GRPC_PORT     = 50051;
   private static final String OWNER_DB      = "hijackowner5040db";
   private static final String ATTACKER_DB   = "hijackattacker5040db";
   private static final String OWNER_USER    = "owner5040";
@@ -104,7 +102,7 @@ public class Issue5040GrpcTransactionHijackIT extends BaseGraphServerTest {
     createUserIfMissing(security, ATTACKER_USER, ATTACKER_PASS, ATTACKER_DB);
     createUserIfMissing(security, NONOWNER_USER, NONOWNER_PASS, OWNER_DB);
 
-    channel = ManagedChannelBuilder.forAddress("localhost", GRPC_PORT).usePlaintext().build();
+    channel = ManagedChannelBuilder.forAddress("localhost", getServerGrpcPort()).usePlaintext().build();
 
     // Ensure a target type exists in the owner's database for the in-transaction inserts.
     final ExecuteCommandResponse createType = ownerStub().executeCommand(ExecuteCommandRequest.newBuilder()

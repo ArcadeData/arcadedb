@@ -24,7 +24,6 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
-import com.arcadedb.server.BaseGraphServerTest;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -43,7 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class BoltEdgeCreationPerformanceIT extends BaseGraphServerTest {
+public class BoltEdgeCreationPerformanceIT extends BaseBoltServerTest {
 
   private static final int PERSON_COUNT = 500;
   private static final int EDGE_COUNT = 500;
@@ -63,7 +62,7 @@ public class BoltEdgeCreationPerformanceIT extends BaseGraphServerTest {
 
   private Driver getDriver() {
     return GraphDatabase.driver(
-        "bolt://localhost:7687",
+        getServerBoltUrl(),
         AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
         Config.builder()
             .withoutEncryption()

@@ -19,7 +19,6 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.ServerPlugin;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
@@ -44,9 +43,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * is kept continuously busy must still be reaped once it exceeds the configured maximum age. This guarantees an
  * upper bound on how long any single gRPC transaction can hold resources, independent of client activity.
  */
-public class GrpcTransactionMaxAgeReaperIT extends BaseGraphServerTest {
-
-  private static final int GRPC_PORT = 50051;
+public class GrpcTransactionMaxAgeReaperIT extends BaseGrpcServerTest {
 
   private static final String MAX_AGE_MS       = "2000";
   private static final String REAPER_PERIOD_MS = "300";
@@ -73,7 +70,7 @@ public class GrpcTransactionMaxAgeReaperIT extends BaseGraphServerTest {
 
   @BeforeEach
   void setupGrpcClient() {
-    channel = ManagedChannelBuilder.forAddress("localhost", GRPC_PORT).usePlaintext().build();
+    channel = ManagedChannelBuilder.forAddress("localhost", getServerGrpcPort()).usePlaintext().build();
     final Channel authenticatedChannel = ClientInterceptors.intercept(channel, new AuthClientInterceptor());
     authenticatedStub = ArcadeDbServiceGrpc.newBlockingStub(authenticatedChannel);
   }
