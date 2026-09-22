@@ -162,6 +162,35 @@ class Issue7879MixedTypeValueComparisonTest {
         .isInstanceOfAny(IllegalArgumentException.class, IndexOutOfBoundsException.class);
   }
 
+  /**
+   * CodeRabbit review follow-up: negating a raw {@code compareTo()} result to reverse it overflows when that
+   * result is {@code Integer.MIN_VALUE} ({@code -Integer.MIN_VALUE == Integer.MIN_VALUE} in two's complement),
+   * silently breaking antisymmetry for that one pair - a real bug even though {@code RID}'s own bounded
+   * {@code {-1, 0, 1}} compareTo() never triggers it. A minimal {@code Comparable} that returns
+   * {@code MIN_VALUE} proves the fix ({@code Integer.compare(0, reversed)}) gets the sign right where a raw
+   * negation would not.
+   */
+  @Test
+  void reverseDirectionSurvivesAMinValueCompareToWithoutOverflow() {
+    final class ExtremeComparable implements Comparable<Object> {
+      @Override
+      public int compareTo(final Object o) {
+        if (o instanceof String)
+          return Integer.MIN_VALUE;
+        throw new ClassCastException();
+      }
+    }
+
+    final Object extreme = new ExtremeComparable();
+    // Forward: extreme.compareTo("x") answers MIN_VALUE directly - no negation involved, so this is just a sanity
+    // check that a legitimately extreme comparator value passes through unchanged.
+    assertThat(BinaryComparator.compareTo(extreme, "x")).isEqualTo(Integer.MIN_VALUE);
+    // Reverse: String#compareTo(Object) blind-casts `extreme` and throws, forcing the retry path this test is
+    // actually about. A raw `-Integer.MIN_VALUE` would overflow back to MIN_VALUE (still "less than"), which
+    // contradicts the forward direction above; the fix must answer "greater than" (positive) instead.
+    assertThat(BinaryComparator.compareTo("x", extreme)).isGreaterThan(0);
+  }
+
   /** The three repro lines from the issue report, direct on the utility. */
   @Test
   void issueReportedRepros() {

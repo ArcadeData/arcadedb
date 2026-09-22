@@ -627,7 +627,13 @@ public class BinaryComparator {
         // must propagate exactly as it would have from the forward attempt.
         if (b instanceof Comparable) {
           try {
-            return -((Comparable<Object>) b).compareTo(a);
+            // Integer.compare(0, reversed), not -reversed: negating a raw compareTo() result overflows when it
+            // is Integer.MIN_VALUE (-Integer.MIN_VALUE == Integer.MIN_VALUE in two's complement), silently
+            // breaking antisymmetry for that one pair - the classic gotcha Effective Java's comparator item
+            // warns against. Latent today (RID#compareTo() is hand-bounded to {-1, 0, 1}), but this is a
+            // general-purpose utility, not RID-specific (CodeRabbit review, issue #7879).
+            final int reversed = ((Comparable<Object>) b).compareTo(a);
+            return Integer.compare(0, reversed);
           } catch (final ClassCastException e2) {
             // Neither direction knows how to compare the other: genuinely unrelated types, fall through.
           }
