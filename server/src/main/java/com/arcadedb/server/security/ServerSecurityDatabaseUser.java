@@ -108,7 +108,7 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
 
   @Override
   public boolean isServerAdministrator() {
-    return !denyAll && ServerSecurityUser.ROOT_USER.equals(userName);
+    return !denyAll && ServerSecurityUser.isServerAdministrator(userName);
   }
 
   @Override

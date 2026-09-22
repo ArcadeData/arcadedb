@@ -121,7 +121,14 @@ public class ServerSecurityUser implements SecurityUser {
    * whose reach is the host rather than one database.
    */
   public boolean isServerAdministrator() {
-    return ROOT_USER.equals(name);
+    return isServerAdministrator(name);
+  }
+
+  /**
+   * The single definition of the server administrator, shared by every principal type that answers the question.
+   */
+  public static boolean isServerAdministrator(final String userName) {
+    return ROOT_USER.equals(userName);
   }
 
   @Override
