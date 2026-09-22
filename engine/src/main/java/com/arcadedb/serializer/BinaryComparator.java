@@ -485,23 +485,24 @@ public class BinaryComparator {
     final long b2Size = buffer2.getUnsignedNumber();
 
     final int minSize = (int) Math.min(b1Size, b2Size);
+    final int startPosition = buffer2.position();
 
     // Compare bytes UNSIGNED to stay consistent with every other string/byte comparison in the engine
     // (UnsignedBytesComparator, the static compareBytes and compare() for TYPE_STRING). A signed comparison
     // sorts UTF-8 continuation/lead bytes (>= 0x80, negative as a Java byte) before ASCII, which desynchronizes
     // the LSM binary-search seek from the range-cursor stop condition and makes partial-prefix lookups on
     // composite indexes return rows of unrelated keys when the key holds accented/multi-byte characters (#5321).
-    for (int i = 0; i < minSize; ++i) {
-      final int b1 = buffer1[i] & 0xFF;
-      final int b2 = buffer2.getByte() & 0xFF;
-
-      if (b1 > b2)
-        return 1;
-      else if (b1 < b2)
-        return -1;
+    // The common prefix is skipped in bulk (issue #7840): the position is then left exactly where the byte-at-a-time
+    // loop this replaces left it - past the differing byte, or past the whole compared run when there is none - which
+    // is what lets the caller go straight on to the next component of a composite key.
+    final int mismatch = buffer2.mismatch(buffer1, minSize);
+    if (mismatch < 0) {
+      buffer2.position(startPosition + minSize);
+      return Long.compare(b1Size, b2Size);
     }
 
-    return Long.compare(b1Size, b2Size);
+    buffer2.position(startPosition + mismatch + 1);
+    return Integer.compare(buffer1[mismatch] & 0xFF, buffer2.getByte(startPosition + mismatch) & 0xFF);
   }
 
   public static boolean equals(final Object a, final Object b) {
@@ -609,8 +610,48 @@ public class BinaryComparator {
    * replacement byte {@code '?'} for it, which sorts below almost everything, while the remap would sort it above the
    * whole BMP. So when the first difference sits on or right after a surrogate that is not part of a pair, the pages'
    * own encoding is compared instead - the rare path, and the only one that allocates.
+   * <p>
+   * All of that is reached only by a string that HOLDS a surrogate. A pair that holds none - every ASCII or Latin
+   * key, which is what an index compares almost all of the time - is handed to {@link String#compareTo(String)}
+   * instead, whose intrinsic answers the identical number several times faster (issue #7840).
    */
   public static int compareStrings(final String a, final String b) {
+    // ONE PAST THE LAST UNIT compareUtf16AsUtf8() CAN LOOK AT: it stops at the first difference, which lies below the
+    // shorter length, and the isolated-surrogate test around that difference reaches at most the unit after it.
+    final int decidingUnits = Math.min(a.length(), b.length()) + 1;
+
+    if (!containsSurrogate(a, decidingUnits) && !containsSurrogate(b, decidingUnits))
+      // NEITHER OPERAND REACHES THE ONE BLOCK WHERE THE TWO ORDERS DISAGREE, SO THE JDK COMPARISON ALREADY ANSWERS
+      // WHAT THE REMAPPING LOOP WOULD - down to the returned value, since String.compareTo() also answers the first
+      // differing pair's difference, or the length difference when one string is a prefix of the other. It matters
+      // because compareTo() is a JIT intrinsic that compares many code units per instruction while the loop below
+      // walks one at a time: an LSM composite key whose trailing component is a long, densely shared string (a file
+      // path, a URL) pays that walk once per comparison, and it is ~2x the cost of the scan plus the intrinsic on
+      // such keys - part of the per-seek cost issue #7840 reported against 26.9.1, the release the walk landed in
+      // (#6997).
+      return a.compareTo(b);
+
+    return compareUtf16AsUtf8(a, b);
+  }
+
+  /**
+   * True when the first {@code limit} units of {@code s} hold a UTF-16 surrogate, the only thing that can make
+   * {@link String#compareTo(String)} and the UTF-8 byte order disagree: both the remap in
+   * {@link #compareUtf16AsUtf8(String, String)} and its isolated-surrogate fallback are reached only through one.
+   * No allocation, and it stops at the units a comparison can actually decide on rather than walking the tails.
+   */
+  private static boolean containsSurrogate(final String s, final int limit) {
+    for (int i = 0, length = Math.min(limit, s.length()); i < length; i++)
+      if (Character.isSurrogate(s.charAt(i)))
+        return true;
+    return false;
+  }
+
+  /**
+   * The general case of {@link #compareStrings(String, String)}: at least one operand holds a surrogate, so the
+   * UTF-16 code unit order has to be remapped onto the UTF-8 byte order one differing pair at a time.
+   */
+  private static int compareUtf16AsUtf8(final String a, final String b) {
     final int aLength = a.length();
     final int bLength = b.length();
     final int length = Math.min(aLength, bLength);

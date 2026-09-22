@@ -541,16 +541,34 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   protected Object[] convertKeys(final Object[] keys, final byte[] keyTypes) {
     // Declared-type narrowing AND case-insensitive folding both happen here; this layers only the disk-storage
     // byte[]-for-String probe encoding on top, so a case-insensitive String is never folded twice.
-    final Object[] convertedKeys = convertKeysToDeclaredTypes(keys, keyTypes);
-    if (convertedKeys == null)
+    return encodeKeysForPageProbe(convertKeysToDeclaredTypes(keys, keyTypes));
+  }
+
+  /**
+   * Layers only the disk-storage {@code byte[]}-for-{@code String} probe encoding on top of keys ALREADY narrowed by
+   * {@link #convertKeysToDeclaredTypes}, leaving that array untouched.
+   * <p>
+   * A caller that needs BOTH forms of the same bound - {@code LSMTreeIndexCursor} does, one to seed {@code lookupInPage}
+   * and one to compare against deserialized keys - used to build them independently, which ran the declared-type
+   * narrowing and the collation folding twice over every component of every bound on every seek (issue #7840).
+   *
+   * @param declaredTypeKeys keys already narrowed to the index's declared types, or {@code null}
+   *
+   * @return a new array with each {@code String} component encoded, or {@code null} when the input is
+   * {@code null} itself
+   */
+  protected static Object[] encodeKeysForPageProbe(final Object[] declaredTypeKeys) {
+    if (declaredTypeKeys == null)
       return null;
 
-    for (int i = 0; i < convertedKeys.length; ++i) {
-      if (convertedKeys[i] instanceof String string)
-        // OPTIMIZATION: ALWAYS CONVERT STRINGS TO BYTE[]
-        convertedKeys[i] = string.getBytes(DatabaseFactory.getDefaultCharset());
-    }
-    return convertedKeys;
+    final Object[] encoded = new Object[declaredTypeKeys.length];
+    for (int i = 0; i < declaredTypeKeys.length; ++i)
+      // OPTIMIZATION: ALWAYS CONVERT STRINGS TO BYTE[]
+      encoded[i] = declaredTypeKeys[i] instanceof String string ?
+          string.getBytes(DatabaseFactory.getDefaultCharset()) :
+          declaredTypeKeys[i];
+
+    return encoded;
   }
 
   /**
