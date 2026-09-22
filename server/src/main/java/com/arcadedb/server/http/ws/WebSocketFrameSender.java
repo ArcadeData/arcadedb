@@ -164,6 +164,12 @@ public final class WebSocketFrameSender {
    * on at a time, this one can be reached from that I/O thread ({@code WebSocketReceiveListener}) AND from an
    * Undertow worker thread ({@code WebSocketInsertProtocol.execute}) concurrently, so two racing first sends
    * could otherwise each create and install their own counter and silently split the budget in two.
+   * <p>
+   * The lock is {@code channel} itself rather than a lock object of this class's own, because the counter
+   * has to be found (or created) from the {@code channel} instance in the first place and nothing else in
+   * this codebase is known to synchronize on a {@code WebSocketChannel}: the risk a private lock would avoid
+   * - contending with an unrelated synchronized block elsewhere that happens to use the same monitor - does
+   * not apply here, and this section is held only long enough to check-then-create one attribute.
    */
   private static AtomicLong pendingBytes(final WebSocketChannel channel) {
     AtomicLong pending = (AtomicLong) channel.getAttribute(PENDING_BYTES);
