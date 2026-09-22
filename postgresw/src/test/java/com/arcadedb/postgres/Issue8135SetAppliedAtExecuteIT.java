@@ -42,6 +42,7 @@ import static com.arcadedb.postgres.PostgresWireMessages.sendBind;
 import static com.arcadedb.postgres.PostgresWireMessages.sendDescribe;
 import static com.arcadedb.postgres.PostgresWireMessages.sendExecute;
 import static com.arcadedb.postgres.PostgresWireMessages.sendParse;
+import static com.arcadedb.postgres.PostgresWireMessages.sendSimpleQuery;
 import static com.arcadedb.postgres.PostgresWireMessages.sendSync;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
@@ -92,6 +93,11 @@ class Issue8135SetAppliedAtExecuteIT extends PostgresWireProtocolTestBase {
         assertThat(messageTypesOf(readUntilReadyForQuery(in))).as("the Parse is accepted").containsExactly('1', 'Z');
         assertThat(currentDateTimeFormat()).as("preparing a SET must not apply it").isNotEqualTo(DateUtils.DATE_TIME_ISO_8601_FORMAT);
 
+        // An explicit block keeps portal "p" alive across the Syncs below: in autocommit a Sync ends the implicit
+        // transaction and the portal with it, as in PostgreSQL (issue #8212).
+        sendSimpleQuery(out, "BEGIN");
+        assertThat(messageTypesOf(readUntilReadyForQuery(in))).containsExactly('C', 'Z');
+
         // Bound and described but still never executed.
         sendBind(out, "p", "s");
         sendDescribe(out, 'P', "p");
@@ -106,6 +112,9 @@ class Issue8135SetAppliedAtExecuteIT extends PostgresWireProtocolTestBase {
         final List<WireMessage> executed = readUntilReadyForQuery(in);
         assertThat(messageTypesOf(executed)).containsExactly('C', 'Z');
         assertThat(currentDateTimeFormat()).as("executing the SET applies it").isEqualTo(DateUtils.DATE_TIME_ISO_8601_FORMAT);
+
+        sendSimpleQuery(out, "COMMIT");
+        assertThat(messageTypesOf(readUntilReadyForQuery(in))).containsExactly('C', 'Z');
       });
     }
   }
@@ -154,6 +163,11 @@ class Issue8135SetAppliedAtExecuteIT extends PostgresWireProtocolTestBase {
       authenticate(out, in);
 
       assertTimeoutPreemptively(Duration.ofSeconds(30), () -> {
+        // An explicit block keeps portal "p" alive across the Sync: in autocommit a Sync ends the implicit
+        // transaction and the portal with it, as in PostgreSQL (issue #8212).
+        sendSimpleQuery(out, "BEGIN");
+        assertThat(messageTypesOf(readUntilReadyForQuery(in))).containsExactly('C', 'Z');
+
         sendParse(out, "s", SET_ISO);
         sendBind(out, "p", "s");
         sendExecute(out, "p");
@@ -170,6 +184,9 @@ class Issue8135SetAppliedAtExecuteIT extends PostgresWireProtocolTestBase {
         assertThat(messageTypesOf(readUntilReadyForQuery(in))).containsExactly('C', 'Z');
         assertThat(currentDateTimeFormat()).as("a replayed portal applies its SET once")
             .isNotEqualTo(DateUtils.DATE_TIME_ISO_8601_FORMAT);
+
+        sendSimpleQuery(out, "COMMIT");
+        assertThat(messageTypesOf(readUntilReadyForQuery(in))).containsExactly('C', 'Z');
       });
     }
   }
@@ -241,9 +258,9 @@ class Issue8135SetAppliedAtExecuteIT extends PostgresWireProtocolTestBase {
     assertThat(currentDateTimeFormat()).as("a refused SET changes nothing").isNotEqualTo(DateUtils.DATE_TIME_ISO_8601_FORMAT);
   }
 
-  private static Socket connect() throws Exception {
+  private Socket connect() throws Exception {
     final Socket socket = new Socket();
-    socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+    socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
     return socket;
   }
 
