@@ -37,10 +37,21 @@ import io.undertow.server.HttpServerExchange;
  * <p>
  * {@link #requiresTransaction()} is false: these are reads, and an auto-commit wrapper around a read would only
  * add a transaction to roll back.
+ * <p>
+ * {@link #participatesInSessionTransaction()} is false, for the reason issue #7859 gave the TimeSeries and
+ * observability routes: these are reads that raise {@link IllegalArgumentException} on malformed client input
+ * (a missing or non-numeric {@code k}, an unknown index name) before anything reaches the engine, and on the
+ * inherited default that 400 still reached {@code HttpSession.execute}'s rollback arm and destroyed a
+ * transaction the client opened with {@code /begin} and still believed it owned (issue #8063).
  */
 public abstract class AbstractVectorSearchHandler extends DatabaseAbstractHandler {
   protected AbstractVectorSearchHandler(final HttpServer httpServer) {
     super(httpServer);
+  }
+
+  @Override
+  protected boolean participatesInSessionTransaction() {
+    return false;
   }
 
   /**
