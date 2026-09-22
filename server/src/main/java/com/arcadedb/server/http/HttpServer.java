@@ -312,7 +312,7 @@ public class HttpServer implements ServerPlugin {
 
     // AI routes are always registered; the chat handler checks isConfigured() at request time
     final var aiConfig = server.getAiConfiguration();
-    final var chatStorage = new ChatStorage(server.getRootPath());
+    final var chatStorage = new ChatStorage(server.getRootPath(), () -> server.getSecurity().getUsers());
     final var aiChatsHandler = new AiChatsHandler(this, chatStorage);
     final RouteRecordingRoutingHandler aiRoutes = new RouteRecordingRoutingHandler();
     routes.addPrefixPath("/api/v1/ai", aiRoutes//
