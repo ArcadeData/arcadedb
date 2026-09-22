@@ -343,10 +343,8 @@ public class PostGrafanaQueryHandler extends AbstractObservabilityHandler {
         // belongs in the error frame with the other caller mistakes above.
         TimeSeriesGateway.requireAggregatableColumn(columns.get(colIndex), aggType);
 
-        // The request carries the position the value occupies in an ENGINE ROW, not its schema index: the two
-        // are the same number only while the TIMESTAMP column is declared first (issue #8140).
-        requests.add(new MultiColumnAggregationRequest(
-            TimeSeriesGateway.aggregationRowIndex(columns, colIndex), aggType, alias));
+        // As on /ts/query: the factory owns both rules a producer has to get right (issue #8140).
+        requests.add(MultiColumnAggregationRequest.of(columns, colIndex, aggType, alias));
         aliases.add(alias);
       }
     } catch (final IllegalArgumentException e) {

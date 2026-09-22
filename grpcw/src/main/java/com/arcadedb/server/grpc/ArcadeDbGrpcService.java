@@ -3718,10 +3718,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       final String alias = request.getAlias().isEmpty()
           ? request.getField() + "_" + type.name().toLowerCase(Locale.ROOT)
           : request.getAlias();
-      // The request carries the position the value occupies in an ENGINE ROW, not its schema index: the two
-      // are the same number only while the TIMESTAMP column is declared first (issue #8140).
-      requests.add(new MultiColumnAggregationRequest(
-          TimeSeriesGateway.aggregationRowIndex(columns, columnIndex), type, alias));
+      // As on the two HTTP endpoints: the factory owns both rules a producer has to get right (issue #8140).
+      requests.add(MultiColumnAggregationRequest.of(columns, columnIndex, type, alias));
       aliases.add(alias);
     }
 

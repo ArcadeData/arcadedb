@@ -228,6 +228,36 @@ class Issue8140AggregationColumnIndexConventionTest extends TestHelper {
     assertThat(TimeSeriesGateway.columnNames(columns, null)).containsExactly("ts", "v", "host", "w");
   }
 
+  /**
+   * The factory every producer builds through, which is what makes the two rules hold at all four of them
+   * rather than at whichever call sites remembered them (code review on PR #8192). Before this, three of the
+   * four producers converted unconditionally, so an HTTP- or gRPC-built COUNT carried a real row index while
+   * the record's javadoc said it named no column - harmless only for as long as every consumer kept checking
+   * the type before the index.
+   */
+  @Test
+  void theFactoryGivesACountNoColumnAndEveryOtherRequestTheRowIndex() {
+    createSeries();
+    final List<ColumnDefinition> columns = columns();
+
+    assertThat(MultiColumnAggregationRequest.of(columns, 0, AggregationType.SUM, "s").columnIndex())
+        .as("'v' has schema index 0 and row index 1").isEqualTo(1);
+    assertThat(MultiColumnAggregationRequest.of(columns, 3, AggregationType.MAX, "m").columnIndex())
+        .as("'w' is the control: its two indices coincide").isEqualTo(3);
+
+    assertThat(MultiColumnAggregationRequest.of(columns, 0, AggregationType.COUNT, "c").columnIndex())
+        .as("a COUNT names no column however it was asked for")
+        .isEqualTo(MultiColumnAggregationRequest.NO_COLUMN);
+    assertThat(MultiColumnAggregationRequest.of(columns, 2, AggregationType.COUNT, "c").columnIndex())
+        .as("not even when the field it names is the TIMESTAMP column, which COUNT is exempt from refusing")
+        .isEqualTo(MultiColumnAggregationRequest.NO_COLUMN);
+    assertThat(MultiColumnAggregationRequest.count("c").columnIndex())
+        .isEqualTo(MultiColumnAggregationRequest.NO_COLUMN);
+
+    assertThat(MultiColumnAggregationRequest.NO_COLUMN)
+        .as("position 0 of an engine row is the timestamp, so it cannot double as 'no column'").isNegative();
+  }
+
   // -------------------------------------------------------------------------------------------------
   // Plumbing
   // -------------------------------------------------------------------------------------------------

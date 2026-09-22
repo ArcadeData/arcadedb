@@ -82,7 +82,6 @@ import com.arcadedb.engine.timeseries.AggregationType;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.MultiColumnAggregationRequest;
 import com.arcadedb.engine.timeseries.TagFilter;
-import com.arcadedb.engine.timeseries.TimeSeriesGateway;
 import com.arcadedb.function.sql.time.SQLFunctionTimeBucket;
 import com.arcadedb.function.sql.time.SQLFunctionTsLast;
 import com.arcadedb.query.sql.parser.BaseIdentifier;
@@ -3236,15 +3235,15 @@ public class SelectExecutionPlanner {
         if (aggType == null)
           return false; // unsupported aggregate
 
-        // COUNT reads no column on either half of the push-down, so its request names none (issue #8140):
-        // -1 rather than 0, because 0 is the timestamp's own position in an engine row.
-        int rowIndex = -1;
+        // COUNT is the one aggregate this push-down never resolves a column for: it counts rows on both
+        // halves, and COUNT(*) names no field to resolve (issue #8140).
+        int schemaIndex = -1;
         if (aggType != AggregationType.COUNT) {
           // Extract field name from first parameter
           if (funcCall.getParams().isEmpty())
             return false;
           final String fieldName = funcCall.getParams().get(0).toString().trim();
-          final int schemaIndex = findColumnIndex(columns, fieldName);
+          schemaIndex = findColumnIndex(columns, fieldName);
           if (schemaIndex < 0)
             return false; // field not found in timeseries columns
           if (!columns.get(schemaIndex).isNumericallyAggregatable())
@@ -3252,13 +3251,14 @@ public class SelectExecutionPlanner {
             // push-down would answer it inconsistently (issue #7725), so decline it and let the generic
             // aggregation path have the query, which is what every other unsupported shape above does too.
             return false;
-          // The request carries the position the value occupies in an ENGINE ROW, which is the schema index
-          // only while the TIMESTAMP column is declared first (issue #8140).
-          rowIndex = TimeSeriesGateway.aggregationRowIndex(columns, schemaIndex);
         }
 
         final String alias = item.getProjectionAliasAsString();
-        requests.add(new MultiColumnAggregationRequest(rowIndex, aggType, alias));
+        // The factory turns the schema index into the ROW index the request carries, and gives a COUNT no
+        // column at all - the two rules every producer of a request has to get right (issue #8140).
+        requests.add(aggType == AggregationType.COUNT
+            ? MultiColumnAggregationRequest.count(alias)
+            : MultiColumnAggregationRequest.of(columns, schemaIndex, aggType, alias));
         requestAliasToOutputAlias.put(alias, alias);
       }
     }

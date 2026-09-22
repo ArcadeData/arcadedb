@@ -287,10 +287,10 @@ public class PostTimeSeriesQueryHandler extends DatabaseAbstractHandler {
         // 500 after it (issue #7725). The catch below renders it as the same named 400 as the refusals above.
         TimeSeriesGateway.requireAggregatableColumn(columns.get(colIndex), aggType);
 
-        // The request carries the position the value occupies in an ENGINE ROW, not its schema index: the two
-        // are the same number only while the TIMESTAMP column is declared first (issue #8140).
-        requests.add(new MultiColumnAggregationRequest(
-            TimeSeriesGateway.aggregationRowIndex(columns, colIndex), aggType, alias));
+        // Never the canonical constructor: the factory is what turns the schema index into the ENGINE ROW
+        // position the request carries - the two are the same number only while the TIMESTAMP column is
+        // declared first - and what gives a COUNT no column at all (issue #8140).
+        requests.add(MultiColumnAggregationRequest.of(columns, colIndex, aggType, alias));
         aggNames.put(alias);
       }
     } catch (final IllegalArgumentException e) {
