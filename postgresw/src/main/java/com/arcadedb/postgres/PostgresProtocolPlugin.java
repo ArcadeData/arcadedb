@@ -25,10 +25,10 @@ import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.network.DefaultServerSocketFactory;
 
 public class PostgresProtocolPlugin implements ServerPlugin {
-  private ArcadeDBServer          server;
+  private          ArcadeDBServer          server;
   private volatile PostgresNetworkListener listener;
-  private String                  host;
-  private String                  portRange;
+  private          String                  host;
+  private          String                  portRange;
 
   @Override
   public void configure(final ArcadeDBServer arcadeDBServer, final ContextConfiguration configuration) {
