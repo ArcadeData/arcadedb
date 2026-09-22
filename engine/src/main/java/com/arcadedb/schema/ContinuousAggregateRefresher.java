@@ -31,6 +31,16 @@ import java.util.logging.Level;
 import java.util.regex.Pattern;
 
 public class ContinuousAggregateRefresher {
+  // Allows letters, digits, and underscores only — consistent with ArcadeDB identifier rules.
+  // Backtick, dot, hyphen, and other injection-enabling characters are excluded.
+  private static final Pattern SAFE_COLUMN_NAME = Pattern.compile("[A-Za-z0-9_]+");
+
+  /**
+   * The clauses a SELECT can carry AFTER its WHERE, in the order {@code SelectStatement.toString()} writes them.
+   * The first top-level occurrence of any of them is where the WHERE clause ENDS, which is where the bracket that
+   * keeps the caller's own predicate intact has to close (#8156).
+   */
+  private static final String[] CLAUSES_AFTER_WHERE = { "GROUP BY", "ORDER BY", "UNWIND", "SKIP", "LIMIT", "TIMEOUT" };
 
   public static void incrementalRefresh(final Database database, final ContinuousAggregateImpl ca) {
     if (!ca.tryBeginRefresh()) {
@@ -124,17 +134,6 @@ public class ContinuousAggregateRefresher {
       ca.endRefresh();
     }
   }
-
-  // Allows letters, digits, and underscores only — consistent with ArcadeDB identifier rules.
-  // Backtick, dot, hyphen, and other injection-enabling characters are excluded.
-  private static final Pattern SAFE_COLUMN_NAME = Pattern.compile("[A-Za-z0-9_]+");
-
-  /**
-   * The clauses a SELECT can carry AFTER its WHERE, in the order {@code SelectStatement.toString()} writes them.
-   * The first top-level occurrence of any of them is where the WHERE clause ENDS, which is where the bracket that
-   * keeps the caller's own predicate intact has to close (#8156).
-   */
-  private static final String[] CLAUSES_AFTER_WHERE = { "GROUP BY", "ORDER BY", "UNWIND", "SKIP", "LIMIT", "TIMEOUT" };
 
   /**
    * The legacy two-argument reading, where a watermark of 0 means "never set". Kept for callers that hold no flag.
