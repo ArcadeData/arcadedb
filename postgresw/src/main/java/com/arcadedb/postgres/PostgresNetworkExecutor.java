@@ -2331,6 +2331,20 @@ public class PostgresNetworkExecutor extends Thread {
       final String portalName = readString();
       final String sourcePreparedStatement = readString();
 
+      // THE DESTINATION PORTAL IS INVALIDATED BEFORE ANYTHING THAT CAN FAIL (issue #8071), the Bind-side twin of
+      // parseCommand()'s rule for prepared statements (issue #7906). The registration further down runs only on
+      // the success path, so a Bind that failed - a parameter PostgresType.deserialize() refuses (the catch arm
+      // below), or the aborted-block refusal - used to leave the PREVIOUS portal bound under this name, and an
+      // Execute of that name in a later round trip found a portal already executed and answered it with a success
+      // tag, for a statement the client had just been told was not bound. PostgreSQL never leaves one usable
+      // either: exec_bind_message() replaces the unnamed portal before converting any parameter, and every error
+      // aborts the transaction the old portal belonged to. A Bind is always a request to replace the name, so a
+      // failed one leaves no portal under it; the only exception is skip-until-Sync, where PostgreSQL DISCARDS
+      // the message unread and it must leave the name exactly as it found it - the same boundary parseCommand()
+      // draws. skipUntilSync cannot change while the rest of this message is read, so it is safe to test here.
+      if (!skipUntilSync)
+        portals.remove(portalName);
+
       // Look up the prepared statement (stored during PARSE) and create THIS Bind's own independent portal
       // from it (issue #6660 / CodeRabbit review on #6658). PARSE's PostgresPortal is a read-only template
       // from here on - bindFrom() copies what PARSE already fixed for the statement (query, sqlStatement,
@@ -2465,7 +2479,8 @@ public class PostgresNetworkExecutor extends Thread {
         // refuse with an ErrorResponse instead of silently returning, so the client knows this Bind never ran
         // (issue #6545). errorInTransaction stays set until COMMIT/ROLLBACK/END ends the block, and this refusal
         // is an ErrorResponse like any other, so it re-enters skip-until-Sync - the Execute the client already
-        // pipelined behind this Bind must not run against whatever portal is still registered under that name.
+        // pipelined behind this Bind must not run. The portal previously bound under that name is already gone
+        // (removed at the top of this method, issue #8071), so an Execute after the block ends finds none either.
         refuseInAbortedTransaction();
         return;
       }
@@ -2476,10 +2491,9 @@ public class PostgresNetworkExecutor extends Thread {
       // This is necessary because EXECUTE looks up portals by portal name, not prepared statement name.
       // PostgreSQL protocol: PARSE creates "prepared statement", BIND creates "portal" from it.
       // If the source prepared statement was closed or non-existent, the Bind is refused (issue #8211) rather than
-      // answered BindComplete for a portal it never registered, and any portal previously bound under this name
-      // goes with it, as PostgreSQL's aborted transaction takes it.
+      // answered BindComplete for a portal it never registered. Any portal previously bound under this name was
+      // already removed at the top of this method (issue #8071).
       if (preparedStatement == null) {
-        portals.remove(portalName);
         refuseMissingPreparedStatement(sourcePreparedStatement);
         return;
       }
