@@ -362,6 +362,14 @@ public enum Type {
       // this method cannot see.
       return converted == null && value != null ? value : converted;
     } catch (final IllegalArgumentException e) {
+      // Only a DATE/TIME parse failure is kept. That is the one this method exists for: the client has no schema in
+      // scope, so a value the server formatted with a pattern it cannot see is unreadable HERE rather than wrong.
+      // Every other refusal - a value of a shape no branch can take at all - failed the read before issue #8090 and
+      // still does: widening the leniency to those would turn a genuinely mismatched field into a silent
+      // pass-through, which is not what having no schema to read dates with has anything to do with.
+      if (!(e.getCause() instanceof DateTimeException))
+        throw e;
+
       LogManager.instance().log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, value, targetClass);
       return value;
     }

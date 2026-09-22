@@ -544,6 +544,13 @@ class Issue8090SpaceSeparatedFractionalDateTimeTest extends TestHelper {
 
     // null in is still null out: there is no original to keep.
     assertThat(Type.convertOrKeep(null, null, LocalDateTime.class)).isNull();
+
+    // ...but the leniency stops at date parsing. A value of a shape no branch can take at all failed the read
+    // before this issue and still does: having no schema to read DATES with says nothing about those.
+    assertThatThrownBy(() -> Type.convertOrKeep(null, new Object(), Date.class))//
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> Type.convertOrKeep(null, "not-a-number", Integer.class))//
+        .isInstanceOf(NumberFormatException.class);
   }
 
   /**
