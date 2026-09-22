@@ -48,6 +48,16 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue4510ForceApplyPartialDeltaTest extends TestHelper {
+  /**
+   * These tests hand-write WAL pages over the bucket, so the records the cached counter was taken from stop existing
+   * without anything booking a delta for them. The blanket end-of-test check would report that as the #8040 finding
+   * it technically is - about the fixture, not about the replay under test.
+   */
+  @Override
+  protected boolean isCheckingDatabaseIntegrity() {
+    return false;
+  }
+
 
   @Override
   protected void beginTest() {
