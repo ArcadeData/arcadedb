@@ -65,6 +65,12 @@ public class ContinuousAggregateRefresher {
       if (!SAFE_COLUMN_NAME.matcher(bucketColumn).matches())
         throw new IllegalArgumentException("Unsafe bucket column name: '" + bucketColumn + "'");
 
+      // Where a completed refresh's new watermark is parked until the transaction has actually COMMITTED (found in
+      // review). Advancing it inside the lambda left the watermark AHEAD OF THE DATA whenever the commit itself
+      // failed - retry exhaustion, say: the rows were rolled back, nothing restored the watermark, and the next
+      // refresh trusted it and skipped the very window that had just been lost.
+      final Long[] advancedWatermark = new Long[1];
+
       database.transaction(() -> {
         // Delete rows in the current (possibly incomplete) bucket and all newer buckets. #8152: the guard used to be
         // `watermark > 0`, which skipped the delete for an aggregate legitimately anchored at the epoch and let that
@@ -101,11 +107,15 @@ public class ContinuousAggregateRefresher {
           }
         }
 
-        // Advance watermark to the max bucket boundary found. The FIRST bucket ever seen installs the watermark even
-        // when it is not greater than the initial 0 - that is the whole point of tracking "set" separately (#8152).
+        // The watermark advances to the max bucket boundary found. The FIRST bucket ever seen installs it even when
+        // it is not greater than the initial 0 - that is the whole point of tracking "set" separately (#8152).
         if (maxBucketSeen && (!watermarkSet || maxBucketTs > watermark))
-          ca.setWatermarkTs(maxBucketTs);
+          advancedWatermark[0] = maxBucketTs;
       });
+
+      // The transaction committed, so the rows the watermark refers to are durable and it can be installed.
+      if (advancedWatermark[0] != null)
+        ca.setWatermarkTs(advancedWatermark[0]);
 
       final long durationMs = (System.nanoTime() - startNs) / 1_000_000;
       ca.recordRefreshSuccess(durationMs);
@@ -115,8 +125,7 @@ public class ContinuousAggregateRefresher {
       // Persist updated watermark only if it actually advanced.
       // If saveConfiguration fails, revert the in-memory watermark to the original value
       // so the next refresh re-processes the same window (delete-first design makes it safe).
-      final ContinuousAggregateImpl.Watermark endWatermark = ca.currentWatermark();
-      if (endWatermark.set() && (!watermarkSet || endWatermark.timestamp() > watermark)) {
+      if (advancedWatermark[0] != null) {
         final LocalSchema schema = (LocalSchema) database.getSchema();
         try {
           schema.saveConfiguration();

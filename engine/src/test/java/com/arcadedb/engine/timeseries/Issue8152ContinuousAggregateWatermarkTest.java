@@ -19,15 +19,22 @@
 package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.BasicDatabase;
+import com.arcadedb.database.Database;
+import com.arcadedb.exception.TransactionException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.ContinuousAggregate;
+import com.arcadedb.schema.ContinuousAggregateImpl;
+import com.arcadedb.schema.ContinuousAggregateRefresher;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * https://github.com/ArcadeData/arcadedb/issues/8152 and
@@ -177,6 +184,56 @@ class Issue8152ContinuousAggregateWatermarkTest extends TestHelper {
 
     ca.refresh();
     assertThat(countAggregateRows()).isEqualTo(1);
+  }
+
+  /**
+   * Found in review: the new watermark used to be installed INSIDE the refresh transaction. A commit that then
+   * failed rolled the rows back and left the watermark ahead of the data - the next refresh trusted it and skipped
+   * the window that had just been lost. The commit is made to fail here by throwing at the very end of the
+   * transaction scope, after every row has been written.
+   */
+  @Test
+  void aFailedCommitLeavesTheWatermarkWhereItWas() {
+    createSensorType();
+
+    database.transaction(() -> insert(0L, "A", 20.0));
+    createHourlyAggregate("SELECT sensor_id, ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp "
+        + "FROM SensorReading GROUP BY sensor_id, hour");
+
+    final ContinuousAggregateImpl ca = (ContinuousAggregateImpl) database.getSchema()
+        .getContinuousAggregate("hourly_temps");
+
+    database.transaction(() -> insert(2 * HOUR, "A", 30.0));
+    assertThat(ca.getWatermarkTs()).isEqualTo(2 * HOUR);
+
+    final long rowsBefore = countAggregateRows();
+    assertThat(rowsBefore).isEqualTo(2);
+
+    // Wind the watermark back to the epoch bucket, so the failing refresh has a real advance to make: it will
+    // recompute both buckets and want to move the watermark to hour 2.
+    ca.setWatermarkTs(0);
+    final long watermarkBefore = ca.getWatermarkTs();
+
+    // A database whose transaction() runs the scope and then fails the commit.
+    final Database failingCommit = (Database) Proxy.newProxyInstance(getClass().getClassLoader(),
+        new Class<?>[] { Database.class }, (proxy, method, args) -> {
+          if ("transaction".equals(method.getName()) && args != null && args.length == 1) {
+            database.transaction(() -> {
+              ((BasicDatabase.TransactionScope) args[0]).execute();
+              throw new TransactionException("simulated commit failure");
+            });
+            return null;
+          }
+          return method.invoke(database, args);
+        });
+
+    assertThatThrownBy(() -> ContinuousAggregateRefresher.incrementalRefresh(failingCommit, ca))
+        .isInstanceOf(TransactionException.class);
+
+    // Neither the watermark nor the rows moved: the refresh that failed left nothing behind to skip over.
+    assertThat(ca.getWatermarkTs()).isEqualTo(watermarkBefore);
+    assertThat(countAggregateRows()).isEqualTo(rowsBefore);
+    assertThat(ca.getStatus()).isEqualTo("ERROR");
   }
 
   private void createSensorType() {
