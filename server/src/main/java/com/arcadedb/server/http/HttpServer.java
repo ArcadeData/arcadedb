@@ -260,6 +260,15 @@ public class HttpServer implements ServerPlugin {
     final PathHandler routes = new PathHandler();
     final RouteRecordingRoutingHandler basicRoutes = new RouteRecordingRoutingHandler();
 
+    // Shared with the GET registrations below (issue #8133): container healthchecks such as
+    // `wget --spider` issue HEAD instead of GET, and Undertow's RoutingHandler does not fall back
+    // from HEAD to a registered GET route on its own, so it answered 405. Registering the same
+    // handler instance under HEAD costs nothing extra - Undertow's HeadStreamSinkConduit discards
+    // whatever body the handler writes at the connector level, so headers and status code still
+    // match what GET would have returned.
+    final GetReadyHandler readyHandler = new GetReadyHandler(this);
+    final GetHealthHandler healthHandler = new GetHealthHandler(this);
+
     routes.addPrefixPath("/ws", new WebSocketConnectionHandler(this, webSocketEventBus));
     routes.addPrefixPath("/api/v1", basicRoutes
         .post("/batch/{database}", new PostBatchHandler(this))
@@ -281,8 +290,10 @@ public class HttpServer implements ServerPlugin {
         .post("/vector/{database}/fulltext", new PostVectorFullTextSearchHandler(this))
         .get("/server", new GetServerHandler(this))
         .post("/server", new PostServerCommandHandler(this))
-        .get("/ready", new GetReadyHandler(this))
-        .get("/health", new GetHealthHandler(this))
+        .get("/ready", readyHandler)
+        .add("HEAD", "/ready", readyHandler)
+        .get("/health", healthHandler)
+        .add("HEAD", "/health", healthHandler)
         .get("/openapi.json", new GetOpenApiHandler(this))
         .get("/docs", new GetApiDocsHandler(this))
         .get("/server/api-tokens", new GetApiTokensHandler(this))

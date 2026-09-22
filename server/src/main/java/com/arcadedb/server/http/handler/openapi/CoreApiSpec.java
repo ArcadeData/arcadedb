@@ -243,6 +243,18 @@ public class CoreApiSpec implements OpenApiContributor {
     SpecBuilders.publicOperation(getOp);
     pathItem.setGet(getOp);
 
+    // Same handler as GET (issue #8133): container healthchecks such as `wget --spider` issue HEAD,
+    // so it must answer the same status without a body rather than 405.
+    final Operation headOp = new Operation();
+    headOp.setSummary("Check server readiness (no body)");
+    headOp.setDescription(
+        "Identical to GET /ready but without a response body, for probes (e.g. 'wget --spider') that use HEAD.");
+    headOp.setOperationId("checkReadyHead");
+    headOp.addTagsItem("Health");
+    headOp.setResponses(createReadyResponses());
+    SpecBuilders.publicOperation(headOp);
+    pathItem.setHead(headOp);
+
     return pathItem;
   }
 
@@ -258,6 +270,18 @@ public class CoreApiSpec implements OpenApiContributor {
     getOp.setResponses(createHealthResponses());
     SpecBuilders.publicOperation(getOp);
     pathItem.setGet(getOp);
+
+    // Same handler as GET (issue #8133): container healthchecks such as `wget --spider` issue HEAD,
+    // so it must answer the same status without a body rather than 405.
+    final Operation headOp = new Operation();
+    headOp.setSummary("Check server liveness (no body)");
+    headOp.setDescription(
+        "Identical to GET /health but without a response body, for probes (e.g. 'wget --spider') that use HEAD.");
+    headOp.setOperationId("checkHealthHead");
+    headOp.addTagsItem("Health");
+    headOp.setResponses(createHealthResponses());
+    SpecBuilders.publicOperation(headOp);
+    pathItem.setHead(headOp);
 
     return pathItem;
   }

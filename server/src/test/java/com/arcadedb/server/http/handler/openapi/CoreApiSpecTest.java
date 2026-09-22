@@ -158,6 +158,23 @@ class CoreApiSpecTest {
         .containsExactlyInAnyOrder("204", "503");
   }
 
+  /**
+   * Issue #8133: HEAD must be documented for both probes, alongside GET, with the same public
+   * (unauthenticated) access and the same set of possible status codes.
+   */
+  @Test
+  void healthAndReadyAlsoDocumentHead() {
+    final Operation healthHead = openAPI.getPaths().get("/api/v1/health").getHead();
+    assertThat(healthHead.getOperationId()).isEqualTo("checkHealthHead");
+    assertThat(healthHead.getSecurity()).as("HEAD must stay public like GET").isEmpty();
+    assertThat(healthHead.getResponses().keySet()).containsExactly("204");
+
+    final Operation readyHead = openAPI.getPaths().get("/api/v1/ready").getHead();
+    assertThat(readyHead.getOperationId()).isEqualTo("checkReadyHead");
+    assertThat(readyHead.getSecurity()).as("HEAD must stay public like GET").isEmpty();
+    assertThat(readyHead.getResponses().keySet()).containsExactlyInAnyOrder("204", "503");
+  }
+
   @Test
   void beginDeclaresTheSessionIdResponseHeader() {
     final Operation post = openAPI.getPaths().get("/api/v1/begin/{database}").getPost();
