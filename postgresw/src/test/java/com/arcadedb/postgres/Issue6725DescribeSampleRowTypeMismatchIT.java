@@ -18,7 +18,6 @@
  */
 package com.arcadedb.postgres;
 
-
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;

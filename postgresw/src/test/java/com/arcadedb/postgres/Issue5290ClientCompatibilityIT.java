@@ -53,7 +53,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 public class Issue5290ClientCompatibilityIT extends PostgresWireProtocolTestBase {
 
-
   @Override
   public void setTestConfiguration() {
     super.setTestConfiguration();

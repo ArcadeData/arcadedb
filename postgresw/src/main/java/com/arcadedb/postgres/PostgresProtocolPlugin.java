@@ -26,7 +26,7 @@ import com.arcadedb.server.network.DefaultServerSocketFactory;
 
 public class PostgresProtocolPlugin implements ServerPlugin {
   private ArcadeDBServer          server;
-  private PostgresNetworkListener listener;
+  private volatile PostgresNetworkListener listener;
   private String                  host;
   private String                  portRange;
 

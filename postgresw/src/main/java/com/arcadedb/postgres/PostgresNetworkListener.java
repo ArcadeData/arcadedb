@@ -34,7 +34,7 @@ public class PostgresNetworkListener extends Thread {
   private final    ServerSocketFactory    socketFactory;
   /** Bounds how many accepted connections can sit un-authenticated at once (issue #6412). */
   private final    PreAuthConnectionGate  preAuthGate;
-  private          ServerSocket        serverSocket;
+  private volatile ServerSocket        serverSocket;
   private volatile boolean             active          = true;
   private final    int                 protocolVersion = -1;
 
