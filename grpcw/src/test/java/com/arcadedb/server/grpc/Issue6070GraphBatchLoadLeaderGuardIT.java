@@ -69,7 +69,8 @@ class Issue6070GraphBatchLoadLeaderGuardIT extends BaseRaftHATest {
   // shared with TimeSeriesGrpcForwardedInsertTypeIT, onto 51161 - which Issue7308GrpcRestoreImportLeaderRoutingIT
   // also used.
   private final int[] grpcPorts = allocateFreePorts(3);
-  private static final String VERTEX_TYPE    = "Issue6070LeaderGuardNode";
+
+  private static final String VERTEX_TYPE = "Issue6070LeaderGuardNode";
 
   private static final Metadata.Key<String> USER_HEADER     = Metadata.Key.of("x-arcade-user",
       Metadata.ASCII_STRING_MARSHALLER);

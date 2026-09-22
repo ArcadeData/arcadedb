@@ -49,9 +49,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 class GrpcFollowerForwardingIT extends BaseRaftHATest {
 
   // One gRPC port per server, handed out free by the OS for every test instance rather than fixed (issue #7496).
-
   private final int[] grpcPorts = allocateFreePorts(3);
-  private static final String VERTEX_TYPE    = "GrpcFollowerWrite";
+
+  private static final String VERTEX_TYPE = "GrpcFollowerWrite";
 
   private static final Metadata.Key<String> USER_HEADER     =
       Metadata.Key.of("x-arcade-user", Metadata.ASCII_STRING_MARSHALLER);
