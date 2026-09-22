@@ -557,11 +557,18 @@ public class PageManager extends LockContext {
       try {
         final long deadline = System.currentTimeMillis() + SNAPSHOT_BARRIER_MAX_MILLIS;
 
+        // FATAL HERE, UNLIKE openSnapshot's OWN TREATMENT OF THE SAME DRAIN (review on PR #8128): that path
+        // reads the page CACHE through a shadow/copy-on-write window, so a page still pending when its barrier
+        // flips is merely "the snapshot's t0 is a little older than it could have been" - correctness comes
+        // from the snapshot mechanism, not from this drain. This path reads the RAW FILES straight off disk
+        // once the callback runs, so a page still pending here is a page the callback is about to read stale -
+        // exactly the #8111 bug this whole barrier exists to close. Proceeding anyway on a timeout would trade
+        // a rare, loud failure for the same silent one #8111 was.
         if (!flushThread.waitPendingPagesOfDatabaseUntil(database, deadline))
-          LogManager.instance().log(this, Level.WARNING,
-              "Freezing the files of database '%s' for a backup: the flush pipeline did not settle within %d ms "
-                  + "under the publication lock, the frozen point may be behind the last committed transaction",
-              null, database.getName(), SNAPSHOT_BARRIER_MAX_MILLIS);
+          throw new IOException("Cannot freeze the files of database '" + database.getName()
+              + "': the flush pipeline did not settle within " + SNAPSHOT_BARRIER_MAX_MILLIS
+              + " ms under the publication lock, so the on-disk image would not reflect the last committed "
+              + "transaction(s)");
 
         if (!flushThread.trySuspendUntil(database, deadline))
           // A CONCURRENT RESUME IS FLUSHING ITS DEFERRED BACKLOG AND WOULD KEEP EVERY COMMITTER IN THE JVM
