@@ -21,6 +21,7 @@ package com.arcadedb.server.gremlin;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import org.apache.tinkerpop.gremlin.process.traversal.Bytecode;
+import org.apache.tinkerpop.gremlin.process.traversal.util.BytecodeHelper;
 import org.apache.tinkerpop.gremlin.server.auth.AuthenticatedUser;
 import org.apache.tinkerpop.gremlin.server.authz.AuthorizationException;
 import org.apache.tinkerpop.gremlin.server.authz.Authorizer;
@@ -38,11 +39,19 @@ import java.util.Map;
  * Runs as a TinkerPop {@link Authorizer} on every bytecode and string request, before the traversal is
  * executed, and rejects the request with an {@link AuthorizationException} when the authenticated user is
  * not granted access to the targeted database - mirroring the check the HTTP and BOLT transports perform.
+ * <p>
+ * It also reserves to the server administrator every request that makes the server evaluate Groovy: a string script
+ * in any language other than {@value #GREMLIN_LANG} (TinkerPop evaluates a script with no language as
+ * {@code gremlin-groovy}) and a bytecode traversal carrying a lambda, whose body travels as Groovy source. Groovy is
+ * arbitrary JVM code, so its reach is the host, not the database the request targets. Every other user keeps
+ * bytecode traversals and {@value #GREMLIN_LANG} string scripts, both of which are parsed by the Gremlin grammar
+ * rather than executed as code.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class ArcadeGremlinAuthorizer implements Authorizer {
-  private ArcadeDBServer server;
+  static final         String         GREMLIN_LANG = "gremlin-lang";
+  private              ArcadeDBServer server;
 
   @Override
   public void setup(final Map<String, Object> config) {
@@ -60,6 +69,10 @@ public class ArcadeGremlinAuthorizer implements Authorizer {
     if (aliases != null)
       for (final String alias : aliases.values())
         checkDatabaseAccess(securityUser, alias);
+
+    if (!securityUser.isServerAdministrator() && BytecodeHelper.getLambdaLanguage(bytecode).isPresent())
+      throw new AuthorizationException(
+          "User '" + securityUser.getName() + "' is not authorized to use lambdas: they are evaluated as Groovy code, which is reserved to the server administrator");
     return bytecode;
   }
 
@@ -79,6 +92,13 @@ public class ArcadeGremlinAuthorizer implements Authorizer {
       throw new AuthorizationException("Gremlin sessions are not supported");
 
     final ServerSecurityUser securityUser = publishPrincipal(user);
+
+    final Object language = msg.getArgs().get(Tokens.ARGS_LANGUAGE);
+    if (!securityUser.isServerAdministrator() && !GREMLIN_LANG.equals(language))
+      throw new AuthorizationException("User '" + securityUser.getName() + "' is not authorized to evaluate "
+          + (language != null ? "'" + language + "'" : "Groovy") + " scripts, which are reserved to the server administrator. Submit the script with language '"
+          + GREMLIN_LANG + "' or send a bytecode traversal");
+
     final Object aliasesArg = msg.getArgs().get(Tokens.ARGS_ALIASES);
     if (aliasesArg instanceof Map<?, ?> aliases)
       for (final Object alias : aliases.values())

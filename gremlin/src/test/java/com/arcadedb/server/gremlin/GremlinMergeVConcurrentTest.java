@@ -52,7 +52,7 @@ class GremlinMergeVConcurrentTest extends AbstractGremlinServerIT {
     final int nOfProperties = 8;
 
     // Create vertex type with multiple buckets and thread selection strategy
-    try (RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, getDatabaseName(), "root",
+    try (RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), getDatabaseName(), "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
 
       database.transaction(() -> {
@@ -203,7 +203,7 @@ class GremlinMergeVConcurrentTest extends AbstractGremlinServerIT {
       }
 
       // Verify all vertices were created
-      try (RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, getDatabaseName(), "root",
+      try (RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), getDatabaseName(), "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
 
         Number count = (Number) database.query("sql", "SELECT count(*) as count FROM Imported")
