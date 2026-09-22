@@ -179,7 +179,7 @@ class Issue8062RemoteRetryDoesNotReplayCommittedHalfIT extends BaseGraphServerTe
     assertThat(sessionId).as("the /begin response names the session").isNotNull();
 
     final HttpURLConnection batched = post("command/" + DATABASE_NAME,
-        "{\"language\":\"sql\",\"command\":\"UPDATE " + ROWS + " SET seq = seq + 1 BATCH 10\"}", sessionId.trim());
+        "UPDATE " + ROWS + " SET seq = seq + 1 BATCH 10", sessionId.trim());
     assertThat(batched.getResponseCode()).isEqualTo(200);
     assertThat(batched.getHeaderField(RemoteDatabase.ARCADEDB_SESSION_PARTIAL_COMMIT))
         .as("the batch boundary published 20 of the 25 rows under the caller's transaction").isEqualTo("true");
@@ -198,12 +198,20 @@ class Issue8062RemoteRetryDoesNotReplayCommittedHalfIT extends BaseGraphServerTe
     }
 
     final HttpURLConnection batched = post("command/" + DATABASE_NAME,
-        "{\"language\":\"sql\",\"command\":\"UPDATE " + ROWS + " SET seq = seq + 1 BATCH 10\"}", null);
+        "UPDATE " + ROWS + " SET seq = seq + 1 BATCH 10", null);
     assertThat(batched.getResponseCode()).isEqualTo(200);
     assertThat(batched.getHeaderField(RemoteDatabase.ARCADEDB_SESSION_PARTIAL_COMMIT)).isNull();
   }
 
-  private HttpURLConnection post(final String path, final String body, final String sessionId) throws Exception {
+  /**
+   * A raw send rather than {@link RemoteDatabase}, because these two tests are about the HEADERS on the wire and
+   * the driver does not expose them. The JSON body is built by {@link BaseGraphServerTest#formatPayload}, the
+   * helper every other raw-HTTP test in this module uses; only the session header and the
+   * {@code getServerHttpPort()} URL are assembled here, and neither has a helper to borrow.
+   *
+   * @param command the SQL to send as the request body, or null for a body-less endpoint such as /begin
+   */
+  private HttpURLConnection post(final String path, final String command, final String sessionId) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) URI.create(
         "http://127.0.0.1:" + getServerHttpPort() + "/api/v1/" + path).toURL().openConnection();
     connection.setRequestMethod("POST");
@@ -211,10 +219,9 @@ class Issue8062RemoteRetryDoesNotReplayCommittedHalfIT extends BaseGraphServerTe
         .encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes(StandardCharsets.UTF_8)));
     if (sessionId != null)
       connection.setRequestProperty(RemoteDatabase.ARCADEDB_SESSION_ID, sessionId);
-    if (body != null) {
+    if (command != null) {
       connection.setRequestProperty("Content-Type", "application/json");
-      connection.setDoOutput(true);
-      connection.getOutputStream().write(body.getBytes(StandardCharsets.UTF_8));
+      formatPayload(connection, "sql", command, null, null);
     }
     connection.connect();
     // Force the response to be read so the headers are populated whatever the status.

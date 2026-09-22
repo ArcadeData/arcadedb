@@ -138,6 +138,15 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
       // rather than the finally block below, so the answer is read at the last possible moment and the header
       // still lands on a response the handler wrote itself (the NDJSON streaming encoding of issue #7306),
       // exactly as the read-your-writes bookmark does.
+      //
+      // That costs one captured lambda per SESSION-BOUND request - deliberately, and it is the reason the
+      // registration sits behind the activeSession null check rather than inside the listener: a request with
+      // no session (the overwhelming majority, every auto-commit command and every read) allocates nothing and
+      // pays one reference comparison. For a request that does have one, the allocation buys a verdict that
+      // survives a handler writing its own response, which the finally block cannot give: the alternative is a
+      // signal that is simply missing whenever the response was streamed. A session-bound request has already
+      // parsed a JSON body and will build a JSON response, so this is not the allocation that decides its cost
+      // (code review on PR #8138).
       if (activeSession != null && reportsSessionPartialCommit()) {
         final TransactionContext sessionTxAtStart = activeSession.transaction;
         final long sessionCommitCountAtStart = sessionTxAtStart != null ? sessionTxAtStart.getCommitCount() : 0;

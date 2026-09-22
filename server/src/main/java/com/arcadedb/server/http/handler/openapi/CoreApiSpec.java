@@ -923,7 +923,13 @@ public class CoreApiSpec implements OpenApiContributor {
         continue;
       // A new Header per response rather than one shared instance, as above (#7425 review).
       entry.getValue().addHeaderObject(SESSION_PARTIAL_COMMIT_HEADER, SpecBuilders.stringHeader("""
-          Present, with the value 'true', only when this request ran inside a transaction named by           'arcadedb-session-id' AND that transaction published a commit while the request was executing - which           is what a statement carrying an explicit 'BATCH n' boundary does. It says part of the caller's           transaction is already durable and cannot be rolled back, so a client that retries its transaction           block on a conflict must NOT replay it: the replay would apply the durable part a second time. Absent           on every other response, including one from a request that ran outside a session.\
+          Present, with the value 'true', only when this request ran inside a transaction named by \
+          'arcadedb-session-id' AND that transaction published a commit while the request was executing - \
+          which is what a statement carrying an explicit 'BATCH n' boundary does. It says part of the \
+          caller's transaction is already durable and cannot be rolled back, so a client that retries its \
+          transaction block on a conflict must NOT replay it: the replay would apply the durable part a \
+          second time. Absent on every other response, including one from a request that ran outside a \
+          session.\
           """));
     }
   }
