@@ -18,6 +18,7 @@
  */
 package com.arcadedb.utility;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.SerializationException;
 import com.arcadedb.schema.Type;
@@ -78,6 +79,13 @@ public class DateUtils {
    * {@code '2024-02-29 13:45.123456'} is refused rather than quietly read as 13:45:00.123456, and a bare
    * {@code '2024-02-29+01:00'} rather than as midnight in that offset.
    */
+  /**
+   * The built-in patterns, so a schema still on them can skip a walk whose answer {@link #SPACE_SEPARATED_DATE_TIME}
+   * already gives. Read from {@link GlobalConfiguration} rather than restated, so the two cannot drift apart.
+   */
+  private static final String                                       DEFAULT_DATE_TIME_FORMAT  = (String) GlobalConfiguration.DATE_TIME_FORMAT.getDefValue();
+  private static final String                                       DEFAULT_DATE_FORMAT       = (String) GlobalConfiguration.DATE_FORMAT.getDefValue();
+
   private static final DateTimeFormatter                            SPACE_SEPARATED_DATE_TIME = new DateTimeFormatterBuilder()//
       .append(DateTimeFormatter.ISO_LOCAL_DATE)//
       .optionalStart()//
@@ -553,8 +561,18 @@ public class DateUtils {
    * The schema's two patterns, in order, as a {@link Temporal} that still carries any offset they captured.
    */
   private static Temporal parseWithSchemaPatterns(final Database database, final String string) {
-    final Temporal fromDateTimeFormat = parseWithPattern(string, database.getSchema().getDateTimeFormat());
-    return fromDateTimeFormat != null ? fromDateTimeFormat : parseWithPattern(string, database.getSchema().getDateFormat());
+    final String dateTimeFormat = database.getSchema().getDateTimeFormat();
+    final String dateFormat = database.getSchema().getDateFormat();
+
+    // Nothing to try when neither has been changed: SPACE_SEPARATED_DATE_TIME already accepts everything the two
+    // built-in patterns do - a bare date, and a date with a space and a time - and resolves it identically, the same
+    // defaulted hour/minute/second included. Walking them first would cost the commonest write on the commonest
+    // configuration TWO extra formatter passes to reach the answer the shared shape gives anyway.
+    if (DEFAULT_DATE_TIME_FORMAT.equals(dateTimeFormat) && DEFAULT_DATE_FORMAT.equals(dateFormat))
+      return null;
+
+    final Temporal fromDateTimeFormat = parseWithPattern(string, dateTimeFormat);
+    return fromDateTimeFormat != null ? fromDateTimeFormat : parseWithPattern(string, dateFormat);
   }
 
   /**

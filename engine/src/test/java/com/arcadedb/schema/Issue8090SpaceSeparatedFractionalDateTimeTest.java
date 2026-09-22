@@ -334,6 +334,33 @@ class Issue8090SpaceSeparatedFractionalDateTimeTest extends TestHelper {
   }
 
   /**
+   * A MIN/MAX bound on a precision-bearing datetime property is checked against the value, rather than reported as a
+   * violation whatever the value is. {@code DATETIME_MICROS} and its siblings had no arm in the validator's switch,
+   * so they fell to the {@code default} one - which reports a violation UNCONDITIONALLY. Setting a bound on the very
+   * type this issue was reported on therefore failed every subsequent write to that property.
+   */
+  @Test
+  void aBoundOnAPrecisionDatetimePropertyIsActuallyCompared() {
+    for (final Type type : new Type[] { Type.DATETIME_SECOND, Type.DATETIME_MICROS, Type.DATETIME_NANOS }) {
+      final String typeName = "Bound8090" + type.name();
+      database.getSchema().createDocumentType(typeName).createProperty("ts", type)//
+          .setMin("2024-01-01 00:00:00").setMax("2030-01-01 00:00:00");
+
+      database.transaction(() -> {
+        // Inside the bounds: this used to be refused too, which is what made the property unwritable.
+        database.newDocument(typeName).set("ts", "2024-02-29 13:45:10.123456").save();
+
+        // ...and outside them it is still refused, so the bound is being read rather than ignored.
+        assertThatThrownBy(() -> database.newDocument(typeName).set("ts", "2031-06-01 00:00:00").save())//
+            .as("type %s", type)//
+            .isInstanceOf(ValidationException.class);
+      });
+
+      assertThat(database.countType(typeName, false)).as("type %s", type).isEqualTo(1);
+    }
+  }
+
+  /**
    * The {@code Instant} branch of {@code Type.convert} had no {@code String} case at all, so with
    * {@code arcadedb.dateTimeImplementation=java.time.Instant} a datetime literal stayed in the record as the raw
    * {@link String} it arrived as. It now goes through the same shared chain as every other datetime target.

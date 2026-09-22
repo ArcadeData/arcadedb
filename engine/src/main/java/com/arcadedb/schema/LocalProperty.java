@@ -73,9 +73,20 @@ public class LocalProperty extends AbstractProperty {
 
     final Database database = owner.getSchema().getEmbedded().getDatabase();
 
-    final Object convertedValue = defaultValue instanceof String ?
-        defaultValue :
-        Type.convert(database, defaultValue, type.javaDefaultType);
+    // Wrapped: convert() refuses an unreadable DATE/TIME value since issue #8090, and a raw IllegalArgumentException
+    // out of the schema API says nothing about which property was being altered. getDefaultValue() already reports
+    // the evaluation-time failure as a SchemaException naming the property; this is the set-time half of the same
+    // contract.
+    final Object convertedValue;
+    try {
+      convertedValue = defaultValue instanceof String ?
+          defaultValue :
+          Type.convert(database, defaultValue, type.javaDefaultType);
+    } catch (final IllegalArgumentException e) {
+      throw new SchemaException(
+          "Error on setting the default value `" + defaultValue + "` on property '" + owner.getName() + "." + name
+              + "': " + e.getMessage(), e);
+    }
 
     // Compiled once here rather than on every record create, and before any state is touched, so a rejected default
     // leaves the property exactly as it was. Before the "did it change?" check and not inside it: a default persisted
