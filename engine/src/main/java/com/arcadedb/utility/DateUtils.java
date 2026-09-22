@@ -59,6 +59,13 @@ public class DateUtils {
   private static final int                                          MAX_CACHED_FORMATTERS     = 1_000;
 
   /**
+   * The built-in patterns, so a schema still on them can skip a walk whose answer {@link #SPACE_SEPARATED_DATE_TIME}
+   * already gives. Read from {@link GlobalConfiguration} rather than restated, so the two cannot drift apart.
+   */
+  private static final String                                       DEFAULT_DATE_TIME_FORMAT  = (String) GlobalConfiguration.DATE_TIME_FORMAT.getDefValue();
+  private static final String                                       DEFAULT_DATE_FORMAT       = (String) GlobalConfiguration.DATE_FORMAT.getDefValue();
+
+  /**
    * Last-resort parser for the SQL-timestamp spelling that none of the strict ISO formats accept: an ISO date, a
    * <em>space</em> separator, a time, and - the part that made issue #8090 a silent data loss - an arbitrary
    * fractional-second field. That is exactly what {@code psqlodbc} renders a bound timestamp in and what PostgreSQL
@@ -79,13 +86,6 @@ public class DateUtils {
    * {@code '2024-02-29 13:45.123456'} is refused rather than quietly read as 13:45:00.123456, and a bare
    * {@code '2024-02-29+01:00'} rather than as midnight in that offset.
    */
-  /**
-   * The built-in patterns, so a schema still on them can skip a walk whose answer {@link #SPACE_SEPARATED_DATE_TIME}
-   * already gives. Read from {@link GlobalConfiguration} rather than restated, so the two cannot drift apart.
-   */
-  private static final String                                       DEFAULT_DATE_TIME_FORMAT  = (String) GlobalConfiguration.DATE_TIME_FORMAT.getDefValue();
-  private static final String                                       DEFAULT_DATE_FORMAT       = (String) GlobalConfiguration.DATE_FORMAT.getDefValue();
-
   private static final DateTimeFormatter                            SPACE_SEPARATED_DATE_TIME = new DateTimeFormatterBuilder()//
       .append(DateTimeFormatter.ISO_LOCAL_DATE)//
       .optionalStart()//
