@@ -30,6 +30,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.util.Collections;
 import java.util.Map;
 
@@ -57,6 +59,12 @@ class GetReadyHandlerHATest extends StaticBaseServerTest {
     config.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, DEFAULT_PASSWORD_FOR_TESTS);
     config.setValue(GlobalConfiguration.SERVER_HTTP_IO_THREADS, 2);
     config.setValue(GlobalConfiguration.TYPE_DEFAULT_BUCKETS, 2);
+    // Binding the wildcard address (the default) lets this server's port-in-use check miss a stranger
+    // bound to the specific loopback address on the same port: both binds succeed, and the OS then
+    // routes a 127.0.0.1 client to whichever listener it prefers, not necessarily this one. Binding
+    // "localhost" explicitly - what BaseGraphServerTest already does for the same reason - makes the
+    // bind collide (and correctly fail over to the next port) instead of silently sharing the port.
+    config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST, "localhost");
 
     server = new ArcadeDBServer(config);
     server.start();
@@ -109,6 +117,33 @@ class GetReadyHandlerHATest extends StaticBaseServerTest {
     server.setHA(new FakeHAPlugin(HAServerPlugin.ELECTION_STATUS.VOTING_FOR_ME, null));
 
     assertThat(executeReady().getCode()).isEqualTo(503);
+  }
+
+  /**
+   * Issue #8133 follow-up (code review nitpick): the other tests here call {@link GetReadyHandler}
+   * directly, which never exercises HTTP routing. This drives the 503 branch through a real HEAD
+   * request against {@link HttpServer}, to confirm HEAD shares the not-ready path with GET too, not
+   * just the 204 one already covered in {@code HealthProbesIT}.
+   */
+  @Test
+  void flagOnAndElectionInProgressReturns503ForARealHeadRequestToo() throws Exception {
+    server.getConfiguration().setValue(GlobalConfiguration.SERVER_READINESS_REQUIRES_HA, true);
+    server.getConfiguration().setValue(GlobalConfiguration.HA_ENABLED, true);
+    server.setHA(new FakeHAPlugin(HAServerPlugin.ELECTION_STATUS.VOTING_FOR_ME, null));
+
+    final String url = getServerHttpUrl(server, "/api/v1/ready");
+    final HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
+    connection.setRequestMethod("HEAD");
+    try {
+      connection.connect();
+      assertThat(connection.getResponseCode()).as("HEAD %s", url).isEqualTo(503);
+      // Unlike the 204 case, GET's 503 body is the non-ready reason text, so Content-Length here
+      // correctly describes what GET would have sent - it is not expected to be 0. What HEAD must
+      // guarantee is that no body bytes are actually delivered, which is what this checks.
+      assertThat(connection.getErrorStream()).as("HEAD %s must not deliver a body", url).isNull();
+    } finally {
+      connection.disconnect();
+    }
   }
 
   @Test
