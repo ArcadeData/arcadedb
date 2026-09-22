@@ -247,7 +247,11 @@ public class RedisQueryEngine implements QueryEngine {
     // MCPToolUtils.collectInTransaction does: `database.transaction(...)` retries the block up to
     // arcadedb.txRetries times on an MVCC conflict, rolling the failed attempt back first, and an accumulator
     // declared outside the block is never reset between attempts - so a single retry publishes the discarded
-    // attempt's replies alongside the committed ones (issue #8037).
+    // attempt's replies alongside the committed ones (issue #8037). A one-element array rather than
+    // MCPToolUtils's own JSONArray[1] holder, because List<Object> is generic and JSONArray is not - the
+    // unchecked array-creation warning is suppressed rather than left to accumulate as noise, since nothing
+    // else touches this array before the single assignment below.
+    @SuppressWarnings("unchecked")
     final List<Object>[] committed = new List[1];
 
     database.transaction(() -> {
