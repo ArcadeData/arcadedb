@@ -107,7 +107,7 @@ class GraphDatabaseCheckerReclaimFailClosedTest extends TestHelper {
 
     // Remove a MIDDLE chunk (not the head, not the vertex) so markChain marks the head, then the next lookup
     // throws RecordNotFoundException part-way through - a live chain whose walk fails mid-way.
-    database.transaction(() -> database.getSchema().getBucketById(middleChunk.getBucketId()).deleteRecord(middleChunk));
+    database.transaction(() -> TestHelper.deleteRecordAtLowLevel(database, middleChunk));
 
     final Map<String, Object> stats = new GraphDatabaseChecker((DatabaseInternal) database)
         .reclaimOrphanedEdgeSegments(0, Integer.MAX_VALUE);

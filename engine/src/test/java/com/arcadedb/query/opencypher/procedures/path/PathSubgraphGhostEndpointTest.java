@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.procedures.path;
 
+import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
@@ -81,8 +82,8 @@ class PathSubgraphGhostEndpointTest {
     final RID otherGhostRID = (RID) database.query("sql", "SELECT FROM Other WHERE name = 'OTHER_GHOST'").next().getIdentity()
         .get();
     database.transaction(() -> {
-      database.getSchema().getBucketById(ghostRID.getBucketId()).deleteRecord(ghostRID);
-      database.getSchema().getBucketById(otherGhostRID.getBucketId()).deleteRecord(otherGhostRID);
+      TestHelper.deleteRecordAtLowLevel(database, ghostRID);
+      TestHelper.deleteRecordAtLowLevel(database, otherGhostRID);
     });
   }
 

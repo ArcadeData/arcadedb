@@ -236,7 +236,14 @@ class Issue5680VertexDeleteEdgeCollectionTest extends TestHelper {
     final List<RID> edges = createEdges(hubRID, 5);
     final RID srcRID = outVertexOf(edges.get(0));
 
-    database.transaction(() -> graphEngine().deleteVertex((VertexInternal) srcRID.asVertex(), true));
+    database.transaction(() -> {
+      // GraphEngine.deleteVertex removes the vertex's own record through Bucket.deleteRecord and leaves the bucket
+      // delta to its caller, which on the ordinary path is LocalDatabase.deleteRecord. Calling the engine directly -
+      // the only way to ask for force - skips that, so the fixture books it, or the counter it leaves behind is one
+      // too high and the #8040 check reports the fixture rather than the delete under test.
+      graphEngine().deleteVertex((VertexInternal) srcRID.asVertex(), true);
+      ((DatabaseInternal) database).getTransaction().updateBucketRecordDelta(srcRID.getBucketId(), -1);
+    });
 
     database.transaction(() -> {
       assertThat(database.existsRecord(srcRID)).isFalse();
@@ -532,7 +539,7 @@ class Issue5680VertexDeleteEdgeCollectionTest extends TestHelper {
   }
 
   private void deleteRecord(final RID rid) {
-    database.transaction(() -> database.getSchema().getBucketById(rid.getBucketId()).deleteRecord(rid));
+    database.transaction(() -> TestHelper.deleteRecordAtLowLevel(database, rid));
     database.transaction(() -> assertThat(database.existsRecord(rid)).isFalse());
   }
 

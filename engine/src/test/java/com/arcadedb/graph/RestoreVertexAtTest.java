@@ -84,7 +84,12 @@ class RestoreVertexAtTest extends TestHelper {
 
     // THE INCIDENT: raw, no-cascade delete of the hub - only its own record's slot is freed, edges untouched.
     final LocalBucket hubBucket = (LocalBucket) db.getSchema().getBucketById(hub[0].getBucketId());
-    database.transaction(() -> hubBucket.deleteRecord(hub[0]));
+    database.transaction(() -> {
+      hubBucket.deleteRecord(hub[0]);
+      // Bucket.deleteRecord leaves the cached record counter to its caller (see TestHelper.deleteRecordAtLowLevel):
+      // without the delta the counter stays one ahead of the bucket for good, and the restore below adds another.
+      ((DatabaseInternal) database).getTransaction().updateBucketRecordDelta(hub[0].getBucketId(), -1);
+    });
 
     database.transaction(() -> assertThatThrownBy(() -> database.lookupByRID(hub[0], true)).isInstanceOf(RecordNotFoundException.class));
 

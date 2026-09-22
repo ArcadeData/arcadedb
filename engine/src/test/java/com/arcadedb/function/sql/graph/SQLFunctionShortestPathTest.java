@@ -347,7 +347,7 @@ class SQLFunctionShortestPathTest {
       });
 
       // Delete only the A->B edge record, leaving its segment pointer dangling.
-      graph.transaction(() -> graph.getSchema().getBucketById(ghost[0].getBucketId()).deleteRecord(ghost[0]));
+      graph.transaction(() -> TestHelper.deleteRecordAtLowLevel(graph, ghost[0]));
 
       function = new SQLFunctionShortestPath();
       final Map<String, Object> options = new HashMap<>();

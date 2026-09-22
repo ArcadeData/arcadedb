@@ -98,7 +98,7 @@ class RestoreConstraintsAndEventsTest extends TestHelper {
     });
 
     final LocalBucket bucket = (LocalBucket) ((DatabaseInternal) database).getSchema().getBucketById(edge[0].getBucketId());
-    database.transaction(() -> bucket.deleteRecord(edge[0]));
+    database.transaction(() -> TestHelper.deleteRecordAtLowLevel(database, edge[0]));
 
     final String restore =
         "RESTORE EDGE " + EDGE + " RID " + edge[0] + " FROM " + endpoints[0] + " TO " + endpoints[1];
@@ -351,7 +351,7 @@ class RestoreConstraintsAndEventsTest extends TestHelper {
         database.newDocument(typeName).set("v", "original").save().getIdentity());
 
     final LocalBucket bucket = (LocalBucket) ((DatabaseInternal) database).getSchema().getBucketById(rid[0].getBucketId());
-    database.transaction(() -> bucket.deleteRecord(rid[0]));
+    database.transaction(() -> TestHelper.deleteRecordAtLowLevel(database, rid[0]));
     return rid[0];
   }
 
@@ -361,7 +361,7 @@ class RestoreConstraintsAndEventsTest extends TestHelper {
     database.transaction(() -> rid[0] = database.newVertex(VERTEX).set("label", "original").save().getIdentity());
 
     final LocalBucket bucket = (LocalBucket) ((DatabaseInternal) database).getSchema().getBucketById(rid[0].getBucketId());
-    database.transaction(() -> bucket.deleteRecord(rid[0]));
+    database.transaction(() -> TestHelper.deleteRecordAtLowLevel(database, rid[0]));
     return rid[0];
   }
 }

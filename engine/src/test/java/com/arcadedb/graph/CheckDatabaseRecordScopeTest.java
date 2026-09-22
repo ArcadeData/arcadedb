@@ -220,7 +220,7 @@ class CheckDatabaseRecordScopeTest extends TestHelper {
     }
 
     // With its IN endpoint gone, the same scoped check reports the edge's dangling link.
-    database.transaction(() -> database.getSchema().getBucketById(hubRID.getBucketId()).deleteRecord(hubRID));
+    database.transaction(() -> TestHelper.deleteRecordAtLowLevel(database, hubRID));
 
     try (final ResultSet rs = database.command("sql", "CHECK DATABASE RECORD " + edges.get(0))) {
       assertThat(rs.hasNext()).isTrue();
@@ -677,7 +677,7 @@ class CheckDatabaseRecordScopeTest extends TestHelper {
   }
 
   private void deleteRecord(final RID rid) {
-    database.transaction(() -> database.getSchema().getBucketById(rid.getBucketId()).deleteRecord(rid));
+    database.transaction(() -> TestHelper.deleteRecordAtLowLevel(database, rid));
     database.transaction(() -> assertThat(database.existsRecord(rid)).isFalse());
   }
 

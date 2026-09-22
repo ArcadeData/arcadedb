@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.sql.graph;
 
+import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
@@ -78,7 +79,7 @@ class SQLFunctionMoveGhostEdgeTest {
     }
     database.transaction(() -> {
       final Bucket bucket = database.getSchema().getBucketById(ghostRID.getBucketId());
-      bucket.deleteRecord(ghostRID);
+      TestHelper.deleteRecordAtLowLevel(database, ghostRID);
     });
 
     // outE('LINK').inV() routes every out-edge (including the ghost) through e2v. Must not throw.

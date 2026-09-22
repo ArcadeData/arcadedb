@@ -146,7 +146,7 @@ class Issue5670EdgeDeleteDanglingBackRefTest extends TestHelper {
     try {
       // A handle that has NOT materialised its record (loadContent=false): reading its head RID lazy-loads it.
       final VertexInternal lazyHub = (VertexInternal) database.lookupByRID(hubRID, false);
-      database.getSchema().getBucketById(hubRID.getBucketId()).deleteRecord(hubRID);
+      TestHelper.deleteRecordAtLowLevel(database, hubRID);
 
       assertThatThrownBy(
           () -> ((DatabaseInternal) database).getGraphEngine().getEdgeHeadChunkForWrite(lazyHub, Vertex.DIRECTION.IN))
@@ -334,7 +334,7 @@ class Issue5670EdgeDeleteDanglingBackRefTest extends TestHelper {
   }
 
   private void deleteRecord(final RID rid) {
-    database.transaction(() -> database.getSchema().getBucketById(rid.getBucketId()).deleteRecord(rid));
+    database.transaction(() -> TestHelper.deleteRecordAtLowLevel(database, rid));
     database.transaction(() -> assertThat(database.existsRecord(rid)).isFalse());
   }
 

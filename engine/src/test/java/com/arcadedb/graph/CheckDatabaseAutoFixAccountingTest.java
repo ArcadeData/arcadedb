@@ -77,7 +77,7 @@ class CheckDatabaseAutoFixAccountingTest extends TestHelper {
     // Remove the EDGE record through its bucket, leaving both vertices' adjacency lists naming a RID that is not
     // there. The walk flags that RID corrupted, and the repair loop can never delete it.
     database.transaction(
-        () -> database.getSchema().getBucketById(edge[0].getBucketId()).deleteRecord(edge[0]));
+        () -> TestHelper.deleteRecordAtLowLevel(database, edge[0]));
 
     final Map<String, Object> stats = new GraphDatabaseChecker((DatabaseInternal) database)
         .checkVertices(VERTEX_TYPE, true, 0);

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
@@ -293,7 +294,7 @@ class RaftCheckDatabaseFix3NodesIT extends BaseRaftHATest {
       assertThat(midChunk.get()).as("the hub's degree must span more than one chunk").isNotNull();
     });
 
-    db.transaction(() -> db.getSchema().getBucketById(midChunk.get().getBucketId()).deleteRecord(midChunk.get()));
+    db.transaction(() -> TestHelper.deleteRecordAtLowLevel(db, midChunk.get()));
   }
 
   /**

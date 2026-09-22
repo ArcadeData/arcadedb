@@ -143,7 +143,7 @@ class BrokenMultiPageRecordDeleteTest extends TestHelper {
     // could not possibly succeed. Either way nothing is silently orphaned.
     database.begin();
     try {
-      bucket.deleteRecord(broken);
+      TestHelper.deleteRecordAtLowLevel(database, broken);
       fail("Expected BrokenChunkChainException on deleting a record with a broken chunk chain");
     } catch (final BrokenChunkChainException expected) {
       // EXPECTED: a confirmed broken chain is corruption, not contention.
@@ -154,7 +154,12 @@ class BrokenMultiPageRecordDeleteTest extends TestHelper {
 
     // The force delete removes the stuck record. existsRecord is the authoritative physical check; countType is not
     // used as the oracle here because this low-level bucket.deleteRecord bypasses the database-level record counter.
-    database.transaction(() -> bucket.deleteRecord(broken, true));
+    database.transaction(() -> {
+      bucket.deleteRecord(broken, true);
+      // Bucket.deleteRecord leaves the cached record counter to its caller - see
+      // TestHelper.deleteRecordAtLowLevel, which this is the force-flag variant of.
+      ((DatabaseInternal) database).getTransaction().updateBucketRecordDelta(broken.getBucketId(), -1);
+    });
     assertThat(database.getSchema().getBucketById(broken.getBucketId()).existsRecord(broken)).isFalse();
 
     // A CHECK DATABASE FIX afterwards reconciles the counter and finds nothing else to repair.

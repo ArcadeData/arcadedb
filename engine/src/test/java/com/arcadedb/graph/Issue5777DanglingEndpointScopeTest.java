@@ -277,7 +277,7 @@ class Issue5777DanglingEndpointScopeTest extends TestHelper {
    * RID that resolves to nothing while an edge still names it.
    */
   private void rawDelete(final RID rid) {
-    database.transaction(() -> database.getSchema().getBucketById(rid.getBucketId()).deleteRecord(rid));
+    database.transaction(() -> TestHelper.deleteRecordAtLowLevel(database, rid));
   }
 
   /**

@@ -32,6 +32,15 @@ import static org.assertj.core.api.Assertions.assertThat;
  * command reconciled it. {@code CHECK DATABASE ... FIX} now repairs the drift.
  */
 class Issue5149CountStarCacheDriftTest extends TestHelper {
+  /**
+   * These tests plant a deliberately wrong cached record counter, which is the whole subject here, so the blanket
+   * end-of-test integrity check would report it as the #8040 finding it is.
+   */
+  @Override
+  protected boolean isCheckingDatabaseIntegrity() {
+    return false;
+  }
+
   private static final int TOTAL = 100;
 
   @Override

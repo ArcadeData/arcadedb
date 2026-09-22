@@ -18,6 +18,7 @@
  */
 package com.arcadedb.graph;
 
+import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
@@ -75,7 +76,7 @@ class GraphDatabaseCheckerDiagnosticsTest {
       final RID targetRid = target[0].getIdentity();
 
       // Delete the single shared target at low level, leaving every edge dangling on its incoming side.
-      db.transaction(() -> db.getSchema().getBucketById(targetRid.getBucketId()).deleteRecord(targetRid));
+      db.transaction(() -> TestHelper.deleteRecordAtLowLevel(db, targetRid));
 
       final Map<String, Object> result = new DatabaseChecker(db)
           .setVerboseLevel(0)

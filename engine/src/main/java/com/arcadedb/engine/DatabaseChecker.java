@@ -2241,6 +2241,10 @@ public class DatabaseChecker {
     result.put("totalActiveVertices", 0L);
     result.put("totalAllocatedEdges", 0L);
     result.put("totalActiveEdges", 0L);
+    // #8040: buckets whose cached record counter disagrees with what the walk actually found, and how many of them
+    // this run invalidated so the next count() recomputes.
+    result.put("staleRecordCounters", 0L);
+    result.put("staleRecordCountersFixed", 0L);
 
     for (final Bucket b : database.getSchema().getBuckets()) {
       stepTick();
@@ -2264,7 +2268,13 @@ public class DatabaseChecker {
 
       updateStats(stats);
 
-      ((LinkedHashSet<String>) result.get("warnings")).addAll((Collection<String>) stats.get("warnings"));
+      // Through addWarning, not addAll: the bucket walk is the one pass whose warnings used to bypass BOTH the
+      // maxWarnings cap that exists to keep a badly damaged database from OOMing the run AND the totalWarnings
+      // tally, so a run whose only findings were bucket-level reported zero warnings while listing several. It was
+      // unreachable in practice only because nothing the walk reports fires on a healthy bucket - until #8040 added
+      // one that can fire on a bucket with no other defect at all.
+      for (final String warning : (Collection<String>) stats.get("warnings"))
+        addWarning(warning);
       ((LinkedHashSet<RID>) result.get("deletedRecordsAfterFix")).addAll((Collection<RID>) stats.get("deletedRecordsAfterFix"));
     }
 

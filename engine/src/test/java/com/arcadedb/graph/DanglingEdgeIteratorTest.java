@@ -18,6 +18,7 @@
  */
 package com.arcadedb.graph;
 
+import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
@@ -74,7 +75,7 @@ class DanglingEdgeIteratorTest {
     // Create a dangling edge pointer: remove the edge RECORD at bucket level, bypassing graph cleanup,
     // so the link survives in vertex A's edge segment while the edge record is gone.
     database.transaction(() ->
-        database.getSchema().getBucketById(edgeRid[0].getBucketId()).deleteRecord(edgeRid[0]));
+        TestHelper.deleteRecordAtLowLevel(database, edgeRid[0]));
 
     // REPEATABLE_READ forces the edge content to load during iteration, exposing the dangling pointer.
     database.setTransactionIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);

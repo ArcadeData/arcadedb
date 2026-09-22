@@ -64,12 +64,12 @@ class RestoreRecordAtPositionTest extends TestHelper {
     database.transaction(() -> rid[0] = database.newDocument(DOC_TYPE).set("name", "original-doc").save().getIdentity());
 
     final LocalBucket bucket = (LocalBucket) db.getSchema().getBucketById(rid[0].getBucketId());
-    database.transaction(() -> bucket.deleteRecord(rid[0]));
+    database.transaction(() -> TestHelper.deleteRecordAtLowLevel(database, rid[0]));
     assertThat(bucket.existsRecord(rid[0])).isFalse();
 
     database.transaction(() -> {
       final MutableDocument shell = database.newDocument(DOC_TYPE).set("name", "restored-doc");
-      final RID restoredRid = bucket.restoreRecordAtPosition(rid[0].getPosition(), shell);
+      final RID restoredRid = TestHelper.restoreRecordAtLowLevel(database, bucket, rid[0].getPosition(), shell);
       assertThat(restoredRid).isEqualTo(rid[0]);
     });
 
@@ -87,13 +87,13 @@ class RestoreRecordAtPositionTest extends TestHelper {
     // Raw, no-cascade delete - exactly what GraphDatabaseChecker's vertex arm and LocalBucket.check(fix=true) do:
     // deletes the ONE record's slot, nothing else.
     final LocalBucket bucket = (LocalBucket) db.getSchema().getBucketById(rid[0].getBucketId());
-    database.transaction(() -> bucket.deleteRecord(rid[0]));
+    database.transaction(() -> TestHelper.deleteRecordAtLowLevel(database, rid[0]));
 
     assertThat(bucket.existsRecord(rid[0])).as("the slot must be free before restore").isFalse();
 
     database.transaction(() -> {
       final MutableVertex shell = database.newVertex(TYPE).set("name", "restored");
-      final RID restoredRid = bucket.restoreRecordAtPosition(rid[0].getPosition(), shell);
+      final RID restoredRid = TestHelper.restoreRecordAtLowLevel(database, bucket, rid[0].getPosition(), shell);
       assertThat(restoredRid).isEqualTo(rid[0]);
     });
 
@@ -119,9 +119,9 @@ class RestoreRecordAtPositionTest extends TestHelper {
     final LocalBucket bucket = (LocalBucket) db.getSchema().getBucketById(rid[0].getBucketId());
 
     database.transaction(() -> {
-      bucket.deleteRecord(rid[0]);
+      TestHelper.deleteRecordAtLowLevel(database, rid[0]);
       final MutableVertex shell = database.newVertex(TYPE).set("name", "restored-same-tx");
-      assertThat(bucket.restoreRecordAtPosition(rid[0].getPosition(), shell)).isEqualTo(rid[0]);
+      assertThat(TestHelper.restoreRecordAtLowLevel(database, bucket, rid[0].getPosition(), shell)).isEqualTo(rid[0]);
     });
 
     database.transaction(() -> {
@@ -165,7 +165,7 @@ class RestoreRecordAtPositionTest extends TestHelper {
         database.lookupByRID(rid[i], false).asDocument().delete();
 
       final MutableDocument shell = database.newDocument(type).set("name", "restored-middle");
-      assertThat(bucket.restoreRecordAtPosition(rid[1].getPosition(), shell)).isEqualTo(rid[1]);
+      assertThat(TestHelper.restoreRecordAtLowLevel(database, bucket, rid[1].getPosition(), shell)).isEqualTo(rid[1]);
     });
 
     database.transaction(() -> {
@@ -308,7 +308,7 @@ class RestoreRecordAtPositionTest extends TestHelper {
 
     assertThatThrownBy(() -> database.transaction(() -> {
       final MutableVertex shell = database.newVertex(TYPE).set("name", "would-clobber");
-      bucket.restoreRecordAtPosition(rid[0].getPosition(), shell);
+      TestHelper.restoreRecordAtLowLevel(database, bucket, rid[0].getPosition(), shell);
     })).isInstanceOf(DatabaseOperationException.class).hasMessageContaining("occupied");
 
     // The live record must be completely untouched by the refused attempt.
@@ -329,12 +329,12 @@ class RestoreRecordAtPositionTest extends TestHelper {
     });
 
     final LocalBucket bucket = (LocalBucket) db.getSchema().getBucketById(rid[0].getBucketId());
-    database.transaction(() -> bucket.deleteRecord(rid[0]));
+    database.transaction(() -> TestHelper.deleteRecordAtLowLevel(database, rid[0]));
     assertThat(bucket.existsRecord(rid[0])).isFalse();
 
     database.transaction(() -> {
       final MutableVertex shell = database.newVertex(TYPE).set("name", bigData);
-      final RID restoredRid = bucket.restoreRecordAtPosition(rid[0].getPosition(), shell);
+      final RID restoredRid = TestHelper.restoreRecordAtLowLevel(database, bucket, rid[0].getPosition(), shell);
       assertThat(restoredRid).isEqualTo(rid[0]);
     });
 
@@ -363,11 +363,11 @@ class RestoreRecordAtPositionTest extends TestHelper {
     assertThat(rid[0].getPosition()).isZero();
 
     final LocalBucket bucket = (LocalBucket) db.getSchema().getBucketById(rid[0].getBucketId());
-    database.transaction(() -> bucket.deleteRecord(rid[0]));
+    database.transaction(() -> TestHelper.deleteRecordAtLowLevel(database, rid[0]));
     assertThat(bucket.existsRecord(rid[0])).isFalse();
 
     database.transaction(() -> {
-      final RID restoredRid = bucket.restoreRecordAtPosition(rid[0].getPosition(), database.newVertex(TYPE).set("name", bigData));
+      final RID restoredRid = TestHelper.restoreRecordAtLowLevel(database, bucket, rid[0].getPosition(), database.newVertex(TYPE).set("name", bigData));
       assertThat(restoredRid).isEqualTo(rid[0]);
     });
 

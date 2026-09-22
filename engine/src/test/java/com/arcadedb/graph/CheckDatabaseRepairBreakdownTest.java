@@ -65,7 +65,7 @@ class CheckDatabaseRepairBreakdownTest extends TestHelper {
     createGraph();
 
     final RID edge = anyEdge();
-    database.transaction(() -> database.getSchema().getBucketById(edge.getBucketId()).deleteRecord(edge));
+    database.transaction(() -> TestHelper.deleteRecordAtLowLevel(database, edge));
 
     final Result row = runFix();
 

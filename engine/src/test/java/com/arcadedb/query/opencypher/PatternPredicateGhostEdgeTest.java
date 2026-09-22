@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher;
 
+import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
@@ -90,7 +91,7 @@ class PatternPredicateGhostEdgeTest {
     }
     database.transaction(() -> {
       final Bucket bucket = database.getSchema().getBucketById(edgeRID.getBucketId());
-      bucket.deleteRecord(edgeRID);
+      TestHelper.deleteRecordAtLowLevel(database, edgeRID);
     });
 
     // The client's command. Before the fix this threw RecordNotFoundException at
@@ -132,7 +133,7 @@ class PatternPredicateGhostEdgeTest {
       edgeRID = ((Edge) rs.next().getProperty("r")).getIdentity();
     }
     database.transaction(() ->
-        database.getSchema().getBucketById(edgeRID.getBucketId()).deleteRecord(edgeRID));
+        TestHelper.deleteRecordAtLowLevel(database, edgeRID));
 
     assertThatCode(() -> {
       try (final ResultSet rs = database.query("opencypher",
@@ -162,7 +163,7 @@ class PatternPredicateGhostEdgeTest {
       edgeRID = ((Edge) rs.next().getProperty("r")).getIdentity();
     }
     database.transaction(() ->
-        database.getSchema().getBucketById(edgeRID.getBucketId()).deleteRecord(edgeRID));
+        TestHelper.deleteRecordAtLowLevel(database, edgeRID));
 
     // Returning the edge forces it to be loaded; the ghost must be skipped, not crash, and yield no row.
     assertThatCode(() -> {
@@ -198,7 +199,7 @@ class PatternPredicateGhostEdgeTest {
       edgeRID = ((Edge) rs.next().getProperty("r")).getIdentity();
     }
     database.transaction(() ->
-        database.getSchema().getBucketById(edgeRID.getBucketId()).deleteRecord(edgeRID));
+        TestHelper.deleteRecordAtLowLevel(database, edgeRID));
 
     // Single-hop comprehension: the ghost is the only edge, so the list is empty (no throw).
     assertThatCode(() -> {

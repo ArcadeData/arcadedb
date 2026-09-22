@@ -104,7 +104,7 @@ class GraphDatabaseCheckerOrphanReclaimTest extends TestHelper {
   }
 
   private void deleteRecordLowLevel(final RID rid) {
-    database.transaction(() -> database.getSchema().getBucketById(rid.getBucketId()).deleteRecord(rid));
+    database.transaction(() -> TestHelper.deleteRecordAtLowLevel(database, rid));
   }
 
   private Map<String, Object> runCheck(final boolean fix) {
