@@ -119,9 +119,14 @@ public final class WebSocketFrameSender {
     final long outstanding = pending.addAndGet(messageSize);
     if (maxPendingBytes > 0 && outstanding > maxPendingBytes) {
       pending.addAndGet(-messageSize);
+      // A single Object argument, not (null, maxPendingBytes): the two-argument form resolves to
+      // LogManager's (Throwable, Object) overload by Java's most-specific-method rule (Throwable <: Object),
+      // so it was never actually wrong - null bound to the throwable slot and maxPendingBytes to the lone
+      // %d - but it read as if the format argument had been dropped, which is worth not inviting a second
+      // time.
       LogManager.instance().log(WebSocketFrameSender.class, Level.WARNING,
           "Closing /ws connection: more than %d bytes of unread answers are still outstanding towards it. Raise "
-              + "arcadedb.server.wsMaxPendingControlBytes if this is a legitimately slow consumer", null, maxPendingBytes);
+              + "arcadedb.server.wsMaxPendingControlBytes if this is a legitimately slow consumer", maxPendingBytes);
       try {
         channel.close();
       } catch (final IOException e) {
