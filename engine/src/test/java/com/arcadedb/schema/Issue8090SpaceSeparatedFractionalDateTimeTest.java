@@ -278,6 +278,62 @@ class Issue8090SpaceSeparatedFractionalDateTimeTest extends TestHelper {
   }
 
   /**
+   * ...and the mercy the index key conversion shows stops at a date it cannot read. A value of a shape the key type
+   * cannot take at all - a non-numeric string on a LONG key - raised {@link NumberFormatException} through the build
+   * before this fix and still has to, rather than being silently indexed under a null key. That is the difference
+   * between {@code convertIndexKeyOrNull()} and the blanket {@code convertOrNull()}, and it is the reason the index
+   * sites do not simply use the latter.
+   */
+  @Test
+  void aNonDateMismatchStillFailsTheIndexBuild() {
+    for (final Schema.INDEX_TYPE indexType : new Schema.INDEX_TYPE[] { Schema.INDEX_TYPE.LSM_TREE,
+        Schema.INDEX_TYPE.HASH }) {
+      final String typeName = "Num8090" + indexType.name();
+      database.getSchema().createDocumentType(typeName);
+
+      database.transaction(() -> {
+        database.newDocument(typeName).set("n", 42L).save();
+        database.newDocument(typeName).set("n", "not a number").save();
+      });
+
+      database.getSchema().getType(typeName).createProperty("n", Type.LONG);
+
+      assertThatThrownBy(() -> database.getSchema().buildTypeIndex(typeName, new String[] { "n" }).withType(indexType)
+          .withUnique(false).create())//
+          .as("index type %s", indexType)//
+          .rootCause().isInstanceOf(NumberFormatException.class);
+    }
+
+    // The policy itself, directly: an unreadable date is a null key, every other refusal still escapes.
+    assertThat(Type.convertIndexKeyOrNull(database, "not a date", LocalDateTime.class)).isNull();
+    assertThatThrownBy(() -> Type.convertIndexKeyOrNull(database, "not a number", Long.class))//
+        .isInstanceOf(NumberFormatException.class);
+  }
+
+  /**
+   * Routing {@code date()}'s no-format path through the shared chain must not lose the argument CHECKING that path
+   * used to get for free: a length-matched string went through {@code formatterFor()}, so an unknown time zone id
+   * was reported as a client error (issue #6388) rather than ignored. An id that cannot exist is a mistake in the
+   * call whether or not the branch has anything to apply it to.
+   */
+  @Test
+  void dateStillRejectsAnUnknownTimeZoneWithNoFormatNamed() {
+    database.transaction(() -> {
+      assertThatThrownBy(() -> database.query("sql",
+          "SELECT date('2024-02-29 13:45:10.123456', { timezone: 'Nowhere/Atall' }) AS d").next())//
+          .isInstanceOf(IllegalArgumentException.class)//
+          .rootCause().hasMessageContaining("Nowhere/Atall");
+
+      // A zone that does exist is accepted and, on this path, changes nothing about what is read - the chain reads
+      // no zone out of the text, which is exactly what the branch's comment claims.
+      assertThat(database.query("sql", "SELECT date('2024-02-29 13:45:10.123456', { timezone: 'Asia/Tokyo' }) AS d")
+          .next().<Object>getProperty("d"))//
+          .isEqualTo(database.query("sql", "SELECT date('2024-02-29 13:45:10.123456') AS d").next()
+              .<Object>getProperty("d"));
+    });
+  }
+
+  /**
    * The {@code Instant} branch of {@code Type.convert} had no {@code String} case at all, so with
    * {@code arcadedb.dateTimeImplementation=java.time.Instant} a datetime literal stayed in the record as the raw
    * {@link String} it arrived as. It now goes through the same shared chain as every other datetime target.
