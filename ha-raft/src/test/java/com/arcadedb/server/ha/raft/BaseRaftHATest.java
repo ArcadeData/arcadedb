@@ -364,10 +364,9 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
           return;
         }
       }
-      try {
-        Thread.sleep(500);
-      } catch (final InterruptedException e) {
-        Thread.currentThread().interrupt();
+      if (!sleepQuietly(500)) {
+        logSlowWait(this, "Raft leader election (interrupted)", System.currentTimeMillis() - startMs, false,
+            LEADER_ELECTION_TIMEOUT_MS);
         return;
       }
     }
@@ -446,8 +445,10 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
         reportSlowWait("cluster bootstrap settle", startMs, true);
         return;
       }
-      if (!sleepQuietly(100))
+      if (!sleepQuietly(100)) {
+        reportSlowWait("cluster bootstrap settle (interrupted)", startMs, false);
         return;
+      }
     }
     reportSlowWait("cluster bootstrap settle", startMs, false);
   }
