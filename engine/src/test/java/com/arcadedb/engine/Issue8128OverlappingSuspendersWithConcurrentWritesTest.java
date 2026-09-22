@@ -26,8 +26,12 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
@@ -109,8 +113,92 @@ class Issue8128OverlappingSuspendersWithConcurrentWritesTest extends TestHelper 
     });
 
     assertThat(secondRan.get()).isTrue();
-    // Once the last suspender resumed, the deferred write must have been flushed and be durable.
-    assertThat(flush.pageIndex.hasPendingOf(database)).isFalse();
+    // Once the last suspender resumes, the deferred write is handed back to the flush thread's normal
+    // pipeline rather than written synchronously inside the resume itself - poll rather than assert
+    // immediately, the same way the deferral itself was awaited above.
+    final long flushDeadline = System.currentTimeMillis() + 5_000;
+    while (flush.pageIndex.hasPendingOf(database) && System.currentTimeMillis() < flushDeadline)
+      Thread.sleep(5);
+    assertThat(flush.pageIndex.hasPendingOf(database))
+        .as("the deferred write must have been flushed once the last suspender resumed")
+        .isFalse();
     assertThat(database.query("sql", "select count(*) as c from Overlap").next().<Long>getProperty("c")).isEqualTo(1L);
+  }
+
+  /**
+   * The scenario a follow-up review round found the fast-path probe alone did not close: two callers can
+   * BOTH observe "nothing suspended yet" (the probe is a plain, unsynchronized-relative-to-each-other read
+   * in that sense) and both commit to the first-suspender sequence, each running its own step 1 bulk drain
+   * concurrently. Whichever reaches {@code trySuspendUntil} first, inside {@code PageManager}'s own
+   * {@code lock()}, genuinely becomes first; the fix is that the OTHER one re-checks {@code isSuspended}
+   * inside that SAME lock before attempting its own drain-dependent acquisition, so it discovers the
+   * nesting instead of running a residual drain that can never converge while the winner holds the freeze.
+   * <p>
+   * Not reproduced deterministically (that would need instrumenting the exact interleaving inside
+   * {@code PageManagerFlushThread}) but driven hard enough, with many threads racing to start at the same
+   * instant and each doing real, overlapping writes inside its own window, that the race window this fix
+   * closes is exercised many times over the run. Before the round-2 fix this reliably surfaced as an
+   * {@code IOException} ("the flush pipeline did not settle...") within a handful of iterations locally.
+   */
+  @Test
+  void manyRacingSuspendersWithConcurrentWritesNeverStallOrFail() throws Exception {
+    final Database db = (Database) database;
+    final PageManager pageManager = ((DatabaseInternal) database).getPageManager();
+
+    database.getSchema().createDocumentType("Race");
+
+    final int threads = 8;
+    final int iterations = 20;
+    final AtomicInteger nextId = new AtomicInteger();
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+    final ExecutorService pool = Executors.newFixedThreadPool(threads);
+
+    try {
+      assertTimeoutPreemptively(Duration.ofSeconds(90), () -> {
+        for (int iteration = 0; iteration < iterations && failure.get() == null; iteration++) {
+          final CountDownLatch ready = new CountDownLatch(threads);
+          final CountDownLatch go = new CountDownLatch(1);
+          final CountDownLatch done = new CountDownLatch(threads);
+
+          for (int t = 0; t < threads; t++)
+            pool.submit(() -> {
+              try {
+                ready.countDown();
+                // Every thread is released at the same instant, maximizing how often two of them both
+                // start their own suspendFlushAndExecute call before either has established the freeze.
+                go.await();
+                pageManager.suspendFlushAndExecute(db, () -> {
+                  try {
+                    for (int w = 0; w < 5; w++) {
+                      database.transaction(() -> database.newDocument("Race").set("id", nextId.incrementAndGet()).save());
+                      Thread.sleep(5);
+                    }
+                  } catch (final Exception e) {
+                    failure.compareAndSet(null, e);
+                  }
+                });
+              } catch (final Throwable t2) {
+                failure.compareAndSet(null, t2);
+              } finally {
+                done.countDown();
+              }
+            });
+
+          ready.await();
+          go.countDown();
+
+          assertThat(done.await(10, TimeUnit.SECONDS))
+              .as("iteration %d: every overlapping suspender must complete well within budget, not stall behind "
+                  + "a drain that can never converge", iteration)
+              .isTrue();
+        }
+      });
+    } finally {
+      pool.shutdown();
+    }
+
+    assertThat(failure.get())
+        .as("no overlapping suspender may fail with the residual race this test targets")
+        .isNull();
   }
 }

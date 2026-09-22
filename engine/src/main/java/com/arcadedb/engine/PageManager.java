@@ -522,24 +522,32 @@ public class PageManager extends LockContext {
 
   public void suspendFlushAndExecute(final Database database, final CallableNoReturn callback)
       throws IOException, InterruptedException {
-    // FAST PATH (review on PR #8128): another caller already has this database frozen - #5068's
-    // overlapping-window guarantee below ("every caller... owns its whole window even when the windows
-    // overlap"), e.g. a backup calling into a nested verify, or an HA snapshot request landing mid-backup.
-    // That window is already established; this call only needs to extend it, the same instant bump the
-    // unconditional setSuspended(database, true) always did before this method took on the #8111 drains.
-    // Skipping them here is not just an optimization: while ANY suspender holds the database suspended, a
-    // commit's page is DEFERRED rather than written (flushPagesFromQueueToDisk's isSuspended(db) branch) and
-    // stays counted as pending in pageIndex without ever being removed from it - flushedPagesPerDatabase never
-    // advances for it - so a drain run here would see pending() > 0 with no possible progress until the FIRST
-    // suspender releases. A previously-instant, previously-safe overlapping acquire would instead hang for
-    // arcadedb.flushAllPagesTimeout and then fail outright, which is worse than doing nothing.
-    if (flushThread.isSuspended(database)) {
-      flushThread.setSuspended(database, true);
-      try {
-        CodeUtils.executeIgnoringExceptions(callback, "Error during suspend flush", true);
-      } finally {
-        flushThread.setSuspended(database, false);
-      }
+    // FAST-PATH PROBE (review on PR #8128, round 2): setSuspended(true) IS the atomic acquisition
+    // (suspended.merge under suspendLock), and its return value says whether THIS call turned out to be the
+    // first suspender (true) or joined an already-established freeze (false) - unlike a plain isSuspended()
+    // peek beforehand, which is an unsynchronized read that can be stale in EITHER direction (a nested case
+    // not yet visible, or an already-resumed one that still looks suspended). If the probe unexpectedly
+    // finds us first, back out immediately and fall through to the full sequence below, which has to drain
+    // BEFORE establishing the freeze (issue #8111) - something this quick attempt has no way to have done.
+    if (flushThread.setSuspended(database, true)) {
+      flushThread.setSuspended(database, false);
+    } else {
+      // Genuinely nested: this database was already frozen when the probe landed, so this window is what
+      // an overlapping caller is entitled to (#5068 - "every caller... owns its whole window even when the
+      // windows overlap", e.g. a backup calling into a nested verify) - no drain needed, the same instant
+      // acquisition the unconditional setSuspended(database, true) call always did before this method took
+      // on the #8111 drains. Skipping the drain here is not just an optimization: while ANY suspender holds
+      // the database suspended, a commit's page is DEFERRED rather than written
+      // (flushPagesFromQueueToDisk's isSuspended(db) branch) and stays counted as pending in pageIndex
+      // without ever being removed from it, so a drain run here would see pending() > 0 with no possible
+      // progress until the FIRST suspender releases - hanging for arcadedb.flushAllPagesTimeout and then
+      // failing outright, which is worse than doing nothing.
+      //
+      // The probe call above IS the acquisition - it already incremented the refcount when it returned
+      // false, so this runs on that same reference rather than taking a second one (a bug caught locally
+      // before push: acquiring again here left a permanent extra reference nothing ever released, so the
+      // database could never reach refcount 0 and a deferred backlog could never resume).
+      runAlreadySuspended(database, callback);
       return;
     }
 
@@ -549,8 +557,9 @@ public class PageManager extends LockContext {
     // in: a full backup taken from the frozen files then archived a bucket at whatever size it had BEFORE the
     // most recent commit, sometimes a bare newly-created file with no data pages in it at all.
     //
-    // Reached only when nothing has this database suspended yet (the fast path above owns every other case),
-    // so the drains below are both necessary AND safe: nothing can be deferring pages out from under them.
+    // The probe above proved nothing was suspended a moment ago, but a DIFFERENT caller can still win the
+    // race to become first while this thread's own step 1 (below, deliberately unlocked and the long part)
+    // is running - closed by the re-check inside the lock at step 2, not by anything here.
     //
     // STEP 1: THE BULK DRAIN, DELIBERATELY OUTSIDE EVERY LOCK - the same first step openSnapshot's own barrier
     // takes, and for the same reason (it is the long part, and committers must not queue behind it).
@@ -570,36 +579,51 @@ public class PageManager extends LockContext {
     // held, and the residual drain below converges by construction - exactly openSnapshot's own reasoning for
     // needing this second, locked drain rather than trusting the first one alone.
     //
-    // Both locks are released immediately after the suspension is acquired, unlike openSnapshot's barrier:
-    // this callback can run for as long as a whole backup, and holding a JVM-wide lock for that would block
-    // every committer and Raft apply in the process, not just this database's - the suspension itself is what
-    // throttles this database's own writers for the callback's duration, same as before this fix.
+    // Both locks are released immediately after the suspension is acquired (or nesting is discovered),
+    // unlike openSnapshot's barrier: this callback can run for as long as a whole backup, and holding a
+    // JVM-wide lock for that would block every committer and Raft apply in the process, not just this
+    // database's - the suspension itself is what throttles this database's own writers for the callback's
+    // duration, same as before this fix.
     final ReentrantReadWriteLock applyLock = ((DatabaseInternal) database).getTransactionManager().getApplyLock();
+    boolean nested = false;
     applyLock.writeLock().lock();
     try {
       lock();
       try {
-        final long deadline = System.currentTimeMillis() + SNAPSHOT_BARRIER_MAX_MILLIS;
+        // RE-CHECKED HERE RATHER THAN TRUSTED FROM STEP 1 (review on PR #8128, round 2): every caller of
+        // trySuspendUntil below - this one and openSnapshot's own - calls it from inside this SAME lock()
+        // critical section, so a positive read here is properly serialized against it by the mutex's own
+        // happens-before guarantee, unlike an unsynchronized peek taken before acquiring this lock would be.
+        // Either this thread observes no one suspended (and is about to become the genuine first suspender
+        // below), or it observes a suspension that fully completed its own trySuspendUntil while holding
+        // this exact lock before releasing it - there is no window in which it can observe a HALF-completed
+        // one, because two callers can never be inside this lock() at once.
+        if (flushThread.isSuspended(database))
+          nested = true;
+        else {
+          final long deadline = System.currentTimeMillis() + SNAPSHOT_BARRIER_MAX_MILLIS;
 
-        // FATAL HERE, UNLIKE openSnapshot's OWN TREATMENT OF THE SAME DRAIN (review on PR #8128): that path
-        // reads the page CACHE through a shadow/copy-on-write window, so a page still pending when its barrier
-        // flips is merely "the snapshot's t0 is a little older than it could have been" - correctness comes
-        // from the snapshot mechanism, not from this drain. This path reads the RAW FILES straight off disk
-        // once the callback runs, so a page still pending here is a page the callback is about to read stale -
-        // exactly the #8111 bug this whole barrier exists to close. Proceeding anyway on a timeout would trade
-        // a rare, loud failure for the same silent one #8111 was.
-        if (!flushThread.waitPendingPagesOfDatabaseUntil(database, deadline))
-          throw new IOException("Cannot freeze the files of database '" + database.getName()
-              + "': the flush pipeline did not settle within " + SNAPSHOT_BARRIER_MAX_MILLIS
-              + " ms under the publication lock, so the on-disk image would not reflect the last committed "
-              + "transaction(s)");
+          // FATAL HERE, UNLIKE openSnapshot's OWN TREATMENT OF THE SAME DRAIN (review on PR #8128): that
+          // path reads the page CACHE through a shadow/copy-on-write window, so a page still pending when
+          // its barrier flips is merely "the snapshot's t0 is a little older than it could have been" -
+          // correctness comes from the snapshot mechanism, not from this drain. This path reads the RAW
+          // FILES straight off disk once the callback runs, so a page still pending here is a page the
+          // callback is about to read stale - exactly the #8111 bug this whole barrier exists to close.
+          // Proceeding anyway on a timeout would trade a rare, loud failure for the same silent one #8111
+          // was.
+          if (!flushThread.waitPendingPagesOfDatabaseUntil(database, deadline))
+            throw new IOException("Cannot freeze the files of database '" + database.getName()
+                + "': the flush pipeline did not settle within " + SNAPSHOT_BARRIER_MAX_MILLIS
+                + " ms under the publication lock, so the on-disk image would not reflect the last committed "
+                + "transaction(s)");
 
-        if (!flushThread.trySuspendUntil(database, deadline))
-          // A CONCURRENT RESUME IS FLUSHING ITS DEFERRED BACKLOG AND WOULD KEEP EVERY COMMITTER IN THE JVM
-          // WAITING BEHIND THIS LOCK - GIVE UP INSTEAD OF PROLONGING THAT (same tradeoff openSnapshot makes).
-          throw new IOException("Cannot freeze the files of database '" + database.getName()
-              + "': the page flush could not be suspended within " + SNAPSHOT_BARRIER_MAX_MILLIS
-              + " ms because another suspender is still resuming");
+          if (!flushThread.trySuspendUntil(database, deadline))
+            // A CONCURRENT RESUME IS FLUSHING ITS DEFERRED BACKLOG AND WOULD KEEP EVERY COMMITTER IN THE JVM
+            // WAITING BEHIND THIS LOCK - GIVE UP INSTEAD OF PROLONGING THAT (same tradeoff openSnapshot makes).
+            throw new IOException("Cannot freeze the files of database '" + database.getName()
+                + "': the page flush could not be suspended within " + SNAPSHOT_BARRIER_MAX_MILLIS
+                + " ms because another suspender is still resuming");
+        }
       } finally {
         unlock();
       }
@@ -607,15 +631,42 @@ public class PageManager extends LockContext {
       applyLock.writeLock().unlock();
     }
 
+    if (nested) {
+      // Discovered under the lock above via a pure read (isSuspended), unlike the probe's own
+      // setSuspended(true) - this thread holds no reference yet, so it must acquire one before running,
+      // the same instant acquisition the fast-path probe would have done had it landed a moment later.
+      flushThread.setSuspended(database, true);
+      runAlreadySuspended(database, callback);
+      return;
+    }
+
     // #5068: the suspension is REFCOUNTED, so every caller (backup, verify, HA snapshot serving, nested
     // scopes per #4958) owns its whole window even when the windows overlap on the same database: flushing
     // is resumed (and the deferred batches flushed) only when the LAST suspender exits - a later, OVERLAPPING
-    // caller never reaches this point at all (the fast path above owns it). The wait for the in-flight batch
-    // runs INSIDE the try so an interrupt during the wait still releases this caller's reference, and covers
-    // only the batch already in flight when trySuspendUntil returned - the residual drain above is what
-    // guarantees there is nothing else left to catch.
+    // caller never reaches this point at all (the fast path and the nested re-check above own every other
+    // case). The wait for the in-flight batch runs INSIDE the try so an interrupt during the wait still
+    // releases this caller's reference, and covers only the batch already in flight when trySuspendUntil
+    // returned - the residual drain above is what guarantees there is nothing else left to catch.
     try {
       flushThread.waitForCurrentFlushToComplete(database);
+      CodeUtils.executeIgnoringExceptions(callback, "Error during suspend flush", true);
+    } finally {
+      flushThread.setSuspended(database, false);
+    }
+  }
+
+  /**
+   * Runs {@code callback} and releases exactly one suspension reference on {@code database} - the whole of
+   * what an OVERLAPPING (non-first) suspender needs once it already holds that reference, with no drain: the
+   * first suspender already established the frozen window. The CALLER must have already acquired the
+   * reference this releases - via the fast-path probe's own {@code setSuspended(true)} call (which IS the
+   * acquisition when it returns {@code false}), or via an explicit one taken right before calling this for a
+   * reference the probe never took (the under-lock nested case, discovered by a pure {@code isSuspended}
+   * read). Acquiring again in here would double-count that reference and leak it forever, since nothing else
+   * would ever release the second one - the exact bug an earlier version of this fix had.
+   */
+  private void runAlreadySuspended(final Database database, final CallableNoReturn callback) {
+    try {
       CodeUtils.executeIgnoringExceptions(callback, "Error during suspend flush", true);
     } finally {
       flushThread.setSuspended(database, false);
