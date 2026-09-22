@@ -1276,11 +1276,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * <b>When the physical free itself fails</b> the transaction is marked rollback-only (CodeRabbit on PR #7936).
    * Logging a warning and carrying on would have left the caller free to commit precisely the state this method
    * exists to prevent - a body in the bucket whose index entries have just been taken away - so the answer is
-   * not "the compensation succeeded": {@link TransactionContext#setRollbackOnly} makes the later
-   * {@code commit()} fail instead, and the caller's own error handling reaches the rollback that discards the
-   * whole transaction. The failure is attached to {@code cause} as a suppressed exception rather than thrown in
-   * its place, because {@code cause} is the reason the record was refused and that is what the caller is
-   * reporting. A direct rollback from here is not an option: this method does not own the transaction.
+   * not "the compensation succeeded": {@link TransactionContext#setRollbackOnly} makes the later commit fail
+   * instead - in {@link TransactionContext#commit1stPhase(boolean)}, the method every commit path converges on,
+   * the replicated one included (issue #8053) - and the caller's own error handling reaches the rollback that
+   * discards the whole transaction. The failure is attached to {@code cause} as a suppressed exception rather
+   * than thrown in its place, because {@code cause} is the reason the record was refused and that is what the
+   * caller is reporting. A direct rollback from here is not an option: this method does not own the transaction.
    *
    * @param cause the throwable the indexer raised, which is about to be rethrown by the caller
    */
