@@ -21,7 +21,9 @@ package com.arcadedb.engine;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.utility.StallAwareStopwatch;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -98,15 +100,16 @@ class Issue8128OverlappingSuspendersWithConcurrentWritesTest extends TestHelper 
           .isTrue();
 
       // The overlapping suspender must acquire INSTANTLY - the pre-#8111-fix behavior - not stall behind
-      // drains that can never make progress while suspender #1 still owns the freeze.
-      final long start = System.currentTimeMillis();
+      // drains that can never make progress while suspender #1 still owns the freeze. StallAwareStopwatch,
+      // not a raw System.currentTimeMillis() delta (review on PR #8128): this is exactly the tripwire case it
+      // exists for - the instant fast-path join vs. the drain-then-acquire path bounded by
+      // SNAPSHOT_BARRIER_MAX_MILLIS - and a GC pause or scheduling hiccup in a shared-JVM full-suite run must
+      // not fail this test for reasons unrelated to the regression it guards against.
+      final StallAwareStopwatch stopwatch = StallAwareStopwatch.start();
       pageManager.suspendFlushAndExecute(db, () -> secondRan.set(true));
-      final long elapsed = System.currentTimeMillis() - start;
-
-      assertThat(elapsed)
-          .as("an overlapping suspender must acquire instantly, not pay for the #8111 drains a second time "
-              + "while they can make no progress")
-          .isLessThan(1_000);
+      stopwatch.assertGaveUpWithin(1_000,
+          "an overlapping suspender's instant join from a fresh drain-then-acquire that would have to wait out "
+              + "SNAPSHOT_BARRIER_MAX_MILLIS while the freeze it can make no progress against is still held");
 
       releaseFirst.countDown();
       first.join();
@@ -141,6 +144,7 @@ class Issue8128OverlappingSuspendersWithConcurrentWritesTest extends TestHelper 
    * {@code IOException} ("the flush pipeline did not settle...") within a handful of iterations locally.
    */
   @Test
+  @Tag("slow")
   void manyRacingSuspendersWithConcurrentWritesNeverStallOrFail() throws Exception {
     final Database db = (Database) database;
     final PageManager pageManager = ((DatabaseInternal) database).getPageManager();
