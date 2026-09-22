@@ -343,7 +343,8 @@ public class PostGrafanaQueryHandler extends AbstractObservabilityHandler {
         // belongs in the error frame with the other caller mistakes above.
         TimeSeriesGateway.requireAggregatableColumn(columns.get(colIndex), aggType);
 
-        requests.add(new MultiColumnAggregationRequest(colIndex, aggType, alias));
+        // As on /ts/query: the factory owns both rules a producer has to get right (issue #8140).
+        requests.add(MultiColumnAggregationRequest.of(columns, colIndex, aggType, alias));
         aliases.add(alias);
       }
     } catch (final IllegalArgumentException e) {

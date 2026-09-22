@@ -3757,7 +3757,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       final String alias = request.getAlias().isEmpty()
           ? request.getField() + "_" + type.name().toLowerCase(Locale.ROOT)
           : request.getAlias();
-      requests.add(new MultiColumnAggregationRequest(columnIndex, type, alias));
+      // As on the two HTTP endpoints: the factory owns both rules a producer has to get right (issue #8140).
+      requests.add(MultiColumnAggregationRequest.of(columns, columnIndex, type, alias));
       aliases.add(alias);
     }
 

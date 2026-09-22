@@ -3235,17 +3235,18 @@ public class SelectExecutionPlanner {
         if (aggType == null)
           return false; // unsupported aggregate
 
-        // For COUNT(*), columnIndex doesn't matter
-        int columnIndex = 0;
+        // COUNT is the one aggregate this push-down never resolves a column for: it counts rows on both
+        // halves, and COUNT(*) names no field to resolve (issue #8140).
+        int schemaIndex = -1;
         if (aggType != AggregationType.COUNT) {
           // Extract field name from first parameter
           if (funcCall.getParams().isEmpty())
             return false;
           final String fieldName = funcCall.getParams().get(0).toString().trim();
-          columnIndex = findColumnIndex(columns, fieldName);
-          if (columnIndex < 0)
+          schemaIndex = findColumnIndex(columns, fieldName);
+          if (schemaIndex < 0)
             return false; // field not found in timeseries columns
-          if (!columns.get(columnIndex).isNumericallyAggregatable())
+          if (!columns.get(schemaIndex).isNumericallyAggregatable())
             // A column no storage layer reads as a number - a STRING field, any TAG, the timestamp itself. The
             // push-down would answer it inconsistently (issue #7725), so decline it and let the generic
             // aggregation path have the query, which is what every other unsupported shape above does too.
@@ -3253,7 +3254,11 @@ public class SelectExecutionPlanner {
         }
 
         final String alias = item.getProjectionAliasAsString();
-        requests.add(new MultiColumnAggregationRequest(columnIndex, aggType, alias));
+        // The factory turns the schema index into the ROW index the request carries, and gives a COUNT no
+        // column at all - the two rules every producer of a request has to get right (issue #8140).
+        requests.add(aggType == AggregationType.COUNT
+            ? MultiColumnAggregationRequest.count(alias)
+            : MultiColumnAggregationRequest.of(columns, schemaIndex, aggType, alias));
         requestAliasToOutputAlias.put(alias, alias);
       }
     }
