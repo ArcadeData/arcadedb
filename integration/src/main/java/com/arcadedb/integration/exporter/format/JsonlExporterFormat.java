@@ -285,7 +285,15 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
    * The schema line already carries the type's definition; without this the definition came back on import with no
    * data behind it, which is not a round trip. The samples do not go through {@link JsonGraphSerializer}: a
    * TimeSeries row is a fixed column tuple with no RID and no type of its own, so it is written as the raw value
-   * array the engine reads and writes, in schema-column order, timestamp first.
+   * array the engine reads and writes.
+   * <p>
+   * <b>That array is an ENGINE ROW</b>: position 0 is the timestamp and positions 1..n are the NON-TIMESTAMP
+   * columns in schema order. This paragraph used to call it "schema-column order, timestamp first", two
+   * descriptions of the same array only while the TIMESTAMP column is declared FIRST - and
+   * {@code JsonlImporterFormat} read it the second way, so a type declaring the timestamp anywhere else, which
+   * issue #7702 made spellable, did not survive the round trip (issue #7899). The engine layout is what is
+   * emitted, here and before the correction, so nothing about the FILE changes and no format-version bump is
+   * involved; what changed is that the reader and this sentence now agree with it.
    * <p>
    * Walked through {@link TimeSeriesEngine#forEachRow} rather than {@code iterateQuery} (issue #7697):
    * {@code iterateQuery}'s own javadoc says the sealed layer materialises every matching row before it returns an
@@ -328,6 +336,9 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
         try {
           engine.forEachRow(Long.MIN_VALUE, Long.MAX_VALUE, null, null, null, row -> {
             final JSONArray sample = new JSONArray();
+            // Copied position for position: the row IS the wire order (see the engine-row note above), so there
+            // is nothing to permute here - the bound is the row's own length, guarded by the column count
+            // because an unprojected row carries exactly one value per column.
             for (int i = 0; i < columns.size() && i < row.length; i++)
               // Only the non-finite doubles need work, and they need it badly: JSONArray.put(Number) rewrites NaN
               // and +/-Infinity to 0, so writing them straight would turn "no measurement" into a measurement of
