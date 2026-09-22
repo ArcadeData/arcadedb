@@ -3908,7 +3908,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         final TransactionContext[] persistTransaction = new TransactionContext[1];
         database.begin();
         persistTransaction[0] = database.getTransaction();
-        persistTransaction[0].setUseWAL(false);
+        persistTransaction[0].setUseWALForThisTransaction(false);
         persistTransaction[0].setCommitLockTimeout(commitLockTimeout);
 
         final ChunkCommitCallback chunkCallback = bytesWritten -> {
@@ -3921,7 +3921,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           // Start new transaction and disable WAL
           database.begin();
           persistTransaction[0] = database.getTransaction();
-          persistTransaction[0].setUseWAL(false);
+          persistTransaction[0].setUseWALForThisTransaction(false);
           persistTransaction[0].setCommitLockTimeout(commitLockTimeout);
         };
 
@@ -9927,13 +9927,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
           if (startedTransaction)
             db.getWrappedDatabaseInstance().begin();
 
-          // Save original WAL setting and disable for bulk load
-          final boolean originalWAL = db.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_WAL);
-          db.getTransaction().setUseWAL(false);
+          // Disable the WAL for the bulk load on THIS transaction only (issue #8129). Setting the session flag
+          // instead outlived the build: the thread's TransactionContext is reused across begin()/commit(), so every
+          // later transaction on it committed without the WAL. The override is cleared by each chunk commit's
+          // reset(), hence re-applied after every begin() below, and restored in the finally for a build that shares
+          // a transaction it did not open.
+          final Boolean originalWALOverride = db.getTransaction().getUseWALForThisTransaction();
+          db.getTransaction().setUseWALForThisTransaction(false);
           // Every commit of this build - the vector-data chunks, the graph persist chunks, and the final one -
           // waits on the bulk budget rather than the interactive default (issue #7361). Set here rather than
           // only where the graph is persisted: it is one build, and the transaction is this one throughout.
-          // Captured and restored in the finally exactly like originalWAL above, and for the same reason: when
+          // Captured and restored in the finally exactly like originalWALOverride above, and for the same reason: when
           // this build did NOT open the transaction it is running in (build() is public and an embedded caller
           // may hold one), the caller's own later commit must not inherit a budget meant for a bulk build.
           final Long originalCommitLockTimeout = db.getTransaction().getCommitLockTimeout();
@@ -9992,8 +9996,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
             throw e;
 
           } finally {
-            // RESTORE WAL setting
-            db.getTransaction().setUseWAL(originalWAL);
+            // RESTORE the WAL override of the transaction the build ran in (null, the session's setting, unless a
+            // caller sharing its transaction had set one)
+            db.getTransaction().setUseWALForThisTransaction(originalWALOverride);
             db.getTransaction().setCommitLockTimeout(originalCommitLockTimeout);
           }
 
@@ -10070,7 +10075,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
         db.getWrappedDatabaseInstance().commit();
         db.getWrappedDatabaseInstance().begin();
-        db.getTransaction().setUseWAL(false); // Re-disable WAL for new transaction
+        db.getTransaction().setUseWALForThisTransaction(false); // Re-disable WAL for new transaction
         db.getTransaction().setCommitLockTimeout(getGraphPersistCommitLockTimeout()); // and re-apply the bulk lock budget
 
         bytesInCurrentChunk.set(0);
@@ -10117,7 +10122,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     final long commitLockTimeout = getGraphPersistCommitLockTimeout();
     if (startedTransaction) {
       db.begin();
-      db.getTransaction().setUseWAL(false);
+      db.getTransaction().setUseWALForThisTransaction(false);
     }
     // OUTSIDE the branch above, deliberately. The only caller is build(), whose PHASE 1 has already begun the
     // transaction this runs in, so startedTransaction is false on the real path - gating the budget on it left
@@ -10143,7 +10148,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
         // Start new transaction and disable WAL
         db.begin();
-        db.getTransaction().setUseWAL(false);
+        db.getTransaction().setUseWALForThisTransaction(false);
         db.getTransaction().setCommitLockTimeout(commitLockTimeout);
       };
 
