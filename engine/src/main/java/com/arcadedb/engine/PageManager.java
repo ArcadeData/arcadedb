@@ -522,11 +522,35 @@ public class PageManager extends LockContext {
 
   public void suspendFlushAndExecute(final Database database, final CallableNoReturn callback)
       throws IOException, InterruptedException {
+    // FAST PATH (review on PR #8128): another caller already has this database frozen - #5068's
+    // overlapping-window guarantee below ("every caller... owns its whole window even when the windows
+    // overlap"), e.g. a backup calling into a nested verify, or an HA snapshot request landing mid-backup.
+    // That window is already established; this call only needs to extend it, the same instant bump the
+    // unconditional setSuspended(database, true) always did before this method took on the #8111 drains.
+    // Skipping them here is not just an optimization: while ANY suspender holds the database suspended, a
+    // commit's page is DEFERRED rather than written (flushPagesFromQueueToDisk's isSuspended(db) branch) and
+    // stays counted as pending in pageIndex without ever being removed from it - flushedPagesPerDatabase never
+    // advances for it - so a drain run here would see pending() > 0 with no possible progress until the FIRST
+    // suspender releases. A previously-instant, previously-safe overlapping acquire would instead hang for
+    // arcadedb.flushAllPagesTimeout and then fail outright, which is worse than doing nothing.
+    if (flushThread.isSuspended(database)) {
+      flushThread.setSuspended(database, true);
+      try {
+        CodeUtils.executeIgnoringExceptions(callback, "Error during suspend flush", true);
+      } finally {
+        flushThread.setSuspended(database, false);
+      }
+      return;
+    }
+
     // #8111: waitForCurrentFlushToComplete alone only waits for a batch ALREADY IN FLIGHT - it is a no-op
     // when the flush thread has not yet picked up the pages a commit just queued. Suspending right after that
     // used to leave those pages sitting in RAM, never written to disk, for the whole window the callback runs
     // in: a full backup taken from the frozen files then archived a bucket at whatever size it had BEFORE the
     // most recent commit, sometimes a bare newly-created file with no data pages in it at all.
+    //
+    // Reached only when nothing has this database suspended yet (the fast path above owns every other case),
+    // so the drains below are both necessary AND safe: nothing can be deferring pages out from under them.
     //
     // STEP 1: THE BULK DRAIN, DELIBERATELY OUTSIDE EVERY LOCK - the same first step openSnapshot's own barrier
     // takes, and for the same reason (it is the long part, and committers must not queue behind it).
@@ -585,11 +609,11 @@ public class PageManager extends LockContext {
 
     // #5068: the suspension is REFCOUNTED, so every caller (backup, verify, HA snapshot serving, nested
     // scopes per #4958) owns its whole window even when the windows overlap on the same database: flushing
-    // is resumed (and the deferred batches flushed) only when the LAST suspender exits. The wait for the
-    // in-flight batch runs INSIDE the try so an interrupt during the wait still releases this caller's
-    // reference; it is cheap for non-first suspenders (the flush thread is already parked deferring), and
-    // covers only the batch already in flight when trySuspendUntil returned - the residual drain above is
-    // what guarantees there is nothing else left to catch.
+    // is resumed (and the deferred batches flushed) only when the LAST suspender exits - a later, OVERLAPPING
+    // caller never reaches this point at all (the fast path above owns it). The wait for the in-flight batch
+    // runs INSIDE the try so an interrupt during the wait still releases this caller's reference, and covers
+    // only the batch already in flight when trySuspendUntil returned - the residual drain above is what
+    // guarantees there is nothing else left to catch.
     try {
       flushThread.waitForCurrentFlushToComplete(database);
       CodeUtils.executeIgnoringExceptions(callback, "Error during suspend flush", true);
