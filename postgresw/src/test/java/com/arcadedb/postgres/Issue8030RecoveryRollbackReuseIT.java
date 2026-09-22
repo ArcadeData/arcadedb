@@ -18,7 +18,6 @@
  */
 package com.arcadedb.postgres;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 
 import org.junit.jupiter.api.DisplayName;
@@ -84,7 +83,7 @@ class Issue8030RecoveryRollbackReuseIT extends PostgresWireProtocolTestBase {
   @DisplayName("[#8030] a ROLLBACK registered by the aborted-block recovery really rolls back when it is bound and executed again")
   void reusedRecoveryRollbackRollsBackTheNextBlock() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -135,7 +134,7 @@ class Issue8030RecoveryRollbackReuseIT extends PostgresWireProtocolTestBase {
   @DisplayName("[#8030] the recovery-registered statement rolls back when bound under a different portal name too")
   void recoveryRollbackReboundUnderAnotherPortalNameStillRollsBack() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -177,7 +176,7 @@ class Issue8030RecoveryRollbackReuseIT extends PostgresWireProtocolTestBase {
   @DisplayName("[#8030] a COMMIT or END that recovered an aborted block rolls back on reuse, matching the ROLLBACK tag it answers")
   void recoveryViaCommitOrEndAlsoRollsBackOnReuse() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -229,7 +228,7 @@ class Issue8030RecoveryRollbackReuseIT extends PostgresWireProtocolTestBase {
   @DisplayName("[#8030] re-executing the already-bound recovery portal after its block ended is refused, never replayed")
   void replayingTheBoundRecoveryPortalAfterItsBlockEndedIsRefused() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);

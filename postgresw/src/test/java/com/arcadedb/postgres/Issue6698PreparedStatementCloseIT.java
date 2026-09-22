@@ -18,7 +18,6 @@
  */
 package com.arcadedb.postgres;
 
-import com.arcadedb.GlobalConfiguration;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -46,7 +45,7 @@ class Issue6698PreparedStatementCloseIT extends PostgresWireProtocolTestBase {
   @DisplayName("[#6698] Close('S') removes named prepared statement from preparedStatements map")
   void closeNamedPreparedStatementRemovesFromMap() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -95,7 +94,7 @@ class Issue6698PreparedStatementCloseIT extends PostgresWireProtocolTestBase {
   @DisplayName("[#6698] Close('S') removes unnamed prepared statement from preparedStatements map")
   void closeUnnamedPreparedStatementRemovesFromMap() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -134,7 +133,7 @@ class Issue6698PreparedStatementCloseIT extends PostgresWireProtocolTestBase {
   @DisplayName("[#6698] Closing a prepared statement does not discard previously bound active portals")
   void closePreparedStatementPreservesExistingBoundPortals() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -166,7 +165,7 @@ class Issue6698PreparedStatementCloseIT extends PostgresWireProtocolTestBase {
   @DisplayName("[#6698] Close('P') and Close('S') on non-existent targets return CloseComplete without error")
   void closeNonExistentTargetReturnsCloseComplete() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -191,7 +190,7 @@ class Issue6698PreparedStatementCloseIT extends PostgresWireProtocolTestBase {
   @DisplayName("[#6698] Close('P') removes portal from portals map")
   void closePortalRemovesFromMap() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -214,7 +213,7 @@ class Issue6698PreparedStatementCloseIT extends PostgresWireProtocolTestBase {
   @DisplayName("[#6698] Rebinding an existing portal name from a closed prepared statement invalidates portal")
   void rebindPortalFromClosedStatementClearsExistingPortalAndReturnsNoData() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);

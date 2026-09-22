@@ -18,7 +18,6 @@
  */
 package com.arcadedb.postgres;
 
-import com.arcadedb.GlobalConfiguration;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
@@ -72,7 +71,7 @@ class Issue6458PortalSuspensionIT extends PostgresWireProtocolTestBase {
   @Test
   void executeMaxRowsSendsRowsBeforeSuspendedNeverBothTerminatorsAndThePortalSurvivesToContinue() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
 
@@ -147,7 +146,7 @@ class Issue6458PortalSuspensionIT extends PostgresWireProtocolTestBase {
   @Test
   void describePortalThenExecuteWithASmallLimitReturnsOnlyThatManyRowsThenSuspends() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
 
@@ -226,7 +225,7 @@ class Issue6458PortalSuspensionIT extends PostgresWireProtocolTestBase {
   @Test
   void reBindingAnAlreadyExecutedPortalWithNoNewParseReRunsInsteadOfServingTheExhaustedFirstRun() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
 
@@ -290,7 +289,7 @@ class Issue6458PortalSuspensionIT extends PostgresWireProtocolTestBase {
   @Test
   void bindOnAnUnknownSourceStatementClearsAnyExistingPortalInsteadOfServingItsStaleResult() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
 
@@ -347,7 +346,7 @@ class Issue6458PortalSuspensionIT extends PostgresWireProtocolTestBase {
   @Test
   void bindOnAnUnknownSourceStatementClearsAnExistingDeferredCatalogPortalToo() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
 
@@ -405,7 +404,7 @@ class Issue6458PortalSuspensionIT extends PostgresWireProtocolTestBase {
   @Test
   void twoPortalsFromOneStatementDoNotShareStateEvenWhenOneIsSuspended() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
 
@@ -575,7 +574,7 @@ class Issue6458PortalSuspensionIT extends PostgresWireProtocolTestBase {
     properties.setProperty("ssl", "false");
     properties.setProperty("sslMode", "disable");
     return DriverManager.getConnection(
-        "jdbc:postgresql://localhost:" + GlobalConfiguration.POSTGRES_PORT.getValueAsInteger() + "/" + getDatabaseName(), properties);
+        getServerPostgresJdbcUrl(), properties);
   }
 
   // ---- raw wire-protocol helpers for executeMaxRowsSendsRowsBeforeSuspendedNeverBothTerminatorsAndThePortalSurvivesToContinue ----
