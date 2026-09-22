@@ -244,8 +244,14 @@ class Issue8128OverlappingSuspendersWithConcurrentWritesTest extends TestHelper 
       }
     };
 
+    // Declared outside the try, not final: a failure before releaseHook.countDown() below must still be able
+    // to release and interrupt both workers in the finally, rather than leaving one of them blocked in the
+    // hook (or, for B, in its own acquisition attempt) while TestHelper's own teardown proceeds against the
+    // same database underneath it (review on PR #8128).
+    Thread x = null;
+    Thread b = null;
     try {
-      final Thread x = new Thread(() -> {
+      x = new Thread(() -> {
         try {
           pageManager.suspendFlushAndExecute(db,
               () -> database.transaction(() -> database.newDocument("Race5").set("id", 1).save()));
@@ -265,7 +271,7 @@ class Issue8128OverlappingSuspendersWithConcurrentWritesTest extends TestHelper 
 
       final AtomicBoolean sawPendingAtCallbackEntry = new AtomicBoolean();
       final AtomicReference<Throwable> bFailure = new AtomicReference<>();
-      final Thread b = new Thread(() -> {
+      b = new Thread(() -> {
         try {
           pageManager.suspendFlushAndExecute(db, () -> sawPendingAtCallbackEntry.set(flush.pageIndex.hasPendingOf(database)));
         } catch (final Throwable t) {
@@ -296,7 +302,25 @@ class Issue8128OverlappingSuspendersWithConcurrentWritesTest extends TestHelper 
               + "#8111 drain")
           .isFalse();
     } finally {
-      flush.testHookAfterDeferredBacklogSnapshot = null;
+      // Unconditionally release the hook FIRST: an assertion above can fail before releaseHook.countDown()
+      // runs on the happy path, and without this X would stay parked in the hook for up to its own 10s
+      // timeout while teardown proceeds. Interrupting both threads then bounds how long a failure elsewhere
+      // (e.g. B stuck in its own drain) can keep them alive past this test.
+      releaseHook.countDown();
+      if (x != null)
+        x.interrupt();
+      if (b != null)
+        b.interrupt();
+      try {
+        if (x != null)
+          x.join(10_000);
+        if (b != null)
+          b.join(10_000);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      } finally {
+        flush.testHookAfterDeferredBacklogSnapshot = null;
+      }
     }
 
     final long deadline = System.currentTimeMillis() + 5_000;
