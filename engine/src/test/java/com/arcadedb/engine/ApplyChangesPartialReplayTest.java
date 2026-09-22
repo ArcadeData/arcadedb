@@ -38,6 +38,16 @@ import static org.assertj.core.api.Assertions.assertThat;
  * errors on followers under heavy load (version gap spreading).
  */
 class ApplyChangesPartialReplayTest extends TestHelper {
+  /**
+   * These tests hand-write WAL pages over the bucket, so the records the cached counter was taken from stop existing
+   * without anything booking a delta for them. The blanket end-of-test check would report that as the #8040 finding
+   * it technically is - about the fixture, not about the replay under test.
+   */
+  @Override
+  protected boolean isCheckingDatabaseIntegrity() {
+    return false;
+  }
+
 
   @Override
   protected void beginTest() {
