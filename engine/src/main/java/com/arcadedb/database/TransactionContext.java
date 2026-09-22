@@ -636,6 +636,12 @@ public class TransactionContext implements Transaction {
     this.walFlush = flush;
   }
 
+  /**
+   * @return whether THIS transaction's commit is written to the WAL: the per-transaction override when one is set,
+   * otherwise the session's setting. A caller that saves this value to restore it later through
+   * {@link #setUseWAL(boolean)} must read it while no override is active, or it would bake a one-transaction override
+   * into the session's durability (issue #8129).
+   */
   @Override
   public boolean isUseWAL() {
     final Boolean override = useWALOverride;
@@ -1792,6 +1798,7 @@ public class TransactionContext implements Transaction {
     newPageCounters.clear();
     immutablePages.clear();
     commitLockTimeout = null;
+    useWALOverride = null;
   }
 
   /**
