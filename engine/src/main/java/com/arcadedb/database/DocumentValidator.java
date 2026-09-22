@@ -509,9 +509,6 @@ public class DocumentValidator {
    * must not be quietly treated as absent. What issue #8090 changed is only how that failure is reported: the
    * conversion used to answer {@code null} here, which then became an NPE on the comparison below. Naming the side
    * that could not be read turns that into something the caller can act on.
-   */
-  /**
-   * Reads one side of a MIN/MAX date comparison.
    * <p>
    * The precision-bearing types reach here at all now: {@code DATETIME_MICROS} and its siblings used to fall through
    * to the {@code default} arm, which reports a violation UNCONDITIONALLY, so setting a MIN or a MAX on such a
@@ -537,8 +534,6 @@ public class DocumentValidator {
       return null; // unreachable: throwValidationException always throws
     }
   }
-
-
 
   private static void throwValidationException(final DocumentType type, final Property p, final String message)
       throws ValidationException {
