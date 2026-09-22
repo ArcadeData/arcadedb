@@ -230,6 +230,10 @@ public class ContinuousAggregateRefresher {
    * #8156: this used to scan for WHERE only, and the other branch of {@code buildFilteredQuery} used a plain
    * {@code indexOf} for GROUP BY / ORDER BY / LIMIT that knew nothing about quoting - so a GROUP BY inside a string
    * literal was taken for the clause. One scanner now answers for every clause keyword.
+   * <p>
+   * The scan always starts at 0 and {@code fromIdx} only filters what it RETURNS: the quote, comment and paren
+   * state at {@code fromIdx} can only be known by reading everything before it. Starting the loop at {@code fromIdx}
+   * would be faster and wrong. That costs one pass per keyword, on a query string, once per refresh.
    */
   private static int findTopLevelKeyword(final String upperQuery, final String keyword, final int fromIdx) {
     final int keywordLen = keyword.length();
