@@ -291,16 +291,33 @@ public class TransactionManager {
     final long begin = System.currentTimeMillis();
 
     while (true) {
-      final WALFile file = activeWALFilePool[(int) (Thread.currentThread().threadId() % activeWALFilePool.length)];
+      final WALFile[] pool = activeWALFilePool;
+      final int slot = (int) (Thread.currentThread().threadId() % pool.length);
 
-      if (file != null && file.acquire(() -> {
-        file.writeTransactionToFile(database, pages, sync, file, txId, bufferChanges);
-        return null;
-      }))
+      if (tryWriteTransactionToWALFile(pool[slot], pages, sync, txId, bufferChanges))
+        break;
+
+      // #7768: this thread's own slot refused the write. Before sleeping on it, offer the transaction to the
+      // other files in the pool. Any active WAL file can hold any transaction - recovery reads every
+      // txlog_*.wal and merges them by txId (see checkIntegrity) - so the thread-id hash is a contention
+      // spreader, not a constraint. Without this fallback a single slot that has gone permanently unusable
+      // took down every thread congruent to it for the life of the database, and with the documented
+      // arcadedb.txWalFiles=1 it took down the database's whole commit path.
+      boolean writtenElsewhere = false;
+      for (int i = 0; i < pool.length && !writtenElsewhere; ++i)
+        if (i != slot)
+          writtenElsewhere = tryWriteTransactionToWALFile(pool[i], pages, sync, txId, bufferChanges);
+
+      if (writtenElsewhere)
         break;
 
       if (System.currentTimeMillis() - begin > WRITE_WAL_TIMEOUT)
-        throw new TransactionException("Timeout on writing transaction to WAL");
+        // Name the condition actually observed. "Timeout on writing transaction to WAL" on its own reads as a
+        // slow disk, which is what sent issue #7768 looking at storage latency instead of at a WAL pool whose
+        // files were all refusing writes (#7768).
+        throw new TransactionException(
+            "Timeout on writing transaction " + txId + " to the WAL after " + WRITE_WAL_TIMEOUT
+                + "ms: no file in the pool of " + pool.length + " accepted the write (" + describeWALFilePool(pool) + ")");
 
       try {
         Thread.sleep(10);
@@ -313,6 +330,49 @@ public class TransactionManager {
         throw new TransactionException("Interrupted while writing transaction " + txId + " to the WAL", e);
       }
     }
+  }
+
+  /**
+   * Offers the transaction to one WAL file. Returns false - without writing - when the file is absent, is
+   * being rotated out ({@code !active}) or has been closed; {@link WALFile#acquire} makes that decision under
+   * the file's own monitor so the answer cannot race a concurrent close.
+   * <p>
+   * A REFUSAL is what the fallback in {@link #writeTransactionToWAL} is for; a THROW deliberately is not.
+   * If the write itself fails - notably when {@code WALFile.reopenChannel} refuses because the file has
+   * vanished from disk, which {@code acquire} rethrows as an unchecked {@code WALException} - that
+   * propagates out of {@code writeTransactionToWAL} instead of quietly landing the transaction in a
+   * different file. That is the intended scope boundary, not an oversight: a WAL file disappearing under a
+   * live instance is the #7479 case, where something outside this process is mutating this database's
+   * files, and the next housekeeping tick fences the whole database over it within a second. Writing MORE
+   * data in the meantime, to any file, is the opposite of what that fence is for, so this one commit fails
+   * loud. Only a cleanly refused slot - closed, absent or mid-rotation - is routed elsewhere.
+   */
+  private boolean tryWriteTransactionToWALFile(final WALFile file, final List<MutablePage> pages,
+      final WALFile.FlushType sync, final long txId, final Binary bufferChanges) {
+    return file != null && file.acquire(() -> {
+      file.writeTransactionToFile(database, pages, sync, file, txId, bufferChanges);
+      return null;
+    });
+  }
+
+  /**
+   * Per-slot state of the WAL pool, for the timeout diagnostic in {@link #writeTransactionToWAL} (#7768).
+   * Package-private so the diagnostic can be asserted on directly instead of by waiting out the 30s
+   * {@code WRITE_WAL_TIMEOUT} that produces it.
+   */
+  static String describeWALFilePool(final WALFile[] pool) {
+    final StringBuilder buffer = new StringBuilder();
+    for (int i = 0; i < pool.length; ++i) {
+      if (i > 0)
+        buffer.append(", ");
+      final WALFile file = pool[i];
+      buffer.append(i).append('=');
+      if (file == null)
+        buffer.append("<none>");
+      else
+        buffer.append(file.getFilePath()).append(file.isOpen() ? "[open]" : "[CLOSED]").append(file.isActive() ? "" : "[inactive]");
+    }
+    return buffer.toString();
   }
 
   public void notifyPageFlushed(final MutablePage page) {
@@ -1187,35 +1247,50 @@ public class TransactionManager {
             }
           }
         } catch (final ClosedChannelException e) {
-          try {
-            file.close();
-          } catch (IOException ex) {
-            // IGNORE IT
-          }
-        } catch (final IOException e) {
-          // #7479: a WAL file this instance still has open just became inaccessible. Under normal
-          // single-process operation that never happens - the OS keeps an open file's content reachable
-          // through its descriptor even past an unlink - so it means something outside this instance's
-          // control removed it (the reported case: a second embedded process/instance sharing the same
-          // database directory, its own clean close deleting every *.wal file it could see). Retrying
-          // this check every second forever, as before, only produced an unbounded flood of identical
-          // stack traces while the database kept silently accepting writes into a WAL pool that can no
-          // longer be trusted. Fence it once instead, the same way a post-WAL-append commit failure
-          // already does (#5053): fenceForRecovery() logs a single clear SEVERE line, and the
-          // housekeeping timer cancels itself on its next tick (the isFencedForRecovery() guard above) -
-          // there is no point checking the rest of the pool, the whole database is about to stop being
-          // usable anyway.
-          if (database.getEmbedded() instanceof LocalDatabase localDatabase) {
-            localDatabase.fenceForRecovery(
-                "WAL file '" + file + "' became inaccessible while still open; check whether another process or "
-                    + "database instance is writing to this database's files", e);
+          // #7768: this used to be answered with a bare file.close() - no log line, no fence, no replacement
+          // file - and because ClosedChannelException IS an IOException, that narrower catch silently stole
+          // the case the branch below was written to fence, leaving the pool slot closed for the life of the
+          // database (the rotation branch above requires isOpen(), so it could never fire for that slot
+          // again). WALFile now reopens a channel a thread interrupt closed (see WALFile.reopenChannel), so
+          // the only ClosedChannelException that still reaches here is one the reopen REFUSED, and there are
+          // exactly two of those. A file closed on purpose concurrently with this pass - a shutdown racing
+          // the housekeeping timer - is benign: the pool is going away anyway, so just carry on with the rest
+          // of it. Anything else is a file this instance still considers open that it can no longer reach,
+          // which is the #7479 case and must fence.
+          if (file.isOpen() && fenceForInaccessibleWALFile(file, e))
             return;
-          }
-          // No LocalDatabase to fence (a wrapper this issue does not otherwise reach): fall back to the
-          // original behaviour of logging and continuing to check the rest of the pool.
-          LogManager.instance().log(this, Level.SEVERE, "Error on WAL file management for file '%s'", e, file);
+        } catch (final IOException e) {
+          if (fenceForInaccessibleWALFile(file, e))
+            return;
         }
       }
+  }
+
+  /**
+   * #7479: a WAL file this instance still has open just became inaccessible. Under normal single-process
+   * operation that never happens - the OS keeps an open file's content reachable through its descriptor even
+   * past an unlink - so it means something outside this instance's control removed it (the reported case: a
+   * second embedded process/instance sharing the same database directory, its own clean close deleting every
+   * *.wal file it could see). Retrying this check every second forever, as before, only produced an unbounded
+   * flood of identical stack traces while the database kept silently accepting writes into a WAL pool that
+   * can no longer be trusted. Fence it once instead, the same way a post-WAL-append commit failure already
+   * does (#5053): fenceForRecovery() logs a single clear SEVERE line and the housekeeping timer cancels
+   * itself on its next tick (the isFencedForRecovery() guard in checkWALFiles).
+   *
+   * @return true when the database was fenced, in which case there is no point checking the rest of the pool
+   * - the whole database is about to stop being usable anyway.
+   */
+  private boolean fenceForInaccessibleWALFile(final WALFile file, final IOException cause) {
+    if (database.getEmbedded() instanceof LocalDatabase localDatabase) {
+      localDatabase.fenceForRecovery(
+          "WAL file '" + file + "' became inaccessible while still open; check whether another process or "
+              + "database instance is writing to this database's files", cause);
+      return true;
+    }
+    // No LocalDatabase to fence (a wrapper this issue does not otherwise reach): fall back to the original
+    // behaviour of logging and continuing to check the rest of the pool.
+    LogManager.instance().log(this, Level.SEVERE, "Error on WAL file management for file '%s'", cause, file);
+    return false;
   }
 
   /**
