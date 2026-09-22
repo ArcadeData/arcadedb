@@ -389,14 +389,18 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
    * (issue #7840).
    *
    * @param other  the bytes to compare this buffer's run against, read from its offset 0
-   * @param length how many bytes to compare; must not exceed either operand's remaining bytes
+   * @param length how many bytes to compare
    *
    * @return the offset of the first difference, or {@code -1} when there is none
+   *
+   * @throws BufferUnderflowException when either operand holds fewer than {@code length} bytes to compare
    */
   public int mismatch(final byte[] other, final int length) {
     checkForFetching(length);
-    if (length > buffer.remaining())
-      // WHAT THE getByte() RUN THIS REPLACES WOULD THROW ONCE IT WALKED PAST THE LIMIT, JUST RAISED UP FRONT
+    if (length > buffer.remaining() || length > other.length)
+      // WHAT THE getByte() RUN THIS REPLACES WOULD THROW ONCE IT WALKED PAST THE LIMIT, JUST RAISED UP FRONT - and
+      // answered for BOTH operands, so a caller that over-reads `other` gets this rather than an array index error
+      // out of Arrays.mismatch
       throw new BufferUnderflowException();
 
     // READ AFTER checkForFetching(), NEVER BEFORE: a fetch replaces the buffer and rewinds the position, so a
@@ -600,7 +604,9 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
     final int length = (int) len;
     if (length > 0) {
       checkForFetching(length);
-      final int available = size - buffer.position();
+      // Bounded by the LIMIT as well as by size: getString() reads the content straight out of the backing array, so
+      // this check stands in for the one ByteBuffer.get() used to make, and must not rely on size <= limit holding
+      final int available = Math.min(size, buffer.limit()) - buffer.position();
       if (length > available)
         throw new SerializationException(
             "Byte array length " + length + " exceeds the " + available + " bytes available in buffer of size " + size
