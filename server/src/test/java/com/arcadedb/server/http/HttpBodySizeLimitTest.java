@@ -51,8 +51,7 @@ class HttpBodySizeLimitTest extends BaseGraphServerTest {
   @Test
   void requestExceedingBodyLimitReturns413WithJsonError() throws Exception {
     testEachServer(serverIndex -> {
-      final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
+      final HttpURLConnection connection = (HttpURLConnection) new URL(getServerHttpUrl(serverIndex, "/api/v1/command/graph")).openConnection();
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
@@ -87,8 +86,7 @@ class HttpBodySizeLimitTest extends BaseGraphServerTest {
   void requestWithinBodyLimitSucceeds() throws Exception {
     testEachServer(serverIndex -> {
       // A small query well within the 1KB limit should succeed normally
-      final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph").openConnection();
+      final HttpURLConnection connection = (HttpURLConnection) new URL(getServerHttpUrl(serverIndex, "/api/v1/query/graph")).openConnection();
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
