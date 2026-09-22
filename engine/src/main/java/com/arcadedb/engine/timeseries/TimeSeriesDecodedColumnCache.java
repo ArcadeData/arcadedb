@@ -227,14 +227,22 @@ final class TimeSeriesDecodedColumnCache {
    * Whether a boxed column's elements are references it shares rather than objects it allocated. An all-null column
    * allocated nothing either, so it answers true as well.
    * <p>
-   * Two types qualify. A STRING column is handed back unchanged by {@link ColumnDefinition#boxString}, and a BOOLEAN
-   * one autoboxes to {@code Boolean.TRUE}/{@code Boolean.FALSE}, which the JVM caches - so a column of either holds
-   * two references per slot and nothing more (review of PR #8194). Every other boxing allocates per value.
+   * Three types qualify, and the boundary matters in BOTH directions - charging a shared reference per row evicts a
+   * column early, while charging an allocated object as a reference lets the cache hold more than its budget:
+   * <ul>
+   * <li>STRING, handed back unchanged by {@link ColumnDefinition#boxString};</li>
+   * <li>BOOLEAN, autoboxed to the two {@code Boolean} constants the JVM caches;</li>
+   * <li>BYTE, autoboxed through {@code Byte.valueOf}, whose cache spans -128..127 - which is EVERY value a byte can
+   * hold, so no boxed byte is ever allocated (review of PR #8194).</li>
+   * </ul>
+   * SHORT, INTEGER and LONG must NOT be added to that list, however similar they look: their caches also stop at
+   * -128..127, but that is a sliver of their range, so a column of realistic values allocates per row and has to be
+   * charged for it.
    */
   private static boolean holdsSharedReferences(final Object[] values) {
     for (final Object value : values) {
       if (value != null)
-        return value instanceof String || value instanceof Boolean;
+        return value instanceof String || value instanceof Boolean || value instanceof Byte;
     }
     return true;
   }

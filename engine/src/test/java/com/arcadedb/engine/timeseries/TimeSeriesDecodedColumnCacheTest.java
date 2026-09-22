@@ -192,30 +192,48 @@ class TimeSeriesDecodedColumnCacheTest {
   }
 
   /**
-   * Boxed columns whose elements are shared instances - a STRING column handed back unchanged, a BOOLEAN autoboxed to
-   * the JVM's cached singletons - are charged as references, while a column that really did allocate per row is not.
+   * Boxed columns whose elements are shared instances - a STRING column handed back unchanged, a BOOLEAN or BYTE
+   * autoboxed to a JVM-cached constant - are charged as references, while a column that really did allocate per row
+   * is not.
+   * <p>
+   * A SHORT is the case that has to keep being charged per row despite looking like the BYTE beside it:
+   * {@code Short.valueOf} caches -128..127 too, but that is a sliver of a short's range rather than all of it, so
+   * values outside it allocate.
    */
   @Test
   void onlyBoxedColumnsThatAllocatedPerRowAreChargedPerRow() {
     final TimeSeriesDecodedColumnCache cache = new TimeSeriesDecodedColumnCache(1024L * 1024L);
 
     final Object[] booleans = new Object[500];
-    for (int i = 0; i < booleans.length; i++)
-      booleans[i] = i % 2 == 0;
-
+    final Object[] bytes = new Object[500];
+    final Object[] shorts = new Object[500];
     final Object[] doubles = new Object[500];
-    for (int i = 0; i < doubles.length; i++)
+    for (int i = 0; i < booleans.length; i++) {
+      booleans[i] = i % 2 == 0;
+      bytes[i] = (byte) i;
+      // Deliberately past Short.valueOf's cache, which is where a short stops behaving like a byte.
+      shorts[i] = (short) (1_000 + i);
       doubles[i] = (double) i;
+    }
 
-    cache.put(1L, 0, TimeSeriesDecodedColumnCache.SHAPE_BOXED, booleans);
-    final long booleanBytes = cache.getHeldBytes();
+    assertThat(chargeFor(cache, 1L, booleans))
+        .as("Boolean.TRUE/FALSE are singletons, so only the references are held")
+        .isEqualTo(16L + 8L * booleans.length);
+    assertThat(chargeFor(cache, 2L, bytes))
+        .as("Byte.valueOf caches every value a byte can hold, so a boxed byte is never allocated")
+        .isEqualTo(16L + 8L * bytes.length);
+    assertThat(chargeFor(cache, 3L, shorts))
+        .as("a short outside -128..127 really was allocated, however much it resembles the byte above")
+        .isEqualTo(16L + 24L * shorts.length);
+    assertThat(chargeFor(cache, 4L, doubles))
+        .as("a boxed Double per row really was allocated per row")
+        .isEqualTo(16L + 24L * doubles.length);
+  }
 
-    cache.put(2L, 0, TimeSeriesDecodedColumnCache.SHAPE_BOXED, doubles);
-    final long doubleBytes = cache.getHeldBytes() - booleanBytes;
-
-    assertThat(booleanBytes).as("Boolean.TRUE/FALSE are singletons, so only the references are held").isEqualTo(
-        16L + 8L * booleans.length);
-    assertThat(doubleBytes).as("a boxed Double per row really was allocated per row").isEqualTo(
-        16L + 24L * doubles.length);
+  /** What admitting {@code column} under {@code blockId} added to the cache's running total. */
+  private static long chargeFor(final TimeSeriesDecodedColumnCache cache, final long blockId, final Object[] column) {
+    final long before = cache.getHeldBytes();
+    cache.put(blockId, 0, TimeSeriesDecodedColumnCache.SHAPE_BOXED, column);
+    return cache.getHeldBytes() - before;
   }
 }
