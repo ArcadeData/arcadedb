@@ -314,6 +314,12 @@ public class GrpcServerPlugin implements ServerPlugin {
     // Publish gRPC metrics into the server's shared JVM-wide registry so the same exporters that
     // scrape the rest of the server (Prometheus, OTLP, JMX, Studio) also see gRPC telemetry.
     serverBuilder.intercept(new GrpcMetricsInterceptor(Metrics.globalRegistry));
+    // Carries back the verdict "your own transaction published a commit under this call", which the retry loop
+    // RemoteGrpcDatabase inherits from RemoteDatabase needs in order NOT to replay a block whose earlier half
+    // is already durable (issue #8134). Registered unconditionally and on this shared path, so both the
+    // standard and the xDS builder get it: dropping this line does not fail a call, it silently returns the
+    // guard to the state issue #8134 reports - a BATCH-boundary block replayed after a conflict.
+    serverBuilder.intercept(new GrpcSessionPartialCommitInterceptor());
 
     // Add compression interceptor if force compression is enabled
     if (getConfigBoolean(config, CONFIG_COMPRESSION_FORCE, false)) {
