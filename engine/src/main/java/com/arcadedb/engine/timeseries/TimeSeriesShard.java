@@ -205,7 +205,8 @@ public class TimeSeriesShard implements AutoCloseable {
     // registered: retrying initEngine() after the sealed file is repaired reuses this very component and produced
     // a type reporting isEngineAvailable() == true whose every read threw FileNotFoundException (issue #6839).
     // The failure at initHeaderPage() a few lines above already propagates without closing, for the same reason.
-    this.sealedStore = new TimeSeriesSealedStore(shardPath, columns);
+    this.sealedStore = new TimeSeriesSealedStore(shardPath, columns,
+        GlobalConfiguration.decodedBlockCacheBytes(database.getConfiguration()));
 
     // Crash recovery: if a compaction was interrupted, truncate any partial sealed blocks.
     //
