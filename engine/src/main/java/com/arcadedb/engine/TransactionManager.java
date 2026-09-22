@@ -1236,42 +1236,51 @@ public class TransactionManager {
               return;
             }
           }
-        } catch (final IOException e) {
-          // #7768: a ClosedChannelException used to be caught HERE, ahead of this branch, and answered with a
-          // bare file.close() - no log line, no fence, no replacement file. ClosedChannelException IS an
-          // IOException, so that narrower catch silently stole the case this branch was written to fence, and
-          // left the pool slot closed for the life of the database: the rotation branch above requires
-          // isOpen(), so it could never fire for that slot again. WALFile now reopens a channel a thread
-          // interrupt closed (see WALFile.reopenChannel), so the only ClosedChannelException that still
-          // reaches here is one the reopen REFUSED. That is either a file closed on purpose concurrently with
-          // this pass - a shutdown racing the housekeeping timer, benign, the pool is going away anyway - or
-          // a file that is gone from disk, which is precisely the #7479 case below.
-          if (e instanceof ClosedChannelException && !file.isOpen())
-            continue;
-
-          // #7479: a WAL file this instance still has open just became inaccessible. Under normal
-          // single-process operation that never happens - the OS keeps an open file's content reachable
-          // through its descriptor even past an unlink - so it means something outside this instance's
-          // control removed it (the reported case: a second embedded process/instance sharing the same
-          // database directory, its own clean close deleting every *.wal file it could see). Retrying
-          // this check every second forever, as before, only produced an unbounded flood of identical
-          // stack traces while the database kept silently accepting writes into a WAL pool that can no
-          // longer be trusted. Fence it once instead, the same way a post-WAL-append commit failure
-          // already does (#5053): fenceForRecovery() logs a single clear SEVERE line, and the
-          // housekeeping timer cancels itself on its next tick (the isFencedForRecovery() guard above) -
-          // there is no point checking the rest of the pool, the whole database is about to stop being
-          // usable anyway.
-          if (database.getEmbedded() instanceof LocalDatabase localDatabase) {
-            localDatabase.fenceForRecovery(
-                "WAL file '" + file + "' became inaccessible while still open; check whether another process or "
-                    + "database instance is writing to this database's files", e);
+        } catch (final ClosedChannelException e) {
+          // #7768: this used to be answered with a bare file.close() - no log line, no fence, no replacement
+          // file - and because ClosedChannelException IS an IOException, that narrower catch silently stole
+          // the case the branch below was written to fence, leaving the pool slot closed for the life of the
+          // database (the rotation branch above requires isOpen(), so it could never fire for that slot
+          // again). WALFile now reopens a channel a thread interrupt closed (see WALFile.reopenChannel), so
+          // the only ClosedChannelException that still reaches here is one the reopen REFUSED, and there are
+          // exactly two of those. A file closed on purpose concurrently with this pass - a shutdown racing
+          // the housekeeping timer - is benign: the pool is going away anyway, so just carry on with the rest
+          // of it. Anything else is a file this instance still considers open that it can no longer reach,
+          // which is the #7479 case and must fence.
+          if (file.isOpen() && fenceForInaccessibleWALFile(file, e))
             return;
-          }
-          // No LocalDatabase to fence (a wrapper this issue does not otherwise reach): fall back to the
-          // original behaviour of logging and continuing to check the rest of the pool.
-          LogManager.instance().log(this, Level.SEVERE, "Error on WAL file management for file '%s'", e, file);
+        } catch (final IOException e) {
+          if (fenceForInaccessibleWALFile(file, e))
+            return;
         }
       }
+  }
+
+  /**
+   * #7479: a WAL file this instance still has open just became inaccessible. Under normal single-process
+   * operation that never happens - the OS keeps an open file's content reachable through its descriptor even
+   * past an unlink - so it means something outside this instance's control removed it (the reported case: a
+   * second embedded process/instance sharing the same database directory, its own clean close deleting every
+   * *.wal file it could see). Retrying this check every second forever, as before, only produced an unbounded
+   * flood of identical stack traces while the database kept silently accepting writes into a WAL pool that
+   * can no longer be trusted. Fence it once instead, the same way a post-WAL-append commit failure already
+   * does (#5053): fenceForRecovery() logs a single clear SEVERE line and the housekeeping timer cancels
+   * itself on its next tick (the isFencedForRecovery() guard in checkWALFiles).
+   *
+   * @return true when the database was fenced, in which case there is no point checking the rest of the pool
+   * - the whole database is about to stop being usable anyway.
+   */
+  private boolean fenceForInaccessibleWALFile(final WALFile file, final IOException cause) {
+    if (database.getEmbedded() instanceof LocalDatabase localDatabase) {
+      localDatabase.fenceForRecovery(
+          "WAL file '" + file + "' became inaccessible while still open; check whether another process or "
+              + "database instance is writing to this database's files", cause);
+      return true;
+    }
+    // No LocalDatabase to fence (a wrapper this issue does not otherwise reach): fall back to the original
+    // behaviour of logging and continuing to check the rest of the pool.
+    LogManager.instance().log(this, Level.SEVERE, "Error on WAL file management for file '%s'", cause, file);
+    return false;
   }
 
   /**
