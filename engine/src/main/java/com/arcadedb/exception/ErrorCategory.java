@@ -115,6 +115,14 @@ public enum ErrorCategory {
    * now decides the answer on every wire protocol, not just HTTP: an internal invariant violation reaches a
    * MongoDB client as {@code BadValue} and a Postgres one as {@code 22023}. A conscious trade, not a free one.
    * <p>
+   * {@link #PARSING} is decided before {@link #VALIDATION} - the opposite of the order {@link #ARITHMETIC} keeps
+   * over it above - because {@link #VALIDATION}'s own {@link IllegalArgumentException} arm is a broad,
+   * cause-chain-wide test: a malformed full-text query is re-typed into an {@link IllegalArgumentException} at
+   * two call sites so the message reads as the caller's mistake, but {@link FullTextQueryParseException} still
+   * rides along as its cause. Testing {@link #VALIDATION} first would match that {@link IllegalArgumentException}
+   * before {@link #PARSING} ever saw its own {@link FullTextQueryParseException} arm, so the same malformed
+   * expression would classify as PARSING through one entry point and VALIDATION through another (issue #8068).
+   * <p>
    * Each arm walks the chain separately, which is deliberate and not the same as one walk testing every type per
    * frame. Priority here is by category, not by depth: a chain whose {@link NeedRetryException} sits *below* an
    * {@link ArithmeticErrorException} still classifies as {@link #RETRY}, because that is the verdict a driver has
@@ -134,14 +142,14 @@ public enum ErrorCategory {
       return SCHEMA;
     if (CauseChain.contains(error, SecurityException.class))
       return SECURITY;
+    if (CauseChain.contains(error, CommandParsingException.class) //
+        || CauseChain.contains(error, FullTextQueryParseException.class))
+      return PARSING;
     if (CauseChain.contains(error, ValidationException.class) //
         || CauseChain.contains(error, QueryNotIdempotentException.class) //
         || CauseChain.contains(error, InvalidPropertyTypeException.class) //
         || CauseChain.contains(error, IllegalArgumentException.class))
       return VALIDATION;
-    if (CauseChain.contains(error, CommandParsingException.class) //
-        || CauseChain.contains(error, FullTextQueryParseException.class))
-      return PARSING;
     if (CauseChain.contains(error, TimeoutException.class))
       return TIMEOUT;
     return SERVER;

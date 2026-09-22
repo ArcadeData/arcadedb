@@ -19,6 +19,7 @@
 package com.arcadedb.exception;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.index.fulltext.FullTextQueryParseException;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -132,6 +133,21 @@ class ErrorCategoryTest {
     assertThat(ErrorCategory.of(missingType)).isEqualTo(ErrorCategory.SCHEMA);
     assertThat(ErrorCategory.of(missingType)).isNotEqualTo(ErrorCategory.SERVER);
     assertThat(ErrorCategory.of(new TransactionException("commit failed", missingType))).isEqualTo(ErrorCategory.SCHEMA);
+  }
+
+  @Test
+  void aFullTextParseFailureReTypedAsIllegalArgumentIsStillParsing() {
+    // Issue #8068: FullTextQuery.search() and HybridSearch re-type FullTextQueryParseException into an
+    // IllegalArgumentException so the message reads as the caller's mistake, but the parse exception rides along
+    // as the cause. PARSING must win over VALIDATION here, otherwise the same malformed expression classifies as
+    // PARSING through SEARCH_INDEX (which lets the FullTextQueryParseException surface directly) and VALIDATION
+    // through the full-text and hybrid search functions - a different SQLSTATE / Mongo error code for one input.
+    final FullTextQueryParseException parseFailure = new FullTextQueryParseException("unbalanced quote", null);
+    final IllegalArgumentException reTyped = new IllegalArgumentException("Invalid full-text query: unbalanced quote",
+        parseFailure);
+
+    assertThat(ErrorCategory.of(parseFailure)).isEqualTo(ErrorCategory.PARSING);
+    assertThat(ErrorCategory.of(reTyped)).isEqualTo(ErrorCategory.PARSING);
   }
 
   @Test

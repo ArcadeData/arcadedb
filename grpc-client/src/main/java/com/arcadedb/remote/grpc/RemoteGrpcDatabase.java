@@ -51,6 +51,7 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.remote.RemoteException;
 import com.arcadedb.remote.RemoteImmutableDocument;
@@ -1230,15 +1231,26 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
   @Override
   public Iterator<Record> iterateType(final String typeName, final boolean polymorphic) {
-    String query = "select from `" + typeName + "`";
-    if (!polymorphic)
-      query += " where @type = '" + typeName + "'";
-    return streamQuery(query);
+    // Both halves escaped: the name reaches the server as an IDENTIFIER in the target and as a string PARAMETER in
+    // the filter, so a name carrying a back-tick or a quote is the name the caller asked for rather than a
+    // different one or a parse error - the same fix RemoteDatabase.iterateType() got for #7914 (issue #8050).
+    final String query = "select from " + Identifier.quote(typeName) + (polymorphic ? "" : " where @type = :typeName");
+    return polymorphic ? streamQuery(query) : streamQuery(query, Map.of("typeName", typeName));
   }
 
   @Override
   public Iterator<Record> iterateBucket(final String bucketName) {
-    return streamQuery("select from bucket:`" + bucketName + "`");
+    return streamQuery("select from " + bucketTarget(bucketName));
+  }
+
+  /**
+   * The SQL spelling of a bucket as a query TARGET, with the name escaped. Not {@code bucket:} + a quoted name: the
+   * grammar's bucket target in a FROM position is the bare {@code BUCKET_IDENTIFIER} lexer token - back-ticks there
+   * are a parse error. The single-element bucket LIST is the form that does take a quoted identifier, and it
+   * addresses the same one bucket (mirrors {@code RemoteDatabase.bucketTarget}, issue #8050).
+   */
+  private static String bucketTarget(final String bucketName) {
+    return "bucket:[" + Identifier.quote(bucketName) + "]";
   }
 
   public String createRecord(final String cls, final Map<String, Object> props, final long timeoutMs) {
@@ -1387,7 +1399,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   public long countBucket(final String bucketName) {
     checkDatabaseIsOpen();
     stats.countBucket.incrementAndGet();
-    ResultSet result = query("sql", "select count(*) as count from bucket:" + bucketName);
+    ResultSet result = query("sql", "select count(*) as count from " + bucketTarget(bucketName));
     if (result.hasNext()) {
       Number count = result.next().getProperty("count");
       return count != null ? count.longValue() : 0;
@@ -1399,8 +1411,11 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   public long countType(final String typeName, final boolean polymorphic) {
     checkDatabaseIsOpen();
     stats.countType.incrementAndGet();
-    final String appendix = polymorphic ? "" : " where @type = '" + typeName + "'";
-    ResultSet result = query("sql", "select count(*) as count from " + typeName + appendix);
+    // The target is escaped as an IDENTIFIER and the @type filter bound as a string PARAMETER, the same split
+    // iterateType() uses (issue #8050).
+    final String appendix = polymorphic ? "" : " where @type = :typeName";
+    final Map<String, Object> params = polymorphic ? Map.of() : Map.of("typeName", typeName);
+    ResultSet result = query("sql", "select count(*) as count from " + Identifier.quote(typeName) + appendix, params);
     if (result.hasNext()) {
       Number count = result.next().getProperty("count");
       return count != null ? count.longValue() : 0;
@@ -2015,8 +2030,13 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   }
 
   private Iterator<Record> streamQuery(final String query) {
+    return streamQuery(query, Collections.emptyMap());
+  }
+
+  private Iterator<Record> streamQuery(final String query, final Map<String, Object> params) {
     StreamQueryRequest request = StreamQueryRequest.newBuilder().setDatabase(getName()).setQuery(query)
         .setLanguage("sql")
+        .putAllParameters(convertParamsToGrpcValue(params))
         .setCredentials(buildCredentials())
         .setBatchSize(100).build();
 

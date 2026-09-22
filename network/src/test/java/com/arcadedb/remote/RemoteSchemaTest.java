@@ -51,6 +51,11 @@ class RemoteSchemaTest {
   void setUp() {
     mockDatabase = mock(RemoteDatabase.class);
     schema = new RemoteSchema(mockDatabase);
+    // reload() also reads schema:buckets directly, alongside schema:types, so a standalone bucket is visible
+    // even when no type uses it (issue #7797 follow-up). Tests below only care about type-attached buckets, so
+    // this default keeps them unchanged; a test asserting on a standalone bucket overrides it explicitly.
+    final ResultSet emptyBuckets = buildSchemaResultSet();
+    when(mockDatabase.command("sql", "select from schema:buckets")).thenReturn(emptyBuckets);
   }
 
   @Test
