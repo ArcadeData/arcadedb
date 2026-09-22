@@ -433,15 +433,6 @@ public class PostgresNetworkExecutor extends Thread {
     if (skipUntilSync)
       return;
 
-    if (errorInTransaction) {
-      // The block is aborted and only the client's COMMIT/ROLLBACK/END ends it, so this Describe never runs -
-      // but it is owed a reply, and PostgreSQL's own exec_describe_*_message answers 25P02 rather than nothing.
-      // Returning silently here left a client that had recovered past a Sync waiting for a RowDescription that
-      // was never coming (issue #7851 review).
-      refuseInAbortedTransaction();
-      return;
-    }
-
     // Describe('S') names a PREPARED STATEMENT (registered by PARSE); Describe('P') names a bound PORTAL
     // (registered by BIND) - two different registries since #6660 / CodeRabbit split them apart so portals
     // stop sharing mutable state. A statement's column info, once resolved here from its schema, is a
@@ -449,6 +440,20 @@ public class PostgresNetworkExecutor extends Thread {
     // the template - every portal bound from it afterwards inherits it via PostgresPortal.bindFrom(), the
     // same way queryTargetType/aliasToSourceProperty are already memoized per statement.
     final PostgresPortal portal = type == 'S' ? preparedStatements.get(portalName) : getPortal(portalName, false);
+
+    if (errorInTransaction && !endsTransactionBlock(portal)) {
+      // The block is aborted and only the client's COMMIT/ROLLBACK/END ends it, so this Describe never runs -
+      // but it is owed a reply, and PostgreSQL's own exec_describe_*_message answers 25P02 rather than nothing.
+      // Returning silently here left a client that had recovered past a Sync waiting for a RowDescription that
+      // was never coming (issue #7851 review).
+      // A prepared COMMIT/ROLLBACK/END is the exception (issue #8029): PostgreSQL refuses to describe only what
+      // returns rows while aborted, precisely so that a client which blindly Describes everything it runs - libpq's
+      // PQexecPrepared, and psycopg3 with it - can still end the block. It falls through to the NoData answer
+      // every transaction-control statement gets.
+      refuseInAbortedTransaction();
+      return;
+    }
+
     if (portal == null) {
       // NoData would tell the client the statement/portal exists and returns no rows (issue #8211)
       if (type == 'S')
@@ -640,6 +645,23 @@ public class PostgresNetworkExecutor extends Thread {
         return;
 
       if (errorInTransaction) {
+        final PostgresPortal abortedPortal = getPortal(portalName, false);
+        if (endsTransactionBlock(abortedPortal)) {
+          // A portal bound from a prepared COMMIT/ROLLBACK/END with no Parse in front of it (issue #8029): what a
+          // client statement cache sends - pgjdbc once prepareThreshold promotes ROLLBACK, libpq's PQexecPrepared -
+          // and the one statement class PostgreSQL still runs in an aborted block. Refusing it wedged the session
+          // in 'E' for good. Ended exactly as queryCommand() and parseCommand() end an aborted block: a COMMIT of
+          // it is a ROLLBACK, tagged ROLLBACK. The tag is written here rather than rewritten into portal.query so
+          // the prepared statement the portal came from keeps answering COMMIT once the session is healthy again.
+          portal = abortedPortal;
+          if (database.isTransactionActive())
+            database.rollback();
+          endTransactionBlockState();
+          // Consumed, as applyTransactionControl() consumes it: re-Executing this portal must not end the next block.
+          abortedPortal.transactionControl = null;
+          writeCommandComplete("ROLLBACK", 0);
+          return;
+        }
         // Same as describeCommand above: refused, not swallowed. The portal may well still be registered from
         // before the failure, and running it would execute a statement the client was told the block refuses.
         refuseInAbortedTransaction();
@@ -2473,7 +2495,10 @@ public class PostgresNetworkExecutor extends Thread {
         // pipelined behind the failing message gets no second ErrorResponse of its own.
         return;
 
-      if (errorInTransaction) {
+      if (errorInTransaction && !endsTransactionBlock(preparedStatement)) {
+        // A prepared COMMIT/ROLLBACK/END is let through (issue #8029): it is the statement that ends the block, and
+        // executeCommand() runs it as the rollback it has to be. Refusing it here left a client that reuses a cached
+        // transaction-end statement - Bind+Execute with no Parse - no way out of the aborted block at all.
         // Reached when the block is aborted but the discard state is not set: the failure came from the simple
         // query protocol, or a Sync has since been processed. Mirror the simple-query fix from #6542/#6457 and
         // refuse with an ErrorResponse instead of silently returning, so the client knows this Bind never ran
@@ -3556,9 +3581,10 @@ public class PostgresNetworkExecutor extends Thread {
    * {@link #endTransactionBlockState()} rather than clearing {@code explicitTransactionStarted} alone, so
    * there is one rule for ending a block on both protocols. The other two flags it clears are already false
    * here: {@code executeCommand()} is the only caller and returns on {@code skipUntilSync} before reaching
-   * this method, and answers {@code errorInTransaction} with {@link #refuseInAbortedTransaction()} - an
-   * aborted block's own COMMIT/ROLLBACK is dispatched by {@code parseCommand()} instead, which ends the block
-   * there and marks the portal {@code ignoreExecution}.
+   * this method, and handles {@code errorInTransaction} before reaching it - an aborted block's own
+   * COMMIT/ROLLBACK is ended either by {@code parseCommand()}'s recovery branch, when the client re-parses it, or
+   * by {@code executeCommand()}'s aborted branch, when it binds an already-prepared one (issue #8029); every other
+   * portal is answered with {@link #refuseInAbortedTransaction()}.
    * <p>
    * The marker is cleared once applied. Portals outlive their Execute on purpose (a limit-hit Execute suspends and
    * the client fetches the rest through the same portal, issue #6458), so without this a second Execute of a
@@ -3590,6 +3616,16 @@ public class PostgresNetworkExecutor extends Thread {
     }
     portal.transactionControl = null;
     return true;
+  }
+
+  /**
+   * True for a prepared statement or portal that ends a transaction block - the only statement class PostgreSQL
+   * still accepts while the block is aborted ({@code IsTransactionExitStmt}). BEGIN carries a marker too but is not
+   * one: PostgreSQL refuses it with {@code 25P02} like any other statement there.
+   */
+  private static boolean endsTransactionBlock(final PostgresPortal portal) {
+    return portal != null && (portal.transactionControl == PostgresPortal.TransactionControl.COMMIT
+        || portal.transactionControl == PostgresPortal.TransactionControl.ROLLBACK);
   }
 
   /**
