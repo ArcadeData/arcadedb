@@ -34,7 +34,7 @@ import java.util.Map;
 import java.util.stream.Stream;
 
 /**
- * Procedure: do.when(condition, ifQuery, elseQuery, params)
+ * Procedure: do.when(condition, ifQuery, elseQuery, params = {})
  * <p>
  * Runs {@code ifQuery} when {@code condition} is true, {@code elseQuery} otherwise, both given as
  * Cypher query strings, with {@code params} bound into the sub-query as named parameters. Each row
@@ -55,6 +55,12 @@ import java.util.stream.Stream;
  * rather than only failing once someone happens to trigger the true branch. {@code elseQuery} differs
  * only in that {@code null} is accepted, meaning "no else branch": the call yields zero rows rather than
  * running anything.
+ * </p>
+ * <p>
+ * {@code params} is optional and defaults to an empty map, matching APOC's declared
+ * {@code apoc.do.when(condition :: BOOLEAN, ifQuery :: STRING, elseQuery :: STRING, params = {} :: MAP)} (issue
+ * #8102). It is the only one of the four APOC gives a default: {@code elseQuery} carries none there, so the
+ * two-argument call stays an error here too rather than becoming an ArcadeDB-only spelling of the procedure.
  * </p>
  * <p>
  * {@code ifQuery}/{@code elseQuery} run as Cypher against this database with whatever privileges the
@@ -81,9 +87,14 @@ public class DoWhen implements CypherProcedure {
     return NAME;
   }
 
+  /**
+   * Three, not four: APOC declares the trailing {@code params} with a default, so a call that omits it is a call
+   * this procedure has to accept (issue #8102). It stops at three because APOC's {@code elseQuery} has no default -
+   * lowering it further would make ArcadeDB accept a call APOC rejects.
+   */
   @Override
   public int getMinArgs() {
-    return 4;
+    return 3;
   }
 
   @Override
@@ -135,6 +146,10 @@ public class DoWhen implements CypherProcedure {
     // Rejected by validateArgs() at execution before a branch can run; let that error surface.
     if (literalArguments.length < getMinArgs() || literalArguments.length > getMaxArgs())
       return false;
+    // The array is one entry per argument WRITTEN at the call site, so it is as short as three once params became
+    // optional (issue #8102). Both branch slots are still inside it: the guard above has established a length of at
+    // least getMinArgs(), and elseQuery at index 2 is the last argument getMinArgs() covers. A further lowering of
+    // that bound would have to bound these two reads with it.
     return branchMayWrite(literalArguments[1]) || branchMayWrite(literalArguments[2]);
   }
 
@@ -174,7 +189,7 @@ public class DoWhen implements CypherProcedure {
     final boolean condition = extractBoolean(args[0]);
     final String ifQuery = extractString(args[1], "ifQuery");
     final String elseQuery = args[2] == null ? "" : extractString(args[2], "elseQuery");
-    final Map<String, Object> params = extractMap(args[3]);
+    final Map<String, Object> params = extractMap(argAt(args, 3));
 
     final String query = condition ? ifQuery : elseQuery;
     if (query == null || query.isBlank())
@@ -197,6 +212,16 @@ public class DoWhen implements CypherProcedure {
     }
 
     return rows.stream();
+  }
+
+  /**
+   * The argument at {@code index}, or {@code null} when the caller stopped short of it. {@code validateArgs} has
+   * already run, so a shorter array means the argument is one APOC declares with a default - here only
+   * {@code params}, whose absence {@link #extractMap} already resolves to the empty map, the same value APOC
+   * defaults it to (issue #8102).
+   */
+  private static Object argAt(final Object[] args, final int index) {
+    return index < args.length ? args[index] : null;
   }
 
   private boolean extractBoolean(final Object arg) {
