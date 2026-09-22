@@ -250,14 +250,19 @@ class Issue8152ContinuousAggregateWatermarkTest extends TestHelper {
         ts, sensor, temperature);
   }
 
+  /**
+   * {@code count(@rid)}, NOT {@code count(*)}: the latter answers from a cached per-bucket counter plus the
+   * transaction delta rather than scanning (see {@code engine/CLAUDE.md}), and these assertions exist precisely to
+   * catch rows that should not be there. Ground truth has to come from a real scan.
+   */
   private long countAggregateRows() {
-    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM hourly_temps")) {
+    try (final ResultSet rs = database.query("sql", "SELECT count(@rid) AS c FROM hourly_temps")) {
       return ((Number) rs.next().getProperty("c")).longValue();
     }
   }
 
   private long rowsFor(final String sensor) {
-    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM hourly_temps WHERE sensor_id = ?",
+    try (final ResultSet rs = database.query("sql", "SELECT count(@rid) AS c FROM hourly_temps WHERE sensor_id = ?",
         sensor)) {
       return ((Number) rs.next().getProperty("c")).longValue();
     }
