@@ -48,7 +48,6 @@ class ApplyChangesPartialReplayTest extends TestHelper {
     return false;
   }
 
-
   @Override
   protected void beginTest() {
     database.getSchema().createDocumentType("TestType");
