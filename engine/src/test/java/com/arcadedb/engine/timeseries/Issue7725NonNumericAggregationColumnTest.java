@@ -195,11 +195,13 @@ class Issue7725NonNumericAggregationColumnTest extends TestHelper {
   }
 
   /**
-   * The single-column {@code aggregate()} entry point carried a third copy of the same {@code else 0.0}, and
-   * has to agree with the multi-column one over the same samples.
+   * A BOOLEAN column asked for on its own rather than beside a numeric sibling. The single-column
+   * {@code aggregate()} entry point used to carry a third copy of the same {@code else 0.0}; it has since been
+   * deleted (issue #8189), so the same question is asked of the path production actually uses, with one request
+   * in the list instead of several.
    */
   @Test
-  void theSingleColumnAggregateAgreesWithTheMultiColumnOne() throws Exception {
+  void aBooleanColumnAskedForOnItsOwnStillSumsItsTrueSamples() throws Exception {
     database.command("sql", "CREATE TIMESERIES TYPE Flags2 TIMESTAMP ts FIELDS (active BOOLEAN) SHARDS 1");
     final TimeSeriesEngine engine = ((LocalTimeSeriesType) database.getSchema().getType("Flags2")).getEngine();
 
@@ -211,27 +213,32 @@ class Issue7725NonNumericAggregationColumnTest extends TestHelper {
 
     database.begin();
     try {
-      final AggregationResult sum = engine.aggregate(Long.MIN_VALUE, Long.MAX_VALUE, 0, AggregationType.SUM, HOUR, null);
+      final MultiColumnAggregationResult sum = engine.aggregateMulti(Long.MIN_VALUE, Long.MAX_VALUE,
+          List.of(new MultiColumnAggregationRequest(1, AggregationType.SUM, "sum")), HOUR, null);
       assertThat(sum.size()).isEqualTo(1);
-      assertThat(sum.getValue(0)).as("two true samples, not zero").isEqualTo(2.0);
+      assertThat(sum.getValue(0L, 0)).as("two true samples, not zero").isEqualTo(2.0);
     } finally {
       database.commit();
     }
   }
 
   /**
-   * The width guard, reached through the one public entry point that can: {@code aggregate()} takes a raw
-   * column index and never validates it, so an index past the row's width lands on the guard.
+   * The width guard, as the only public entry point now expresses it.
    * <p>
-   * This is a deliberate behaviour change beyond what #7725 reported, and the one place the fix is not purely
-   * "make the two layers agree": such a request used to contribute a real {@code 0.0} per row, so SUM answered
-   * the number zero and AVG answered zero for a column that was never read at all. Absence is what "this row
-   * carries no such column" means, and {@link TimeSeriesNaN#ABSENT} is how the rest of the stack says it - so
-   * SUM is absent rather than a total of zero, and COUNT still counts the rows, which is what distinguishes
-   * "no measurement" from "no rows".
+   * #7725's own change was that a position the row does not carry contributes {@link TimeSeriesNaN#ABSENT}
+   * instead of a real {@code 0.0} - so SUM is absent rather than a total of zero for a column that was never
+   * read. That rule still governs the MUTABLE half, in {@code mutableSample}. What a CALLER can observe changed
+   * with issue #8140, which gave the sealed half a by-name refusal for a {@code columnIndex} naming no value
+   * column, and with #8189, which deleted the single-column {@code aggregate()} that reached the mutable half
+   * without passing it: {@code aggregateMulti} resolves every non-COUNT request's column up front, so an index
+   * past the last one is refused rather than quietly answered as a gap. That is the better of the two - a gap
+   * and a typo are indistinguishable to the caller, an exception is not.
+   * <p>
+   * COUNT is the contrast, and it is why the refusal is not simply "validate the index": COUNT names no column
+   * at all, so its {@code columnIndex} is never resolved and counting the rows still works.
    */
   @Test
-  void aColumnIndexPastTheRowWidthIsAbsentRatherThanAZeroSample() throws Exception {
+  void aColumnIndexPastTheRowWidthIsRefusedRatherThanAnsweredAsAGap() throws Exception {
     database.command("sql", "CREATE TIMESERIES TYPE Narrow TIMESTAMP ts FIELDS (value DOUBLE) SHARDS 1");
     final TimeSeriesEngine engine = ((LocalTimeSeriesType) database.getSchema().getType("Narrow")).getEngine();
 
@@ -242,19 +249,21 @@ class Issue7725NonNumericAggregationColumnTest extends TestHelper {
 
     database.begin();
     try {
-      // Column 9 does not exist: the row carries the timestamp and one field, so row.length is 2.
-      final AggregationResult sum = engine.aggregate(Long.MIN_VALUE, Long.MAX_VALUE, 9, AggregationType.SUM, HOUR, null);
-      assertThat(sum.size()).isEqualTo(1);
-      assertThat(sum.getValue(0)).as("a column the row does not carry is a gap, not a total of zero").isNaN();
+      // Row position 10 does not exist: the row carries the timestamp and one field, so row.length is 2.
+      assertThatThrownBy(() -> engine.aggregateMulti(Long.MIN_VALUE, Long.MAX_VALUE,
+          List.of(new MultiColumnAggregationRequest(10, AggregationType.SUM, "sum")), HOUR, null))
+          .as("a position no column occupies is a caller error, not a gap in the data")
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("out of range");
 
-      final AggregationResult count = engine.aggregate(Long.MIN_VALUE, Long.MAX_VALUE, 9, AggregationType.COUNT, HOUR,
-          null);
-      assertThat(count.getValue(0)).as("COUNT counts rows, so it is unaffected").isEqualTo(2.0);
+      final MultiColumnAggregationResult count = engine.aggregateMulti(Long.MIN_VALUE, Long.MAX_VALUE,
+          List.of(new MultiColumnAggregationRequest(10, AggregationType.COUNT, "count")), HOUR, null);
+      assertThat(count.getValue(0L, 0)).as("COUNT names no column, so it is unaffected").isEqualTo(2.0);
 
       // The counter-case: the column that IS there still answers a number.
-      final AggregationResult real = engine.aggregate(Long.MIN_VALUE, Long.MAX_VALUE, 0, AggregationType.SUM, HOUR,
-          null);
-      assertThat(real.getValue(0)).isEqualTo(7.0);
+      final MultiColumnAggregationResult real = engine.aggregateMulti(Long.MIN_VALUE, Long.MAX_VALUE,
+          List.of(new MultiColumnAggregationRequest(1, AggregationType.SUM, "sum")), HOUR, null);
+      assertThat(real.getValue(0L, 0)).isEqualTo(7.0);
     } finally {
       database.commit();
     }

@@ -313,15 +313,18 @@ class Issue7089NaNTransparentSumAvgTest extends TestHelper {
     assertThat(metrics.getSlowPathBlocks()).isZero();
     assertSqlPushDownIsNaNTransparent();
 
-    // The single-column path agrees with the multi-column one.
+    // The same numbers read one request at a time rather than three in one pass, so a per-request accumulator
+    // that only works when its siblings are present would not pass here either.
     database.begin();
-    final AggregationResult sum = engine.aggregate(Long.MIN_VALUE, Long.MAX_VALUE, 0, AggregationType.SUM, HOUR, null);
-    final AggregationResult avg = engine.aggregate(Long.MIN_VALUE, Long.MAX_VALUE, 0, AggregationType.AVG, HOUR, null);
+    final MultiColumnAggregationResult sum = engine.aggregateMulti(Long.MIN_VALUE, Long.MAX_VALUE,
+        List.of(new MultiColumnAggregationRequest(1, AggregationType.SUM, "sum")), HOUR, null);
+    final MultiColumnAggregationResult avg = engine.aggregateMulti(Long.MIN_VALUE, Long.MAX_VALUE,
+        List.of(new MultiColumnAggregationRequest(1, AggregationType.AVG, "avg")), HOUR, null);
     database.commit();
-    assertThat(sum.getValue(sum.findBucketIndex(0L))).isEqualTo(80.0);
-    assertThat(avg.getValue(avg.findBucketIndex(0L))).isCloseTo(80.0 / 3, within(1e-9));
-    assertThat(sum.getValue(sum.findBucketIndex(HOUR))).isNaN();
-    assertThat(avg.getValue(avg.findBucketIndex(HOUR))).isNaN();
+    assertThat(sum.getValue(0L, 0)).isEqualTo(80.0);
+    assertThat(avg.getValue(0L, 0)).isCloseTo(80.0 / 3, within(1e-9));
+    assertThat(sum.getValue(HOUR, 0)).isNaN();
+    assertThat(avg.getValue(HOUR, 0)).isNaN();
   }
 
   private void insert(final long ts, final double value) {

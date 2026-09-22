@@ -333,11 +333,14 @@ class Issue8179DecodedBlockCacheTest extends TestHelper {
   }
 
   private double sumOfValues(final TimeSeriesEngine engine, final TagFilter filter) throws IOException {
-    final AggregationResult result = engine.aggregate(Long.MIN_VALUE, Long.MAX_VALUE, 1, AggregationType.SUM, 0,
-        filter);
+    // Row position 2 is 'value': the engine row is [ts, host, value], timestamp first and then the non-TIMESTAMP
+    // columns in schema order (issue #8140). The single-column aggregate() this used to call was deleted with
+    // its second column-index convention (issue #8189).
+    final MultiColumnAggregationResult result = engine.aggregateMulti(Long.MIN_VALUE, Long.MAX_VALUE,
+        List.of(new MultiColumnAggregationRequest(2, AggregationType.SUM, "sum")), 0, filter);
     double total = 0;
-    for (int i = 0; i < result.size(); i++)
-      total += result.getValue(i);
+    for (final long bucketTs : result.getBucketTimestamps())
+      total += result.getValue(bucketTs, 0);
     return total;
   }
 

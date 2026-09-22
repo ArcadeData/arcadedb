@@ -18,6 +18,7 @@
  */
 package com.arcadedb.exception;
 
+import com.arcadedb.engine.timeseries.TimeSeriesWalkCoarsenedException;
 import com.arcadedb.index.fulltext.FullTextQueryParseException;
 
 /**
@@ -123,6 +124,15 @@ public enum ErrorCategory {
    * before {@link #PARSING} ever saw its own {@link FullTextQueryParseException} arm, so the same malformed
    * expression would classify as PARSING through one entry point and VALIDATION through another (issue #8068).
    * <p>
+   * {@link TimeSeriesWalkCoarsenedException} rides with {@link NeedRetryException} rather than falling through to
+   * {@link #SERVER}, because it means the same thing to a driver: a downsample replaced the rows a read had not
+   * reached yet, so no answer it can still produce is at one resolution - and downsampling is a maintenance
+   * event, not a per-request one, so the identical read re-issued succeeds. It is not a {@link NeedRetryException}
+   * subtype because it is not a transaction conflict and nothing may auto-retry it inside a commit loop; the
+   * decision to re-read belongs to the caller. Naming it here is what gives every wire protocol the answer the
+   * HTTP handler already gives (503), instead of a gRPC {@code INTERNAL} a retry-driven client reads as a server
+   * fault (issue #8166, review of PR #8197).
+   * <p>
    * Each arm walks the chain separately, which is deliberate and not the same as one walk testing every type per
    * frame. Priority here is by category, not by depth: a chain whose {@link NeedRetryException} sits *below* an
    * {@link ArithmeticErrorException} still classifies as {@link #RETRY}, because that is the verdict a driver has
@@ -130,7 +140,8 @@ public enum ErrorCategory {
    * nothing worth reclaiming - they run only on a failure path, and each is capped by {@link CauseChain}.
    */
   public static ErrorCategory of(final Throwable error) {
-    if (CauseChain.contains(error, NeedRetryException.class))
+    if (CauseChain.contains(error, NeedRetryException.class) //
+        || CauseChain.contains(error, TimeSeriesWalkCoarsenedException.class))
       return RETRY;
     if (CauseChain.contains(error, ArithmeticErrorException.class))
       return ARITHMETIC;

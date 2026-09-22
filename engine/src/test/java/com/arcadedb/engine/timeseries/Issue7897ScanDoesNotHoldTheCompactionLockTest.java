@@ -34,6 +34,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #7897: {@code forEachRow} ran the caller's visitor while the shard held {@code compactionLock.readLock()}
@@ -263,10 +264,21 @@ class Issue7897ScanDoesNotHoldTheCompactionLockTest extends TestHelper {
    * flight: downsampling REPLACES blocks rather than dropping them, so the rows a snapshot entry names may still
    * be in the store under a different sample count - which is precisely the shape {@code resolveLiveBlock}'s
    * identity does NOT match, and has to decline rather than read at the old offsets (code review on PR #7970).
+   * <p>
+   * What the walk does with that declined block changed in issue #8166. It used to carry on, so the walk
+   * "survived" by returning the rows it had read and silently none of the rest - and the rows it skipped had not
+   * been deleted, they had been COARSENED, so the answer was neither the fine rows nor the coarse ones and
+   * nothing said so. It now raises {@link TimeSeriesWalkCoarsenedException}: a walk that has already emitted
+   * fine rows cannot go on to emit their coarse replacements without counting the crossing bucket at two
+   * resolutions, so the honest outcome is to stop and let the caller re-run.
+   * <p>
+   * The two properties this test was written for are unchanged and still asserted: what reached the visitor
+   * BEFORE the raise is real samples read at live offsets, never garbage decoded through a stale one, and never
+   * the same sample twice.
    */
   @Test
   @Timeout(180)
-  void aDownsamplingPassDuringTheScanReplacesBlocksAndTheWalkSurvivesIt() throws Exception {
+  void aDownsamplingPassDuringTheScanIsRefusedRatherThanAnsweredShort() throws Exception {
     database.command("sql",
         "CREATE TIMESERIES TYPE Coarse TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE) SHARDS 1");
     final TimeSeriesEngine coarse = ((LocalTimeSeriesType) database.getSchema().getType("Coarse")).getEngine();
@@ -296,7 +308,7 @@ class Issue7897ScanDoesNotHoldTheCompactionLockTest extends TestHelper {
     final AtomicBoolean downsampledOnce = new AtomicBoolean();
     final AtomicReference<Throwable> downsampleFailure = new AtomicReference<>();
 
-    coarse.forEachRow(Long.MIN_VALUE, Long.MAX_VALUE, null, null, null, row -> {
+    assertThatThrownBy(() -> coarse.forEachRow(Long.MIN_VALUE, Long.MAX_VALUE, null, null, null, row -> {
       seen.add((Long) row[0]);
       if (downsampledOnce.compareAndSet(false, true)) {
         final Thread downsampler = new Thread(() -> {
@@ -314,15 +326,24 @@ class Issue7897ScanDoesNotHoldTheCompactionLockTest extends TestHelper {
         }
       }
       return true;
-    });
+    }))
+        .as("the rows past the rewrite are coarser, not gone, so no answer from here on is one resolution")
+        .isInstanceOf(TimeSeriesWalkCoarsenedException.class);
 
-    assertThat(downsampleFailure.get()).isNull();
-    // The walk must come back with real samples, not with whatever a stale offset into a rewritten file decodes
-    // to. A downsampled block is declined by resolveLiveBlock, so its rows are absent rather than wrong - which
-    // is the contract, and the reason this asserts a SUBSET and not equality.
+    assertThat(downsampleFailure.get()).as("the downsample itself must not be what failed").isNull();
+    // The walk reads through LIVE offsets or not at all: what the visitor got before the refusal is real samples,
+    // never whatever a stale offset into a rewritten file decodes to, and never one of them twice. A SUBSET, not
+    // equality, because the refusal deliberately cuts the walk short.
     assertThat(seen).as("no timestamp the store never held").isSubsetOf(originals);
     assertThat(new HashSet<>(seen)).as("and none of them twice").hasSize(seen.size());
-    assertThat(seen).as("the walk still produced the rows it read before the rewrite landed").isNotEmpty();
+    assertThat(seen).as("the rows read before the rewrite landed still reached the visitor").isNotEmpty();
+
+    // And the rows ARE still in the store, coarsened: re-running the read is what the refusal asks the caller to
+    // do, and it answers.
+    final List<Long> afterwards = new ArrayList<>();
+    coarse.forEachRow(Long.MIN_VALUE, Long.MAX_VALUE, null, null, null, row -> afterwards.add((Long) row[0]));
+    assertThat(afterwards).as("a fresh walk over the coarsened store is a whole answer at one resolution")
+        .isNotEmpty();
   }
 
   /**
