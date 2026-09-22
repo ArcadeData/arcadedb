@@ -531,15 +531,4 @@ class CheckDatabaseTest extends TestHelper {
 
     return (int) outEdges.count();
   }
-
-  /**
-   * The low-level delete these fixtures corrupt with: {@code Bucket.deleteRecord} deliberately does not maintain the
-   * cached record counter, so every engine caller books the delta itself (see
-   * {@code DatabaseChecker.deleteCorruptedRecords}). A fixture that skips it leaves a counter one too high per record
-   * and the #8040 check reports the fixture instead of what the test is about.
-   */
-  private static void deleteAtLowLevel(final Database db, final RID rid) {
-    TestHelper.deleteRecordAtLowLevel(db, rid);
-    ((DatabaseInternal) db).getTransaction().updateBucketRecordDelta(rid.getBucketId(), -1);
-  }
 }
