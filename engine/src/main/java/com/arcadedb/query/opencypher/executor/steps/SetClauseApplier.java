@@ -512,7 +512,11 @@ public final class SetClauseApplier {
     int newLabelsCount = 0;
     for (final String label : labelsToAdd)
       if (!currentType.instanceOf(label) && !allLabels.contains(label)) {
-        allLabels.add(label);
+        // Validated only once the label is known to be genuinely new to this vertex. A label it already answers
+        // to is filtered out above and must stay a no-op rather than an error - SET n:`~NO_LABEL~` on an
+        // already-unlabelled vertex is exactly that case (issue #6395) - and a separator-carrying label it
+        // already carries is legitimate, so only what SET adds is refused (issue #8100).
+        allLabels.add(Labels.requireUsableLabelName(label, "a label in SET"));
         newLabelsCount++;
       }
 

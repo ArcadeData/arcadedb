@@ -391,6 +391,10 @@ public class CreateStep extends AbstractExecutionStep {
     // with that guard on every unlabelled CREATE.
     final String typeName;
     if (nodePattern.hasLabels()) {
+      // Every label here is one this statement introduces, so this is where a label that cannot become a type
+      // name is refused - ensureCompositeType sees resulting label sets, which may legitimately contain a
+      // separator-carrying label the vertex already had (issue #8100, and #6363 for why not there).
+      Labels.requireUsableLabelNames(nodePattern.getLabels(), "a label in CREATE");
       typeName = Labels.ensureCompositeType(context.getDatabase().getSchema(), nodePattern.getLabels());
     } else {
       typeName = Labels.NO_LABEL_TYPE;

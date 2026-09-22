@@ -1291,6 +1291,8 @@ public class MergeStep extends AbstractExecutionStep {
     // CreateStep.createVertex for why (issue #6395 review).
     final String typeName;
     if (nodePattern.hasLabels()) {
+      // Introduced labels, validated here - see CreateStep.createVertex (issue #8100).
+      Labels.requireUsableLabelNames(nodePattern.getLabels(), "a label in MERGE");
       typeName = Labels.ensureCompositeType(context.getDatabase().getSchema(), nodePattern.getLabels());
     } else {
       typeName = Labels.NO_LABEL_TYPE;
