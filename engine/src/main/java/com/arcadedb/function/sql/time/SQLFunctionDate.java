@@ -83,6 +83,12 @@ public class SQLFunctionDate extends SQLFunctionAbstract {
           // date('2024-02-29 13:45:10.123456') became an empty result (issue #8090). The `timezone` option keeps
           // the effect it had here before: none, since neither this chain nor a zone-less pattern reads a zone out
           // of the text - it applies to a pattern that carries zone fields, which is the explicit-format path below.
+          // It is still CHECKED, though. Before this chain existed, a length-matched string went through
+          // formatterFor(), so an unknown zone id was reported as a client error even on this path; an id that
+          // cannot exist is a mistake in the call whether or not this branch has anything to apply it to, and
+          // quietly ignoring it is the thing issue #6388 set out to stop.
+          zoneFor(timezone, context);
+
           date = DateUtils.parseDateTimeKeepingWallClock(context.getDatabase(), dateAsString);
         } else
           date = LocalDateTime.parse(dateAsString, formatterFor(format, timezone, context));
@@ -113,11 +119,19 @@ public class SQLFunctionDate extends SQLFunctionAbstract {
       throw new IllegalArgumentException(NAME + "() received an invalid date format '" + format + "': " + e.getMessage(), e);
     }
 
+    return formatter.withZone(zoneFor(timezone, context));
+  }
+
+  /**
+   * Resolves the zone the call named, falling back to the schema's. Shared with the no-format path, which has no
+   * formatter to hang it on but must still reject an id that does not exist (issue #6388).
+   */
+  private static ZoneId zoneFor(final String timezone, final CommandContext context) {
     if (timezone == null)
-      return formatter.withZone(context.getDatabase().getSchema().getZoneId());
+      return context.getDatabase().getSchema().getZoneId();
 
     try {
-      return formatter.withZone(ZoneId.of(timezone));
+      return ZoneId.of(timezone);
     } catch (final DateTimeException e) {
       throw new IllegalArgumentException(NAME + "() received an unknown time zone id '" + timezone + "'", e);
     }

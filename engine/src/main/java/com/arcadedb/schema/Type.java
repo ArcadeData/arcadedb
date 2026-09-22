@@ -366,7 +366,7 @@ public enum Type {
       // Every other refusal - a value of a shape no branch can take at all - failed the read before issue #8090 and
       // still does: widening the leniency to those would turn a genuinely mismatched field into a silent
       // pass-through, which is not what having no schema to read dates with has anything to do with.
-      if (!(e.getCause() instanceof DateTimeException))
+      if (!isUnreadableDate(e))
         throw e;
 
       LogManager.instance().log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, value, targetClass);
@@ -376,6 +376,43 @@ public enum Type {
 
   public static Object convertOrKeep(final Database database, final Object value, final Class<?> targetClass) {
     return convertOrKeep(database, value, targetClass, null);
+  }
+
+  /**
+   * Same as {@link #convert(Database, Object, Class)}, but an unreadable DATE/TIME value answers {@code null}
+   * instead of throwing. This is the rule for an INDEX KEY, and it is deliberately narrower than
+   * {@link #convertOrNull(Database, Object, Class)}.
+   * <p>
+   * A key reaching an index is whatever the records already hold, and on a schemaless property (a Cypher label, say)
+   * that can include a date the index's settled type cannot read. Such a row has to index under a null key and let
+   * the build carry on: refusing it would make one heterogeneous record fail {@code CREATE INDEX} outright, and,
+   * since {@code build()} rethrows, would also fail an ordinary {@code INSERT} that used to index a null key and
+   * continue - a regression {@code convert()} becoming strict in issue #8090 would otherwise have caused.
+   * <p>
+   * Every OTHER refusal still fails the build, exactly as it did before that change: a non-numeric string reaching a
+   * {@code LONG} key raised {@link NumberFormatException} through {@code convert()} then and still does. Using
+   * {@code convertOrNull()} here instead would swallow those too, silently indexing a genuinely mismatched value
+   * under a null key - a widening that has nothing to do with the date parsing this rule exists for.
+   */
+  public static Object convertIndexKeyOrNull(final Database database, final Object value, final Class<?> targetClass) {
+    try {
+      return convert(database, value, targetClass);
+    } catch (final IllegalArgumentException e) {
+      if (!isUnreadableDate(e))
+        throw e;
+
+      LogManager.instance().log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, value, targetClass);
+      return null;
+    }
+  }
+
+  /**
+   * Answers whether a refusal out of {@code convert()} is a date/time value it could not read, as opposed to a value
+   * of a shape the target type cannot take at all. Only the date arm wraps its cause, so the cause is what tells the
+   * two apart - see the {@link DateTimeException} catch in {@code convert()}.
+   */
+  private static boolean isUnreadableDate(final IllegalArgumentException e) {
+    return e.getCause() instanceof DateTimeException;
   }
 
   /**
