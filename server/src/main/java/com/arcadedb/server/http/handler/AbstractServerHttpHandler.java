@@ -53,6 +53,7 @@ import io.micrometer.observation.Observation;
 import io.micrometer.observation.transport.RequestReplyReceiverContext;
 import io.undertow.server.HttpHandler;
 import io.undertow.server.HttpServerExchange;
+import io.undertow.server.RequestTooBigException;
 import io.undertow.util.AttachmentKey;
 import io.undertow.util.HeaderValues;
 import io.undertow.util.Headers;
@@ -60,6 +61,10 @@ import io.undertow.util.HttpString;
 import io.undertow.util.PathTemplateMatch;
 import io.undertow.util.StatusCodes;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
 import java.security.MessageDigest;
@@ -74,11 +79,24 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
 import java.util.logging.Level;
 
 public abstract class AbstractServerHttpHandler implements HttpHandler {
+  /** Shared answer of {@link #readRequestBody} for a request that carries no body at all. */
+  private static final byte[] EMPTY_REQUEST_BODY = new byte[0];
+  /**
+   * Read granularity of {@link #readRequestBody}. Also the most the cap can be overshot in heap before the
+   * refusal fires, since the check runs once per read rather than once per byte.
+   */
+  private static final int    REQUEST_BODY_READ_BUFFER_SIZE = 8192;
+  /**
+   * The most {@link #readRequestBody} pre-allocates for a body on the strength of its {@code Content-Length}
+   * header alone. A larger body still arrives intact - the buffer grows - it is only the head start that stops
+   * here.
+   */
+  private static final int    MAX_PRESIZED_REQUEST_BODY     = 1024 * 1024;
+
   // Raw request body, kept on the exchange for the handlers that need the text rather than the JSONObject
   // parsed from it: the request body is consumed once and cannot be read again from the exchange.
   public static final AttachmentKey<String> RAW_PAYLOAD = AttachmentKey.create(String.class);
@@ -260,17 +278,83 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       LogManager.instance()
               .log(this, Level.SEVERE, "Error: handler must return true at mustExecuteOnWorkerThread() to read payload from request");
 
-    final AtomicReference<String> result = new AtomicReference<>();
-    e.getRequestReceiver().receiveFullBytes(
-            // OK
-            (exchange, data) -> result.set(new String(data, DatabaseFactory.getDefaultCharset())),
-            // ERROR
-            (exchange, err) -> {
-              LogManager.instance().log(this, Level.SEVERE, "receiveFullBytes completed with an error: %s", err, err.getMessage());
-              exchange.setStatusCode(StatusCodes.INTERNAL_SERVER_ERROR);
-              exchange.getResponseSender().send("Invalid Request");
-            });
-    return result.get();
+    final byte[] body = readRequestBody(e);
+    return body == null ? null : new String(body, DatabaseFactory.getDefaultCharset());
+  }
+
+  /**
+   * Reads the whole request body into memory, refusing one that exceeds
+   * {@code arcadedb.server.httpBodyContentMaxSize}. The single buffered reader of the HTTP server: every handler
+   * that needs the body as text or as bytes goes through it, so the cap means the same thing on all of them.
+   * <p>
+   * It replaced {@code Receiver.receiveFullBytes}, which cannot enforce that cap. Undertow's receiver compares
+   * its {@code maxBufferSize} against the DECLARED {@code Content-Length} only
+   * ({@code BlockingReceiverImpl.receiveFullBytes}), so a body sent with {@code Transfer-Encoding: chunked} - or
+   * an HTTP/2 POST with no {@code content-length} - was accumulated into a {@code ByteArrayOutputStream} with no
+   * limit at all, and the declared-length check in {@code HttpServer.createBodySizeLimitHandler} could not see it
+   * either, because {@code getRequestContentLength()} answers {@code -1} for it (issue #7772).
+   * <p>
+   * The cap is checked BEFORE the chunk that crosses it is buffered, so the heap this method can be made to hold
+   * is the cap plus one read buffer, whatever the client sends. Refusing here rather than letting Undertow's
+   * {@code MAX_ENTITY_SIZE} do it is what makes the refusal answerable: that ceiling is enforced inside the
+   * request conduit, which terminates the exchange and closes the connection at the instant it is crossed, so a
+   * handler reached afterwards has nothing left to write a response on. It is also frozen at the value read when
+   * the server was built, while this one is re-read per request - so it is left off entirely and this is the
+   * enforcement, not a second line behind one. See the note in {@code HttpServer.buildUndertowServer}.
+   *
+   * @return the body, or {@code null} when it could not be read and a 500 has already been sent
+   *
+   * @throws UncheckedIOException wrapping a {@link RequestTooBigException} when the body exceeds the cap;
+   *                              {@link #sendMappedErrorResponse} answers it with the documented JSON 413
+   */
+  protected byte[] readRequestBody(final HttpServerExchange e) {
+    if (e.isRequestComplete())
+      return EMPTY_REQUEST_BODY;
+
+    // Re-read per request, so a change through SET SERVER SETTING takes effect on the next request rather than
+    // at the next restart - the behaviour the declared-length check has always had.
+    final long maxBodySize = httpServer.getServer().getConfiguration()
+        .getValueAsLong(GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE);
+
+    // Sized from the declared length where there is one, so the common case does not pay for a chain of
+    // doublings and array copies on a hot path - what Receiver.receiveFullBytes did. Bounded by
+    // MAX_PRESIZED_REQUEST_BODY rather than trusting the header outright: Content-Length is a claim, and
+    // allocating whatever a client asserts is a way to be made to reserve the whole cap per request by a caller
+    // that then sends one byte.
+    final long declaredLength = e.getRequestContentLength();
+    // Clamped by the cap as well as by MAX_PRESIZED_REQUEST_BODY: a deployment whose cap is under 1 MB would
+    // otherwise reserve up to 1 MB for a declared length it is about to refuse anyway (PR #8092 review). Never
+    // below one read buffer, so a very small cap does not turn the first write into a grow-and-copy.
+    final long presizeCeiling = maxBodySize > 0
+        ? Math.max(Math.min(maxBodySize, MAX_PRESIZED_REQUEST_BODY), REQUEST_BODY_READ_BUFFER_SIZE)
+        : MAX_PRESIZED_REQUEST_BODY;
+    final ByteArrayOutputStream buffered = new ByteArrayOutputStream(declaredLength > 0
+        ? (int) Math.min(declaredLength, presizeCeiling)
+        : REQUEST_BODY_READ_BUFFER_SIZE);
+    final byte[] chunk = new byte[REQUEST_BODY_READ_BUFFER_SIZE];
+    long total = 0;
+    try {
+      final InputStream in = e.getInputStream();
+      int read;
+      // != -1, not > 0: only -1 means end of body. A zero-length read would otherwise be taken for the end and
+      // a partial body handed back as though it were whole - on a request the cap is supposed to decide about.
+      // InputStream.read(byte[]) cannot return 0 for a non-empty buffer, so this costs nothing and removes the
+      // silent-truncation hazard for any stream implementation that ever sits here (PR #8092 review).
+      while ((read = in.read(chunk)) != -1) {
+        total += read;
+        if (maxBodySize > 0 && total > maxBodySize)
+          throw new UncheckedIOException(new RequestTooBigException(
+              "Request body size exceeds the maximum allowed size of " + maxBodySize + " bytes. Configure '"
+                  + GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE.getKey() + "' to increase the limit"));
+        buffered.write(chunk, 0, read);
+      }
+    } catch (final IOException err) {
+      LogManager.instance().log(this, Level.SEVERE, "Error on reading the request body: %s", err, err.getMessage());
+      e.setStatusCode(StatusCodes.INTERNAL_SERVER_ERROR);
+      e.getResponseSender().send("Invalid Request");
+      return null;
+    }
+    return buffered.toByteArray();
   }
 
   @Override
@@ -738,6 +822,29 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return;
     }
 
+    // 413 Content Too Large: the REQUEST body exceeded arcadedb.server.httpBodyContentMaxSize, so this server
+    // stopped reading it - in readRequestBody above, or in PostBatchHandler's CountingInputStream for the route
+    // that streams instead of buffering. Reached only by a body that declared no length; a declared one is
+    // refused earlier and more cheaply by HttpServer.createBodySizeLimitHandler, which never runs the handler at
+    // all. This arm is what makes the cap mean the same thing for a chunked or HTTP/2 body as for a
+    // Content-Length one (issue #7772). A 4xx and not a 5xx: the server is working exactly as configured, and
+    // repeating the request unchanged can only be refused again.
+    // Named for the bytes ON THE WIRE, to keep it apart from the decoded-size arm below: the two caps are
+    // different settings refusing at different points, and both are reachable on the same request.
+    final RequestTooBigException wireBodyTooLarge = firstOf(e, cause, RequestTooBigException.class);
+    if (wireBodyTooLarge != null) {
+      logUserError(wireBodyTooLarge);
+      // The setting name goes in the label, not only in 'detail': detail is concealed in production mode, and a
+      // caller that cannot see WHICH knob refused it has been told nothing it can act on. Same treatment as the
+      // ResultSetTooLargeException arm below, for the same reason.
+      final long maxBodySize = httpServer.getServer().getConfiguration()
+          .getValueAsLong(GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE);
+      sendErrorResponse(exchange, 413,
+          "Request body too large (" + GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE.getKey() + ")",
+          wireBodyTooLarge, String.valueOf(maxBodySize));
+      return;
+    }
+
     // 413 Content Too Large: the response the caller asked for exceeds the hard row ceiling
     // (arcadedb.server.httpQueryMaxResultRows). Independent of every other arm - nothing extends it and it
     // extends nothing but ServerException - so its position here is only for readability. A 4xx and not a 5xx:
@@ -1056,7 +1163,21 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    */
   private static boolean isGenericWrapper(final Throwable e) {
     return e instanceof TransactionException || e instanceof CommandExecutionException
-            || e instanceof CommandParsingException;
+            || e instanceof CommandParsingException
+            // UncheckedIOException is the definition above applied literally: it says "an IO failure happened"
+            // and carries no classification of its own, so the failure that matters is always its cause. The
+            // server's own reason for listing it is readRequestBody, which uses it to carry the body-too-large
+            // refusal out of a call that cannot declare a checked exception (issue #7772).
+            //
+            // It is not the only producer that can reach this boundary - the two others in the tree are
+            // LocalDatabase and JsonlExporterFormat:
+            //   $ grep -rn --include='*.java' 'throw new UncheckedIOException' . | grep '/src/main/'
+            //   integration/.../exporter/format/JsonlExporterFormat.java:345
+            //   server/.../http/handler/AbstractServerHttpHandler.java:321
+            //   engine/.../database/LocalDatabase.java:592
+            // Both of those wrap a plain IOException, which no arm below classifies either, so unwrapping leaves
+            // them on the same generic 500 they reached before.
+            || e instanceof UncheckedIOException;
   }
 
   /**
