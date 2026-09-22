@@ -76,6 +76,12 @@ final class TimeSeriesDecodedColumnCache {
    * The shape is part of the key rather than something converted between, so a column read both raw and boxed
    * costs two entries and the budget keeps telling the truth about the memory held. Converting instead would have
    * to reproduce {@link ColumnDefinition}'s boxing exactly, and issue #7711 is what that gets wrong.
+   * <p>
+   * The two shapes of one DICTIONARY column share NOTHING, not even the strings (review of PR #8194): the boxed path
+   * reaches {@code DictionaryCodec.decode} through {@code decodeColumn} on its own, and that method builds a fresh
+   * {@code String} per distinct value on every call. So a query touching both shapes of the same block decodes it
+   * twice and is charged for both, which is what the budget should say about two independent object graphs - but it
+   * is not something a reader should have to derive from two files to know.
    */
   private record CacheKey(long blockId, int columnIndex, int shape) {
   }
