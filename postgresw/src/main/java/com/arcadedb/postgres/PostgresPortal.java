@@ -79,6 +79,14 @@ public class PostgresPortal {
    * no Bind or Execute - open, commit or roll back a transaction it never executed.
    */
   public TransactionControl        transactionControl;
+  /**
+   * The {@code {name, value}} pair of a {@code SET} statement, or null for everything else (issue #8135). Parse only
+   * parses and RECORDS it here, exactly as it does {@link #transactionControl}; {@code executeCommand()} applies it
+   * and then clears it on the portal it acted on. Applying it at Parse let a statement that was only prepared change
+   * the session, and left every later Bind+Execute of the cached statement answering {@code CommandComplete SET}
+   * without re-applying anything.
+   */
+  public String[]                  setting;
 
   /**
    * The three transaction-control statements this server recognizes ahead of the SQL grammar, in any of their
@@ -139,7 +147,7 @@ public class PostgresPortal {
    * statement, since both names pointed at the same object.
    * <p>
    * This copies only what PARSE already fixed for the statement for good (query text/language/parameter
-   * types, the parsed {@code sqlStatement}, the {@code ignoreExecution}/{@code transactionControl} markers,
+   * types, the parsed {@code sqlStatement}, the {@code ignoreExecution}/{@code transactionControl}/{@code setting} markers,
    * and - for a resolved catalog answer, SHOW and the system queries - the response PARSE precomputed into
    * {@code executed}/{@code cachedResultSet}/{@code columns}) and leaves
    * every per-Bind field (parameter values, {@code fullResultSet}, {@code resultCursor}, {@code suspended},
@@ -154,6 +162,7 @@ public class PostgresPortal {
     portal.isExpectingResult = template.isExpectingResult;
     portal.catalogQuery = template.catalogQuery;
     portal.transactionControl = template.transactionControl;
+    portal.setting = template.setting;
     portal.copyStatement = template.copyStatement;
     portal.executed = template.executed;
     portal.cachedResultSet = template.cachedResultSet;
