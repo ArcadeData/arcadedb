@@ -925,13 +925,20 @@ public class PostgresNetworkExecutor extends Thread {
         transactionControl = true;
         resultSet = new IteratorResultSet(Collections.emptyIterator());
       } else if (isCommitStatement(upperCaseText)) {
-        if (explicitTransactionStarted && database.isTransactionActive())
+        // Whatever transaction the connection holds, not only one an explicit BEGIN opened (issue #8028): a
+        // 'Q' message can arrive while the implicit block of an extended-protocol pipeline is still open - the
+        // block is opened at Execute and only ended by a Sync - and asking explicitTransactionStarted left that
+        // block for the Sync to decide while the client had already been told COMMIT. Same rule as
+        // applyTransactionControl()'s arms on the extended protocol.
+        if (database.isTransactionActive())
           database.commit();
         endTransactionBlockState();
         transactionControl = true;
         resultSet = new IteratorResultSet(Collections.emptyIterator());
       } else if (isRollbackStatement(upperCaseText)) {
-        if (explicitTransactionStarted && database.isTransactionActive())
+        // See the COMMIT arm above (issue #8028): an implicit block is a transaction the client can end too,
+        // and leaving it open made Sync COMMIT the writes the client had just been told were rolled back.
+        if (database.isTransactionActive())
           database.rollback();
         endTransactionBlockState();
         transactionControl = true;
@@ -3482,6 +3489,23 @@ public class PostgresNetworkExecutor extends Thread {
    * loss of acknowledged data. It is the same two lines queryCommand() runs for a COMMIT on the simple query
    * protocol, so both protocols now persist an explicit block at exactly the same point.
    * <p>
+   * COMMIT and ROLLBACK act on whatever transaction the connection holds, asking the database rather than
+   * {@code explicitTransactionStarted} (issue #8028). That flag is raised only by a BEGIN, and since issue
+   * #7775 a pipeline sent without one runs inside the implicit block {@link #beginImplicitTransactionBlock}
+   * opens, where it is false: guarding on it made both arms answer the client and do nothing, so a ROLLBACK
+   * left the block for the next Sync to COMMIT - the writes the client was told were discarded were kept -
+   * and a COMMIT left it for the same Sync to discard if anything later in the pipeline failed, which is the
+   * loss of acknowledged data described above. PostgreSQL ends an implicit block on either keyword
+   * ({@code EndTransactionBlock}/{@code UserAbortTransactionBlock} on {@code TBLOCK_IMPLICIT_INPROGRESS}); a
+   * write that follows in the same pipeline opens a fresh block at its own Execute.
+   * <p>
+   * {@link #endTransactionBlockState()} rather than clearing {@code explicitTransactionStarted} alone, so
+   * there is one rule for ending a block on both protocols. The other two flags it clears are already false
+   * here: {@code executeCommand()} is the only caller and returns on {@code skipUntilSync} before reaching
+   * this method, and answers {@code errorInTransaction} with {@link #refuseInAbortedTransaction()} - an
+   * aborted block's own COMMIT/ROLLBACK is dispatched by {@code parseCommand()} instead, which ends the block
+   * there and marks the portal {@code ignoreExecution}.
+   * <p>
    * The marker is cleared once applied. Portals outlive their Execute on purpose (a limit-hit Execute suspends and
    * the client fetches the rest through the same portal, issue #6458), so without this a second Execute of a
    * retained ROLLBACK portal would roll back whatever transaction had been opened since.
@@ -3500,14 +3524,14 @@ public class PostgresNetworkExecutor extends Thread {
         database.begin();
     }
     case COMMIT -> {
-      if (explicitTransactionStarted && database.isTransactionActive())
+      if (database.isTransactionActive())
         database.commit();
-      explicitTransactionStarted = false;
+      endTransactionBlockState();
     }
     case ROLLBACK -> {
-      if (explicitTransactionStarted && database.isTransactionActive())
+      if (database.isTransactionActive())
         database.rollback();
-      explicitTransactionStarted = false;
+      endTransactionBlockState();
     }
     }
     portal.transactionControl = null;
