@@ -30,6 +30,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.Collections;
@@ -139,8 +140,13 @@ class GetReadyHandlerHATest extends StaticBaseServerTest {
       assertThat(connection.getResponseCode()).as("HEAD %s", url).isEqualTo(503);
       // Unlike the 204 case, GET's 503 body is the non-ready reason text, so Content-Length here
       // correctly describes what GET would have sent - it is not expected to be 0. What HEAD must
-      // guarantee is that no body bytes are actually delivered, which is what this checks.
-      assertThat(connection.getErrorStream()).as("HEAD %s must not deliver a body", url).isNull();
+      // guarantee is that no body bytes are actually delivered. Read whatever getErrorStream() hands
+      // back rather than asserting it is null: on a HEAD response, whether the JDK returns null or a
+      // non-null-but-empty stream for a >=400 status is an HttpURLConnection implementation detail
+      // that can differ across JDK vendors/versions - what must hold everywhere is zero bytes read.
+      final InputStream errorStream = connection.getErrorStream();
+      final byte[] body = errorStream != null ? errorStream.readAllBytes() : new byte[0];
+      assertThat(body).as("HEAD %s must not deliver a body", url).isEmpty();
     } finally {
       connection.disconnect();
     }
