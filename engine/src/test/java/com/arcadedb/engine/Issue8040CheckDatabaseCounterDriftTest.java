@@ -24,6 +24,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.Collection;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -73,6 +74,32 @@ class Issue8040CheckDatabaseCounterDriftTest extends TestHelper {
 
     // Read-only means read-only: the counter, and the wrong count(*) it serves, are still there.
     assertThat(bucket().getCachedRecordCount()).isEqualTo(RECORDS + 4L);
+  }
+
+  /**
+   * The second defect this finding exposed: bucket-level warnings reached the result through {@code addAll}, which
+   * put them in the list and told the tally nothing, so a run whose only findings were bucket-level reported zero
+   * warnings while listing one - and the {@code maxWarnings} cap that keeps a badly damaged database from OOMing the
+   * run did not apply to them either.
+   * <p>
+   * Pinned on {@code totalWarnings} rather than on the list, because the list is what both versions fill: only the
+   * tally tells the fixed path from the broken one.
+   */
+  @Test
+  void aBucketWarningIsCountedAndCapped() {
+    bucket().setCachedRecordCount(RECORDS + 4);
+
+    try (final ResultSet rs = database.command("sql", "CHECK DATABASE")) {
+      final Result row = rs.next();
+      assertThat((Collection<String>) row.getProperty("warnings")).as("%s", row.toJSON()).hasSize(1);
+      assertThat((Long) row.getProperty("totalWarnings")).as("%s", row.toJSON()).isEqualTo(1L);
+    }
+
+    // And it goes through the cap: a run allowed to retain none retains none, and still counts it.
+    final Map<String, Object> capped = new DatabaseChecker(database).setVerboseLevel(0).setMaxWarnings(0).check();
+
+    assertThat((Collection<String>) capped.get("warnings")).as("%s", capped).isEmpty();
+    assertThat((Long) capped.get("totalWarnings")).as("%s", capped).isEqualTo(1L);
   }
 
   /**
