@@ -19,7 +19,6 @@
 package com.arcadedb.postgres;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 import org.apache.tomcat.jdbc.pool.DataSource;
 import org.apache.tomcat.jdbc.pool.PoolProperties;
 import org.junit.jupiter.api.AfterEach;
@@ -28,7 +27,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-class TomcatConnectionPoolPostgresWJdbcIT extends BaseGraphServerTest {
+class TomcatConnectionPoolPostgresWJdbcIT extends PostgresWireProtocolTestBase {
   private DataSource datasource;
 
   @Override
@@ -54,7 +53,7 @@ class TomcatConnectionPoolPostgresWJdbcIT extends BaseGraphServerTest {
   @BeforeEach
   void setUp() {
     PoolProperties p = new PoolProperties();
-    p.setUrl("jdbc:postgresql://localhost/" + getDatabaseName());
+    p.setUrl(getServerPostgresJdbcUrl());
     p.setDriverClassName("org.postgresql.Driver");
     p.setUsername("root");
     p.setPassword(DEFAULT_PASSWORD_FOR_TESTS);

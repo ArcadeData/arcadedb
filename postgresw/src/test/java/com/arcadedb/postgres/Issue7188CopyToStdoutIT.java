@@ -520,7 +520,7 @@ class Issue7188CopyToStdoutIT extends PostgresWireProtocolTestBase {
     properties.setProperty("ssl", "false");
     properties.setProperty("sslMode", "disable");
     properties.setProperty("preferQueryMode", "simple");
-    return DriverManager.getConnection("jdbc:postgresql://localhost:5432/" + getDatabaseName(), properties);
+    return DriverManager.getConnection(getServerPostgresJdbcUrl(), properties);
   }
 
   private interface Exchange {
@@ -529,7 +529,7 @@ class Issue7188CopyToStdoutIT extends PostgresWireProtocolTestBase {
 
   private void withConnection(final Exchange exchange) throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       // A hang detector on the handshake reads too, which run before the timed exchange below.
       socket.setSoTimeout(30_000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());

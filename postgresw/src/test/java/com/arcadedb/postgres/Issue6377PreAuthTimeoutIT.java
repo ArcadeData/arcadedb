@@ -50,7 +50,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class Issue6377PreAuthTimeoutIT extends PostgresWireProtocolTestBase {
 
-  private static final int POSTGRES_PORT = 5432;
   /** Lowered so an unbounded phase shows up as a hung test rather than a half-minute one. */
   private static final int HANDSHAKE_TIMEOUT_MS = 1_000;
   /**
@@ -166,7 +165,7 @@ class Issue6377PreAuthTimeoutIT extends PostgresWireProtocolTestBase {
 
   private Socket openSocket() throws Exception {
     final Socket socket = new Socket();
-    socket.connect(new InetSocketAddress("localhost", POSTGRES_PORT), 5_000);
+    socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 5_000);
     socket.setSoTimeout(CLIENT_SAFETY_TIMEOUT_MS);
     return socket;
   }
@@ -193,6 +192,6 @@ class Issue6377PreAuthTimeoutIT extends PostgresWireProtocolTestBase {
     properties.setProperty("ssl", "false");
     properties.setProperty("sslMode", "disable");
     properties.setProperty("preferQueryMode", "simple");
-    return DriverManager.getConnection("jdbc:postgresql://localhost:" + POSTGRES_PORT + "/" + getDatabaseName(), properties);
+    return DriverManager.getConnection(getServerPostgresJdbcUrl(), properties);
   }
 }

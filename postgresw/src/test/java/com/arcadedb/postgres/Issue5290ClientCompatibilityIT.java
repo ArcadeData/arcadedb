@@ -19,7 +19,6 @@
 package com.arcadedb.postgres;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -52,9 +51,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue5290ClientCompatibilityIT extends BaseGraphServerTest {
-
-  private static final int POSTGRES_PORT = 5432;
+public class Issue5290ClientCompatibilityIT extends PostgresWireProtocolTestBase {
 
   @Override
   public void setTestConfiguration() {
@@ -207,6 +204,6 @@ public class Issue5290ClientCompatibilityIT extends BaseGraphServerTest {
     properties.setProperty("ssl", "false");
     properties.setProperty("sslMode", "disable");
     properties.setProperty("preferQueryMode", "simple");
-    return DriverManager.getConnection("jdbc:postgresql://localhost:" + POSTGRES_PORT + "/" + getDatabaseName(), properties);
+    return DriverManager.getConnection(getServerPostgresJdbcUrl(), properties);
   }
 }

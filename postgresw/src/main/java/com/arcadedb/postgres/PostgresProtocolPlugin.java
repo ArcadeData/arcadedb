@@ -25,21 +25,31 @@ import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.network.DefaultServerSocketFactory;
 
 public class PostgresProtocolPlugin implements ServerPlugin {
-  private ArcadeDBServer          server;
-  private PostgresNetworkListener listener;
-  private String                  host;
-  private int                     port;
+  private          ArcadeDBServer          server;
+  private volatile PostgresNetworkListener listener;
+  private          String                  host;
+  private          String                  portRange;
 
   @Override
   public void configure(final ArcadeDBServer arcadeDBServer, final ContextConfiguration configuration) {
     this.server = arcadeDBServer;
     this.host = configuration.getValueAsString(GlobalConfiguration.POSTGRES_HOST);
-    this.port = configuration.getValueAsInteger(GlobalConfiguration.POSTGRES_PORT);
+    // A single port, a range `<from>-<to>` or a comma-separated list: the listener binds the first free one (#8142).
+    this.portRange = configuration.getValueAsString(GlobalConfiguration.POSTGRES_PORT).trim();
   }
 
   @Override
   public void startService() {
-    listener = new PostgresNetworkListener(server, new DefaultServerSocketFactory(), host, "" + port);
+    listener = new PostgresNetworkListener(server, new DefaultServerSocketFactory(), host, portRange);
+  }
+
+  /**
+   * The port the listener ACTUALLY bound, which is not necessarily the first one of the configured range: a port
+   * already taken is skipped. Returns -1 when the service is not listening.
+   */
+  public int getPort() {
+    final PostgresNetworkListener l = listener;
+    return l != null ? l.getPort() : -1;
   }
 
   @Override

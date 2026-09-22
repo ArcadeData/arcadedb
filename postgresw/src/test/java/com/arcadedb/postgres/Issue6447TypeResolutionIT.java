@@ -263,6 +263,6 @@ class Issue6447TypeResolutionIT extends PostgresWireProtocolTestBase {
     properties.setProperty("sslMode", "disable");
     if (simpleQueryProtocol)
       properties.setProperty("preferQueryMode", "simple");
-    return DriverManager.getConnection("jdbc:postgresql://localhost:5432/" + getDatabaseName(), properties);
+    return DriverManager.getConnection(getServerPostgresJdbcUrl(), properties);
   }
 }

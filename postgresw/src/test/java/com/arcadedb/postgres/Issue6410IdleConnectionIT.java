@@ -50,7 +50,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class Issue6410IdleConnectionIT extends PostgresWireProtocolTestBase {
 
-  private static final int    POSTGRES_PORT     = 5432;
   private static final String EXECUTOR_THREAD   = "ArcadeDB-postgres/";
   /** How long a thread is given to notice that its connection is gone. Generous: it should be immediate. */
   private static final long   RETIREMENT_TIMEOUT_MS = 10_000;
@@ -170,7 +169,7 @@ class Issue6410IdleConnectionIT extends PostgresWireProtocolTestBase {
 
   private Socket openSocket() throws Exception {
     final Socket socket = new Socket();
-    socket.connect(new InetSocketAddress("localhost", POSTGRES_PORT), 5_000);
+    socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 5_000);
     socket.setSoTimeout(30_000);
     return socket;
   }
@@ -222,6 +221,6 @@ class Issue6410IdleConnectionIT extends PostgresWireProtocolTestBase {
     properties.setProperty("ssl", "false");
     properties.setProperty("sslMode", "disable");
     properties.setProperty("preferQueryMode", "simple");
-    return DriverManager.getConnection("jdbc:postgresql://localhost:" + POSTGRES_PORT + "/" + getDatabaseName(), properties);
+    return DriverManager.getConnection(getServerPostgresJdbcUrl(), properties);
   }
 }

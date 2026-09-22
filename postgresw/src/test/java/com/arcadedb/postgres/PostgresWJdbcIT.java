@@ -23,7 +23,6 @@ import com.arcadedb.database.Database;
 import com.arcadedb.function.java.JavaClassFunctionLibraryDefinition;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -60,7 +59,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.fail;
 import static org.assertj.core.data.Offset.offset;
 
-public class PostgresWJdbcIT extends BaseGraphServerTest {
+public class PostgresWJdbcIT extends PostgresWireProtocolTestBase {
   @Override
   public void setTestConfiguration() {
     super.setTestConfiguration();
@@ -491,7 +490,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
   private Connection getConnection() throws ClassNotFoundException, SQLException {
     Class.forName("org.postgresql.Driver");
 
-    var url = "jdbc:postgresql://localhost/" + getDatabaseName();
+    var url = getServerPostgresJdbcUrl();
     var props = new Properties();
     props.setProperty("user", "root");
     props.setProperty("password", DEFAULT_PASSWORD_FOR_TESTS);

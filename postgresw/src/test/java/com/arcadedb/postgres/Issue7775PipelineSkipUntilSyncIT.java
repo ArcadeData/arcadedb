@@ -18,7 +18,6 @@
  */
 package com.arcadedb.postgres;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 
 import org.junit.jupiter.api.DisplayName;
@@ -77,7 +76,7 @@ class Issue7775PipelineSkipUntilSyncIT extends PostgresWireProtocolTestBase {
   @DisplayName("[#7775] a failed autocommit pipeline discards the messages after the error and persists nothing")
   void failedAutocommitPipelineDiscardsTheRestAndRollsTheImplicitBlockBack() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -133,7 +132,7 @@ class Issue7775PipelineSkipUntilSyncIT extends PostgresWireProtocolTestBase {
   @DisplayName("[#7775] one statement per Sync - the ordinary JDBC shape - is unaffected by the implicit block")
   void aSingleStatementPerSyncStillCommitsAndReads() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);

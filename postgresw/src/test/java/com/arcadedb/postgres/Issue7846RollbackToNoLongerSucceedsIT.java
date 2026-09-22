@@ -19,7 +19,6 @@
 package com.arcadedb.postgres;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -46,7 +45,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class Issue7846RollbackToNoLongerSucceedsIT extends BaseGraphServerTest {
+class Issue7846RollbackToNoLongerSucceedsIT extends PostgresWireProtocolTestBase {
 
   @Override
   public void setTestConfiguration() {
@@ -70,7 +69,7 @@ class Issue7846RollbackToNoLongerSucceedsIT extends BaseGraphServerTest {
 
   private Connection getConnection() throws SQLException, ClassNotFoundException {
     Class.forName("org.postgresql.Driver");
-    final var url = "jdbc:postgresql://localhost/" + getDatabaseName();
+    final var url = getServerPostgresJdbcUrl();
     final var props = new Properties();
     props.setProperty("user", "root");
     props.setProperty("password", DEFAULT_PASSWORD_FOR_TESTS);

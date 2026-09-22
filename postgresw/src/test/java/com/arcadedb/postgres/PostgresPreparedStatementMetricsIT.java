@@ -19,7 +19,6 @@
 package com.arcadedb.postgres;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.Timer;
 import org.junit.jupiter.api.AfterEach;
@@ -38,7 +37,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * PARSE+BIND+EXECUTE) are timed and emitted as {@code arcadedb.query.duration} with
  * {@code protocol=postgres} and {@code language=sql}.
  */
-public class PostgresPreparedStatementMetricsIT extends BaseGraphServerTest {
+public class PostgresPreparedStatementMetricsIT extends PostgresWireProtocolTestBase {
 
   @Override
   public void setTestConfiguration() {
@@ -55,7 +54,7 @@ public class PostgresPreparedStatementMetricsIT extends BaseGraphServerTest {
 
   private Connection getConnection() throws Exception {
     Class.forName("org.postgresql.Driver");
-    final String url = "jdbc:postgresql://localhost/" + getDatabaseName();
+    final String url = getServerPostgresJdbcUrl();
     final Properties props = new Properties();
     props.setProperty("user", "root");
     props.setProperty("password", DEFAULT_PASSWORD_FOR_TESTS);

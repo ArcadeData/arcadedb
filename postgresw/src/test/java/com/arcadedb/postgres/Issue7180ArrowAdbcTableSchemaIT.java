@@ -163,6 +163,6 @@ class Issue7180ArrowAdbcTableSchemaIT extends PostgresWireProtocolTestBase {
     properties.setProperty("password", DEFAULT_PASSWORD_FOR_TESTS);
     properties.setProperty("ssl", "false");
     properties.setProperty("sslMode", "disable");
-    return DriverManager.getConnection("jdbc:postgresql://localhost:5432/" + getDatabaseName(), properties);
+    return DriverManager.getConnection(getServerPostgresJdbcUrl(), properties);
   }
 }

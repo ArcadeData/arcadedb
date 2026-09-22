@@ -18,7 +18,6 @@
  */
 package com.arcadedb.postgres;
 
-import com.arcadedb.GlobalConfiguration;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -62,7 +61,7 @@ class Issue7906StaleStatementAfterFailedParseIT extends PostgresWireProtocolTest
   @DisplayName("[#7906] a refused Parse in its own round trip does not leave the previous statement bindable")
   void aRefusedParseDestroysTheStatementRegisteredUnderTheSameName() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -112,7 +111,7 @@ class Issue7906StaleStatementAfterFailedParseIT extends PostgresWireProtocolTest
   @DisplayName("[#7906] a refused ROLLBACK TO in a pipeline does not run the previously parsed statement")
   void aRefusedRollbackToInOnePipelineDoesNotRunThePreviousStatement() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
