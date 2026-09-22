@@ -18,7 +18,6 @@
  */
 package com.arcadedb.postgres;
 
-import com.arcadedb.GlobalConfiguration;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -47,7 +46,7 @@ class PostgresBindParamBoundIT extends PostgresWireProtocolTestBase {
   @DisplayName("[#5894] Oversized Bind parameter length is rejected before allocation, with a graceful error instead of an OOM'd thread")
   void oversizedBindParameterIsRejectedGracefully() throws Exception {
     try (final Socket attacker = new Socket()) {
-      attacker.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      attacker.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(attacker.getOutputStream());
       final DataInputStream in = new DataInputStream(attacker.getInputStream());
 
@@ -87,7 +86,7 @@ class PostgresBindParamBoundIT extends PostgresWireProtocolTestBase {
     // well-behaved client is still served promptly right after.
     assertTimeoutPreemptively(Duration.ofSeconds(15), () -> {
       try (final Socket client = new Socket()) {
-        client.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+        client.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
         final DataOutputStream out = new DataOutputStream(client.getOutputStream());
         final DataInputStream in = new DataInputStream(client.getInputStream());
         sendStartupMessage(out, "root", getDatabaseName());

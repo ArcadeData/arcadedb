@@ -115,6 +115,14 @@ public class PostgresNetworkListener extends Thread {
       }
   }
 
+  /**
+   * The local port the server socket is bound to, or -1 if it is not bound (never bound, or closed).
+   */
+  public int getPort() {
+    final ServerSocket socket = serverSocket;
+    return socket != null && socket.isBound() && !socket.isClosed() ? socket.getLocalPort() : -1;
+  }
+
   @Override
   public String toString() {
     return serverSocket.getLocalSocketAddress().toString();
@@ -171,20 +179,20 @@ public class PostgresNetworkListener extends Thread {
       final String[] portValues = iHostPortRange.split(",");
       ports = new int[portValues.length];
       for (int i = 0; i < portValues.length; ++i)
-        ports[i] = Integer.parseInt(portValues[i]);
+        ports[i] = Integer.parseInt(portValues[i].trim());
 
     } else if (iHostPortRange.contains("-")) {
       // MULTIPLE RANGE PORTS
       final String[] limits = iHostPortRange.split("-");
-      final int lowerLimit = Integer.parseInt(limits[0]);
-      final int upperLimit = Integer.parseInt(limits[1]);
+      final int lowerLimit = Integer.parseInt(limits[0].trim());
+      final int upperLimit = Integer.parseInt(limits[1].trim());
       ports = new int[upperLimit - lowerLimit + 1];
       for (int i = 0; i < upperLimit - lowerLimit + 1; ++i)
         ports[i] = lowerLimit + i;
 
     } else
       // SINGLE PORT SPECIFIED
-      ports = new int[]{Integer.parseInt(iHostPortRange)};
+      ports = new int[]{Integer.parseInt(iHostPortRange.trim())};
 
     return ports;
   }

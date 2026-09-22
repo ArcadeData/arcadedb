@@ -2609,7 +2609,8 @@ public enum GlobalConfiguration {
 
   // POSTGRES
   POSTGRES_PORT("arcadedb.postgres.port", SCOPE.SERVER,
-      "TCP/IP port number used for incoming connections for Postgres plugin. Default is 5432", Integer.class, 5432),
+      "TCP/IP port number used for incoming connections for Postgres plugin. Specify a single port, a range `<from>-<to>` or a comma-separated list: the first free one is used. Default is 5432",
+      String.class, "5432"),
 
   POSTGRES_HOST("arcadedb.postgres.host", SCOPE.SERVER,
       "TCP/IP host name used for incoming connections for Postgres plugin. Default is '0.0.0.0'", String.class, "0.0.0.0"),

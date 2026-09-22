@@ -18,7 +18,6 @@
  */
 package com.arcadedb.postgres;
 
-import com.arcadedb.GlobalConfiguration;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -54,7 +53,7 @@ class TransactionControlNoRowDescriptionIT extends PostgresWireProtocolTestBase 
   @DisplayName("BEGIN, COMMIT and ROLLBACK on the simple query protocol are answered with CommandComplete only")
   void transactionControlIsAnsweredWithTheBareCommandTag() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -87,7 +86,7 @@ class TransactionControlNoRowDescriptionIT extends PostgresWireProtocolTestBase 
   @DisplayName("SAVEPOINT and RELEASE are answered with CommandComplete only")
   void savepointStatementsAreAnsweredWithTheBareCommandTag() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -113,7 +112,7 @@ class TransactionControlNoRowDescriptionIT extends PostgresWireProtocolTestBase 
   @DisplayName("[#7846] ROLLBACK TO is refused, not answered with CommandComplete, and aborts the transaction")
   void rollbackToIsRefusedRatherThanAcceptedAsANoOp() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -147,7 +146,7 @@ class TransactionControlNoRowDescriptionIT extends PostgresWireProtocolTestBase 
   @DisplayName("[#7846] ROLLBACK TO outside an explicit transaction is refused without wedging the session")
   void rollbackToOutsideAnExplicitTransactionIsRefusedButLeavesTheSessionIdle() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -172,7 +171,7 @@ class TransactionControlNoRowDescriptionIT extends PostgresWireProtocolTestBase 
   @DisplayName("A language-prefixed {sql}BEGIN still gets the bare BEGIN command tag")
   void languagePrefixedTransactionControlGetsTheRightCommandTag() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -204,7 +203,7 @@ class TransactionControlNoRowDescriptionIT extends PostgresWireProtocolTestBase 
   @DisplayName("[#7905] BEGIN, COMMIT and ROLLBACK on the EXTENDED protocol answer NoData, not a zero-field RowDescription")
   void transactionControlOnTheExtendedProtocolAnswersNoData() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -252,7 +251,7 @@ class TransactionControlNoRowDescriptionIT extends PostgresWireProtocolTestBase 
   @DisplayName("[#7905] the ROLLBACK that recovers an aborted block over the extended protocol answers NoData too")
   void theAbortedBlockRecoveryPortalAnswersNoDataAsWell() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);

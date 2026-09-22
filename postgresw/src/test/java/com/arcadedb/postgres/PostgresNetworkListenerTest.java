@@ -65,6 +65,17 @@ class PostgresNetworkListenerTest {
     assertThat(ports).containsExactly(5432, 5434);
   }
 
+  /**
+   * Issue #8142: arcadedb.postgres.port is now a String setting that takes a range or a list, as
+   * arcadedb.server.httpIncomingPort does, so the blanks a hand-written value carries must not fail the parse.
+   */
+  @Test
+  void getPortsToleratesBlanksAroundPorts() throws Exception {
+    assertThat(invokeGetPorts(" 5432 ")).containsExactly(5432);
+    assertThat(invokeGetPorts("5432, 5434")).containsExactly(5432, 5434);
+    assertThat(invokeGetPorts("5432 - 5434")).containsExactly(5432, 5433, 5434);
+  }
+
   @Test
   void getPortsHighPortNumber() throws Exception {
     int[] ports = invokeGetPorts("65535");

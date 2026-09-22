@@ -179,6 +179,6 @@ class Issue7470CopyToStdoutSparseTypeIT extends PostgresWireProtocolTestBase {
     properties.setProperty("ssl", "false");
     properties.setProperty("sslMode", "disable");
     properties.setProperty("preferQueryMode", "simple");
-    return DriverManager.getConnection("jdbc:postgresql://localhost:5432/" + getDatabaseName(), properties);
+    return DriverManager.getConnection(getServerPostgresJdbcUrl(), properties);
   }
 }

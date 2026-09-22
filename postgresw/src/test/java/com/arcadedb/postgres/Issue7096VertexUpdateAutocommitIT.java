@@ -19,7 +19,6 @@
 package com.arcadedb.postgres;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -43,7 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class Issue7096VertexUpdateAutocommitIT extends BaseGraphServerTest {
+class Issue7096VertexUpdateAutocommitIT extends PostgresWireProtocolTestBase {
 
   @Override
   public void setTestConfiguration() {
@@ -71,7 +70,7 @@ class Issue7096VertexUpdateAutocommitIT extends BaseGraphServerTest {
     props.setProperty("user", "root");
     props.setProperty("password", DEFAULT_PASSWORD_FOR_TESTS);
     props.setProperty("ssl", "false");
-    return DriverManager.getConnection("jdbc:postgresql://localhost/" + getDatabaseName(), props);
+    return DriverManager.getConnection(getServerPostgresJdbcUrl(), props);
   }
 
   @Test

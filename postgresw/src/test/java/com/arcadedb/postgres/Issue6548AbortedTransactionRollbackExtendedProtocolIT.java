@@ -18,7 +18,6 @@
  */
 package com.arcadedb.postgres;
 
-import com.arcadedb.GlobalConfiguration;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -70,7 +69,7 @@ class Issue6548AbortedTransactionRollbackExtendedProtocolIT extends PostgresWire
   @DisplayName("[#6548] ROLLBACK sent as its own Parse/Bind/Execute while aborted clears both errorInTransaction and explicitTransactionStarted")
   void rollbackRecoversFromAbortedTransactionOverExtendedProtocol() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -105,7 +104,7 @@ class Issue6548AbortedTransactionRollbackExtendedProtocolIT extends PostgresWire
   @DisplayName("[#6548] a trailing ';' or surrounding whitespace on ROLLBACK does not defeat the aborted-transaction recovery match")
   void rollbackWithTrailingSemicolonOrWhitespaceRecoversFromAbortedTransaction() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -137,7 +136,7 @@ class Issue6548AbortedTransactionRollbackExtendedProtocolIT extends PostgresWire
   @DisplayName("[#6548] COMMIT/END sent while aborted over the extended query protocol recover the session and report the ROLLBACK tag")
   void commitAndEndRecoverFromAbortedTransactionOverExtendedProtocol() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
