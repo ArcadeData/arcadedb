@@ -319,6 +319,69 @@ class RemoteGrpcDatabaseCoverageIT extends BaseGraphServerTest {
     }
   }
 
+  /**
+   * Issue #8050: countBucket/iterateBucket inlined the bare name after {@code bucket:} - a dash is legal in a
+   * bucket name (accepted by CREATE BUCKET when quoted) but breaks the unescaped SQL the moment it reaches the
+   * grammar as a bare token.
+   */
+  @Test
+  @DisplayName("countBucket and iterateBucket work on a bucket name that needs quoting")
+  void countAndIterateBucketWithDashInName() {
+    final String bucketName = "cov-bucket-8050";
+    grpc.command("sql", "CREATE BUCKET `" + bucketName + "` IF NOT EXISTS", Map.of());
+    try {
+      // The bare `BUCKET:name` target the grammar's INSERT accepts cannot take a quoted name either (same
+      // restriction the production fix documents), so route the insert through an existing type instead - the
+      // `TypeName BUCKET identifier` form does take a QUOTED_IDENTIFIER.
+      grpc.command("sql", "INSERT INTO `" + DOC_TYPE + "` BUCKET `" + bucketName + "` SET name = 'b1'", Map.of());
+      grpc.command("sql", "INSERT INTO `" + DOC_TYPE + "` BUCKET `" + bucketName + "` SET name = 'b2'", Map.of());
+
+      assertThat(grpc.countBucket(bucketName)).isEqualTo(2);
+
+      // The count above is the strong assertion that the SQL reached the right bucket. Here only the streaming
+      // RPC itself matters - that it runs at all against a quoted bucket name instead of failing to parse - so the
+      // row count is what is asserted, not the per-row type reconstruction StreamQuery is not obliged to carry.
+      final Iterator<Record> it = grpc.iterateBucket(bucketName);
+      int count = 0;
+      while (it.hasNext()) {
+        it.next();
+        count++;
+      }
+      assertThat(count).isEqualTo(2);
+    } finally {
+      grpc.command("sql", "DROP BUCKET `" + bucketName + "`", Map.of());
+    }
+  }
+
+  /**
+   * Issue #8050: countType/iterateType interpolated the type name into the FROM target and, for the
+   * non-polymorphic filter, into a single-quoted {@code @type} literal - a type name that needs back-tick
+   * quoting (a space) breaks the target, and one carrying an apostrophe ends the literal early.
+   */
+  @Test
+  @DisplayName("countType and iterateType work on a type name that needs quoting")
+  void countAndIterateTypeWithSpaceInName() {
+    final String typeName = "Cov Type 8050";
+    grpc.command("sql", "CREATE DOCUMENT TYPE `" + typeName + "` IF NOT EXISTS", Map.of());
+    try {
+      grpc.command("sql", "INSERT INTO `" + typeName + "` SET name = 't1'", Map.of());
+      grpc.command("sql", "INSERT INTO `" + typeName + "` SET name = 't2'", Map.of());
+
+      assertThat(grpc.countType(typeName, true)).isEqualTo(2);
+      assertThat(grpc.countType(typeName, false)).isEqualTo(2);
+
+      final Iterator<Record> it = grpc.iterateType(typeName, false);
+      int count = 0;
+      while (it.hasNext()) {
+        assertThat(it.next()).isNotNull();
+        count++;
+      }
+      assertThat(count).isEqualTo(2);
+    } finally {
+      grpc.command("sql", "DROP TYPE `" + typeName + "`", Map.of());
+    }
+  }
+
   // ==================== Iterate ====================
 
   @Test
