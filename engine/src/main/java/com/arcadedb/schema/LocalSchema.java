@@ -2525,8 +2525,8 @@ public class LocalSchema implements Schema {
         //   - getType() above resolves aliases, so typeName can BE an alias. Removing that one key would leave the
         //     type registered under its own name with its buckets and indexes already torn down.
         //   - an alias key left behind keeps the dropped instance reachable through typeMap().values(), which
-        //     serializeConfiguration() (called by saveConfiguration() in the finally below) writes back into
-        //     schema.json keyed by t.getName() - so the dropped type is re-serialised under its own name with zero
+        //     toJSON() - reached from the saveConfiguration() in the finally below - writes back into schema.json
+        //     keyed by t.getName(), so the dropped type is re-serialised under its own name with zero
         //     buckets and comes back alive, unusable, at the next open. It also kept existsType(alias) answering
         //     true, made a later ALTER TYPE ... ALIASES refuse the alias naming a type that no longer exists, and
         //     left the instance in getTypes(), which is what CHECK DATABASE walks.

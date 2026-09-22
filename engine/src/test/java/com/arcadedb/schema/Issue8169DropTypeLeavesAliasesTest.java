@@ -44,9 +44,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *   dropped type.</li>
  *   <li>A later {@code ALTER TYPE Other ALIASES <alias>} was refused naming a type that no longer existed - #8064's
  *   atomic {@code putIfAbsent} turned the stale entry from a silent overwrite into a hard refusal.</li>
- *   <li>{@code serializeConfiguration()} iterates {@code typeMap().values()} and keys each entry by
- *   {@code t.getName()}, so the dropped instance - still reachable through its surviving alias key - was written
- *   back into {@code schema.json} under its own name with zero buckets, and came back alive at the next open.</li>
+ *   <li>{@code toJSON()} - reached from {@code saveConfiguration()} - iterates {@code typeMap().values()} and
+ *   keys each entry by {@code t.getName()}, so the dropped instance, still reachable through its surviving alias
+ *   key, was written back into {@code schema.json} under its own name with zero buckets and came back alive at
+ *   the next open.</li>
  * </ol>
  * The drop also resolves its argument through {@code getType()}, which resolves aliases, so {@code DROP TYPE <alias>}
  * tore down the real type's buckets and indexes and then removed only the alias key, leaving the type itself
@@ -119,9 +120,9 @@ public class Issue8169DropTypeLeavesAliasesTest extends TestHelper {
 
     database.getSchema().dropType("Order");
 
-    // THE FILE ITSELF, not only what the reopen makes of it: serializeConfiguration() keys typeMap().values() by
-    // t.getName(), and the dropped instance was still in those values through its surviving alias key, so it was
-    // written back under its own name with an empty bucket list
+    // THE FILE ITSELF, not only what the reopen makes of it: toJSON() keys typeMap().values() by t.getName(), and
+    // the dropped instance was still in those values through its surviving alias key, so it was written back under
+    // its own name with an empty bucket list
     final JSONObject onDisk = new JSONObject(
         Files.readString(Path.of(getDatabasePath(), "schema.json"), StandardCharsets.UTF_8));
     assertThat(onDisk.getJSONObject("types").keySet()).containsExactly("Invoice");
@@ -173,5 +174,51 @@ public class Issue8169DropTypeLeavesAliasesTest extends TestHelper {
 
     assertThat(database.getSchema().existsType("Employee")).isTrue();
     assertThat(database.getSchema().existsType("Emp")).isTrue();
+  }
+
+  @Test
+  void dropTypeThroughAnAliasIsStillRefusedForAContinuousAggregateSourceType() {
+    database.command("sql",
+        "CREATE TIMESERIES TYPE SensorReading TIMESTAMP ts TAGS (sensor_id STRING) FIELDS (temperature DOUBLE)");
+    database.getSchema().getType("SensorReading").setAliases(Set.of("Sensor"));
+    database.transaction(() -> database.command("sql",
+        "INSERT INTO SensorReading SET ts = 1000, sensor_id = 'A', temperature = 22.5"));
+    database.getSchema().buildContinuousAggregate()
+        .withName("hourly_temps")
+        .withQuery("SELECT sensor_id, ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp "
+            + "FROM SensorReading GROUP BY sensor_id, hour")
+        .create();
+
+    // The continuous-aggregate guard is the twin of the materialized-view one above and was bypassed the same way
+    assertThatThrownBy(() -> database.getSchema().dropType("Sensor"))
+        .isInstanceOf(SchemaException.class)
+        .hasMessageContaining("hourly_temps");
+
+    assertThat(database.getSchema().existsType("SensorReading")).isTrue();
+    assertThat(database.getSchema().existsType("Sensor")).isTrue();
+  }
+
+  @Test
+  void dropTypeThroughAnAliasIsStillRefusedForAContinuousAggregateBackingType() {
+    database.command("sql",
+        "CREATE TIMESERIES TYPE SensorReading TIMESTAMP ts TAGS (sensor_id STRING) FIELDS (temperature DOUBLE)");
+    database.transaction(() -> database.command("sql",
+        "INSERT INTO SensorReading SET ts = 1000, sensor_id = 'A', temperature = 22.5"));
+    final String backingTypeName = database.getSchema().buildContinuousAggregate()
+        .withName("hourly_temps")
+        .withQuery("SELECT sensor_id, ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp "
+            + "FROM SensorReading GROUP BY sensor_id, hour")
+        .create()
+        .getBackingType()
+        .getName();
+
+    database.getSchema().getType(backingTypeName).setAliases(Set.of("HourlyTemps"));
+
+    assertThatThrownBy(() -> database.getSchema().dropType("HourlyTemps"))
+        .isInstanceOf(SchemaException.class)
+        .hasMessageContaining("hourly_temps");
+
+    assertThat(database.getSchema().existsType(backingTypeName)).isTrue();
+    assertThat(database.getSchema().existsType("HourlyTemps")).isTrue();
   }
 }
