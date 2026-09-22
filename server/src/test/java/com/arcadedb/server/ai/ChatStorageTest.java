@@ -645,4 +645,147 @@ class ChatStorageTest {
     assertThat(chatStorage.listChats(username)).hasSize(1);
     assertThat(legacyDir).doesNotExist();
   }
+
+  // ---------------------------------------------------------------------------------------------
+  // Issue #8154: the ambiguity guard used to run only when the sanitized legacy name contained an
+  // underscore. sanitizeFilename() does not fold case, but the filesystems this class already
+  // special-cases do, so "Alice" and "alice" are two accounts, two hashed directories - and ONE
+  // legacy directory. The six tests below drive that collision through every public entry point.
+  //
+  // They are deterministic on a case-SENSITIVE filesystem too, which is what CI runs on: the
+  // decision under test is made from the registered-account list before any filesystem comparison,
+  // so creating chats/Alice and looking up "Alice" reaches it either way. Before the fix, "Alice"
+  // passed the underscore gate untested, passed isSpelledExactlyOnDisk (the entry really is spelled
+  // "Alice"), and migrated the shared directory - "alice"'s chat included.
+  // ---------------------------------------------------------------------------------------------
+
+  /**
+   * Seeds chats/Alice with one chat belonging to each of the two case-folded accounts and returns
+   * the legacy directory, so each entry-point test below starts from the reported repro's tree.
+   */
+  private File seedCaseFoldedLegacyDirectory(final JSONObject alicesChat, final JSONObject othersChat) throws Exception {
+    final File legacyDir = Paths.get(TEST_ROOT, "chats", "Alice").toFile();
+    assertThat(legacyDir.mkdirs()).isTrue();
+    FileUtils.writeFile(new File(legacyDir, ChatStorage.sanitizeFilename(alicesChat.getString("id")) + ".json"),
+        alicesChat.toString());
+    FileUtils.writeFile(new File(legacyDir, ChatStorage.sanitizeFilename(othersChat.getString("id")) + ".json"),
+        othersChat.toString());
+    return legacyDir;
+  }
+
+  private static ChatStorage caseFoldedAccountsStorage() {
+    return new ChatStorage(TEST_ROOT, () -> Set.of("Alice", "alice"));
+  }
+
+  @Test
+  void listChatsRefusesALegacyDirectoryTwoCaseFoldedAccountsMapOntoEvenWithoutAnUnderscore() throws Exception {
+    // The reported repro. "Alice" and "alice" both sanitize to themselves - no underscore, one
+    // preimage each - yet both name the same legacy directory. Awarding it to "Alice" hands her
+    // "alice"'s chat and leaves "alice" with an empty store and no warning.
+    final ChatStorage storage = caseFoldedAccountsStorage();
+    assertThat(ChatStorage.sanitizeFilename("Alice")).doesNotContain("_");
+
+    final JSONObject alices = ChatStorage.createNewChat("db", "Alice private notes");
+    final JSONObject others = ChatStorage.createNewChat("db", "alice OTHER USER notes");
+    final File legacyDir = seedCaseFoldedLegacyDirectory(alices, others);
+
+    assertThat(storage.listChats("Alice")).as("must not be handed the other account's chats").isEmpty();
+    assertThat(storage.listChats("alice")).isEmpty();
+    assertThat(legacyDir).as("left intact for the operator to split by hand").exists();
+    assertThat(Paths.get(TEST_ROOT, "chats", ChatStorage.hashUsername("Alice")).toFile()).doesNotExist();
+  }
+
+  @Test
+  void getChatRefusesALegacyDirectoryTwoCaseFoldedAccountsMapOnto() throws Exception {
+    // getChat() reaches the migration through getChatFile(), not listChats(), so it is its own
+    // disclosure path: reading the other account's chat BY ID needs no listing at all.
+    final ChatStorage storage = caseFoldedAccountsStorage();
+    final JSONObject alices = ChatStorage.createNewChat("db", "Alice private notes");
+    final JSONObject others = ChatStorage.createNewChat("db", "alice OTHER USER notes");
+    final File legacyDir = seedCaseFoldedLegacyDirectory(alices, others);
+
+    assertThat(storage.getChat("Alice", others.getString("id"))).as("cross-user read").isNull();
+    assertThat(storage.getChat("Alice", alices.getString("id"))).isNull();
+    assertThat(legacyDir).exists();
+  }
+
+  @Test
+  void saveChatRefusesALegacyDirectoryTwoCaseFoldedAccountsMapOnto() throws Exception {
+    // The write path. A refused migration must still let the account write - into its own, empty
+    // hashed store - without dragging the shared legacy directory in behind it.
+    final ChatStorage storage = caseFoldedAccountsStorage();
+    final JSONObject alices = ChatStorage.createNewChat("db", "Alice private notes");
+    final JSONObject others = ChatStorage.createNewChat("db", "alice OTHER USER notes");
+    final File legacyDir = seedCaseFoldedLegacyDirectory(alices, others);
+
+    final JSONObject fresh = ChatStorage.createNewChat("db", "Written after the upgrade");
+    storage.saveChat("Alice", fresh);
+
+    assertThat(storage.listChats("Alice")).extracting(c -> c.getString("title"))
+        .as("only the post-upgrade chat, never the legacy pair").containsExactly("Written after the upgrade");
+    assertThat(legacyDir).exists();
+    assertThat(legacyDir.list()).hasSize(2);
+  }
+
+  @Test
+  void deleteChatRefusesALegacyDirectoryTwoCaseFoldedAccountsMapOnto() throws Exception {
+    // The destructive path, and the worst of the four: a wrongly migrated directory lets one
+    // account delete the other's history outright.
+    final ChatStorage storage = caseFoldedAccountsStorage();
+    final JSONObject alices = ChatStorage.createNewChat("db", "Alice private notes");
+    final JSONObject others = ChatStorage.createNewChat("db", "alice OTHER USER notes");
+    final File legacyDir = seedCaseFoldedLegacyDirectory(alices, others);
+
+    assertThat(storage.deleteChat("Alice", others.getString("id"))).as("cross-user delete").isFalse();
+    assertThat(legacyDir).exists();
+    assertThat(legacyDir.list()).as("both legacy chats untouched").hasSize(2);
+  }
+
+  @Test
+  void aCaseFoldedCollisionIsRecordedOnDiskSoItSurvivesTheOtherAccountBeingDeleted() throws Exception {
+    // The marker half of the gap. The old code only reached ambiguityMarkerFile() for a name with an
+    // underscore, so a case-folded collision was never recorded: deleting "alice" afterwards left
+    // exactly one account mapping onto chats/Alice, and the next lookup migrated it - "alice"'s chat
+    // included. Same escalation-by-deletion as #8126's, reached through case folding instead.
+    final AtomicReference<Set<String>> registeredAccounts = new AtomicReference<>(Set.of("Alice", "alice"));
+    final ChatStorage storage = new ChatStorage(TEST_ROOT, registeredAccounts::get);
+
+    final JSONObject alices = ChatStorage.createNewChat("db", "Alice private notes");
+    final JSONObject others = ChatStorage.createNewChat("db", "alice OTHER USER notes");
+    final File legacyDir = seedCaseFoldedLegacyDirectory(alices, others);
+
+    assertThat(storage.listChats("Alice")).isEmpty();
+    final File marker = Paths.get(TEST_ROOT, "chats", ".Alice.ambiguous-migration").toFile();
+    assertThat(marker).as("the collision must be recorded, not only refused in the moment").exists();
+
+    // "alice" is deleted. The current account list alone now says the name is unambiguous.
+    registeredAccounts.set(Set.of("Alice"));
+
+    assertThat(storage.listChats("Alice")).isEmpty();
+    assertThat(legacyDir).exists();
+
+    // ...and across a restart, since the record is a file rather than in-memory state.
+    final ChatStorage afterRestart = new ChatStorage(TEST_ROOT, registeredAccounts::get);
+    assertThat(afterRestart.listChats("Alice")).isEmpty();
+    assertThat(legacyDir).as("must not have been migrated, taking alice's chat with it").exists();
+  }
+
+  @Test
+  void anUnderscoreFreeLegacyDirectoryStillMigratesWhenTheAccountListShowsNoCaseFoldedTwin() throws Exception {
+    // The guard rail on the fix: consulting the account list for every name must not start refusing
+    // the ordinary migration. "bob" is registered alongside accounts that do not collide with it in
+    // any casing, so its history must still move under its hash.
+    final ChatStorage storage = new ChatStorage(TEST_ROOT, () -> Set.of("bob", "carol", "root"));
+
+    final File legacyDir = Paths.get(TEST_ROOT, "chats", "bob").toFile();
+    assertThat(legacyDir.mkdirs()).isTrue();
+    final JSONObject chat = ChatStorage.createNewChat("db", "bob's pre-upgrade chat");
+    FileUtils.writeFile(new File(legacyDir, ChatStorage.sanitizeFilename(chat.getString("id")) + ".json"), chat.toString());
+
+    assertThat(storage.listChats("bob")).hasSize(1);
+    assertThat(legacyDir).doesNotExist();
+    assertThat(Paths.get(TEST_ROOT, "chats", ChatStorage.hashUsername("bob")).toFile()).exists();
+    assertThat(Paths.get(TEST_ROOT, "chats", ".bob.ambiguous-migration").toFile()).doesNotExist();
+  }
+
 }
