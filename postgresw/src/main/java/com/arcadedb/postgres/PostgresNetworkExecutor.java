@@ -2578,6 +2578,25 @@ public class PostgresNetworkExecutor extends Thread {
           // transaction-control statement too, so its Describe('P') owes NoData rather than a zero-field
           // RowDescription. The rollback itself already happened, just above.
           portal.ignoreExecution = true;
+          // MARKED ROLLBACK for the same reason the healthy branch below marks its three, and this is what the
+          // recovery branch used to leave out (issue #8030). What is registered here is a PREPARED STATEMENT,
+          // and it outlives the round trip that recovered the block: PostgresPortal.bindFrom() copies it for
+          // every later Bind, which is what a pgjdbc/psycopg3 statement cache sends once the statement is
+          // promoted - Bind+Execute of the same name, with no Parse in between. Without the marker every one of
+          // those Binds produced a portal applyTransactionControl() had nothing to act on, while the
+          // ignoreExecution arm of executeCommand() answered "CommandComplete ROLLBACK" regardless: the client
+          // was told its rollback succeeded, the open transaction stayed open with explicitTransactionStarted
+          // still set (ReadyForQuery kept reporting 'T'), and the writes it had discarded were persisted by
+          // whatever COMMIT came next. ROLLBACK and not COMMIT even when the client sent COMMIT/END, for the
+          // same reason portal.query is rewritten just above: that is the tag this statement answers with from
+          // now on, and a reuse that committed instead would contradict it.
+          // The immediate database.rollback() above stays - it is what makes the Parse itself recover the block
+          // - and it does not double up with this: applyTransactionControl()'s ROLLBACK arm is guarded on
+          // explicitTransactionStarted, which endTransactionBlockState() has just cleared, so the Execute
+          // pipelined behind this Parse finds nothing left to roll back. Re-executing an ALREADY-BOUND portal
+          // stays the no-op issue #7851 requires, since applyTransactionControl() clears the marker on the copy
+          // it acted on rather than on this template.
+          portal.transactionControl = PostgresPortal.TransactionControl.ROLLBACK;
           preparedStatements.put(portalName, portal);
           writeMessage("parse complete", null, '1', 4);
         }
