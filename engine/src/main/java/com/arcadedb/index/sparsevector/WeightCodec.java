@@ -38,6 +38,13 @@ public final class WeightCodec {
   /** Bit pattern used as a tombstone sentinel for fp32 weights. Quiet NaN with a recognizable payload. */
   public static final int FP32_TOMBSTONE_BITS = 0x7FC0DEAD;
 
+  /** Half-precision bit pattern of the largest finite magnitude, 65504. */
+  private static final int FP16_MAX_FINITE = 0x7BFF;
+  /** Half-precision exponent field, all ones: infinity when the significand is zero, NaN otherwise. */
+  private static final int FP16_INFINITY = 0x7C00;
+  /** Half-precision magnitude mask (everything but the sign bit). */
+  private static final int FP16_ABS_MASK = 0x7FFF;
+
   // ---------- int8 ----------
 
   /**
@@ -100,13 +107,6 @@ public final class WeightCodec {
   }
 
   // ---------- fp16 ----------
-
-  /** Half-precision bit pattern of the largest finite magnitude, 65504. */
-  private static final int FP16_MAX_FINITE = 0x7BFF;
-  /** Half-precision exponent field, all ones: infinity when the significand is zero, NaN otherwise. */
-  private static final int FP16_INFINITY = 0x7C00;
-  /** Half-precision magnitude mask (everything but the sign bit). */
-  private static final int FP16_ABS_MASK = 0x7FFF;
 
   /**
    * IEEE 754 half-precision float encoding. Returns a 16-bit value packed in a short.
