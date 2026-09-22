@@ -1560,18 +1560,18 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       if (value instanceof List<?> list) {
         final List<Object> converted = new ArrayList<>(list.size());
         for (final Object item : list)
-          converted.add(item == null ? null : Type.convert(null, item, elementImplementation));
+          converted.add(item == null ? null : Type.convertOrKeep(null, item, elementImplementation));
         return converted;
       }
       if (value instanceof Map<?, ?> map) {
         final Map<Object, Object> converted = new LinkedHashMap<>(map.size());
         for (final Map.Entry<?, ?> mapEntry : map.entrySet())
           converted.put(mapEntry.getKey(),
-              mapEntry.getValue() == null ? null : Type.convert(null, mapEntry.getValue(), elementImplementation));
+              mapEntry.getValue() == null ? null : Type.convertOrKeep(null, mapEntry.getValue(), elementImplementation));
         return converted;
       }
     }
-    return Type.convert(null, value, javaImplementationForType(hint.type()));
+    return Type.convertOrKeep(null, value, javaImplementationForType(hint.type()));
   }
 
   private Class<?> javaImplementationForType(final Type type) {

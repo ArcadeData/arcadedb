@@ -75,7 +75,10 @@ public class RemoteImmutableDocument extends ImmutableDocument {
         else if (propType != null)
           javaImplementation = propType.getDefaultJavaType();
 
-        value = Type.convert(null, value, javaImplementation, property);
+        // convertOrKeep: this READS what the server sent, with no Database in scope and therefore no access to the
+        // schema's date patterns, so a value the server formatted with a custom one cannot be typed here. Keeping it
+        // hands the caller the value intact; refusing would fail the whole read over a single column (issue #8090).
+        value = Type.convertOrKeep(null, value, javaImplementation, property);
 
         // ISSUE #4735: for LIST/MAP properties with a declared primitive ofType (e.g. `MAP OF LONG`), the JSON parser
         // hydrates nested numbers using the smallest fitting type (Integer), losing the declared schema type. Convert the
@@ -213,12 +216,12 @@ public class RemoteImmutableDocument extends ImmutableDocument {
     if (value instanceof Map<?, ?> mapValue) {
       final Map<Object, Object> converted = new LinkedHashMap<>(mapValue.size());
       for (final Map.Entry<?, ?> entry : mapValue.entrySet())
-        converted.put(entry.getKey(), Type.convert(null, entry.getValue(), javaType));
+        converted.put(entry.getKey(), Type.convertOrKeep(null, entry.getValue(), javaType));
       return converted;
     } else if (value instanceof List<?> listValue) {
       final List<Object> converted = new ArrayList<>(listValue.size());
       for (final Object item : listValue)
-        converted.add(Type.convert(null, item, javaType));
+        converted.add(Type.convertOrKeep(null, item, javaType));
       return converted;
     }
 
