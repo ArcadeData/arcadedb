@@ -105,6 +105,11 @@ public class LocalSchema implements Schema {
    * file written before this change - therefore has its counts dropped on load, and the buckets recompute
    * authoritatively on their next {@code count()}. The marker is written back on the next clean close, so the
    * recount is paid once and never again.
+   * <p>
+   * The comparison is {@code >=}, and the contract that makes that right is monotonic: a bump means "counts written
+   * before this version cannot be trusted", never "counts written after it cannot be read". A future change of the
+   * opposite kind - one that makes a NEWER file unsafe for an older build to believe - is not expressible by
+   * bumping this, and would need the older build to refuse what it does not recognise instead.
    */
   public static final int                                    STATISTICS_FORMAT_VERSION     = 1;
   /**
