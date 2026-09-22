@@ -59,7 +59,8 @@ class Issue6183FollowerCommandRoutingIT extends BaseRaftHATest {
 
   private static final int    BASE_RAFT_PORT = 2434;
   private static final int    BASE_HTTP_PORT = 2480;
-  private static final int    BASE_GRPC_PORT = 51121;
+  // One gRPC port per server, handed out free by the OS for every test instance rather than fixed (issue #7496).
+  private final int[] grpcPorts = allocateFreePorts(3);
   private static final String VERTEX_TYPE    = "Issue6183ForwardedType";
 
   private static final Metadata.Key<String> USER_HEADER     = Metadata.Key.of("x-arcade-user",
@@ -86,7 +87,7 @@ class Issue6183FollowerCommandRoutingIT extends BaseRaftHATest {
         sb.append(",");
       sb.append("localhost:{raft:").append(BASE_RAFT_PORT + i)
           .append(",http:").append(BASE_HTTP_PORT + i)
-          .append(",grpc:").append(BASE_GRPC_PORT + i).append("}");
+          .append(",grpc:").append(grpcPorts[i]).append("}");
     }
     return sb.toString();
   }
@@ -99,7 +100,7 @@ class Issue6183FollowerCommandRoutingIT extends BaseRaftHATest {
     final int index = Integer.parseInt(serverName.substring(serverName.lastIndexOf('_') + 1));
 
     config.setValue("arcadedb.grpc.enabled", "true");
-    config.setValue(GlobalConfiguration.GRPC_PORT.getKey(), String.valueOf(BASE_GRPC_PORT + index));
+    config.setValue(GlobalConfiguration.GRPC_PORT.getKey(), String.valueOf(grpcPorts[index]));
     config.setValue("arcadedb.grpc.host", "localhost");
     config.setValue("arcadedb.grpc.reflection.enabled", "false");
     config.setValue("arcadedb.grpc.health.enabled", "false");
@@ -124,7 +125,7 @@ class Issue6183FollowerCommandRoutingIT extends BaseRaftHATest {
     final int followerIndex = anyFollowerOf(leaderIndex);
     waitForAllServers();
 
-    final ExecuteCommandResponse response = execute("localhost:" + (BASE_GRPC_PORT + followerIndex),
+    final ExecuteCommandResponse response = execute("localhost:" + grpcPorts[followerIndex],
         "CREATE VERTEX TYPE " + VERTEX_TYPE);
 
     assertThat(response.getSuccess()).as("a follower forwards a DDL to the leader instead of refusing it: %s",
@@ -147,7 +148,7 @@ class Issue6183FollowerCommandRoutingIT extends BaseRaftHATest {
     final int leaderIndex = findLeaderIndex();
     assertThat(leaderIndex).isGreaterThanOrEqualTo(0);
 
-    assertThatThrownBy(() -> execute("localhost:" + (BASE_GRPC_PORT + leaderIndex), "SELECTT FROM Nothing"))
+    assertThatThrownBy(() -> execute("localhost:" + grpcPorts[leaderIndex], "SELECTT FROM Nothing"))
         .isInstanceOf(StatusRuntimeException.class);
   }
 

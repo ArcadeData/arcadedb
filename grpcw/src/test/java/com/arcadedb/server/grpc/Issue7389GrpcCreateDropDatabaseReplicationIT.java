@@ -29,11 +29,10 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.DataOutputStream;
-import java.io.IOException;
 import java.net.HttpURLConnection;
-import java.net.ServerSocket;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
@@ -61,7 +60,8 @@ class Issue7389GrpcCreateDropDatabaseReplicationIT extends BaseRaftHATest {
   private static final long   PROPAGATION_WAIT = TimeUnit.SECONDS.toMillis(60);
 
   /**
-   * gRPC and Raft ports, one per server, taken from the ephemeral range at class-init time.
+   * gRPC and Raft ports, one per server, taken from the ephemeral range for every test instance, so a later test
+   * method never reuses ports a stranger may have claimed since the previous cluster stopped (issue #7496).
    * <p>
    * {@code BaseRaftHATest} pins every HA test in the repository to the same Raft base port, so two
    * HA suites running at once - two agents in two worktrees, a stale server from a crashed fork -
@@ -69,14 +69,15 @@ class Issue7389GrpcCreateDropDatabaseReplicationIT extends BaseRaftHATest {
    * about the test. Overriding {@link #peerIdForIndex} and {@link #getServerAddresses} below keeps
    * this cluster self-consistent on ports nothing else claims.
    */
-  private static final int[] GRPC_PORTS = allocateFreePorts(SERVER_COUNT);
-  private static final int[] RAFT_PORTS = allocateFreePorts(SERVER_COUNT);
+  private final int[] ports     = allocateFreePorts(2 * SERVER_COUNT);
+  private final int[] grpcPorts = Arrays.copyOfRange(ports, 0, SERVER_COUNT);
+  private final int[] raftPorts = Arrays.copyOfRange(ports, SERVER_COUNT, 2 * SERVER_COUNT);
 
   private ManagedChannel channel;
 
   @Override
   protected String peerIdForIndex(final int index) {
-    return "localhost_" + RAFT_PORTS[index];
+    return "localhost_" + raftPorts[index];
   }
 
   @Override
@@ -87,7 +88,7 @@ class Issue7389GrpcCreateDropDatabaseReplicationIT extends BaseRaftHATest {
     for (int i = 0; i < SERVER_COUNT; i++) {
       if (i > 0)
         addresses.append(",");
-      addresses.append("localhost:").append(RAFT_PORTS[i]).append(":").append(2480 + i);
+      addresses.append("localhost:").append(raftPorts[i]).append(":").append(2480 + i);
     }
     return addresses.toString();
   }
@@ -100,10 +101,10 @@ class Issue7389GrpcCreateDropDatabaseReplicationIT extends BaseRaftHATest {
     final int index = Integer.parseInt(serverName.substring(serverName.lastIndexOf('_') + 1));
 
     // After super, which sets the shared base port this class is deliberately not using.
-    config.setValue(GlobalConfiguration.HA_RAFT_PORT, RAFT_PORTS[index]);
+    config.setValue(GlobalConfiguration.HA_RAFT_PORT, raftPorts[index]);
 
     config.setValue("arcadedb.grpc.enabled", "true");
-    config.setValue("arcadedb.grpc.port", String.valueOf(GRPC_PORTS[index]));
+    config.setValue("arcadedb.grpc.port", String.valueOf(grpcPorts[index]));
     config.setValue("arcadedb.grpc.host", "localhost");
     config.setValue("arcadedb.grpc.reflection.enabled", "false");
     config.setValue("arcadedb.grpc.health.enabled", "false");
@@ -199,7 +200,7 @@ class Issue7389GrpcCreateDropDatabaseReplicationIT extends BaseRaftHATest {
   }
 
   private ArcadeDbAdminServiceGrpc.ArcadeDbAdminServiceBlockingStub adminStubOn(final int serverIndex) {
-    channel = ManagedChannelBuilder.forAddress("localhost", GRPC_PORTS[serverIndex]).usePlaintext().build();
+    channel = ManagedChannelBuilder.forAddress("localhost", grpcPorts[serverIndex]).usePlaintext().build();
     return ArcadeDbAdminServiceGrpc.newBlockingStub(channel);
   }
 
@@ -274,32 +275,5 @@ class Issue7389GrpcCreateDropDatabaseReplicationIT extends BaseRaftHATest {
       Thread.sleep(200);
     }
     return condition.getAsBoolean();
-  }
-
-  /**
-   * Reserves {@code count} ports the OS says are free, holding them all open until the last one is
-   * chosen so the same port cannot be handed out twice within this call.
-   */
-  private static int[] allocateFreePorts(final int count) {
-    final ServerSocket[] sockets = new ServerSocket[count];
-    final int[] ports = new int[count];
-    try {
-      for (int i = 0; i < count; i++) {
-        sockets[i] = new ServerSocket(0);
-        sockets[i].setReuseAddress(true);
-        ports[i] = sockets[i].getLocalPort();
-      }
-      return ports;
-    } catch (final IOException e) {
-      throw new IllegalStateException("Cannot allocate free ports for the test", e);
-    } finally {
-      for (final ServerSocket socket : sockets)
-        if (socket != null)
-          try {
-            socket.close();
-          } catch (final IOException ignore) {
-            // Nothing useful to do: the port is reported anyway and binding it is what proves it free.
-          }
-    }
   }
 }
