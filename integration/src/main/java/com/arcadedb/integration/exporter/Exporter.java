@@ -108,6 +108,10 @@ public class Exporter {
         result.put("edges", context.edges.get());
       if (context.timeSeriesSamples.get() > 0)
         result.put("timeSeriesSamples", context.timeSeriesSamples.get());
+      // Reported, never fatal - see ExporterContext.vanishedTimeSeriesBlocks for why retention removing blocks
+      // under a running export is not the same kind of gap a skipped record is (issue #8166).
+      if (context.vanishedTimeSeriesBlocks.get() > 0)
+        result.put("vanishedTimeSeriesBlocks", context.vanishedTimeSeriesBlocks.get());
       if (skippedRecords > 0)
         result.put("skippedRecords", skippedRecords);
 

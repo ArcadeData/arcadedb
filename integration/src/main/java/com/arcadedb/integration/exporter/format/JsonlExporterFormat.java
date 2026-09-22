@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Record;
+import com.arcadedb.engine.timeseries.AggregationMetrics;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.graph.Edge;
@@ -333,8 +334,15 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
         // A single-element holder, not a local variable reassigned in the loop: the visitor lambda can only close
         // over an effectively-final reference, and the chunk itself is replaced (not mutated) on every flush.
         final JSONArray[] chunkHolder = { new JSONArray() };
+        // An AggregationMetrics, where this used to pass null (issue #8166). The engine counts a sealed block a
+        // retention truncate removed from under the walk, and until now the only reader of that count anywhere
+        // was the PromQL/HTTP metrics surface - so an export that lost blocks mid-walk wrote a SHORT file with no
+        // exception, no log line and no count, which issue #8043 called the worst available outcome. A block a
+        // DOWNSAMPLE replaced does not reach here at all any more: the engine raises for it, because its rows
+        // were coarsened rather than removed and no mixed-resolution answer is a consistent one.
+        final AggregationMetrics metrics = new AggregationMetrics();
         try {
-          engine.forEachRow(Long.MIN_VALUE, Long.MAX_VALUE, null, null, null, row -> {
+          engine.forEachRow(Long.MIN_VALUE, Long.MAX_VALUE, null, null, metrics, row -> {
             final JSONArray sample = new JSONArray();
             // Copied position for position: the row IS the wire order (see the engine-row note above), so there
             // is nothing to permute here - the bound is the row's own length, guarded by the column count
@@ -365,6 +373,16 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
 
         if (chunkHolder[0].length() > 0)
           writeJsonLine("ts", new JSONObject().put("t", typeName).put("s", chunkHolder[0]));
+
+        // WARNING rather than a failure: retention dropping old blocks while a long export runs is legitimate and
+        // expected, and the rows are genuinely gone rather than somewhere else, so the export is not wrong - it is
+        // merely not the snapshot the operator may think it is. What it must not be is SILENT.
+        if (metrics.getVanishedBlocks() > 0) {
+          context.vanishedTimeSeriesBlocks.addAndGet(metrics.getVanishedBlocks());
+          LogManager.instance().log(this, Level.WARNING,
+              "%d sealed block(s) of TIMESERIES type '%s' were removed by retention while this export was reading "
+                  + "them; their samples are NOT part of this export", null, metrics.getVanishedBlocks(), typeName);
+        }
       } finally {
         // Rolled back, never committed, on the success path too: the scan above only reads, so there is nothing
         // to publish, and a rollback releases the read view without asking the page manager to flush anything.

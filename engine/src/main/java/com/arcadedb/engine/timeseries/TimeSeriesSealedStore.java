@@ -162,9 +162,18 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   private volatile long             globalMinTs    = Long.MAX_VALUE;  // volatile: read without write lock
   private volatile long             globalMaxTs    = Long.MIN_VALUE;  // volatile: read without write lock
   private          boolean          headerDirty;
-  // Counts how many times downsampleBlocks actually rewrote the sealed file (i.e., selected at least one
-  // block to downsample). Used by tests to assert idempotency: a steady-state cycle must not rewrite.
-  private          long             downsampleRewriteCount;
+  /**
+   * Counts how many times {@link #downsampleBlocks} actually rewrote the sealed file - i.e. selected at least one
+   * block to coarsen. Written under the directory WRITE lock and read under the read lock, so a walk that is
+   * between two blocks cannot see a torn value.
+   * <p>
+   * It answers two questions. Tests read it through {@link #getDownsampleRewriteCount()} to assert idempotency:
+   * a steady-state maintenance cycle, with nothing new old enough to reduce, must not rewrite (issue #4599). And
+   * {@link BlockDirectorySnapshot} stamps it, so {@link #walkBlocks} can tell a block a retention truncate DROPPED
+   * from one a downsample REPLACED with coarser rows - the first leaves the walk correctly short, the second
+   * leaves it unable to produce a consistent answer at all (issue #8166).
+   */
+  private          long             downsampleEpoch;
 
   /**
    * A fresh {@link BlockEntry#blockId} (issue #8043).
@@ -685,7 +694,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       if (first >= end)
         return BlockDirectorySnapshot.EMPTY;
 
-      return new BlockDirectorySnapshot(new ArrayList<>(blockDirectory.subList(first, end)), first);
+      return new BlockDirectorySnapshot(new ArrayList<>(blockDirectory.subList(first, end)), first, downsampleEpoch);
     } finally {
       directoryLock.readLock().unlock();
     }
@@ -698,9 +707,16 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * {@code firstIndex} is what lets {@link #resolveLiveBlock} try reference identity at the entry's own position
    * in the live directory before falling back to a search: without it the slice's own indices would name the
    * wrong blocks.
+   * <p>
+   * {@code downsampleEpoch} is what lets {@link #walkBlocks} tell the two reasons a block can fail to resolve
+   * apart (issue #8166). A block that is simply GONE - dropped by a retention {@code truncateBefore} - leaves a
+   * walk correctly short, and it is counted and stepped over. A block replaced by a DOWNSAMPLE has not gone
+   * anywhere: its rows are in the store, coarsened, and no answer that mixes them with the fine rows this walk
+   * has already emitted is a consistent one. Comparing the epoch the snapshot was taken at against the store's
+   * current one says whether a downsample can have been the cause, without keeping per-block state for it.
    */
-  record BlockDirectorySnapshot(List<BlockEntry> blocks, int firstIndex) {
-    static final BlockDirectorySnapshot EMPTY = new BlockDirectorySnapshot(List.of(), 0);
+  record BlockDirectorySnapshot(List<BlockEntry> blocks, int firstIndex, long downsampleEpoch) {
+    static final BlockDirectorySnapshot EMPTY = new BlockDirectorySnapshot(List.of(), 0, 0L);
   }
 
   /**
@@ -827,16 +843,18 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       int end = 0;
       Object[] combination = null;
       boolean vanished = false;
+      boolean coarsened = false;
       directoryLock.readLock().lock();
       try {
         final BlockEntry live = resolveLiveBlock(entry, directorySnapshot.firstIndex() + blockIdx);
-        // A null live entry means the block was truncated or downsampled away while this walk was between two
-        // blocks: the rows it held are no longer in the store, so there is nothing to hand over and nothing to
-        // read through a stale offset. It no longer means "a sealed file was installed under this walk" - since
-        // issue #8043 the block's identity is in the file, so a block the leader's copy still holds resolves.
-        if (live == null)
+        // A null live entry means the block left the directory while this walk was between two blocks. It no
+        // longer means "a sealed file was installed under this walk" - since issue #8043 the block's identity is
+        // in the file, so a block the leader's copy still holds resolves - and the two causes that remain are
+        // NOT the same answer (issue #8166), which is what the epoch below separates.
+        if (live == null) {
+          coarsened = downsampleEpoch != directorySnapshot.downsampleEpoch();
           vanished = true;
-        else {
+        } else {
           // The whole point of issue #7710: one row off the directory entry, with no file read and no decode.
           if (combinationsOnly)
             combination = declaredSingleCombination(live, combinationColumns, combinationWidth, tsColIdx, fromTs, toTs);
@@ -865,9 +883,21 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         directoryLock.readLock().unlock();
       }
 
+      // Raised rather than counted when a DOWNSAMPLE is what moved the store (issue #8166). Downsampling does
+      // not remove these rows, it replaces them with coarser ones, so the rows already handed to the visitor and
+      // the rows still to come are at two different resolutions and no walk can join them into one answer. See
+      // TimeSeriesWalkCoarsenedException for why no hand-over fixes that, only hides it.
+      if (coarsened)
+        throw new TimeSeriesWalkCoarsenedException(
+            "Sealed block [" + entry.minTimestamp + ".." + entry.maxTimestamp + "] of '" + getSealedFileName()
+                + "' was replaced by a downsample while this read was in flight, so no answer it can still produce"
+                + " mixes one resolution: the rows already returned are the fine ones and the rows remaining are"
+                + " their coarser replacements. Run the read again to get a whole answer at one resolution");
+
       // Counted, not merely skipped (issue #8043): a walk whose answer is SHORT because the store moved under it
       // is otherwise indistinguishable from one that simply matched no row, and a silently short answer to an
-      // EXPORT DATABASE is the worst available outcome.
+      // EXPORT DATABASE is the worst available outcome. This arm is now a RETENTION truncate alone, for which a
+      // short answer is the correct one: those rows really are gone.
       if (vanished) {
         if (metrics != null)
           metrics.addVanishedBlock();
@@ -1419,45 +1449,6 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   /**
-   * Push-down aggregation on sealed blocks.
-   */
-  public AggregationResult aggregate(final long fromTs, final long toTs, final int columnIndex,
-      final AggregationType type, final long bucketIntervalMs) throws IOException {
-    final AggregationResult result = new AggregationResult();
-    final int tsColIdx = findTimestampColumnIndex();
-    final int targetColSchemaIdx = findNonTsColumnSchemaIndex(columnIndex);
-
-    final long singleBucketTs = TimeSeriesEngine.singleBucketAnchor(fromTs);
-
-    // Hold the read lock for the entire scan including file I/O to prevent stale offsets
-    // after atomic file replacement by concurrent writers (truncate/downsample).
-    directoryLock.readLock().lock();
-    try {
-      for (final BlockEntry entry : blockDirectory) {
-        if (entry.maxTimestamp < fromTs || entry.minTimestamp > toTs)
-          continue;
-
-        final long[] timestamps = decompressTimestamps(entry, tsColIdx);
-        final double[] values = decompressDoubleColumn(entry, targetColSchemaIdx);
-
-        for (int i = 0; i < timestamps.length; i++) {
-          if (timestamps[i] < fromTs || timestamps[i] > toTs)
-            continue;
-
-          final long bucketTs = bucketIntervalMs > 0
-              ? Math.floorDiv(timestamps[i], bucketIntervalMs) * bucketIntervalMs
-              : singleBucketTs;
-
-          accumulateSample(result, bucketTs, values[i], type);
-        }
-      }
-      return result;
-    } finally {
-      directoryLock.readLock().unlock();
-    }
-  }
-
-  /**
    * Push-down multi-column aggregation on sealed blocks.
    * Processes compressed blocks directly without creating Object[] row arrays.
    * When a block fits entirely within a single time bucket, uses block-level
@@ -1973,7 +1964,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     }
 
     // Rewrite sealed file: toKeep blocks (raw copy) + new downsampled blocks
-    downsampleRewriteCount++;
+    downsampleEpoch++;
     rewriteWithBlocks(toKeep, newBlocksCompressed, newBlocksMeta, newBlocksStats, newBlocksTagDV, granularityMs);
     } finally {
       directoryLock.writeLock().unlock();
@@ -3097,7 +3088,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   long getDownsampleRewriteCount() {
     directoryLock.readLock().lock();
     try {
-      return downsampleRewriteCount;
+      return downsampleEpoch;
     } finally {
       directoryLock.readLock().unlock();
     }
@@ -4035,29 +4026,4 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     }
     throw new IllegalArgumentException("Column index " + nonTsIndex + " out of range");
   }
-
-  private void accumulateSample(final AggregationResult result, final long bucketTs, final double value,
-      final AggregationType type) {
-    final int idx = result.findBucketIndex(bucketTs);
-    if (idx >= 0) {
-      final double existing = result.getValue(idx);
-      final long count = result.getCount(idx);
-      // NaN policy (issue #7089): SUM/AVG skip an absent sample the way MIN/MAX below do, and the count kept
-      // alongside is of the samples that contributed - what the AVG is divided by once the scan is over.
-      final double merged = switch (type) {
-        case SUM, AVG -> TimeSeriesNaN.sum(existing, count, value);
-        case COUNT -> existing + 1;
-        // NaN policy (issue #4596): NaN is treated as absent and skipped, so a real value always
-        // wins over a NaN running value (consistent with the row-iter, merge and SIMD paths).
-        case MIN -> Double.isNaN(value) ? existing : Double.isNaN(existing) ? value : Math.min(existing, value);
-        case MAX -> Double.isNaN(value) ? existing : Double.isNaN(existing) ? value : Math.max(existing, value);
-      };
-      result.updateValue(idx, merged);
-      result.updateCount(idx, type == AggregationType.COUNT ? count + 1 : TimeSeriesNaN.countIfPresent(count, value));
-    } else {
-      result.addBucket(bucketTs, type == AggregationType.COUNT ? 1 : value,
-          type == AggregationType.COUNT ? 1 : TimeSeriesNaN.countIfPresent(0, value));
-    }
-  }
-
 }
