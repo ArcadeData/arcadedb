@@ -558,6 +558,64 @@ class ChatStorageTest {
   }
 
   @Test
+  void anAmbiguousDirectoryStaysRefusedEvenAfterOneOfTheTwoCollidingAccountsIsDeleted() throws Exception {
+    // Code review on PR #8126: deciding purely from the CURRENT account list is not enough. If
+    // "user@corp.com" and "user.corp.com" are both seen to collide on "user_corp_com" (refused,
+    // correctly), and "user.corp.com" is deleted afterwards, a naive re-check would see only
+    // "user@corp.com" mapping onto the name and migrate the directory - including
+    // "user.corp.com"'s chats - straight into "user@corp.com"'s store. That is the exact cross-user
+    // access #7113 set out to remove, reached through account deletion instead of a name collision.
+    final AtomicReference<Set<String>> registeredAccounts =
+        new AtomicReference<>(Set.of("user@corp.com", "user.corp.com"));
+    final ChatStorage resolvingStorage = new ChatStorage(TEST_ROOT, registeredAccounts::get);
+
+    final String sharedLegacyName = ChatStorage.sanitizeFilename("user@corp.com");
+    final File legacyDir = Paths.get(TEST_ROOT, "chats", sharedLegacyName).toFile();
+    assertThat(legacyDir.mkdirs()).isTrue();
+    final JSONObject chat = ChatStorage.createNewChat("db", "Both accounts existed when this collision was seen");
+    FileUtils.writeFile(new File(legacyDir, ChatStorage.sanitizeFilename(chat.getString("id")) + ".json"), chat.toString());
+
+    // First lookup: both accounts still exist, the collision is real and observed - refused, and the
+    // collision is now recorded on disk, not just refused in the moment.
+    assertThat(resolvingStorage.listChats("user@corp.com")).isEmpty();
+    assertThat(legacyDir).exists();
+
+    // "user.corp.com" is deleted. Taken at face value, the account list now shows exactly one match.
+    registeredAccounts.set(Set.of("user@corp.com"));
+
+    // The directory must STILL be refused: the recorded collision outlives the deleted account, on
+    // this same ChatStorage instance...
+    assertThat(resolvingStorage.listChats("user@corp.com")).isEmpty();
+    assertThat(legacyDir).as("must not have been migrated, taking user.corp.com's chats with it").exists();
+
+    // ...and on a FRESH instance too, e.g. after a server restart, since the record is a file on disk
+    // rather than in-memory state.
+    final ChatStorage afterRestart = new ChatStorage(TEST_ROOT, registeredAccounts::get);
+    assertThat(afterRestart.listChats("user@corp.com")).isEmpty();
+    assertThat(legacyDir).exists();
+  }
+
+  @Test
+  void twoAccountsDifferingOnlyByCaseAreTreatedAsACollisionEvenThoughSanitizeFilenameDoesNotFoldCase() throws Exception {
+    // CodeRabbit review on PR #8126: ServerSecurity keys accounts by EXACT name, so "John_Doe" and
+    // "john_doe" can both be registered - sanitizeFilename does not lowercase either, so a naive
+    // case-sensitive comparison in soleKnownAccountName would not see them as colliding. But
+    // legacyDir.exists() (the check that gets here at all) is case-INSENSITIVE on the filesystems this
+    // class already special-cases (HASHED_DIR_NAME, isSpelledExactlyOnDisk), so "chats/John_Doe" and
+    // "chats/john_doe" name the very same on-disk directory: only one of the two accounts could really
+    // have owned it, and it cannot be told which from the file tree - the migration must be refused.
+    final ChatStorage resolvingStorage = new ChatStorage(TEST_ROOT, () -> Set.of("John_Doe", "john_doe"));
+
+    final File legacyDir = Paths.get(TEST_ROOT, "chats", "john_doe").toFile();
+    assertThat(legacyDir.mkdirs()).isTrue();
+    final JSONObject chat = ChatStorage.createNewChat("db", "Which of the two really wrote this?");
+    FileUtils.writeFile(new File(legacyDir, ChatStorage.sanitizeFilename(chat.getString("id")) + ".json"), chat.toString());
+
+    assertThat(resolvingStorage.listChats("john_doe")).isEmpty();
+    assertThat(legacyDir).as("must be left untouched, not awarded to whichever spelling looked up first").exists();
+  }
+
+  @Test
   void anAmbiguousLegacyDirectoryStaysRefusedWhenTheKnownUserSupplierIsAbsent() throws Exception {
     // The default, single-argument constructor (used by every pre-#8078 caller and by every other
     // test in this class) must keep today's fully conservative behaviour: no known-user set to

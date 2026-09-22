@@ -23,9 +23,11 @@ import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
@@ -74,34 +76,53 @@ class Issue8085WebSocketFrameSenderPendingBytesBudgetTest {
    * Many frames that are each individually small - the shape of the actual attack: a flood of tiny malformed
    * requests, each answered with a ~130 byte error frame - must still accumulate against ONE connection-wide
    * counter and trip the same eviction once their sum crosses the cap.
+   * <p>
+   * The 80 bytes already outstanding stand in for two such frames still in flight - queued with Undertow but
+   * not yet reported done, exactly what a peer that has stopped reading looks like to this accounting (the
+   * same shape {@code Issue6762WebSocketEventBusTest.neverCompletingSubscription()} uses for the event bus's
+   * own budget). {@link WebSocketFrameSender#sendBudgeted} releases a reservation the instant a send THROWS
+   * synchronously, so driving this by repeating a call that throws against a bare mock would release each
+   * reservation immediately and never accumulate anything.
    */
   @Test
   void manySmallFramesAccumulateAndTripTheSameEvictionOnceTheirSumExceedsTheBudget() throws Exception {
     final WebSocketChannel channel = channelWithRealAttributes();
+    channel.setAttribute(WebSocketFrameSender.PENDING_BYTES, new AtomicLong(80));
 
     final long cap = 100;
     final String smallFrame = "x".repeat(40);
 
-    // The first two reservations (40 + 40 = 80) stay under the 100-byte cap, so each is handed to Undertow's
-    // real send path - which throws against a bare mock with no socket behind it (see
-    // Issue7909InFlightStartHoldsTheFrameBudgetTest.runHeldFrame for the same tolerance). What matters here is
-    // that the RESERVATION survives that failed write, exactly as it does in production when a frame is queued
-    // and the peer just never reads it.
-    for (int i = 0; i < 2; i++) {
-      try {
-        WebSocketFrameSender.sendBudgeted(channel, smallFrame, cap);
-      } catch (final RuntimeException ignoredUnwritableFrame) {
-      }
-    }
-
-    // The third reservation (120 total) crosses the cap: refused before any write is attempted, so no
-    // exception this time, and the connection is closed instead of accumulating a fourth queued frame.
+    // The third frame (80 + 40 = 120) crosses the cap: refused before any write is attempted, so no exception,
+    // and the connection is closed instead of accumulating a further queued frame.
     final boolean[] accepted = new boolean[1];
     assertThatCode(() -> accepted[0] = WebSocketFrameSender.sendBudgeted(channel, smallFrame, cap))
         .doesNotThrowAnyException();
 
     assertThat(accepted[0]).isFalse();
     verify(channel).close();
+  }
+
+  /**
+   * A send that throws SYNCHRONOUSLY (never reaching Undertow's callback at all) must give its reservation
+   * back rather than leak it for the rest of the connection's life - the asymmetry code review flagged
+   * against {@code WebSocketEventBus.publish()}'s own belt-and-suspenders guard around the same kind of call.
+   * A mocked channel with no real socket is exactly this failure mode: {@code WebSockets.sendText} throws
+   * before ever registering the callback.
+   */
+  @Test
+  void aSynchronousSendFailureReleasesItsReservationInsteadOfLeakingIt() throws Exception {
+    final WebSocketChannel channel = channelWithRealAttributes();
+    final long cap = 1_000;
+    final String frame = "x".repeat(40);
+
+    assertThatThrownBy(() -> WebSocketFrameSender.sendBudgeted(channel, frame, cap))
+        .as("the underlying Undertow failure must still surface to the caller, not be swallowed")
+        .isInstanceOf(RuntimeException.class);
+
+    final AtomicLong pending = (AtomicLong) channel.getAttribute(WebSocketFrameSender.PENDING_BYTES);
+    assertThat(pending.get())
+        .as("the reservation must be given back, not leaked, when the send throws synchronously")
+        .isZero();
   }
 
   /** The cap is opt-out, the same contract {@code eventBusMaxPendingBytes} already documents. */
