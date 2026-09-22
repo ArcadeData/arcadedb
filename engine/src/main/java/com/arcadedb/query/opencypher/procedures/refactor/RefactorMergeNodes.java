@@ -50,9 +50,11 @@ import java.util.stream.Stream;
  * is resolved: {@code "overwrite"} (the absorbed node's value wins, the default), {@code "discard"}
  * (the survivor's original value is kept) or {@code "combine"} (the distinct values contributed by
  * either node are kept, in first-seen order, as a list - flattening a {@code List}-valued contribution
- * into that list rather than nesting it - or as the sole value itself when only one distinct value
- * survives, whether that is because both nodes agreed on it or because de-duplication collapsed the
- * property to one entry). A property present only on an absorbed node is always copied onto the survivor.
+ * into that list rather than nesting it - or, when neither node contributed a {@code List} and only one
+ * distinct value survives, as that sole value itself. A property either node carried as a list stays a
+ * list even where de-duplication leaves it holding one element, so {@code combine} never rewrites a
+ * list-valued property as a bare element (issue #8155). A property present only on an absorbed node is
+ * always copied onto the survivor.
  * The whole {@code config} argument is optional and defaults to an empty map - hence to the
  * {@code "overwrite"} policy - matching APOC's
  * {@code apoc.refactor.mergeNodes(nodes :: LIST<NODE>, config = {} :: MAP)} (issue #7427).
@@ -162,14 +164,24 @@ public class RefactorMergeNodes implements CypherProcedure {
           // keep the survivor's original value
         }
         case "combine" -> {
-          final List<Object> combined = new ArrayList<>();
-          addDistinct(combined, survivor.get(propertyName));
-          addDistinct(combined, absorbedValue);
+          final Object survivorValue = survivor.get(propertyName);
           // APOC's contract for 'combine' is "if the values are the same, keep one; otherwise merge into a
           // list", so a list appears only once a second distinct value has actually turned up. Merging nodes
           // that agree - the common case - therefore leaves every scalar the scalar it was, instead of the
           // two-element list of duplicates this branch used to produce (issue #7428).
-          survivor.set(propertyName, combined.size() == 1 ? combined.getFirst() : combined);
+          //
+          // That collapse is about MULTIPLICITY, so it applies only where the multiplicity is all there was:
+          // when either node contributed a List, the merged property is written back as a List however few
+          // distinct values came out of it. Without the guard, two nodes agreeing on tags:['x'] - or lists
+          // whose union de-duplicates to one element - left the survivor holding the bare element, and save()
+          // wrote that shape to disk, so a reader doing 'x' IN p.tags, UNWIND p.tags or size(p.tags) found a
+          // string where its list used to be (issue #8155). A Java array is deliberately NOT a List here, so
+          // two equal embeddings still collapse to the single array (issue #8099); see addDistinct.
+          final boolean anyContributionWasList = survivorValue instanceof List<?> || absorbedValue instanceof List<?>;
+          final List<Object> combined = new ArrayList<>();
+          addDistinct(combined, survivorValue);
+          addDistinct(combined, absorbedValue);
+          survivor.set(propertyName, !anyContributionWasList && combined.size() == 1 ? combined.getFirst() : combined);
         }
         // unreachable in practice - extractPropertiesPolicy validates policy against VALID_POLICIES
         // before mergeProperties is ever called; kept as a defensive fallback against the two drifting

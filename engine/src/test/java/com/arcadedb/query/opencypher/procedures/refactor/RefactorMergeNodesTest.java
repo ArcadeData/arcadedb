@@ -28,6 +28,7 @@ import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -466,12 +467,14 @@ class RefactorMergeNodesTest {
   }
 
   /**
-   * Deliberate consequence of the APOC contract, pinned here so it is a decision and not a surprise: when the
-   * merge leaves exactly one distinct value the property becomes that value, even where both contributions
-   * were single-element lists.
+   * Issue #8155, the reported regression: #7428's "if the values are the same, keep one" is about MULTIPLICITY,
+   * and this test used to pin it applying to the TYPE as well - two nodes agreeing on {@code tag: ['x']} left the
+   * survivor holding the bare string {@code "x"}, and {@code save()} wrote that shape to disk, so {@code 'x' IN
+   * p.tag}, {@code UNWIND p.tag} and {@code size(p.tag)} all stopped working on a property nothing had asked to
+   * change. A contribution that arrived as a list now keeps the merged property a list.
    */
   @Test
-  void combinePolicyCollapsesEqualSingleElementListsToTheScalar() {
+  void combinePolicyKeepsEqualSingleElementListsAsAList() {
     database.begin();
     database.newVertex("Person").set("name", "A").set("tag", List.of("x")).save();
     database.newVertex("Person").set("name", "B").set("tag", List.of("x")).save();
@@ -484,7 +487,11 @@ class RefactorMergeNodesTest {
     final Object tag = rs.next().getProperty("tag");
     database.commit();
 
-    assertThat(tag).isEqualTo("x");
+    assertThat(tag).isEqualTo(List.of("x"));
+
+    // ...and that is the shape that was stored, not a projection artefact: read it back in a fresh query.
+    final ResultSet readBack = database.query("opencypher", "MATCH (p:Person) RETURN p.tag AS tag");
+    assertThat(readBack.next().<Object>getProperty("tag")).isEqualTo(List.of("x"));
   }
 
   /**
@@ -531,12 +538,13 @@ class RefactorMergeNodesTest {
   }
 
   /**
-   * An empty list contributes no values, so the merge sees exactly one distinct value and the survivor ends up
-   * with the scalar rather than with a one-element list. Raised in review on #7428 as an untested corner of the
-   * "distinct values seen" semantics; pinned here so the answer is on the record either way.
+   * An empty list contributes no VALUE - the merge sees exactly one distinct value, {@code "x"} - but it is still
+   * a list, and issue #8155 is that the shape of the surviving property is decided by the shapes that were
+   * contributed, not by how many distinct values came out. So the survivor keeps a one-element list here, where
+   * before #8155 it was handed the bare scalar.
    */
   @Test
-  void combinePolicyTreatsAnEmptyListAsContributingNothing() {
+  void combinePolicyKeepsAListWhenTheOnlyValueCameFromTheOtherSide() {
     database.begin();
     database.newVertex("Person").set("name", "A").set("tag", List.of()).save();
     database.newVertex("Person").set("name", "B").set("tag", "x").save();
@@ -549,7 +557,7 @@ class RefactorMergeNodesTest {
     final Object tag = rs.next().getProperty("tag");
     database.commit();
 
-    assertThat(tag).isEqualTo("x");
+    assertThat(tag).isEqualTo(List.of("x"));
   }
 
   /**
@@ -666,5 +674,117 @@ class RefactorMergeNodesTest {
     database.commit();
 
     assertThat(tag).isEqualTo(List.of("x", "y"));
+  }
+
+  /**
+   * Issue #8155, the de-duplicating shape: the union of {@code ['x','x']} and {@code ['x']} is one element, but
+   * both contributions were lists, so the survivor stays a list. Before the fix it became the string {@code "x"}.
+   */
+  @Test
+  void combinePolicyKeepsAListWhenDeduplicationCollapsesTheUnionToOneElement() {
+    database.begin();
+    database.newVertex("Person").set("name", "A").set("tag", List.of("x", "x")).save();
+    database.newVertex("Person").set("name", "B").set("tag", List.of("x")).save();
+    database.commit();
+
+    database.begin();
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (a:Person {name:'A'}), (b:Person {name:'B'}) "
+            + "CALL apoc.refactor.mergeNodes([a,b], {properties: 'combine'}) YIELD node RETURN node.tag AS tag");
+    final Object tag = rs.next().getProperty("tag");
+    database.commit();
+
+    assertThat(tag).isEqualTo(List.of("x"));
+  }
+
+  /**
+   * Issue #8155 across the merge loop: the survivor's value on the second and third iterations is whatever the
+   * previous one wrote, so the list has to survive every iteration and not only the first.
+   */
+  @Test
+  void combinePolicyKeepsThreeEqualSingleElementListsAsAList() {
+    database.begin();
+    database.newVertex("Person").set("name", "A").set("tag", List.of("x")).save();
+    database.newVertex("Person").set("name", "B").set("tag", List.of("x")).save();
+    database.newVertex("Person").set("name", "C").set("tag", List.of("x")).save();
+    database.commit();
+
+    database.begin();
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (a:Person {name:'A'}), (b:Person {name:'B'}), (c:Person {name:'C'}) "
+            + "CALL apoc.refactor.mergeNodes([a,b,c], {properties: 'combine'}) YIELD node RETURN node.tag AS tag");
+    final Object tag = rs.next().getProperty("tag");
+    database.commit();
+
+    assertThat(tag).isEqualTo(List.of("x"));
+  }
+
+  /**
+   * Issue #8155 with only the ABSORBED node carrying the list: the survivor's scalar equals the list's sole
+   * element, so the union is one value, yet a list was contributed and the merged property is a list.
+   */
+  @Test
+  void combinePolicyKeepsAListContributedOnlyByTheAbsorbedNode() {
+    database.begin();
+    database.newVertex("Person").set("name", "A").set("tag", "x").save();
+    database.newVertex("Person").set("name", "B").set("tag", List.of("x")).save();
+    database.commit();
+
+    database.begin();
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (a:Person {name:'A'}), (b:Person {name:'B'}) "
+            + "CALL apoc.refactor.mergeNodes([a,b], {properties: 'combine'}) YIELD node RETURN node.tag AS tag");
+    final Object tag = rs.next().getProperty("tag");
+    database.commit();
+
+    assertThat(tag).isEqualTo(List.of("x"));
+  }
+
+  /**
+   * Issue #8155 on a SCHEMA-TYPED list: the property is declared {@code LIST}, which is the case where writing the
+   * collapsed scalar back puts a value of the wrong type into a typed slot rather than merely surprising a reader.
+   */
+  @Test
+  void combinePolicyKeepsASchemaDeclaredListPropertyAList() {
+    database.getSchema().getType("Person").createProperty("tags", Type.LIST);
+
+    database.begin();
+    database.newVertex("Person").set("name", "A").set("tags", List.of("x")).save();
+    database.newVertex("Person").set("name", "B").set("tags", List.of("x")).save();
+    database.commit();
+
+    database.begin();
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (a:Person {name:'A'}), (b:Person {name:'B'}) "
+            + "CALL apoc.refactor.mergeNodes([a,b], {properties: 'combine'}) YIELD node RETURN node.tags AS tags");
+    final Object tags = rs.next().getProperty("tags");
+    database.commit();
+
+    assertThat(tags).isInstanceOf(List.class);
+    assertThat(tags).isEqualTo(List.of("x"));
+  }
+
+  /**
+   * Issue #8155 must not take #7428 back with it: two equal SCALARS still collapse to the scalar, because neither
+   * contribution was a list. Pinned next to the list cases so the boundary between them is explicit.
+   */
+  @Test
+  void combinePolicyStillCollapsesTwoEqualScalarsWhenNoListWasContributed() {
+    database.begin();
+    database.newVertex("Person").set("name", "A").set("tag", "x").set("n", 5L).save();
+    database.newVertex("Person").set("name", "B").set("tag", "x").set("n", 5L).save();
+    database.commit();
+
+    database.begin();
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (a:Person {name:'A'}), (b:Person {name:'B'}) "
+            + "CALL apoc.refactor.mergeNodes([a,b], {properties: 'combine'}) YIELD node RETURN node.tag AS tag, node.n AS n");
+    final Result row = rs.next();
+    final Object tag = row.getProperty("tag");
+    final Object n = row.getProperty("n");
+    database.commit();
+
+    assertThat(tag).isEqualTo("x");
+    assertThat(n).isEqualTo(5L);
   }
 }
