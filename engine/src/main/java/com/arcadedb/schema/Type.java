@@ -2016,7 +2016,13 @@ public enum Type {
   private static Date dateFromSharedChain(final Database database, final String valueAsString) {
     // parseZonedDateTime for the same reason as the Instant branch: a Date is an instant, so an offset the value
     // carries is kept rather than swapped for the database's zone.
-    return Date.from(DateUtils.parseZonedDateTime(database, valueAsString).toInstant());
+    //
+    // ...without the schema patterns, though: convertToDate has already tried both, through SimpleDateFormat, which
+    // is the parser a Date target is defined by (see the branch above). Letting the chain walk them a second time
+    // with a DateTimeFormatter would be deterministic wasted work on the commonest DATETIME target, and a second
+    // interpretation of the same pattern that could answer differently from the first. Only the ISO and
+    // SQL-timestamp shapes are left to try here.
+    return Date.from(DateUtils.parseZonedDateTime(database, valueAsString, false).toInstant());
   }
 
   /**
