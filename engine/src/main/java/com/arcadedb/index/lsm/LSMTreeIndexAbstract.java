@@ -541,16 +541,24 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   protected Object[] convertKeys(final Object[] keys, final byte[] keyTypes) {
     // Declared-type narrowing AND case-insensitive folding both happen here; this layers only the disk-storage
     // byte[]-for-String probe encoding on top, so a case-insensitive String is never folded twice.
-    return encodeKeysForPageProbe(convertKeysToDeclaredTypes(keys, keyTypes));
+    final Object[] convertedKeys = convertKeysToDeclaredTypes(keys, keyTypes);
+    if (convertedKeys == null)
+      return null;
+
+    // IN PLACE, into the array convertKeysToDeclaredTypes just allocated: no caller of THIS method keeps the narrowed
+    // form, so there is nothing to preserve and nothing to gain from a second array on an index get/put/remove.
+    return encodeStrings(convertedKeys, convertedKeys);
   }
 
   /**
    * Layers only the disk-storage {@code byte[]}-for-{@code String} probe encoding on top of keys ALREADY narrowed by
-   * {@link #convertKeysToDeclaredTypes}, leaving that array untouched.
+   * {@link #convertKeysToDeclaredTypes}, into a NEW array so the narrowed one survives untouched.
    * <p>
-   * A caller that needs BOTH forms of the same bound - {@code LSMTreeIndexCursor} does, one to seed {@code lookupInPage}
-   * and one to compare against deserialized keys - used to build them independently, which ran the declared-type
-   * narrowing and the collation folding twice over every component of every bound on every seek (issue #7840).
+   * For the one caller that needs BOTH forms of the same bound - {@code LSMTreeIndexCursor}, which seeds
+   * {@code lookupInPage} with the encoded form and compares deserialized keys against the narrowed one. It used to
+   * build them independently, which ran the declared-type narrowing and the collation folding twice over every
+   * component of every bound on every seek (issue #7840). Everything else goes through {@link #convertKeys}, which
+   * needs no copy.
    *
    * @param declaredTypeKeys keys already narrowed to the index's declared types, or {@code null}
    *
@@ -561,14 +569,19 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     if (declaredTypeKeys == null)
       return null;
 
-    final Object[] encoded = new Object[declaredTypeKeys.length];
-    for (int i = 0; i < declaredTypeKeys.length; ++i)
-      // OPTIMIZATION: ALWAYS CONVERT STRINGS TO BYTE[]
-      encoded[i] = declaredTypeKeys[i] instanceof String string ?
-          string.getBytes(DatabaseFactory.getDefaultCharset()) :
-          declaredTypeKeys[i];
+    return encodeStrings(declaredTypeKeys, new Object[declaredTypeKeys.length]);
+  }
 
-    return encoded;
+  /**
+   * Writes each component of {@code source} into {@code target}, encoding the {@code String} ones the way the pages
+   * store them. {@code target} may BE {@code source}, which is how {@link #convertKeys} avoids a second array.
+   */
+  private static Object[] encodeStrings(final Object[] source, final Object[] target) {
+    for (int i = 0; i < source.length; ++i)
+      // OPTIMIZATION: ALWAYS CONVERT STRINGS TO BYTE[]
+      target[i] = source[i] instanceof String string ? string.getBytes(DatabaseFactory.getDefaultCharset()) : source[i];
+
+    return target;
   }
 
   /**

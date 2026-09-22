@@ -18,7 +18,6 @@
  */
 package performance;
 
-
 import com.arcadedb.database.Binary;
 import com.arcadedb.serializer.BinaryComparator;
 import org.junit.jupiter.api.Tag;
@@ -111,9 +110,6 @@ class WideKeyComparisonBenchmark {
     sink = consumed;
     return elapsed;
   }
-
-
-
 
   private static int compareAgainstPages(final BinaryComparator comparator, final byte[][] keys, final Binary[] pages) {
     int total = 0;
