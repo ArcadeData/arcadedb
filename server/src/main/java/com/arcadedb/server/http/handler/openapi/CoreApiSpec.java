@@ -243,6 +243,18 @@ public class CoreApiSpec implements OpenApiContributor {
     SpecBuilders.publicOperation(getOp);
     pathItem.setGet(getOp);
 
+    // Same handler as GET (issue #8133): container healthchecks such as `wget --spider` issue HEAD,
+    // so it must answer the same status without a body rather than 405.
+    final Operation headOp = new Operation();
+    headOp.setSummary("Check server readiness (no body)");
+    headOp.setDescription(
+        "Identical to GET /ready but without a response body, for probes (e.g. 'wget --spider') that use HEAD.");
+    headOp.setOperationId("checkReadyHead");
+    headOp.addTagsItem("Health");
+    headOp.setResponses(createReadyResponses());
+    SpecBuilders.publicOperation(headOp);
+    pathItem.setHead(headOp);
+
     return pathItem;
   }
 
@@ -259,16 +271,35 @@ public class CoreApiSpec implements OpenApiContributor {
     SpecBuilders.publicOperation(getOp);
     pathItem.setGet(getOp);
 
+    // Same handler as GET (issue #8133): container healthchecks such as `wget --spider` issue HEAD,
+    // so it must answer the same status without a body rather than 405.
+    final Operation headOp = new Operation();
+    headOp.setSummary("Check server liveness (no body)");
+    headOp.setDescription(
+        "Identical to GET /health but without a response body, for probes (e.g. 'wget --spider') that use HEAD.");
+    headOp.setOperationId("checkHealthHead");
+    headOp.addTagsItem("Health");
+    headOp.setResponses(createHealthResponses());
+    SpecBuilders.publicOperation(headOp);
+    pathItem.setHead(headOp);
+
     return pathItem;
   }
 
   private ApiResponses createHealthResponses() {
     final ApiResponses responses = new ApiResponses();
 
-    // Liveness only ever responds with 204 when reachable; it never returns 503 (unlike readiness).
     final ApiResponse liveResponse = new ApiResponse();
     liveResponse.setDescription("Server process and HTTP layer are up");
     responses.addApiResponse("204", liveResponse);
+
+    // ServerControlPlane.isLive() also fails liveness for a crash-loop the HA layer has already
+    // escalated and given up on (issue #7622), so an orchestrator restarts the process instead of an
+    // operator having to notice a SEVERE alert and do it by hand.
+    final ApiResponse notLiveResponse = new ApiResponse();
+    notLiveResponse.setDescription(
+        "The server is in a crash loop the HA layer has given up recovering from automatically; a process restart is required");
+    responses.addApiResponse("503", notLiveResponse);
 
     return responses;
   }
