@@ -30,6 +30,9 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class ServerSecurityUser implements SecurityUser {
+  /** Name of the server administrator, the one user whose authority spans the whole server. */
+  public static final String ROOT_USER = "root";
+
   private final ArcadeDBServer                                        server;
   private final JSONObject                                            userConfiguration;
   private final String                                                name;
@@ -111,6 +114,14 @@ public class ServerSecurityUser implements SecurityUser {
   @Override
   public String getName() {
     return name;
+  }
+
+  /**
+   * Whether this user is the server administrator ({@value #ROOT_USER}), the only principal authorized for capabilities
+   * whose reach is the host rather than one database.
+   */
+  public boolean isServerAdministrator() {
+    return ROOT_USER.equals(name);
   }
 
   @Override

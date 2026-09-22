@@ -33,6 +33,10 @@ public class ArcadeIoRegistrationStrategy extends AbstractTraversalStrategy<Trav
   @Override
   public void apply(final Traversal.Admin<?, ?> traversal) {
     if (traversal.getStartStep() instanceof IoStep) {
+      // io() READS OR WRITES A FILE AT A CALLER-CHOSEN HOST PATH: RESERVED TO THE SERVER ADMINISTRATOR
+      if (traversal.getGraph().orElse(null) instanceof ArcadeGraph arcadeGraph)
+        GremlinHostAccessGuard.checkServerAdministrator(arcadeGraph.getDatabase(), "use the io() step");
+
       final IoStep ioStep = (IoStep) traversal.getStartStep();
       ioStep.configure(IO.registry, new ArcadeIoRegistry());
     }
