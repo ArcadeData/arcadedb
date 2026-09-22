@@ -2590,12 +2590,9 @@ public class PostgresNetworkExecutor extends Thread {
           // whatever COMMIT came next. ROLLBACK and not COMMIT even when the client sent COMMIT/END, for the
           // same reason portal.query is rewritten just above: that is the tag this statement answers with from
           // now on, and a reuse that committed instead would contradict it.
-          // The immediate database.rollback() above stays - it is what makes the Parse itself recover the block
-          // - and it does not double up with this: applyTransactionControl()'s ROLLBACK arm is guarded on
-          // explicitTransactionStarted, which endTransactionBlockState() has just cleared, so the Execute
-          // pipelined behind this Parse finds nothing left to roll back. Re-executing an ALREADY-BOUND portal
-          // stays the no-op issue #7851 requires, since applyTransactionControl() clears the marker on the copy
-          // it acted on rather than on this template.
+          // The immediate database.rollback() above stays - it is what makes the Parse itself recover the block -
+          // and neither it nor issue #7851's "applies only once" boundary is disturbed by the marker; see
+          // applyTransactionControl(), whose guard and whose clearing of the marker are what make both hold.
           portal.transactionControl = PostgresPortal.TransactionControl.ROLLBACK;
           preparedStatements.put(portalName, portal);
           writeMessage("parse complete", null, '1', 4);
