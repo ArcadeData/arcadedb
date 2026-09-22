@@ -2349,7 +2349,10 @@ public class LocalSchema implements Schema {
       }
 
       if (droppedCounts > 0)
-        LogManager.instance().log(this, Level.INFO,
+        // WARNING, not INFO: this is the one line that tells an operator why count(*) on this node is about to
+        // change, and #8040 is a report of that drift being mistaken for HA state divergence. A message nobody's
+        // log configuration shows would leave them in exactly the position the fix exists to get them out of.
+        LogManager.instance().log(this, Level.WARNING,
             "Database '%s': discarded the cached record count of %d bucket(s) because '%s' was written by a build that"
                 + " could persist a wrong count (issue #8040). The affected buckets recompute on their next count().",
             null, database.getName(), droppedCounts, file.getName());
