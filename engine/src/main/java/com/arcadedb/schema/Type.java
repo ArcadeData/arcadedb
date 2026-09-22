@@ -495,6 +495,14 @@ public enum Type {
     return item;
   }
 
+  /**
+   * Note for anyone adding a branch to the body below: the {@code catch (DateTimeException)} at the end covers the
+   * WHOLE of it, not only the date branches, which are scattered through it. What keeps that honest is the target -
+   * a DATE/TIME target refuses, everything else keeps the {@code null} it would have had - so a new branch throwing
+   * a {@link DateTimeException} for an unrelated reason is not silently escalated into a refusal. It does mean the
+   * decision is made on the target rather than on which branch raised it, so a new DATE/TIME target belongs in
+   * {@code isDateTimeTarget} as well as here.
+   */
   public static Object convert(final Database database, final Object value, Class<?> targetClass, final Property property) {
     if (value == null)
       return null;
