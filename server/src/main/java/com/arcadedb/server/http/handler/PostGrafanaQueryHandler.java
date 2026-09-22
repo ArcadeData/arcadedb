@@ -336,7 +336,8 @@ public class PostGrafanaQueryHandler extends AbstractObservabilityHandler {
         if (colIndex < 0)
           return buildErrorFrame("Field '" + fieldName + "' not found in type");
 
-        requests.add(new MultiColumnAggregationRequest(colIndex, aggType, alias));
+        // As on /ts/query: the factory owns both rules a producer has to get right (issue #8140).
+        requests.add(MultiColumnAggregationRequest.of(columns, colIndex, aggType, alias));
         aliases.add(alias);
       }
     } catch (final IllegalArgumentException e) {
