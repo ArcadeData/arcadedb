@@ -199,6 +199,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final String          owner;
     final long            createdAtMs;
     volatile long         lastAccessMs;
+    // The ENGINE's transaction object behind this gRPC transaction, captured once on the dedicated thread right
+    // after database.begin() (issue #8134). Its commit counter is the only witness that a statement with a
+    // BATCH boundary published part of the caller's block: LocalDatabase.begin() reuses the same context object
+    // for the next transaction and the counter is never reset, which is exactly what the HTTP handler relies on
+    // when it holds the session's TransactionContext across a request.
+    // Fully qualified because this class is itself called TransactionContext - as is the protobuf message the
+    // requests carry - so all three names meet in this file and only one of them can be the short one.
+    volatile com.arcadedb.database.TransactionContext engineTransaction;
 
     TransactionContext(Database db, String txId, String owner) {
       this.db = db;
@@ -550,10 +558,33 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    * executor-internals exception up through the RPC's catch block (issue #6709 cycle-2 review).
    */
   <T> Future<T> submitToActiveTransaction(final TransactionContext txCtx, final Callable<T> task) {
+    // #8134: read HERE, on the thread the RPC was dispatched on, because that is where the gRPC Context is
+    // attached - the transaction's dedicated executor thread has none. Every RPC that runs work inside a
+    // CLIENT-MANAGED transaction comes through this method, which is why the sampling lives here rather than
+    // in each of the dozen RPCs: commitTransaction and rollbackTransaction submit to the executor directly and
+    // are therefore exempt, exactly as /commit is exempt from the HTTP header
+    // (DatabaseAbstractHandler.reportsSessionPartialCommit()) - a transaction that committed in full has
+    // nothing left to replay and must not be described as half-published.
+    final GrpcSessionPartialCommitInterceptor.Verdict partialCommit =
+        GrpcSessionPartialCommitInterceptor.currentVerdict();
     try {
       return txCtx.executor.submit(() -> {
         requireTransactionStillActive(txCtx);
-        return task.call();
+        final com.arcadedb.database.TransactionContext engineTx = txCtx.engineTransaction;
+        final long commitCountAtStart = engineTx != null ? engineTx.getCommitCount() : 0;
+        try {
+          return task.call();
+        } finally {
+          // In a finally, because the statement that publishes half the block is often the same one that then
+          // fails: a verdict only reported on the success path would miss the case the guard exists for.
+          //
+          // Raised on the executor thread and read on the gRPC thread when the call closes. Every one of this
+          // method's callers joins the Future it returns before that close - the unary RPCs on the response
+          // they send, streamQuery and the chunked inserts on each unit of work - so the verdict is always
+          // established before it is read, whatever kind of RPC asked for it.
+          if (com.arcadedb.database.TransactionContext.isPartiallyCommitted(engineTx, commitCountAtStart))
+            GrpcSessionPartialCommitInterceptor.raise(partialCommit);
+        }
       });
     } catch (final RejectedExecutionException ree) {
       throw unknownTransactionStatus(txCtx.txId).asRuntimeException();
@@ -1777,6 +1808,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // Begin transaction ON THE DEDICATED THREAD - this is critical because ArcadeDB
       // transactions are thread-local
       final String txOwner = owner;
+      // txCtx is cleared to null once the transaction is registered, so the task below cannot close over it.
+      final TransactionContext startedTxCtx = txCtx;
       Future<?> beginFuture = txCtx.executor.submit(() -> {
         // Initialize the DatabaseContext on this dedicated thread before any DB operation
         DatabaseContext.INSTANCE.init((DatabaseInternal) database);
@@ -1793,6 +1826,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         bindPrincipalToCurrentThread(database, txOwner);
 
         database.begin(isolationLevel);
+
+        // #8134: the engine's transaction object, taken on the thread whose DatabaseContext owns it and
+        // therefore the only thread that can see it. Held for the transaction's whole life so that every RPC
+        // dispatched onto this thread can sample the same counter, the way the HTTP handler samples the
+        // counter of the session's TransactionContext.
+        startedTxCtx.engineTransaction = ((DatabaseInternal) database).getTransactionIfExists();
       });
       beginFuture.get(); // Wait for begin to complete
 
@@ -4475,6 +4514,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     }
   }
 
+  /**
+   * Inserts the rows of one chunk. Deliberately contains no {@code commit()} and no {@code begin()}: inside a
+   * client-managed transaction the client owns the lifecycle, and outside one the caller wraps.
+   * <p>
+   * Issue #8134 depends on that. This runs under {@link #submitToActiveTransaction}, which reports to the
+   * caller "your transaction published a commit under this call" by comparing the transaction's commit counter
+   * across the task. Adding a commit here would start setting that signal on every streamed chunk, telling a
+   * client's retry loop not to replay blocks that are perfectly replayable. If a commit ever does belong here,
+   * read {@link GrpcSessionPartialCommitInterceptor} first and give the change a test of its own.
+   */
   private Counts insertRowsTagged(InsertContext ctx, Iterator<GrpcRecord> it) {
 
     Counts c = new Counts();

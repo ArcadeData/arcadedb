@@ -394,7 +394,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     txCreatedRecords.clear();
     // #8062: a fresh transaction has published nothing yet. Cleared BEFORE the call, so the /begin response
     // cannot be answered against a stale verdict left by the transaction that came before it.
-    sessionPartiallyCommitted = false;
+    resetSessionPartiallyCommitted();
 
     // For STICKY strategy: pin to a concrete cluster member before the HTTP call so
     // that begin, command, and commit all reach the same physical node. Prefer the
@@ -547,7 +547,32 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     });
 
     if (response.headers().firstValue(ARCADEDB_SESSION_PARTIAL_COMMIT).isPresent())
-      sessionPartiallyCommitted = true;
+      markSessionPartiallyCommitted();
+  }
+
+  /**
+   * Latches the verdict that the CURRENT transaction has already published part of the caller's block, so
+   * {@link #transaction(TransactionScope, boolean, int, OkCallback, ErrorCallback)} must not replay it.
+   * <p>
+   * Protected because the verdict reaches a subclass over its own wire: {@code RemoteGrpcDatabase} reads it
+   * from the {@code arcadedb-session-partial-commit} call TRAILER, which is the same contract this class reads
+   * from the response header of the same name (issue #8134). Latched, never cleared here - see
+   * {@link #captureResponseHeaders(HttpResponse)} - so that the teardown a failed attempt performs on its way
+   * out cannot un-say it.
+   */
+  protected void markSessionPartiallyCommitted() {
+    sessionPartiallyCommitted = true;
+  }
+
+  /**
+   * Clears the latch, which is what STARTING a transaction means: a fresh transaction has published nothing
+   * yet. Called by {@link #begin(Database.TRANSACTION_ISOLATION_LEVEL)} and, separately, by any subclass whose
+   * own {@code begin} does not delegate here - {@code RemoteGrpcDatabase} begins over gRPC and never calls
+   * {@code super.begin(...)}, so without its own call the verdict reached in one transaction would disable
+   * retries for the rest of the connection's life (issue #8134).
+   */
+  protected void resetSessionPartiallyCommitted() {
+    sessionPartiallyCommitted = false;
   }
 
   /**
