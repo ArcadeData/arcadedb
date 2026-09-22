@@ -130,7 +130,7 @@ class CheckDatabaseTest extends TestHelper {
       assertThat(edge.asEdge().getOut()).isEqualTo(root.getIdentity());
 
       // DELETE THE EDGE AT LOW LEVEL
-      database.getSchema().getBucketById(edge.getIdentity().getBucketId()).deleteRecord(edge.getIdentity());
+      TestHelper.deleteRecordAtLowLevel(database, edge.getIdentity());
     });
 
     ResultSet result = database.command("sql", "check database");
@@ -203,7 +203,7 @@ class CheckDatabaseTest extends TestHelper {
   void checkBrokenDeletedVertex() {
     database.transaction(() ->
       // DELETE THE VERTEX AT LOW LEVEL
-      database.getSchema().getBucketById(root.getIdentity().getBucketId()).deleteRecord(root.getIdentity()));
+      TestHelper.deleteRecordAtLowLevel(database, root.getIdentity()));
 
     ResultSet result = database.command("sql", "check database");
     assertThat(result.hasNext()).isTrue();
@@ -353,7 +353,7 @@ class CheckDatabaseTest extends TestHelper {
           final Record rec = it.next();
           if (rec.getIdentity().equals(hub[0].getIdentity()))
             continue;
-          db.getSchema().getBucketById(rec.getIdentity().getBucketId()).deleteRecord(rec.getIdentity());
+          TestHelper.deleteRecordAtLowLevel(db, rec.getIdentity());
           deleted++;
         }
       });
@@ -414,7 +414,7 @@ class CheckDatabaseTest extends TestHelper {
           final Record rec = it.next();
           if (rec.getIdentity().equals(hub[0].getIdentity()))
             continue;
-          db.getSchema().getBucketById(rec.getIdentity().getBucketId()).deleteRecord(rec.getIdentity());
+          TestHelper.deleteRecordAtLowLevel(db, rec.getIdentity());
         }
       });
 
@@ -468,7 +468,7 @@ class CheckDatabaseTest extends TestHelper {
         final Iterator<Record> it = db.iterateType("Node", false);
         while (it.hasNext()) {
           final Record rec = it.next();
-          db.getSchema().getBucketById(rec.getIdentity().getBucketId()).deleteRecord(rec.getIdentity());
+          TestHelper.deleteRecordAtLowLevel(db, rec.getIdentity());
         }
       });
 
@@ -530,5 +530,16 @@ class CheckDatabaseTest extends TestHelper {
         .getEdgeHeadChunk((VertexInternal) rootVertex.asVertex(), Vertex.DIRECTION.OUT);
 
     return (int) outEdges.count();
+  }
+
+  /**
+   * The low-level delete these fixtures corrupt with: {@code Bucket.deleteRecord} deliberately does not maintain the
+   * cached record counter, so every engine caller books the delta itself (see
+   * {@code DatabaseChecker.deleteCorruptedRecords}). A fixture that skips it leaves a counter one too high per record
+   * and the #8040 check reports the fixture instead of what the test is about.
+   */
+  private static void deleteAtLowLevel(final Database db, final RID rid) {
+    TestHelper.deleteRecordAtLowLevel(db, rid);
+    ((DatabaseInternal) db).getTransaction().updateBucketRecordDelta(rid.getBucketId(), -1);
   }
 }

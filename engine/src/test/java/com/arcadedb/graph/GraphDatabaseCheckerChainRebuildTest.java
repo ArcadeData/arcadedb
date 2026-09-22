@@ -217,7 +217,7 @@ class GraphDatabaseCheckerChainRebuildTest extends TestHelper {
   }
 
   private void deleteRecordLowLevel(final RID rid) {
-    database.transaction(() -> database.getSchema().getBucketById(rid.getBucketId()).deleteRecord(rid));
+    database.transaction(() -> TestHelper.deleteRecordAtLowLevel(database, rid));
   }
 
   /** The full adjacency is available again, the traversal query works, and a follow-up check is clean. */

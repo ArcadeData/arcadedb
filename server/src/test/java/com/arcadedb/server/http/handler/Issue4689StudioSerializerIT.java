@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
@@ -153,7 +154,7 @@ class Issue4689StudioSerializerIT extends BaseGraphServerTest {
 
     // Create the dangling pointer: remove the edge RECORD at bucket level, bypassing graph cleanup.
     db.transaction(() ->
-        db.getSchema().getBucketById(danglingEdge[0].getBucketId()).deleteRecord(danglingEdge[0]));
+        TestHelper.deleteRecordAtLowLevel(db, danglingEdge[0]));
 
     final Database.TRANSACTION_ISOLATION_LEVEL previous = db.getTransactionIsolationLevel();
     db.setTransactionIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);

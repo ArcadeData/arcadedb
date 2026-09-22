@@ -107,7 +107,12 @@ class Issue6282BrokenChainDeleteAndProbeTest extends TestHelper {
     assertThat(bucket.existsRecord(broken)).as("a refused delete must leave the record where it was").isTrue();
 
     // THE PAIRED HALF: THE RECORD IS STILL REMOVABLE, SO THE NEW VERDICT DID NOT MAKE IT UNDELETABLE
-    database.transaction(() -> bucket.deleteRecord(broken, true));
+    database.transaction(() -> {
+      bucket.deleteRecord(broken, true);
+      // Bucket.deleteRecord leaves the cached record counter to its caller - see
+      // TestHelper.deleteRecordAtLowLevel, which this is the force-flag variant of.
+      ((DatabaseInternal) database).getTransaction().updateBucketRecordDelta(broken.getBucketId(), -1);
+    });
     assertThat(bucket.existsRecord(broken)).isFalse();
   }
 
@@ -231,7 +236,12 @@ class Issue6282BrokenChainDeleteAndProbeTest extends TestHelper {
     }
 
     // THE PAIRED HALF: THE RECORD IS STILL REMOVABLE WITH FORCE
-    database.transaction(() -> bucket.deleteRecord(rid, true));
+    database.transaction(() -> {
+      bucket.deleteRecord(rid, true);
+      // Bucket.deleteRecord leaves the cached record counter to its caller - see
+      // TestHelper.deleteRecordAtLowLevel, which this is the force-flag variant of.
+      ((DatabaseInternal) database).getTransaction().updateBucketRecordDelta(rid.getBucketId(), -1);
+    });
     assertThat(bucket.existsRecord(rid)).isFalse();
   }
 
@@ -313,7 +323,7 @@ class Issue6282BrokenChainDeleteAndProbeTest extends TestHelper {
         .as("precondition: the READ path does see this as corruption").isTrue();
 
     // NO force, NO opt-in: the pointers are all sound, so the physical free walks the whole chain and completes
-    database.transaction(() -> bucket.deleteRecord(rid));
+    database.transaction(() -> TestHelper.deleteRecordAtLowLevel(database, rid));
 
     assertThat(bucket.existsRecord(rid))
         .as("a chain whose only fault is a declared size is still fully walkable, so it deletes like any other")

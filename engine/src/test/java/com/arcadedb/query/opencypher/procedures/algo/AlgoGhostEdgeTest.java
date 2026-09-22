@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.procedures.algo;
 
+import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
@@ -80,7 +81,7 @@ class AlgoGhostEdgeTest {
     }
     database.transaction(() -> {
       final Bucket bucket = database.getSchema().getBucketById(ghostRID.getBucketId());
-      bucket.deleteRecord(ghostRID);
+      TestHelper.deleteRecordAtLowLevel(database, ghostRID);
     });
   }
 
