@@ -114,12 +114,14 @@ public class LSMTreeIndexCursor implements IndexCursor {
     // Disk-probe encoding (byte[]-for-String): needed ONLY to seed lookupInPage and the compacted series'
     // equivalent below - both purely local to this constructor - never for a comparison against an
     // already-deserialized key, which is what every typedFromKeys/typedToKeys comparison elsewhere is for.
-    final Object[] serializedFromKeys = index.convertKeys(fromKeys, binaryKeyTypes);
+    // Narrowed ONCE and encoded from the result (#7840): building the two forms independently ran Type.convert() and
+    // the case-insensitive folding twice over every component of both bounds, on every seek.
     this.typedFromKeys = index.convertKeysToDeclaredTypes(fromKeys, binaryKeyTypes);
+    final Object[] serializedFromKeys = LSMTreeIndexAbstract.encodeKeysForPageProbe(this.typedFromKeys);
 
     final Object[] normalizedToKeys = toKeys != null && toKeys.length == 0 ? null : toKeys;
-    final Object[] serializedToKeys = index.convertKeys(normalizedToKeys, binaryKeyTypes);
     this.typedToKeys = index.convertKeysToDeclaredTypes(normalizedToKeys, binaryKeyTypes);
+    final Object[] serializedToKeys = LSMTreeIndexAbstract.encodeKeysForPageProbe(this.typedToKeys);
     this.toKeysInclusive = endKeysInclusive;
 
     final DatabaseInternal database = index.getDatabase();

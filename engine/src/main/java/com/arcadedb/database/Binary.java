@@ -26,6 +26,7 @@ import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.BufferUnderflowException;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.logging.Level;
@@ -376,6 +377,31 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
   }
 
   /**
+   * Index of the first of the next {@code length} bytes, counted from the current position, that differs from the
+   * byte at the same offset of {@code other}; {@code -1} when the two runs are identical. The position is NOT moved,
+   * so the caller decides how far the comparison consumed.
+   * <p>
+   * Exists so a run can be compared in bulk - {@link Arrays#mismatch} is a vectorised JIT intrinsic - rather than one
+   * bounds-checked {@link #getByte()} per byte. An LSM index probe compares a STRING key component against the page
+   * this way, so on a long key (a file path, a URL) that byte-at-a-time walk was the single largest cost of a seek
+   * (issue #7840).
+   *
+   * @param other  the bytes to compare this buffer's run against, read from its offset 0
+   * @param length how many bytes to compare; must not exceed either operand's remaining bytes
+   *
+   * @return the offset of the first difference, or {@code -1} when there is none
+   */
+  public int mismatch(final byte[] other, final int length) {
+    checkForFetching(length);
+    if (length > buffer.remaining())
+      // WHAT THE getByte() RUN THIS REPLACES WOULD THROW ONCE IT WALKED PAST THE LIMIT, JUST RAISED UP FRONT
+      throw new BufferUnderflowException();
+
+    final int base = buffer.arrayOffset() + buffer.position();
+    return Arrays.mismatch(other, 0, length, buffer.array(), base, base + length);
+  }
+
+  /**
    * Reads a signed number. This method is not thread safe
    *
    * @return An array of longs with the signed number in the 1st position and the occupied bytes on the 2nd position.
@@ -505,12 +531,20 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
 
   @Override
   public String getString() {
-    return new String(getBytes(), DatabaseFactory.getDefaultCharset());
+    // Decoded straight out of the backing array rather than through getBytes(): that would copy the content into a
+    // throwaway byte[] which the String constructor then copies again. A string key component is read back once per
+    // page entry an index cursor walks, so the pair of allocations was on the hot path of every scan (issue #7840).
+    final int length = readLengthPrefix();
+    final int position = buffer.position();
+    // MOVED FIRST SO THE LIMIT IS STILL WHAT BOUNDS THE READ, AS IT WAS WHEN THE CONTENT WENT THROUGH buffer.get()
+    buffer.position(position + length);
+    return new String(buffer.array(), buffer.arrayOffset() + position, length, DatabaseFactory.getDefaultCharset());
   }
 
   @Override
   public String getString(final int index) {
-    return new String(getBytes(index), DatabaseFactory.getDefaultCharset());
+    buffer.position(index);
+    return getString();
   }
 
   @Override
@@ -532,11 +566,24 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
 
   @Override
   public byte[] getBytes() {
+    final int length = readLengthPrefix();
+    final byte[] result = new byte[length];
+    if (length > 0)
+      buffer.get(result);
+    return result;
+  }
+
+  /**
+   * Reads the length prefix of a byte array or string and validates it against what the buffer actually holds,
+   * leaving the position on the first content byte.
+   * <p>
+   * A negative or out-of-int-range length means the buffer is misaligned or the underlying record is corrupted.
+   * Surface a clear, actionable error instead of a cryptic NegativeArraySizeException (issue #4420): when a record
+   * written by an older buggy version (or replicated as a corrupted page) is read back, the length prefix can decode
+   * to a value &gt; Integer.MAX_VALUE that wraps to a small negative when cast to int (e.g. -51).
+   */
+  private int readLengthPrefix() {
     final long len = getUnsignedNumber();
-    // A negative or out-of-int-range length means the buffer is misaligned or the underlying record is corrupted.
-    // Surface a clear, actionable error instead of a cryptic NegativeArraySizeException (issue #4420): when a record
-    // written by an older buggy version (or replicated as a corrupted page) is read back, the length prefix can decode
-    // to a value > Integer.MAX_VALUE that wraps to a small negative when cast to int (e.g. -51).
     if (len < 0L || len > Integer.MAX_VALUE)
       throw new SerializationException(
           "Invalid byte array length " + len + " at position " + (buffer.position() - getUnsignedNumberSpace(len))
@@ -551,10 +598,7 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
             "Byte array length " + length + " exceeds the " + available + " bytes available in buffer of size " + size
                 + " (corrupted record or misaligned read)");
     }
-    final byte[] result = new byte[length];
-    if (length > 0)
-      buffer.get(result);
-    return result;
+    return length;
   }
 
   @Override
