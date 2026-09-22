@@ -339,4 +339,77 @@ class CSVImporterFormatLoadEdgesTransactionLeakTest {
         .isFalse();
   }
 
+  /**
+   * CodeRabbit review on PR #8128: with a caller transaction already active on entry, {@code loadEdges()}'s own
+   * {@code database.begin()} nests its transaction ON TOP of it, so a failed commit here is the DatabaseContext
+   * {@code popIfNotLastTransaction()} pops UNCONDITIONALLY case - stack size &gt; 1 pops the last transaction
+   * whether the commit that preceded it succeeded or failed. {@code database.isTransactionActive()} right after
+   * such a failure therefore answers about the CALLER's own surviving transaction, not a leaked one of this
+   * method's - restoring {@code txOpen} from it would roll back work that belongs to the caller to resolve, not
+   * to {@code loadEdges()}. {@link #databaseWhoseCommitFails()} (rolls back then throws) reproduces this shape
+   * correctly, unlike {@link #commitFailsOnFirstCallWithoutPopping} above, which is specifically the OUTERMOST
+   * case's shape.
+   */
+  @Test
+  void aFailedPeriodicCommitWithACallerTransactionActiveNeverTouchesTheCallersTransaction() throws Exception {
+    final CSVImporterFormat format = new CSVImporterFormat();
+    final ImporterSettings settings = edgeSettings();
+    settings.commitEvery = 1;
+    final SourceSchema sourceSchema = schemaFor(format, settings);
+    final ImporterContext context = new ImporterContext();
+
+    final Parser loadParser = csvParserOver("from,to\nv1,v2\nv2,v1\n");
+
+    database.begin();
+    database.newDocument("Marker").set("name", "caller").save();
+
+    assertThatThrownBy(
+        () -> format.load(sourceSchema, AnalyzedEntity.EntityType.EDGE, loadParser, databaseWhoseCommitFails(), context, settings))
+        .isInstanceOf(TransactionException.class);
+
+    assertThat(database.isTransactionActive())
+        .as("the caller's own transaction must have survived loadEdges()'s failed periodic commit untouched")
+        .isTrue();
+
+    database.commit();
+
+    assertThat(countOf("Marker"))
+        .as("the caller's own record must be what its own later commit made durable")
+        .isEqualTo(1);
+    assertThat(countOf("Relationship"))
+        .as("the importer's failed commit must not have made anything durable")
+        .isZero();
+  }
+
+  /** Same reproduction as above, but the failure lands on the TRAILING commit instead of the periodic one. */
+  @Test
+  void aFailedTrailingCommitWithACallerTransactionActiveNeverTouchesTheCallersTransaction() throws Exception {
+    final CSVImporterFormat format = new CSVImporterFormat();
+    final ImporterSettings settings = edgeSettings();
+    final SourceSchema sourceSchema = schemaFor(format, settings);
+    final ImporterContext context = new ImporterContext();
+
+    final Parser loadParser = csvParserOver("from,to\nv1,v2\n");
+
+    database.begin();
+    database.newDocument("Marker").set("name", "caller").save();
+
+    assertThatThrownBy(
+        () -> format.load(sourceSchema, AnalyzedEntity.EntityType.EDGE, loadParser, databaseWhoseCommitFails(), context, settings))
+        .isInstanceOf(TransactionException.class);
+
+    assertThat(database.isTransactionActive())
+        .as("the caller's own transaction must have survived loadEdges()'s failed trailing commit untouched")
+        .isTrue();
+
+    database.commit();
+
+    assertThat(countOf("Marker"))
+        .as("the caller's own record must be what its own later commit made durable")
+        .isEqualTo(1);
+    assertThat(countOf("Relationship"))
+        .as("the importer's failed commit must not have made anything durable")
+        .isZero();
+  }
+
 }

@@ -865,9 +865,16 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       final int headerColumns = headerColumnsOf(entity);
 
       String[] row;
-      // No ownsTransaction/callerTransactionActiveOnEntry guard needed here, unlike loadDocuments()/loadVertices():
-      // database.begin() nests rather than reusing an already-active transaction (see LocalDatabase#begin()), so a
-      // caller's own pre-existing transaction is never touched by this method's own commits below.
+      // No ownsTransaction guard needed here, unlike loadDocuments()/loadVertices(): database.begin() nests
+      // rather than reusing an already-active transaction (see LocalDatabase#begin()), so a caller's own
+      // pre-existing transaction is never touched by this method's own commits below. Captured before begin()
+      // purely for the commit-failure restoration below (issue #8122 review): DatabaseContext
+      // #popIfNotLastTransaction() pops UNCONDITIONALLY - success or failure - whenever more than one
+      // transaction is on the stack, so a failed commit here already pops this method's own level when a
+      // caller transaction predates it, the same as a successful one would. Restoring txOpen from
+      // isTransactionActive() in that case would read the CALLER's surviving transaction as if it were this
+      // method's own still-open one, and roll it back out from under them.
+      final boolean callerTransactionActiveOnEntry = database.isTransactionActive();
       database.begin();
       // Whether the transaction just opened (or the one begun after a periodic commit below) is still the current
       // one. Cleared right before every commit - which pops it in a finally even if it throws - so a rollback below
@@ -943,14 +950,19 @@ public class CSVImporterFormat extends AbstractImporterFormat {
             if (txCount >= settings.commitEvery) {
               // txOpen cleared before the call, but DatabaseContext#popIfNotLastTransaction() does NOT pop the
               // outermost transaction off the stack, only a nested one, so a commit() that fails on THIS
-              // transaction (the common case: database.begin() above opened it with nothing predating it) can
-              // leave it still active rather than popped. Restored from the live state on failure so the finally
-              // below still rolls it back instead of leaking it (issue #8122).
+              // transaction - the common case: no caller transaction predates it - can leave it still active
+              // rather than popped. Restored from the live state on failure so the finally below still rolls
+              // it back instead of leaking it (issue #8122). Gated on !callerTransactionActiveOnEntry: when a
+              // caller transaction DOES predate this one, popIfNotLastTransaction() pops this level
+              // unconditionally on failure just like it would on success, so isTransactionActive() here would
+              // read the caller's own surviving transaction, not a leaked one of this method's - restoring
+              // from it would roll back work that belongs to the caller to resolve.
               txOpen = false;
               try {
                 database.commit();
               } catch (final RuntimeException | Error commitFailure) {
-                txOpen = database.isTransactionActive();
+                if (!callerTransactionActiveOnEntry)
+                  txOpen = database.isTransactionActive();
                 throw commitFailure;
               }
               committedEdges = context.createdEdges.get();
@@ -967,14 +979,14 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           if (settings.parsingLimitEntries > 0 && context.parsed.get() >= settings.parsingLimitEntries)
             break;
         }
-        // Same restore-on-failure as the periodic commit above, and for the same reason: a failing commit() does
-        // not always pop the outermost transaction, so txOpen cleared unconditionally before the call would leave
-        // a still-active transaction with nothing armed to roll it back (issue #8122).
+        // Same restore-on-failure as the periodic commit above, gated the same way and for the same reason
+        // (issue #8122).
         txOpen = false;
         try {
           database.commit();
         } catch (final RuntimeException | Error commitFailure) {
-          txOpen = database.isTransactionActive();
+          if (!callerTransactionActiveOnEntry)
+            txOpen = database.isTransactionActive();
           throw commitFailure;
         }
         completed = true;
