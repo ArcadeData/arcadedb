@@ -87,7 +87,7 @@ public class SQLFunctionDate extends SQLFunctionAbstract {
           // formatterFor(), so an unknown zone id was reported as a client error even on this path; an id that
           // cannot exist is a mistake in the call whether or not this branch has anything to apply it to, and
           // quietly ignoring it is the thing issue #6388 set out to stop.
-          zoneFor(timezone, context);
+          validateZone(timezone);
 
           date = DateUtils.parseDateTimeKeepingWallClock(context.getDatabase(), dateAsString);
         } else
@@ -123,13 +123,23 @@ public class SQLFunctionDate extends SQLFunctionAbstract {
   }
 
   /**
-   * Resolves the zone the call named, falling back to the schema's. Shared with the no-format path, which has no
-   * formatter to hang it on but must still reject an id that does not exist (issue #6388).
+   * Resolves the zone the call named, falling back to the schema's.
    */
   private static ZoneId zoneFor(final String timezone, final CommandContext context) {
-    if (timezone == null)
-      return context.getDatabase().getSchema().getZoneId();
+    return timezone == null ? context.getDatabase().getSchema().getZoneId() : zoneOf(timezone);
+  }
 
+  /**
+   * Refuses a zone id that does not exist, for the no-format path: it has no formatter to hang a zone on, so it has
+   * nothing to do with the resolved value - but a named id that cannot exist is a mistake in the call and has been
+   * reported as one since issue #6388.
+   */
+  private static void validateZone(final String timezone) {
+    if (timezone != null)
+      zoneOf(timezone);
+  }
+
+  private static ZoneId zoneOf(final String timezone) {
     try {
       return ZoneId.of(timezone);
     } catch (final DateTimeException e) {
