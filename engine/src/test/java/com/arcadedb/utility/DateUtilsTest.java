@@ -27,6 +27,7 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.temporal.ChronoUnit;
+import java.util.Date;
 import java.util.Locale;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -329,7 +330,7 @@ class DateUtilsTest {
   void toEpochMillisReadsEveryDateTimeRepresentation() {
     final long millis = 1_770_000_000_000L;
     assertThat(DateUtils.toEpochMillis(millis)).isEqualTo(millis);
-    assertThat(DateUtils.toEpochMillis(new java.util.Date(millis))).isEqualTo(millis);
+    assertThat(DateUtils.toEpochMillis(new Date(millis))).isEqualTo(millis);
     assertThat(DateUtils.toEpochMillis(Instant.ofEpochMilli(millis))).isEqualTo(millis);
     // The representation ts.timeBucket() actually returns, and the one whose absence caused the defect.
     assertThat(DateUtils.toEpochMillis(LocalDateTime.ofInstant(Instant.ofEpochMilli(millis), ZoneOffset.UTC)))

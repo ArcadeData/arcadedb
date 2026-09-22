@@ -380,8 +380,11 @@ public class ContinuousAggregateRefresher {
     try {
       return DateUtils.toEpochMillis(value);
     } catch (final IllegalArgumentException | DateTimeParseException e) {
+      // The caller skips a null bucket rather than asking about it, but the message must not be the thing that
+      // throws if that ever changes (found in review).
       throw new IllegalArgumentException("Continuous aggregate '" + aggregateName + "': bucket column '" + bucketColumn
-          + "' holds '" + value + "' (" + value.getClass().getName() + "), which is not a timestamp", e);
+          + "' holds '" + value + "'" + (value != null ? " (" + value.getClass().getName() + ")" : "")
+          + ", which is not a timestamp", e);
     }
   }
 }
