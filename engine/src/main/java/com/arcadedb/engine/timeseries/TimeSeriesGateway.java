@@ -576,13 +576,24 @@ public final class TimeSeriesGateway {
    * The columns a projection selects, in the order the engine returns their values: the timestamp column
    * first, then the selected non-timestamp columns in schema order. {@code columnIndices} is the result of
    * {@link #resolveColumnIndices(List, List)}; {@code null} means every column.
+   * <p>
+   * The {@code null} case used to answer the raw schema list, which is the same list only while the TIMESTAMP
+   * column is declared FIRST (issue #7899). {@code TimeSeriesBucket.readRow} puts the timestamp in position 0
+   * and then walks the schema SKIPPING the TIMESTAMP column, so a type declaring it anywhere else - which
+   * issue #7702 made spellable in {@code CREATE TIMESERIES TYPE} - had its response columns named after the
+   * neighbouring column's values on every surface that reads this for the full row: {@code GET /ts/latest},
+   * {@code POST /ts/query}, the Grafana frames, and both gRPC time-series RPCs.
    */
   public static List<ColumnDefinition> selectedColumns(final List<ColumnDefinition> columns,
       final int[] columnIndices) {
-    if (columnIndices == null)
+    // The common declaration - and every one written before issue #7702 - already spells the row order, so it
+    // is handed back without copying it.
+    if (columnIndices == null && !columns.isEmpty()
+        && columns.getFirst().getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
       return columns;
 
-    final List<ColumnDefinition> selected = new ArrayList<>(columnIndices.length + 1);
+    final List<ColumnDefinition> selected =
+        new ArrayList<>(columnIndices != null ? columnIndices.length + 1 : columns.size());
     for (final ColumnDefinition column : columns)
       if (column.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP) {
         selected.add(column);
@@ -594,11 +605,14 @@ public final class TimeSeriesGateway {
     for (final ColumnDefinition column : columns) {
       if (column.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
         continue;
-      for (final int wanted : columnIndices)
-        if (wanted == nonTsIdx) {
-          selected.add(column);
-          break;
-        }
+      if (columnIndices == null)
+        selected.add(column);
+      else
+        for (final int wanted : columnIndices)
+          if (wanted == nonTsIdx) {
+            selected.add(column);
+            break;
+          }
       nonTsIdx++;
     }
 

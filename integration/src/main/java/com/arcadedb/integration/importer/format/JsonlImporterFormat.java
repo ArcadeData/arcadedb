@@ -655,8 +655,22 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
   /**
    * Appends one chunk of TIMESERIES samples, as written by {@code JsonlExporterFormat.exportTimeSeries} (issue
-   * #7032). Each sample is the type's columns in schema order, timestamp first - a TimeSeries row has no RID, so
-   * there is nothing to remap and nothing to record in {@code ridIndex}.
+   * #7032). A TimeSeries row has no RID, so there is nothing to remap and nothing to record in
+   * {@code ridIndex}.
+   * <p>
+   * <b>The sample is an ENGINE ROW</b>, not a schema row: position 0 is the timestamp and positions 1..n are
+   * the NON-TIMESTAMP columns in schema order, which is the layout {@code TimeSeriesEngine.forEachRow} hands
+   * the exporter and the layout {@code TimeSeriesEngine.appendBatch} takes back. This used to read the array as
+   * if it followed the schema, taking the timestamp from the TIMESTAMP column's SCHEMA position - the same
+   * array under both readings while that position is 0, and a different one as soon as it is not. Issue #7702
+   * made a later position spellable in {@code CREATE TIMESERIES TYPE}, so an export of such a type either could
+   * not be restored at all (a STRING column before the timestamp raised a bare {@code ClassCastException}) or
+   * was restored with the timestamp and that column's value exchanged (issue #7899).
+   * <p>
+   * No format-version bump comes with the correction, and none is needed: the exporter emits - and always
+   * emitted - the engine layout, so an export written by an earlier build is byte-identical under both
+   * readings for every type whose TIMESTAMP column is first, and no earlier build could export a type whose
+   * TIMESTAMP column is not.
    */
   private void loadTimeSeriesSamples(final DatabaseInternal database, final ImporterContext context,
       final JSONObject chunk) throws IOException {
@@ -669,12 +683,6 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       throw new ImportException("TimeSeries engine for type '" + typeName + "' is not initialized");
 
     final List<ColumnDefinition> columns = tsType.getTsColumns();
-    int timestampIdx = 0;
-    for (int i = 0; i < columns.size(); i++)
-      if (columns.get(i).getRole() == ColumnDefinition.ColumnRole.TIMESTAMP) {
-        timestampIdx = i;
-        break;
-      }
 
     final JSONArray samples = chunk.getJSONArray("s");
     final int rows = samples.length();
@@ -696,12 +704,14 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
     for (int r = 0; r < rows; r++) {
       final JSONArray sample = samples.getJSONArray(r);
-      timestamps[r] = ((Number) sample.get(timestampIdx)).longValue();
+      // Position 0 is the timestamp and the rest follow it in non-timestamp schema order, which is exactly the
+      // order appendBatch wants its value columns in - see the engine-row note on this method.
+      timestamps[r] = ((Number) sample.get(0)).longValue();
       int valueIdx = 0;
-      for (int c = 0; c < columns.size(); c++) {
-        if (c == timestampIdx)
+      for (final ColumnDefinition column : columns) {
+        if (column.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
           continue;
-        values[valueIdx][r] = decodeSampleValue(sample.get(c), columns.get(c).getDataType());
+        values[valueIdx][r] = decodeSampleValue(sample.get(valueIdx + 1), column.getDataType());
         valueIdx++;
       }
     }
