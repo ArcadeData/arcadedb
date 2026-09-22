@@ -149,7 +149,7 @@ public class ContinuousAggregateImpl implements ContinuousAggregate {
    * Restores the watermark to a previously observed state, flag included. Used to roll back an advance whose
    * persistence failed, which must leave the aggregate exactly as it was rather than pinned at a spurious epoch.
    */
-  public void restoreWatermark(final long watermarkTs, final boolean watermarkSet) {
+  void restoreWatermark(final long watermarkTs, final boolean watermarkSet) {
     this.watermark = watermarkSet ? new Watermark(watermarkTs, true) : Watermark.UNSET;
   }
 

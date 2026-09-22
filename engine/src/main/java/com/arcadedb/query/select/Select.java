@@ -341,11 +341,19 @@ public class Select {
    * {@code between} evaluates its right operand as an {@code Object[]} of exactly two bounds
    * ({@link SelectWhereBetweenBlock#values}), which is the one operator whose in-memory value shape is not what a
    * JSON array parses to. Every other operator taking a list - {@code in} - is happy with a {@link List}.
+   * <p>
+   * The arity is checked HERE rather than left to {@code SelectOperator.between}'s own
+   * "BETWEEN requires a range of two values", which only fires once a record is being evaluated - a long way from
+   * the JSON document that is actually wrong (found in review).
    */
   private static Object adaptRightOperand(final SelectOperator operator, final Object right) {
-    if (operator == SelectOperator.between && right instanceof List<?> list)
-      return list.toArray();
-    return right;
+    if (operator != SelectOperator.between)
+      return right;
+    if (!(right instanceof List<?> list) || list.size() != 2)
+      throw new IllegalArgumentException(
+          "Operator 'between' requires a range of exactly two values, written as [left, \"between\", [low, high]], "
+              + "but was given " + right);
+    return list.toArray();
   }
 
   public SelectCompiled compile() {
