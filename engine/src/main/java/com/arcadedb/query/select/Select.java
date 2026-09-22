@@ -306,6 +306,13 @@ public class Select {
    * because the left of a condition is what is being tested.
    */
   private Object parseJsonOperand(final Object operand, final boolean underLogicOperator, final boolean leftSide) {
+    if (underLogicOperator && !(operand instanceof JSONArray))
+      // A logic operator joins CONDITIONS. Letting a bare property through here built a tree whose 'and' evaluated a
+      // property value as a Boolean, so the caller got an opaque ClassCastException at query time instead of being
+      // told what was wrong with their JSON - the one error path in this method that did not name its own cause.
+      throw new IllegalArgumentException("Operand " + operand + " of a logic operator must be a condition, "
+          + "written as a nested array such as [\":a\", \"=\", 1]");
+
     if (operand instanceof JSONArray array) {
       if (underLogicOperator)
         return parseJsonCondition(array);

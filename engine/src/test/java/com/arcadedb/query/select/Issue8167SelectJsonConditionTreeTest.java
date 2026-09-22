@@ -182,6 +182,13 @@ public class Issue8167SelectJsonConditionTreeTest extends TestHelper {
         .json(new JSONObject("{\"fromType\":\"D\",\"where\":[\":a\",\"=\",1,2]}")))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("Invalid condition");
+
+    // A logic operator joins conditions, so a bare property under one is refused HERE rather than evaluated as a
+    // Boolean later, which handed the caller a ClassCastException with nothing to act on.
+    assertThatThrownBy(() -> database.select()
+        .json(new JSONObject("{\"fromType\":\"D\",\"where\":[\":a\",\"and\",\":b\"]}")))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("must be a condition");
   }
 
   /**
