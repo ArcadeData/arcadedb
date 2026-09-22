@@ -92,6 +92,11 @@ public class PageManagerFlushThread extends Thread {
   // A new suspender arriving in that window waits on suspendLock(database) until the resume completes, so
   // its suspension window can never overlap the resume's page writes (issue #5068).
   private final        Set<Database>                                            resumingDatabases   = ConcurrentHashMap.newKeySet();
+  // Test-only (review on PR #8128, round 5): lets a test pause resumeFlushing right after it has snapshotted the
+  // deferred backlog it is about to flush, so a commit issued while paused deterministically becomes a FRESH
+  // deferred entry the snapshot did not capture (a genuine "newDeferred") instead of racing thread scheduling to
+  // land one there by chance. No-op (null) outside tests.
+  volatile              Runnable                                                testHookAfterDeferredBacklogSnapshot;
   private final static PagesToFlush                                             SHUTDOWN_THREAD     = new PagesToFlush(null);
   /** Fallback wake-up interval of {@link #waitAllPagesOfDatabaseAreFlushed(Database)} - see {@link #flushWaitPollMillis}. */
   private final static long                                                     DEFAULT_FLUSH_WAIT_POLL_MILLIS = 10;
@@ -1009,6 +1014,45 @@ public class PageManagerFlushThread extends Thread {
     }
   }
 
+  /**
+   * Non-blocking join of an ALREADY, ACTIVELY suspended database (review on PR #8128, round 5).
+   * <p>
+   * {@code isSuspended(database)} is a lock-free peek: a caller that reads it {@code true} and only afterwards
+   * calls the WAITING {@link #trySuspendUntil} can straddle a resume that is already in flight. If that resume
+   * (another suspender's release) fully completes - {@code suspended.remove(database)} in Phase 2, THEN Phase 3
+   * re-enqueues whatever it deferred into the ASYNC queue rather than writing it synchronously, THEN
+   * {@code resumingDatabases.remove(database)} - before {@code trySuspendUntil}'s wait returns, that call's own
+   * {@code suspended.merge} is a genuine 0-to-1 transition: this caller has become the fresh first suspender of
+   * a brand-new window, not a joiner of the old one. A caller that had already decided "joined, skip the #8111
+   * drain" from the stale peek would then run its callback against files that may still be missing whatever the
+   * departed suspender re-enqueued but had not yet been picked up by the ordinary flush thread - #8111 again,
+   * reintroduced through this specific interleaving.
+   * <p>
+   * This method closes the gap by making the check and the join ONE atomic step, under the same
+   * {@code suspendLock(database)} every transition of {@link #suspended}/{@link #resumingDatabases} already
+   * uses, and by refusing rather than waiting when nothing is safely joinable right now: a database that is not
+   * suspended, or whose last suspender is still resuming, is not something this call may join - the caller must
+   * fall back to the full drain-then-acquire sequence, which is correct in both of those cases (see
+   * {@code PageManager#suspendFlushAndExecute}).
+   *
+   * @return {@code true} only when the database was suspended AND no resume was in flight for it, in which case a
+   *     suspender reference was atomically acquired - the caller must release it exactly once with
+   *     {@code setSuspended(database, false)}, same as {@link #trySuspendUntil}. {@code false} otherwise, in which
+   *     case nothing was acquired and nothing was waited for.
+   */
+  boolean tryJoinActiveSuspension(final Database database) {
+    final Object lock = suspendLock(database);
+    synchronized (lock) {
+      if (resumingDatabases.contains(database))
+        return false;
+      final Integer count = suspended.get(database);
+      if (count == null || count == 0)
+        return false;
+      suspended.merge(database, 1, Integer::sum);
+      return true;
+    }
+  }
+
   public void waitForCurrentFlushToComplete(final Database database) throws InterruptedException {
     waitForCurrentFlushToCompleteUntil(database, Long.MAX_VALUE);
   }
@@ -1127,6 +1171,9 @@ public class PageManagerFlushThread extends Thread {
       // a replicated write and roll the page version backwards.
       synchronized (replayDrainLock(database)) {
         final ConcurrentLinkedQueue<PagesToFlush> deferred = deferredByDatabase.remove(database);
+        final Runnable testHook = testHookAfterDeferredBacklogSnapshot;
+        if (testHook != null)
+          testHook.run();
         if (deferred != null) {
           for (final PagesToFlush batch : deferred) {
             synchronized (batch.pages) {

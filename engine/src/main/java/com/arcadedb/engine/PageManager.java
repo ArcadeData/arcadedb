@@ -524,40 +524,35 @@ public class PageManager extends LockContext {
 
   public void suspendFlushAndExecute(final Database database, final CallableNoReturn callback)
       throws IOException, InterruptedException {
-    // FAST PATH (review on PR #8128, round 3): a caller joining an ALREADY established freeze must never
-    // observe (or create) a HALF-established one - two separately-locked calls (an unsynchronized isSuspended
-    // peek, or an isSuspended check followed by its own separately-locked acquire) both leave a window in
-    // which a second thread can join a "freeze" the first thread hasn't actually drained yet, because the
-    // first thread's own probe/acquire was not itself gated on having drained anything. Closed by making the
-    // check AND the join one atomic operation under PageManager's own lock() - the same lock every acquisition
-    // in this method, including step 2's below, is now taken under - so "count > 0" is only ever observable
-    // here once the corresponding drain has actually completed under that same lock.
+    // FAST PATH (review on PR #8128, round 5): "joined, skip the drain" must never be decided from a peek
+    // taken BEFORE the acquire - flushThread.isSuspended(database) followed by a separately-resolved
+    // trySuspendUntil left a window in which the peek sees "suspended" (true at that instant) but the
+    // suspension it observed finishes releasing - including re-enqueuing whatever it deferred into the ASYNC
+    // flush queue, not writing it synchronously - before trySuspendUntil's own wait returns, so that call's
+    // acquisition is a genuine fresh 0-to-1, not a join of the window the peek observed. Deciding "joined"
+    // from the stale peek then skipped the drain over a caller that was actually first, running its callback
+    // against files that backlog had not yet reached: #8111 again, reintroduced through this interleaving.
+    // tryJoinActiveSuspension makes the check and the join one atomic step under the flush thread's own
+    // suspendLock(database) - the same lock every transition of its suspension state already uses - so it can
+    // never straddle a resume this way: it joins only when the database is suspended AND no resume is in
+    // flight for it, in the same instant it acquires.
     lock();
     final boolean joinedExisting;
     try {
-      joinedExisting = flushThread.isSuspended(database);
-      if (joinedExisting) {
-        // trySuspendUntil, not the unbounded setSuspended(database, true): this runs WHILE HOLDING lock(), so
-        // an unbounded wait for a concurrent resume (which does not itself need lock() - resumeFlushing only
-        // calls PageManager.flushPage, which takes no lock here - but can still run for as long as
-        // arcadedb.flushSuspendMaxDeferredRAM takes to write) would stall every OTHER database's commits and
-        // Raft applies behind this one lock for that whole duration. Bounded the same way openSnapshot bounds
-        // its own use of this lock, for the same reason.
-        if (!flushThread.trySuspendUntil(database, System.currentTimeMillis() + SNAPSHOT_BARRIER_MAX_MILLIS))
-          throw new IOException("Cannot freeze the files of database '" + database.getName()
-              + "': the page flush could not be suspended within " + SNAPSHOT_BARRIER_MAX_MILLIS
-              + " ms because another suspender is still resuming");
-      }
+      joinedExisting = flushThread.tryJoinActiveSuspension(database);
     } finally {
       unlock();
     }
 
     if (joinedExisting) {
-      // Genuinely nested: this database was already frozen - and, by the invariant above, genuinely drained
-      // - so this window is what an overlapping caller is entitled to (#5068 - "every caller... owns its
-      // whole window even when the windows overlap", e.g. a backup calling into a nested verify) - no drain
-      // of this thread's own needed, the same instant acquisition the unconditional
-      // setSuspended(database, true) call always did before this method took on the #8111 drains.
+      // Genuinely nested: this database was already frozen - and, by tryJoinActiveSuspension's own atomicity,
+      // genuinely still held by another live suspender - so this window is what an overlapping caller is
+      // entitled to (#5068 - "every caller... owns its whole window even when the windows overlap", e.g. a
+      // backup calling into a nested verify) - no drain of this thread's own needed, the same instant
+      // acquisition the unconditional setSuspended(database, true) call always did before this method took on
+      // the #8111 drains. A database that is not suspended, or whose last suspender is still resuming, is
+      // refused (not waited on) by tryJoinActiveSuspension and falls through to the drain-then-acquire
+      // sequence below, which is correct for both of those cases.
       runAlreadySuspended(database, callback);
       return;
     }
@@ -601,16 +596,13 @@ public class PageManager extends LockContext {
     try {
       lock();
       try {
-        // RE-CHECKED HERE RATHER THAN TRUSTED FROM STEP 1 (review on PR #8128): every acquisition in this
-        // method - the fast path above, this re-check, and trySuspendUntil below - now happens from inside
-        // PageManager's own lock() critical section, so a positive read here is properly serialized against
-        // all of them by the mutex's own happens-before guarantee. Unlike the fast path above, joining here
-        // uses the bounded trySuspendUntil for the same JVM-wide-stall reason given there.
-        if (flushThread.isSuspended(database)) {
-          if (!flushThread.trySuspendUntil(database, System.currentTimeMillis() + SNAPSHOT_BARRIER_MAX_MILLIS))
-            throw new IOException("Cannot freeze the files of database '" + database.getName()
-                + "': the page flush could not be suspended within " + SNAPSHOT_BARRIER_MAX_MILLIS
-                + " ms because another suspender is still resuming");
+        // RE-CHECKED HERE RATHER THAN TRUSTED FROM STEP 1 (review on PR #8128), and via the same ATOMIC
+        // tryJoinActiveSuspension the fast path above uses (round 5) rather than an isSuspended peek followed
+        // by a separately-resolved trySuspendUntil - that pattern's own window (peek sees "suspended", but the
+        // suspension it observed finishes releasing before the wait resolves, turning this into a fresh
+        // acquisition) applies exactly as much here as it did in the fast path, and this branch is reached
+        // precisely when the fast path already declined to join once.
+        if (flushThread.tryJoinActiveSuspension(database)) {
           nested = true;
         } else {
           final long deadline = System.currentTimeMillis() + SNAPSHOT_BARRIER_MAX_MILLIS;
@@ -644,7 +636,7 @@ public class PageManager extends LockContext {
     }
 
     if (nested) {
-      // Discovered - and joined, via trySuspendUntil - under the lock above.
+      // Discovered - and joined, via tryJoinActiveSuspension - under the lock above.
       runAlreadySuspended(database, callback);
       return;
     }
@@ -668,7 +660,7 @@ public class PageManager extends LockContext {
    * Runs {@code callback} and releases exactly one suspension reference on {@code database} - the whole of
    * what an OVERLAPPING (non-first) suspender needs once it already holds that reference, with no drain: the
    * first suspender already established the frozen window. The CALLER must have already acquired the
-   * reference this releases, via {@code trySuspendUntil} - acquiring again in here would double-count that
+   * reference this releases, via {@code tryJoinActiveSuspension} or {@code trySuspendUntil} - acquiring again in here would double-count that
    * reference and leak it forever, since nothing else would ever release the second one (a bug an earlier
    * version of this fix had, caught locally before push by the stress test below).
    */

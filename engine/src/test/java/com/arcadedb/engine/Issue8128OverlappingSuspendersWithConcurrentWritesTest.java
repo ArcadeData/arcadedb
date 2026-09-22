@@ -206,4 +206,102 @@ class Issue8128OverlappingSuspendersWithConcurrentWritesTest extends TestHelper 
         .as("no overlapping suspender may fail with the residual race this test targets")
         .isNull();
   }
+
+  /**
+   * Regression test for a review finding on the fast path and the STEP 2 re-check above (PR #8128, round 5):
+   * both used to decide "joined, skip the #8111 drain" from an {@code isSuspended(database)} PEEK taken
+   * BEFORE the acquire, rather than from the acquire's own outcome. If the suspension the peek observed
+   * finishes releasing - Phase 2 clears the refcount, Phase 3 re-enqueues whatever it deferred into the
+   * ASYNC flush queue rather than writing it synchronously - before the peek-triggered {@code trySuspendUntil}
+   * wakes up, that call's own acquisition is a genuine fresh 0-to-1: this caller has become the first
+   * suspender of a brand-new window, not a joiner of the one the peek saw. The stale "joined" verdict then
+   * skipped the drain over exactly that caller, so its callback could run against files still missing
+   * whatever the departed suspender's release had queued but not yet written - #8111 again, reintroduced
+   * through this interleaving.
+   * <p>
+   * {@link PageManagerFlushThread#testHookAfterDeferredBacklogSnapshot} makes this deterministic rather than
+   * a matter of thread-scheduling luck: it pauses a real resume right after it has snapshotted the backlog
+   * it is about to flush, so a commit made while paused becomes a genuine, not-yet-flushed deferred entry of
+   * its own rather than part of what the resume is already about to write - and only then lets a second
+   * suspender's acquisition attempt land, exactly in the window this fix closes.
+   */
+  @Test
+  void suspenderWhoseAcquireStraddlesACompletingReleaseDrainsRatherThanSkips() throws Exception {
+    final Database db = (Database) database;
+    final PageManager pageManager = ((DatabaseInternal) database).getPageManager();
+    final PageManagerFlushThread flush = pageManager.getFlushThread();
+
+    database.getSchema().createDocumentType("Race5");
+
+    final CountDownLatch backlogSnapshotted = new CountDownLatch(1);
+    final CountDownLatch releaseHook = new CountDownLatch(1);
+    flush.testHookAfterDeferredBacklogSnapshot = () -> {
+      backlogSnapshotted.countDown();
+      try {
+        releaseHook.await(10, TimeUnit.SECONDS);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    };
+
+    try {
+      final Thread x = new Thread(() -> {
+        try {
+          pageManager.suspendFlushAndExecute(db,
+              () -> database.transaction(() -> database.newDocument("Race5").set("id", 1).save()));
+        } catch (final Exception e) {
+          throw new RuntimeException(e);
+        }
+      }, "test-suspender-x");
+      x.start();
+
+      assertThat(backlogSnapshotted.await(10, TimeUnit.SECONDS))
+          .as("X's release must have reached the hook - snapshotted its own backlog - before this test proceeds")
+          .isTrue();
+
+      // A commit made now, while X's release is paused right after snapshotting its OWN backlog, cannot be
+      // part of what X is about to flush: it becomes a fresh, genuinely unflushed deferred entry of its own.
+      database.transaction(() -> database.newDocument("Race5").set("id", 2).save());
+
+      final AtomicBoolean sawPendingAtCallbackEntry = new AtomicBoolean();
+      final AtomicReference<Throwable> bFailure = new AtomicReference<>();
+      final Thread b = new Thread(() -> {
+        try {
+          pageManager.suspendFlushAndExecute(db, () -> sawPendingAtCallbackEntry.set(flush.pageIndex.hasPendingOf(database)));
+        } catch (final Throwable t) {
+          bFailure.set(t);
+        }
+      }, "test-suspender-b");
+      b.start();
+
+      // Generous, non-tight padding: gives B's thread a real chance to reach its own acquisition attempt
+      // WHILE X is still paused at the hook - the interleaving this fix targets - whether B ends up waiting
+      // (pre-fix trySuspendUntil) or declining outright (post-fix tryJoinActiveSuspension). The hook alone
+      // guarantees the interleaving is POSSIBLE; this only makes it reliably OBSERVED rather than missed by
+      // scheduling luck - it does not stand in for the correctness this test asserts.
+      Thread.sleep(200);
+
+      releaseHook.countDown();
+
+      x.join(10_000);
+      b.join(10_000);
+
+      assertThat(x.isAlive()).as("suspender X must have finished releasing").isFalse();
+      assertThat(b.isAlive()).as("suspender B must have finished its acquisition and callback").isFalse();
+      assertThat(bFailure.get()).as("suspender B must not have failed").isNull();
+
+      assertThat(sawPendingAtCallbackEntry.get())
+          .as("suspender B's callback ran while a page committed just before it was still pending - it "
+              + "treated a fresh acquisition as a join of X's already-completed window and skipped the "
+              + "#8111 drain")
+          .isFalse();
+    } finally {
+      flush.testHookAfterDeferredBacklogSnapshot = null;
+    }
+
+    final long deadline = System.currentTimeMillis() + 5_000;
+    while (flush.pageIndex.hasPendingOf(database) && System.currentTimeMillis() < deadline)
+      Thread.sleep(5);
+    assertThat(database.query("sql", "select count(*) as c from Race5").next().<Long>getProperty("c")).isEqualTo(2L);
+  }
 }
