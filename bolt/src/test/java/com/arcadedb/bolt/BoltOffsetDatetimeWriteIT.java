@@ -19,7 +19,6 @@
 package com.arcadedb.bolt;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -46,7 +45,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * offset datetime sent as a query parameter is stored and read back with the instant preserved - the
  * exact graphiti write path once the driver stops sending ISO strings.
  */
-public class BoltOffsetDatetimeWriteIT extends BaseGraphServerTest {
+public class BoltOffsetDatetimeWriteIT extends BaseBoltServerTest {
 
   @Override
   public void setTestConfiguration() {
@@ -62,7 +61,7 @@ public class BoltOffsetDatetimeWriteIT extends BaseGraphServerTest {
   }
 
   private Driver getDriver() {
-    return GraphDatabase.driver("bolt://localhost:7687", AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
+    return GraphDatabase.driver(getServerBoltUrl(), AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
         Config.builder().withoutEncryption().build());
   }
 

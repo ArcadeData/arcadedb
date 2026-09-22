@@ -19,7 +19,6 @@
 package com.arcadedb.bolt;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -45,9 +44,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Bolt5978AuthTimeoutIT extends BaseGraphServerTest {
-
-  private static final int BOLT_PORT = GlobalConfiguration.BOLT_PORT.getValueAsInteger();
+public class Bolt5978AuthTimeoutIT extends BaseBoltServerTest {
 
   @Override
   public void setTestConfiguration() {
@@ -68,7 +65,7 @@ public class Bolt5978AuthTimeoutIT extends BaseGraphServerTest {
     GlobalConfiguration.NETWORK_SOCKET_TIMEOUT.setValue(500);
     try {
       try (final Socket socket = new Socket()) {
-        socket.connect(new InetSocketAddress("localhost", BOLT_PORT), 5000);
+        socket.connect(new InetSocketAddress("localhost", getServerBoltPort()), 5000);
         // Safety bound for the test itself only, well above the lowered server-side timeout: if this fires
         // instead of a clean EOF, the server is still holding the idle connection open.
         socket.setSoTimeout(10_000);
@@ -93,7 +90,7 @@ public class Bolt5978AuthTimeoutIT extends BaseGraphServerTest {
     GlobalConfiguration.NETWORK_SOCKET_TIMEOUT.setValue(500);
     try {
       try (final Socket socket = new Socket()) {
-        socket.connect(new InetSocketAddress("localhost", BOLT_PORT), 5000);
+        socket.connect(new InetSocketAddress("localhost", getServerBoltPort()), 5000);
         socket.setSoTimeout(10_000);
         // Never send anything at all, not even the magic bytes.
         assertThat(socket.getInputStream().read()).isEqualTo(-1);
@@ -111,7 +108,7 @@ public class Bolt5978AuthTimeoutIT extends BaseGraphServerTest {
     // The pre-auth timeout must not keep applying once HELLO/LOGON succeeded: a BOLT client is expected to
     // keep a long-lived, often idle connection open between queries (driver session pooling).
     GlobalConfiguration.NETWORK_SOCKET_TIMEOUT.setValue(500);
-    try (final Driver driver = GraphDatabase.driver("bolt://localhost:" + BOLT_PORT,
+    try (final Driver driver = GraphDatabase.driver(getServerBoltUrl(),
         AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS))) {
       try (final Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         assertThat(session.run("RETURN 1 AS value").hasNext()).isTrue();
@@ -126,7 +123,7 @@ public class Bolt5978AuthTimeoutIT extends BaseGraphServerTest {
   }
 
   private void assertBoltStillServesClients() {
-    try (final Driver driver = GraphDatabase.driver("bolt://localhost:" + BOLT_PORT,
+    try (final Driver driver = GraphDatabase.driver(getServerBoltUrl(),
         AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS))) {
       try (final Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         final Result result = session.run("RETURN 1 AS value");

@@ -19,7 +19,6 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.Status;
@@ -33,9 +32,7 @@ import java.util.concurrent.TimeUnit;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-public class GrpcAdminServiceIT extends BaseGraphServerTest {
-
-  private static final int GRPC_PORT = 50051;
+public class GrpcAdminServiceIT extends BaseGrpcServerTest {
 
   private ManagedChannel channel;
   private ArcadeDbAdminServiceGrpc.ArcadeDbAdminServiceBlockingStub adminStub;
@@ -48,7 +45,7 @@ public class GrpcAdminServiceIT extends BaseGraphServerTest {
 
   @BeforeEach
   void setupGrpcClient() {
-    channel = ManagedChannelBuilder.forAddress("localhost", GRPC_PORT)
+    channel = ManagedChannelBuilder.forAddress("localhost", getServerGrpcPort())
         .usePlaintext()
         .build();
     adminStub = ArcadeDbAdminServiceGrpc.newBlockingStub(channel);

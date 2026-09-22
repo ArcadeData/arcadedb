@@ -20,7 +20,6 @@ package com.arcadedb.bolt;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.bolt.message.BoltMessage;
-import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -39,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue7874BoltDatabaseNotFoundIT extends BaseGraphServerTest {
+public class Issue7874BoltDatabaseNotFoundIT extends BaseBoltServerTest {
 
   private static final String MISSING_DATABASE = "issue7874-no-such-database";
 
@@ -63,7 +62,7 @@ public class Issue7874BoltDatabaseNotFoundIT extends BaseGraphServerTest {
    */
   @Test
   void runNamingADatabaseThatDoesNotExistIsAClientError() throws Exception {
-    try (final BoltWireConnection bolt = new BoltWireConnection(getDatabaseName())) {
+    try (final BoltWireConnection bolt = new BoltWireConnection(getServerBoltPort(), getDatabaseName())) {
       bolt.run("RETURN 1", Map.of("db", MISSING_DATABASE));
 
       final BoltWireConnection.Summary failure = bolt.readSummary();
@@ -81,7 +80,7 @@ public class Issue7874BoltDatabaseNotFoundIT extends BaseGraphServerTest {
    */
   @Test
   void beginNamingADatabaseThatDoesNotExistIsTheSameClientError() throws Exception {
-    try (final BoltWireConnection bolt = new BoltWireConnection(getDatabaseName())) {
+    try (final BoltWireConnection bolt = new BoltWireConnection(getServerBoltPort(), getDatabaseName())) {
       bolt.sendBegin(MISSING_DATABASE);
 
       final BoltWireConnection.Summary failure = bolt.readSummary();
@@ -96,7 +95,7 @@ public class Issue7874BoltDatabaseNotFoundIT extends BaseGraphServerTest {
    */
   @Test
   void theConnectionStillWorksAgainstARealDatabaseAfterTheRefusal() throws Exception {
-    try (final BoltWireConnection bolt = new BoltWireConnection(getDatabaseName())) {
+    try (final BoltWireConnection bolt = new BoltWireConnection(getServerBoltPort(), getDatabaseName())) {
       bolt.run("RETURN 1", Map.of("db", MISSING_DATABASE));
       assertThat(bolt.readSummary().signature()).isEqualTo(BoltMessage.FAILURE);
 

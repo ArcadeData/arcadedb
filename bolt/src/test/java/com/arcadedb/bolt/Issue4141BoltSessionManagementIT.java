@@ -19,7 +19,6 @@
 package com.arcadedb.bolt;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.neo4j.driver.AuthTokens;
@@ -51,7 +50,7 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue4141BoltSessionManagementIT extends BaseGraphServerTest {
+public class Issue4141BoltSessionManagementIT extends BaseBoltServerTest {
 
   @Override
   public void setTestConfiguration() {
@@ -68,7 +67,7 @@ public class Issue4141BoltSessionManagementIT extends BaseGraphServerTest {
 
   private Driver getDriver() {
     return GraphDatabase.driver(
-        "bolt://localhost:7687",
+        getServerBoltUrl(),
         AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
         Config.builder()
             .withoutEncryption()

@@ -20,7 +20,6 @@ package com.arcadedb.remote.grpc;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -38,9 +37,8 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  * already committed. Proto3 scalars cannot be null, so the gRPC client must treat an empty proto
  * rid/type as absent (matching the HTTP/JSON contract where the metadata key is simply missing).
  */
-class TimeSeriesGrpcInsertMaterializationIT extends BaseGraphServerTest {
+class TimeSeriesGrpcInsertMaterializationIT extends BaseGrpcClientServerTest {
 
-  private static final int    GRPC_PORT = 50051;
   private static final String TYPE_NAME = "sensor";
 
   private RemoteGrpcServer   grpcServer;
@@ -69,8 +67,8 @@ class TimeSeriesGrpcInsertMaterializationIT extends BaseGraphServerTest {
 
   @Test
   void tsInsertOverGrpcClientMaterialisesWithoutThrowing() {
-    grpcServer = new RemoteGrpcServer("localhost", GRPC_PORT, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
-    db = new RemoteGrpcDatabase(grpcServer, "localhost", GRPC_PORT, getServerHttpPort(), getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
+    grpcServer = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    db = new RemoteGrpcDatabase(grpcServer, "localhost", getServerGrpcPort(), getServerHttpPort(), getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
 
     db.command("sql", "CREATE TIMESERIES TYPE " + TYPE_NAME
         + " TIMESTAMP ts TAGS (sensor_id STRING, region STRING) FIELDS (temperature DOUBLE, humidity DOUBLE)");

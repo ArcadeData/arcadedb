@@ -19,7 +19,6 @@
 package com.arcadedb.mongo;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.mongodb.MongoClient;
 import com.mongodb.MongoClientOptions;
 import com.mongodb.MongoCredential;
@@ -45,9 +44,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code toString()} does not equal the stored text. {@code findOne}/{@code updateOne}/{@code deleteOne} by
  * {@code _id} - the most common Mongo operations - silently found nothing.
  */
-public class MongoDBObjectIdFilterTest extends BaseGraphServerTest {
+public class MongoDBObjectIdFilterTest extends BaseMongoServerTest {
 
-  private static final int                       DEF_PORT = 27017;
   private              MongoClient               client;
   private              MongoCollection<Document> collection;
 
@@ -62,7 +60,7 @@ public class MongoDBObjectIdFilterTest extends BaseGraphServerTest {
   public void beginTest() {
     super.beginTest();
     getDatabase(0);
-    client = new MongoClient(new ServerAddress("localhost", DEF_PORT),
+    client = new MongoClient(new ServerAddress("localhost", getServerMongoPort()),
         MongoCredential.createPlainCredential("root", getDatabaseName(), DEFAULT_PASSWORD_FOR_TESTS.toCharArray()),
         MongoClientOptions.builder().serverSelectionTimeout(5000).build());
     client.getDatabase(getDatabaseName()).createCollection("doc");

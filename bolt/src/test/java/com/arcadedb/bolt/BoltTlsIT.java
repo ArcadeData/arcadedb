@@ -20,7 +20,6 @@ package com.arcadedb.bolt;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -45,7 +44,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class BoltTlsIT extends BaseGraphServerTest {
+public class BoltTlsIT extends BaseBoltServerTest {
 
   private static final String KEYSTORE_PASSWORD  = "testPassword123";
   private static final String TRUSTSTORE_PASSWORD = "testPassword123";
@@ -139,7 +138,7 @@ public class BoltTlsIT extends BaseGraphServerTest {
   void tlsConnectionWithSelfSignedCert() {
     // bolt+ssc:// means TLS with self-signed certificate (no verification)
     try (final Driver driver = GraphDatabase.driver(
-        "bolt+ssc://localhost:7687",
+        "bolt+ssc://localhost:" + getServerBoltPort(),
         AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
         Config.builder().build())) {
       driver.verifyConnectivity();
@@ -149,7 +148,7 @@ public class BoltTlsIT extends BaseGraphServerTest {
   @Test
   void tlsConnectionCanRunQuery() {
     try (final Driver driver = GraphDatabase.driver(
-        "bolt+ssc://localhost:7687",
+        "bolt+ssc://localhost:" + getServerBoltPort(),
         AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
         Config.builder().build())) {
       try (final Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
@@ -165,7 +164,7 @@ public class BoltTlsIT extends BaseGraphServerTest {
   void plaintextConnectionInOptionalMode() {
     // In OPTIONAL mode, plaintext bolt:// should also work
     try (final Driver driver = GraphDatabase.driver(
-        "bolt://localhost:7687",
+        getServerBoltUrl(),
         AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
         Config.builder().withoutEncryption().build())) {
       driver.verifyConnectivity();
@@ -175,7 +174,7 @@ public class BoltTlsIT extends BaseGraphServerTest {
   @Test
   void plaintextConnectionCanRunQueryInOptionalMode() {
     try (final Driver driver = GraphDatabase.driver(
-        "bolt://localhost:7687",
+        getServerBoltUrl(),
         AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
         Config.builder().withoutEncryption().build())) {
       try (final Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {

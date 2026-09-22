@@ -19,7 +19,6 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
 import org.junit.jupiter.api.Test;
@@ -41,7 +40,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue6597InsertStreamChunkDatabaseIT extends BaseGraphServerTest {
+public class Issue6597InsertStreamChunkDatabaseIT extends BaseGrpcServerTest {
 
   @Override
   public void setTestConfiguration() {

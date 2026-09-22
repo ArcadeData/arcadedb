@@ -21,7 +21,6 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.security.ServerSecurity;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
@@ -63,9 +62,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * (e.g. {@code lookupByRid}, {@code updateRecord}, {@code deleteRecord}, {@code bulkInsert}) are not
  * intentionally excluded; they share that same gate and so are covered transitively.
  */
-public class Issue4794GrpcPerDbAuthorizationIT extends BaseGraphServerTest {
+public class Issue4794GrpcPerDbAuthorizationIT extends BaseGrpcServerTest {
 
-  private static final int    GRPC_PORT       = 50051;
   private static final String ALLOWED_DB      = "allowed4794db";
   private static final String LIMITED_USER    = "limited4794";
   private static final String LIMITED_PASS    = "limited4794pass";
@@ -101,7 +99,7 @@ public class Issue4794GrpcPerDbAuthorizationIT extends BaseGraphServerTest {
       security.createUser(config);
     }
 
-    channel = ManagedChannelBuilder.forAddress("localhost", GRPC_PORT).usePlaintext().build();
+    channel = ManagedChannelBuilder.forAddress("localhost", getServerGrpcPort()).usePlaintext().build();
   }
 
   @AfterEach

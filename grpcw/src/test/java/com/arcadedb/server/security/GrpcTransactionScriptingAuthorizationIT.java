@@ -21,8 +21,8 @@ package com.arcadedb.server.security;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.grpc.ArcadeDbServiceGrpc;
+import com.arcadedb.server.grpc.BaseGrpcServerTest;
 import com.arcadedb.server.grpc.BeginTransactionRequest;
 import com.arcadedb.server.grpc.BeginTransactionResponse;
 import com.arcadedb.server.grpc.CommitTransactionRequest;
@@ -68,9 +68,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class GrpcTransactionScriptingAuthorizationIT extends BaseGraphServerTest {
+public class GrpcTransactionScriptingAuthorizationIT extends BaseGrpcServerTest {
 
-  private static final int    GRPC_PORT   = 50051;
   private static final String READER_USER = "grpc-tx-reader";
   private static final String READER_PWD  = "readerpass1";
 
@@ -111,7 +110,7 @@ public class GrpcTransactionScriptingAuthorizationIT extends BaseGraphServerTest
         .put("password", security.encodePassword(READER_PWD))
         .put("databases", new JSONObject().put(getDatabaseName(), new JSONArray().put("grpcTxReader"))));
 
-    channel = ManagedChannelBuilder.forAddress("localhost", GRPC_PORT).usePlaintext().build();
+    channel = ManagedChannelBuilder.forAddress("localhost", getServerGrpcPort()).usePlaintext().build();
   }
 
   @AfterEach

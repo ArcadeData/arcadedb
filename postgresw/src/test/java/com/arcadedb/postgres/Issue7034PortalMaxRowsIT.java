@@ -165,6 +165,10 @@ class Issue7034PortalMaxRowsIT extends PostgresWireProtocolTestBase {
       authenticate(out, in);
 
       assertTimeoutPreemptively(Duration.ofSeconds(10), () -> {
+        // An explicit block keeps the suspended portal alive across the Sync, as in PostgreSQL (issue #8212)
+        sendSimpleQuery(out, "BEGIN");
+        assertThat(messageTypesOf(readUntilReadyForQuery(in))).doesNotContain('E');
+
         sendParse(out, "SELECT FROM " + TYPE);
         sendBind(out, "P1");
         sendDescribe(out, "P1");

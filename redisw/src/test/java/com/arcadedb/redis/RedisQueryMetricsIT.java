@@ -19,7 +19,6 @@
 package com.arcadedb.redis;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.Timer;
 import org.junit.jupiter.api.AfterEach;
@@ -40,9 +39,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * before Redis commands run, drives several commands, then asserts the count
  * did not increase (i.e. no Redis-thread work was mis-labelled as "internal").
  */
-public class RedisQueryMetricsIT extends BaseGraphServerTest {
+public class RedisQueryMetricsIT extends BaseRedisServerTest {
 
-  private static final int DEF_PORT = GlobalConfiguration.REDIS_PORT.getValueAsInteger();
 
   @Override
   public void setTestConfiguration() {
@@ -63,7 +61,7 @@ public class RedisQueryMetricsIT extends BaseGraphServerTest {
     // The timer may already exist if other tests in the suite created it.
     final long beforeCount = internalTimerCount();
 
-    try (final Jedis jedis = new Jedis("localhost", DEF_PORT)) {
+    try (final Jedis jedis = new Jedis("localhost", getServerRedisPort())) {
       jedis.auth("root", DEFAULT_PASSWORD_FOR_TESTS);
 
       // PING

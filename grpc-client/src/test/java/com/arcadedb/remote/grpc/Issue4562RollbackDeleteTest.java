@@ -24,10 +24,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
-import com.arcadedb.server.BaseGraphServerTest;
-import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
@@ -47,7 +44,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
-class Issue4562RollbackDeleteTest extends BaseGraphServerTest {
+class Issue4562RollbackDeleteTest extends BaseGrpcClientServerTest {
 
   static final String TYPE = "SimpleVertexEx";
 
@@ -68,21 +65,12 @@ class Issue4562RollbackDeleteTest extends BaseGraphServerTest {
     super.endTest();
   }
 
-  @BeforeAll
-  void ensureDatabaseExists() {
-    grpcServer = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
-  }
-
-  @AfterAll
-  void teardownServer() {
-    if (grpcServer != null)
-      grpcServer.close();
-  }
-
   @BeforeEach
   void open() {
-    grpc = new RemoteGrpcDatabase(this.grpcServer, "localhost", 50051, 2480, getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
-    httpDb = new RemoteDatabase("localhost", 2480, getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
+    // Per test, after the server started: the gRPC port is assigned by the operating system on every start (#8209).
+    grpcServer = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    grpc = new RemoteGrpcDatabase(this.grpcServer, "localhost", getServerGrpcPort(), getServerHttpPort(), getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
+    httpDb = new RemoteDatabase("localhost", getServerHttpPort(), getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
 
     grpc.command("sql", "CREATE VERTEX TYPE `" + TYPE + "` IF NOT EXISTS", Map.of());
     grpc.command("sql", "CREATE PROPERTY `" + TYPE + "`.svex IF NOT EXISTS STRING", Map.of());
@@ -108,6 +96,8 @@ class Issue4562RollbackDeleteTest extends BaseGraphServerTest {
       httpDb.close();
       httpDb = null;
     }
+    if (grpcServer != null)
+      grpcServer.close();
   }
 
   /**

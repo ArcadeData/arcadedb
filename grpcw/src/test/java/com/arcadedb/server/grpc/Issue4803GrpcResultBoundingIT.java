@@ -20,7 +20,6 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
-import com.arcadedb.server.BaseGraphServerTest;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
 import io.grpc.ClientCall;
@@ -58,9 +57,7 @@ import static org.assertj.core.api.Assertions.catchThrowableOfType;
  *       the call with {@code RESOURCE_EXHAUSTED} when exceeded.</li>
  * </ul>
  */
-public class Issue4803GrpcResultBoundingIT extends BaseGraphServerTest {
-
-  private static final int GRPC_PORT = 50051;
+public class Issue4803GrpcResultBoundingIT extends BaseGrpcServerTest {
 
   private static final int MAX_QUERY_ROWS       = 5;
   private static final int MAX_MATERIALIZED_ROWS = 5;
@@ -91,7 +88,7 @@ public class Issue4803GrpcResultBoundingIT extends BaseGraphServerTest {
         db.newVertex(VERTEX1_TYPE_NAME).set("id", 1000L + i).save();
     });
 
-    channel = ManagedChannelBuilder.forAddress("localhost", GRPC_PORT).usePlaintext().build();
+    channel = ManagedChannelBuilder.forAddress("localhost", getServerGrpcPort()).usePlaintext().build();
     final Channel authenticatedChannel = ClientInterceptors.intercept(channel, new AuthClientInterceptor());
     authenticatedStub = ArcadeDbServiceGrpc.newBlockingStub(authenticatedChannel);
   }

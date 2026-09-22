@@ -69,7 +69,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue8037RedisRetryReplyDuplicationTest extends BaseGraphServerTest {
+public class Issue8037RedisRetryReplyDuplicationTest extends BaseRedisServerTest {
 
   /**
    * Throws a {@link ConcurrentModificationException} the first time {@code seen} reaches {@code failAt}, and lets

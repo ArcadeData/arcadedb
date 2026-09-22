@@ -20,7 +20,6 @@ package com.arcadedb.remote.grpc;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -42,9 +41,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * and the RPC failed with {@code INTERNAL}. The fix narrows via {@link Number#byteValue()} /
  * {@link Number#shortValue()}.
  */
-public class Issue5046GrpcByteShortWriteIT extends BaseGraphServerTest {
+public class Issue5046GrpcByteShortWriteIT extends BaseGrpcClientServerTest {
 
-  private static final int    GRPC_PORT   = 50051;
   private static final String VERTEX_TYPE = "Issue5046Vertex";
 
   private RemoteGrpcServer   grpcServer;
@@ -58,8 +56,8 @@ public class Issue5046GrpcByteShortWriteIT extends BaseGraphServerTest {
 
   @BeforeEach
   void openAndPrepare() {
-    grpcServer = new RemoteGrpcServer("localhost", GRPC_PORT, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
-    grpc = new RemoteGrpcDatabase(grpcServer, "localhost", GRPC_PORT, getServerHttpPort(), getDatabaseName(), "root",
+    grpcServer = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    grpc = new RemoteGrpcDatabase(grpcServer, "localhost", getServerGrpcPort(), getServerHttpPort(), getDatabaseName(), "root",
         DEFAULT_PASSWORD_FOR_TESTS);
 
     grpc.command("sql", "CREATE VERTEX TYPE `" + VERTEX_TYPE + "` IF NOT EXISTS");

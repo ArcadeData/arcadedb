@@ -29,7 +29,6 @@ import com.arcadedb.remote.timeseries.TimeSeriesQuery;
 import com.arcadedb.remote.timeseries.TimeSeriesQueryResult;
 import com.arcadedb.remote.timeseries.TimeSeriesWriteSummary;
 import com.arcadedb.schema.LocalTimeSeriesType;
-import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -56,9 +55,8 @@ import static org.assertj.core.api.Assertions.within;
  * reaches the samples through one shared {@code TimeSeriesGateway}. A test that writes over one protocol and
  * reads over the other is what stops the two from drifting.
  */
-class Issue7305TimeSeriesGrpcIT extends BaseGraphServerTest {
+class Issue7305TimeSeriesGrpcIT extends BaseGrpcClientServerTest {
 
-  private static final int    GRPC_PORT = 50051;
   private static final String TYPE      = "weather";
 
   private RemoteGrpcServer   grpcServer;
@@ -101,8 +99,8 @@ class Issue7305TimeSeriesGrpcIT extends BaseGraphServerTest {
 
   private RemoteGrpcDatabase grpcClient() {
     if (grpc == null) {
-      grpcServer = new RemoteGrpcServer("localhost", GRPC_PORT, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
-      grpc = new RemoteGrpcDatabase(grpcServer, "localhost", GRPC_PORT, httpPort(), getDatabaseName(), "root",
+      grpcServer = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+      grpc = new RemoteGrpcDatabase(grpcServer, "localhost", getServerGrpcPort(), httpPort(), getDatabaseName(), "root",
           DEFAULT_PASSWORD_FOR_TESTS);
     }
     return grpc;
