@@ -357,6 +357,11 @@ class Issue7768InterruptedWalSlotTest extends TestHelper {
   /**
    * A WAL file that passes the {@code isOpen()} guard once and then reports itself closed: the shutdown
    * racing the housekeeping timer, which must stay benign rather than fence a database that is going away.
+   * <p>
+   * Staging the race this way couples the test to {@code checkWALFiles()} consulting {@code isOpen()} twice -
+   * once in the rotation guard, once in the {@code ClosedChannelException} branch. Were that ever refactored
+   * into a single cached read, this stub would report "open" throughout and the test would keep passing while
+   * quietly exercising nothing, so the call count is asserted below rather than assumed.
    */
   private static class ClosingUnderneathWALFile extends WALFile {
     private int isOpenCalls = 0;
@@ -381,16 +386,21 @@ class Issue7768InterruptedWalSlotTest extends TestHelper {
     final LocalDatabase db = (LocalDatabase) database;
     final TransactionManager txManager = db.getTransactionManager();
 
-    final WALFile closing = new ClosingUnderneathWALFile(db.getDatabasePath() + "/txlog_7768_closing.wal");
+    final ClosingUnderneathWALFile closing = new ClosingUnderneathWALFile(db.getDatabasePath() + "/txlog_7768_closing.wal");
     WALFile displaced = null;
     try {
       displaced = txManager.replaceActiveWALFileForTesting(0, closing);
 
       txManager.checkWALFilesForTesting();
+      final int isOpenCalls = closing.isOpenCalls;
 
       assertThat(db.isFencedForRecovery())
           .as("a file closed on purpose while this pass was running is a shutdown, not an inaccessible WAL")
           .isFalse();
+      assertThat(isOpenCalls)
+          .as("checkWALFiles() must ask isOpen() again inside the ClosedChannelException branch; if it ever "
+              + "stops doing so this stub never reports itself closed and the race below stops being tested")
+          .isGreaterThanOrEqualTo(2);
     } finally {
       closing.close();
       if (displaced != null)
