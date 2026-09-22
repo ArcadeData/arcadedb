@@ -231,8 +231,17 @@ public class Issue8037RedisRetryReplyDuplicationTest extends BaseGraphServerTest
     return Integer.parseInt(value.toString());
   }
 
+  /**
+   * Not a drop-in duplicate of {@link BaseGraphServerTest#executeCommand}: that one hardcodes the "studio"
+   * serializer, which wraps the reply as {@code result: {...}} (an object) rather than the raw
+   * {@code result: [...]} array shape {@link #getResultValue} parses below and the actual redis client/HTTP
+   * caller this test is reproducing gets - checked while addressing a review suggestion to reuse the base
+   * method, which changes {@code getResultValue} into a runtime type-error rather than compiling to something
+   * silently wrong. Kept separate on purpose; the only thing this repeats from the base method is asking the
+   * server for its actual bound port (issue #6560) rather than assuming 2480+serverIndex.
+   */
+  @Override
   protected JSONObject executeCommand(final int serverIndex, final String language, final String command) throws Exception {
-    // Ask the server which port it actually bound (issue #6560) rather than assuming 2480+serverIndex.
     final HttpURLConnection connection = (HttpURLConnection) new URL(
         "http://127.0.0.1:" + getServer(serverIndex).getHttpServer().getPort() + "/api/v1/command/" + getDatabaseName()).openConnection();
     connection.setRequestMethod("POST");
