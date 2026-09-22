@@ -150,6 +150,11 @@ class Issue7840WideKeyComparisonTest extends TestHelper {
         .as("a run longer than the buffer holds fails like the getByte() walk it replaces")
         .isInstanceOf(BufferUnderflowException.class);
     assertThat(page.position()).as("and leaves the position untouched").isZero();
+
+    assertThatThrownBy(() -> page.mismatch(bytes(0x41, 0x42), 4))
+        .as("and so does a run longer than the OTHER operand holds, rather than an array index error")
+        .isInstanceOf(BufferUnderflowException.class);
+    assertThat(page.position()).isZero();
   }
 
   @Test
