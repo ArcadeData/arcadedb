@@ -107,18 +107,19 @@ class Issue7879MixedTypeValueComparisonTest {
   }
 
   /**
-   * CodeRabbit review follow-up: the same-class fast path cast every pair straight to Comparable without checking
-   * that the class actually implements it, so two instances of a non-Comparable class threw ClassCastException
-   * instead of reaching the class-name tiebreak two arms down. A same-class pair has no other ordering
-   * information available, so the tiebreak answers 0 - consistent, not a regression.
+   * CodeRabbit suggested guarding the same-class fast path with {@code a instanceof Comparable}, so two instances
+   * of a non-Comparable class would fall to the class-name tiebreak (0, since the name is identical) instead of
+   * throwing. Tried and reverted: {@code LtOperatorTest}/{@code GeOperatorTest}/{@code LeOperatorTest} explicitly
+   * assert that {@code op.execute(null, new Object(), new Object())} throws {@code ClassCastException} - two
+   * genuinely unrelated same-class objects are meant to be "not comparable", not silently "equal". Pinned here so
+   * a future change cannot reintroduce the CodeRabbit suggestion without noticing the conflict.
    */
   @Test
-  void sameClassNonComparablePairFallsBackInsteadOfThrowing() {
+  void sameClassNonComparablePairStillThrows() {
     final Object a = new Object();
     final Object b = new Object();
     assertThat(a.getClass()).isEqualTo(b.getClass());
-    assertThatNoException().isThrownBy(() -> BinaryComparator.compareTo(a, b));
-    assertThat(BinaryComparator.compareTo(a, b)).isZero();
+    assertThatThrownBy(() -> BinaryComparator.compareTo(a, b)).isInstanceOf(ClassCastException.class);
   }
 
   /**

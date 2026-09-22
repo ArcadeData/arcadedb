@@ -595,11 +595,13 @@ public class BinaryComparator {
     else if (DateUtils.isDate(a) || DateUtils.isDate(b))
       return DateUtils.dateTimeToTimestampInferringStringPrecision(a, ChronoUnit.NANOS)
           .compareTo(DateUtils.dateTimeToTimestampInferringStringPrecision(b, ChronoUnit.NANOS));
-    else if (a.getClass() == b.getClass() && a instanceof Comparable)
-      // The instanceof guard matters even for two instances of the identical class: a same-class pair of a type
-      // that does NOT implement Comparable would otherwise hit the blind cast below and throw, instead of
-      // reaching the class-name tiebreak two arms down - which answers 0 for a same-class pair, consistent with
-      // there being no other ordering information available (CodeRabbit review, issue #7879).
+    else if (a.getClass() == b.getClass())
+      // Deliberately unguarded, unlike the class-mismatch branches below: two instances of the SAME class that
+      // does not implement Comparable is exactly the case LtOperatorTest/GeOperatorTest/LeOperatorTest pin as
+      // "genuinely not orderable" and expect to throw ClassCastException here (they wrap it in a try/catch and
+      // fail the test if none is thrown), not to silently answer 0 from a class-name tiebreak that is identical
+      // for both operands. A CodeRabbit suggestion to guard this arm with `a instanceof Comparable` was tried and
+      // reverted for exactly that reason (issue #7879 review).
       return ((Comparable<Object>) a).compareTo(b);
     else if (a instanceof Number numberA && b instanceof Number numberB)
       // A schemaless property mixes boxed widths routinely - any value read back from JSON, or written by a
