@@ -2441,24 +2441,30 @@ public class LocalSchema implements Schema {
   public void dropType(final String typeName) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
+    // THE GUARDS BELOW COMPARE THE CANONICAL NAME, NOT THE STRING THE CALLER TYPED (#8169). getType() further down
+    // resolves aliases, so typeName can be an alias - and comparing the raw argument let DROP TYPE <alias> walk
+    // straight past these checks and drop a materialized view's backing or source type out from under it.
+    final LocalDocumentType resolvedType = getTypeOrNull(typeName);
+    final String canonicalTypeName = resolvedType != null ? resolvedType.getName() : typeName;
+
     // Prevent dropping a type that is a backing type or source type for a materialized view or continuous aggregate
     synchronized (this) {
       for (final MaterializedViewImpl view : materializedViews.values()) {
-        if (view.getBackingTypeName().equals(typeName))
+        if (view.getBackingTypeName().equals(canonicalTypeName))
           throw new SchemaException(
               "Cannot drop type '" + typeName + "' because it is the backing type for materialized view '" + view.getName() + "'. " +
                   "Drop the materialized view first with: DROP MATERIALIZED VIEW " + view.getName());
-        if (view.getSourceTypeNames().contains(typeName))
+        if (view.getSourceTypeNames().contains(canonicalTypeName))
           throw new SchemaException(
               "Cannot drop type '" + typeName + "' because it is a source type for materialized view '" + view.getName() + "'. " +
                   "Drop the materialized view first with: DROP MATERIALIZED VIEW " + view.getName());
       }
       for (final ContinuousAggregateImpl ca : continuousAggregates.values()) {
-        if (ca.getBackingTypeName().equals(typeName))
+        if (ca.getBackingTypeName().equals(canonicalTypeName))
           throw new SchemaException(
               "Cannot drop type '" + typeName + "' because it is the backing type for continuous aggregate '" + ca.getName() + "'. " +
                   "Drop the continuous aggregate first with: DROP CONTINUOUS AGGREGATE " + ca.getName());
-        if (ca.getSourceTypeName().equals(typeName))
+        if (ca.getSourceTypeName().equals(canonicalTypeName))
           throw new SchemaException(
               "Cannot drop type '" + typeName + "' because it is the source type for continuous aggregate '" + ca.getName() + "'. " +
                   "Drop the continuous aggregate first with: DROP CONTINUOUS AGGREGATE " + ca.getName());
@@ -2473,7 +2479,10 @@ public class LocalSchema implements Schema {
       final String previousTypeBeingDropped = typeBeingDropped;
       // Covers the whole cascade below, not just the index-drop loop: dropBucket() a few lines down can also
       // reach dropIndexInternal() for a leftover bucket-associated index, and the suppression must hold there too.
-      typeBeingDropped = typeName;
+      // The CANONICAL name, for the same reason the guards above use it: line ~1785 compares this against
+      // affectedType.getName(), so a drop that named the type by an alias suppressed nothing and reported the
+      // partition suitability of a type that was being dropped (#8169).
+      typeBeingDropped = canonicalTypeName;
 
       try {
         final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType(typeName);
@@ -2511,7 +2520,22 @@ public class LocalSchema implements Schema {
         if (type instanceof LocalTimeSeriesType tsType)
           tsType.drop();
 
-        if (typeMap().remove(typeName) == null)
+        // EVERY NAME THE TYPE ANSWERS TO GOES, NOT ONLY THE ONE THE CALLER TYPED (#8169). Two reasons, and the
+        // second is the damaging one:
+        //   - getType() above resolves aliases, so typeName can BE an alias. Removing that one key would leave the
+        //     type registered under its own name with its buckets and indexes already torn down.
+        //   - an alias key left behind keeps the dropped instance reachable through typeMap().values(), which
+        //     serializeConfiguration() (called by saveConfiguration() in the finally below) writes back into
+        //     schema.json keyed by t.getName() - so the dropped type is re-serialised under its own name with zero
+        //     buckets and comes back alive, unusable, at the next open. It also kept existsType(alias) answering
+        //     true, made a later ALTER TYPE ... ALIASES refuse the alias naming a type that no longer exists, and
+        //     left the instance in getTypes(), which is what CHECK DATABASE walks.
+        // remove(key, value) rather than remove(key), for the same reason setAliases() unwinds with the two-argument
+        // form: a name that has since been taken over by another type must not be taken away from it.
+        for (final String alias : type.getAliases())
+          typeMap().remove(alias, type);
+
+        if (!typeMap().remove(type.getName(), type))
           throw new SchemaException("Type '" + typeName + "' not found");
       } finally {
         typeBeingDropped = previousTypeBeingDropped;
