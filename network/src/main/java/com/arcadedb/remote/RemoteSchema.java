@@ -122,6 +122,7 @@ public class RemoteSchema implements Schema {
   @Override
   public void dropBucket(final String bucketName) {
     remoteDatabase.command("sql", "drop bucket " + Identifier.quote(bucketName));
+    invalidateSchema();
   }
 
   @Override
@@ -245,6 +246,7 @@ public class RemoteSchema implements Schema {
   @Override
   public Bucket createBucket(final String bucketName) {
     final ResultSet result = remoteDatabase.command("sql", "create bucket " + Identifier.quote(bucketName));
+    invalidateSchema();
     return new RemoteBucket(result.next().getProperty("bucketName"));
   }
 
@@ -854,10 +856,22 @@ public class RemoteSchema implements Schema {
     final Map<String, RemoteDocumentType> newTypes   = new HashMap<>();
     final Map<String, RemoteDocumentType> previous   = this.types;
 
+    // schema:buckets, not just the buckets attached to a type above: a standalone bucket exists as soon as it is
+    // created, whether or not any type uses it - the same reason existsBucket() reads schema:buckets directly
+    // rather than the type list (issue #7031) - but this cache fed getBucketByName()/getBuckets() from the type
+    // walk alone, so a standalone bucket was never visible through either, no matter how fresh the reload
+    // (issue #7797 follow-up).
+    try (final ResultSet bucketsResult = remoteDatabase.command("sql", "select from schema:buckets")) {
+      while (bucketsResult.hasNext()) {
+        final String bucketName = bucketsResult.next().getProperty("name");
+        newBuckets.computeIfAbsent(bucketName, RemoteBucket::new);
+      }
+    }
+
     for (Result record : cached) {
       final List<String> typeBucketNames = record.getProperty("buckets");
       for (String typeBucketName : typeBucketNames)
-        newBuckets.computeIfAbsent(typeBucketName, name -> new RemoteBucket(name));
+        newBuckets.computeIfAbsent(typeBucketName, RemoteBucket::new);
     }
 
     for (Result record : cached) {

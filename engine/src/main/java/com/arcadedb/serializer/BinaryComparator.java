@@ -26,6 +26,7 @@ import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.DateUtils;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.time.chrono.ChronoLocalDate;
 import java.time.chrono.ChronoLocalDateTime;
 import java.time.temporal.ChronoUnit;
@@ -582,6 +583,11 @@ public class BinaryComparator {
       return compareBytes(bytes, bytes1);
     else if (a instanceof Map map && b instanceof Map map1)
       return CollectionUtils.compare(map, map1);
+    else if (a instanceof List<?> list && b instanceof List<?> list1)
+      // Mirrors the Map arm above: TransactionIndexContext.ComparableKey already calls CollectionUtils.compare(List,
+      // List) directly for exactly this pair, so this class' own fallthrough must agree instead of casting an
+      // ArrayList to Comparable - which it is not - and throwing (issue #7879).
+      return CollectionUtils.compare(list, list1);
     else if (a instanceof ChronoLocalDate aDate && b instanceof ChronoLocalDate bDate)
       return aDate.compareTo(bDate);
     else if (a instanceof ChronoLocalDateTime<?> aDate && b instanceof ChronoLocalDateTime<?> bDate)
@@ -589,7 +595,117 @@ public class BinaryComparator {
     else if (DateUtils.isDate(a) || DateUtils.isDate(b))
       return DateUtils.dateTimeToTimestampInferringStringPrecision(a, ChronoUnit.NANOS)
           .compareTo(DateUtils.dateTimeToTimestampInferringStringPrecision(b, ChronoUnit.NANOS));
-    return ((Comparable<Object>) a).compareTo(b);
+    else if (a.getClass() == b.getClass())
+      // Deliberately unguarded, unlike the class-mismatch branches below: two instances of the SAME class that
+      // does not implement Comparable is exactly the case LtOperatorTest/GeOperatorTest/LeOperatorTest pin as
+      // "genuinely not orderable" and expect to throw ClassCastException here (they wrap it in a try/catch and
+      // fail the test if none is thrown), not to silently answer 0 from a class-name tiebreak that is identical
+      // for both operands. A CodeRabbit suggestion to guard this arm with `a instanceof Comparable` was tried and
+      // reverted for exactly that reason (issue #7879 review).
+      return ((Comparable<Object>) a).compareTo(b);
+    else if (a instanceof Number numberA && b instanceof Number numberB)
+      // A schemaless property mixes boxed widths routinely - any value read back from JSON, or written by a
+      // client that does not pin the width - so two different Number subclasses have to widen and compare rather
+      // than fall through to the cast below, which throws ClassCastException for any two classes (issue #7879).
+      return compareNumbers(numberA, numberB);
+    else if (a instanceof Comparable) {
+      // Some types compare across a class mismatch on purpose - RID#compareTo(Object) parses a String operand
+      // as "#bucket:position" and Gt/Lt/Ge/LeOperator rely on exactly that (issue #6188), throwing their own
+      // IllegalArgumentException/IndexOutOfBoundsException for a string that isn't RID-shaped, which those
+      // operators catch to report "not comparable" instead of failing the query. Try the real compareTo() first
+      // and let any exception OTHER than ClassCastException propagate unchanged; only a ClassCastException - the
+      // blind-cast failure of a compareTo() typed to its own class, e.g. String#compareTo(Object) on an Integer -
+      // falls back to the class-name tiebreak below (issue #7879).
+      try {
+        return ((Comparable<Object>) a).compareTo(b);
+      } catch (final ClassCastException e) {
+        // The forward attempt failing does not mean the pair is incomparable: RID#compareTo(String) succeeds,
+        // but the reverse call has String#compareTo(Object) blind-cast the RID and throw - and answering that
+        // direction from the class-name tiebreak instead of the real (negated) comparison breaks antisymmetry
+        // (CodeRabbit review, issue #7879). Try the reverse direction before giving up, still only absorbing
+        // ClassCastException - a domain-specific exception from b's own compareTo() (e.g. RID's parse failure)
+        // must propagate exactly as it would have from the forward attempt.
+        if (b instanceof Comparable) {
+          try {
+            // Integer.compare(0, reversed), not -reversed: negating a raw compareTo() result overflows when it
+            // is Integer.MIN_VALUE (-Integer.MIN_VALUE == Integer.MIN_VALUE in two's complement), silently
+            // breaking antisymmetry for that one pair - the classic gotcha Effective Java's comparator item
+            // warns against. Latent today (RID#compareTo() is hand-bounded to {-1, 0, 1}), but this is a
+            // general-purpose utility, not RID-specific (CodeRabbit review, issue #7879).
+            final int reversed = ((Comparable<Object>) b).compareTo(a);
+            return Integer.compare(0, reversed);
+          } catch (final ClassCastException e2) {
+            // Neither direction knows how to compare the other: genuinely unrelated types, fall through.
+          }
+        }
+        return a.getClass().getName().compareTo(b.getClass().getName());
+      }
+    }
+    // a is not even a Comparable: the same class-name tiebreak CollectionUtils.compareKeys() uses for a
+    // heterogeneous key set, so the order stays total and antisymmetric instead of throwing (issue #7879).
+    return a.getClass().getName().compareTo(b.getClass().getName());
+  }
+
+  /**
+   * Widens two {@link Number}s of different classes to a common precision and orders them - the value-side
+   * counterpart of the numeric widening {@link #compare(Object, byte, Object, byte)} already applies to typed
+   * operands. Two integral operands ({@code Byte}/{@code Short}/{@code Integer}/{@code Long}/{@code BigInteger})
+   * meet in {@code long}, or in {@link BigInteger} when either actually is one, so magnitude is never lost.
+   * {@code BigInteger} against a floating operand follows the same finite-double clamp every other
+   * {@code BigInteger} comparison in this class uses ({@link Type#finiteDoubleValue}) so an enormous-but-finite
+   * value never compares equal to an infinity. Two floating operands ({@code Float}/{@code Double}/
+   * {@code BigDecimal}) meet in {@link BigDecimal} through {@link Type#floatingToBigDecimal} - exact for the
+   * shortest decimal each reads as - unless either is NaN or infinite, where only {@code double} has an ordering
+   * at all.
+   */
+  private static int compareNumbers(final Number a, final Number b) {
+    final boolean integralA = isIntegral(a);
+    final boolean integralB = isIntegral(b);
+
+    if (integralA && integralB) {
+      if (a instanceof BigInteger || b instanceof BigInteger)
+        return toBigInteger(a).compareTo(toBigInteger(b));
+      return Long.compare(a.longValue(), b.longValue());
+    }
+
+    if (a instanceof BigInteger bigIntegerA)
+      return compareBigIntegerAgainstFloating(bigIntegerA, b);
+    if (b instanceof BigInteger bigIntegerB)
+      return -compareBigIntegerAgainstFloating(bigIntegerB, a);
+
+    if (integralA)
+      return compareIntegralAgainstFloatingNumber(a.longValue(), b);
+    if (integralB)
+      return -compareIntegralAgainstFloatingNumber(b.longValue(), a);
+
+    if (!Type.isFinite(a) || !Type.isFinite(b))
+      return Double.compare(a.doubleValue(), b.doubleValue());
+    return Type.floatingToBigDecimal(a).compareTo(Type.floatingToBigDecimal(b));
+  }
+
+  private static int compareBigIntegerAgainstFloating(final BigInteger a, final Number b) {
+    if (b instanceof BigDecimal bigDecimal)
+      return new BigDecimal(a).compareTo(bigDecimal);
+    if (!Type.isFinite(b))
+      return Double.compare(Type.finiteDoubleValue(a), b.doubleValue());
+    return new BigDecimal(a).compareTo(Type.floatingToBigDecimal(b));
+  }
+
+  private static int compareIntegralAgainstFloatingNumber(final long a, final Number b) {
+    if (b instanceof BigDecimal bigDecimal)
+      return BigDecimal.valueOf(a).compareTo(bigDecimal);
+    if (Type.isExactAsDouble(a) || !Type.isFinite(b))
+      return Double.compare(a, b.doubleValue());
+    return BigDecimal.valueOf(a).compareTo(Type.floatingToBigDecimal(b));
+  }
+
+  private static boolean isIntegral(final Number value) {
+    return value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
+        || value instanceof BigInteger;
+  }
+
+  private static BigInteger toBigInteger(final Number value) {
+    return value instanceof BigInteger bigInteger ? bigInteger : BigInteger.valueOf(value.longValue());
   }
 
   /**

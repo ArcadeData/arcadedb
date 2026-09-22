@@ -19,6 +19,7 @@
 package com.arcadedb.remote;
 
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
@@ -32,6 +33,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class RemoteSchemaIT extends BaseGraphServerTest {
   private static final String DATABASE_NAME = "remote-database";
@@ -268,6 +270,32 @@ class RemoteSchemaIT extends BaseGraphServerTest {
         assertThat(database.getSchema().getOrCreateEdgeType("Edg").getName()).isEqualTo("Edg");
         assertThat(database.getSchema().getOrCreateEdgeType("Edg").getName()).isEqualTo("Edg");
         assertThat(database.getSchema().getOrCreateEdgeType("Edg", 2).getName()).isEqualTo("Edg");
+      }
+    });
+  }
+
+  /**
+   * Issue #7797: dropBucket() did not invalidate the schema cache (unlike dropType()), so a bucket looked up
+   * before the drop kept answering as a live RemoteBucket instead of throwing SchemaException.
+   */
+  @Test
+  void dropBucketInvalidatesSchemaCache() throws Exception {
+    testEachServer(serverIndex -> {
+      try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(serverIndex), DATABASE_NAME, "root",
+          BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
+
+        database.getSchema().createBucket("tmpBucket");
+
+        // Warm the cache.
+        assertThat(database.getSchema().getBucketByName("tmpBucket")).isNotNull();
+        assertThat(database.getSchema().getBuckets().stream().map(Bucket::getName)).contains("tmpBucket");
+
+        database.getSchema().dropBucket("tmpBucket");
+
+        assertThat(database.getSchema().existsBucket("tmpBucket")).isFalse();
+        assertThatThrownBy(() -> database.getSchema().getBucketByName("tmpBucket")).isInstanceOf(SchemaException.class);
+        assertThat(database.getSchema().getBucketByNameIfExists("tmpBucket")).isNull();
+        assertThat(database.getSchema().getBuckets().stream().map(Bucket::getName)).doesNotContain("tmpBucket");
       }
     });
   }
