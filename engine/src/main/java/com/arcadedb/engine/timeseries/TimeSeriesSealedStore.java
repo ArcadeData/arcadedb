@@ -175,26 +175,32 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    */
   private          long             downsampleEpoch;
   /**
-   * What RETENTION has provably removed, so a vanished block can be attributed to the pass that actually removed
-   * it rather than to whichever maintenance pass happened to run (issue #8166, review of PR #8197).
+   * The cutoff RETENTION has provably swept past, so a vanished block can be attributed to the pass that actually
+   * removed it rather than to whichever maintenance pass happened to run (issue #8166, review of PR #8197).
    * <p>
    * {@link #downsampleEpoch} alone answers "did ANY downsample run since the snapshot", not "was THIS block
    * coarsened". A long walk - an {@code EXPORT DATABASE} over a large series - can span both a retention pass
    * that legitimately drops one of its blocks AND an unrelated downsample cycle elsewhere in the store, and
-   * would then refuse an answer it could have given honestly. These two watermarks close that: a truncate
-   * removes a contiguous run of blocks at one END of the directory, so the boundary it moved is all that has to
-   * be remembered to know, exactly, whether a given block fell inside it.
+   * would then refuse an answer it could have given honestly. This closes it: {@link #truncateBefore} drops every
+   * block OLDER than its cutoff, so a block with {@code maxTimestamp < retentionRemovedBelowTs} is gone because
+   * of retention, whatever else ran.
    * <p>
-   * {@link #truncateBefore} drops everything OLDER than its cutoff, so a block with
-   * {@code maxTimestamp < retentionRemovedBelowTs} is gone because of retention. {@link #truncateToBlockCount}
-   * keeps a prefix and drops the NEWEST blocks, so a block with
-   * {@code minTimestamp >= retentionRemovedFromTs} is gone for the same reason. Both are monotonic - a boundary
-   * only ever moves outward - so neither can un-explain a block it once explained, and both are written under the
-   * directory WRITE lock beside the rewrite that moved them.
+   * <b>It is monotonic, and only a LOWER boundary can be.</b> A retention cutoff is permanent and forward-only,
+   * and time moves forward, so no legitimate later write lands below one already swept and the claim cannot
+   * become false. The mirror boundary - for a truncate that drops the NEWEST blocks - cannot have that property,
+   * and was removed after the review of PR #8197: the store goes on compacting blocks past any such line by
+   * design, so it would pin itself near "now" and excuse every later block as retired. Its only producer made
+   * that certain, because {@code truncateToBlockCount} is not a retention decision at all - both its callers are
+   * ROLLBACK paths in {@code TimeSeriesShard} (crash recovery of an interrupted compaction, and a failed
+   * {@code compact()}), undoing the store's own speculative state rather than retiring a time range, after which
+   * the shard resumes compacting above the line just drawn. A walk crossing one now takes the ordinary route:
+   * refused if a downsample also ran, counted if not.
+   * <p>
+   * Written under the directory WRITE lock, and only AFTER the rewrite that moves it has actually landed - see
+   * {@link #truncateBefore}. Recording it first left the store permanently believing a range had been retired
+   * when a failed atomic move had dropped nothing, which is the same silently-short answer in a new disguise.
    */
   private          long             retentionRemovedBelowTs = Long.MIN_VALUE;
-  /** The upper counterpart, for the tail {@link #truncateToBlockCount} drops. See {@link #retentionRemovedBelowTs}. */
-  private          long             retentionRemovedFromTs  = Long.MAX_VALUE;
 
   /**
    * A fresh {@link BlockEntry#blockId} (issue #8043).
@@ -994,11 +1000,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    */
   /**
    * Whether a retention truncate provably removed this block, read against the two boundaries
-   * {@link #retentionRemovedBelowTs} and {@link #retentionRemovedFromTs} record. Called under the directory read
-   * lock, which is what makes the pair a consistent snapshot of what retention has done.
+   * {@link #retentionRemovedBelowTs} records. Called under the directory read lock, which is what makes reading
+   * it a consistent view of what retention has done.
    */
   private boolean removedByRetention(final BlockEntry snapshotEntry) {
-    return snapshotEntry.maxTimestamp < retentionRemovedBelowTs || snapshotEntry.minTimestamp >= retentionRemovedFromTs;
+    return snapshotEntry.maxTimestamp < retentionRemovedBelowTs;
   }
 
   private BlockEntry resolveLiveBlock(final BlockEntry snapshotEntry, final int hintIdx) {
@@ -1746,10 +1752,6 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       if (retained.size() == blockDirectory.size())
         return; // Nothing to truncate
 
-      // Recorded before the rewrite, so a walk that finds one of these blocks missing can tell that RETENTION is
-      // why, and is answered short rather than refused (issue #8166). Monotonic: the boundary only moves up.
-      retentionRemovedBelowTs = Math.max(retentionRemovedBelowTs, timestamp);
-
       // Rewrite the file with only retained blocks
       final int colCount = columns.size();
       final String tempPath = basePath + ".ts.sealed.tmp";
@@ -1802,6 +1804,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         if (e.minTimestamp < globalMinTs) globalMinTs = e.minTimestamp;
         if (e.maxTimestamp > globalMaxTs) globalMaxTs = e.maxTimestamp;
       }
+      // HERE, and not beside the decision at the top of the method (review of PR #8197). The boundary is a claim
+      // that a range of timestamps is GONE, and until the move above lands nothing has gone: a failed write or a
+      // failed swap leaves the live file and this directory intact, and the method rethrows. Advancing it first
+      // left the store permanently believing a range had been retired when it had not - and because the claim is
+      // monotonic there is no path back, so a later downsample inside that range would be excused as retention
+      // and a walk crossing it answered silently short, which is the defect issue #8166 exists to close.
+      retentionRemovedBelowTs = Math.max(retentionRemovedBelowTs, timestamp);
 
       indexFile = new RandomAccessFile(oldFile, "rw");
       indexChannel = indexFile.getChannel();
@@ -2453,9 +2462,6 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         return; // nothing to truncate
 
       final List<BlockEntry> retained = new ArrayList<>(blockDirectory.subList(0, (int) targetBlockCount));
-      // The counterpart of truncateBefore's boundary, for the TAIL this drops: the first block that goes names
-      // the point past which nothing survives (issue #8166). Monotonic: the boundary only moves down.
-      retentionRemovedFromTs = Math.min(retentionRemovedFromTs, blockDirectory.get((int) targetBlockCount).minTimestamp);
       final int colCount = columns.size();
       final String tempPath = basePath + ".ts.sealed.tmp";
 
@@ -3376,6 +3382,15 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * An image that only ADDS blocks - the ordinary case, a leader shipping its latest compaction - loses no id
    * and moves neither, so nothing changes and a walk crossing it reads straight through, which is what issue
    * #8043 fixed and what {@code Issue8043SealedWalkAcrossInstallTest} pins.
+   * <p>
+   * <b>The precondition, which lives in another module.</b> Telling the two apart by what replaced the lost ids
+   * needs ONE install to carry ONE rewrite session per shard. {@code RaftReplicatedDatabase} ships a
+   * {@code TsSealedBlob} or slice sequence per rewrite and Raft applies them in log order, so a retirement and a
+   * downsample never arrive coalesced into a single image. The one place a follower does adopt a coalesced file
+   * is a full snapshot resync, which copies it directly and never reaches this method - it closes and reopens
+   * the whole database instead, which invalidates any walk far more bluntly. If a future path ever installs a
+   * coalesced image here, this method would read it as a rewrite and refuse a walk that could have been answered
+   * short: conservative, but worth knowing about (review of PR #8197).
    */
   private void adoptRewriteHistoryOf(final Set<Long> previousBlockIds) {
     boolean gainedNewIds = false;
@@ -3398,19 +3413,20 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       return;
     }
 
-    // Nothing arrived, or nothing left: an image that only retires or only appends. Its bounds are then an
-    // honest statement about what the store still holds, so they are recorded as a retention boundary - which is
-    // what keeps an install of a leader-RETIRED image from being mistaken for a coarsening one.
-    if (blockDirectory.isEmpty()) {
-      if (lostIds)
-        retentionRemovedBelowTs = Long.MAX_VALUE;
+    // Nothing arrived in their place, so ids that went away were RETIRED. Where the image now starts is then a
+    // permanent, forward-only claim of the same shape truncateBefore makes, and recording it is what keeps an
+    // install of a leader-RETIRED image from being mistaken for a coarsening one.
+    //
+    // Only when ids actually went away: an image that merely APPENDS retires nothing, and its first block is
+    // wherever this shard's history happens to begin rather than a line retention swept past.
+    if (!lostIds)
       return;
-    }
 
-    retentionRemovedBelowTs = Math.max(retentionRemovedBelowTs, blockDirectory.getFirst().minTimestamp);
-    final long lastMaxTs = blockDirectory.get(blockDirectory.size() - 1).maxTimestamp;
-    if (lastMaxTs < Long.MAX_VALUE)
-      retentionRemovedFromTs = Math.min(retentionRemovedFromTs, lastMaxTs + 1);
+    retentionRemovedBelowTs = blockDirectory.isEmpty()
+        // The image holds nothing, so nothing this node held survives it - and "removed" is the honest word for
+        // every one of those blocks, not "replaced".
+        ? Long.MAX_VALUE
+        : Math.max(retentionRemovedBelowTs, blockDirectory.getFirst().minTimestamp);
   }
 
   /**

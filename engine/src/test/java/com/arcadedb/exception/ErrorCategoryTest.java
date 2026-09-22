@@ -18,8 +18,8 @@
  */
 package com.arcadedb.exception;
 
-import com.arcadedb.engine.timeseries.TimeSeriesWalkCoarsenedException;
 import com.arcadedb.database.RID;
+import com.arcadedb.engine.timeseries.TimeSeriesWalkCoarsenedException;
 import com.arcadedb.index.fulltext.FullTextQueryParseException;
 import org.junit.jupiter.api.Test;
 

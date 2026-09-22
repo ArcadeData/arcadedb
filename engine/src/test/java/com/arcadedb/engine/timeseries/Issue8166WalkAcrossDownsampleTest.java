@@ -219,24 +219,81 @@ class Issue8166WalkAcrossDownsampleTest {
   }
 
   /**
-   * The same for the TAIL truncate, which drops the NEWEST blocks rather than the oldest and therefore needs its
-   * own boundary.
+   * The TAIL truncate gets NO boundary of its own, and the review of PR #8197 is why: an upper boundary cannot be
+   * monotonic in a store that keeps compacting forward, and {@code truncateToBlockCount} is not a retention
+   * decision in the first place - both its callers are rollback paths in {@code TimeSeriesShard}, undoing an
+   * interrupted or failed compaction rather than retiring a time range. Feeding it a watermark pinned the store
+   * near "now" for the rest of the process, after which every later block looked retired and a real downsample
+   * over it was answered silently short: the defect this class exists to close, reintroduced through the back
+   * door.
+   * <p>
+   * So a tail truncate takes the ordinary route. On its own it leaves the walk correctly short and counted; with
+   * a downsample beside it the walk is refused, which is the conservative half of the trade and the one that
+   * cannot return a wrong answer.
    */
   @Test
-  void aTailTruncatedBlockIsCountedRatherThanRefused() throws Exception {
+  void aTailTruncateAloneIsCountedAndWithADownsampleIsRefused() throws Exception {
     try (final TimeSeriesSealedStore store = threeBlockStore()) {
       final BlockDirectorySnapshot snapshot = store.snapshotBlockDirectory(0L, Long.MAX_VALUE);
-
-      store.downsampleBlocks(CUTOFF_TS, GRANULARITY_MS, 0, TAG_COLUMNS, NUMERIC_COLUMNS);
-      // One block left: the coarse one. Everything the snapshot named above it is gone by retention.
-      store.truncateToBlockCount(0);
+      // Keeps the first block, drops the two above it - a rollback of blocks this store had speculatively added.
+      store.truncateToBlockCount(1);
 
       final AggregationMetrics metrics = new AggregationMetrics();
       final List<Object[]> rows = new ArrayList<>();
-      assertThat(store.forEachRow(snapshot, 0L, Long.MAX_VALUE, null, null, metrics, rows::add)).isTrue();
+      assertThat(store.forEachRow(snapshot, 0L, Long.MAX_VALUE, null, null, metrics, rows::add))
+          .as("no downsample ran, so nothing is refused").isTrue();
+      assertThat(rows).as("the block it kept still reads").hasSize(2);
+      assertThat(metrics.getVanishedBlocks()).isEqualTo(2);
+    }
 
-      assertThat(rows).isEmpty();
-      assertThat(metrics.getVanishedBlocks()).isEqualTo(3);
+    FileUtils.deleteRecursively(new File(BASE_DIR));
+    new File(BASE_DIR).mkdirs();
+
+    try (final TimeSeriesSealedStore store = threeBlockStore()) {
+      final BlockDirectorySnapshot snapshot = store.snapshotBlockDirectory(0L, Long.MAX_VALUE);
+      store.downsampleBlocks(CUTOFF_TS, GRANULARITY_MS, 0, TAG_COLUMNS, NUMERIC_COLUMNS);
+      store.truncateToBlockCount(0);
+
+      final List<Object[]> rows = new ArrayList<>();
+      assertThatThrownBy(() -> store.forEachRow(snapshot, 0L, Long.MAX_VALUE, null, null, null, rows::add))
+          .as("a downsample ran and no boundary excuses these blocks, so the walk is refused")
+          .isInstanceOf(TimeSeriesWalkCoarsenedException.class);
+    }
+  }
+
+  /**
+   * The reproducer the review of PR #8197 described, and the reason the tail boundary is gone rather than merely
+   * moved: a shard whose compaction once rolled back must not spend the rest of the process excusing every block
+   * it compacts afterwards as retired.
+   * <p>
+   * Rolls back a tail truncate, seals NEW blocks past the line it drew, downsamples THOSE, and walks across the
+   * downsample with a snapshot taken before it. With a tail watermark this answered silently short; the refusal
+   * is the whole point of the class.
+   */
+  @Test
+  void aRolledBackTailTruncateDoesNotExcuseTheBlocksCompactedAfterIt() throws Exception {
+    try (final TimeSeriesSealedStore store = threeBlockStore()) {
+      // The rollback: every speculative block goes, as a failed compact() would undo them. The line it draws is
+      // at timestamp 1000, the first block dropped - and everything the shard seals from here on is above it,
+      // which is exactly what a watermark fed from this call would then excuse for the rest of the process.
+      store.truncateToBlockCount(0);
+      assertThat(store.getBlockCount()).isZero();
+
+      // The shard carries on, sealing new blocks ABOVE the line that rollback drew.
+      appendBlock(store, 3000L, "B");
+      appendBlock(store, 5000L, "C");
+      store.flushHeader();
+
+      final BlockDirectorySnapshot snapshot = store.snapshotBlockDirectory(0L, Long.MAX_VALUE);
+      assertThat(snapshot.blocks()).hasSize(2);
+
+      // ... and those new blocks are coarsened, which is a REPLACEMENT and not a retirement.
+      store.downsampleBlocks(CUTOFF_TS, GRANULARITY_MS, 0, TAG_COLUMNS, NUMERIC_COLUMNS);
+
+      final List<Object[]> rows = new ArrayList<>();
+      assertThatThrownBy(() -> store.forEachRow(snapshot, 0L, Long.MAX_VALUE, null, null, null, rows::add))
+          .as("a rollback is not retention, so it may not excuse a later downsample as one")
+          .isInstanceOf(TimeSeriesWalkCoarsenedException.class);
     }
   }
 

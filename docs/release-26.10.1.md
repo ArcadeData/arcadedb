@@ -80,9 +80,11 @@ file reads, from the image itself, whether the leader retired blocks or rewrote 
 install of a leader-downsampled store is refused rather than answered short. No file-format change is involved -
 ids that went away while others arrived in their place say it.
 
-A walk that meets BOTH maintenance passes is attributed correctly: retention records the boundary each truncate
-moved, so a block that fell inside it is counted as vanished even when an unrelated downsample ran in the same
-store, and only a block retention cannot account for is refused.
+A walk that meets BOTH maintenance passes is attributed correctly: a retention `truncateBefore` records the
+cutoff it swept past - after the rewrite lands, not before - so a block that fell inside it is counted as
+vanished even when an unrelated downsample ran in the same store, and only a block retention cannot account for
+is refused. The cutoff is recorded for the lower boundary alone, because only a lower one can be permanent in a
+store that keeps compacting forward.
 
 ## Improvements
 
