@@ -545,12 +545,43 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     if (convertedKeys == null)
       return null;
 
-    for (int i = 0; i < convertedKeys.length; ++i) {
-      if (convertedKeys[i] instanceof String string)
-        // OPTIMIZATION: ALWAYS CONVERT STRINGS TO BYTE[]
-        convertedKeys[i] = string.getBytes(DatabaseFactory.getDefaultCharset());
-    }
-    return convertedKeys;
+    // IN PLACE, into the array convertKeysToDeclaredTypes just allocated: no caller of THIS method keeps the narrowed
+    // form, so there is nothing to preserve and nothing to gain from a second array on an index get/put/remove.
+    return encodeStrings(convertedKeys, convertedKeys);
+  }
+
+  /**
+   * Layers only the disk-storage {@code byte[]}-for-{@code String} probe encoding on top of keys ALREADY narrowed by
+   * {@link #convertKeysToDeclaredTypes}, into a NEW array so the narrowed one survives untouched.
+   * <p>
+   * For the one caller that needs BOTH forms of the same bound - {@code LSMTreeIndexCursor}, which seeds
+   * {@code lookupInPage} with the encoded form and compares deserialized keys against the narrowed one. It used to
+   * build them independently, which ran the declared-type narrowing and the collation folding twice over every
+   * component of every bound on every seek (issue #7840). Everything else goes through {@link #convertKeys}, which
+   * needs no copy.
+   *
+   * @param declaredTypeKeys keys already narrowed to the index's declared types, or {@code null}
+   *
+   * @return a new array with each {@code String} component encoded, or {@code null} when the input is
+   * {@code null} itself
+   */
+  protected static Object[] encodeKeysForPageProbe(final Object[] declaredTypeKeys) {
+    if (declaredTypeKeys == null)
+      return null;
+
+    return encodeStrings(declaredTypeKeys, new Object[declaredTypeKeys.length]);
+  }
+
+  /**
+   * Writes each component of {@code source} into {@code target}, encoding the {@code String} ones the way the pages
+   * store them. {@code target} may BE {@code source}, which is how {@link #convertKeys} avoids a second array.
+   */
+  private static Object[] encodeStrings(final Object[] source, final Object[] target) {
+    for (int i = 0; i < source.length; ++i)
+      // OPTIMIZATION: ALWAYS CONVERT STRINGS TO BYTE[]
+      target[i] = source[i] instanceof String string ? string.getBytes(DatabaseFactory.getDefaultCharset()) : source[i];
+
+    return target;
   }
 
   /**
