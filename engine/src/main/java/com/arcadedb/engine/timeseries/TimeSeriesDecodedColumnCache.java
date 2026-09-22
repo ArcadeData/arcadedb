@@ -18,9 +18,12 @@
  */
 package com.arcadedb.engine.timeseries;
 
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Decoded sealed-block columns, kept so that reading the same block twice decodes it once (issue #8179).
@@ -181,9 +184,11 @@ final class TimeSeriesDecodedColumnCache {
     if (array instanceof double[] a)
       return 16L + 8L * a.length;
     if (array instanceof String[] a)
-      return 16L + 8L * a.length;
+      return 16L + 8L * a.length + distinctStringBytes(a);
     if (array instanceof Object[] a)
-      return 16L + (holdsSharedReferences(a) ? 8L : 24L) * a.length;
+      return holdsSharedReferences(a)
+          ? 16L + 8L * a.length + distinctStringBytes(a)
+          : 16L + 24L * a.length;
     return 16L;
   }
 
@@ -197,5 +202,30 @@ final class TimeSeriesDecodedColumnCache {
         return value instanceof String;
     }
     return true;
+  }
+
+  /**
+   * What the DISTINCT strings an array points at retain, on top of the slots pointing at them (code review on PR
+   * #8194).
+   * <p>
+   * Counting the references alone would have been right if the strings outlived the array anyway, and they do not:
+   * {@code DictionaryCodec.decode} builds each one with {@code new String(utf8, UTF_8)} per call, so holding the
+   * array is what keeps them alive. A block may carry up to {@code DictionaryCodec.MAX_DICTIONARY_SIZE} = 65535
+   * distinct values, so the gap between "65536 references" and what those references retain is megabytes on a column
+   * charged half of one - and the budget is the only thing bounding this cache's footprint.
+   * <p>
+   * Deduplicated by IDENTITY, which is both cheaper than equality and the accurate measure: every slot of a decoded
+   * dictionary column points into the same small array of distinct values, so the retained set is that array and not
+   * one string per row. Sizes are deliberately generous - an object header plus two bytes per character, the
+   * worst-case UTF-16 coder - because an estimate that bounds memory should err upwards.
+   */
+  private static long distinctStringBytes(final Object[] values) {
+    final Set<String> counted = Collections.newSetFromMap(new IdentityHashMap<>());
+    long bytes = 0;
+    for (final Object value : values) {
+      if (value instanceof String text && counted.add(text))
+        bytes += 40L + 2L * text.length();
+    }
+    return bytes;
   }
 }

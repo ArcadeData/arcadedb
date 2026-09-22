@@ -35,6 +35,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.function.IntFunction;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -242,6 +243,36 @@ class Issue8179DecodedBlockCacheTest extends TestHelper {
   }
 
   /**
+   * A high-cardinality tag column is charged for the strings it retains, not just for the slots pointing at them
+   * (code review on PR #8194).
+   * <p>
+   * {@code DictionaryCodec.decode} allocates every value with {@code new String(utf8, UTF_8)} per call, so holding
+   * the decoded array is what keeps those strings alive, and a block may carry up to 65535 distinct ones. Charging
+   * the references alone put megabytes in a cache that believed it held half a megabyte. The comparison is against
+   * the SAME row count carrying a handful of repeated values, which is the shape the reference-only charge was right
+   * for: the two differ only in how many distinct strings the column retains.
+   */
+  @Test
+  void aHighCardinalityTagIsChargedForTheStringsItRetains() throws Exception {
+    final int rows = 4_000;
+    final String padding = "x".repeat(200);
+
+    final TimeSeriesEngine repeated = createMetric("few_values", 1, 64L);
+    appendTags(repeated, rows, i -> "host_" + (i % 4) + padding);
+    repeated.compactAll();
+    assertThat(repeated.query(Long.MIN_VALUE, Long.MAX_VALUE, TS_AND_VALUE, null)).isNotEmpty();
+
+    final TimeSeriesEngine distinct = createMetric("all_distinct", 1, 64L);
+    appendTags(distinct, rows, i -> "host_" + i + padding);
+    distinct.compactAll();
+    assertThat(distinct.query(Long.MIN_VALUE, Long.MAX_VALUE, TS_AND_VALUE, null)).isNotEmpty();
+
+    assertThat(cacheOf(distinct).getHeldBytes())
+        .as("a column retaining one distinct 200-char string per row costs far more than one retaining four")
+        .isGreaterThan(cacheOf(repeated).getHeldBytes() * 2);
+  }
+
+  /**
    * Readers racing on the same store get the same rows, whichever of them decoded a column and whichever was handed
    * it back.
    * <p>
@@ -336,6 +367,20 @@ class Issue8179DecodedBlockCacheTest extends TestHelper {
         .withCompactionBucketInterval(BUCKET_MS)
         .create();
     return ((LocalTimeSeriesType) database.getSchema().getType(typeName)).getEngine();
+  }
+
+  /** Appends {@code count} samples whose tag value is whatever {@code tag} makes of the row number. */
+  private void appendTags(final TimeSeriesEngine engine, final int count, final IntFunction<String> tag)
+      throws IOException {
+    final long[] timestamps = new long[count];
+    final Object[] tags = new Object[count];
+    final Object[] values = new Object[count];
+    for (int i = 0; i < count; i++) {
+      timestamps[i] = BASE_TS + i * STEP_MS;
+      tags[i] = tag.apply(i);
+      values[i] = (double) i;
+    }
+    engine.appendBatch(timestamps, new Object[][] { tags, values });
   }
 
   private void appendHosts(final TimeSeriesEngine engine, final long startOffsetMs, final int count,
