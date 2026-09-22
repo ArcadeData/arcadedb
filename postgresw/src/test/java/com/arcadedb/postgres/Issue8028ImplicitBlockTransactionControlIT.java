@@ -71,6 +71,7 @@ class Issue8028ImplicitBlockTransactionControlIT extends PostgresWireProtocolTes
   private static final String SIMPLE_ROLLBACK_TYPE = "Issue8028SimpleRollback";
   private static final String SIMPLE_COMMIT_TYPE   = "Issue8028SimpleCommit";
   private static final String EXPLICIT_TYPE        = "Issue8028Explicit";
+  private static final String NO_BLOCK_TYPE       = "Issue8028NoBlock";
 
   @Test
   @DisplayName("[#8028] ROLLBACK inside an implicit block discards its writes instead of leaving them for Sync to commit")
@@ -209,6 +210,53 @@ class Issue8028ImplicitBlockTransactionControlIT extends PostgresWireProtocolTes
     });
 
     assertThat(idsOf(EXPLICIT_TYPE)).as("only the explicitly committed row survives").containsExactly(600);
+  }
+
+  @Test
+  @DisplayName("[#8028] COMMIT and ROLLBACK with no transaction open are acknowledged and leave the session usable")
+  void transactionControlWithNothingOpenIsAcknowledgedAndHarmless() throws Exception {
+    withConnection((out, in) -> {
+      createType(out, in, NO_BLOCK_TYPE);
+
+      // Nothing is open on either protocol here, which is the other side of the isTransactionActive() guard
+      // the fix now relies on: before it, the flag short-circuited and the database was never even asked.
+      // PostgreSQL answers a COMMIT/ROLLBACK outside a block with a warning and the command tag, not an
+      // error, and every driver that ends a unit of work unconditionally sends one.
+      sendSimpleQuery(out, "ROLLBACK");
+      final List<WireMessage> simpleRollback = readUntilReadyForQuery(in);
+      assertThat(messageTypesOf(simpleRollback)).as("a stray ROLLBACK is not an error").doesNotContain('E');
+      assertThat(readyForQueryStatusOf(simpleRollback)).isEqualTo('I');
+
+      sendSimpleQuery(out, "COMMIT");
+      final List<WireMessage> simpleCommit = readUntilReadyForQuery(in);
+      assertThat(messageTypesOf(simpleCommit)).as("a stray COMMIT is not an error").doesNotContain('E');
+      assertThat(readyForQueryStatusOf(simpleCommit)).isEqualTo('I');
+
+      // The same pair over the extended protocol, each as its own pipeline so no write precedes them.
+      parseBindExecute(out, "r0", "ROLLBACK");
+      sendSync(out);
+      final List<WireMessage> extRollback = readUntilReadyForQuery(in);
+      assertThat(messageTypesOf(extRollback)).doesNotContain('E');
+      assertThat(commandTagsOf(extRollback)).contains("ROLLBACK");
+      assertThat(readyForQueryStatusOf(extRollback)).isEqualTo('I');
+
+      parseBindExecute(out, "c0", "COMMIT");
+      sendSync(out);
+      final List<WireMessage> extCommit = readUntilReadyForQuery(in);
+      assertThat(messageTypesOf(extCommit)).doesNotContain('E');
+      assertThat(commandTagsOf(extCommit)).contains("COMMIT");
+      assertThat(readyForQueryStatusOf(extCommit)).isEqualTo('I');
+
+      // And none of the four left the connection in a state that swallows the next write.
+      parseBindExecute(out, "w", "INSERT INTO " + NO_BLOCK_TYPE + " SET id = 700");
+      sendSync(out);
+      final List<WireMessage> afterWrite = readUntilReadyForQuery(in);
+      assertThat(messageTypesOf(afterWrite)).doesNotContain('E');
+      assertThat(readyForQueryStatusOf(afterWrite)).isEqualTo('I');
+    });
+
+    assertThat(idsOf(NO_BLOCK_TYPE)).as("the write that followed four no-op transaction-control statements commits")
+        .containsExactly(700);
   }
 
   private interface WireExchange {
