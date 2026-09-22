@@ -541,7 +541,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // Raised by close(), read by persistAppliedIndexFile(): a lifecycle task that is already past its last
   // interruption point when shutdownNow() lands must not recreate .raft/applied-index under a directory the
   // shutdown is removing (issue #7735). A closed state machine is never reused - RaftHAServer.restartRatis()
-  // builds a new one - so nothing is lost by refusing the write.
+  // builds a new one - so nothing is lost by refusing the write. Written under appliedIndexFileLock, which every
+  // writer holds across its whole check-and-write, so raising it also waits out a write already in flight.
   private volatile boolean closed;
 
   // Bounded escalation (issue #4740): a node that can never resync (no stable leader reachable)
@@ -5536,15 +5537,22 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * the resync on the HealthMonitor tick until the database is refreshed for real.
    */
   private void markDatabasesNotAtSnapshotIndex(final Set<String> databases, final long snapshotIndex) {
+    // One quarantine write for the whole batch (code review on PR #8146). Since the quarantine became durable
+    // (#7735) a per-database markStateDiverged() would re-serialise the applied-index file and fsync+rename it
+    // once per database, back to back, while holding the lock the apply thread also needs - N synchronous
+    // rewrites where this loop used to do pure in-memory work. The set is what one install gave up on, so it
+    // can be more than a couple on a node with many co-located databases.
+    quarantineDatabases(databases, DivergenceCause.SNAPSHOT_INSTALL_INCOMPLETE);
+
     for (final String dbName : databases) {
       // The persisted position was deliberately NOT advanced for this database above, so it still carries whatever
       // this node genuinely applied. -1 (never recorded) clamps to 0, which is the honest answer for a database
       // nothing is known about.
       final long floor = Math.max(0L, readPersistedAppliedIndex(dbName));
       staleDatabaseAppliedFloors.put(dbName, floor);
-      // Named, because the alert quotes it: nothing failed while APPLYING anything here, the install is what did
-      // not finish the job, and an operator sent to look for an apply error would find none (issue #7741).
-      markStateDiverged(dbName, DivergenceCause.SNAPSHOT_INSTALL_INCOMPLETE);
+      // The cause is named above, because the alert quotes it: nothing failed while APPLYING anything here, the
+      // install is what did not finish the job, and an operator sent to look for an apply error would find none
+      // (issue #7741).
       LogManager.instance().log(this, Level.SEVERE,
           "Snapshot install did not bring database '%s' to snapshotIndex=%d: keeping it marked diverged and "
               + "clamping its LINEARIZABLE / read-your-writes reads at appliedIndex=%d until a resync succeeds. "
@@ -5737,6 +5745,42 @@ public class ArcadeStateMachine extends BaseStateMachine {
                 + "writable and has free space (issue #7735)",
             dbName, cause, getAppliedIndexFile());
       return true;
+    }
+  }
+
+  /**
+   * {@link #quarantineDatabase} for a whole batch, in ONE file write (code review on PR #8146).
+   * <p>
+   * Same lock, same load-before-mutate, same first-cause-wins semantics; the only difference is that the file is
+   * rewritten once for the set rather than once per member. Used by the snapshot-install path, which learns
+   * about every database it gave up on at the same moment.
+   * <p>
+   * Deliberately does NOT drive a resync per database the way {@link #handleUnexpectedApplyError} does: its one
+   * caller publishes a read floor beside each mark and leaves recovery to
+   * {@link #retryUnfilledSnapshotGap()}, which is what #6760 chose.
+   *
+   * @return the databases this call newly quarantined, empty when every one of them already was
+   */
+  // @VisibleForTesting
+  Set<String> quarantineDatabases(final Collection<String> dbNames, final DivergenceCause cause) {
+    if (dbNames == null || dbNames.isEmpty())
+      return Set.of();
+    synchronized (appliedIndexFileLock) {
+      ensureAppliedIndexLoaded();
+      final Set<String> added = new HashSet<>();
+      for (final String dbName : dbNames)
+        if (dbName != null && !dbName.isEmpty() && divergedDatabases.putIfAbsent(dbName, cause) == null)
+          added.add(dbName);
+      if (added.isEmpty())
+        return Set.of();
+      if (!persistAppliedIndexFile() && !closed)
+        LogManager.instance().log(this, Level.WARNING,
+            "Database(s) %s are quarantined (%s) but the quarantine could NOT be written to %s: a restart before "
+                + "this is fixed comes back without it. The log is not checkpointed while a database is "
+                + "quarantined, so the skipped entries stay replayable, but check that the .raft directory is "
+                + "writable and has free space (issue #7735)",
+            added, cause, getAppliedIndexFile());
+      return added;
     }
   }
 
@@ -5940,7 +5984,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // writePersistedAppliedIndex() and recreate .raft/applied-index after the directory it lives in is gone
     // (issue #7735). A closed state machine is never reused - restartRatis() builds a new one - so there is no
     // write left that is worth making.
-    closed = true;
+    //
+    // Under appliedIndexFileLock, not as a bare volatile write (CodeRabbit on PR #8146): every caller of
+    // persistAppliedIndexFile() holds that lock for the whole check-and-write, so taking it here BOTH waits for a
+    // writer that already passed the closed check and guarantees that every later one observes the flag. A bare
+    // write leaves the window this guard exists to close - a writer between the check and createDirectories().
+    synchronized (appliedIndexFileLock) {
+      closed = true;
+    }
     lifecycleExecutor.shutdownNow();
     snapshotInstallExecutor.shutdownNow();
     membershipSecuritySeeder.close();

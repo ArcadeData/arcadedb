@@ -36,6 +36,7 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -330,6 +331,58 @@ class Issue7735QuarantineSurvivesRestartTest {
           .as("the first cause is the one that describes what went wrong")
           .containsEntry(DB_A, DivergenceCause.WAL_VERSION_GAP);
       assertThat(sm.isDatabaseDiverged(DB_A)).isTrue();
+    } finally {
+      sm.close();
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // The batch writer the snapshot-install path uses
+  // ---------------------------------------------------------------------------------------------
+
+  /**
+   * A snapshot install learns about every database it gave up on at once, so it quarantines them in one write
+   * rather than rewriting the applied-index file once per database (code review on PR #8146). The batch has to
+   * be as durable as the single-database writer.
+   */
+  @Test
+  void aBatchQuarantineIsWrittenOnceAndRestoresEveryDatabase(@TempDir final Path tempDir) throws Exception {
+    final ArcadeStateMachine before = newStateMachine(tempDir);
+    try {
+      assertThat(before.quarantineDatabases(List.of(DB_A, DB_B), DivergenceCause.SNAPSHOT_INSTALL_INCOMPLETE))
+          .containsExactlyInAnyOrder(DB_A, DB_B);
+    } finally {
+      before.close();
+    }
+
+    final JSONObject quarantine = new JSONObject(Files.readString(appliedIndexFile(tempDir)))
+        .getJSONObject("quarantine");
+    assertThat(quarantine.keySet()).as("one file, both databases").containsExactlyInAnyOrder(DB_A, DB_B);
+
+    final ArcadeStateMachine after = newStateMachine(tempDir);
+    try {
+      assertThat(after.getLocalResyncState().divergedDatabases()).containsExactly(DB_B, DB_A);
+      assertThat(after.getLocalResyncState().divergenceCauses())
+          .containsEntry(DB_A, DivergenceCause.SNAPSHOT_INSTALL_INCOMPLETE)
+          .containsEntry(DB_B, DivergenceCause.SNAPSHOT_INSTALL_INCOMPLETE);
+    } finally {
+      after.close();
+    }
+  }
+
+  /** The batch reports only what it newly quarantined, so first-cause-wins survives it. */
+  @Test
+  void aBatchReportsOnlyTheDatabasesItNewlyQuarantined(@TempDir final Path tempDir) throws Exception {
+    final ArcadeStateMachine sm = newStateMachine(tempDir);
+    try {
+      sm.markStateDiverged(DB_A, DivergenceCause.WAL_VERSION_GAP);
+
+      assertThat(sm.quarantineDatabases(List.of(DB_A, DB_B), DivergenceCause.SNAPSHOT_INSTALL_INCOMPLETE))
+          .containsExactly(DB_B);
+      assertThat(sm.getLocalResyncState().divergenceCauses())
+          .as("the earlier cause stands")
+          .containsEntry(DB_A, DivergenceCause.WAL_VERSION_GAP)
+          .containsEntry(DB_B, DivergenceCause.SNAPSHOT_INSTALL_INCOMPLETE);
     } finally {
       sm.close();
     }
