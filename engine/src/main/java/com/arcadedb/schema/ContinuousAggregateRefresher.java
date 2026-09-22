@@ -75,6 +75,13 @@ public class ContinuousAggregateRefresher {
       final Long[] advancedWatermark = new Long[1];
 
       database.transaction(() -> {
+        // RESET FIRST. database.transaction() retries this very lambda on a NeedRetryException, rolling back in
+        // between, and advancedWatermark outlives the attempt that wrote it - so a watermark computed by an attempt
+        // that was then DISCARDED would survive into one that committed a smaller result, advancing the watermark
+        // past the data that actually exists (found in review). maxBucketTs and maxBucketSeen are re-initialised per
+        // attempt because they are declared inside the lambda; this one has to be told.
+        advancedWatermark[0] = null;
+
         // Delete rows in the current (possibly incomplete) bucket and all newer buckets. #8152: the guard used to be
         // `watermark > 0`, which skipped the delete for an aggregate legitimately anchored at the epoch and let that
         // one bucket gain a duplicate on every refresh.
@@ -121,10 +128,6 @@ public class ContinuousAggregateRefresher {
       // The transaction committed, so the rows the watermark refers to are durable and it can be installed.
       if (advancedWatermark[0] != null)
         ca.setWatermarkTs(advancedWatermark[0]);
-      // The duplicates of the pre-#8152 era are gone with the rows that were just replaced.
-      if (cleanRebuild)
-        ca.cleanRebuildDone();
-
       final long durationMs = (System.nanoTime() - startNs) / 1_000_000;
       ca.recordRefreshSuccess(durationMs);
       ca.updateLastRefreshTime();
@@ -146,6 +149,13 @@ public class ContinuousAggregateRefresher {
           throw saveEx;
         }
       }
+
+      // The duplicates of the pre-#8152 era are gone with the rows that were just replaced - but only once the
+      // schema that records it is on disk. Clearing the flag before that (found by CodeRabbit) meant a failed
+      // saveConfiguration left an aggregate with a correct backing type, a watermark rolled back to unset and no
+      // flag: the next refresh would have appended a full copy on top of the rows the rebuild had just committed.
+      if (cleanRebuild)
+        ca.cleanRebuildDone();
 
     } catch (final Exception e) {
       ca.recordRefreshError();
