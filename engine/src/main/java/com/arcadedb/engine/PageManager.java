@@ -72,7 +72,9 @@ import java.util.function.BiFunction;
  * {@link #openSnapshot} walks 1 to 5 in that order; {@link FileManager#dropFile} takes 4 then 5, which agrees. No
  * path takes the FileManager monitor and then this manager's lock, and none takes the registry lock and then
  * anything else - {@code PageSnapshot.close()} unregisters (5) and only then drops its retained files, holding
- * nothing. {@link #beginDatabaseClose} waits on (5) holding nothing else (#7458).
+ * nothing. {@link #beginDatabaseClose} waits on (5) holding nothing else (#7458). {@link #suspendFlushAndExecute}
+ * takes 2 then 3, for its own residual drain and suspend acquisition (issue #8111) - the same order
+ * {@link #openSnapshot} uses for that pair - and releases both before touching anything past them.
  */
 public class PageManager extends LockContext {
   public static final PageManager INSTANCE = new PageManager();
