@@ -54,54 +54,80 @@ class ExpressionTypeDetector {
     // text-length tolerance, never swallow a short trailing operator such as "= 0".
 
     // count(*) - special grammar rule
-    final Cypher25Parser.CountStarContext countStarCtx = builder.findCountStarRecursive(ctx);
-    if (spansFullExpression(countStarCtx, ctx)) {
+    if (findSpanning(ctx, Cypher25Parser.CountStarContext.class) != null) {
       final List<Expression> args = new ArrayList<>();
       args.add(new StarExpression());
       return new FunctionCallExpression("count", args, false);
     }
 
     // EXISTS expression
-    final Cypher25Parser.ExistsExpressionContext existsCtx = builder.findExistsExpressionRecursive(ctx);
-    if (spansFullExpression(existsCtx, ctx))
+    final Cypher25Parser.ExistsExpressionContext existsCtx = findSpanning(ctx, Cypher25Parser.ExistsExpressionContext.class);
+    if (existsCtx != null)
       return builder.parseExistsExpression(existsCtx);
 
     // COLLECT { ... } subquery expression
-    final Cypher25Parser.CollectExpressionContext collectCtx = builder.findCollectExpressionRecursive(ctx);
-    if (spansFullExpression(collectCtx, ctx))
+    final Cypher25Parser.CollectExpressionContext collectCtx = findSpanning(ctx, Cypher25Parser.CollectExpressionContext.class);
+    if (collectCtx != null)
       return builder.parseCollectExpression(collectCtx);
 
     // COUNT { ... } subquery expression
-    final Cypher25Parser.CountExpressionContext countCtx = builder.findCountExpressionRecursive(ctx);
-    if (spansFullExpression(countCtx, ctx))
+    final Cypher25Parser.CountExpressionContext countCtx = findSpanning(ctx, Cypher25Parser.CountExpressionContext.class);
+    if (countCtx != null)
       return builder.parseCountExpression(countCtx);
 
     // CASE expressions (both forms)
-    final Cypher25Parser.CaseExpressionContext caseCtx = builder.findCaseExpressionRecursive(ctx);
-    if (spansFullExpression(caseCtx, ctx))
+    final Cypher25Parser.CaseExpressionContext caseCtx = findSpanning(ctx, Cypher25Parser.CaseExpressionContext.class);
+    if (caseCtx != null)
       return builder.parseCaseExpression(caseCtx);
 
-    final Cypher25Parser.ExtendedCaseExpressionContext extCaseCtx = builder.findExtendedCaseExpressionRecursive(ctx);
-    if (spansFullExpression(extCaseCtx, ctx))
+    final Cypher25Parser.ExtendedCaseExpressionContext extCaseCtx = findSpanning(ctx,
+        Cypher25Parser.ExtendedCaseExpressionContext.class);
+    if (extCaseCtx != null)
       return builder.parseExtendedCaseExpression(extCaseCtx);
 
     // shortestPath expressions
-    final Cypher25Parser.ShortestPathExpressionContext shortestPathCtx = builder.findShortestPathExpressionRecursive(ctx);
-    if (spansFullExpression(shortestPathCtx, ctx))
+    final Cypher25Parser.ShortestPathExpressionContext shortestPathCtx = findSpanning(ctx,
+        Cypher25Parser.ShortestPathExpressionContext.class);
+    if (shortestPathCtx != null)
       return builder.parseShortestPathExpression(shortestPathCtx);
 
     return null;
   }
 
   /**
-   * Returns true when {@code sub} covers the whole {@code full} expression, i.e. they share the
-   * same first and last tokens. Using token boundaries (rather than a text-length tolerance) is
-   * exact: a trailing operator such as {@code = 0} shifts {@code full}'s stop token past
-   * {@code sub}'s, so the special-function context is correctly recognized as only a sub-part of a
-   * larger comparison/arithmetic expression (issue #5140).
+   * The first descendant of {@code full} (or {@code full} itself) of type {@code type} that covers the WHOLE of
+   * {@code full}, i.e. shares its first and last tokens - or {@code null} when there is none.
+   * <p>
+   * Using token boundaries rather than a text-length tolerance is exact: a trailing operator such as {@code = 0}
+   * shifts {@code full}'s stop token past the sub-expression's, so a special-function context is correctly
+   * recognized as only a sub-part of a larger comparison/arithmetic expression (issue #5140).
+   * <p>
+   * The search walks the full-span SPINE instead of the whole subtree (issue #8132), which is not an approximation:
+   * if a descendant D shares both tokens with {@code full}, then so does every node between them, because an
+   * ancestor's span contains D's and is contained in {@code full}'s. That chain is unique - a node can have at most
+   * one child that still carries its first AND last token - so the spine is O(depth) where the subtree search this
+   * replaces was O(size), and it was run once per candidate type, over and over, at every level of the grammar's
+   * expression cascade. It also answers the same way when nothing spans: the subtree search returned the
+   * FIRST match in depth-first pre-order, and a spanning match is always that first one (any node visited before it
+   * is one of its ancestors, since a sibling to its left would have to carry tokens it starts on).
    */
-  private static boolean spansFullExpression(final ParserRuleContext sub, final ParserRuleContext full) {
-    return sub != null && sub.getStart() == full.getStart() && sub.getStop() == full.getStop();
+  private static <T extends ParserRuleContext> T findSpanning(final ParserRuleContext full, final Class<T> type) {
+    ParserRuleContext node = full;
+    while (node != null) {
+      if (type.isInstance(node))
+        return type.cast(node);
+      node = fullSpanChildOf(node, full);
+    }
+    return null;
+  }
+
+  /** The single child of {@code node} that still carries both of {@code full}'s boundary tokens, or {@code null}. */
+  private static ParserRuleContext fullSpanChildOf(final ParserRuleContext node, final ParserRuleContext full) {
+    for (int i = 0; i < node.getChildCount(); i++)
+      if (node.getChild(i) instanceof ParserRuleContext child && child.getStart() == full.getStart()
+          && child.getStop() == full.getStop())
+        return child;
+    return null;
   }
 
   /**
@@ -115,23 +141,26 @@ class ExpressionTypeDetector {
     // (issue #5342). Token-span equality is exact and lets those cases fall through to arithmetic.
 
     // reduce expressions
-    final Cypher25Parser.ReduceExpressionContext reduceCtx = builder.findReduceExpressionRecursive(ctx);
-    if (reduceCtx != null && spansFullExpression(reduceCtx, ctx))
+    final Cypher25Parser.ReduceExpressionContext reduceCtx = findSpanning(ctx, Cypher25Parser.ReduceExpressionContext.class);
+    if (reduceCtx != null)
       return builder.parseReduceExpression(reduceCtx);
 
     // allReduce expressions
-    final Cypher25Parser.AllReduceExpressionContext allReduceCtx = builder.findAllReduceExpressionRecursive(ctx);
-    if (allReduceCtx != null && spansFullExpression(allReduceCtx, ctx))
+    final Cypher25Parser.AllReduceExpressionContext allReduceCtx = findSpanning(ctx,
+        Cypher25Parser.AllReduceExpressionContext.class);
+    if (allReduceCtx != null)
       return builder.parseAllReduceExpression(allReduceCtx);
 
     // Pattern comprehensions
-    final Cypher25Parser.PatternComprehensionContext patternCompCtx = builder.findPatternComprehensionRecursive(ctx);
-    if (patternCompCtx != null && spansFullExpression(patternCompCtx, ctx))
+    final Cypher25Parser.PatternComprehensionContext patternCompCtx = findSpanning(ctx,
+        Cypher25Parser.PatternComprehensionContext.class);
+    if (patternCompCtx != null)
       return builder.parsePatternComprehension(patternCompCtx);
 
     // List comprehensions
-    final Cypher25Parser.ListComprehensionContext listCompCtx = builder.findListComprehensionRecursive(ctx);
-    if (listCompCtx != null && spansFullExpression(listCompCtx, ctx))
+    final Cypher25Parser.ListComprehensionContext listCompCtx = findSpanning(ctx,
+        Cypher25Parser.ListComprehensionContext.class);
+    if (listCompCtx != null)
       return builder.parseListComprehension(listCompCtx);
 
     return null;

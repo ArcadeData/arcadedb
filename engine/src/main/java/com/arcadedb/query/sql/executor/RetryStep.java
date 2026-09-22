@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TimeoutException;
@@ -79,6 +80,16 @@ public class RetryStep extends AbstractExecutionStep {
       return finalResult.syncPull(ctx, nRecords);
     }
     for (int attempt = 0; attempt < retries; attempt++) {
+      // #8188: the witness that this attempt published part of its work before failing. Sampled before the
+      // attempt runs and read in both catches, exactly as LocalDatabase.transaction() and
+      // DatabaseAsyncTransaction.executeTransaction() do for the same hazard (#7916). The body of a
+      // COMMIT RETRY block opens its transaction itself (its first statement is the BEGIN), so the context
+      // sampled here is the one the BEGIN activates, or - when the script runs under a caller transaction,
+      // as it does on every server path - the caller's, which the nested transaction's batch boundary reports
+      // up to (see BatchStep.commitBoundary).
+      final TransactionContext txAtStart = ctx != null ? ctx.getDatabase().getTransactionIfExists() : null;
+      final long commitCountAtStart = txAtStart != null ? txAtStart.getCommitCount() : 0;
+
       try {
         final ScriptExecutionPlan plan = initPlan(body, ctx);
         final ExecutionStepInternal result = plan.executeFull();
@@ -113,6 +124,8 @@ public class RetryStep extends AbstractExecutionStep {
         rollbackQuietly(ctx);
         if (commandDeadlineReached(ctx))
           throw ex;
+        if (partiallyCommitted(txAtStart, commitCountAtStart, attempt, ex))
+          throw ex;
 
         final ResultSet finished = giveUpOrBackOff(ctx, nRecords, attempt, ex);
         if (finished != null)
@@ -127,6 +140,8 @@ public class RetryStep extends AbstractExecutionStep {
           throw new TimeoutException(
               "COMMIT RETRY gave up after " + (attempt + 1) + " of " + retries + " attempts: the command exceeded the "
                   + ctx.getCommandDeadlineDescription(), ex);
+        if (partiallyCommitted(txAtStart, commitCountAtStart, attempt, ex))
+          throw ex;
 
         final ResultSet finished = giveUpOrBackOff(ctx, nRecords, attempt, ex);
         if (finished != null)
@@ -163,6 +178,36 @@ public class RetryStep extends AbstractExecutionStep {
 
     delayBetweenRetries(attempt);
     return null;
+  }
+
+  /**
+   * Whether the attempt that just failed already published part of its work, which makes it UNSAFE TO RE-RUN
+   * (issue #8188, the fourth loop of the shape issue #7916 named).
+   * <p>
+   * {@code COMMIT RETRY n} rolls the attempt back and executes the whole block again. A rollback can only take
+   * back what is still buffered, and a statement with an EXPLICIT batch boundary - {@code UPDATE}, {@code DELETE}
+   * or {@code MOVE VERTEX} with {@code BATCH n} - commits and re-begins in the MIDDLE of the block, so everything
+   * up to the last boundary is already durable. Replaying the block applies that half a SECOND time, once per
+   * remaining attempt, and the script can still report success.
+   * <p>
+   * The conflict goes to the caller instead, who is the only one who knows how to compensate for the half that
+   * stands. Deliberately NOT routed through {@link #giveUpOrBackOff}: the {@code ELSE} body is arbitrary
+   * statements written for a block that did nothing, and running it over a half-applied one would compound the
+   * damage rather than repair it - and {@code ELSE ... AND CONTINUE}'s empty result set would hide the conflict
+   * from a caller who must see it.
+   *
+   * @return {@code true} when the caller must propagate {@code ex} instead of retrying
+   */
+  private boolean partiallyCommitted(final TransactionContext txAtStart, final long commitCountAtStart, final int attempt,
+      final ArcadeDBException ex) {
+    if (!TransactionContext.isPartiallyCommitted(txAtStart, commitCountAtStart))
+      return false;
+
+    LogManager.instance().log(this, Level.WARNING,
+        "COMMIT RETRY block committed part of its work before failing on attempt %d of %d (a statement with a BATCH "
+            + "boundary): NOT retrying, because replaying it would apply the already durable half a second time. "
+            + "Propagating %s to the caller", attempt + 1, retries, ex.getClass().getSimpleName());
+    return true;
   }
 
   /** Discards the failed attempt's transaction. A rollback that itself fails changes nothing the caller can act on. */

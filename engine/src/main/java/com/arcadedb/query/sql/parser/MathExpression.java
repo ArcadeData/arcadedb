@@ -34,6 +34,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.MathContext;
+import java.math.RoundingMode;
 import java.time.Duration;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
@@ -188,9 +189,12 @@ public class MathExpression extends SimpleNode {
        * throws {@link ArithmeticException} only when the quotient has a non-terminating decimal expansion
        * ({@code 1 / 3}). That is the one case that HAS to round, and it rounds at {@code DECIMAL128} - 34
        * significant digits, the same precision the IEEE 754 decimal128 format carries - rather than at whatever
-       * scale the left operand happens to have. {@code DECIMAL128} rounds HALF_EVEN where the old code said
+       * scale the left operand happens to have, UNLESS that scale asks for more, in which case it rounds there
+       * instead (issue #8165: the alternative is to round at 34 digits and then pad the rest with zeros, which
+       * asserts precision that was never computed). {@code DECIMAL128} rounds HALF_EVEN where the old code said
        * HALF_UP; that is deliberate and reaches only the 34th significant digit of a quotient that has no exact
-       * form anyway (PR #8093 review).
+       * form anyway (PR #8093 review). The wider-than-34 arm keeps HALF_UP, because there it IS the old code -
+       * {@code divide(right, left.scale(), HALF_UP)} - and the point of that arm is to be no less accurate.
        * <p>
        * The left operand's scale is then reinstated as a FLOOR, which is what keeps this a pure bug fix rather
        * than a formatting change for everyone (PR #8093 review). {@code 10.00 / 2.00} answered {@code 5.00}
@@ -208,11 +212,19 @@ public class MathExpression extends SimpleNode {
           quotient = left.divide(right);
         } catch (final ArithmeticException e) {
           // Non-terminating decimal expansion: there is no exact answer to give, so bound the precision.
+          // DECIMAL128's 34 significant digits are a FLOOR on that bound, not a ceiling (issue #8165): a left
+          // operand carrying more fractional digits than DECIMAL128 gives is asking for digits this call would
+          // then have to invent, and the setScale() below would invent them as zeros - fabricated precision
+          // standing exactly where the pre-#8093 `divide(right, HALF_UP)` put correctly rounded digits. When the
+          // left operand asks for more, divide AT its scale, so every digit of the answer was computed.
           quotient = left.divide(right, MathContext.DECIMAL128);
+          if (quotient.scale() < left.scale())
+            quotient = left.divide(right, left.scale(), RoundingMode.HALF_UP);
         }
 
         // Never narrower than the left operand, never rounded to reach it: setScale() here only ever pads with
-        // zeros, because it runs only when the quotient already has fewer fractional digits than the target.
+        // zeros, because it runs only when the quotient already has fewer fractional digits than the target -
+        // and, after the widening above, only ever for an EXACT quotient, where the padding is exact too.
         return quotient.scale() < left.scale() ? quotient.setScale(left.scale()) : quotient;
       }
 
