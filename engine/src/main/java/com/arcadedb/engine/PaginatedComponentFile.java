@@ -54,6 +54,8 @@ public class PaginatedComponentFile extends ComponentFile {
    * channel can never be closed or replaced from under an in-flight operation.
    */
   private final ReentrantReadWriteLock channelLock = new ReentrantReadWriteLock();
+  // #8139: SAME THROTTLE AS WALFile - THE RESTORED INTERRUPT FLAG CLOSES THE REOPENED CHANNEL AGAIN ON THE NEXT READ
+  private final ChannelReopenLog       reopenLog   = new ChannelReopenLog();
 
   /**
    * How many whole pages this file holds, maintained in memory instead of asked of the filesystem (#6132, item 1).
@@ -97,6 +99,17 @@ public class PaginatedComponentFile extends ComponentFile {
 
   protected PaginatedComponentFile(final String filePath, final MODE mode) throws FileNotFoundException {
     super(filePath, mode);
+  }
+
+  /** #8139: the first reopen of a burst is SEVERE, the rest FINE - see {@link ChannelReopenLog}. */
+  private void logReopen(final String operation) {
+    final long folded = reopenLog.record();
+    if (folded < 0)
+      LogManager.instance().log(this, Level.FINE, "File '%s' was closed on %s. Reopen it and retry...", null, fileName, operation);
+    else
+      LogManager.instance().log(this, Level.SEVERE,
+          "File '%s' was closed on %s. Reopen it and retry... (%d more reopens of this file logged at FINE since the last report)",
+          null, fileName, operation, folded);
   }
 
   /**
@@ -144,7 +157,7 @@ public class PaginatedComponentFile extends ComponentFile {
       try {
         channel.force(metaData);
       } catch (final ClosedChannelException e) {
-        LogManager.instance().log(this, Level.SEVERE, "File '%s' was closed on force. Reopen it and retry...", null, fileName);
+        logReopen("force");
         // ClosedByInterruptException leaves the interrupted flag set; clear it so the reopened channel
         // is not immediately closed again, then restore it so callers are notified.
         final boolean wasInterrupted = Thread.interrupted();
@@ -317,7 +330,7 @@ public class PaginatedComponentFile extends ComponentFile {
         while (buffer.hasRemaining())
           pos += channel.write(buffer, pos);
       } catch (final ClosedChannelException e) {
-        LogManager.instance().log(this, Level.SEVERE, "File '%s' was closed on write. Reopen it and retry...", null, fileName);
+        logReopen("write");
         // ClosedByInterruptException leaves the interrupted flag set; clear it so the reopened channel
         // is not immediately closed again, then restore it so callers are notified.
         final boolean wasInterrupted = Thread.interrupted();
@@ -391,7 +404,7 @@ public class PaginatedComponentFile extends ComponentFile {
           pos += r;
         }
       } catch (final ClosedChannelException e) {
-        LogManager.instance().log(this, Level.SEVERE, "File '%s' was closed on read. Reopen it and retry...", null, fileName);
+        logReopen("read");
         // ClosedByInterruptException leaves the interrupted flag set; clear it so the reopened channel
         // is not immediately closed again, then restore it so callers are notified.
         final boolean wasInterrupted = Thread.interrupted();
