@@ -1148,7 +1148,8 @@ public class LocalSchema implements Schema {
     }
   }
 
-  private final Set<String> typesReportedAsUnableToHoldRecords = ConcurrentHashMap.newKeySet();
+  // KEY PREFIX IN reportedUpgradeWarnings: A TYPE LEFT BEHIND BY AN OLDER VERSION (#8169) IS AN UPGRADE LEFTOVER TOO
+  private static final String BUCKETLESS_TYPE_WARNING_PREFIX = "bucketless-type:";
 
   /**
    * #8187: a {@code schema.json} written by a version affected by #8169 carries a dropped type as a real entry with no
@@ -1163,7 +1164,7 @@ public class LocalSchema implements Schema {
         continue;
       // ONCE PER TYPE FOR THE LIFE OF THIS SCHEMA: UNDER HA loadIncremental() RE-READS THE CONFIGURATION FOR EVERY
       // REPLICATED DDL, AND THE TYPE IS DELIBERATELY LEFT IN PLACE
-      if (!typesReportedAsUnableToHoldRecords.add(typeName))
+      if (!reportedUpgradeWarnings.add(BUCKETLESS_TYPE_WARNING_PREFIX + typeName))
         continue;
       LogManager.instance().log(this, Level.WARNING,
           "Type '%s' in database '%s' has no buckets and no subtypes, so it cannot hold any record. If it is a type dropped by a version "
@@ -2561,6 +2562,9 @@ public class LocalSchema implements Schema {
 
         if (!typeMap().remove(type.getName(), type))
           throw new SchemaException("Type '" + typeName + "' not found");
+
+        // #8187: A TYPE CREATED LATER UNDER THIS NAME IS A DIFFERENT TYPE AND IS REPORTED ON ITS OWN MERITS
+        reportedUpgradeWarnings.remove(BUCKETLESS_TYPE_WARNING_PREFIX + type.getName());
       } finally {
         typeBeingDropped = previousTypeBeingDropped;
         if (setMultipleUpdate)

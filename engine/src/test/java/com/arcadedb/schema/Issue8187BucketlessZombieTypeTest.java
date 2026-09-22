@@ -99,6 +99,29 @@ public class Issue8187BucketlessZombieTypeTest extends TestHelper {
     assertThat(database.getSchema().getType("Base").getBuckets(false)).isEmpty();
   }
 
+  @Test
+  void aTypeRecreatedUnderADroppedZombieNameIsReportedAgain() throws IOException {
+    database.getSchema().createDocumentType("Invoice");
+    injectZombie("Order", "PO");
+    assertThat(WarningCapture.captureWarnings(this::reopenDatabase)).anyMatch(w -> w.contains("'Order'"));
+
+    database.command("sql", "DROP TYPE Order");
+
+    // A NEW, UNRELATED TYPE UNDER THE SAME NAME THAT ENDS UP BUCKET-LESS TOO MUST NOT INHERIT THE "ALREADY REPORTED"
+    final DocumentType order = database.getSchema().createDocumentType("Order");
+    for (final var bucket : List.copyOf(order.getBuckets(false)))
+      order.removeBucket(bucket);
+
+    final LocalSchema schema = (LocalSchema) database.getSchema().getEmbedded();
+    assertThat(WarningCapture.captureWarnings(() -> {
+      try {
+        schema.loadIncremental(ComponentFile.MODE.READ_WRITE, Set.of(), Set.of());
+      } catch (final IOException e) {
+        throw new UncheckedIOException(e);
+      }
+    })).anyMatch(w -> w.contains("'Order'"));
+  }
+
   private void injectZombie(final String name, final String alias) throws IOException {
     database.close();
 

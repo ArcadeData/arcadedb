@@ -54,6 +54,9 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   private       IndexInternal       associatedIndex;
   private       IndexMetadata       metadata;
 
+  // #8153: CACHED BY keyedCursor(), SEE THERE
+  private BinaryComparator comparator;
+
   public TypeIndex(final String logicName, final DocumentType type) {
     this.logicName = logicName;
     this.type = type;
@@ -242,9 +245,11 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   private IndexCursor keyedCursor(final Collection<Identifiable> result, final Object[] keys) {
     if (indexesOnBuckets.isEmpty())
       return new IndexCursorCollection(result);
-    final IndexInternal first = indexesOnBuckets.getFirst();
-    return new IndexCursorCollection(result, keys, first.getBinaryKeyTypes(),
-        ((DatabaseInternal) type.getSchema().getEmbedded().getDatabase()).getSerializer().getComparator());
+    BinaryComparator cmp = comparator;
+    if (cmp == null)
+      // RESOLVED ONCE: THE SERIALIZER, AND SO ITS COMPARATOR, LIVES AS LONG AS THE DATABASE. A RACE ONLY RESOLVES IT TWICE
+      comparator = cmp = ((DatabaseInternal) type.getSchema().getEmbedded().getDatabase()).getSerializer().getComparator();
+    return new IndexCursorCollection(result, keys, indexesOnBuckets.getFirst().getBinaryKeyTypes(), cmp);
   }
 
   @Override
