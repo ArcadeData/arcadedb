@@ -674,6 +674,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     stats.readTx.incrementAndGet();
   }
 
+  public void incrementStatsTxRollbacks() {
+    stats.txRollbacks.incrementAndGet();
+  }
+
   @Override
   public void commit() {
     executeInReadLock(() -> {

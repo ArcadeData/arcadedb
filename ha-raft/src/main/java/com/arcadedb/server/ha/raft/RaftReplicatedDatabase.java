@@ -554,6 +554,16 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
             tx.reset();
           if (getSchema().getEmbedded().isDirty())
             getSchema().getEmbedded().saveConfiguration();
+        } catch (final ArcadeDBException e) {
+          // Issue #8149: the same answer as the ordinary arm below. Without it a refused DDL commit left its
+          // transaction ACTIVE - the pop in the finally removes nothing from a single-level stack - with the read
+          // lock released on the way out and nothing guaranteeing the caller rolls it back.
+          rollbackRefusedCommit(tx, e);
+          throw e;
+        } catch (final Exception e) {
+          final TransactionException refusal = new TransactionException("Error on commit of schema transaction (phase 1)", e);
+          rollbackRefusedCommit(tx, refusal);
+          throw refusal;
         } finally {
           current.popIfNotLastTransaction();
         }
@@ -589,11 +599,14 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         current.popIfNotLastTransaction();
         return null;
       } catch (final ArcadeDBException e) {
-        rollback();
+        rollbackRefusedCommit(tx, e);
+        current.popIfNotLastTransaction();
         throw e;
       } catch (final Exception e) {
-        rollback();
-        throw new TransactionException("Error on commit distributed transaction (phase 1)", e);
+        final TransactionException refusal = new TransactionException("Error on commit distributed transaction (phase 1)", e);
+        rollbackRefusedCommit(tx, refusal);
+        current.popIfNotLastTransaction();
+        throw refusal;
       }
     });
 
@@ -605,6 +618,33 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     // transaction is registered with it right before the entry is dispatched, and this thread finishes the commit once
     // the entry is acknowledged. Only the leader has a state machine that applies its own entries this way.
     replicateAndCommitLocally(payload, leader, leader ? stateMachineOrNull() : null);
+  }
+
+  /**
+   * Rolls back a transaction whose commit was refused before it left this node - by phase 1, or by what the
+   * schema-commit arm runs right after it - and leaves the context stack to the caller. Both arms of
+   * {@link #commit()} end here, so what a refused commit leaves behind cannot drift between them again (issue #8149).
+   * <p>
+   * The transaction is rolled back directly rather than through {@link #rollback()}: that pops a nested transaction
+   * as well, and the schema-commit arm pops in its own {@code finally}, so the two together would discard the
+   * enclosing transaction too. The ordinary arm pops right after this call; before, it relied on {@link #rollback()}
+   * to do it, which silently did nothing when phase 1 had already rolled the transaction back itself (a conflict, a
+   * duplicate key), leaving an inactive nested transaction on top of the enclosing one.
+   * <p>
+   * A transaction that is no longer active is left alone: phase 1 rolled it back on its own, or phase 2 concluded
+   * it - after a failure past the WAL append that conclusion is a deliberate reset without rollback (issue #5053),
+   * and rolling back there would drop record state that recovery is going to replay. A failure of the rollback
+   * itself is attached to the refusal rather than replacing it.
+   */
+  private void rollbackRefusedCommit(final TransactionContext tx, final Throwable refusal) {
+    proxied.incrementStatsTxRollbacks();
+    if (!tx.isActive())
+      return;
+    try {
+      tx.rollback();
+    } catch (final RuntimeException e) {
+      refusal.addSuppressed(e);
+    }
   }
 
   /**

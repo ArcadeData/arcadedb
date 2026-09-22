@@ -154,12 +154,10 @@ class Issue8053RollbackOnlyRefusedOnTheReplicatedCommitPathTest {
           .as("no WAL bytes of an unpublishable transaction may be buffered for the SCHEMA_ENTRY")
           .isEmpty();
 
-      // Recorded, not endorsed: this arm only pops the context in its finally, where the ordinary arm above
-      // catches and rolls back, so what phase 1 refused is still open when the exception leaves commit().
-      // That asymmetry predates this change and holds for every exception phase 1 can raise - see #8149.
+      // Since #8149 this arm rolls back what phase 1 refused, the way the ordinary arm above always has.
       assertThat(proxied.isTransactionActive())
-          .as("the schema-commit arm does not roll back what phase 1 refused (#8149)")
-          .isTrue();
+          .as("the schema-commit arm rolls back what phase 1 refused (#8149)")
+          .isFalse();
     } finally {
       schemaCommitThread.remove();
       schemaWalBuffer.remove();
