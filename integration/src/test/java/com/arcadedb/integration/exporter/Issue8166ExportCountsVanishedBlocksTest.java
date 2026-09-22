@@ -32,9 +32,16 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
+import java.util.zip.GZIPInputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -80,21 +87,7 @@ class Issue8166ExportCountsVanishedBlocksTest {
       source.command("sql",
           "CREATE TIMESERIES TYPE Reading TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE) SHARDS 1");
 
-      final LocalTimeSeriesType tsType = (LocalTimeSeriesType) source.getSchema().getType("Reading");
-      final TimeSeriesEngine engine = tsType.getEngine();
-
-      final long[] timestamps = new long[SAMPLES];
-      final Object[] hosts = new Object[SAMPLES];
-      final Object[] values = new Object[SAMPLES];
-      for (int i = 0; i < SAMPLES; i++) {
-        timestamps[i] = BASE_TS + i * 1_000L;
-        hosts[i] = "host_" + (i % 4);
-        values[i] = (double) i;
-      }
-      source.begin();
-      engine.appendBatch(timestamps, new Object[][] { hosts, values });
-      source.commit();
-      engine.compactAll();
+      final TimeSeriesEngine engine = fill("Reading", source, SAMPLES);
 
       assertThat(engine.getShard(0).getSealedStore().getBlockCount())
           .as("the walk needs blocks it has not reached yet for a truncate to strand any").isGreaterThan(2);
@@ -134,6 +127,70 @@ class Issue8166ExportCountsVanishedBlocksTest {
   }
 
   /**
+   * The other half of the review point on PR #8197: a downsample landing mid-export fails THAT TYPE, not the
+   * whole export.
+   * <p>
+   * The engine raises for a coarsened block rather than answering short, and an unchecked exception propagating
+   * out of {@code exportTimeSeries} would abort a run that may already have written every vertex, edge, document
+   * and other TIMESERIES type - making an operator re-run hours of work to learn about one series. It is counted
+   * as a skipped record instead, which is the mechanism issue #6471 established for a part of an export that
+   * could not be written: every other type is still exported, and {@code Exporter} turns a non-zero count into a
+   * failed outcome at the end, so the run is loudly incomplete rather than silently short.
+   */
+  @Test
+  void aDownsampleMidExportFailsOnlyItsOwnTypeAndTheRestIsStillWritten() throws Exception {
+    try (final Database source = new DatabaseFactory(SOURCE_PATH).create()) {
+      source.command("sql",
+          "CREATE TIMESERIES TYPE Reading TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE) SHARDS 1");
+      source.command("sql",
+          "CREATE TIMESERIES TYPE Other TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE) SHARDS 1");
+
+      final TimeSeriesEngine big = fill("Reading", source, SAMPLES);
+      fill("Other", source, 2_000);
+
+      assertThat(big.getShard(0).getSealedStore().getBlockCount())
+          .as("the walk needs a block it has not reached for the downsample to strand one").isGreaterThan(2);
+
+      final ExporterContext context = new ExporterContext();
+      final ExporterSettings settings = new ExporterSettings();
+      settings.file = FILE;
+      settings.format = JsonlExporterFormat.NAME;
+      settings.overwriteFile = true;
+
+      final JsonlExporterFormat format = new JsonlExporterFormat((DatabaseInternal) source, settings, context,
+          new ConsoleLogger(0)) {
+        private boolean fired;
+
+        @Override
+        protected void writeJsonLine(final String type, final JSONObject json) throws IOException {
+          super.writeJsonLine(type, json);
+          // Fired from inside the export's own chunk flush, on whichever type is being written, so the rewrite
+          // lands mid-walk deterministically instead of by racing a background thread against it.
+          if (!fired && "ts".equals(type) && "Reading".equals(json.getString("t"))) {
+            fired = true;
+            try {
+              big.getShard(0).getSealedStore()
+                  .downsampleBlocks(Long.MAX_VALUE, 60_000L, 0, List.of(1), List.of(2));
+            } catch (final IOException e) {
+              throw new IllegalStateException("the downsample itself must not be what failed", e);
+            }
+          }
+        }
+      };
+
+      format.exportDatabase();
+
+      assertThat(context.skippedRecords.get())
+          .as("the coarsened type is recorded as a gap, which makes the export a failed outcome").isEqualTo(1);
+      assertThat(context.timeSeriesSamples.get())
+          .as("and the OTHER type was still exported rather than lost with it").isGreaterThan(0);
+
+      final List<String> types = tsTypesInExport();
+      assertThat(types).as("the export went on past the type it could not finish").contains("Other");
+    }
+  }
+
+  /**
    * The control: an export nobody disturbs reports no vanished block and writes every sample, so passing the
    * metrics through did not turn an ordinary export into a suspicious one.
    */
@@ -143,19 +200,7 @@ class Issue8166ExportCountsVanishedBlocksTest {
       source.command("sql",
           "CREATE TIMESERIES TYPE Reading TIMESTAMP ts TAGS (host STRING) FIELDS (value DOUBLE) SHARDS 1");
 
-      final TimeSeriesEngine engine = ((LocalTimeSeriesType) source.getSchema().getType("Reading")).getEngine();
-      final long[] timestamps = new long[2_000];
-      final Object[] hosts = new Object[2_000];
-      final Object[] values = new Object[2_000];
-      for (int i = 0; i < 2_000; i++) {
-        timestamps[i] = BASE_TS + i * 1_000L;
-        hosts[i] = "host_" + (i % 4);
-        values[i] = (double) i;
-      }
-      source.begin();
-      engine.appendBatch(timestamps, new Object[][] { hosts, values });
-      source.commit();
-      engine.compactAll();
+      fill("Reading", source, 2_000);
 
       final Map<String, Object> result = new Exporter(source, FILE).setFormat(JsonlExporterFormat.NAME)
           .setOverwrite(true).exportDatabase();
@@ -163,5 +208,45 @@ class Issue8166ExportCountsVanishedBlocksTest {
       assertThat(result).doesNotContainKey("vanishedTimeSeriesBlocks");
       assertThat(result).containsEntry("timeSeriesSamples", 2_000L);
     }
+  }
+
+  // ---- Helpers ----
+
+  /** Appends {@code samples} rows to an existing TIMESERIES type and seals them, returning its engine. */
+  private static TimeSeriesEngine fill(final String typeName, final Database source, final int samples)
+      throws IOException {
+    final TimeSeriesEngine engine = ((LocalTimeSeriesType) source.getSchema().getType(typeName)).getEngine();
+    final long[] timestamps = new long[samples];
+    final Object[] hosts = new Object[samples];
+    final Object[] values = new Object[samples];
+    for (int i = 0; i < samples; i++) {
+      timestamps[i] = BASE_TS + i * 1_000L;
+      hosts[i] = "host_" + (i % 4);
+      values[i] = (double) i;
+    }
+    source.begin();
+    engine.appendBatch(timestamps, new Object[][] { hosts, values });
+    source.commit();
+    engine.compactAll();
+    return engine;
+  }
+
+  /** The TIMESERIES type names that actually have a {@code "ts"} line in the written archive. */
+  private static List<String> tsTypesInExport() throws IOException {
+    final List<String> types = new ArrayList<>();
+    try (final BufferedReader reader = new BufferedReader(new InputStreamReader(
+        new GZIPInputStream(new FileInputStream(FILE)), StandardCharsets.UTF_8))) {
+      for (String line = reader.readLine(); line != null; line = reader.readLine()) {
+        if (line.isBlank())
+          continue;
+        final JSONObject json = new JSONObject(line);
+        if ("ts".equals(json.getString("t"))) {
+          final String name = json.getJSONObject("c").getString("t");
+          if (!types.contains(name))
+            types.add(name);
+        }
+      }
+    }
+    return types;
   }
 }

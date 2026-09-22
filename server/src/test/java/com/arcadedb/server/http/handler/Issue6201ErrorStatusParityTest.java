@@ -20,6 +20,7 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.RID;
+import com.arcadedb.engine.timeseries.TimeSeriesWalkCoarsenedException;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.ConcurrentModificationException;
@@ -95,6 +96,13 @@ class Issue6201ErrorStatusParityTest {
       // pattern) is a transient condition, not a permanent failure - it used to fall through to a hard 500,
       // which a remote client's own retry-on-503 loop never saw (issue #6770).
       new MappedFailure("DatabaseIsClosedException", 503, () -> new DatabaseIsClosedException("mydb")),
+      // A TimeSeries read a DOWNSAMPLE overtook: the rows it had not reached were replaced by coarser ones, so no
+      // answer it can still produce is at one resolution and it refuses instead of returning a silently short one
+      // (issue #8166). Transient in the same sense as the two above - downsampling is a maintenance event, not a
+      // per-request one - so the same read re-issued succeeds, and answering the generic 500 would have hidden
+      // that from exactly the PromQL/Grafana client the refusal was added for (review of PR #8197).
+      new MappedFailure("TimeSeriesWalkCoarsenedException", 503,
+          () -> new TimeSeriesWalkCoarsenedException("Sealed block [1..2] was replaced by a downsample")),
       // A permanent DROP/CLOSE DATABASE race (not the transient resync above) that lost the retry-then-reresolve
       // round trip: allowLoad=false found no open handle for the name. An accurate 404, not the generic 500 the
       // un-typed DatabaseOperationException used to fall through to (issue #6778, #6770 follow-up).

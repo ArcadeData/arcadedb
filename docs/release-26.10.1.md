@@ -58,11 +58,24 @@ bucket at the crossing point is counted twice or not at all. Such a walk now rai
 whole answer at one resolution; downsampling a series is a maintenance event rather than a per-request one, so
 the retry succeeds.
 
+Over HTTP the refusal is a **503**, alongside the other retryable failures (`NeedRetryException`,
+`DatabaseIsClosedException`), so a PromQL or Grafana client whose retry policy keys on the status code retries
+rather than seeing an opaque 500 indistinguishable from a server fault.
+
+Through `EXPORT DATABASE` it fails only the type it happened to - counted as a skipped record, logged at SEVERE
+naming the type, and the export goes on to the remaining types. The run still ends as a failed outcome, because
+a non-zero skipped-record count already does that, so nothing is silent; but a multi-hour export does not throw
+away everything it had written because one series was downsampled under it.
+
 `EXPORT DATABASE` also reports sealed blocks that retention removed from under it, as
 `vanishedTimeSeriesBlocks` in the export statistics and as a WARNING naming the type. That count is reported
 and never fatal, unlike `skippedRecords`: those samples are genuinely gone rather than somewhere else. It used
 to be invisible - the engine counted them, but the export passed no `AggregationMetrics` and the only reader of
 the count anywhere was the PromQL/HTTP metrics surface.
+
+A walk that meets BOTH maintenance passes is attributed correctly: retention records the boundary each truncate
+moved, so a block that fell inside it is counted as vanished even when an unrelated downsample ran in the same
+store, and only a block retention cannot account for is refused.
 
 ## Improvements
 

@@ -61,9 +61,9 @@ class Issue8189OneColumnIndexConventionTest extends TestHelper {
 
   @Test
   void neitherAggregationClassCarriesASecondColumnIndexConventionAnyMore() {
-    assertThat(aggregateMethodsOf(TimeSeriesEngine.class))
+    assertThat(singleColumnAggregationMethodsOf(TimeSeriesEngine.class))
         .as("TimeSeriesEngine.aggregate counted non-TIMESTAMP columns; aggregateMulti subsumes it").isEmpty();
-    assertThat(aggregateMethodsOf(TimeSeriesSealedStore.class))
+    assertThat(singleColumnAggregationMethodsOf(TimeSeriesSealedStore.class))
         .as("and so did its sealed-half counterpart").isEmpty();
   }
 
@@ -100,10 +100,15 @@ class Issue8189OneColumnIndexConventionTest extends TestHelper {
         .as("sealed: the same number names the same column").isEqualTo(15.0);
   }
 
-  /** Any {@code aggregate} overload that takes an {@code int} is a column index, whatever it is called. */
-  private static List<String> aggregateMethodsOf(final Class<?> type) {
+  /**
+   * Matches on the SHAPE and not on the name, so renaming the method back in would not slip past: anything that
+   * returns an {@link AggregationResult} is by construction the single-column path, since the multi-column one
+   * returns {@link MultiColumnAggregationResult}. The name {@code aggregate} is matched as well, for an overload
+   * that returns something else again.
+   */
+  private static List<String> singleColumnAggregationMethodsOf(final Class<?> type) {
     return Arrays.stream(type.getDeclaredMethods())
-        .filter(m -> "aggregate".equals(m.getName()))
+        .filter(m -> AggregationResult.class.equals(m.getReturnType()) || "aggregate".equals(m.getName()))
         .map(Method::toGenericString)
         .toList();
   }

@@ -184,6 +184,62 @@ class Issue8166WalkAcrossDownsampleTest {
     }
   }
 
+  /**
+   * The review point on PR #8197, and the reason the epoch is not the whole discriminator: a long walk can meet
+   * BOTH maintenance passes. A retention truncate legitimately drops one of its blocks while an unrelated
+   * downsample runs elsewhere in the same store, and a store-wide "did any downsample happen" test would refuse
+   * an answer that is perfectly honest. Retention is asked first and answers definitively, so each vanished
+   * block is attributed to the pass that actually removed it.
+   */
+  @Test
+  void aTruncatedBlockIsStillCountedEvenWhenADownsampleAlsoRan() throws Exception {
+    try (final TimeSeriesSealedStore store = threeBlockStore()) {
+      // A fourth block, NEWER than the downsample cutoff, so the downsample cannot touch it and the truncate can.
+      appendBlock(store, 20_000L, "D");
+      store.flushHeader();
+
+      final BlockDirectorySnapshot snapshot = store.snapshotBlockDirectory(0L, Long.MAX_VALUE);
+      assertThat(snapshot.blocks()).hasSize(4);
+
+      // Retention drops the three old blocks; the downsample then finds nothing left to coarsen, so to make both
+      // passes real the order is reversed: coarsen first, then truncate the coarse result away entirely.
+      store.downsampleBlocks(CUTOFF_TS, GRANULARITY_MS, 0, TAG_COLUMNS, NUMERIC_COLUMNS);
+      store.truncateBefore(20_000L);
+
+      final AggregationMetrics metrics = new AggregationMetrics();
+      final List<Object[]> rows = new ArrayList<>();
+      assertThat(store.forEachRow(snapshot, 0L, Long.MAX_VALUE, null, null, metrics, rows::add))
+          .as("every block retention removed is accounted for, so nothing is refused").isTrue();
+
+      assertThat(rows).as("the one block retention kept is still read").hasSize(2);
+      assertThat(metrics.getVanishedBlocks())
+          .as("and the three blocks retention provably removed are counted, not blamed on the downsample")
+          .isEqualTo(3);
+    }
+  }
+
+  /**
+   * The same for the TAIL truncate, which drops the NEWEST blocks rather than the oldest and therefore needs its
+   * own boundary.
+   */
+  @Test
+  void aTailTruncatedBlockIsCountedRatherThanRefused() throws Exception {
+    try (final TimeSeriesSealedStore store = threeBlockStore()) {
+      final BlockDirectorySnapshot snapshot = store.snapshotBlockDirectory(0L, Long.MAX_VALUE);
+
+      store.downsampleBlocks(CUTOFF_TS, GRANULARITY_MS, 0, TAG_COLUMNS, NUMERIC_COLUMNS);
+      // One block left: the coarse one. Everything the snapshot named above it is gone by retention.
+      store.truncateToBlockCount(0);
+
+      final AggregationMetrics metrics = new AggregationMetrics();
+      final List<Object[]> rows = new ArrayList<>();
+      assertThat(store.forEachRow(snapshot, 0L, Long.MAX_VALUE, null, null, metrics, rows::add)).isTrue();
+
+      assertThat(rows).isEmpty();
+      assertThat(metrics.getVanishedBlocks()).isEqualTo(3);
+    }
+  }
+
   // ---- Helpers ----
 
   private TimeSeriesSealedStore threeBlockStore() throws Exception {

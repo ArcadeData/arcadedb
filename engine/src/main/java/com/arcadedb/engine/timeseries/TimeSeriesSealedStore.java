@@ -174,6 +174,27 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * leaves it unable to produce a consistent answer at all (issue #8166).
    */
   private          long             downsampleEpoch;
+  /**
+   * What RETENTION has provably removed, so a vanished block can be attributed to the pass that actually removed
+   * it rather than to whichever maintenance pass happened to run (issue #8166, review of PR #8197).
+   * <p>
+   * {@link #downsampleEpoch} alone answers "did ANY downsample run since the snapshot", not "was THIS block
+   * coarsened". A long walk - an {@code EXPORT DATABASE} over a large series - can span both a retention pass
+   * that legitimately drops one of its blocks AND an unrelated downsample cycle elsewhere in the store, and
+   * would then refuse an answer it could have given honestly. These two watermarks close that: a truncate
+   * removes a contiguous run of blocks at one END of the directory, so the boundary it moved is all that has to
+   * be remembered to know, exactly, whether a given block fell inside it.
+   * <p>
+   * {@link #truncateBefore} drops everything OLDER than its cutoff, so a block with
+   * {@code maxTimestamp < retentionRemovedBelowTs} is gone because of retention. {@link #truncateToBlockCount}
+   * keeps a prefix and drops the NEWEST blocks, so a block with
+   * {@code minTimestamp >= retentionRemovedFromTs} is gone for the same reason. Both are monotonic - a boundary
+   * only ever moves outward - so neither can un-explain a block it once explained, and both are written under the
+   * directory WRITE lock beside the rewrite that moved them.
+   */
+  private          long             retentionRemovedBelowTs = Long.MIN_VALUE;
+  /** The upper counterpart, for the tail {@link #truncateToBlockCount} drops. See {@link #retentionRemovedBelowTs}. */
+  private          long             retentionRemovedFromTs  = Long.MAX_VALUE;
 
   /**
    * A fresh {@link BlockEntry#blockId} (issue #8043).
@@ -852,8 +873,12 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         // in the file, so a block the leader's copy still holds resolves - and the two causes that remain are
         // NOT the same answer (issue #8166), which is what the epoch below separates.
         if (live == null) {
-          coarsened = downsampleEpoch != directorySnapshot.downsampleEpoch();
           vanished = true;
+          // Retention is asked FIRST, and it answers definitively: a truncate removed every block past the
+          // boundary it moved, so a block inside that range is gone whatever else ran in the meantime. Only a
+          // block retention cannot account for is attributed to a downsample, which is what keeps a walk that
+          // meets BOTH passes from refusing an answer it could have given (review of PR #8197).
+          coarsened = !removedByRetention(entry) && downsampleEpoch != directorySnapshot.downsampleEpoch();
         } else {
           // The whole point of issue #7710: one row off the directory entry, with no file read and no decode.
           if (combinationsOnly)
@@ -967,6 +992,15 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * @param hintIdx the index the block occupied in the snapshot, which is still its index unless the directory was
    *                rewritten
    */
+  /**
+   * Whether a retention truncate provably removed this block, read against the two boundaries
+   * {@link #retentionRemovedBelowTs} and {@link #retentionRemovedFromTs} record. Called under the directory read
+   * lock, which is what makes the pair a consistent snapshot of what retention has done.
+   */
+  private boolean removedByRetention(final BlockEntry snapshotEntry) {
+    return snapshotEntry.maxTimestamp < retentionRemovedBelowTs || snapshotEntry.minTimestamp >= retentionRemovedFromTs;
+  }
+
   private BlockEntry resolveLiveBlock(final BlockEntry snapshotEntry, final int hintIdx) {
     final int liveSize = blockDirectory.size();
     if (hintIdx < liveSize && blockDirectory.get(hintIdx) == snapshotEntry)
@@ -1712,6 +1746,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       if (retained.size() == blockDirectory.size())
         return; // Nothing to truncate
 
+      // Recorded before the rewrite, so a walk that finds one of these blocks missing can tell that RETENTION is
+      // why, and is answered short rather than refused (issue #8166). Monotonic: the boundary only moves up.
+      retentionRemovedBelowTs = Math.max(retentionRemovedBelowTs, timestamp);
+
       // Rewrite the file with only retained blocks
       final int colCount = columns.size();
       final String tempPath = basePath + ".ts.sealed.tmp";
@@ -2415,6 +2453,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         return; // nothing to truncate
 
       final List<BlockEntry> retained = new ArrayList<>(blockDirectory.subList(0, (int) targetBlockCount));
+      // The counterpart of truncateBefore's boundary, for the TAIL this drops: the first block that goes names
+      // the point past which nothing survives (issue #8166). Monotonic: the boundary only moves down.
+      retentionRemovedFromTs = Math.min(retentionRemovedFromTs, blockDirectory.get((int) targetBlockCount).minTimestamp);
       final int colCount = columns.size();
       final String tempPath = basePath + ".ts.sealed.tmp";
 
