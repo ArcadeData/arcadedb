@@ -377,6 +377,11 @@ public class ClusterAlerts {
    * timetable and can survive restarts. A snapshot download merely queued or running is {@code warning}: it is
    * the ordinary recovery path and is expected to finish.
    * <p>
+   * "Can survive restarts" became true of the quarantine only in issue #7735. Until then the quarantine was an
+   * in-memory map nothing persisted, so a restart brought the node back {@code RUNNING} with {@code alerts: []}
+   * and permanently missing the committed entry the quarantine had skipped - this alert promised durability the
+   * state behind it did not have. It is now recorded in {@code .raft/applied-index} and read back at startup.
+   * <p>
    * The message names the quarantine's CAUSE rather than assuming one (issue #7741). It used to read "after a
    * WAL version gap" whatever had happened, so an operator whose node had quarantined a database on an entry it
    * could not decode - a corrupt local log segment, since issue #7495 - was pointed at the leader for a fault

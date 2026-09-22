@@ -6,13 +6,16 @@ Guidance for working under `ha-raft/`. This file records things the code does no
 
 What a restarted node replays is decided **solely** by the Ratis snapshot marker file `snapshot.<term>_<index>` under `.raft-storage/.../sm/`. `ArcadeStateMachine.reinitialize()` seeds `lastAppliedIndex` from `storage.getLatestSnapshot()`; with no marker it seeds -1 and Ratis replays the whole retained log.
 
-The persisted `.raft/applied-index` JSON is read in `reinitialize()` but **never** feeds the replay position. It has exactly three consumers:
+The persisted `.raft/applied-index` JSON is read in `reinitialize()` but **never** feeds the replay position. It has exactly four consumers:
 
 1. the snapshot-gap check that decides whether to download from the leader,
 2. the per-database bootstrap replay-skip in `applyBootstrapFingerprintEntry`,
-3. `hasNeverAppliedApplicationEntry()`, the offline-bootstrap gate.
+3. `hasNeverAppliedApplicationEntry()`, the offline-bootstrap gate,
+4. its `quarantine` object, which carries `divergedDatabases` across a restart (#7735) - the file is only the courier here, chosen so the quarantine and the applied position it qualifies land in one atomic rename.
 
 **Consequence:** to make a committed-but-unapplied entry replayable you must control what `takeSnapshot()` reports. Clamping the applied-index file changes bootstrap behavior and does nothing for durability. This is the single most common wrong turn when chasing a lost-write bug in this module.
+
+**`takeSnapshot()` therefore refuses while any database is quarantined** (#7735). A quarantine skips a committed entry on purpose and lets every later entry advance `lastAppliedIndex` past it, so checkpointing that index authorises Ratis to purge the one entry a restart still has to replay - which is how a per-database quarantine used to turn into permanent silent divergence. The trade is a log that keeps growing while a database is quarantined; that is deliberate, because no `DivergenceCause` heals without a resync and the node is out of the ready set the whole time.
 
 Note that `globalAppliedIndex` and `lastAppliedIndex` track the same value on the apply path but are seeded independently, so they can briefly differ right after `reinitialize()`. Do not assert equality across that window.
 
