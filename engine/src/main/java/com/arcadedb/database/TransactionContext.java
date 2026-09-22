@@ -197,6 +197,19 @@ public class TransactionContext implements Transaction {
   private       long                                 slotRebaseTrackedBytes;
   private       boolean                              useWAL;
   /**
+   * Overrides {@link #useWAL} for THIS transaction only when set; {@code null} to follow the session's setting.
+   * <p>
+   * {@link #setUseWAL(boolean)} is the session's durability choice and deliberately outlives the transaction it was
+   * made in - a caller that switches the WAL off for a bulk load expects every transaction of that load to run
+   * without it. Engine-internal bulk work (a vector index build, a graph persist) wants the opposite: no WAL for the
+   * pages IT writes, and the session left exactly as it was found. Setting the session flag for that leaked into every
+   * later transaction on the thread, because this context is reused across begin()/commit() cycles (issue #8129: after
+   * an {@code LSM_VECTOR} build, commits on that thread were no longer written to the WAL at all).
+   * <p>
+   * Cleared by {@link #reset()} with the rest of the per-transaction state, so it cannot outlive its transaction.
+   */
+  private       Boolean                              useWALOverride;
+  /**
    * Milliseconds this transaction's commit waits for its file locks, overriding
    * {@link GlobalConfiguration#COMMIT_LOCK_TIMEOUT} when set; {@code null} to use the configured value.
    * <p>
@@ -583,6 +596,24 @@ public class TransactionContext implements Transaction {
   }
 
   /**
+   * Overrides, for THIS transaction only, whether its commit is written to the WAL. See the {@code useWALOverride}
+   * field: unlike {@link #setUseWAL(boolean)} it never outlives the transaction it was set in.
+   *
+   * @param useWAL {@code false} to skip the WAL, {@code true} to force it, {@code null} to go back to the session's
+   *               setting
+   */
+  public void setUseWALForThisTransaction(final Boolean useWAL) {
+    this.useWALOverride = useWAL;
+  }
+
+  /**
+   * @return the per-transaction WAL override, or {@code null} when the session's setting applies
+   */
+  public Boolean getUseWALForThisTransaction() {
+    return useWALOverride;
+  }
+
+  /**
    * Overrides, for THIS transaction only, how long its commit waits for the file locks it needs. See the
    * {@code commitLockTimeout} field.
    *
@@ -607,7 +638,8 @@ public class TransactionContext implements Transaction {
 
   @Override
   public boolean isUseWAL() {
-    return useWAL;
+    final Boolean override = useWALOverride;
+    return override != null ? override : useWAL;
   }
 
   @Override
@@ -2169,7 +2201,7 @@ public class TransactionContext implements Transaction {
 
       Binary result = null;
 
-      if (useWAL) {
+      if (isUseWAL()) {
         txId = database.getTransactionManager().getNextTransactionId();
         //LogManager.instance().log(this, Level.FINE, "Creating buffer for TX %d (threadId=%d)", txId, Thread.currentThread().threadId());
         result = database.getTransactionManager().createTransactionBuffer(txId, pages);
@@ -2607,6 +2639,7 @@ public class TransactionContext implements Transaction {
     afterCommitCallbacks = null;
     registeredCallbackKeys = null;
     commitLockTimeout = null;
+    useWALOverride = null;
     txId = -1;
   }
 
