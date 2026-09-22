@@ -106,11 +106,33 @@ public class GraphSONImporterFormat extends CSVImporterFormat {
       // which takes this route for every file, needed nothing.
       // Convert the lines back to an InputStream
       final String content = String.join("\n", lines);
-      try (final InputStream is = new ByteArrayInputStream(content.getBytes(StandardCharsets.UTF_8))) {
-        final ArcadeGraph graph = ArcadeGraph.open(database);
-        graph.io(IoCore.graphson()).reader().create().readGraph(is, graph);
-      } catch (final IOException e) {
-        throw new ImportException("Error on importing GraphSON", e);
+
+      // TinkerPop's own GraphSON reader reports no per-record progress on this route, so the statistics this format
+      // owes the caller (context.parsed/createdVertices/createdEdges - see ImporterContext#toMap()) are taken as a
+      // before/after delta across the whole schema instead of counted as the reader writes (issue #8054).
+      final long verticesBefore = countRecordsOfKind(database, VertexType.class);
+      final long edgesBefore = countRecordsOfKind(database, EdgeType.class);
+
+      // The before/after delta is taken in a finally, not just after a successful read: TinkerPop's reader can
+      // fail partway through with a RuntimeException (a malformed record, a schema conflict) rather than the
+      // IOException caught below, and on the caller-owned-transaction path #8073 added, whatever it already wrote
+      // stays durable until the caller resolves the transaction either way - so the count must still reach the
+      // caller even when readGraph() throws, the same way Neo4jImporter/OrientDBImporter/RDFImporterFormat
+      // preserve an accurate counter across a partial failure elsewhere in this same code path.
+      try {
+        try (final InputStream is = new ByteArrayInputStream(content.getBytes(StandardCharsets.UTF_8))) {
+          final ArcadeGraph graph = ArcadeGraph.open(database);
+          graph.io(IoCore.graphson()).reader().create().readGraph(is, graph);
+        } catch (final IOException e) {
+          throw new ImportException("Error on importing GraphSON", e);
+        }
+      } finally {
+        final long createdVertices = countRecordsOfKind(database, VertexType.class) - verticesBefore;
+        final long createdEdges = countRecordsOfKind(database, EdgeType.class) - edgesBefore;
+
+        context.createdVertices.addAndGet(createdVertices);
+        context.createdEdges.addAndGet(createdEdges);
+        context.parsed.addAndGet(createdVertices + createdEdges);
       }
     }
   }
@@ -133,11 +155,11 @@ public class GraphSONImporterFormat extends CSVImporterFormat {
     final boolean ownsTransaction = context.importOwnsTransaction(database);
 
     // First pass: create vertices and collect edge data
-    inTransaction(database, ownsTransaction, () -> createVertices(lines, database, idMapping, pendingEdges));
+    inTransaction(database, ownsTransaction, () -> createVertices(lines, database, idMapping, pendingEdges, context));
 
     // Second pass: create edges using the ID mapping
     if (!pendingEdges.isEmpty())
-      inTransaction(database, ownsTransaction, () -> createEdges(pendingEdges, database, idMapping));
+      inTransaction(database, ownsTransaction, () -> createEdges(pendingEdges, database, idMapping, context));
   }
 
   /**
@@ -186,7 +208,7 @@ public class GraphSONImporterFormat extends CSVImporterFormat {
 
   /** The vertex pass: one vertex per line, with its outgoing edges collected into {@code pendingEdges}. */
   private void createVertices(final List<String> lines, final DatabaseInternal database, final Map<Object, RID> idMapping,
-      final List<EdgeData> pendingEdges) {
+      final List<EdgeData> pendingEdges, final ImporterContext context) {
     for (final String line : lines) {
       final JSONObject vertexJson = new JSONObject(line);
       final Object originalId = vertexJson.get("id");
@@ -217,6 +239,11 @@ public class GraphSONImporterFormat extends CSVImporterFormat {
       }
 
       vertex.save();
+      context.createdVertices.incrementAndGet();
+      // Incremented here, after save() succeeds, not at the top of the loop: matching createEdges()'s own
+      // placement right after edge.save() so a line that fails before this point (malformed JSON, a label naming
+      // a non-vertex type) doesn't count as parsed when nothing was actually created from it (issue #8116 review).
+      context.parsed.incrementAndGet();
       final RID newRid = vertex.getIdentity();
       idMapping.put(originalId, newRid);
 
@@ -242,7 +269,7 @@ public class GraphSONImporterFormat extends CSVImporterFormat {
 
   /** The edge pass: the edges collected by {@link #createVertices}, resolved through the original-id mapping. */
   private void createEdges(final List<EdgeData> pendingEdges, final DatabaseInternal database,
-      final Map<Object, RID> idMapping) {
+      final Map<Object, RID> idMapping, final ImporterContext context) {
     for (final EdgeData edgeData : pendingEdges) {
       final RID outRid = idMapping.get(edgeData.outV);
       final RID inRid = idMapping.get(edgeData.inV);
@@ -286,6 +313,12 @@ public class GraphSONImporterFormat extends CSVImporterFormat {
       }
 
       edge.save();
+      context.createdEdges.incrementAndGet();
+      // createVertices() above already counts context.parsed once per vertex actually created, so this pass adds
+      // one per edge actually created, matching the TinkerPop-reader route's context.parsed = createdVertices +
+      // createdEdges - without this, parsedRecords on this route counted vertices only, understating the report
+      // for a source whose lines embed outgoing edges (issue #8116 review).
+      context.parsed.incrementAndGet();
     }
   }
 
