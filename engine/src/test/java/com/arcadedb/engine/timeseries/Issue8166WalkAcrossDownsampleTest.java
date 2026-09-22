@@ -240,6 +240,80 @@ class Issue8166WalkAcrossDownsampleTest {
     }
   }
 
+  /**
+   * The path the epoch alone cannot see, raised in the review of PR #8197: the rewrite happened on ANOTHER node.
+   * <p>
+   * An HA follower installs the leader's sealed file wholesale. If the leader downsampled between this walk's
+   * snapshot and that install, the image carries coarse blocks with new ids, the follower's snapshot entries
+   * resolve to nothing, and its own downsample epoch never moved - so the walk would have counted them as
+   * retention loss and answered short. That is issue #8166 exactly, reached through the one path where this
+   * process did no downsampling at all.
+   */
+  @Test
+  void aWalkCrossingAnInstallOfALeaderDownsampledImageIsRefusedToo() throws Exception {
+    final byte[] leaderV1;
+    final byte[] leaderCoarsened;
+    try (final TimeSeriesSealedStore leader = new TimeSeriesSealedStore(BASE_DIR + "/leader", columns)) {
+      appendBlock(leader, 1000L, "A");
+      appendBlock(leader, 3000L, "B");
+      appendBlock(leader, 5000L, "C");
+      leader.flushHeader();
+      leaderV1 = leader.readWholeSealedFile();
+      leader.downsampleBlocks(CUTOFF_TS, GRANULARITY_MS, 0, TAG_COLUMNS, NUMERIC_COLUMNS);
+      leaderCoarsened = leader.readWholeSealedFile();
+    }
+
+    try (final TimeSeriesSealedStore follower = new TimeSeriesSealedStore(STORE_PATH, columns)) {
+      // A follower's sealed file IS the leader's, byte for byte - that is what makes the block ids the same on
+      // both nodes (issue #8043), and asserting the refusal against independently written blocks would only be
+      // asserting that two random ids differ.
+      follower.installSealedFileBytes(leaderV1);
+      final BlockDirectorySnapshot snapshot = follower.snapshotBlockDirectory(0L, Long.MAX_VALUE);
+      assertThat(snapshot.blocks()).hasSize(3);
+
+      follower.installSealedFileBytes(leaderCoarsened);
+
+      final List<Object[]> rows = new ArrayList<>();
+      assertThatThrownBy(() -> follower.forEachRow(snapshot, 0L, Long.MAX_VALUE, null, null, null, rows::add))
+          .as("this node ran no downsample, so only the image itself can say the rows were rewritten")
+          .isInstanceOf(TimeSeriesWalkCoarsenedException.class);
+    }
+  }
+
+  /**
+   * The counter-case that keeps the containment test from becoming "raise on every install": a leader that
+   * RETIRED old blocks rather than coarsening them leaves the follower's walk correctly short, and counted.
+   */
+  @Test
+  void aWalkCrossingAnInstallOfALeaderRetiredImageIsStillCounted() throws Exception {
+    final byte[] leaderV1;
+    final byte[] leaderRetired;
+    try (final TimeSeriesSealedStore leader = new TimeSeriesSealedStore(BASE_DIR + "/leader2", columns)) {
+      appendBlock(leader, 1000L, "A");
+      appendBlock(leader, 3000L, "B");
+      appendBlock(leader, 5000L, "C");
+      leader.flushHeader();
+      leaderV1 = leader.readWholeSealedFile();
+      leader.truncateBefore(5000L);
+      leaderRetired = leader.readWholeSealedFile();
+    }
+
+    try (final TimeSeriesSealedStore follower = new TimeSeriesSealedStore(STORE_PATH, columns)) {
+      follower.installSealedFileBytes(leaderV1);
+      final BlockDirectorySnapshot snapshot = follower.snapshotBlockDirectory(0L, Long.MAX_VALUE);
+
+      follower.installSealedFileBytes(leaderRetired);
+
+      final AggregationMetrics metrics = new AggregationMetrics();
+      final List<Object[]> rows = new ArrayList<>();
+      assertThat(follower.forEachRow(snapshot, 0L, Long.MAX_VALUE, null, null, metrics, rows::add))
+          .as("the leader deleted those rows; a short answer is the right one").isTrue();
+
+      assertThat(rows).as("the block the leader kept still reads").hasSize(2);
+      assertThat(metrics.getVanishedBlocks()).isEqualTo(2);
+    }
+  }
+
   // ---- Helpers ----
 
   private TimeSeriesSealedStore threeBlockStore() throws Exception {

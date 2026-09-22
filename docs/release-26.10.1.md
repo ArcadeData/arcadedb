@@ -73,6 +73,11 @@ and never fatal, unlike `skippedRecords`: those samples are genuinely gone rathe
 to be invisible - the engine counted them, but the export passed no `AggregationMetrics` and the only reader of
 the count anywhere was the PromQL/HTTP metrics surface.
 
+The same refusal covers a rewrite that happened on ANOTHER node: an HA follower adopting the leader's sealed
+file reads, from the image itself, whether the leader retired blocks or rewrote them, so a walk crossing an
+install of a leader-downsampled store is refused rather than answered short. No file-format change is involved -
+ids that went away while others arrived in their place say it.
+
 A walk that meets BOTH maintenance passes is attributed correctly: retention records the boundary each truncate
 moved, so a block that fell inside it is counted as vanished even when an unrelated downsample ran in the same
 store, and only a block retention cannot account for is refused.

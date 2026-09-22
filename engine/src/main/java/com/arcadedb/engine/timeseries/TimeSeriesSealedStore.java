@@ -876,7 +876,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           vanished = true;
           // Retention is asked FIRST, and it answers definitively: a truncate removed every block past the
           // boundary it moved, so a block inside that range is gone whatever else ran in the meantime. Only a
-          // block retention cannot account for is attributed to a downsample, which is what keeps a walk that
+          // block retention cannot account for is attributed to a REPLACEMENT, which is what keeps a walk that
           // meets BOTH passes from refusing an answer it could have given (review of PR #8197).
           coarsened = !removedByRetention(entry) && downsampleEpoch != directorySnapshot.downsampleEpoch();
         } else {
@@ -3324,6 +3324,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       indexFile = new RandomAccessFile(target, "rw");
       indexChannel = indexFile.getChannel();
 
+      // What this node held a moment ago, so the image can be compared against it below.
+      final Set<Long> previousBlockIds = new HashSet<>(blockDirectory.size());
+      for (final BlockEntry entry : blockDirectory)
+        previousBlockIds.add(entry.blockId);
+
       blockDirectory.clear();
       globalMinTs = Long.MAX_VALUE;
       globalMaxTs = Long.MIN_VALUE;
@@ -3332,9 +3337,80 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         loadDirectory();
       else
         writeEmptyHeader();
+
+      adoptRewriteHistoryOf(previousBlockIds);
     } finally {
       directoryLock.writeLock().unlock();
     }
+  }
+
+  /**
+   * Reads, off the image this node has just adopted, what the LEADER did to it - so a walk in flight over the
+   * blocks it replaces gets the same answer it would have got had the rewrite happened here (review of PR #8197).
+   * <p>
+   * <b>Why the install needs this at all.</b> {@link #downsampleEpoch} only ever sees a downsample THIS process
+   * ran, and the one that matters most happens on another node: a follower adopts the leader's sealed file
+   * wholesale, so if the leader downsampled between a walk's snapshot and that install, the image arrives
+   * carrying coarse blocks with new ids while this node's epoch has not moved. Its snapshot entries then resolve
+   * to nothing, the walk counts them as retention loss and answers short - issue #8166 exactly, reached through
+   * the one path where this process did no downsampling at all.
+   * <p>
+   * <b>Why the directory's geometry cannot answer it instead.</b> The obvious test - "does the live directory
+   * still span this block's range?" - looks right and is not: downsampling MOVES timestamps, folding each row
+   * onto its bucket floor, so the coarse blocks can sit entirely BELOW the fine ones they replaced. A store whose
+   * rows span 1000..6000 downsampled to ten-second buckets holds one block at timestamp 0. Containment, overlap
+   * and every other range test answer "outside" for a block that was replaced rather than removed.
+   * <p>
+   * <b>What the image does say.</b> Two things, neither needing a byte of new file format:
+   * <ul>
+   *   <li>Nothing below the new directory's first block, and nothing above its last, exists any more. That is a
+   *       statement about the live store whatever caused it, so it is recorded as a retention boundary - and it
+   *       is what keeps an install of a leader-RETIRED image from being mistaken for a coarsening one, since the
+   *       blocks it dropped all lie below the new first block.</li>
+   *   <li>Ids that went away WHILE OTHERS ARRIVED mean the leader rewrote those blocks rather than retiring
+   *       them: compaction, truncation and a plain re-install all preserve the ids of what they keep (issues
+   *       #7973 and #8043), so the only way an id disappears and a new one takes its place is that the rows
+   *       behind it were rebuilt. The epoch moves and those blocks are refused. Ids that went away with nothing
+   *       arriving are a retirement, and take the boundary above instead.</li>
+   * </ul>
+   * An image that only ADDS blocks - the ordinary case, a leader shipping its latest compaction - loses no id
+   * and moves neither, so nothing changes and a walk crossing it reads straight through, which is what issue
+   * #8043 fixed and what {@code Issue8043SealedWalkAcrossInstallTest} pins.
+   */
+  private void adoptRewriteHistoryOf(final Set<Long> previousBlockIds) {
+    boolean gainedNewIds = false;
+    for (final BlockEntry entry : blockDirectory)
+      if (!previousBlockIds.remove(entry.blockId))
+        gainedNewIds = true;
+    // Whatever is left is a block this node held and the image does not.
+    final boolean lostIds = !previousBlockIds.isEmpty();
+
+    if (lostIds && gainedNewIds) {
+      // Blocks went away AND blocks arrived in their place: the leader REWROTE them, and the rows behind them
+      // are still in the store under ids this node's snapshots have never seen. The epoch moves, so a walk
+      // holding one of the old ids is refused rather than answered short.
+      //
+      // No retention boundary is recorded for this case, and that is the whole reason the two are told apart
+      // here rather than by the bounds alone: downsampling FOLDS each row onto its bucket floor, so the coarse
+      // blocks can sit entirely below the fine ones and "nothing above the new last block exists any more" -
+      // true of timestamps - would excuse every replaced block as retired.
+      downsampleEpoch++;
+      return;
+    }
+
+    // Nothing arrived, or nothing left: an image that only retires or only appends. Its bounds are then an
+    // honest statement about what the store still holds, so they are recorded as a retention boundary - which is
+    // what keeps an install of a leader-RETIRED image from being mistaken for a coarsening one.
+    if (blockDirectory.isEmpty()) {
+      if (lostIds)
+        retentionRemovedBelowTs = Long.MAX_VALUE;
+      return;
+    }
+
+    retentionRemovedBelowTs = Math.max(retentionRemovedBelowTs, blockDirectory.getFirst().minTimestamp);
+    final long lastMaxTs = blockDirectory.get(blockDirectory.size() - 1).maxTimestamp;
+    if (lastMaxTs < Long.MAX_VALUE)
+      retentionRemovedFromTs = Math.min(retentionRemovedFromTs, lastMaxTs + 1);
   }
 
   /**
