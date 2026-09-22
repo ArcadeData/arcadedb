@@ -350,6 +350,13 @@ public enum Type {
    * fail the whole read over one column. {@code convert()} answered the original value here by falling off the end
    * of its branches, which issue #8090 turned into a refusal - this restores it as a stated contract rather than as
    * a side effect of where the branches happened to stop.
+   * <p>
+   * Two shapes of giving up are kept, not one. The date that motivates the policy arrives as a REFUSAL, and only a
+   * date's refusal is kept - anything else propagates. But {@code convert()} can also give up SILENTLY, through its
+   * own blanket handler, and that answers {@code null} for any target: a {@code List} handed to an {@code Integer}
+   * column, say. The original is kept there too, for the same reason and with no date about it - the contract is
+   * "never answers {@code null} for a non-null input", which is what {@code convertOrKeepNeverAnswersNullForANonNullValue}
+   * pins.
    */
   public static Object convertOrKeep(final Database database, final Object value, final Class<?> targetClass,
       final Property property) {
