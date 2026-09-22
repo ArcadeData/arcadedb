@@ -66,4 +66,13 @@ public class PostCommitHandler extends DatabaseAbstractHandler {
   protected boolean requiresTransaction() {
     return false;
   }
+
+  /**
+   * This route IS the commit, so the session transaction's commit counter moves on every successful call. See
+   * {@link DatabaseAbstractHandler#reportsSessionPartialCommit()} (issue #8062).
+   */
+  @Override
+  protected boolean reportsSessionPartialCommit() {
+    return false;
+  }
 }
