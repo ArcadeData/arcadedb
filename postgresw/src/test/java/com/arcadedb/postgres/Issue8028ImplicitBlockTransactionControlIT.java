@@ -71,7 +71,7 @@ class Issue8028ImplicitBlockTransactionControlIT extends PostgresWireProtocolTes
   private static final String SIMPLE_ROLLBACK_TYPE = "Issue8028SimpleRollback";
   private static final String SIMPLE_COMMIT_TYPE   = "Issue8028SimpleCommit";
   private static final String EXPLICIT_TYPE        = "Issue8028Explicit";
-  private static final String NO_BLOCK_TYPE       = "Issue8028NoBlock";
+  private static final String NO_BLOCK_TYPE        = "Issue8028NoBlock";
 
   @Test
   @DisplayName("[#8028] ROLLBACK inside an implicit block discards its writes instead of leaving them for Sync to commit")
