@@ -230,6 +230,45 @@ public class Issue8167SelectJsonConditionTreeTest extends TestHelper {
     assertThat(database.select().json(in).compile().json().toString()).isEqualTo(in.toString());
   }
 
+  /**
+   * The operand kind is decided by the OPERATOR, not by the operand's own shape, so a value list that happens to
+   * carry an operator keyword in the position a condition's operator would occupy is still a value list. Told apart
+   * by shape, {@code in ('red', 'in')} - a plausible tag list - read as a condition and was refused.
+   */
+  @Test
+  void aValueListCarryingAnOperatorKeywordIsStillAValueList() {
+    database.transaction(() -> {
+      database.newDocument("D").set("a", 9, "b", 9, "tag", "red").save();
+      database.newDocument("D").set("a", 9, "b", 9, "tag", "in").save();
+      database.newDocument("D").set("a", 9, "b", 9, "tag", "green").save();
+    });
+
+    final JSONObject json = database.select().fromType("D").where()//
+        .property("tag").in().value(List.of("red", "in")).compile().json();
+    assertThat(json.getJSONArray("where").toString()).isEqualTo("[[\":tag\",\"in\",[\"red\",\"in\"]]]");
+    assertThat(database.select().json(json).count()).isEqualTo(2);
+    assertThat(database.select().json(json).compile().json().toString()).isEqualTo(json.toString());
+
+    // Same shape for a two-element between range whose bounds are operator keywords.
+    final JSONObject between = database.select().fromType("D").where()//
+        .property("tag").between().values("and", "or").compile().json();
+    assertThat(database.select().json(between).count())
+        .isEqualTo(database.select().fromType("D").where().property("tag").between().values("and", "or").count());
+    assertThat(database.select().json(between).compile().json().toString()).isEqualTo(between.toString());
+  }
+
+  /**
+   * A literal on the LEFT of a comparison is refused on both sides of the change - a value array included, which
+   * under a comparison is a list of values and never a nested condition.
+   */
+  @Test
+  void aValueArrayIsNotAcceptedAsTheLeftOperandOfAComparison() {
+    assertThatThrownBy(() -> database.select()
+        .json(new JSONObject("{\"fromType\":\"D\",\"where\":[[1,2],\"=\",1]}")))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("must be a property or a parameter");
+  }
+
   private void assertNativeMatchesSQL(final String where, final String sqlPredicate) {
     final JSONObject json = new JSONObject("{\"fromType\":\"D\",\"where\":" + where + "}");
     final long native_ = database.select().json(json).count();

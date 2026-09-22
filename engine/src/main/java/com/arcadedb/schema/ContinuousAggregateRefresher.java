@@ -136,12 +136,10 @@ public class ContinuousAggregateRefresher {
   }
 
   /**
-   * The legacy two-argument reading, where a watermark of 0 means "never set". Kept for callers that hold no flag.
+   * The defining query with the incremental filter applied, or the query unchanged when no watermark has been set
+   * yet. #8152: {@code watermarkSet} is a separate argument and NOT {@code watermark > 0}, because an aggregate
+   * anchored at the epoch has a watermark of 0 that must still be filtered on.
    */
-  static String buildFilteredQuery(final ContinuousAggregateImpl ca, final long watermark) {
-    return buildFilteredQuery(ca, watermark, watermark > 0);
-  }
-
   static String buildFilteredQuery(final ContinuousAggregateImpl ca, final long watermark, final boolean watermarkSet) {
     if (!watermarkSet)
       return ca.getQuery();
