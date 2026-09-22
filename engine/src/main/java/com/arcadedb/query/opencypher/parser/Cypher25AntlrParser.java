@@ -171,7 +171,7 @@ public class Cypher25AntlrParser {
 
       CypherSemanticValidator.validate(statement);
 
-      return new ParsedQuery(statement, collectParameterNames(statementContext));
+      return new ParsedQuery(statement, collectParameterNames(statementContext, query));
 
     } catch (final CommandParsingException e) {
       // semantic-validation and explicit parse errors already carry a clear, actionable message
@@ -196,8 +196,17 @@ public class Cypher25AntlrParser {
    * The one parameter position that is a definition rather than a use is the target of
    * {@code SESSION SET $name = <expression>}, which binds the name for the rest of the session; it is
    * skipped, while the value expression on the right is still scanned.
+   * <p>
+   * The walk is skipped entirely for a query with no {@code $} anywhere in its text (issue #8132). The grammar
+   * spells a parameter {@code DOLLAR parameterName}, so no {@code $} means no {@code parameterName} node can
+   * exist, and this turns a full parse-tree traversal - paid on every parse of a query text the statement cache
+   * has not seen - into one {@code indexOf}. The check only ever errs towards doing the walk: a {@code $} inside
+   * a string literal or a comment makes it run and find nothing, which is the same answer it always gave.
    */
-  private static Set<String> collectParameterNames(final ParseTree tree) {
+  private static Set<String> collectParameterNames(final ParseTree tree, final String query) {
+    if (query.indexOf('$') < 0)
+      return Set.of();
+
     final Set<String> names = new LinkedHashSet<>();
     collectParameterNames(tree, names);
     return names.isEmpty() ? Set.of() : Collections.unmodifiableSet(names);
