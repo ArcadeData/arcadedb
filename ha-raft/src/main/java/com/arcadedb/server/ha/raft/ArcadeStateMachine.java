@@ -531,7 +531,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // problem and an undecodable local entry is a corrupt log segment on THIS node, and an operator told only the
   // first is sent to look at the leader for a bad disk of their own. The map is the set - keySet() is what every
   // membership test reads - so the cause cannot go missing or outlive the quarantine it describes.
+  // DURABLE since issue #7735: mirrored into the "quarantine" object of .raft/applied-index by
+  // quarantineDatabase() / clearDivergedDatabase() / clearDivergedState() and read back by
+  // ensureAppliedIndexLoaded(). It has to be, because a quarantine deliberately leaves lastAppliedIndex on the
+  // entry it skipped while every LATER entry advances it - so an in-memory-only mark meant a restart came back
+  // RUNNING, 200 on /api/v1/ready, alerts:[] and permanently short of a committed mutation.
   private final Map<String, DivergenceCause> divergedDatabases = new ConcurrentHashMap<>();
+
+  // Raised by close(), read by persistAppliedIndexFile(): a lifecycle task that is already past its last
+  // interruption point when shutdownNow() lands must not recreate .raft/applied-index under a directory the
+  // shutdown is removing (issue #7735). A closed state machine is never reused - RaftHAServer.restartRatis()
+  // builds a new one - so nothing is lost by refusing the write. Written under appliedIndexFileLock, which every
+  // writer holds across its whole check-and-write, so raising it also waits out a write already in flight.
+  private volatile boolean closed;
 
   // Bounded escalation (issue #4740): a node that can never resync (no stable leader reachable)
   // must not stay in "swallow unexpected errors" mode forever, silently degrading. Each error
@@ -1304,13 +1316,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private void handleUnexpectedApplyError(final long index, final String databaseName, final RuntimeException t) {
     if (databaseName != null && !databaseName.isEmpty()) {
       // Mark the database diverged on the first error so subsequent errors for it route here too.
-      // putIfAbsent() returns null only the first time, which is when we kick off the targeted resync. The cause
+      // quarantineDatabase() returns true only the first time, which is when we kick off the targeted resync. The cause
       // recorded with it is what the operator-facing alert says (issue #7741): an entry this node cannot decode
       // is a corrupt local log segment, not a replication fault, and pointing at the leader for it wastes the
       // one person who can see the bad disk.
-      if (divergedDatabases.putIfAbsent(databaseName,
-          t instanceof RaftLogEntryDecodeException ? DivergenceCause.UNDECODABLE_LOG_ENTRY : DivergenceCause.APPLY_ERROR)
-          == null) {
+      if (quarantineDatabase(databaseName,
+          t instanceof RaftLogEntryDecodeException ? DivergenceCause.UNDECODABLE_LOG_ENTRY : DivergenceCause.APPLY_ERROR)) {
         LogManager.instance().log(this, Level.SEVERE,
             "Unexpected error applying Raft entry for database '%s' at index %d; quarantining the database and "
                 + "triggering a targeted snapshot resync instead of halting the node (issue #4797): %s",
@@ -1366,6 +1377,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * (empty) marker BEFORE returning the purge index, the same marker {@link #notifyInstallSnapshotFromLeader}
    * writes on the follower install path. If the marker cannot be written we report
    * {@link RaftLog#INVALID_LOG_INDEX} so Ratis does not purge a log with no backing snapshot.
+   * <p>
+   * <b>Refused while any database is quarantined (issue #7735):</b> a quarantine skips a committed entry on
+   * purpose and lets later entries advance the applied index past it, so checkpointing that index would let
+   * Ratis purge the one entry a restart still has to replay.
    */
   @Override
   public long takeSnapshot() {
@@ -1392,6 +1407,27 @@ public class ArcadeStateMachine extends BaseStateMachine {
           "Skipping snapshot checkpoint at index %d: the applied position trails the existing marker at %d "
               + "(a stale-snapshot resync still pending)",
           currentIndex, latest.getIndex());
+      return RaftLog.INVALID_LOG_INDEX;
+    }
+
+    // A quarantine SKIPPED a committed entry: applyTransaction returned a failed future before the getAndSet
+    // below the quarantine, so currentIndex covers entries that came AFTER one this node never applied.
+    // Checkpointing it would authorise Ratis to purge the log through that entry, and the skip would become
+    // permanent instead of replayable - the node comes back after a restart missing a committed mutation with
+    // nothing left to replay (issue #7735). Refuse until a resync clears the quarantine, which is exactly what
+    // the two refusals above already do for the conditions they name.
+    //
+    // The cost is a log that keeps growing while a database is quarantined. That is the intended trade: a
+    // quarantine always needs a resync to clear (none of the four DivergenceCause values heals by itself), the
+    // resync is triggered at the mark and re-driven by retryUnfilledSnapshotGap() on every HealthMonitor tick,
+    // and the node is out of the ready set the whole time. Purging a log this node still needs is not cheaper
+    // than the disk it saves.
+    ensureAppliedIndexLoaded();
+    if (!divergedDatabases.isEmpty()) {
+      HALog.log(this, HALog.BASIC,
+          "Skipping snapshot checkpoint at index %d: database(s) %s are quarantined, so the log must stay "
+              + "replayable past the entry the quarantine skipped (issue #7735)",
+          currentIndex, divergedDatabases.keySet());
       return RaftLog.INVALID_LOG_INDEX;
     }
 
@@ -2535,12 +2571,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
       if (gapCounter != null)
         gapCounter.incrementAndGet();
       // Mark this database as diverged so subsequent unexpected errors don't trigger fatal halt
-      // (issue #4740). Set.add() returns true only when the database was not already in the set, so
+      // (issue #4740). quarantineDatabase() returns true only when the database was not already quarantined, so
       // the FIRST gap logs loudly and triggers an immediate snapshot download (instead of waiting for
       // the HealthMonitor's periodic check). Every subsequent committed entry for this database will
       // hit the same gap until the resync lands: those log a throttled one-liner (no per-entry stack
       // trace) so the log is not flooded and the download is not starved of CPU/IO on small nodes.
-      if (divergedDatabases.putIfAbsent(decoded.databaseName(), DivergenceCause.WAL_VERSION_GAP) == null) {
+      if (quarantineDatabase(decoded.databaseName(), DivergenceCause.WAL_VERSION_GAP)) {
         LogManager.instance().log(this, Level.SEVERE,
             "WAL version gap on follower - state divergence detected, triggering snapshot resync (db=%s, txId=%d): %s",
             decoded.databaseName(), walTx.txId, e.getMessage());
@@ -4863,6 +4899,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
               final JSONObject perDb = json.getJSONObject("db", new JSONObject());
               for (final String name : perDb.keySet())
                 appliedIndexByDb.put(name, perDb.getLong(name, -1));
+              restorePersistedQuarantine(json.getJSONObject("quarantine", new JSONObject()));
             } else
               // Legacy format: a single plain number is the global Raft-log position.
               globalAppliedIndex = Long.parseLong(content);
@@ -4883,6 +4920,48 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
+   * Seeds {@link #divergedDatabases} from the {@code quarantine} object of the persisted applied-index file
+   * (issue #7735). Called from {@link #ensureAppliedIndexLoaded()} while it holds {@link #appliedIndexFileLock},
+   * which is the same lock every quarantine mutation takes, so a mark or a clear can neither race the restore nor
+   * be undone by it.
+   * <p>
+   * <b>Why it has to be persisted at all.</b> A quarantine deliberately does NOT advance
+   * {@link #lastAppliedIndex} for the entry that tripped it - {@code applyTransaction} returns a failed future
+   * before the {@code getAndSet} - while every later entry does. The in-memory mark was the only thing standing
+   * between that and a node that restarts, forgets, reports {@code alerts: []} and serves a database permanently
+   * missing a committed mutation.
+   * <p>
+   * {@code putIfAbsent}, mirroring the bootstrap-baseline loader. Every quarantine mutation loads before it
+   * mutates, so in practice the restored cause is already in the map when a later mark arrives and the FIRST
+   * cause wins across the restart exactly as it does within a run (issue #7741): the restored one describes
+   * the failure that quarantined the database, while a mark after it comes from an entry that hit the same
+   * wall on a database already waiting for a resync.
+   * <p>
+   * An unrecognised cause name - written by a newer build - degrades to {@link DivergenceCause#APPLY_ERROR}
+   * rather than dropping the entry: the cause only changes what the alert SAYS, while dropping it would
+   * reinstate exactly the silent divergence this exists to prevent.
+   */
+  private void restorePersistedQuarantine(final JSONObject quarantine) {
+    for (final String name : quarantine.keySet()) {
+      final String causeName = quarantine.getString(name, null);
+      DivergenceCause cause = DivergenceCause.APPLY_ERROR;
+      if (causeName != null)
+        try {
+          cause = DivergenceCause.valueOf(causeName);
+        } catch (final IllegalArgumentException e) {
+          LogManager.instance().log(this, Level.FINE,
+              "Unknown divergence cause '%s' persisted for database '%s'; keeping the quarantine under %s",
+              causeName, name, cause);
+        }
+      if (divergedDatabases.putIfAbsent(name, cause) == null)
+        LogManager.instance().log(this, Level.SEVERE,
+            "Database '%s' is still quarantined from a previous run (%s): this node refuses readiness and will "
+                + "resync it from the leader rather than serve a copy that is missing a committed entry (issue #7735)",
+            name, cause.getDescription());
+    }
+  }
+
+  /**
    * Serialises the in-memory applied-index bookkeeping to {@code .raft/applied-index} via a temp file
    * and atomic rename, so a crash mid-write never leaves a corrupt file.
    * <p>
@@ -4891,24 +4970,38 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * is dominated by the {@code createDirectories} + {@code writeString} + atomic {@code move} syscalls
    * that already ran every apply, so the extra allocation is negligible on the apply path.
    */
-  private void persistAppliedIndexFile() {
+  private boolean persistAppliedIndexFile() {
+    if (closed)
+      return false; // see close(): a task that outlived the shutdown must not recreate the file
     try {
       final Path file = getAppliedIndexFile();
       if (file == null)
-        return;
+        return false;
       final JSONObject json = new JSONObject();
       json.put("global", globalAppliedIndex);
       final JSONObject perDb = new JSONObject();
       for (final Map.Entry<String, Long> entry : appliedIndexByDb.entrySet())
         perDb.put(entry.getKey(), entry.getValue());
       json.put("db", perDb);
+      // The quarantine travels in the SAME atomic write as the applied position it qualifies (issue #7735), so a
+      // crash can never leave a file that says "applied up to N" without saying "and database X was skipped on the
+      // way". Omitted when nothing is quarantined, which is the overwhelmingly common case, so the file shape an
+      // older build reads back is byte-for-byte what it wrote.
+      if (!divergedDatabases.isEmpty()) {
+        final JSONObject quarantine = new JSONObject();
+        for (final Map.Entry<String, DivergenceCause> entry : divergedDatabases.entrySet())
+          quarantine.put(entry.getKey(), entry.getValue().name());
+        json.put("quarantine", quarantine);
+      }
 
       Files.createDirectories(file.getParent());
       final Path tmp = file.resolveSibling("applied-index.tmp");
       Files.writeString(tmp, json.toString());
       Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+      return true;
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.FINE, "Could not write persisted applied index: %s", e.getMessage());
+      return false;
     }
   }
 
@@ -5340,6 +5433,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * Throttled to one attempt per {@link #computeSnapshotWatchdogTimeoutMs()} so a persistently failing
    * download is not retried on every tick: a full resync pulls every database from the leader, and the
    * HealthMonitor ticks far more often than that costs.
+   * <p>
+   * <b>A quarantine counts as an unfilled gap too (issue #7735).</b> Since the quarantine is persisted, a node
+   * restarts still quarantined, and the {@code triggerDatabaseResync} at the mark belongs to the JVM that raised
+   * it - so without this tick a restored quarantine would hold the node out of the ready set with nothing
+   * driving the recovery. When a quarantine is the ONLY thing outstanding the retry is a targeted resync per
+   * quarantined database rather than the full download, which is what the quarantine path itself does.
    */
   public void retryUnfilledSnapshotGap() {
     final RaftHAServer raftHA = this.raftHAServer;
@@ -5348,8 +5447,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final long floor = staleSnapshotAppliedFloor.get();
     // A per-database floor is an unfilled gap too: it is published exactly when an install gave up on a database,
     // which is the case that otherwise never re-arms anything (issue #6760). Same throttle, same single-flight.
-    if (floor < 0 && staleDatabaseAppliedFloors.isEmpty())
-      return; // no unfilled gap
+    //
+    // A quarantine with no floor beside it is the third case (issue #7735). It used to be re-driven only by the
+    // triggerDatabaseResync() at the mark, which is a single attempt in this JVM - so a quarantine RESTORED from
+    // disk after a restart had nothing driving it at all, and the node would have stayed out of the ready set
+    // for good. None of the four DivergenceCause values heals by itself, so a quarantine that is still recorded
+    // on a tick is always a resync waiting to be retried.
+    ensureAppliedIndexLoaded();
+    final Set<String> quarantined = divergedDatabases.isEmpty() ? Set.of() : new HashSet<>(divergedDatabases.keySet());
+    if (floor < 0 && staleDatabaseAppliedFloors.isEmpty() && quarantined.isEmpty())
+      return; // no unfilled gap and nothing quarantined
     if (snapshotDownloadInProgress.get())
       return; // one is genuinely running; it will clear the floor or re-arm the request
     // The same three questions resolveSnapshotSource() asks, so this cheap precheck cannot pass a request the
@@ -5370,6 +5477,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return;
     if (!lastStaleSnapshotRetryMs.compareAndSet(previous, now))
       return; // another tick won the throttle slot
+
+    if (floor < 0 && staleDatabaseAppliedFloors.isEmpty()) {
+      // Only a quarantine is outstanding (issue #7735), so a TARGETED resync of each quarantined database is
+      // both sufficient and far cheaper than pulling every database on the node. The full download below stays
+      // the answer whenever a read floor is outstanding too, because a floor says the node-wide snapshot marker
+      // itself is ahead of what was applied.
+      LogManager.instance().log(this, Level.WARNING,
+          "Database(s) %s are still quarantined from the committed Raft log with no download in flight: retrying "
+              + "the targeted resync from the leader (issue #7735)", quarantined);
+      for (final String dbName : quarantined)
+        triggerDatabaseResync(dbName);
+      return;
+    }
 
     LogManager.instance().log(this, Level.WARNING,
         "Local state is still behind what the snapshot marker claims (read floor=%d, databases short of the "
@@ -5417,15 +5537,22 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * the resync on the HealthMonitor tick until the database is refreshed for real.
    */
   private void markDatabasesNotAtSnapshotIndex(final Set<String> databases, final long snapshotIndex) {
+    // One quarantine write for the whole batch (code review on PR #8146). Since the quarantine became durable
+    // (#7735) a per-database markStateDiverged() would re-serialise the applied-index file and fsync+rename it
+    // once per database, back to back, while holding the lock the apply thread also needs - N synchronous
+    // rewrites where this loop used to do pure in-memory work. The set is what one install gave up on, so it
+    // can be more than a couple on a node with many co-located databases.
+    quarantineDatabases(databases, DivergenceCause.SNAPSHOT_INSTALL_INCOMPLETE);
+
     for (final String dbName : databases) {
       // The persisted position was deliberately NOT advanced for this database above, so it still carries whatever
       // this node genuinely applied. -1 (never recorded) clamps to 0, which is the honest answer for a database
       // nothing is known about.
       final long floor = Math.max(0L, readPersistedAppliedIndex(dbName));
       staleDatabaseAppliedFloors.put(dbName, floor);
-      // Named, because the alert quotes it: nothing failed while APPLYING anything here, the install is what did
-      // not finish the job, and an operator sent to look for an apply error would find none (issue #7741).
-      markStateDiverged(dbName, DivergenceCause.SNAPSHOT_INSTALL_INCOMPLETE);
+      // The cause is named above, because the alert quotes it: nothing failed while APPLYING anything here, the
+      // install is what did not finish the job, and an operator sent to look for an apply error would find none
+      // (issue #7741).
       LogManager.instance().log(this, Level.SEVERE,
           "Snapshot install did not bring database '%s' to snapshotIndex=%d: keeping it marked diverged and "
               + "clamping its LINEARIZABLE / read-your-writes reads at appliedIndex=%d until a resync succeeds. "
@@ -5523,7 +5650,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   // @VisibleForTesting
   void clearDivergedDatabase(final String dbName) {
-    divergedDatabases.remove(dbName);
+    // Under the applied-index lock and after the load, so the on-disk quarantine is dropped with the in-memory
+    // one (issue #7735). Without this the resync would heal the database and the node would still come back
+    // quarantined after the next restart - the inverse of the bug, and just as wrong.
+    synchronized (appliedIndexFileLock) {
+      ensureAppliedIndexLoaded();
+      if (divergedDatabases.remove(dbName) != null)
+        persistAppliedIndexFile();
+    }
     lastDivergedResyncLogByDb.remove(dbName);
     // The resync restored this database, so its read floor is satisfied (issue #6760).
     staleDatabaseAppliedFloors.remove(dbName);
@@ -5569,7 +5703,85 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   // @VisibleForTesting
   void markStateDiverged(final String dbName, final DivergenceCause cause) {
-    divergedDatabases.putIfAbsent(dbName, cause);
+    quarantineDatabase(dbName, cause);
+  }
+
+  /**
+   * The single writer of a quarantine: records {@code dbName} as diverged under {@code cause} and durably
+   * persists the quarantine, returning {@code true} only for the call that established it (issue #7735).
+   * <p>
+   * Every path that quarantines a database goes through here - the WAL version gap in
+   * {@link #applyReplicatedTransaction}, the apply error and the undecodable entry in
+   * {@link #handleUnexpectedApplyError}, and the incomplete snapshot install in
+   * {@code markDatabasesNotAtSnapshotIndex} through {@link #markStateDiverged(String, DivergenceCause)} - so
+   * there is one place the durability can be missing from rather than four.
+   * <p>
+   * Written under {@link #appliedIndexFileLock}, the same lock {@link #ensureAppliedIndexLoaded()} and the
+   * applied-index writers take, so the mark and the applied position it qualifies land in one atomic rename.
+   * The load-before-mutate keeps the other databases' applied positions intact when the file is rewritten.
+   * <p>
+   * The file write is best-effort, exactly like the applied-index write it shares, but a failure is reported at
+   * WARNING here rather than at the FINE the shared writer logs: this is the one write the whole fix depends on,
+   * and an operator whose disk refused it needs to know the quarantine will not survive the next restart. The
+   * backstop is the snapshot refusal in {@link #takeSnapshot()}, which reads the in-memory map and so still
+   * holds: with the log unpurged past the skipped entry, a restart replays into the same quarantine instead of
+   * into a silent gap.
+   *
+   * @return {@code true} when this call established the quarantine, {@code false} when one was already recorded
+   */
+  // @VisibleForTesting
+  boolean quarantineDatabase(final String dbName, final DivergenceCause cause) {
+    if (dbName == null || dbName.isEmpty())
+      return false;
+    synchronized (appliedIndexFileLock) {
+      ensureAppliedIndexLoaded();
+      if (divergedDatabases.putIfAbsent(dbName, cause) != null)
+        return false;
+      if (!persistAppliedIndexFile() && !closed)
+        LogManager.instance().log(this, Level.WARNING,
+            "Database '%s' is quarantined (%s) but the quarantine could NOT be written to %s: a restart before "
+                + "this is fixed comes back without it. The log is not checkpointed while a database is "
+                + "quarantined, so the skipped entry stays replayable, but check that the .raft directory is "
+                + "writable and has free space (issue #7735)",
+            dbName, cause, getAppliedIndexFile());
+      return true;
+    }
+  }
+
+  /**
+   * {@link #quarantineDatabase} for a whole batch, in ONE file write (code review on PR #8146).
+   * <p>
+   * Same lock, same load-before-mutate, same first-cause-wins semantics; the only difference is that the file is
+   * rewritten once for the set rather than once per member. Used by the snapshot-install path, which learns
+   * about every database it gave up on at the same moment.
+   * <p>
+   * Deliberately does NOT drive a resync per database the way {@link #handleUnexpectedApplyError} does: its one
+   * caller publishes a read floor beside each mark and leaves recovery to
+   * {@link #retryUnfilledSnapshotGap()}, which is what #6760 chose.
+   *
+   * @return the databases this call newly quarantined, empty when every one of them already was
+   */
+  // @VisibleForTesting
+  Set<String> quarantineDatabases(final Collection<String> dbNames, final DivergenceCause cause) {
+    if (dbNames == null || dbNames.isEmpty())
+      return Set.of();
+    synchronized (appliedIndexFileLock) {
+      ensureAppliedIndexLoaded();
+      final Set<String> added = new HashSet<>();
+      for (final String dbName : dbNames)
+        if (dbName != null && !dbName.isEmpty() && divergedDatabases.putIfAbsent(dbName, cause) == null)
+          added.add(dbName);
+      if (added.isEmpty())
+        return Set.of();
+      if (!persistAppliedIndexFile() && !closed)
+        LogManager.instance().log(this, Level.WARNING,
+            "Database(s) %s are quarantined (%s) but the quarantine could NOT be written to %s: a restart before "
+                + "this is fixed comes back without it. The log is not checkpointed while a database is "
+                + "quarantined, so the skipped entries stay replayable, but check that the .raft directory is "
+                + "writable and has free space (issue #7735)",
+            added, cause, getAppliedIndexFile());
+      return added;
+    }
   }
 
   /**
@@ -5580,7 +5792,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   // @VisibleForTesting
   void clearDivergedState() {
-    divergedDatabases.clear();
+    // Same reasoning as clearDivergedDatabase: the persisted copy has to go with the in-memory one (issue #7735).
+    synchronized (appliedIndexFileLock) {
+      ensureAppliedIndexLoaded();
+      if (!divergedDatabases.isEmpty()) {
+        divergedDatabases.clear();
+        persistAppliedIndexFile();
+      }
+    }
     lastDivergedResyncLogByDb.clear();
     divergedSwallowedErrors.set(0);
     // A resync reinstalls every database, so every per-database read floor is satisfied too (issue #6760). The
@@ -5591,6 +5810,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   // @VisibleForTesting
   boolean isDatabaseDiverged(final String dbName) {
+    // A quarantine restored from disk must be visible to the very first caller after a restart (issue #7735).
+    // Latched after the first read, so this costs a plain field test on the apply path.
+    ensureAppliedIndexLoaded();
     return divergedDatabases.containsKey(dbName);
   }
 
@@ -5718,6 +5940,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * on a path that runs a handful of times a second at most.
    */
   public LocalResyncState getLocalResyncState() {
+    // The readiness probe and the cluster status document both read this, and both must see a quarantine
+    // restored from disk on the very first poll after a restart (issue #7735). Latched, so a healthy node pays
+    // a plain field test.
+    ensureAppliedIndexLoaded();
     // A healthy node - the overwhelming majority of calls, since the readiness probe polls this - copies
     // nothing: both immutable empties are shared constants and the record's own copyOf calls return them
     // unchanged. Only a node that actually has something in flight pays for the copies.
@@ -5753,6 +5979,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   @Override
   public void close() throws IOException {
+    // Set BEFORE the executors are asked to stop: shutdownNow() interrupts a task, it does not unwind one that is
+    // already past its last interruption point, and such a task can still reach clearDivergedState() /
+    // writePersistedAppliedIndex() and recreate .raft/applied-index after the directory it lives in is gone
+    // (issue #7735). A closed state machine is never reused - restartRatis() builds a new one - so there is no
+    // write left that is worth making.
+    //
+    // Under appliedIndexFileLock, not as a bare volatile write (CodeRabbit on PR #8146): every caller of
+    // persistAppliedIndexFile() holds that lock for the whole check-and-write, so taking it here BOTH waits for a
+    // writer that already passed the closed check and guarantees that every later one observes the flag. A bare
+    // write leaves the window this guard exists to close - a writer between the check and createDirectories().
+    synchronized (appliedIndexFileLock) {
+      closed = true;
+    }
     lifecycleExecutor.shutdownNow();
     snapshotInstallExecutor.shutdownNow();
     membershipSecuritySeeder.close();
