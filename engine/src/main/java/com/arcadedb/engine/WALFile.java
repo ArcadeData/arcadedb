@@ -72,6 +72,8 @@ public class WALFile extends LockContext {
   private final    AtomicInteger    pagesToFlush      = new AtomicInteger();
   private          long             statsPagesWritten = 0;
   private          long             statsBytesWritten = 0;
+  // #8139: THROTTLES THE REOPEN DIAGNOSTIC, WHICH A RECOVERY SCAN ON AN INTERRUPTED THREAD HITS ONCE PER READ
+  private final    ChannelReopenLog reopenLog         = new ChannelReopenLog();
 
   public static class WALTransaction {
     public long      txId;
@@ -205,8 +207,14 @@ public class WALFile extends LockContext {
    */
   private <T> T retryAfterReopen(final ClosedChannelException cause, final String operation, final ChannelOperation<T> io)
       throws IOException {
-    LogManager.instance().log(this, Level.SEVERE,
-        "WAL file '%s' was closed on %s (interrupted thread?). Reopen it and retry...", cause, filePath, operation);
+    final long folded = reopenLog.record();
+    if (folded < 0)
+      LogManager.instance().log(this, Level.FINE,
+          "WAL file '%s' was closed on %s (interrupted thread?). Reopen it and retry...", cause, filePath, operation);
+    else
+      LogManager.instance().log(this, Level.SEVERE,
+          "WAL file '%s' was closed on %s (interrupted thread?). Reopen it and retry... (%d more reopens of this file logged at FINE since the last report)",
+          cause, filePath, operation, folded);
 
     final boolean wasInterrupted = Thread.interrupted();
     try {
@@ -221,6 +229,14 @@ public class WALFile extends LockContext {
       if (wasInterrupted)
         Thread.currentThread().interrupt();
     }
+  }
+
+  /**
+   * How many times this file reopened a channel a thread interrupt closed (issue #8139), so a recovery scan can report
+   * the total once when it finishes instead of relying on the throttled per-reopen lines.
+   */
+  public long getReopenCount() {
+    return reopenLog.getTotal();
   }
 
   @FunctionalInterface

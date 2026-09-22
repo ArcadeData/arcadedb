@@ -25,18 +25,34 @@ import java.util.Collection;
 import java.util.Iterator;
 
 public class IndexCursorCollection implements IndexCursor {
+  private static final Object[] NO_KEYS      = new Object[0];
+  private static final byte[]   NO_KEY_TYPES = new byte[0];
+
   private final Collection<Identifiable> collection;
   private final Iterator<Identifiable>   iterator;
+  // #8153: THE KEY EVERY RECORD OF AN EQUALITY LOOKUP SHARES, WITH THE KEY TYPES AND THE COMPARATOR OF THE INDEX IT CAME
+  // FROM, SO A MultiIndexCursor MERGING THIS CURSOR WITH RANGE CURSORS OVER THE SAME INDEX CAN ORDER IT AMONG THEM
+  private final Object[]                 keys;
+  private final byte[]                   binaryKeyTypes;
+  private final BinaryComparator         comparator;
   private       Identifiable             last = null;
 
   public IndexCursorCollection(final Collection<Identifiable> collection) {
+    this(collection, NO_KEYS, NO_KEY_TYPES, null);
+  }
+
+  public IndexCursorCollection(final Collection<Identifiable> collection, final Object[] keys, final byte[] binaryKeyTypes,
+      final BinaryComparator comparator) {
     this.collection = collection;
     this.iterator = collection.iterator();
+    this.keys = keys;
+    this.binaryKeyTypes = binaryKeyTypes;
+    this.comparator = comparator;
   }
 
   @Override
   public Object[] getKeys() {
-    return new Object[0];
+    return keys;
   }
 
   @Override
@@ -46,12 +62,12 @@ public class IndexCursorCollection implements IndexCursor {
 
   @Override
   public BinaryComparator getComparator() {
-    return null;
+    return comparator;
   }
 
   @Override
   public byte[] getBinaryKeyTypes() {
-    return new byte[0];
+    return binaryKeyTypes;
   }
 
   @Override

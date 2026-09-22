@@ -1192,7 +1192,10 @@ public class LocalDocumentType implements DocumentType {
   @Override
   public Bucket getBucketIdByRecord(final Document record, final boolean async) {
     if (buckets.isEmpty())
-      throw new SchemaException("Cannot retrieve a bucket for type '" + name + "' because there are no buckets associated");
+      // #8187: SAY HOW TO GET OUT OF IT - A TYPE LEFT BEHIND BY #8169 IS REMOVED WITH DROP TYPE
+      throw new SchemaException("Cannot retrieve a bucket for type '" + name
+          + "' because there are no buckets associated. Add one with ALTER TYPE `" + name
+          + "` BUCKET +<bucket>, or remove the type with DROP TYPE `" + name + "` if it should not exist");
     return buckets.get(bucketSelectionStrategy.getBucketIdByRecord(record, async));
   }
 

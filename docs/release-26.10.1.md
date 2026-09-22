@@ -103,3 +103,32 @@ entry is still installed first.
 Both arms are guarded by a Raft-ordering invariant - the type-creation entry carries a lower index and is
 applied first - so neither is expected to fire; the change is about what it costs if it ever does, for instance
 during a rolling upgrade shipping a type this node's build cannot construct.
+
+### A type left behind by the DROP TYPE alias leak (#8169) is reported at open, and `DROP TYPE` removes it (#8187)
+
+The #8169 fix stops `DROP TYPE` from re-serialising a dropped type into `schema.json`, but a database whose
+`schema.json` was already written by an affected version still carries the dropped type as an entry with no
+buckets: `existsType()` answers `true` for it and its aliases, and the first insert fails with
+`Cannot retrieve a bucket for type ... because there are no buckets associated`. Such a database is not repaired
+automatically, because a type without buckets can also be the legitimate result of `ALTER TYPE ... BUCKET -<name>`.
+Instead:
+
+- the open logs a WARNING naming every document, vertex or edge type that has no bucket and no subtype, so it can
+  never hold a record, together with the remedy;
+- the insert error now says the same;
+- `DROP TYPE <name>` removes the zombie type and its aliases permanently (before #8169 the alias kept it alive).
+
+### `arcadedb.dateTimeImplementation=java.util.Date`/`java.util.Calendar` no longer reads DATETIME_MICROS/NANOS as null (#8158)
+
+`java.util.Date` and `java.util.Calendar` cannot carry sub-millisecond precision. With either configured, a
+`DATETIME_MICROS` or `DATETIME_NANOS` value was written successfully but every read failed inside the
+deserializer, was logged as a corrupted property and returned `null`. Those two column types are now returned as
+`java.time.LocalDateTime` under such a setting, which is also what the write side converts them to. `DATETIME` and
+`DATETIME_SECOND` keep honouring the setting, and `java.time.ZonedDateTime`/`java.time.Instant` are unchanged.
+
+### Native `Select` API: `like` and `ilike` evaluate with the SQL semantics (#8170)
+
+`ilike` threw a `NullPointerException` on any record that does not carry the property. Both native operators now
+evaluate through the SQL `LIKE`/`ILIKE` operators: a missing property or a null pattern does not match, a non-string
+value is matched by its string form instead of failing with a `ClassCastException`, and a list property matches when
+any of its items does.

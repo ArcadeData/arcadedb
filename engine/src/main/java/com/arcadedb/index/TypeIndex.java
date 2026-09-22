@@ -19,6 +19,7 @@
 package com.arcadedb.index;
 
 import com.arcadedb.database.DatabaseContext;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.IndexCursorCollection;
 import com.arcadedb.database.RID;
@@ -152,7 +153,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
           while (cursor.hasNext()) {
             if (unique) {
               result = Set.of(cursor.next());
-              return new IndexCursorCollection(result);
+              return keyedCursor(result, keys);
             }
 
             if (result == null)
@@ -161,7 +162,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
           }
         }
       }
-      return new IndexCursorCollection(result != null ? result : Collections.emptyList());
+      return keyedCursor(result != null ? result : Collections.emptyList(), keys);
     }
   }
 
@@ -216,8 +217,9 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
       for (final Index index : getIndexesByKeys(keys)) {
         // #5662: try-with-resources - the limit returns from inside the loop, abandoning the cursor partway
+        // ONLY THE ROWS STILL MISSING ARE ASKED OF THIS BUCKET: THE OLD size - limit WAS NEGATIVE, I.E. UNLIMITED
         try (final IndexCursor cursor = index.get(keys,
-            effectiveLimit > -1 ? (result != null ? result.size() : 0) - effectiveLimit : -1)) {
+            effectiveLimit > -1 ? effectiveLimit - (result != null ? result.size() : 0) : -1)) {
           while (cursor.hasNext()) {
             if (result == null)
               result = effectiveLimit > -1 ? new HashSet<>(effectiveLimit) : new HashSet<>();
@@ -225,12 +227,24 @@ public class TypeIndex implements RangeIndex, IndexInternal {
             result.add(cursor.next());
 
             if (effectiveLimit > -1 && result.size() >= effectiveLimit)
-              return new IndexCursorCollection(result);
+              return keyedCursor(result, keys);
           }
         }
       }
-      return new IndexCursorCollection(result != null ? result : Collections.emptyList());
+      return keyedCursor(result != null ? result : Collections.emptyList(), keys);
     }
+  }
+
+  /**
+   * #8153: an equality lookup answers with the key it was asked for and the key types and comparator of this index, like
+   * every range cursor over it, so a {@link MultiIndexCursor} merging both kinds can compare them.
+   */
+  private IndexCursor keyedCursor(final Collection<Identifiable> result, final Object[] keys) {
+    if (indexesOnBuckets.isEmpty())
+      return new IndexCursorCollection(result);
+    final IndexInternal first = indexesOnBuckets.getFirst();
+    return new IndexCursorCollection(result, keys, first.getBinaryKeyTypes(),
+        ((DatabaseInternal) type.getSchema().getEmbedded().getDatabase()).getSerializer().getComparator());
   }
 
   @Override

@@ -17,13 +17,13 @@ package com.arcadedb.query.select;/*
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
-import com.arcadedb.query.sql.executor.QueryHelper;
+import com.arcadedb.query.sql.parser.ILikeOperator;
+import com.arcadedb.query.sql.parser.LikeOperator;
 import com.arcadedb.serializer.BinaryComparator;
 
 import java.util.Collection;
-import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -151,24 +151,27 @@ public enum SelectOperator {
     }
   },
 
+  /**
+   * #8170: {@code ilike} and {@code like} evaluate through the SQL operators, so the native API cannot drift from SQL on
+   * the operands SQL already handles: a record without the property (or a null pattern) does not match - the native
+   * {@code ilike} used to fold the case of a null and throw a {@link NullPointerException} - a non-string value is
+   * matched by its string form rather than failing a cast, and a multi-value property matches when any item does. Both
+   * sides fold with the ENGLISH locale (issue #7900).
+   */
   ilike("ilike", false, 1) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
-      // BOTH sides fold with the same locale. The right-hand one used to use the JVM default, so on a Turkish
-      // server an ILIKE whose pattern carried an 'I' folded differently from the value it was matched against and
-      // stopped matching (issue #7900).
-      return QueryHelper.like(((String) SelectExecutor.evaluateValue(record, left)).toLowerCase(Locale.ENGLISH),
-          ((String) SelectExecutor.evaluateValue(record, right)).toLowerCase(Locale.ENGLISH),
-          GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(record.getDatabase()));
+      return SQL_ILIKE.execute((DatabaseInternal) record.getDatabase(), SelectExecutor.evaluateValue(record, left),
+          SelectExecutor.evaluateValue(record, right));
     }
   },
 
+  /** See {@link #ilike}. */
   like("like", false, 1) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
-      return QueryHelper.like((String) SelectExecutor.evaluateValue(record, left),
-          (String) SelectExecutor.evaluateValue(record, right),
-          GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(record.getDatabase()));
+      return SQL_LIKE.execute((DatabaseInternal) record.getDatabase(), SelectExecutor.evaluateValue(record, left),
+          SelectExecutor.evaluateValue(record, right));
     }
   },
 
@@ -229,6 +232,9 @@ public enum SelectOperator {
   public final   boolean                     logicOperator;
   public final   int                         precedence;
   private static Map<String, SelectOperator> NAMES = new ConcurrentHashMap<>();
+  // STATELESS: execute() READS NOTHING BUT ITS ARGUMENTS, SO ONE INSTANCE IS SHARED BY EVERY QUERY AND THREAD
+  private static final LikeOperator          SQL_LIKE  = new LikeOperator();
+  private static final ILikeOperator         SQL_ILIKE = new ILikeOperator();
 
   SelectOperator(final String name, final boolean logicOperator, final int precedence) {
     this.name = name;
