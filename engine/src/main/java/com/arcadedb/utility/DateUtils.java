@@ -571,6 +571,24 @@ public class DateUtils {
    * An input with no offset has nothing to preserve and is anchored to the database's zone, as before.
    */
   public static ZonedDateTime parseZonedDateTime(final Database database, final String string) {
+    return parseZonedDateTime(database, string, true);
+  }
+
+  /**
+   * As {@link #parseZonedDateTime(Database, String)}, but a caller that has ALREADY tried the schema's patterns with
+   * its own parser passes {@code false} for {@code trySchemaPatterns}.
+   * <p>
+   * {@code Type.convertToDate} is that caller: a {@code java.util.Date} target reads the schema's patterns through
+   * {@code SimpleDateFormat}, deliberately, for its lenient resolution and default-time-zone anchoring that
+   * {@code java.time} does not reproduce. Walking them again here is not just repeated work on the commonest
+   * DATETIME target - it is a SECOND interpretation of the same pattern, which could answer differently from the one
+   * that target is defined by. Only the built-in shapes below are its business.
+   * <p>
+   * The database is still needed for the zone an offset-less value is attached to, which is why it is not simply
+   * passed as {@code null}.
+   */
+  public static ZonedDateTime parseZonedDateTime(final Database database, final String string,
+      final boolean trySchemaPatterns) {
     DateTimeParseException isoFailure = null;
     if (!hasSpaceDateTimeSeparator(string)) {
       // ISO demands a 'T', so both of these are guaranteed to fail on a space-separated value and are not run.
@@ -592,7 +610,7 @@ public class DateUtils {
 
     // A schema pattern can capture an offset too ('yyyy-MM-dd HH:mm:ss XXX'), and it is the value's own offset just
     // as much as an ISO one is, so it is kept rather than replaced by the database's zone.
-    final Temporal parsed = parseSchemaOrSqlTimestamp(database, string, isoFailure);
+    final Temporal parsed = parseSchemaOrSqlTimestamp(trySchemaPatterns ? database : null, string, isoFailure);
     return parsed instanceof OffsetDateTime offset ?
         offset.toZonedDateTime() :
         ((LocalDateTime) parsed).atZone(zoneOf(database));
