@@ -248,6 +248,45 @@ public class Issue8134GrpcRetryDoesNotReplayCommittedHalfIT extends BaseGraphSer
   }
 
   /**
+   * The guard holds across the SERVER-STREAMING path too, which is a different client code path: a stream runs
+   * on the async stub, not the blocking one, and ends through its own {@code onClose}.
+   * <p>
+   * This is the claim the review on PR #8193 asked to see pinned down rather than argued. A streamed READ
+   * publishes nothing, so it neither earns the trailer nor may un-say a verdict an earlier call in the same
+   * transaction reached - and the block around it must still refuse to replay.
+   * <p>
+   * What it does NOT cover, checked rather than assumed: removing the interceptor from the async stub leaves
+   * this test green, because the verdict here was reached on the blocking stub and a stream only has to not
+   * disturb it. The async stub is wrapped for the write streams, which nothing can make publish today - see
+   * the note on {@code ArcadeDbGrpcService.insertRowsTagged}.
+   */
+  @Test
+  void aStreamOpenedAfterTheBatchBoundaryDoesNotClearTheVerdict() {
+    final AtomicInteger attempts = new AtomicInteger();
+
+    assertThatThrownBy(() -> database.transaction(() -> {
+      attempts.incrementAndGet();
+      database.command("sql", "UPDATE " + ROWS + " SET seq = seq + 1 BATCH 10").close();
+
+      // A streamed read on the same transaction, drained and closed so the call reaches its own close.
+      int rows = 0;
+      try (final ResultSet rs = database.queryStream("sql", "SELECT FROM " + ROWS, 5)) {
+        while (rs.hasNext()) {
+          rs.next();
+          rows++;
+        }
+      }
+      assertThat(rows).isEqualTo(SIZE);
+
+      throw new ConcurrentModificationException("simulated conflict after a streamed read");
+    }, true, ATTEMPTS, null, null)).isInstanceOf(NeedRetryException.class);
+
+    assertThat(attempts.get()).as("a stream must not clear a verdict an earlier RPC in the same transaction set")
+        .isEqualTo(1);
+    assertThat(countRowsWithSeq(2)).as("no row may be incremented twice").isZero();
+  }
+
+  /**
    * Records which gRPC methods answered with the partial-commit trailer. Installed on the CHANNEL, so it sees
    * every call the database makes without depending on the database's own interceptor.
    */

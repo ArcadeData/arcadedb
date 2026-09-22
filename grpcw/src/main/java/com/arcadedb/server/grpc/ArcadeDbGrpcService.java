@@ -577,6 +577,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         } finally {
           // In a finally, because the statement that publishes half the block is often the same one that then
           // fails: a verdict only reported on the success path would miss the case the guard exists for.
+          //
+          // Raised on the executor thread and read on the gRPC thread when the call closes. Every one of this
+          // method's callers joins the Future it returns before that close - the unary RPCs on the response
+          // they send, streamQuery and the chunked inserts on each unit of work - so the verdict is always
+          // established before it is read, whatever kind of RPC asked for it.
           if (com.arcadedb.database.TransactionContext.isPartiallyCommitted(engineTx, commitCountAtStart))
             GrpcSessionPartialCommitInterceptor.raise(partialCommit);
         }
@@ -4509,6 +4514,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     }
   }
 
+  /**
+   * Inserts the rows of one chunk. Deliberately contains no {@code commit()} and no {@code begin()}: inside a
+   * client-managed transaction the client owns the lifecycle, and outside one the caller wraps.
+   * <p>
+   * Issue #8134 depends on that. This runs under {@link #submitToActiveTransaction}, which reports to the
+   * caller "your transaction published a commit under this call" by comparing the transaction's commit counter
+   * across the task. Adding a commit here would start setting that signal on every streamed chunk, telling a
+   * client's retry loop not to replay blocks that are perfectly replayable. If a commit ever does belong here,
+   * read {@link GrpcSessionPartialCommitInterceptor} first and give the change a test of its own.
+   */
   private Counts insertRowsTagged(InsertContext ctx, Iterator<GrpcRecord> it) {
 
     Counts c = new Counts();

@@ -66,9 +66,11 @@ class GrpcSessionPartialCommitInterceptor implements ServerInterceptor {
   /**
    * The forwarding call, carrying its own verdict.
    * <p>
-   * {@code volatile} because the verdict is raised on the transaction's dedicated executor thread and read here
-   * on the gRPC thread: for a unary RPC the {@code Future.get()} that collects the result already orders the
-   * two, but a streaming RPC raises it from work whose completion the closing thread does not join.
+   * The verdict is raised on the transaction's dedicated executor thread and read here on the gRPC thread that
+   * closes the call. Every caller of {@code ArcadeDbGrpcService.submitToActiveTransaction} joins the
+   * {@code Future} it returns before that close - the streaming RPCs per unit of work, the unary ones on the
+   * response they send - so the ordering is established on every path, not only the unary ones.
+   * {@code volatile} so the field stays correct without depending on which of those edges did the ordering.
    */
   private static final class PartialCommitCall<ReqT, RespT>
       extends ForwardingServerCall.SimpleForwardingServerCall<ReqT, RespT> implements Verdict {
