@@ -170,6 +170,13 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   protected        RemoteGrpcServer                                  remoteGrpcServer;
   // ---- fields ----
   private volatile TxDebug                                           debugTx;
+  /**
+   * Latches the {@code arcadedb-session-partial-commit} trailer onto this database, which is how the verdict
+   * the HTTP driver reads from a response header reaches the gRPC one (issue #8134). One instance per database,
+   * applied to both stubs in {@link #rebuildStubs()} so it survives a channel generation change.
+   */
+  private final    SessionPartialCommitInterceptor                   partialCommitInterceptor =
+      new SessionPartialCommitInterceptor(this);
 
   public RemoteGrpcDatabase(final RemoteGrpcServer remoteGrpcServer, final String server, final int grpcPort,
                             final int httpPort,
@@ -207,6 +214,16 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     return blockingStub;
   }
 
+  /**
+   * Latches the partial-commit verdict a call trailer carried, for {@link SessionPartialCommitInterceptor}.
+   * <p>
+   * The setter itself is {@code protected} on {@link com.arcadedb.remote.RemoteDatabase} and the interceptor is
+   * not a subclass of it, so the reach across packages goes through this class, which is (issue #8134).
+   */
+  void latchSessionPartialCommit() {
+    markSessionPartiallyCommitted();
+  }
+
   /** @see #blockingStub() */
   private ArcadeDbServiceGrpc.ArcadeDbServiceStub asyncStub() {
     if (stubChannelGeneration != remoteGrpcServer.channelGeneration())
@@ -221,8 +238,11 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
    */
   private void rebuildStubs() {
     final long generation = remoteGrpcServer.channelGeneration();
-    blockingStub = createBlockingStub();
-    asyncStub = createAsyncStub();
+    // #8134: the partial-commit interceptor is attached HERE rather than inside createBlockingStub() /
+    // createAsyncStub(), which exist to be overridden - a subclass customising stub construction would
+    // otherwise drop the guard and silently go back to replaying a block whose earlier half is durable.
+    blockingStub = createBlockingStub().withInterceptors(partialCommitInterceptor);
+    asyncStub = createAsyncStub().withInterceptors(partialCommitInterceptor);
     stubChannelGeneration = generation;
   }
 
@@ -349,6 +369,11 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       throw new TransactionException("Transaction already begun");
 
     txCreatedRecords.clear();
+    // #8134: a fresh transaction has published nothing yet. This class does NOT call super.begin(...) - it
+    // begins over gRPC instead - so the reset RemoteDatabase.begin() performs never runs for it, and without
+    // this line a verdict reached in one transaction would disable retries for every later one on the same
+    // connection. Cleared BEFORE the call, so the BeginTransaction response cannot be read against a stale one.
+    resetSessionPartiallyCommitted();
 
     BeginTransactionRequest request =
         BeginTransactionRequest.newBuilder().setDatabase(getName()).setCredentials(buildCredentials())
