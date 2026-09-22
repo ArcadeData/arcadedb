@@ -18,6 +18,7 @@
  */
 package com.arcadedb.engine.timeseries;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.engine.timeseries.codec.DeltaOfDeltaCodec;
 import com.arcadedb.engine.timeseries.codec.DictionaryCodec;
@@ -344,7 +345,28 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     }
   }
 
+  /**
+   * Decoded columns of the blocks this store has already read, so a repeated read decodes once (issue #8179).
+   * Per store, hence per shard: see the configuration setting's own description for what that means for the
+   * footprint of a whole type.
+   */
+  private final TimeSeriesDecodedColumnCache decodedColumnCache;
+
+  /**
+   * Opens a store whose decoded-column budget comes from the JVM-wide setting.
+   * <p>
+   * The database-aware overload is what production uses, because
+   * {@link GlobalConfiguration#TIMESERIES_DECODED_BLOCK_CACHE_RAM} is {@code SCOPE.DATABASE} and a budget read off
+   * the global would make a per-database override inert. This one exists for callers that have no database in hand,
+   * which is every direct test of this class.
+   */
   public TimeSeriesSealedStore(final String basePath, final List<ColumnDefinition> columns) throws IOException {
+    this(basePath, columns, GlobalConfiguration.decodedBlockCacheBytes(null));
+  }
+
+  public TimeSeriesSealedStore(final String basePath, final List<ColumnDefinition> columns,
+      final long decodedColumnCacheBytes) throws IOException {
+    this.decodedColumnCache = new TimeSeriesDecodedColumnCache(decodedColumnCacheBytes);
     this.basePath = basePath;
     this.columns = columns;
 
@@ -1759,6 +1781,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
       // Only update in-memory state after the successful file swap
       blockDirectory.clear();
+      decodedColumnCache.clear();
       blockDirectory.addAll(newDirectory);
       globalMinTs = Long.MAX_VALUE;
       globalMaxTs = Long.MIN_VALUE;
@@ -2053,6 +2076,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
     // Only update in-memory state after the successful file swap
     blockDirectory.clear();
+    decodedColumnCache.clear();
     blockDirectory.addAll(newDirectory);
     globalMinTs = Long.MAX_VALUE;
     globalMaxTs = Long.MIN_VALUE;
@@ -2293,6 +2317,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       indexChannel = indexFile.getChannel();
 
       blockDirectory.clear();
+      decodedColumnCache.clear();
       blockDirectory.addAll(newBlockDirectory);
 
       globalMinTs = Long.MAX_VALUE;
@@ -2462,6 +2487,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
       // Only update in-memory state after the successful file swap
       blockDirectory.clear();
+      decodedColumnCache.clear();
       blockDirectory.addAll(newDirectory);
       globalMinTs = Long.MAX_VALUE;
       globalMaxTs = Long.MIN_VALUE;
@@ -2496,6 +2522,22 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     } finally {
       directoryLock.readLock().unlock();
     }
+  }
+
+  /**
+   * Drops the decoded columns this store holds (issue #8179).
+   * <p>
+   * Only the paths that replace the whole FILE need this. A path that rewrites blocks - compaction, downsampling,
+   * retention - mints a new {@link BlockEntry#blockId} for every block whose content changed, so its stale entries
+   * are unreachable rather than wrong; clearing there as well just stops them holding budget.
+   */
+  void clearDecodedColumnCache() {
+    decodedColumnCache.clear();
+  }
+
+  /** The decoded-column cache, so a test can assert on what a second read of the same blocks did (issue #8179). */
+  TimeSeriesDecodedColumnCache getDecodedColumnCache() {
+    return decodedColumnCache;
   }
 
   public int getBlockCount() {
@@ -3286,6 +3328,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       indexChannel = indexFile.getChannel();
 
       blockDirectory.clear();
+      decodedColumnCache.clear();
       globalMinTs = Long.MAX_VALUE;
       globalMaxTs = Long.MIN_VALUE;
       headerDirty = false;
@@ -3521,6 +3564,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
     // Rebuild block directory by scanning block metadata records
     blockDirectory.clear();
+    decodedColumnCache.clear();
     final long fileLength = indexFile.length();
     long pos = HEADER_SIZE;
 
@@ -3685,12 +3729,33 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   private long[] decompressTimestamps(final BlockEntry entry, final int tsColIdx) throws IOException {
+    // Before the cache lookup, not after it: the flag it checks is sticky, so a validated block costs one volatile
+    // read here, and a block reaching a reader for the first time is still refused before any of its bytes are used.
     validateBlockCRC(entry);
+
+    final long[] cached = (long[]) decodedColumnCache.get(entry.blockId, tsColIdx,
+        TimeSeriesDecodedColumnCache.SHAPE_RAW);
+    if (cached != null)
+      return cached;
+
     final byte[] compressed = readBytes(entry.columnOffsets[tsColIdx], entry.columnSizes[tsColIdx]);
-    return DeltaOfDeltaCodec.decode(compressed);
+    final long[] decoded = DeltaOfDeltaCodec.decode(compressed);
+    decodedColumnCache.put(entry.blockId, tsColIdx, TimeSeriesDecodedColumnCache.SHAPE_RAW, decoded);
+    return decoded;
   }
 
   private double[] decompressDoubleColumn(final BlockEntry entry, final int schemaColIdx) throws IOException {
+    final double[] cached = (double[]) decodedColumnCache.get(entry.blockId, schemaColIdx,
+        TimeSeriesDecodedColumnCache.SHAPE_DOUBLE);
+    if (cached != null)
+      return cached;
+
+    final double[] decoded = decodeDoubleColumn(entry, schemaColIdx);
+    decodedColumnCache.put(entry.blockId, schemaColIdx, TimeSeriesDecodedColumnCache.SHAPE_DOUBLE, decoded);
+    return decoded;
+  }
+
+  private double[] decodeDoubleColumn(final BlockEntry entry, final int schemaColIdx) throws IOException {
     final byte[] compressed = readBytes(entry.columnOffsets[schemaColIdx], entry.columnSizes[schemaColIdx]);
     final ColumnDefinition col = columns.get(schemaColIdx);
 
@@ -3707,7 +3772,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     }
 
     throw new IllegalArgumentException(
-        "decompressDoubleColumn: codec " + col.getCompressionHint() + " is not a numeric codec (column " + schemaColIdx + ")");
+        "decodeDoubleColumn: codec " + col.getCompressionHint() + " is not a numeric codec (column " + schemaColIdx + ")");
   }
 
   /**
@@ -3771,17 +3836,28 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         continue;
       }
 
-      final byte[] compressed = readBytes(entry.columnOffsets[c], entry.columnSizes[c]);
       final ColumnDefinition col = columns.get(c);
 
-      final RawColumn decoded = switch (col.getCompressionHint()) {
-        case GORILLA_XOR -> new RawColumn(col, GorillaXORCodec.decode(compressed), null, null);
-        case SIMPLE8B -> new RawColumn(col, null, Simple8bCodec.decode(compressed), null);
-        case DICTIONARY -> new RawColumn(col, null, null, DictionaryCodec.decode(compressed));
-        default -> new RawColumn(col, null, null, null);
-      };
+      // The CACHE holds the codec's own array; the RawColumn around it is rebuilt per call, being three references
+      // and no data.
+      Object values = decodedColumnCache.get(entry.blockId, c, TimeSeriesDecodedColumnCache.SHAPE_RAW);
+      if (values == null) {
+        final byte[] compressed = readBytes(entry.columnOffsets[c], entry.columnSizes[c]);
+        values = switch (col.getCompressionHint()) {
+          case GORILLA_XOR -> GorillaXORCodec.decode(compressed);
+          case SIMPLE8B -> Simple8bCodec.decode(compressed);
+          case DICTIONARY -> DictionaryCodec.decode(compressed);
+          default -> null;
+        };
+        decodedColumnCache.put(entry.blockId, c, TimeSeriesDecodedColumnCache.SHAPE_RAW, values);
+      }
 
-      result.add(decoded);
+      result.add(switch (col.getCompressionHint()) {
+        case GORILLA_XOR -> new RawColumn(col, (double[]) values, null, null);
+        case SIMPLE8B -> new RawColumn(col, null, (long[]) values, null);
+        case DICTIONARY -> new RawColumn(col, null, null, (String[]) values);
+        default -> new RawColumn(col, null, null, null);
+      });
       nonTsIdx++;
     }
     return result.toArray(new RawColumn[0]);
@@ -3839,9 +3915,15 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         continue;
       }
 
-      final byte[] compressed = readBytes(entry.columnOffsets[c], entry.columnSizes[c]);
+      Object[] boxed = (Object[]) decodedColumnCache.get(entry.blockId, c,
+          TimeSeriesDecodedColumnCache.SHAPE_BOXED);
+      if (boxed == null) {
+        final byte[] compressed = readBytes(entry.columnOffsets[c], entry.columnSizes[c]);
+        boxed = decodeColumn(columns.get(c), compressed);
+        decodedColumnCache.put(entry.blockId, c, TimeSeriesDecodedColumnCache.SHAPE_BOXED, boxed);
+      }
 
-      result.add(decodeColumn(columns.get(c), compressed));
+      result.add(boxed);
       nonTsIdx++;
     }
     return result.toArray(new Object[0][]);
