@@ -67,11 +67,19 @@ final class TimeSeriesDecodedColumnCache {
   private record CacheKey(long blockId, int columnIndex, int shape) {
   }
 
-  private final Map<CacheKey, Object> entries;
-  private final long                  maxBytes;
-  private       long                  heldBytes;
-  private       long                  hits;
-  private       long                  misses;
+  /**
+   * A held column and what it was charged, measured ONCE on admission. Re-deriving the charge on eviction would
+   * walk the array again - {@link #holdsSharedReferences} has to look at an element to know what boxing cost - and
+   * would also risk an eviction subtracting a different number than the admission added.
+   */
+  private record Held(Object value, long bytes) {
+  }
+
+  private final Map<CacheKey, Held> entries;
+  private final long                maxBytes;
+  private       long                heldBytes;
+  private       long                hits;
+  private       long                misses;
 
   TimeSeriesDecodedColumnCache(final long maxBytes) {
     this.maxBytes = maxBytes;
@@ -94,12 +102,12 @@ final class TimeSeriesDecodedColumnCache {
     if (maxBytes <= 0 || blockId == TimeSeriesSealedStore.BlockEntry.NO_BLOCK_ID)
       return null;
 
-    final Object cached = entries.get(new CacheKey(blockId, columnIndex, shape));
+    final Held cached = entries.get(new CacheKey(blockId, columnIndex, shape));
     if (cached != null)
       hits++;
     else
       misses++;
-    return cached;
+    return cached != null ? cached.value() : null;
   }
 
   /**
@@ -116,14 +124,14 @@ final class TimeSeriesDecodedColumnCache {
     if (size > maxBytes)
       return;
 
-    final Object previous = entries.put(new CacheKey(blockId, columnIndex, shape), decoded);
+    final Held previous = entries.put(new CacheKey(blockId, columnIndex, shape), new Held(decoded, size));
     if (previous != null)
-      heldBytes -= sizeOf(previous);
+      heldBytes -= previous.bytes();
     heldBytes += size;
 
-    final Iterator<Object> eldest = entries.values().iterator();
+    final Iterator<Held> eldest = entries.values().iterator();
     while (heldBytes > maxBytes && eldest.hasNext()) {
-      heldBytes -= sizeOf(eldest.next());
+      heldBytes -= eldest.next().bytes();
       eldest.remove();
     }
   }
@@ -157,7 +165,15 @@ final class TimeSeriesDecodedColumnCache {
    * <p>
    * A {@code String[]} counts its references only: a DICTIONARY column decodes to the same handful of String
    * objects repeated once per row, so charging each row the string's own bytes would over-count the array by orders
-   * of magnitude. A boxed column, by contrast, DOES allocate one object per row, so it is charged for them.
+   * of magnitude.
+   * <p>
+   * A boxed column is charged per row ONLY when boxing actually allocated per row. It usually does -
+   * {@link ColumnDefinition#boxDouble} and {@link ColumnDefinition#boxRaw} produce a fresh object per value - but
+   * {@link ColumnDefinition#boxString} hands a STRING column's value straight back, so the boxed shape of a
+   * dictionary STRING tag holds the very references the raw shape holds and costs no more than it. That is the
+   * host-style tag of the query this cache exists for, and billing it three times its retained size would evict it
+   * ahead of entries that really are that large. The element type is decided by the column's declared type, so the
+   * first non-null value speaks for the array.
    */
   private static long sizeOf(final Object array) {
     if (array instanceof long[] a)
@@ -167,8 +183,19 @@ final class TimeSeriesDecodedColumnCache {
     if (array instanceof String[] a)
       return 16L + 8L * a.length;
     if (array instanceof Object[] a)
-      // Reference plus the boxed value it points at; the values are per row and not shared.
-      return 16L + 24L * a.length;
+      return 16L + (holdsSharedReferences(a) ? 8L : 24L) * a.length;
     return 16L;
+  }
+
+  /**
+   * Whether a boxed column's elements are references it shares rather than objects it allocated. An all-null column
+   * allocated nothing either, so it answers true as well.
+   */
+  private static boolean holdsSharedReferences(final Object[] values) {
+    for (final Object value : values) {
+      if (value != null)
+        return value instanceof String;
+    }
+    return true;
   }
 }

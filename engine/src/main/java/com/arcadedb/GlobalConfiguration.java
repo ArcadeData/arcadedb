@@ -250,7 +250,9 @@ public enum GlobalConfiguration {
       reached by queries that actually touch that many distinct blocks. One column of a full block costs 512KB, so a \
       budget below 2MB cannot hold the working set of even a single 3-column query. 0 disables the cache, which \
       restores the decode-per-read behaviour exactly. When left at the default it auto-scales with the JVM max heap \
-      (heap/512, never below 4MB).""",
+      (heap/512, never below 4MB). A shard sizes its cache when it is OPENED, so changing this on a running database \
+      reaches the shards opened after the change and not those already open; reopen the database to apply it \
+      everywhere.""",
       Long.class, 4L, null, value -> {
         final long maxHeap = Runtime.getRuntime().maxMemory();
         if (maxHeap == Long.MAX_VALUE)

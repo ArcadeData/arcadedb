@@ -31,6 +31,10 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -235,6 +239,54 @@ class Issue8179DecodedBlockCacheTest extends TestHelper {
     }
     assertThat(decodes).as("the shards that hold the tag decoded on the first read").isPositive();
     assertThat(reuses).as("and reused those columns on the second").isPositive();
+  }
+
+  /**
+   * Readers racing on the same store get the same rows, whichever of them decoded a column and whichever was handed
+   * it back.
+   * <p>
+   * The cache hands out the codec's OWN array rather than a copy, so a column decoded by one thread is read by every
+   * later one. Nothing writes to a decoded array - that is what the audit behind this change established - and this
+   * pins the consequence rather than the audit: with readers interleaving against the LRU, and against the eviction
+   * a budget this small forces, every answer still equals the single-threaded one. No timing is asserted, so there
+   * is nothing here for a loaded machine to make flaky.
+   */
+  @Test
+  void concurrentReadersOfTheSameBlocksAgree() throws Exception {
+    final TimeSeriesEngine engine = createMetric("concurrent", 1, 1L);
+    final TagFilter host4 = TagFilter.eq(0, "host_4");
+
+    appendHosts(engine, 0, 20_000, 8);
+    engine.compactAll();
+
+    final List<List<Object>> expected = rows(engine.query(Long.MIN_VALUE, Long.MAX_VALUE, TS_AND_VALUE, host4));
+    assertThat(expected).isNotEmpty();
+
+    final int threads = 8;
+    final int readsPerThread = 25;
+    final ExecutorService pool = Executors.newFixedThreadPool(threads);
+    try {
+      final List<Future<?>> running = new ArrayList<>(threads);
+      for (int t = 0; t < threads; t++)
+        running.add(pool.submit(() -> {
+          for (int i = 0; i < readsPerThread; i++) {
+            assertThat(rows(engine.queryDescending(Long.MIN_VALUE, Long.MAX_VALUE, TS_AND_VALUE, host4, 3, null)))
+                .isEqualTo(expected.subList(expected.size() - 3, expected.size()).reversed());
+            assertThat(rows(engine.query(Long.MIN_VALUE, Long.MAX_VALUE, TS_AND_VALUE, host4))).isEqualTo(expected);
+          }
+          return null;
+        }));
+
+      for (final Future<?> outcome : running)
+        // Surfaces an assertion that failed on a pool thread, which would otherwise be swallowed by the Future.
+        outcome.get(2, TimeUnit.MINUTES);
+    } finally {
+      pool.shutdownNow();
+    }
+
+    assertThat(cacheOf(engine).getHeldBytes())
+        .as("the budget holds across however many threads were admitting columns at once")
+        .isLessThanOrEqualTo(1024L * 1024L);
   }
 
   /**
