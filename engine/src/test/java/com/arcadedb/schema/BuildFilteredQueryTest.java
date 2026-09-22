@@ -120,6 +120,43 @@ class BuildFilteredQueryTest {
   }
 
   /**
+   * #8156 (found in review): a clause keyword the scan cannot see is not merely missed - the bracket then closes at
+   * the END OF THE QUERY and swallows the real clause into the predicate, which fails the refresh on invalid SQL.
+   * A single space in a keyword therefore matches any run of whitespace.
+   */
+  @Test
+  void aClauseKeywordWithIrregularWhitespaceIsStillAClause() {
+    final ContinuousAggregateImpl twoSpaces = buildCA(
+        "SELECT sensor_id, temp FROM SensorReading WHERE temp > 100 OR sensor_id = 'A' ORDER  BY sensor_id");
+    assertThat(ContinuousAggregateRefresher.buildFilteredQuery(twoSpaces, 1000, true)).isEqualTo(
+        "SELECT sensor_id, temp FROM SensorReading WHERE `ts` >= 1000 AND (temp > 100 OR sensor_id = 'A') "
+            + "ORDER  BY sensor_id");
+
+    final ContinuousAggregateImpl lineBreak = buildCA(
+        "SELECT sensor_id, avg(temp) FROM SensorReading WHERE a = 1 OR b = 2 GROUP\nBY sensor_id");
+    assertThat(ContinuousAggregateRefresher.buildFilteredQuery(lineBreak, 1000, true)).isEqualTo(
+        "SELECT sensor_id, avg(temp) FROM SensorReading WHERE `ts` >= 1000 AND (a = 1 OR b = 2) GROUP\nBY sensor_id");
+
+    // And the no-WHERE branch places the new clause before it just the same.
+    final ContinuousAggregateImpl noWhere = buildCA(
+        "SELECT sensor_id, avg(temp) FROM SensorReading GROUP   BY sensor_id");
+    assertThat(ContinuousAggregateRefresher.buildFilteredQuery(noWhere, 1000, true)).isEqualTo(
+        "SELECT sensor_id, avg(temp) FROM SensorReading WHERE `ts` >= 1000 GROUP   BY sensor_id");
+  }
+
+  /**
+   * A keyword must still not match a longer word that merely starts with it, whitespace tolerance included.
+   */
+  @Test
+  void aLongerWordStartingWithAClauseKeywordIsNotAClause() {
+    final ContinuousAggregateImpl ca = buildCA(
+        "SELECT sensor_id FROM SensorReading WHERE skipped = true OR limited = 1 GROUP BY sensor_id");
+    assertThat(ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000, true)).isEqualTo(
+        "SELECT sensor_id FROM SensorReading WHERE `ts` >= 1000 AND (skipped = true OR limited = 1) "
+            + "GROUP BY sensor_id");
+  }
+
+  /**
    * #8152: a watermark of 0 that HAS been set is a real watermark - the epoch bucket - and must still be filtered
    * on. There is no 2-argument overload that could infer the flag from `watermark > 0`: inferring it is the defect.
    */

@@ -236,7 +236,6 @@ public class ContinuousAggregateRefresher {
    * would be faster and wrong. That costs one pass per keyword, on a query string, once per refresh.
    */
   private static int findTopLevelKeyword(final String upperQuery, final String keyword, final int fromIdx) {
-    final int keywordLen = keyword.length();
     int depth = 0;
     int idx = 0;
     final int len = upperQuery.length();
@@ -286,17 +285,50 @@ public class ContinuousAggregateRefresher {
         idx++;
         continue;
       }
-      if (ch == keyword.charAt(0) && upperQuery.startsWith(keyword, idx)) {
-        final boolean leftBound = idx == 0 || !Character.isLetterOrDigit(upperQuery.charAt(idx - 1));
-        final boolean rightBound = idx + keywordLen >= len || !Character.isLetterOrDigit(upperQuery.charAt(idx + keywordLen));
-        if (leftBound && rightBound && idx >= fromIdx)
-          return idx;
-        idx += keywordLen;
-        continue;
+      if (ch == keyword.charAt(0)) {
+        final int matchEnd = matchKeywordAt(upperQuery, keyword, idx);
+        if (matchEnd > 0) {
+          final boolean leftBound = idx == 0 || !Character.isLetterOrDigit(upperQuery.charAt(idx - 1));
+          final boolean rightBound = matchEnd >= len || !Character.isLetterOrDigit(upperQuery.charAt(matchEnd));
+          if (leftBound && rightBound && idx >= fromIdx)
+            return idx;
+          idx = matchEnd;
+          continue;
+        }
       }
       idx++;
     }
     return -1;
+  }
+
+  /**
+   * Matches {@code keyword} at {@code idx}, answering the index just past the match or -1. A single space in the
+   * keyword matches any run of whitespace in the query, so {@code GROUP  BY} and a {@code GROUP} / {@code BY} split
+   * across a line break are the clause they are, not two words.
+   * <p>
+   * #8156 (found in review): a literal {@code startsWith("ORDER BY")} missed those spellings, and the bracket the
+   * fix adds closes at the end of the WHERE clause - so a clause boundary the scan cannot see swallows the whole
+   * rest of the query, GROUP BY included, into the predicate and makes the refresh fail on invalid SQL. The branch
+   * this replaced never looked past WHERE at all, so the spelling could not hurt it.
+   */
+  private static int matchKeywordAt(final String upperQuery, final String keyword, final int idx) {
+    final int queryLen = upperQuery.length();
+    final int keywordLen = keyword.length();
+    int q = idx;
+    for (int k = 0; k < keywordLen; k++) {
+      final char kc = keyword.charAt(k);
+      if (kc == ' ') {
+        if (q >= queryLen || !Character.isWhitespace(upperQuery.charAt(q)))
+          return -1;
+        while (q < queryLen && Character.isWhitespace(upperQuery.charAt(q)))
+          q++;
+        continue;
+      }
+      if (q >= queryLen || upperQuery.charAt(q) != kc)
+        return -1;
+      q++;
+    }
+    return q;
   }
 
   /**
