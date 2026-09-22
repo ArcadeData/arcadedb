@@ -484,6 +484,44 @@ class Issue8090SpaceSeparatedFractionalDateTimeTest extends TestHelper {
   }
 
   /**
+   * The {@code LocalDate} target reads the schema's patterns through the SAME chain every other datetime target uses,
+   * rather than through a second copy of "try dateTimeFormat, then dateFormat" open-coded in its own branch. Two
+   * copies of that chain drifting apart is half of what issue #8090 was, so this pins that there is only one left:
+   * both schema patterns, the SQL-timestamp spelling and plain ISO all have to answer through it, with a custom
+   * dateTimeFormat in force.
+   */
+  @Test
+  void aLocalDateReadsTheSchemaPatternsThroughTheSharedChain() {
+    final String originalDateTime = database.getSchema().getDateTimeFormat();
+    final String originalDate = database.getSchema().getDateFormat();
+    database.getSchema().setDateTimeFormat("dd/MM/yyyy HH:mm:ss");
+    database.getSchema().setDateFormat("dd/MM/yyyy");
+    try {
+      // The schema's dateTimeFormat, which the branch used to reach through its own LocalDate.parse call...
+      assertThat(Type.convert(database, "29/02/2024 13:45:10", LocalDate.class)).isEqualTo(LocalDate.of(2024, 2, 29));
+      // ...its dateFormat, which was the second copy's second attempt...
+      assertThat(Type.convert(database, "29/02/2024", LocalDate.class)).isEqualTo(LocalDate.of(2024, 2, 29));
+      // ...and the built-in shapes behind both, the SQL-timestamp spelling this issue is about included.
+      assertThat(Type.convert(database, "2024-02-29 13:45:10.123456", LocalDate.class)).isEqualTo(
+          LocalDate.of(2024, 2, 29));
+      assertThat(Type.convert(database, "2024-02-29T13:45:10", LocalDate.class)).isEqualTo(LocalDate.of(2024, 2, 29));
+      assertThat(Type.convert(database, "2024-02-29", LocalDate.class)).isEqualTo(LocalDate.of(2024, 2, 29));
+
+      // An offset is read as a wall clock here: a LocalDate has no zone, so the day written is the day meant and
+      // nothing may shift it across midnight.
+      assertThat(Type.convert(database, "2024-02-29T23:30:00+05:00", LocalDate.class)).isEqualTo(
+          LocalDate.of(2024, 2, 29));
+
+      // A custom dateTimeFormat in force does not make an unreadable value readable.
+      assertThatThrownBy(() -> Type.convert(database, "not-a-date", LocalDate.class))//
+          .isInstanceOf(IllegalArgumentException.class);
+    } finally {
+      database.getSchema().setDateTimeFormat(originalDateTime);
+      database.getSchema().setDateFormat(originalDate);
+    }
+  }
+
+  /**
    * Reading a literal answers what writing it would have stored, for an offset-bearing one too. The read-side
    * surfaces reached the shared chain through its REBASING overload while {@code Type.convert} used the
    * wall-clock-preserving one, so the same string had two answers depending on which entry point saw it - and
