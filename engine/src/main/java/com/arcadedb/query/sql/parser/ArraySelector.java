@@ -152,6 +152,21 @@ public class ArraySelector extends SimpleNode {
     target.set(idx, value);
   }
 
+  /**
+   * Positional write into a {@code Set}. A {@code Set} has no {@code set(index, value)}, so the whole value is
+   * rebuilt in iteration order and then swapped in. The swap MUST run after the rebuild loop, never inside it
+   * (issue #8164): {@code targetIterator} walks {@code target}, so a {@code clear()}/{@code addAll()} between two
+   * {@code next()} calls invalidates it and the second call dies with a {@code ConcurrentModificationException} -
+   * which made EVERY positional SET against a {@code Set}-valued property fail, leaving the in-flight value
+   * truncated to whatever the first iteration had rebuilt.
+   * <p>
+   * An index past the end pads with {@code null} up to it, which is what the {@code List} twin above does - but a
+   * {@code Set} cannot hold the padding twice, so more than one gap collapses into a single {@code null} and the
+   * value lands right after it rather than at the index written. That is the data structure's limit, not a choice:
+   * positions are not representable in a set that already refuses duplicates. Padding is still the behaviour
+   * closest to the {@code List} branch (the collection grows, the gap is marked, the value goes last), which is
+   * why it is kept rather than replaced by a bare append.
+   */
   public void setValue(final Set target, final int idx, final Object value, final CommandContext context) {
     final Set result = new LinkedHashSet<>();
     final int originalSize = target.size();
@@ -169,9 +184,9 @@ public class ArraySelector extends SimpleNode {
       } else {
         result.add(null);
       }
-      target.clear();
-      target.addAll(result);
     }
+    target.clear();
+    target.addAll(result);
   }
 
   public void setValue(final Map target, final Object idx, final Object value, final CommandContext context) {

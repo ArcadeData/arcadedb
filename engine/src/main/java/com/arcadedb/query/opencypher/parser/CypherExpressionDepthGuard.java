@@ -85,27 +85,52 @@ final class CypherExpressionDepthGuard implements ParseTreeListener {
   }
 
   /**
-   * Checks the term count of every {@code (OP operand)*}-shaped rule, using each rule's own generated
-   * accessor - the same one every AST builder in this package calls - so the count is exact and never
-   * drifts from what would actually be folded into a tree. Dispatches on {@link
+   * Checks the term count of every {@code (OP operand)*}-shaped rule, counting exactly the children each rule's
+   * own generated accessor would have returned - the same ones every AST builder in this package folds into a
+   * tree - so the count is exact and never drifts from what would actually be built. Dispatches on {@link
    * ParserRuleContext#getRuleIndex()} rather than the context's runtime type: this fires on every rule
    * exit in the entire query, so an int switch (one comparison against a dense set of constants) is cheaper
    * on that hot path than a chain of {@code instanceof} checks that misses for every irrelevant rule.
    */
   private void checkChainLength(final ParserRuleContext ctx) {
     final int termCount = switch (ctx.getRuleIndex()) {
-      case Cypher25Parser.RULE_expression -> ((Cypher25Parser.ExpressionContext) ctx).expression11().size();    // OR
-      case Cypher25Parser.RULE_expression11 -> ((Cypher25Parser.Expression11Context) ctx).expression10().size(); // XOR
-      case Cypher25Parser.RULE_expression10 -> ((Cypher25Parser.Expression10Context) ctx).expression9().size();  // AND
-      case Cypher25Parser.RULE_expression9 -> ((Cypher25Parser.Expression9Context) ctx).NOT().size() + 1;         // NOT*
-      case Cypher25Parser.RULE_expression8 -> ((Cypher25Parser.Expression8Context) ctx).expression7().size();    // chained comparisons
-      case Cypher25Parser.RULE_expression6 -> ((Cypher25Parser.Expression6Context) ctx).expression5().size();    // + - ||
-      case Cypher25Parser.RULE_expression5 -> ((Cypher25Parser.Expression5Context) ctx).expression4().size();    // * / %
-      case Cypher25Parser.RULE_expression4 -> ((Cypher25Parser.Expression4Context) ctx).expression3().size();    // ^
+      case Cypher25Parser.RULE_expression -> countChildRules(ctx, Cypher25Parser.RULE_expression11);   // OR
+      case Cypher25Parser.RULE_expression11 -> countChildRules(ctx, Cypher25Parser.RULE_expression10); // XOR
+      case Cypher25Parser.RULE_expression10 -> countChildRules(ctx, Cypher25Parser.RULE_expression9);  // AND
+      case Cypher25Parser.RULE_expression9 -> countChildTokens(ctx, Cypher25Parser.NOT) + 1;           // NOT*
+      case Cypher25Parser.RULE_expression8 -> countChildRules(ctx, Cypher25Parser.RULE_expression7);   // chained comparisons
+      case Cypher25Parser.RULE_expression6 -> countChildRules(ctx, Cypher25Parser.RULE_expression5);   // + - ||
+      case Cypher25Parser.RULE_expression5 -> countChildRules(ctx, Cypher25Parser.RULE_expression4);   // * / %
+      case Cypher25Parser.RULE_expression4 -> countChildRules(ctx, Cypher25Parser.RULE_expression3);   // ^
       default -> 1;
     };
     if (termCount - 1 > maxDepth)
       throw tooDeep("chained (a run of AND/OR/XOR/NOT/comparison/arithmetic terms)");
+  }
+
+  /**
+   * Counts the direct children produced by one grammar rule, which is what the generated {@code expressionN()}
+   * accessor returns the size of - but without it (issue #8132). {@code ParserRuleContext#getRuleContexts} builds
+   * an {@code ArrayList} of every match only to be asked for its {@code size()}, and this runs on the exit of
+   * EVERY rule in the query, so that list was pure garbage on the parser's hottest path. Matching on the child's
+   * rule index rather than on its Java type also keeps the count right for a labelled alternative, whose context
+   * class is a subclass of the rule's own.
+   */
+  private static int countChildRules(final ParserRuleContext ctx, final int ruleIndex) {
+    int count = 0;
+    for (int i = 0; i < ctx.getChildCount(); i++)
+      if (ctx.getChild(i) instanceof ParserRuleContext child && child.getRuleIndex() == ruleIndex)
+        ++count;
+    return count;
+  }
+
+  /** The terminal-child twin of {@link #countChildRules}, standing in for {@code ctx.NOT().size()}. */
+  private static int countChildTokens(final ParserRuleContext ctx, final int tokenType) {
+    int count = 0;
+    for (int i = 0; i < ctx.getChildCount(); i++)
+      if (ctx.getChild(i) instanceof TerminalNode terminal && terminal.getSymbol().getType() == tokenType)
+        ++count;
+    return count;
   }
 
   private CommandParsingException tooDeep(final String shape) {

@@ -72,7 +72,11 @@ class CypherExpressionBuilder {
    * 10. Primary expressions (literals, variables, functions, parenthesized) - highest precedence
    */
   Expression parseExpression(final Cypher25Parser.ExpressionContext ctx) {
-    final String text = ctx.getText();
+    // The expression's own text is materialised ONLY where it is used - the two list-literal coverage guards and
+    // the text fallback at the end of this method, all of which sit behind checks that fail for an ordinary
+    // expression. It used to be computed here, before a single one of the dozen structural checks below had a
+    // chance to return, which made a RuleContext.getText() - a concatenation of every token in the subtree into a
+    // fresh String - a fixed cost of parsing any expression at all (issue #8132).
     // === LOGICAL OPERATORS (Lowest precedence) ===
     // Grammar: expression = expression11 (OR expression11)*
     final List<Cypher25Parser.Expression11Context> expr11List = ctx.expression11();
@@ -186,7 +190,7 @@ class CypherExpressionBuilder {
     if (listCtx != null) {
       // Only use list literal if it's at the top level (i.e. the list text covers most of the expression)
       final String listText = listCtx.getText();
-      if (listText.length() >= text.length() - 2) // Allow for whitespace
+      if (listText.length() >= ctx.getText().length() - 2) // Allow for whitespace
         return parseListLiteral(listCtx);
     }
 
@@ -218,7 +222,7 @@ class CypherExpressionBuilder {
     if (listCtx != null) {
       // Guard: only use if list covers most of the expression (avoids inner list taking over)
       final String listText2 = listCtx.getText();
-      if (listText2.length() >= text.length() - 2)
+      if (listText2.length() >= ctx.getText().length() - 2)
         return parseListLiteral(listCtx);
     }
 
@@ -245,7 +249,64 @@ class CypherExpressionBuilder {
       return parseExpression(parenCtx.expression());
 
     // Use the shared text parsing logic
-    return parseExpressionText(text);
+    return parseExpressionText(ctx.getText());
+  }
+
+  /**
+   * The FIRST occurrence, in the same depth-first pre-order the individual {@code findXxxRecursive} searches use, of
+   * each of the five block constructs {@link #parseExpressionFromText} probes for before it dispatches structurally.
+   * <p>
+   * One traversal answers all five (issue #8132). Descent does NOT stop at a match, because the searches this
+   * replaces were independent of one another: a {@code CASE} found first must not hide an {@code EXISTS} nested
+   * inside it, which is exactly what {@code findExistsExpressionRecursive} would still have found on its own pass.
+   * Only the first of each kind is kept, which is what each of those searches returned.
+   */
+  private static final class BlockConstructs {
+    private static final BlockConstructs NONE = new BlockConstructs();
+
+    private Cypher25Parser.CaseExpressionContext         caseExpression;
+    private Cypher25Parser.ExtendedCaseExpressionContext extendedCaseExpression;
+    private Cypher25Parser.ExistsExpressionContext       existsExpression;
+    private Cypher25Parser.CollectExpressionContext      collectExpression;
+    private Cypher25Parser.CountExpressionContext        countExpression;
+
+    static BlockConstructs of(final ParseTree node) {
+      final BlockConstructs found = new BlockConstructs();
+      found.collectFrom(node);
+      // The common case by a wide margin: hand back the shared empty instance so a per-call allocation only
+      // survives when it carries something.
+      return found.isEmpty() ? NONE : found;
+    }
+
+    private void collectFrom(final ParseTree node) {
+      if (node == null)
+        return;
+
+      if (node instanceof Cypher25Parser.CaseExpressionContext ctx) {
+        if (caseExpression == null)
+          caseExpression = ctx;
+      } else if (node instanceof Cypher25Parser.ExtendedCaseExpressionContext ctx) {
+        if (extendedCaseExpression == null)
+          extendedCaseExpression = ctx;
+      } else if (node instanceof Cypher25Parser.ExistsExpressionContext ctx) {
+        if (existsExpression == null)
+          existsExpression = ctx;
+      } else if (node instanceof Cypher25Parser.CollectExpressionContext ctx) {
+        if (collectExpression == null)
+          collectExpression = ctx;
+      } else if (node instanceof Cypher25Parser.CountExpressionContext ctx) {
+        if (countExpression == null)
+          countExpression = ctx;
+      }
+
+      for (int i = 0; i < node.getChildCount(); i++)
+        collectFrom(node.getChild(i));
+    }
+
+    private boolean isEmpty() {
+      return caseExpression == null && extendedCaseExpression == null && existsExpression == null
+          && collectExpression == null && countExpression == null;
+    }
   }
 
   /**
@@ -253,33 +314,50 @@ class CypherExpressionBuilder {
    * This is a helper for parsing lower-level expression contexts.
    */
   Expression parseExpressionFromText(final ParseTree node) {
-    // All recursive searches below use a length guard: only match when the found
-    // context covers (almost) the full node text, preventing mis-parsing of
-    // func(CASE ...) as just the inner CASE.  The - 2 allows for whitespace.
-    final String nodeText = node.getText();
+    return parseExpressionFromText(node, false);
+  }
 
-    final Cypher25Parser.CaseExpressionContext caseCtx = findCaseExpressionRecursive(node);
-    if (caseCtx != null && caseCtx.getText().length() >= nodeText.length() - 2)
-      return parseCaseExpression(caseCtx);
+  /**
+   * @param noBlockConstructs {@code true} when the caller has ALREADY established that this node's subtree holds
+   *                          none of the five block constructs, so the probe for them can be skipped entirely.
+   *                          Only ever passed on from a level of the same descent that found none: this method
+   *                          walks down the grammar's expression cascade by re-entering itself, so a node it
+   *                          descends into is a subtree of one already searched, and a construct absent from the
+   *                          parent is absent from the child (issue #8132)
+   */
+  private Expression parseExpressionFromText(final ParseTree node, final boolean noBlockConstructs) {
+    // The five block constructs below use a length guard: only match when the found context covers (almost) the
+    // full node text, preventing mis-parsing of func(CASE ...) as just the inner CASE. The - 2 allows for
+    // whitespace.
+    //
+    // Found in ONE traversal, skipped outright once a level above has ruled them out, and the node's own text
+    // materialised only if one of them turned up (issue #8132). This method walks the grammar's expression
+    // hierarchy by re-entering itself once per level - expression11 down to expression1 is a dozen levels for a
+    // trivial predicate like `p.id = 5` - so anything done per call is done a dozen times over what is very nearly
+    // the same subtree. Five separate DFS passes plus a RuleContext.getText() (which concatenates every token under
+    // the node into a fresh String) came to ~60 subtree walks and a dozen throwaway strings for an expression that
+    // has none of these constructs, which is the overwhelmingly common case and was a third of the whole parse.
+    final BlockConstructs blocks = noBlockConstructs ? BlockConstructs.NONE : BlockConstructs.of(node);
+    final boolean noBlocksBelow = blocks.isEmpty();
+    final int nodeTextLength = noBlocksBelow ? 0 : node.getText().length();
 
-    final Cypher25Parser.ExtendedCaseExpressionContext extCaseCtx = findExtendedCaseExpressionRecursive(node);
-    if (extCaseCtx != null && extCaseCtx.getText().length() >= nodeText.length() - 2)
-      return parseExtendedCaseExpression(extCaseCtx);
+    if (blocks.caseExpression != null && blocks.caseExpression.getText().length() >= nodeTextLength - 2)
+      return parseCaseExpression(blocks.caseExpression);
+
+    if (blocks.extendedCaseExpression != null && blocks.extendedCaseExpression.getText().length() >= nodeTextLength - 2)
+      return parseExtendedCaseExpression(blocks.extendedCaseExpression);
 
     // Check for EXISTS expressions
-    final Cypher25Parser.ExistsExpressionContext existsCtx = findExistsExpressionRecursive(node);
-    if (existsCtx != null && existsCtx.getText().length() >= nodeText.length() - 2)
-      return parseExistsExpression(existsCtx);
+    if (blocks.existsExpression != null && blocks.existsExpression.getText().length() >= nodeTextLength - 2)
+      return parseExistsExpression(blocks.existsExpression);
 
     // Check for COLLECT { ... } subqueries
-    final Cypher25Parser.CollectExpressionContext collectCtx = findCollectExpressionRecursive(node);
-    if (collectCtx != null && collectCtx.getText().length() >= nodeText.length() - 2)
-      return parseCollectExpression(collectCtx);
+    if (blocks.collectExpression != null && blocks.collectExpression.getText().length() >= nodeTextLength - 2)
+      return parseCollectExpression(blocks.collectExpression);
 
     // Check for COUNT { ... } subqueries
-    final Cypher25Parser.CountExpressionContext countCtx = findCountExpressionRecursive(node);
-    if (countCtx != null && countCtx.getText().length() >= nodeText.length() - 2)
-      return parseCountExpression(countCtx);
+    if (blocks.countExpression != null && blocks.countExpression.getText().length() >= nodeTextLength - 2)
+      return parseCountExpression(blocks.countExpression);
 
     // Check for logical expressions (AND, OR, XOR, NOT) in the parse tree
     // This handles cases like (a AND b) appearing as children of comparisons
@@ -316,7 +394,7 @@ class CypherExpressionBuilder {
       if (!e2.postFix().isEmpty())
         return parseExpression2WithPostfix(e2);
       // No postfix — delegate to expression1
-      return parseExpressionFromText(e2.expression1());
+      return parseExpressionFromText(e2.expression1(), noBlocksBelow);
     }
 
     // Handle Expression8 (comparison operators: =, <>, <, >, <=, >=)
@@ -326,7 +404,7 @@ class CypherExpressionBuilder {
         return parseComparisonFromExpression8(expr8);
       // Single Expression7 child, delegate to it
       if (!expr8.expression7().isEmpty())
-        return parseExpressionFromText(expr8.expression7().get(0));
+        return parseExpressionFromText(expr8.expression7().get(0), noBlocksBelow);
     }
 
     // Handle Expression7 (IS NULL, STARTS WITH, ENDS WITH, CONTAINS, IN, label check, IS TYPED)
@@ -342,7 +420,7 @@ class CypherExpressionBuilder {
       if (comp instanceof Cypher25Parser.TypeComparisonContext)
         return parseIsTypedExpression((Cypher25Parser.TypeComparisonContext) comp);
       // No comparison, delegate to expression6
-      return parseExpressionFromText(expr7.expression6());
+      return parseExpressionFromText(expr7.expression6(), noBlocksBelow);
     }
 
     // Handle intermediate expression contexts by walking down the grammar hierarchy.
@@ -351,21 +429,21 @@ class CypherExpressionBuilder {
       final Cypher25Parser.Expression6Context e6 = (Cypher25Parser.Expression6Context) node;
       if (e6.expression5().size() > 1)
         return parseArithmeticExpression6(e6);
-      return parseExpressionFromText(e6.expression5().get(0));
+      return parseExpressionFromText(e6.expression5().get(0), noBlocksBelow);
     }
 
     if (node instanceof Cypher25Parser.Expression5Context) {
       final Cypher25Parser.Expression5Context e5 = (Cypher25Parser.Expression5Context) node;
       if (e5.expression4().size() > 1)
         return parseArithmeticExpression5(e5);
-      return parseExpressionFromText(e5.expression4().get(0));
+      return parseExpressionFromText(e5.expression4().get(0), noBlocksBelow);
     }
 
     if (node instanceof Cypher25Parser.Expression4Context) {
       final Cypher25Parser.Expression4Context e4 = (Cypher25Parser.Expression4Context) node;
       if (e4.expression3().size() > 1)
         return parseArithmeticExpression4(e4);
-      return parseExpressionFromText(e4.expression3().get(0));
+      return parseExpressionFromText(e4.expression3().get(0), noBlocksBelow);
     }
 
     if (node instanceof Cypher25Parser.Expression3Context) {
@@ -736,29 +814,6 @@ class CypherExpressionBuilder {
   }
 
   /**
-   * Recursively find countStar context in the parse tree.
-   * count(*) has special grammar handling as CountStarContext.
-   */
-  Cypher25Parser.CountStarContext findCountStarRecursive(final ParseTree node) {
-    if (node == null) {
-      return null;
-    }
-
-    // Check if this node is count(*)
-    if (node instanceof Cypher25Parser.CountStarContext) {
-      return (Cypher25Parser.CountStarContext) node;
-    }
-
-    // Only traverse into single-child wrapper nodes (expression precedence layers)
-    // Stop at any node that is NOT a simple wrapper (multiple children means it's a compound expression)
-    if (node.getChildCount() == 1) {
-      return findCountStarRecursive(node.getChild(0));
-    }
-
-    return null;
-  }
-
-  /**
    * Recursively find list literal context in the parse tree.
    */
   Cypher25Parser.ListLiteralContext findListLiteralRecursive(final ParseTree node) {
@@ -910,92 +965,6 @@ class CypherExpressionBuilder {
 
     for (int i = 0; i < node.getChildCount(); i++) {
       final Cypher25Parser.ExistsExpressionContext found = findExistsExpressionRecursive(node.getChild(i));
-      if (found != null) {
-        return found;
-      }
-    }
-
-    return null;
-  }
-
-  /**
-   * Recursively find COLLECT { ... } subquery expression in the parse tree.
-   */
-  Cypher25Parser.CollectExpressionContext findCollectExpressionRecursive(
-      final ParseTree node) {
-    if (node == null)
-      return null;
-
-    if (node instanceof Cypher25Parser.CollectExpressionContext)
-      return (Cypher25Parser.CollectExpressionContext) node;
-
-    for (int i = 0; i < node.getChildCount(); i++) {
-      final Cypher25Parser.CollectExpressionContext found = findCollectExpressionRecursive(node.getChild(i));
-      if (found != null)
-        return found;
-    }
-
-    return null;
-  }
-
-  /**
-   * Recursively find COUNT { ... } subquery expression in the parse tree.
-   */
-  Cypher25Parser.CountExpressionContext findCountExpressionRecursive(
-      final ParseTree node) {
-    if (node == null)
-      return null;
-
-    if (node instanceof Cypher25Parser.CountExpressionContext)
-      return (Cypher25Parser.CountExpressionContext) node;
-
-    for (int i = 0; i < node.getChildCount(); i++) {
-      final Cypher25Parser.CountExpressionContext found = findCountExpressionRecursive(node.getChild(i));
-      if (found != null)
-        return found;
-    }
-
-    return null;
-  }
-
-  /**
-   * Recursively find CASE expression in the parse tree.
-   */
-  Cypher25Parser.CaseExpressionContext findCaseExpressionRecursive(
-      final ParseTree node) {
-    if (node == null) {
-      return null;
-    }
-
-    if (node instanceof Cypher25Parser.CaseExpressionContext) {
-      return (Cypher25Parser.CaseExpressionContext) node;
-    }
-
-    for (int i = 0; i < node.getChildCount(); i++) {
-      final Cypher25Parser.CaseExpressionContext found = findCaseExpressionRecursive(node.getChild(i));
-      if (found != null) {
-        return found;
-      }
-    }
-
-    return null;
-  }
-
-  /**
-   * Recursively find extended CASE expression in the parse tree.
-   */
-  Cypher25Parser.ExtendedCaseExpressionContext findExtendedCaseExpressionRecursive(
-      final ParseTree node) {
-    if (node == null) {
-      return null;
-    }
-
-    if (node instanceof Cypher25Parser.ExtendedCaseExpressionContext) {
-      return (Cypher25Parser.ExtendedCaseExpressionContext) node;
-    }
-
-    for (int i = 0; i < node.getChildCount(); i++) {
-      final Cypher25Parser.ExtendedCaseExpressionContext found = findExtendedCaseExpressionRecursive(node.getChild(i));
       if (found != null) {
         return found;
       }
@@ -1471,25 +1440,6 @@ class CypherExpressionBuilder {
   }
 
   /**
-   * Recursively find PatternComprehensionContext in the parse tree.
-   */
-  Cypher25Parser.PatternComprehensionContext findPatternComprehensionRecursive(final ParseTree node) {
-    if (node == null)
-      return null;
-
-    if (node instanceof Cypher25Parser.PatternComprehensionContext)
-      return (Cypher25Parser.PatternComprehensionContext) node;
-
-    for (int i = 0; i < node.getChildCount(); i++) {
-      final Cypher25Parser.PatternComprehensionContext found = findPatternComprehensionRecursive(node.getChild(i));
-      if (found != null)
-        return found;
-    }
-
-    return null;
-  }
-
-  /**
    * Recursively find ListItemsPredicateContext in the parse tree.
    */
   Cypher25Parser.ListItemsPredicateContext findListItemsPredicateRecursive(final ParseTree node) {
@@ -1501,26 +1451,6 @@ class CypherExpressionBuilder {
 
     for (int i = 0; i < node.getChildCount(); i++) {
       final Cypher25Parser.ListItemsPredicateContext found = findListItemsPredicateRecursive(node.getChild(i));
-      if (found != null)
-        return found;
-    }
-
-    return null;
-  }
-
-  /**
-   * Recursively find ShortestPathExpressionContext in the parse tree.
-   */
-  Cypher25Parser.ShortestPathExpressionContext findShortestPathExpressionRecursive(
-      final ParseTree node) {
-    if (node == null)
-      return null;
-
-    if (node instanceof Cypher25Parser.ShortestPathExpressionContext)
-      return (Cypher25Parser.ShortestPathExpressionContext) node;
-
-    for (int i = 0; i < node.getChildCount(); i++) {
-      final Cypher25Parser.ShortestPathExpressionContext found = findShortestPathExpressionRecursive(node.getChild(i));
       if (found != null)
         return found;
     }
