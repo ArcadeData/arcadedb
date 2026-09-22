@@ -416,6 +416,17 @@ public enum Type {
   }
 
   /**
+   * The targets whose conversion reads a date or a time, and so the ones for which a {@link DateTimeException} out
+   * of {@code convert()} means "this value cannot be read" rather than something unrelated that happened to be
+   * raised under the same try.
+   */
+  private static boolean isDateTimeTarget(final Class<?> targetClass) {
+    return targetClass.equals(Date.class) || targetClass.equals(Calendar.class) || targetClass.equals(LocalDate.class)
+        || targetClass.equals(LocalDateTime.class) || targetClass.equals(ZonedDateTime.class)
+        || targetClass.equals(Instant.class);
+  }
+
+  /**
    * {@link #convertOrNull(Database, Object, Class)} carrying the target {@link Property}, so a datetime keeps being
    * truncated to the precision the column declares while a value that cannot be converted still answers
    * {@code null} instead of throwing.
@@ -925,9 +936,16 @@ public enum Type {
       // answering null through parseFully(), so nothing under this try can raise one, and naming it would suggest
       // a path that no longer exists.
       //
-      // This arm covers the WHOLE try above, not just the date branches. That is safe because no non-date branch
-      // raises a DateTimeException today - but a future branch added there that throws one for an unrelated reason
-      // would be escalated from a silent null to a refusal by this arm, not by any decision of its own.
+      // The arm spans the whole try, since the date branches are scattered through it and wrapping each one would
+      // put six copies of this decision in the file. What makes that safe is the target, not the position: only a
+      // DATE/TIME target refuses. A DateTimeException raised by some future non-date branch for an unrelated reason
+      // keeps the answer it would have had, rather than being escalated to a refusal by an arm it merely passed
+      // under.
+      if (!isDateTimeTarget(targetClass)) {
+        LogManager.instance().log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, value, targetClass);
+        return null;
+      }
+
       throw new IllegalArgumentException(
           "Error in conversion of value '" + value + "' to type '" + targetClass.getSimpleName() + "': " + e.getMessage(), e);
     } catch (final Exception e) {
