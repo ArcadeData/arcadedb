@@ -33,9 +33,11 @@ public class ArcadeIoRegistrationStrategy extends AbstractTraversalStrategy<Trav
   @Override
   public void apply(final Traversal.Admin<?, ?> traversal) {
     if (traversal.getStartStep() instanceof IoStep) {
-      // io() READS OR WRITES A FILE AT A CALLER-CHOSEN HOST PATH: RESERVED TO THE SERVER ADMINISTRATOR
-      if (traversal.getGraph().orElse(null) instanceof ArcadeGraph arcadeGraph)
-        GremlinHostAccessGuard.checkServerAdministrator(arcadeGraph.getDatabase(), "use the io() step");
+      // io() READS OR WRITES A FILE AT A CALLER-CHOSEN HOST PATH: RESERVED TO THE SERVER ADMINISTRATOR. FAIL CLOSED WHEN
+      // THE TRAVERSAL CARRIES NO ARCADEGRAPH: WITHOUT ITS DATABASE THE BOUND PRINCIPAL CANNOT BE CHECKED
+      if (!(traversal.getGraph().orElse(null) instanceof ArcadeGraph arcadeGraph))
+        throw new SecurityException("Cannot verify the permission to use the io() step: the traversal is not bound to an ArcadeDB graph");
+      GremlinHostAccessGuard.checkServerAdministrator(arcadeGraph.getDatabase(), "use the io() step");
 
       final IoStep ioStep = (IoStep) traversal.getStartStep();
       ioStep.configure(IO.registry, new ArcadeIoRegistry());
