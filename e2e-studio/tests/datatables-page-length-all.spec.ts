@@ -69,11 +69,12 @@ async function expectSinglePage(page: Page): Promise<void> {
   expect(paging.numbers, `paging buttons drawn for "All": ${JSON.stringify(paging)}`).toEqual(['1']);
   expect(paging.ellipsis).toBe(0);
 
-  // With a single page, every navigation button is inert.
+  // With a single page, every navigation button is inert. Each button must exist: a class renamed by a
+  // DataTables upgrade has to fail here rather than skip the check.
   for (const cls of ['first', 'previous', 'next', 'last']) {
     const button = page.locator(`#result_wrapper .dt-paging .${cls}`);
-    if ((await button.count()) > 0)
-      await expect(button.first(), `the "${cls}" button must be disabled on the only page`).toHaveAttribute('aria-disabled', 'true');
+    await expect(button, `the "${cls}" paging button is missing`).toHaveCount(1);
+    await expect(button, `the "${cls}" button must be disabled on the only page`).toHaveAttribute('aria-disabled', 'true');
   }
 }
 
