@@ -85,12 +85,6 @@ public final class WebSocketFrameSender {
     WebSockets.sendText(text, channel, callback);
   }
 
-  /** {@link #send(WebSocketChannel, String, WebSocketCallback)} with no callback, skipped when the channel is gone. */
-  public static void sendIfOpen(final WebSocketChannel channel, final String text) {
-    if (channel.isOpen())
-      WebSockets.sendText(text, channel, null);
-  }
-
   /**
    * {@link #send(WebSocketChannel, String, WebSocketCallback)}, but first charges {@code text}'s size against a
    * per-connection pending-bytes budget shared by every sender that answers a request made ON this channel -
