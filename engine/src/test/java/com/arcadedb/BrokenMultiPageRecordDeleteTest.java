@@ -155,10 +155,7 @@ class BrokenMultiPageRecordDeleteTest extends TestHelper {
     // The force delete removes the stuck record. existsRecord is the authoritative physical check; countType is not
     // used as the oracle here because this low-level bucket.deleteRecord bypasses the database-level record counter.
     database.transaction(() -> {
-      bucket.deleteRecord(broken, true);
-      // Bucket.deleteRecord leaves the cached record counter to its caller - see
-      // TestHelper.deleteRecordAtLowLevel, which this is the force-flag variant of.
-      ((DatabaseInternal) database).getTransaction().updateBucketRecordDelta(broken.getBucketId(), -1);
+      TestHelper.deleteRecordAtLowLevel(database, broken, true);
     });
     assertThat(database.getSchema().getBucketById(broken.getBucketId()).existsRecord(broken)).isFalse();
 

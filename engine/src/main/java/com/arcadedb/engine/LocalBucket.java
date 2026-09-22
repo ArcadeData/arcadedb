@@ -6326,13 +6326,19 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
     if (!fix && cachedRecordCount.get() != cachedRecordCountBefore)
       // A commit landed on this bucket while the walk was running: its fold moved the counter, so the number read
-      // at the top and the slots counted since describe different moments and the disagreement proves nothing. This
-      // is exact rather than a heuristic - a commit that publishes records into this bucket ALWAYS folds its delta
-      // into the counter (TransactionContext.commit2ndPhase, skipped only at -1, which this method already
-      // declines to compare) - so the counter moving is precisely the signal that the walk was not looking at one
-      // point in time. It matters because a read-only CHECK DATABASE is the one form an operator runs on a live
-      // node, which is exactly how #8040 was diagnosed, and a false "your counters are wrong" there would send
-      // them looking for the defect this exists to report.
+      // at the top and the slots counted since describe different moments and the disagreement proves nothing. The
+      // signal is a real one rather than a guess - a commit that publishes records into this bucket ALWAYS folds
+      // its delta into the counter (TransactionContext.commit2ndPhase, skipped only at -1, which this method
+      // already declines to compare) - so a counter that moved says the walk was not looking at one point in time.
+      // It matters because a read-only CHECK DATABASE is the one form an operator runs on a live node, which is
+      // exactly how #8040 was diagnosed, and a false "your counters are wrong" there would send them looking for
+      // the defect this exists to report.
+      //
+      // Not exact in the other direction, and deliberately so: several commits whose deltas happen to cancel leave
+      // the counter reading what it read before, so a walk torn by those is still compared. Closing that would mean
+      // holding the bucket against writers for the length of a full scan, which is a cost every CHECK DATABASE on
+      // every healthy bucket would pay for a window this narrow; a spurious warning there costs one recount and
+      // says exactly which bucket to look at.
       //
       // Under FIX the signal is unavailable - check() sets the counter to -1 before the first repair (#6320), so
       // nothing folds into it for this to observe - and it is not needed: a repair pass already assumes no

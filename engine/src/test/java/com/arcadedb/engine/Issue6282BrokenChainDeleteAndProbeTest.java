@@ -108,10 +108,7 @@ class Issue6282BrokenChainDeleteAndProbeTest extends TestHelper {
 
     // THE PAIRED HALF: THE RECORD IS STILL REMOVABLE, SO THE NEW VERDICT DID NOT MAKE IT UNDELETABLE
     database.transaction(() -> {
-      bucket.deleteRecord(broken, true);
-      // Bucket.deleteRecord leaves the cached record counter to its caller - see
-      // TestHelper.deleteRecordAtLowLevel, which this is the force-flag variant of.
-      ((DatabaseInternal) database).getTransaction().updateBucketRecordDelta(broken.getBucketId(), -1);
+      TestHelper.deleteRecordAtLowLevel(database, broken, true);
     });
     assertThat(bucket.existsRecord(broken)).isFalse();
   }
@@ -237,10 +234,7 @@ class Issue6282BrokenChainDeleteAndProbeTest extends TestHelper {
 
     // THE PAIRED HALF: THE RECORD IS STILL REMOVABLE WITH FORCE
     database.transaction(() -> {
-      bucket.deleteRecord(rid, true);
-      // Bucket.deleteRecord leaves the cached record counter to its caller - see
-      // TestHelper.deleteRecordAtLowLevel, which this is the force-flag variant of.
-      ((DatabaseInternal) database).getTransaction().updateBucketRecordDelta(rid.getBucketId(), -1);
+      TestHelper.deleteRecordAtLowLevel(database, rid, true);
     });
     assertThat(bucket.existsRecord(rid)).isFalse();
   }
