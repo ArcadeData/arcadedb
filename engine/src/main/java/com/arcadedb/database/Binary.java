@@ -388,7 +388,9 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
    * this way, so on a long key (a file path, a URL) that byte-at-a-time walk was the single largest cost of a seek
    * (issue #7840).
    *
-   * @param other  the bytes to compare this buffer's run against, read from its offset 0
+   * @param other  the bytes to compare this buffer's run against, always read from its offset 0. A plain array, not
+   *               a second cursor: unlike the {@link Binary}-typed comparisons in this class it carries no position
+   *               of its own, and this call does not move anything on its side
    * @param length how many bytes to compare
    *
    * @return the offset of the first difference, or {@code -1} when there is none

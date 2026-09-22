@@ -491,6 +491,8 @@ public class BinaryComparator {
     // sorts UTF-8 continuation/lead bytes (>= 0x80, negative as a Java byte) before ASCII, which desynchronizes
     // the LSM binary-search seek from the range-cursor stop condition and makes partial-prefix lookups on
     // composite indexes return rows of unrelated keys when the key holds accented/multi-byte characters (#5321).
+    // The getUnsignedNumber() above consumed the stored run's length prefix, which is what leaves buffer2 sitting on
+    // the first content byte that mismatch() reads from here.
     // The common prefix is skipped in bulk (issue #7840). mismatch() advances the position the way the
     // byte-at-a-time loop this replaces did, which is what lets the caller go straight on to the next component of a
     // composite key, so the differing byte is read back relative to where it left off rather than from a position
