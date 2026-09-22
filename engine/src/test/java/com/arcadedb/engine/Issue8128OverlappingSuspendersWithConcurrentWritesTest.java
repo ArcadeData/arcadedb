@@ -194,7 +194,12 @@ class Issue8128OverlappingSuspendersWithConcurrentWritesTest extends TestHelper 
         }
       });
     } finally {
-      pool.shutdown();
+      // shutdownNow(), not shutdown(): if the preemptive timeout above fired, worker threads can still be
+      // blocked inside suspendFlushAndExecute against `database` - shutdown() would leave them running while
+      // TestHelper's own @AfterEach tears that database down underneath them, corrupting whichever test runs
+      // next rather than just this one (review on PR #8128).
+      pool.shutdownNow();
+      pool.awaitTermination(10, TimeUnit.SECONDS);
     }
 
     assertThat(failure.get())
