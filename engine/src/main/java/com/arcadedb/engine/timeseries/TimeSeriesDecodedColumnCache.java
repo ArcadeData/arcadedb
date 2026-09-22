@@ -43,6 +43,21 @@ import java.util.Set;
  * alone - it already allocates nothing per block - and only the four {@code BlockEntry}-keyed decode methods
  * populate this cache.
  * <p>
+ * {@code downsampleBlocks} is the path to read carefully, because it both reads through this cache and rewrites the
+ * blocks it read (review of PR #8194). Only its TAG columns are decoded outside the cache, through a direct
+ * {@code readBytes}/{@code decodeColumn}; its timestamps and numeric columns go through {@code decompressTimestamps}
+ * and {@code decompressDoubleColumn} and do populate it. That is safe rather than merely lucky: the method holds
+ * {@code directoryLock.writeLock()} for its whole body, so no reader can be served from it mid-rewrite, and it ends
+ * by clearing the cache. Anyone auditing this should not carry away the shorter claim that downsampling bypasses the
+ * cache outright - two of its three column kinds do not.
+ * <p>
+ * <b>Every file rewrite clears the WHOLE cache, including entries that are still valid.</b> A block copied verbatim
+ * keeps its id, so its decoded columns would still describe it correctly afterwards - yet compaction, retention and
+ * downsampling drop them along with everything else. That is a deliberate trade-off and not an oversight (review of
+ * PR #8194): invalidating precisely would mean diffing the directory before and after each rewrite to learn which ids
+ * survived, and the cost of being imprecise is a hot block decoded once more after a maintenance cycle. Worth
+ * revisiting if maintenance ever runs often enough for that re-decode to show up.
+ * <p>
  * <b>Cached arrays are shared, not copied,</b> so every consumer must treat them as read-only. That holds today:
  * all of the decode call sites index, binary-search or accumulate over them and none writes an element. A future
  * consumer that needs to mutate a decoded column must copy it first.
