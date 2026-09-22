@@ -63,11 +63,14 @@ final class ChannelReopenLog {
    */
   long record() {
     total.incrementAndGet();
+    // COUNTED BEFORE THE CAS, SO A CONCURRENT REOPEN THAT LANDS BETWEEN THE WINNING CAS AND THE getAndSet() BELOW IS
+    // FOLDED INTO THIS REPORT RATHER THAN LOST (IT LOGS AT FINE ITSELF)
+    sinceLastSevere.incrementAndGet();
     final long now = nanoClock.getAsLong();
     final long last = lastSevereNanos.get();
     if ((last == NEVER || now - last >= SEVERE_INTERVAL_NANOS) && lastSevereNanos.compareAndSet(last, now))
-      return sinceLastSevere.getAndSet(0);
-    sinceLastSevere.incrementAndGet();
+      // MINUS THIS REOPEN, WHICH IS THE ONE BEING REPORTED
+      return sinceLastSevere.getAndSet(0) - 1;
     return -1;
   }
 

@@ -1148,6 +1148,8 @@ public class LocalSchema implements Schema {
     }
   }
 
+  private final Set<String> typesReportedAsUnableToHoldRecords = ConcurrentHashMap.newKeySet();
+
   /**
    * #8187: a {@code schema.json} written by a version affected by #8169 carries a dropped type as a real entry with no
    * buckets, and it was loaded silently: the first sign was an insert failing. A document, vertex or edge type with no
@@ -1158,6 +1160,10 @@ public class LocalSchema implements Schema {
     for (final String typeName : typeNames) {
       final LocalDocumentType type = getType(typeName);
       if (type instanceof LocalTimeSeriesType || !type.getBuckets(false).isEmpty() || !type.getSubTypes().isEmpty())
+        continue;
+      // ONCE PER TYPE FOR THE LIFE OF THIS SCHEMA: UNDER HA loadIncremental() RE-READS THE CONFIGURATION FOR EVERY
+      // REPLICATED DDL, AND THE TYPE IS DELIBERATELY LEFT IN PLACE
+      if (!typesReportedAsUnableToHoldRecords.add(typeName))
         continue;
       LogManager.instance().log(this, Level.WARNING,
           "Type '%s' in database '%s' has no buckets and no subtypes, so it cannot hold any record. If it is a type dropped by a version "

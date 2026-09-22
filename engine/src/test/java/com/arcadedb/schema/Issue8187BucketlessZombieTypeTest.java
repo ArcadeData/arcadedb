@@ -19,6 +19,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.WarningCapture;
 import com.arcadedb.serializer.json.JSONArray;
@@ -26,10 +27,12 @@ import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -57,6 +60,17 @@ public class Issue8187BucketlessZombieTypeTest extends TestHelper {
 
     assertThat(database.getSchema().existsType("Order")).isTrue();
     assertThat(database.getSchema().existsType("PO")).isTrue();
+
+    // UNDER HA loadIncremental() RUNS ONCE PER REPLICATED DDL: THE ZOMBIE IS REPORTED ONCE, NOT AFTER EVERY STATEMENT
+    final LocalSchema schema = (LocalSchema) database.getSchema().getEmbedded();
+    final List<String> incremental = WarningCapture.captureWarnings(() -> {
+      try {
+        schema.loadIncremental(ComponentFile.MODE.READ_WRITE, Set.of(), Set.of());
+      } catch (final IOException e) {
+        throw new UncheckedIOException(e);
+      }
+    });
+    assertThat(incremental).noneMatch(w -> w.contains("'Order'"));
 
     assertThatThrownBy(() -> database.transaction(() -> database.newDocument("Order").set("a", 1).save()))
         .isInstanceOf(SchemaException.class).hasMessageContaining("Order").hasMessageContaining("DROP TYPE");
