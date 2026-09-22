@@ -262,8 +262,17 @@ public class WhereClause extends SimpleNode {
     return new SimpleNode[] { baseExpression };
   }
 
+  /**
+   * Coerces a value to a declared type for a WHERE comparison, answering {@code null} when it cannot be expressed
+   * in that type.
+   * <p>
+   * convertOrNull, like {@code QueryOperatorEquals}: comparing a value against a literal of an incompatible shape is
+   * an ordinary "no match", not a query to refuse. This has no caller left in the reactor, but it is public, so it
+   * keeps answering {@code null} the way it did before issue #8090 made {@code Type.convert} itself strict, rather
+   * than starting to throw at whatever outside caller still holds it.
+   */
   public static Object convert(final Object o, final Type oType) {
-    return Type.convert(null, o, oType.getDefaultJavaType());
+    return Type.convertOrNull(null, o, oType.getDefaultJavaType());
   }
 
   /**

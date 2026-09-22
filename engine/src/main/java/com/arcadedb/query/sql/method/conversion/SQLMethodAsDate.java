@@ -23,6 +23,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 import com.arcadedb.utility.DateUtils;
 
+import java.time.format.DateTimeParseException;
+
 import java.time.temporal.Temporal;
 import java.util.Date;
 
@@ -57,8 +59,21 @@ public class SQLMethodAsDate extends AbstractSQLMethod {
     else if (value instanceof Number number)
       return new Date(number.longValue());
 
-    final String format = params.length > 0 ? params[0].toString() : context.getDatabase().getSchema().getDateFormat();
-    return DateUtils.getDate(DateUtils.parse(value.toString(), format),
-        context.getDatabase().getSerializer().getDateImplementation());
+    // The same shape as the sibling asDatetime(): an explicit format is the caller saying exactly how to read the
+    // string, so that pattern alone applies; without one the shared write-path chain decides, so asDate() reads
+    // every spelling an INSERT accepts - including the SQL timestamp with a fractional second, of which it keeps
+    // the date part - rather than only the schema's single dateFormat pattern. A value that matches nothing
+    // answers null, as date() and asDatetime() do (issue #8090).
+    final Object date;
+    try {
+      date = params.length > 0 ?
+          DateUtils.parse(value.toString(), params[0].toString()) :
+          DateUtils.parseDateTimeKeepingWallClock(context.getDatabase(), value.toString()).toLocalDate()
+              .atStartOfDay();
+    } catch (final DateTimeParseException e) {
+      return null;
+    }
+
+    return DateUtils.getDate(date, context.getDatabase().getSerializer().getDateImplementation());
   }
 }

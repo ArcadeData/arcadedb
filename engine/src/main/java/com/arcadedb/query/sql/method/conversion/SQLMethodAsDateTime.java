@@ -23,6 +23,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 import com.arcadedb.utility.DateUtils;
 
+import java.time.format.DateTimeParseException;
+
 /**
  * Transforms a value to datetime. If the conversion is not possible, null is returned.
  *
@@ -55,9 +57,29 @@ public class SQLMethodAsDateTime extends AbstractSQLMethod {
     else if (value instanceof Number number)
       return DateUtils.getDate(value, dateTimeImpl);
 
-    final String format = params.length > 0 ? params[0].toString() : context.getDatabase().getSchema().getDateTimeFormat();
-    final Object date = DateUtils.parse(value.toString(), format);
+    // With an explicit format the caller has said exactly how to read the string, so that pattern alone applies.
+    // Without one, the shared chain applies - the same one the write path uses - so `asDatetime()` accepts every
+    // spelling an INSERT accepts, including the SQL timestamp with a fractional second (issue #8090), instead of
+    // only the schema's single dateTimeFormat pattern.
+    //
+    // ...KeepingWallClock, the SAME overload Type.convert uses, so reading a literal answers what writing it would
+    // have stored. The rebasing overload would make an offset-bearing literal read back shifted by the database's
+    // zone here while an INSERT of that same literal kept its wall-clock - one string, two answers, from two
+    // entry points that share this chain. date() and asDate() take the same overload for the same reason.
+    //
+    // A value that matches nothing answers null, as this method's contract has always promised and as the sibling
+    // date() function already does. That is the READ side of the split issue #8090 drew: a write must refuse a
+    // value it cannot store, because silently emptying the column is the data loss being fixed, while a conversion
+    // asked for inside a query is an ordinary miss.
+    final Object date;
+    try {
+      date = params.length > 0 ?
+          DateUtils.parse(value.toString(), params[0].toString()) :
+          DateUtils.parseDateTimeKeepingWallClock(context.getDatabase(), value.toString());
+    } catch (final DateTimeParseException e) {
+      return null;
+    }
 
-    return DateUtils.getDate(date, context.getDatabase().getSerializer().getDateTimeImplementation());
+    return DateUtils.getDate(date, dateTimeImpl);
   }
 }

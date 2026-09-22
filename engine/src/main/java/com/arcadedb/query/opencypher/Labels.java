@@ -669,6 +669,31 @@ public final class Labels {
   }
 
   /**
+   * Rejects a relationship (edge) type name carrying {@link #LABEL_SEPARATOR}.
+   * <p>
+   * ArcadeDB shares one type namespace between vertex and edge types. An edge type named e.g. {@code A~B} is
+   * cosmetic on its own - an edge type is never composite, so there is no label set for it to collapse - but it
+   * collides with the vertex namespace: once it exists, the composite vertex type that the ordinary label set
+   * {@code [A, B]} computes can never be created, so {@code CREATE (n:A:B)} fails for good with no way to recover
+   * short of dropping the edge type (issue #8118, a follow-up to the vertex-label guard in {@link #ensureCompositeType}
+   * and {@link #requireUsableLabel}).
+   * <p>
+   * Callers apply this only on the path that would create a brand-new type ({@code !schema.existsType(...)}), never
+   * unconditionally, so that writing to or indexing an edge type that already exists keeps working regardless of
+   * its name.
+   *
+   * @param relationshipType the relationship type name about to be created
+   *
+   * @throws CommandSemanticException if the name contains {@link #LABEL_SEPARATOR}
+   */
+  public static void requireUsableRelationshipTypeName(final String relationshipType) {
+    if (relationshipType != null && relationshipType.contains(LABEL_SEPARATOR))
+      throw new CommandSemanticException("Relationship type '" + relationshipType + "' cannot contain '"
+          + LABEL_SEPARATOR + "', which is reserved as the separator between the labels of a composite vertex type "
+          + "and would otherwise collide with the vertex type namespace");
+  }
+
+  /**
    * Ensures composite type exists, creating it if necessary.
    * Returns the type name to use for creating vertices.
    * <p>

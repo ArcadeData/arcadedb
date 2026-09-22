@@ -32,6 +32,7 @@ import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.QuerySession;
+import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.CypherAdminStatement;
 import com.arcadedb.query.opencypher.ast.CypherDDLStatement;
 import com.arcadedb.query.opencypher.ast.CypherSessionStatement;
@@ -527,9 +528,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
     // Auto-create the type if it doesn't exist (Cypher does not require types to be pre-declared)
     if (!schema.existsType(typeName)) {
-      if (ddl.isForRelationship())
+      if (ddl.isForRelationship()) {
+        Labels.requireUsableRelationshipTypeName(typeName);
         schema.getOrCreateEdgeType(typeName);
-      else
+      } else
         schema.getOrCreateVertexType(typeName);
     }
 
@@ -919,9 +921,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
     // Auto-create the type if it doesn't exist (Cypher does not require types to be pre-declared)
     if (!schema.existsType(typeName)) {
-      if (ddl.isForRelationship())
+      if (ddl.isForRelationship()) {
+        Labels.requireUsableRelationshipTypeName(typeName);
         schema.getOrCreateEdgeType(typeName);
-      else
+      } else
         schema.getOrCreateVertexType(typeName);
     }
 

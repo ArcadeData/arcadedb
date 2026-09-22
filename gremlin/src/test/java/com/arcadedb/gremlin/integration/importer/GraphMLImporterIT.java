@@ -34,6 +34,7 @@ import java.io.FileOutputStream;
 import java.net.URL;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.stream.Collectors;
 import java.util.zip.GZIPInputStream;
 
@@ -90,6 +91,29 @@ class GraphMLImporterIT {
       for (final DocumentType type : database.getSchema().getTypes()) {
         assertThat(database.countType(type.getName(), true) > 0).isTrue();
       }
+    }
+  }
+
+  /**
+   * Issue #8054: a GraphML import that fully succeeds used to report {@code {"result":"OK"}} with no statistics at
+   * all, because {@code GraphMLImporterFormat.load()} handed the whole file to TinkerPop's own reader and never
+   * touched {@code context.parsed}/{@code createdVertices}/{@code createdEdges}. {@code ImporterContext#toMap()}
+   * omits every counter that is zero, so the whole map came back empty.
+   */
+  @Test
+  void importCompressedOKReportsStatistics() {
+    final URL inputFile = GraphMLImporterIT.class.getClassLoader().getResource(FILE);
+
+    try (final Database database = new DatabaseFactory(DATABASE_PATH).create()) {
+      final Map<String, Object> report = new Importer(database, inputFile.getFile()).load();
+
+      assertThat(((Number) report.get("createdVertices")).longValue())
+          .as("a fully successful import must report the vertices it created, not an empty map")
+          .isGreaterThan(0);
+      assertThat(((Number) report.get("createdEdges")).longValue())
+          .as("a fully successful import must report the edges it created, not an empty map")
+          .isGreaterThan(0);
+      assertThat(((Number) report.get("parsedRecords")).longValue()).isGreaterThan(0);
     }
   }
 

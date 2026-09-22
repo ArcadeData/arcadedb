@@ -39,6 +39,7 @@ import java.net.URL;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 import java.util.zip.GZIPInputStream;
 
@@ -98,6 +99,29 @@ class GraphSONImporterIT {
     }
   }
 
+  /**
+   * Issue #8054: a GraphSON import that fully succeeds on the RID-format route (the TinkerPop-reader branch of
+   * {@code GraphSONImporterFormat.load()}) used to report {@code {"result":"OK"}} with no statistics at all,
+   * because nothing on that route ever touched {@code context.parsed}/{@code createdVertices}/{@code createdEdges}.
+   * {@code ImporterContext#toMap()} omits every counter that is zero, so the whole map came back empty.
+   */
+  @Test
+  void importCompressedOKReportsStatistics() {
+    final URL inputFile = GraphSONImporterIT.class.getClassLoader().getResource(FILE);
+
+    try (final Database database = new DatabaseFactory(DATABASE_PATH).create()) {
+      final Map<String, Object> report = new Importer(database, inputFile.getFile()).load();
+
+      assertThat(((Number) report.get("createdVertices")).longValue())
+          .as("a fully successful import must report the vertices it created, not an empty map")
+          .isGreaterThan(0);
+      assertThat(((Number) report.get("createdEdges")).longValue())
+          .as("a fully successful import must report the edges it created, not an empty map")
+          .isGreaterThan(0);
+      assertThat(((Number) report.get("parsedRecords")).longValue()).isGreaterThan(0);
+    }
+  }
+
   @Test
   void importFromSQL() {
     final URL inputFile = GraphSONImporterIT.class.getClassLoader().getResource(FILE);
@@ -133,13 +157,18 @@ class GraphSONImporterIT {
     try (final Database database = new DatabaseFactory(DATABASE_PATH).create()) {
 
       final Importer importer = new Importer(database, inputFile.getFile());
-      importer.load();
+      final Map<String, Object> report = importer.load();
 
       assertThat(databaseDirectory.exists()).isTrue();
 
       // Verify types were created
       assertThat(database.getSchema().existsType("Class")).isTrue();
       assertThat(database.getSchema().existsType("Person")).isTrue();
+
+      // Issue #8054: this is the importWithIdMapping() branch (non-RID ids) - the OTHER route the format
+      // could report no statistics on.
+      assertThat(((Number) report.get("createdVertices")).longValue()).isEqualTo(4);
+      assertThat(((Number) report.get("createdEdges")).longValue()).isEqualTo(2);
 
       // Test that we can query vertices by their original IDs using Gremlin
       try (final ArcadeGraph graph = ArcadeGraph.open(database)) {

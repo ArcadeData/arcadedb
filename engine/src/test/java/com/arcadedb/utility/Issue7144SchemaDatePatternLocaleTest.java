@@ -41,7 +41,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Issue #7144, the follow-up to #7112: pinning {@link DateUtils#getFormatter(String)} to {@code Locale.ENGLISH} only
  * covered the values that reach {@code DateUtils.format/parse}. The same schema patterns were still fed straight to
  * {@code DateTimeFormatter.ofPattern()} - which binds {@code Locale.getDefault(Locale.Category.FORMAT)} - from
- * {@code parseIsoDateTime}, from {@link Type}'s String conversions, from {@link JSONObject}'s date formats and from
+ * {@code DateUtils.parseDateTime}, from {@link Type}'s String conversions, from {@link JSONObject}'s date formats and from
  * the SQL/Cypher date functions. Two nodes with different JVM locales then disagreed on the textual form of a date,
  * and a value written by one failed to parse on the other.
  * <p>

@@ -23,6 +23,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -47,13 +48,19 @@ public class SQLMethodAsRecord extends AbstractSQLMethod {
     if (obj != null) {
       if (obj instanceof Identifiable identifiable)
         return identifiable.getRecord();
-      else if (obj instanceof List list) {
-        for (int i = 0; i < list.size(); i++)
-          list.set(i, getRecord(list.get(i), context));
-        return list;
-
-      } else if (obj instanceof String string && RID.is(obj))
+      else if (obj instanceof String string && RID.is(obj))
         return RID.create(context != null ? context.getDatabase() : null, string).getRecord();
+
+      // A List, AN ARRAY (split(), A JSON ARRAY PARAMETER), OR ANY OTHER COLLECTION-SHAPED RECEIVER: BUILD A NEW
+      // LIST RATHER THAN REWRITE THE CALLER'S OWN List IN PLACE, WHICH THREW ON AN IMMUTABLE List AND MUTATED A
+      // VALUE THE CALLER MAY STILL HOLD (ISSUE #7877)
+      final List<Object> list = listReceiverOrNull(obj);
+      if (list != null) {
+        final List<Object> result = new ArrayList<>(list.size());
+        for (final Object item : list)
+          result.add(getRecord(item, context));
+        return result;
+      }
     }
     return null;
   }

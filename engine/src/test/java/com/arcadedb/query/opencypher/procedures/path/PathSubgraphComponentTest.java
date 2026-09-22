@@ -163,6 +163,33 @@ class PathSubgraphComponentTest {
     assertThat(((Number) result.getProperty("total")).intValue()).isEqualTo(VERTICES);
   }
 
+  /**
+   * Issue #7982: with {@code labelFilter} set, the edge leaving the component through it is currently reported in
+   * {@code relationships} even though its far endpoint (the chunk) never made it into {@code nodes} - so a caller
+   * can be handed a relationship naming a vertex the same result does not contain.
+   */
+  @Test
+  void labelFilteredRelationshipsNameOnlyVerticesInNodes() {
+    final Result result = database.query("cypher", """
+        MATCH (n:Entity {id: 0})
+        CALL path.subgraphall(n, {labelFilter: 'Entity'}) YIELD nodes, relationships
+        RETURN nodes, relationships
+        """).next();
+
+    final List<?> nodes = result.getProperty("nodes");
+    final List<?> relationships = result.getProperty("relationships");
+
+    final java.util.Set<Object> nodeIds = new java.util.HashSet<>();
+    for (final Object node : nodes)
+      nodeIds.add(((Vertex) node).getIdentity());
+
+    for (final Object relationship : relationships) {
+      final com.arcadedb.graph.Edge edge = (com.arcadedb.graph.Edge) relationship;
+      assertThat(nodeIds).as("relationship %s out-vertex must be in nodes", edge.getIdentity()).contains(edge.getOut());
+      assertThat(nodeIds).as("relationship %s in-vertex must be in nodes", edge.getIdentity()).contains(edge.getIn());
+    }
+  }
+
   @Test
   void maxLevelBoundsTheWalk() {
     final Result result = database.query("cypher", """

@@ -72,19 +72,33 @@ class Issue7800ReRenderAndCopyTest extends AbstractParserTest {
   }
 
   /**
-   * CodeRabbit follow-up (fourth round): {@code urlString} used to be the un-decoded literal body (quotes stripped,
-   * escapes untouched), and {@code BackupDatabaseStatement} uses {@code Url.getUrlString()} as the actual backup
-   * file path - so a URL containing an escape sequence would target a path with a literal backslash-n instead of
-   * the real character. {@code urlString} is now decoded the same way {@code DefineFunctionStatement.code} already
-   * is, while {@code quotedLiteral} stays the raw source text for rendering.
+   * CodeRabbit follow-up (fourth round) briefly decoded {@code urlString} the same way
+   * {@code DefineFunctionStatement.code} does, on the argument that {@code BackupDatabaseStatement} uses
+   * {@code Url.getUrlString()} as the actual backup file path. That broke every Windows-style path: decoding turns
+   * {@code C:\temp\new.zip} into a path containing a TAB and a LINE FEED, because the lexer's escape set
+   * (backslash-n, backslash-t, backslash-r, backslash-u escapes and friends) has nothing to do with filesystem path
+   * separators (issue #7894).
+   * {@code urlString} must stay the un-decoded, unquoted literal body - only the outer quotes are stripped - while
+   * {@code quotedLiteral} carries the raw source text for rendering, so a genuine {@code \n} in a quoted literal is
+   * preserved as the two characters backslash-n, not resolved into a line break.
    */
   @Test
-  void backupDatabaseUrlIsDecodedForExecutionButRendersVerbatim() {
+  void backupDatabaseUrlIsUnDecodedForExecutionAndRendersVerbatim() {
     final BackupDatabaseStatement stmt = (BackupDatabaseStatement) new com.arcadedb.query.sql.antlr.SQLAntlrParser(null)
         .parse("BACKUP DATABASE 'line1\\nline2'");
 
-    assertThat(stmt.url.getUrlString()).isEqualTo("line1\nline2");
+    assertThat(stmt.url.getUrlString()).isEqualTo("line1\\nline2");
     assertThat(stmt.toString()).isEqualTo("BACKUP DATABASE 'line1\\nline2'");
+  }
+
+  /** Issue #7894: a Windows-style path with a backslash must reach the executor byte-for-byte, not escape-decoded. */
+  @Test
+  void backupDatabaseWindowsPathUrlIsNotEscapeDecoded() {
+    final BackupDatabaseStatement stmt = (BackupDatabaseStatement) new com.arcadedb.query.sql.antlr.SQLAntlrParser(null)
+        .parse("BACKUP DATABASE 'C:\\temp\\new.zip'");
+
+    assertThat(stmt.url.getUrlString()).isEqualTo("C:\\temp\\new.zip");
+    assertThat(stmt.toString()).isEqualTo("BACKUP DATABASE 'C:\\temp\\new.zip'");
   }
 
   /**

@@ -77,21 +77,21 @@ public class SQLFunctionDate extends SQLFunctionAbstract {
         }
 
         if (format == null) {
-          final String databaseDateFormat = context.getDatabase().getSchema().getDateFormat();
-          if (dateAsString.length() == databaseDateFormat.length())
-            format = databaseDateFormat;
-          else {
-            final String databaseDateTimeFormat = context.getDatabase().getSchema().getDateTimeFormat();
-            if (dateAsString.length() == databaseDateTimeFormat.length())
-              format = databaseDateTimeFormat;
-            else
-              return null;
-          }
-        }
+          // No format named by the caller: the shared write-path chain decides, so date() reads every spelling an
+          // INSERT accepts - including the SQL timestamp with a fractional second. This used to guess the pattern
+          // from the string's LENGTH and answer null for anything that matched neither, which is how
+          // date('2024-02-29 13:45:10.123456') became an empty result (issue #8090). The `timezone` option keeps
+          // the effect it had here before: none, since neither this chain nor a zone-less pattern reads a zone out
+          // of the text - it applies to a pattern that carries zone fields, which is the explicit-format path below.
+          // It is still CHECKED, though. Before this chain existed, a length-matched string went through
+          // formatterFor(), so an unknown zone id was reported as a client error even on this path; an id that
+          // cannot exist is a mistake in the call whether or not this branch has anything to apply it to, and
+          // quietly ignoring it is the thing issue #6388 set out to stop.
+          validateZone(timezone);
 
-        final DateTimeFormatter formatter = formatterFor(format, timezone, context);
-
-        date = LocalDateTime.parse(dateAsString, formatter);
+          date = DateUtils.parseDateTimeKeepingWallClock(context.getDatabase(), dateAsString);
+        } else
+          date = LocalDateTime.parse(dateAsString, formatterFor(format, timezone, context));
       } catch (final DateTimeParseException e) {
         // THE VALUE DOES NOT MATCH THE FORMAT: NOT AN ERROR, THE DOCUMENTED ANSWER IS NULL. THE ARGUMENTS THEMSELVES
         // BEING WRONG IS A DIFFERENT STORY AND IS RAISED BY formatterFor() BELOW.
@@ -119,11 +119,29 @@ public class SQLFunctionDate extends SQLFunctionAbstract {
       throw new IllegalArgumentException(NAME + "() received an invalid date format '" + format + "': " + e.getMessage(), e);
     }
 
-    if (timezone == null)
-      return formatter.withZone(context.getDatabase().getSchema().getZoneId());
+    return formatter.withZone(zoneFor(timezone, context));
+  }
 
+  /**
+   * Resolves the zone the call named, falling back to the schema's.
+   */
+  private static ZoneId zoneFor(final String timezone, final CommandContext context) {
+    return timezone == null ? context.getDatabase().getSchema().getZoneId() : zoneOf(timezone);
+  }
+
+  /**
+   * Refuses a zone id that does not exist, for the no-format path: it has no formatter to hang a zone on, so it has
+   * nothing to do with the resolved value - but a named id that cannot exist is a mistake in the call and has been
+   * reported as one since issue #6388.
+   */
+  private static void validateZone(final String timezone) {
+    if (timezone != null)
+      zoneOf(timezone);
+  }
+
+  private static ZoneId zoneOf(final String timezone) {
     try {
-      return formatter.withZone(ZoneId.of(timezone));
+      return ZoneId.of(timezone);
     } catch (final DateTimeException e) {
       throw new IllegalArgumentException(NAME + "() received an unknown time zone id '" + timezone + "'", e);
     }

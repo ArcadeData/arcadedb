@@ -101,7 +101,11 @@ class CypherApocOptionalTrailingArgumentsIssue8102Test {
     }
   }
 
-  /** The arity gate moved, it did not disappear: one argument is still too few and four still too many. */
+  /**
+   * The arity gate moved, it did not disappear: one argument is still too few and five still too many. The upper
+   * bound is four because {@code onMatchProps} landed on main with issue #8117 while this branch was open - both
+   * trailing maps are now optional, so every count from two to four is legal and nothing outside that is.
+   */
   @Test
   void mergeNodeStillRejectsAnArgumentCountOutsideItsNewBounds() {
     assertThatThrownBy(() -> database.command("opencypher",
@@ -109,8 +113,27 @@ class CypherApocOptionalTrailingArgumentsIssue8102Test {
         .isInstanceOf(CommandSemanticException.class);
 
     assertThatThrownBy(() -> database.command("opencypher",
-        "CALL apoc.merge.node(['Person'], {name:'John'}, {age:30}, {seen:1}) YIELD node RETURN node").hasNext())
+        "CALL apoc.merge.node(['Person'], {name:'John'}, {age:30}, {seen:1}, {extra:2}) YIELD node RETURN node").hasNext())
         .isInstanceOf(CommandSemanticException.class);
+  }
+
+  /**
+   * The absent-argument helper now supplies BOTH trailing maps, so a three-argument call must still leave an
+   * existing node untouched: {@code onMatchProps} defaulting to the empty map is a no-op, not a null dereference.
+   */
+  @Test
+  void mergeNodeWithoutOnMatchPropsLeavesTheExistingNodeUntouched() {
+    mergeJohnWithoutCreateProps();
+
+    try (final ResultSet rs = database.command("opencypher",
+        "CALL apoc.merge.node(['Person'], {name:'John'}, {age:30}) YIELD node RETURN node.name AS name, node.age AS age")) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result row = rs.next();
+      assertThat(row.<String>getProperty("name")).isEqualTo("John");
+      assertThat(row.<Object>getProperty("age")).isNull();
+    }
+
+    assertThat(countOfPersons()).isEqualTo(1L);
   }
 
   /**
