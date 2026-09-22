@@ -24,6 +24,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.executor.CypherVertexReload;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -102,8 +103,10 @@ public class MergeRelationship implements CypherProcedure {
     final Database database = context.getDatabase();
 
     // Ensure edge type exists
-    if (!database.getSchema().existsType(relType))
+    if (!database.getSchema().existsType(relType)) {
+      Labels.requireUsableRelationshipTypeName(relType);
       database.getSchema().createEdgeType(relType);
+    }
 
     // The vertex instances the row carries were loaded before the rows ahead of it applied their merges, and
     // appending an edge rewrites the edge-list head pointer of BOTH endpoints - out on the start, in on the

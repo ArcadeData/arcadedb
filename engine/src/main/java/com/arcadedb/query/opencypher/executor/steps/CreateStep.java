@@ -441,8 +441,10 @@ public class CreateStep extends AbstractExecutionStep {
 
     // Ensure edge type exists (Cypher auto-creates types)
     // getOrCreateEdgeType returns quickly if the type already exists (schema cache lookup)
-    if (!context.getDatabase().getSchema().existsType(type))
+    if (!context.getDatabase().getSchema().existsType(type)) {
+      Labels.requireUsableRelationshipTypeName(type);
       context.getDatabase().getSchema().getOrCreateEdgeType(type);
+    }
 
     // Evaluate edge properties BEFORE creating the edge so they are passed to newEdge() and set
     // before the internal save()/validation. Otherwise edges with mandatory properties fail
