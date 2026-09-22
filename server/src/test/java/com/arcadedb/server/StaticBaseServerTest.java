@@ -24,6 +24,8 @@ import com.arcadedb.server.http.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 
+import java.io.IOException;
+import java.net.ServerSocket;
 import java.util.logging.Level;
 
 /**
@@ -103,6 +105,43 @@ public abstract class StaticBaseServerTest {
    */
   protected static String getServerWsUrl(final ArcadeDBServer server, final String path) {
     return "ws://localhost:" + getServerHttpPort(server) + path;
+  }
+
+  /**
+   * {@code count} distinct TCP ports the operating system hands out as free right now, for a listener that has no
+   * range to fall back on the way the HTTP server does (gRPC, Raft, ...).
+   * <p>
+   * A fixed port - {@code 51141 + serverIndex} - is answered by whatever already holds it: a server from an earlier
+   * class in the same fork that has not released it yet, another suite that picked the same number, another process
+   * on the runner. The failure then lands on whichever test starts next, as "Address already in use" during startup
+   * or as a call answered by a stranger, and never names the real cause (issue #7496). Every socket stays open until
+   * all {@code count} are taken, so the ports are distinct from each other; they are closed before returning, so the
+   * caller can bind them.
+   * <p>
+   * Allocate everything one fixture needs in ONE call: two separate calls can in principle return the same port,
+   * because the first call has already released its sockets when the second one asks.
+   */
+  protected static int[] allocateFreePorts(final int count) {
+    final ServerSocket[] sockets = new ServerSocket[count];
+    final int[] ports = new int[count];
+    try {
+      for (int i = 0; i < count; i++) {
+        sockets[i] = new ServerSocket(0);
+        sockets[i].setReuseAddress(true);
+        ports[i] = sockets[i].getLocalPort();
+      }
+      return ports;
+    } catch (final IOException e) {
+      throw new IllegalStateException("Cannot allocate " + count + " free ports for the test", e);
+    } finally {
+      for (final ServerSocket socket : sockets)
+        if (socket != null)
+          try {
+            socket.close();
+          } catch (final IOException ignore) {
+            // Nothing useful to do: the port is reported anyway and binding it is what proves it free.
+          }
+    }
   }
 
   protected static void testLog(final String msg, final Object... args) {

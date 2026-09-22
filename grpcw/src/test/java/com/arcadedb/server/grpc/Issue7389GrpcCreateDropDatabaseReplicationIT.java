@@ -29,11 +29,10 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.DataOutputStream;
-import java.io.IOException;
 import java.net.HttpURLConnection;
-import java.net.ServerSocket;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
@@ -69,8 +68,9 @@ class Issue7389GrpcCreateDropDatabaseReplicationIT extends BaseRaftHATest {
    * about the test. Overriding {@link #peerIdForIndex} and {@link #getServerAddresses} below keeps
    * this cluster self-consistent on ports nothing else claims.
    */
-  private static final int[] GRPC_PORTS = allocateFreePorts(SERVER_COUNT);
-  private static final int[] RAFT_PORTS = allocateFreePorts(SERVER_COUNT);
+  private static final int[] PORTS      = allocateFreePorts(2 * SERVER_COUNT);
+  private static final int[] GRPC_PORTS = Arrays.copyOfRange(PORTS, 0, SERVER_COUNT);
+  private static final int[] RAFT_PORTS = Arrays.copyOfRange(PORTS, SERVER_COUNT, 2 * SERVER_COUNT);
 
   private ManagedChannel channel;
 
@@ -274,32 +274,5 @@ class Issue7389GrpcCreateDropDatabaseReplicationIT extends BaseRaftHATest {
       Thread.sleep(200);
     }
     return condition.getAsBoolean();
-  }
-
-  /**
-   * Reserves {@code count} ports the OS says are free, holding them all open until the last one is
-   * chosen so the same port cannot be handed out twice within this call.
-   */
-  private static int[] allocateFreePorts(final int count) {
-    final ServerSocket[] sockets = new ServerSocket[count];
-    final int[] ports = new int[count];
-    try {
-      for (int i = 0; i < count; i++) {
-        sockets[i] = new ServerSocket(0);
-        sockets[i].setReuseAddress(true);
-        ports[i] = sockets[i].getLocalPort();
-      }
-      return ports;
-    } catch (final IOException e) {
-      throw new IllegalStateException("Cannot allocate free ports for the test", e);
-    } finally {
-      for (final ServerSocket socket : sockets)
-        if (socket != null)
-          try {
-            socket.close();
-          } catch (final IOException ignore) {
-            // Nothing useful to do: the port is reported anyway and binding it is what proves it free.
-          }
-    }
   }
 }

@@ -64,11 +64,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class Issue6070GraphBatchLoadLeaderGuardIT extends BaseRaftHATest {
 
-  // 20 apart from every other gRPC IT's base, because each of these starts three servers on BASE..BASE+2.
-  // This class used to share 51091 with TimeSeriesGrpcForwardedInsertTypeIT, so whenever the two ran close
-  // enough together the second one's GrpcServerPlugin failed to bind and took the whole class down with
-  // "Failed to bind to address 0.0.0.0:51092" - reported as a plugin startup error rather than as a port clash.
-  private static final int    BASE_GRPC_PORT = 51161;
+  // One gRPC port per server, handed out free by the OS for every test instance rather than fixed (issue #7496).
+  // A hand-picked base cannot be kept apart from every other class's: this class was first moved off 51091, which it
+  // shared with TimeSeriesGrpcForwardedInsertTypeIT, onto 51161 - which Issue7308GrpcRestoreImportLeaderRoutingIT
+  // also used.
+  private final int[] grpcPorts = allocateFreePorts(3);
   private static final String VERTEX_TYPE    = "Issue6070LeaderGuardNode";
 
   private static final Metadata.Key<String> USER_HEADER     = Metadata.Key.of("x-arcade-user",
@@ -88,7 +88,7 @@ class Issue6070GraphBatchLoadLeaderGuardIT extends BaseRaftHATest {
     final int index = Integer.parseInt(serverName.substring(serverName.lastIndexOf('_') + 1));
 
     config.setValue("arcadedb.grpc.enabled", "true");
-    config.setValue("arcadedb.grpc.port", String.valueOf(BASE_GRPC_PORT + index));
+    config.setValue("arcadedb.grpc.port", String.valueOf(grpcPorts[index]));
     config.setValue("arcadedb.grpc.host", "localhost");
     config.setValue("arcadedb.grpc.reflection.enabled", "false");
     config.setValue("arcadedb.grpc.health.enabled", "false");
@@ -202,7 +202,7 @@ class Issue6070GraphBatchLoadLeaderGuardIT extends BaseRaftHATest {
 
   private Throwable loadOneVertexInto(final int serverIndex, final String tempId, final String databaseName)
       throws Exception {
-    channel = ManagedChannelBuilder.forAddress("localhost", BASE_GRPC_PORT + serverIndex).usePlaintext().build();
+    channel = ManagedChannelBuilder.forAddress("localhost", grpcPorts[serverIndex]).usePlaintext().build();
     try {
       final Channel authenticated = ClientInterceptors.intercept(channel, new AuthClientInterceptor());
 

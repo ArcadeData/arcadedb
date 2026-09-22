@@ -48,7 +48,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Tag("slow")
 class TimeSeriesGrpcForwardedInsertTypeIT extends BaseRaftHATest {
 
-  private static final int    BASE_GRPC_PORT = 51091;
+  // One gRPC port per server, handed out free by the OS for every test instance rather than fixed (issue #7496).
+
+  private final int[] grpcPorts = allocateFreePorts(2);
   private static final String TYPE_NAME      = "sensor";
 
   private ManagedChannel channel;
@@ -59,7 +61,7 @@ class TimeSeriesGrpcForwardedInsertTypeIT extends BaseRaftHATest {
     final String serverName = config.getValueAsString(GlobalConfiguration.SERVER_NAME);
     final int index = Integer.parseInt(serverName.substring(serverName.lastIndexOf('_') + 1));
     config.setValue("arcadedb.grpc.enabled", "true");
-    config.setValue("arcadedb.grpc.port", String.valueOf(BASE_GRPC_PORT + index));
+    config.setValue("arcadedb.grpc.port", String.valueOf(grpcPorts[index]));
     config.setValue("arcadedb.grpc.host", "localhost");
     config.setValue("arcadedb.grpc.reflection.enabled", "false");
     config.setValue("arcadedb.grpc.health.enabled", "false");
@@ -102,7 +104,7 @@ class TimeSeriesGrpcForwardedInsertTypeIT extends BaseRaftHATest {
     final int followerIndex = (leaderIndex + 1) % getServerCount();
 
     channel = ManagedChannelBuilder
-        .forAddress("localhost", BASE_GRPC_PORT + followerIndex)
+        .forAddress("localhost", grpcPorts[followerIndex])
         .usePlaintext()
         .maxInboundMessageSize(64 * 1024 * 1024)
         .build();
