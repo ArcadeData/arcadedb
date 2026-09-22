@@ -6298,10 +6298,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * the walk, so their sum is what {@code count()} would return on the bucket as this pass found it.
    * <p>
    * <b>When it stays silent.</b> With a counter that was never computed (-1 - there is nothing to be wrong), with a
-   * bucket the caller's transaction has pending changes on (see {@link #check}), and whenever
+   * bucket the caller's transaction has pending changes on (see {@link #check}), whenever
    * {@link CheckStats#recordCountComparable} says this run's own repairs or an unreadable page moved one side of the
-   * comparison without the other. A false "your counters are wrong" on a database being repaired would be worse than
-   * no report at all.
+   * comparison without the other, and - on a read-only run - when another transaction committed into this bucket
+   * while the walk was running. A false "your counters are wrong" on a database being repaired, or on a live node
+   * somebody is already diagnosing, would be worse than no report at all.
    * <p>
    * <b>The repair is the invalidation {@code check(fix=true)} already makes</b>: the next {@code count()} rescans and
    * republishes. A read-only run only reports, like every other finding here.
@@ -6319,6 +6320,22 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     final long scanned = totals.totalActiveRecords + totals.totalPlaceholderRecords + totals.totalMultiPageRecords;
 
     if (cachedRecordCountBefore == scanned)
+      return;
+
+    if (!fix && cachedRecordCount.get() != cachedRecordCountBefore)
+      // A commit landed on this bucket while the walk was running: its fold moved the counter, so the number read
+      // at the top and the slots counted since describe different moments and the disagreement proves nothing. This
+      // is exact rather than a heuristic - a commit that publishes records into this bucket ALWAYS folds its delta
+      // into the counter (TransactionContext.commit2ndPhase, skipped only at -1, which this method already
+      // declines to compare) - so the counter moving is precisely the signal that the walk was not looking at one
+      // point in time. It matters because a read-only CHECK DATABASE is the one form an operator runs on a live
+      // node, which is exactly how #8040 was diagnosed, and a false "your counters are wrong" there would send
+      // them looking for the defect this exists to report.
+      //
+      // Under FIX the signal is unavailable - check() sets the counter to -1 before the first repair (#6320), so
+      // nothing folds into it for this to observe - and it is not needed: a repair pass already assumes no
+      // concurrent writers, which is what its own #5149 invalidation comment and the CHECK DATABASE documentation
+      // both say.
       return;
 
     ++totals.totalErrors;
