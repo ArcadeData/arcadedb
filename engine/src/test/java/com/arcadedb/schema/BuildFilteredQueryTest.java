@@ -34,7 +34,7 @@ class BuildFilteredQueryTest {
   void withGroupBy() {
     final ContinuousAggregateImpl ca = buildCA(
         "SELECT sensor_id, avg(temp) FROM SensorReading GROUP BY sensor_id");
-    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000);
+    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000, true);
     assertThat(result).isEqualTo(
         "SELECT sensor_id, avg(temp) FROM SensorReading WHERE `ts` >= 1000 GROUP BY sensor_id");
   }
@@ -43,7 +43,7 @@ class BuildFilteredQueryTest {
   void withOrderByNoGroupBy() {
     final ContinuousAggregateImpl ca = buildCA(
         "SELECT sensor_id, temp FROM SensorReading ORDER BY sensor_id");
-    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000);
+    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000, true);
     assertThat(result).isEqualTo(
         "SELECT sensor_id, temp FROM SensorReading WHERE `ts` >= 1000 ORDER BY sensor_id");
   }
@@ -52,7 +52,7 @@ class BuildFilteredQueryTest {
   void withOrderByAndGroupBy() {
     final ContinuousAggregateImpl ca = buildCA(
         "SELECT sensor_id, avg(temp) FROM SensorReading GROUP BY sensor_id ORDER BY sensor_id");
-    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000);
+    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000, true);
     // WHERE should be inserted before GROUP BY
     assertThat(result).isEqualTo(
         "SELECT sensor_id, avg(temp) FROM SensorReading WHERE `ts` >= 1000 GROUP BY sensor_id ORDER BY sensor_id");
@@ -62,7 +62,7 @@ class BuildFilteredQueryTest {
   void withExistingWhere() {
     final ContinuousAggregateImpl ca = buildCA(
         "SELECT sensor_id, avg(temp) FROM SensorReading WHERE active = true GROUP BY sensor_id");
-    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000);
+    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000, true);
     // #8156: the caller's predicate is bracketed. It is redundant for a single comparison and mandatory the moment
     // the predicate contains an OR, so it is applied unconditionally rather than guessed at.
     assertThat(result).isEqualTo(
@@ -79,7 +79,7 @@ class BuildFilteredQueryTest {
     final ContinuousAggregateImpl ca = buildCA(
         "SELECT sensor_id, ts.timeBucket('1h', ts) AS hour, avg(temp) AS avg_temp FROM SensorReading "
             + "WHERE temp > 100 OR sensor_id = 'A' GROUP BY sensor_id, hour");
-    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 7200000);
+    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 7200000, true);
     assertThat(result).isEqualTo(
         "SELECT sensor_id, ts.timeBucket('1h', ts) AS hour, avg(temp) AS avg_temp FROM SensorReading "
             + "WHERE `ts` >= 7200000 AND (temp > 100 OR sensor_id = 'A') GROUP BY sensor_id, hour");
@@ -89,7 +89,7 @@ class BuildFilteredQueryTest {
   void orInExistingWhereWithNoTrailingClause() {
     final ContinuousAggregateImpl ca = buildCA(
         "SELECT sensor_id FROM SensorReading WHERE temp > 100 OR sensor_id = 'A'");
-    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000);
+    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000, true);
     assertThat(result).isEqualTo(
         "SELECT sensor_id FROM SensorReading WHERE `ts` >= 1000 AND (temp > 100 OR sensor_id = 'A')");
   }
@@ -98,7 +98,7 @@ class BuildFilteredQueryTest {
   void whereClauseEndsAtOrderByNotAtTheEndOfTheString() {
     final ContinuousAggregateImpl ca = buildCA(
         "SELECT sensor_id, temp FROM SensorReading WHERE temp > 100 OR sensor_id = 'A' ORDER BY sensor_id LIMIT 10");
-    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000);
+    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000, true);
     assertThat(result).isEqualTo(
         "SELECT sensor_id, temp FROM SensorReading WHERE `ts` >= 1000 AND (temp > 100 OR sensor_id = 'A') "
             + "ORDER BY sensor_id LIMIT 10");
@@ -113,7 +113,7 @@ class BuildFilteredQueryTest {
   void clauseKeywordInsideAStringLiteralIsNotAClause() {
     final ContinuousAggregateImpl ca = buildCA(
         "SELECT sensor_id FROM SensorReading WHERE label = 'GROUP BY me' OR temp > 1 GROUP BY sensor_id");
-    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000);
+    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000, true);
     assertThat(result).isEqualTo(
         "SELECT sensor_id FROM SensorReading WHERE `ts` >= 1000 AND (label = 'GROUP BY me' OR temp > 1) "
             + "GROUP BY sensor_id");
@@ -121,7 +121,7 @@ class BuildFilteredQueryTest {
 
   /**
    * #8152: a watermark of 0 that HAS been set is a real watermark - the epoch bucket - and must still be filtered
-   * on. The 2-argument overload keeps the old "0 means unset" reading for callers that have no flag to pass.
+   * on. There is no 2-argument overload that could infer the flag from `watermark > 0`: inferring it is the defect.
    */
   @Test
   void watermarkOfZeroIsFilteredWhenExplicitlySet() {
@@ -137,7 +137,7 @@ class BuildFilteredQueryTest {
   void noKeywordsAppendsAtEnd() {
     final ContinuousAggregateImpl ca = buildCA(
         "SELECT sensor_id, avg(temp) FROM SensorReading");
-    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000);
+    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000, true);
     assertThat(result).isEqualTo(
         "SELECT sensor_id, avg(temp) FROM SensorReading WHERE `ts` >= 1000");
   }
@@ -146,7 +146,7 @@ class BuildFilteredQueryTest {
   void withLimitNoGroupByNoOrderBy() {
     final ContinuousAggregateImpl ca = buildCA(
         "SELECT sensor_id, temp FROM SensorReading LIMIT 100");
-    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000);
+    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000, true);
     assertThat(result).isEqualTo(
         "SELECT sensor_id, temp FROM SensorReading WHERE `ts` >= 1000 LIMIT 100");
   }
@@ -158,7 +158,7 @@ class BuildFilteredQueryTest {
     // detecting that the existing pair spans the whole predicate is more code than it saves.
     final ContinuousAggregateImpl ca = buildCA(
         "SELECT sensor_id, avg(temp) FROM SensorReading WHERE(active = true) GROUP BY sensor_id");
-    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000);
+    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000, true);
     assertThat(result).isEqualTo(
         "SELECT sensor_id, avg(temp) FROM SensorReading WHERE `ts` >= 1000 AND ((active = true)) GROUP BY sensor_id");
   }
@@ -167,7 +167,7 @@ class BuildFilteredQueryTest {
   void watermarkZeroReturnsOriginal() {
     final ContinuousAggregateImpl ca = buildCA(
         "SELECT sensor_id FROM SensorReading ORDER BY sensor_id");
-    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 0);
+    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 0, false);
     assertThat(result).isEqualTo("SELECT sensor_id FROM SensorReading ORDER BY sensor_id");
   }
 
@@ -176,7 +176,7 @@ class BuildFilteredQueryTest {
     // Regression: block comment containing WHERE must not be matched as the top-level WHERE
     final ContinuousAggregateImpl ca = buildCA(
         "SELECT sensor_id, avg(temp) /* WHERE not here */ FROM SensorReading GROUP BY sensor_id");
-    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000);
+    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000, true);
     assertThat(result).isEqualTo(
         "SELECT sensor_id, avg(temp) /* WHERE not here */ FROM SensorReading WHERE `ts` >= 1000 GROUP BY sensor_id");
   }
@@ -186,7 +186,7 @@ class BuildFilteredQueryTest {
     // Regression: line comment containing WHERE must not be matched as the top-level WHERE
     final ContinuousAggregateImpl ca = buildCA(
         "SELECT sensor_id, avg(temp) FROM SensorReading -- no WHERE needed\nGROUP BY sensor_id");
-    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000);
+    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000, true);
     assertThat(result).isEqualTo(
         "SELECT sensor_id, avg(temp) FROM SensorReading -- no WHERE needed\nWHERE `ts` >= 1000 GROUP BY sensor_id");
   }
@@ -196,7 +196,7 @@ class BuildFilteredQueryTest {
     // A -- comment containing WHERE should not be treated as a top-level WHERE clause
     final ContinuousAggregateImpl ca = buildCA(
         "SELECT avg(temp) FROM SensorReading -- WHERE clause not needed\nGROUP BY sensor_id");
-    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000);
+    final String result = ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000, true);
     // Should insert before GROUP BY, not after comment's WHERE
     assertThat(result).isEqualTo(
         "SELECT avg(temp) FROM SensorReading -- WHERE clause not needed\nWHERE `ts` >= 1000 GROUP BY sensor_id");
@@ -211,7 +211,7 @@ class BuildFilteredQueryTest {
         "SensorReading", 3_600_000L, "hour",
         "outer.inner"); // dot in timestamp column name
 
-    assertThatThrownBy(() -> ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000))
+    assertThatThrownBy(() -> ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000, true))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("Unsafe timestamp column name");
   }

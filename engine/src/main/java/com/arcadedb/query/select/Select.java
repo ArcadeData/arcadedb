@@ -287,24 +287,35 @@ public class Select {
       throw new IllegalArgumentException("Operator '" + parsedOperatorName
           + "' is binary and requires a right operand: " + condition);
 
-    final Object left = parseJsonOperand(condition.get(0), true);
-    final Object right = unary ? null : parseJsonOperand(condition.get(2), false);
+    // #8167/#8173: THE KIND OF EACH OPERAND IS DETERMINED BY THE OPERATOR, NOT BY GUESSING FROM THE OPERAND'S OWN
+    // SHAPE. A LOGIC OPERATOR (and/or/not) JOINS CONDITIONS; EVERY OTHER OPERATOR TESTS A PROPERTY AGAINST A VALUE,
+    // AND A JSON ARRAY IN THAT RIGHT-HAND SLOT IS ALWAYS A LIST OF VALUES - THE RANGE OF A `between`, THE CANDIDATES
+    // OF AN `in`. TELLING THE TWO APART BY SHAPE INSTEAD (A 2/3-ELEMENT ARRAY WHOSE MIDDLE ELEMENT NAMES AN
+    // OPERATOR) WOULD MISREAD ANY VALUE LIST THAT HAPPENS TO CARRY AN OPERATOR KEYWORD IN THAT POSITION, SUCH AS
+    // `in ('red', 'in')` - A PLAUSIBLE TAG LIST. THE OPERATOR LEAVES NOTHING TO GUESS
+    final boolean logic = parsedOperator.logicOperator;
+    final Object left = parseJsonOperand(condition.get(0), logic, true);
+    final Object right = unary ? null : parseJsonOperand(condition.get(2), logic, false);
 
     return new SelectTreeNode(left, parsedOperator, adaptRightOperand(parsedOperator, right));
   }
 
   /**
-   * One operand of a JSON condition: a nested CONDITION array is its own subtree, {@code ":name"} a property,
-   * {@code "#name"} a parameter, anything else a literal. A literal is only legal on the right: the left of a
-   * condition is what is being tested.
+   * One operand of a JSON condition. Under a logic operator an array operand is a nested condition - a parenthesis,
+   * parsed into its own subtree; under any other operator it is a list of values. {@code ":name"} is a property and
+   * {@code "#name"} a parameter on either side; anything else is a literal, which is only legal on the right,
+   * because the left of a condition is what is being tested.
    */
-  private Object parseJsonOperand(final Object operand, final boolean leftSide) {
+  private Object parseJsonOperand(final Object operand, final boolean underLogicOperator, final boolean leftSide) {
     if (operand instanceof JSONArray array) {
-      if (leftSide || isConditionArray(array))
+      if (underLogicOperator)
         return parseJsonCondition(array);
-      // A VALUE array, not a condition: the range of a `between`, the candidates of an `in`. SelectTreeNode.toJSON()
-      // writes both as a plain JSON array of literals, and treating every right-hand array as a nested condition is
-      // what stopped those two operators round-tripping at all (found alongside #8173).
+      if (leftSide)
+        throw new IllegalArgumentException("Unsupported value " + array
+            + ": the left operand of a comparison must be a property or a parameter");
+      // SelectTreeNode.toJSON() writes a `between` range and an `in` candidate list as a plain JSON array of
+      // literals. Reading every right-hand array back as a nested condition is what stopped those two operators
+      // round-tripping at all (found alongside #8173).
       return array.toList();
     }
     if (operand instanceof String string && string.startsWith(":"))
@@ -316,19 +327,6 @@ public class Select {
     if (leftSide)
       throw new IllegalArgumentException("Unsupported value " + operand);
     return operand;
-  }
-
-  /**
-   * Whether a JSON array is a CONDITION - the one-element {@code run} wrapper, or a 2/3-element array whose middle
-   * element names an operator - rather than a list of values. Only the right-hand side of a condition can hold
-   * either, and the two are told apart by shape because the format gives them the same syntax.
-   */
-  private static boolean isConditionArray(final JSONArray array) {
-    if (array.length() == 1)
-      return array.get(0) instanceof JSONArray;
-    if (array.length() != 2 && array.length() != 3)
-      return false;
-    return array.get(1) instanceof String operatorName && SelectOperator.byName(operatorName) != null;
   }
 
   /**
