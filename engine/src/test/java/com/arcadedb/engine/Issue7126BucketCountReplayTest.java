@@ -50,7 +50,6 @@ class Issue7126BucketCountReplayTest extends TestHelper {
     return false;
   }
 
-
   @Override
   protected void beginTest() {
     database.getSchema().createDocumentType("Counted");
