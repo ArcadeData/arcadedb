@@ -30,6 +30,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.Locale;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -317,5 +318,51 @@ class DateUtilsTest {
     final OffsetDateTime millis = OffsetDateTime.of(2026, 1, 2, 3, 4, 5, 123_000_000, ZoneOffset.UTC);
     assertThat(DateUtils.getPrecisionFromValue(micros)).isEqualTo(ChronoUnit.MICROS);
     assertThat(DateUtils.getHigherPrecision(millis, micros)).isEqualTo(ChronoUnit.MICROS);
+  }
+
+  /**
+   * #8152: {@link DateUtils#toEpochMillis} is THE converter for an absolute moment - a time-bucket boundary, a
+   * continuous-aggregate watermark, a pushed-down time-range bound - and it has to read every representation the
+   * engine hands it, at UTC for a zone-less one.
+   */
+  @Test
+  void toEpochMillisReadsEveryDateTimeRepresentation() {
+    final long millis = 1_770_000_000_000L;
+    assertThat(DateUtils.toEpochMillis(millis)).isEqualTo(millis);
+    assertThat(DateUtils.toEpochMillis(new java.util.Date(millis))).isEqualTo(millis);
+    assertThat(DateUtils.toEpochMillis(Instant.ofEpochMilli(millis))).isEqualTo(millis);
+    // The representation ts.timeBucket() actually returns, and the one whose absence caused the defect.
+    assertThat(DateUtils.toEpochMillis(LocalDateTime.ofInstant(Instant.ofEpochMilli(millis), ZoneOffset.UTC)))
+        .isEqualTo(millis);
+    assertThat(DateUtils.toEpochMillis(ZonedDateTime.ofInstant(Instant.ofEpochMilli(millis), ZoneOffset.UTC)))
+        .isEqualTo(millis);
+    assertThat(DateUtils.toEpochMillis(OffsetDateTime.ofInstant(Instant.ofEpochMilli(millis), ZoneOffset.UTC)))
+        .isEqualTo(millis);
+    assertThat(DateUtils.toEpochMillis("2026-02-02T02:40:00")).isEqualTo(millis);
+  }
+
+  /**
+   * A bare numeric string is an absolute moment here, so its epoch precision comes from its digit count - the same
+   * reading {@code BinaryComparator} uses (#5956). Taking the raw digits as milliseconds would make a pushed-down
+   * range bound disagree with the generic filter evaluating the very same predicate (found in review on #8152).
+   */
+  @Test
+  void toEpochMillisInfersTheEpochPrecisionOfANumericString() {
+    assertThat(DateUtils.toEpochMillis("1770000000")).isEqualTo(1_770_000_000_000L);       // seconds
+    assertThat(DateUtils.toEpochMillis("1770000000000")).isEqualTo(1_770_000_000_000L);    // millis
+    assertThat(DateUtils.toEpochMillis("1770000000000000")).isEqualTo(1_770_000_000_000L); // micros
+    assertThat(DateUtils.toEpochMillis("3600")).isEqualTo(3_600_000L);
+  }
+
+  /**
+   * #8152: THE point of this converter. A silent sentinel for a type it cannot read is what let a return-type
+   * change become a data defect - every bucket read as the epoch, which the refresher could not tell from "no
+   * watermark yet".
+   */
+  @Test
+  void toEpochMillisRefusesWhatItCannotRead() {
+    assertThatThrownBy(() -> DateUtils.toEpochMillis(null)).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> DateUtils.toEpochMillis(Boolean.TRUE)).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> DateUtils.toEpochMillis(new Object())).isInstanceOf(IllegalArgumentException.class);
   }
 }

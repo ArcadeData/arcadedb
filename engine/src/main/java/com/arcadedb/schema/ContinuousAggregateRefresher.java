@@ -53,8 +53,11 @@ public class ContinuousAggregateRefresher {
     try {
       final String backingTypeName = ca.getBackingTypeName();
       final String bucketColumn = ca.getBucketColumn();
-      final long watermark = ca.getWatermarkTs();
-      final boolean watermarkSet = ca.isWatermarkSet();
+      // ONE read of the pair: the flag decides whether to delete and the timestamp decides what, so reading them
+      // through two separate getters could straddle a concurrent advance (found in review).
+      final ContinuousAggregateImpl.Watermark startWatermark = ca.currentWatermark();
+      final long watermark = startWatermark.timestamp();
+      final boolean watermarkSet = startWatermark.set();
 
       // Validate interpolated names to prevent backtick injection
       if (!SAFE_COLUMN_NAME.matcher(backingTypeName).matches())
@@ -112,7 +115,8 @@ public class ContinuousAggregateRefresher {
       // Persist updated watermark only if it actually advanced.
       // If saveConfiguration fails, revert the in-memory watermark to the original value
       // so the next refresh re-processes the same window (delete-first design makes it safe).
-      if (ca.isWatermarkSet() && (!watermarkSet || ca.getWatermarkTs() > watermark)) {
+      final ContinuousAggregateImpl.Watermark endWatermark = ca.currentWatermark();
+      if (endWatermark.set() && (!watermarkSet || endWatermark.timestamp() > watermark)) {
         final LocalSchema schema = (LocalSchema) database.getSchema();
         try {
           schema.saveConfiguration();

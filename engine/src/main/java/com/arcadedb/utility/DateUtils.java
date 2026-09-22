@@ -330,13 +330,21 @@ public class DateUtils {
    * - a value indistinguishable from "no watermark yet" - so its watermark never advanced and every refresh appended
    * a second copy of the whole aggregate. A SILENT SENTINEL IS WHAT TURNED A TYPE CHANGE INTO A DATA DEFECT, so this
    * one throws on a type it does not know rather than answering with a number that means something else.
+   * <p>
+   * A bare numeric {@link String} has its own epoch precision inferred from its digit count
+   * ({@link #dateTimeToTimestampInferringStringPrecision}), because every caller here is asking for an ABSOLUTE
+   * MOMENT - a bucket boundary, a time-range bound - which is the reading {@code BinaryComparator} already uses for
+   * the same string (#5956). Taking the raw digits as milliseconds instead would make a pushed-down range bound
+   * disagree with the generic filter evaluating the very same predicate.
    *
    * @throws IllegalArgumentException when {@code value} is {@code null}, or of a type that carries no date/time
    */
   public static long toEpochMillis(final Object value) {
     if (value == null)
       throw new IllegalArgumentException("Cannot convert a null value to a timestamp");
-    final Long millis = dateTimeToTimestamp(null, value, ChronoUnit.MILLIS);
+    final Long millis = value instanceof String
+        ? dateTimeToTimestampInferringStringPrecision(value, ChronoUnit.MILLIS)
+        : dateTimeToTimestamp(null, value, ChronoUnit.MILLIS);
     if (millis == null)
       throw new IllegalArgumentException(
           "Cannot convert value of type '" + value.getClass().getName() + "' to a timestamp in milliseconds");
