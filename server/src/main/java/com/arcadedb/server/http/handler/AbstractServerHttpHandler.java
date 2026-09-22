@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.ProtocolContext;
+import com.arcadedb.engine.timeseries.TimeSeriesWalkCoarsenedException;
 import com.arcadedb.exception.*;
 import com.arcadedb.index.fulltext.FullTextQueryParseException;
 import com.arcadedb.log.LogManager;
@@ -977,6 +978,19 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return;
     }
 
+    // 503: a TimeSeries read was overtaken by a DOWNSAMPLE, which replaced the rows it had not reached yet with
+    // coarser ones (issue #8166). Transient by construction in the same sense the two arms around it are:
+    // downsampling a series is a maintenance event, not a per-request one, so the identical request re-issued
+    // returns a whole answer at one resolution. It has to be mapped HERE rather than left to the generic 500,
+    // because that 500 is precisely the outcome the refusal exists to replace - a client whose retry policy keys
+    // on the status code cannot tell it apart from a real server fault, and the whole point of raising instead of
+    // answering short was that the caller be able to act on it.
+    final TimeSeriesWalkCoarsenedException coarsened = firstOf(e, cause, TimeSeriesWalkCoarsenedException.class);
+    if (coarsened != null) {
+      sendRetryableResponse(exchange, coarsened);
+      return;
+    }
+
     // 503: an HA snapshot-reinstall resync (issue #5977 pattern) closed and reinstalled the database out from
     // under a handle a request had already resolved (or resolved while one was in flight). The condition is
     // transient by construction - a handle resolved a moment later sees the reinstalled database - so it must be
@@ -1194,8 +1208,9 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   }
 
   /**
-   * Sends a 503 for a failure the caller can retry as-is - a Raft conflict or a resync race, both transient by
-   * construction. Shared by the {@link NeedRetryException} and {@link DatabaseIsClosedException} arms of
+   * Sends a 503 for a failure the caller can retry as-is - a Raft conflict, a resync race, or a TimeSeries read
+   * a downsample overtook, all transient by construction. Shared by the {@link NeedRetryException},
+   * {@link DatabaseIsClosedException} and {@link TimeSeriesWalkCoarsenedException} arms of
    * {@link #sendMappedErrorResponse}.
    */
   private void sendRetryableResponse(final HttpServerExchange exchange, final Throwable retryable) {

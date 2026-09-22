@@ -31,10 +31,38 @@ public class ExporterContext {
    */
   public final AtomicLong skippedRecords = new AtomicLong();
   /**
+   * TIMESERIES types whose samples are in the export but INCOMPLETE, because a downsample replaced the rows the
+   * walk had not reached yet and the engine refused to mix two resolutions (issue #8166).
+   * <p>
+   * Counted beside {@link #skippedRecords} rather than instead of it - the export must still end as a failed
+   * outcome - but reported separately because the two are different shapes, which the review of PR #8197 asked
+   * to have written down. A skipped record produced NO output: it threw while being serialized and nothing of it
+   * reached the file. A partial type has rows on disk under its own name, every one of them real, just fewer
+   * than the type holds and at a finer resolution than the store now keeps. A consumer that reads
+   * {@code skippedRecords > 0} as "there is nothing for this" would be wrong about a type named here, so it is
+   * named here.
+   */
+  public final AtomicLong partialTimeSeriesTypes = new AtomicLong();
+  /**
    * TIMESERIES samples written to the export (issue #7032). A TimeSeries type owns no record bucket, so its rows
    * are counted here rather than under {@link #documents}.
    */
   public final AtomicLong timeSeriesSamples = new AtomicLong();
+  /**
+   * Sealed TIMESERIES blocks a retention pass removed from under the export's own read (issue #8166).
+   * <p>
+   * Counted and reported rather than made a failure, unlike {@link #skippedRecords}. Retention dropping blocks
+   * older than the policy while a long export runs is legitimate, and the samples in them are genuinely gone
+   * rather than somewhere else - so the export is not incomplete against the database as it now stands, it is
+   * merely not the snapshot an operator reading the summary may assume. What it must not be is SILENT, which is
+   * what it was: the engine already counted the blocks, and the only reader of that count anywhere in the tree
+   * was the PromQL/HTTP metrics surface, while {@code EXPORT DATABASE} passed no metrics at all.
+   * <p>
+   * The other way a block can leave the directory mid-read - a DOWNSAMPLE coarsening it - does not reach this
+   * counter: the engine raises {@code TimeSeriesWalkCoarsenedException} for it, because those rows were replaced
+   * rather than removed and no mixed-resolution answer is a consistent one.
+   */
+  public final AtomicLong vanishedTimeSeriesBlocks = new AtomicLong();
   public       long       startedOn;
   public       long       lastLapOn;
   public       long       lastDocuments;
