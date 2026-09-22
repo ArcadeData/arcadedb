@@ -188,6 +188,15 @@ class Issue8166ExportCountsVanishedBlocksTest {
       assertThat(tsTypesInExport())
           .as("which is the point of the distinction: there really are rows on disk under its name")
           .contains("Reading");
+
+      // THE invariant, and the one a `continue` past the trailing flush broke: every row the visitor counted is
+      // a row in the file. The rows buffered since the last chunk boundary - up to TIMESERIES_CHUNK_SIZE - 1 of
+      // them - are already counted in timeSeriesSamples when the refusal fires, so dropping them leaves the
+      // summary claiming samples the archive does not hold (review of PR #8197). Asserted across both types,
+      // because that is the number an operator reads.
+      assertThat(tsSamplesInExport())
+          .as("a sample counted but not written is exactly the silently-short answer this PR is about")
+          .isEqualTo(context.timeSeriesSamples.get());
       assertThat(context.timeSeriesSamples.get())
           .as("and the OTHER type was still exported rather than lost with it").isGreaterThan(0);
 
@@ -235,6 +244,22 @@ class Issue8166ExportCountsVanishedBlocksTest {
     source.commit();
     engine.compactAll();
     return engine;
+  }
+
+  /** Every TIMESERIES sample actually present in the written archive, across all types. */
+  private static long tsSamplesInExport() throws IOException {
+    long samples = 0;
+    try (final BufferedReader reader = new BufferedReader(new InputStreamReader(
+        new GZIPInputStream(new FileInputStream(FILE)), StandardCharsets.UTF_8))) {
+      for (String line = reader.readLine(); line != null; line = reader.readLine()) {
+        if (line.isBlank())
+          continue;
+        final JSONObject json = new JSONObject(line);
+        if ("ts".equals(json.getString("t")))
+          samples += json.getJSONObject("c").getJSONArray("s").length();
+      }
+    }
+    return samples;
   }
 
   /** The TIMESERIES type names that actually have a {@code "ts"} line in the written archive. */
