@@ -18,6 +18,7 @@
  */
 package com.arcadedb.serializer;
 
+import com.arcadedb.database.RID;
 import com.arcadedb.utility.CollectionUtils;
 import org.junit.jupiter.api.Test;
 
@@ -29,6 +30,7 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #7879: {@code CollectionUtils.compare(Map, Map)} was hardened against a heterogeneous key set (#7111) but
@@ -102,6 +104,61 @@ class Issue7879MixedTypeValueComparisonTest {
   @Test
   void collectionUtilsCompareListDoesNotThrowOnMixedElementClasses() {
     assertThatNoException().isThrownBy(() -> CollectionUtils.compare(List.of("x"), List.of(1)));
+  }
+
+  /**
+   * CodeRabbit review follow-up: the same-class fast path cast every pair straight to Comparable without checking
+   * that the class actually implements it, so two instances of a non-Comparable class threw ClassCastException
+   * instead of reaching the class-name tiebreak two arms down. A same-class pair has no other ordering
+   * information available, so the tiebreak answers 0 - consistent, not a regression.
+   */
+  @Test
+  void sameClassNonComparablePairFallsBackInsteadOfThrowing() {
+    final Object a = new Object();
+    final Object b = new Object();
+    assertThat(a.getClass()).isEqualTo(b.getClass());
+    assertThatNoException().isThrownBy(() -> BinaryComparator.compareTo(a, b));
+    assertThat(BinaryComparator.compareTo(a, b)).isZero();
+  }
+
+  /**
+   * CodeRabbit review follow-up: {@link RID#compareTo(Object)} deliberately compares against a {@code String}
+   * operand by parsing it (issue #6188), so {@code RID vs its own string spelling} must answer 0 in BOTH
+   * directions. The forward direction (RID first) always worked because RID's own compareTo runs directly, but
+   * the reverse (String first) used to fall straight to the class-name tiebreak the instant
+   * {@code String#compareTo(Object)} blind-cast the RID and threw - which does not equal 0 for two different
+   * classes, breaking antisymmetry. The fallback now retries the reverse direction (negated) before giving up.
+   */
+  @Test
+  void ridAndItsStringSpellingCompareEqualInEitherOrder() {
+    final RID rid = new RID(3, 7);
+    final String spelling = rid.toString();
+
+    assertThat(BinaryComparator.compareTo(rid, spelling)).isZero();
+    assertThat(BinaryComparator.compareTo(spelling, rid)).isZero();
+  }
+
+  @Test
+  void ridAndAMismatchedStringSpellingStayAntisymmetric() {
+    final RID rid = new RID(3, 7);
+    final String other = new RID(3, 9).toString();
+
+    final int forward = BinaryComparator.compareTo(rid, other);
+    final int reverse = BinaryComparator.compareTo(other, rid);
+    assertThat(forward).isNotZero();
+    assertThat(Integer.signum(forward)).isEqualTo(-Integer.signum(reverse));
+  }
+
+  /**
+   * The reverse-direction retry must still only absorb ClassCastException: a malformed, non-RID-shaped String
+   * reaches RID#compareTo(String) exactly as it would have in the forward direction, and that still throws
+   * (issue #6188) rather than being swallowed into a false "not equal" class-name answer.
+   */
+  @Test
+  void malformedStringReverseAgainstRidStillThrows() {
+    final RID rid = new RID(3, 7);
+    assertThatThrownBy(() -> BinaryComparator.compareTo("not-a-rid", rid))
+        .isInstanceOfAny(IllegalArgumentException.class, IndexOutOfBoundsException.class);
   }
 
   /** The three repro lines from the issue report, direct on the utility. */
