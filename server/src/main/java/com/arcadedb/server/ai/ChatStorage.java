@@ -440,17 +440,20 @@ public class ChatStorage {
    * only thing that constructs a {@code ChatStorage} outside tests, supplies them.
    */
   private boolean migrationRefusedByAccountList(final String legacyName, final String username, final File ambiguityMarker) {
-    switch (legacyNameOwnership(legacyName, username)) {
-    case COLLISION:
-      // Recorded here rather than inside the classifier, so the one side effect on this path sits at
-      // the point that acts on the answer instead of hiding behind a query (review on PR #8186).
-      markPermanentlyAmbiguous(ambiguityMarker, legacyName);
-      return true;
-    case UNKNOWN:
-      return legacyName.indexOf('_') >= 0;
-    default:
-      return false;
-    }
+    // Exhaustive over the enum with no default branch, deliberately (review on PR #8186): SOLE is the
+    // fail-OPEN answer here, so a fourth LegacyNameOwnership value must not be able to inherit it by
+    // falling through. Without a default this stops compiling instead, which is the loudest a future
+    // change to this security control can be told to come back and decide.
+    return switch (legacyNameOwnership(legacyName, username)) {
+      case COLLISION -> {
+        // Recorded here rather than inside the classifier, so the one side effect on this path sits at
+        // the point that acts on the answer instead of hiding behind a query.
+        markPermanentlyAmbiguous(ambiguityMarker, legacyName);
+        yield true;
+      }
+      case UNKNOWN -> legacyName.indexOf('_') >= 0;
+      case SOLE -> false;
+    };
   }
 
   /**
