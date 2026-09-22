@@ -401,9 +401,10 @@ public class WALFile extends LockContext {
   /**
    * Whether this file is still the one its pool slot writes to, as opposed to having been rotated out and
    * left waiting for its pending pages to flush. Used by the WAL-pool diagnostic in
-   * {@code TransactionManager.writeTransactionToWAL} (#7768).
+   * {@code TransactionManager.writeTransactionToWAL} (#7768). Package-private, like {@link #acquiredLock()}
+   * above it: nothing outside {@code com.arcadedb.engine} has any use for it.
    */
-  public boolean isActive() {
+  boolean isActive() {
     return active;
   }
 

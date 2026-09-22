@@ -336,6 +336,16 @@ public class TransactionManager {
    * Offers the transaction to one WAL file. Returns false - without writing - when the file is absent, is
    * being rotated out ({@code !active}) or has been closed; {@link WALFile#acquire} makes that decision under
    * the file's own monitor so the answer cannot race a concurrent close.
+   * <p>
+   * A REFUSAL is what the fallback in {@link #writeTransactionToWAL} is for; a THROW deliberately is not.
+   * If the write itself fails - notably when {@code WALFile.reopenChannel} refuses because the file has
+   * vanished from disk, which {@code acquire} rethrows as an unchecked {@code WALException} - that
+   * propagates out of {@code writeTransactionToWAL} instead of quietly landing the transaction in a
+   * different file. That is the intended scope boundary, not an oversight: a WAL file disappearing under a
+   * live instance is the #7479 case, where something outside this process is mutating this database's
+   * files, and the next housekeeping tick fences the whole database over it within a second. Writing MORE
+   * data in the meantime, to any file, is the opposite of what that fence is for, so this one commit fails
+   * loud. Only a cleanly refused slot - closed, absent or mid-rotation - is routed elsewhere.
    */
   private boolean tryWriteTransactionToWALFile(final WALFile file, final List<MutablePage> pages,
       final WALFile.FlushType sync, final long txId, final Binary bufferChanges) {
