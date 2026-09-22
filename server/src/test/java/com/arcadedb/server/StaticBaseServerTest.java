@@ -185,6 +185,8 @@ public abstract class StaticBaseServerTest {
     ServerSocket socket = null;
     try {
       socket = new ServerSocket();
+      // Deliberately no setReuseAddress(true): a port still in TIME_WAIT from a server that just stopped counts as
+      // busy here, so the probe prefers a port nothing has touched recently over one it would have to share.
       socket.bind(new InetSocketAddress(port));
       return socket;
     } catch (final IOException busy) {
