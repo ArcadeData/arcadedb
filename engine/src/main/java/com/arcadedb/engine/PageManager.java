@@ -522,26 +522,65 @@ public class PageManager extends LockContext {
       throws IOException, InterruptedException {
     // #8111: waitForCurrentFlushToComplete alone only waits for a batch ALREADY IN FLIGHT - it is a no-op
     // when the flush thread has not yet picked up the pages a commit just queued. Suspending right after that
-    // leaves those pages sitting in RAM, never written to disk, for the whole window the callback runs in: a
-    // full backup taken from the frozen files then archives a bucket at whatever size it had BEFORE the most
-    // recent commit, sometimes a bare newly-created file with no data pages in it at all. The point-in-time
-    // snapshot path (openSnapshot, above) already carries this exact lesson in its own step 1 - "drains the
-    // flush queue COMPLETELY - not just the in-flight batch" - for the same reason; this is the same drain,
-    // run before the suspension takes hold so it can still make progress, matching that path's ordering.
+    // used to leave those pages sitting in RAM, never written to disk, for the whole window the callback runs
+    // in: a full backup taken from the frozen files then archived a bucket at whatever size it had BEFORE the
+    // most recent commit, sometimes a bare newly-created file with no data pages in it at all.
+    //
+    // STEP 1: THE BULK DRAIN, DELIBERATELY OUTSIDE EVERY LOCK - the same first step openSnapshot's own barrier
+    // takes, and for the same reason (it is the long part, and committers must not queue behind it).
     if (!waitAllPagesOfDatabaseAreFlushed(database))
       throw new IOException(
           "Cannot freeze the files of database '" + database.getName()
               + "': the flush queue did not drain within the timeout, so the on-disk image would not reflect "
               + "the last committed transaction(s)");
 
+    // STEP 2: THE RESIDUAL DRAIN, WITH PUBLICATION EXCLUDED - reusing openSnapshot's own barrier exactly,
+    // rather than a hand-rolled approximation of it. A commit between step 1 finishing and the suspension
+    // flag actually being observed by the flush thread is not closed by waitForCurrentFlushToComplete below:
+    // that call only waits while nextPagesToFlush still refers to a batch of this database, and a batch that
+    // loses the isSuspended(db) race gets DEFERRED - not written - before nextPagesToFlush is cleared, so the
+    // wait would report "done" over a page that never reached disk. publishPages holds this same lock across
+    // both the synchronous page write and the flush enqueue, so nothing can feed the pipeline while it is
+    // held, and the residual drain below converges by construction - exactly openSnapshot's own reasoning for
+    // needing this second, locked drain rather than trusting the first one alone.
+    //
+    // Both locks are released immediately after the suspension is acquired, unlike openSnapshot's barrier:
+    // this callback can run for as long as a whole backup, and holding a JVM-wide lock for that would block
+    // every committer and Raft apply in the process, not just this database's - the suspension itself is what
+    // throttles this database's own writers for the callback's duration, same as before this fix.
+    final ReentrantReadWriteLock applyLock = ((DatabaseInternal) database).getTransactionManager().getApplyLock();
+    applyLock.writeLock().lock();
+    try {
+      lock();
+      try {
+        final long deadline = System.currentTimeMillis() + SNAPSHOT_BARRIER_MAX_MILLIS;
+
+        if (!flushThread.waitPendingPagesOfDatabaseUntil(database, deadline))
+          LogManager.instance().log(this, Level.WARNING,
+              "Freezing the files of database '%s' for a backup: the flush pipeline did not settle within %d ms "
+                  + "under the publication lock, the frozen point may be behind the last committed transaction",
+              null, database.getName(), SNAPSHOT_BARRIER_MAX_MILLIS);
+
+        if (!flushThread.trySuspendUntil(database, deadline))
+          // A CONCURRENT RESUME IS FLUSHING ITS DEFERRED BACKLOG AND WOULD KEEP EVERY COMMITTER IN THE JVM
+          // WAITING BEHIND THIS LOCK - GIVE UP INSTEAD OF PROLONGING THAT (same tradeoff openSnapshot makes).
+          throw new IOException("Cannot freeze the files of database '" + database.getName()
+              + "': the page flush could not be suspended within " + SNAPSHOT_BARRIER_MAX_MILLIS
+              + " ms because another suspender is still resuming");
+      } finally {
+        unlock();
+      }
+    } finally {
+      applyLock.writeLock().unlock();
+    }
+
     // #5068: the suspension is REFCOUNTED, so every caller (backup, verify, HA snapshot serving, nested
     // scopes per #4958) owns its whole window even when the windows overlap on the same database: flushing
     // is resumed (and the deferred batches flushed) only when the LAST suspender exits. The wait for the
     // in-flight batch runs INSIDE the try so an interrupt during the wait still releases this caller's
-    // reference; it is cheap for non-first suspenders (the flush thread is already parked deferring). It is
-    // also what catches the narrow window between the drain above finishing and this suspension taking
-    // hold, the same way the snapshot path's own second drain (under its locks) catches its equivalent gap.
-    flushThread.setSuspended(database, true);
+    // reference; it is cheap for non-first suspenders (the flush thread is already parked deferring), and
+    // covers only the batch already in flight when trySuspendUntil returned - the residual drain above is
+    // what guarantees there is nothing else left to catch.
     try {
       flushThread.waitForCurrentFlushToComplete(database);
       CodeUtils.executeIgnoringExceptions(callback, "Error during suspend flush", true);
