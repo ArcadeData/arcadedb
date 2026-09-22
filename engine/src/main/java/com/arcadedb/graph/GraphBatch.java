@@ -466,7 +466,9 @@ public class GraphBatch implements AutoCloseable {
     // are exactly what a fresh context would initialize from.
     final TransactionContext tx = database.getTransactionIfExists();
     if (tx != null) {
-      savedUseWAL = tx.isUseWAL();
+      // The session's setting, not the effective one: a per-transaction override active right now must not be
+      // made permanent by the restore on close() (issue #8129).
+      savedUseWAL = tx.isSessionUseWAL();
       savedWALFlush = tx.getWALFlush();
     } else {
       savedUseWAL = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_WAL);

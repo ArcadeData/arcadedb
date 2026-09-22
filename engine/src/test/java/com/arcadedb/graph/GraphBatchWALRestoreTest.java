@@ -116,6 +116,34 @@ class GraphBatchWALRestoreTest extends TestHelper {
     assertThat(failure.get()).as("GraphBatch on a thread without a TransactionContext").isNull();
   }
 
+  @Test
+  void aPerTransactionOverrideActiveAtConstructionIsNotRestoredIntoTheSession() {
+    // Issue #8129: the batch saves the WAL setting to put it back on close(). Saving the EFFECTIVE value would turn a
+    // one-transaction override that happened to be active at construction into the session's permanent setting.
+    final DatabaseInternal db = (DatabaseInternal) database;
+
+    database.begin();
+    db.getTransaction().setUseWALForThisTransaction(false);
+    final GraphBatch batch = GraphBatch.builder(database).withWAL(false).withWALFlush(WALFile.FlushType.NO).build();
+    database.commit();
+    try {
+      database.begin();
+      final MutableVertex v1 = batch.newVertex(VERTEX_TYPE).save();
+      final MutableVertex v2 = batch.newVertex(VERTEX_TYPE).save();
+      database.commit();
+      batch.newEdge(v1.getIdentity(), EDGE_TYPE, v2.getIdentity());
+    } finally {
+      batch.close();
+    }
+
+    database.begin();
+    try {
+      assertThat(db.getTransaction().isUseWAL()).as("useWAL after GraphBatch.close()").isTrue();
+    } finally {
+      database.rollback();
+    }
+  }
+
   private void runBatch() {
     try (final GraphBatch batch = GraphBatch.builder(database)
         .withWAL(false)

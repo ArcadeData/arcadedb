@@ -1545,8 +1545,10 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
             ownTx = database.getTransaction();
             // Read AFTER begin() on purpose: TransactionContext.begin()/reset() never touch these two, so this is
-            // still the value that was in force before this method ran - which is what has to go back.
-            previousUseWAL = ownTx.isUseWAL();
+            // still the value that was in force before this method ran - which is what has to go back. The session's
+            // setting rather than the effective one, so a per-transaction override can never be restored into it
+            // (issue #8129).
+            previousUseWAL = ownTx.isSessionUseWAL();
             previousWALFlush = ownTx.getWALFlush();
 
             ownTx.setUseWAL(useWAL);
