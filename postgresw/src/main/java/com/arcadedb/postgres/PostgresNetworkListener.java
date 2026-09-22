@@ -125,7 +125,8 @@ public class PostgresNetworkListener extends Thread {
 
   @Override
   public String toString() {
-    return serverSocket.getLocalSocketAddress().toString();
+    final ServerSocket socket = serverSocket;
+    return socket != null ? String.valueOf(socket.getLocalSocketAddress()) : getName();
   }
 
   /**
@@ -171,7 +172,25 @@ public class PostgresNetworkListener extends Thread {
             "'");
   }
 
+  /**
+   * Parses a single port, a range {@code <from>-<to>} or a comma-separated list. A malformed value is refused with a
+   * message naming it: since {@code arcadedb.postgres.port} became a string setting to carry a range (issue #8142) it
+   * is no longer validated when it is set, and a bare {@link NumberFormatException} out of the listener's constructor
+   * would not say which setting was wrong.
+   */
   private static int[] getPorts(final String iHostPortRange) {
+    try {
+      final int[] ports = parsePorts(iHostPortRange);
+      if (ports.length == 0)
+        throw new IllegalArgumentException("empty port range");
+      return ports;
+    } catch (final RuntimeException e) {
+      throw new ServerException("Invalid Postgres port setting '" + iHostPortRange
+          + "': expected a port, a range '<from>-<to>' or a comma-separated list of ports", e);
+    }
+  }
+
+  private static int[] parsePorts(final String iHostPortRange) {
     final int[] ports;
 
     if (iHostPortRange.contains(",")) {
@@ -186,6 +205,8 @@ public class PostgresNetworkListener extends Thread {
       final String[] limits = iHostPortRange.split("-");
       final int lowerLimit = Integer.parseInt(limits[0].trim());
       final int upperLimit = Integer.parseInt(limits[1].trim());
+      if (limits.length != 2 || upperLimit < lowerLimit)
+        throw new IllegalArgumentException("malformed port range");
       ports = new int[upperLimit - lowerLimit + 1];
       for (int i = 0; i < upperLimit - lowerLimit + 1; ++i)
         ports[i] = lowerLimit + i;

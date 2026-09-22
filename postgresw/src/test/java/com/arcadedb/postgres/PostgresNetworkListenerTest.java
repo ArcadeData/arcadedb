@@ -18,11 +18,16 @@
  */
 package com.arcadedb.postgres;
 
+import com.arcadedb.server.ServerException;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Unit tests for PostgresNetworkListener, specifically the port parsing logic.
@@ -74,6 +79,22 @@ class PostgresNetworkListenerTest {
     assertThat(invokeGetPorts(" 5432 ")).containsExactly(5432);
     assertThat(invokeGetPorts("5432, 5434")).containsExactly(5432, 5434);
     assertThat(invokeGetPorts("5432 - 5434")).containsExactly(5432, 5433, 5434);
+  }
+
+  /**
+   * The setting is a string now, so a malformed value is no longer refused when it is set: the parse must refuse it
+   * with a message naming the value rather than a bare NumberFormatException (issue #8142).
+   */
+  @ParameterizedTest
+  @ValueSource(strings = { "", "abc", "5432-", "5435-5432", "5432,x", "5432-5433-5434" })
+  void getPortsRefusesMalformedValuesNamingThem(final String value) throws Exception {
+    final Method method = PostgresNetworkListener.class.getDeclaredMethod("getPorts", String.class);
+    method.setAccessible(true);
+    assertThatThrownBy(() -> method.invoke(null, value))
+        .isInstanceOf(InvocationTargetException.class)
+        .cause()
+        .isInstanceOf(ServerException.class)
+        .hasMessageContaining("'" + value + "'");
   }
 
   @Test
