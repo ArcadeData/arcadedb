@@ -72,7 +72,7 @@ class ClusterInternalAuthTest extends BaseGraphServerTest {
   @Test
   void clusterTokenHeaderAloneWithoutUserHeaderIsRejected() throws Exception {
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(URI.create("http://localhost:2480/api/v1/command/" + getDatabaseName()))
+        .uri(URI.create(getServerHttpUrl(0, "/api/v1/command/" + getDatabaseName())))
         .header("Content-Type", "application/json")
         .header("X-ArcadeDB-Cluster-Token", CLUSTER_TOKEN)
         .POST(HttpRequest.BodyPublishers.ofString("{\"language\":\"sql\",\"command\":\"SELECT 1\"}"))
@@ -84,7 +84,7 @@ class ClusterInternalAuthTest extends BaseGraphServerTest {
   private HttpResponse<String> sendWithInternalHeaders(final String clusterToken, final String userName)
       throws Exception {
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(URI.create("http://localhost:2480/api/v1/command/" + getDatabaseName()))
+        .uri(URI.create(getServerHttpUrl(0, "/api/v1/command/" + getDatabaseName())))
         .header("Content-Type", "application/json")
         .header("X-ArcadeDB-Cluster-Token", clusterToken)
         .header("X-ArcadeDB-Forwarded-User", userName)

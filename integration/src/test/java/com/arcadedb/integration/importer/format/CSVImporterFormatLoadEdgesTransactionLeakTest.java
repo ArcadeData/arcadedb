@@ -40,7 +40,9 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
+import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 
@@ -249,6 +251,92 @@ class CSVImporterFormatLoadEdgesTransactionLeakTest {
     assertThat(context.createdEdges.get())
         .as("the report must not credit the import with the batch the failed commit never wrote")
         .isZero();
+  }
+
+  /**
+   * Wraps a real {@link DatabaseInternal} so its very first {@code commit()} call throws {@code failure}
+   * BEFORE delegating to the real one - unlike {@link #databaseWhoseCommitFails()} above, which rolls back
+   * first and so always leaves {@code isTransactionActive()} false regardless of what the caller does with
+   * its own {@code txOpen} bookkeeping. This is the shape a real failure takes on the OUTERMOST transaction:
+   * {@code LocalDatabase.commit()}'s {@code finally} block calls
+   * {@code DatabaseContext.DatabaseContextTL#popIfNotLastTransaction()}, which pops a nested transaction but
+   * deliberately leaves the last (outermost) one on the stack - so a commit that throws on it leaves the
+   * transaction genuinely still active, with {@code txOpen} the only thing that says otherwise (issue #8122).
+   */
+  private static DatabaseInternal commitFailsOnFirstCallWithoutPopping(final DatabaseInternal real, final RuntimeException failure) {
+    final InvocationHandler handler = new InvocationHandler() {
+      private boolean commitCalled = false;
+
+      @Override
+      public Object invoke(final Object proxy, final Method method, final Object[] args) throws Throwable {
+        if ("commit".equals(method.getName()) && (args == null || args.length == 0) && !commitCalled) {
+          commitCalled = true;
+          throw failure;
+        }
+        try {
+          return method.invoke(real, args);
+        } catch (final InvocationTargetException e) {
+          throw e.getCause();
+        }
+      }
+    };
+
+    return (DatabaseInternal) Proxy.newProxyInstance(DatabaseInternal.class.getClassLoader(), new Class<?>[] { DatabaseInternal.class },
+        handler);
+  }
+
+  /**
+   * Reproduces issue #8122: with no transaction active on entry, {@code loadEdges()}'s own
+   * {@code database.begin()} opens the OUTERMOST transaction, so a periodic commit that fails on it must be
+   * rolled back explicitly - the {@code finally} block's {@code popIfNotLastTransaction()} will not do it.
+   */
+  @Test
+  void aFailedPeriodicCommitOnTheOutermostTransactionIsRolledBackNotLeaked() throws Exception {
+    final CSVImporterFormat format = new CSVImporterFormat();
+    final ImporterSettings settings = edgeSettings();
+    settings.commitEvery = 1;
+    final SourceSchema sourceSchema = schemaFor(format, settings);
+    final ImporterContext context = new ImporterContext();
+
+    final RuntimeException commitFailure = new RuntimeException("simulated periodic commit failure");
+    final DatabaseInternal failingOnCommit = commitFailsOnFirstCallWithoutPopping((DatabaseInternal) database, commitFailure);
+
+    final Parser loadParser = csvParserOver("from,to\nv1,v2\nv2,v1\n");
+
+    assertThatThrownBy(() -> format.load(sourceSchema, AnalyzedEntity.EntityType.EDGE, loadParser, failingOnCommit, context, settings))
+        .as("a commit failure must propagate")
+        .isSameAs(commitFailure);
+
+    assertThat(database.isTransactionActive())
+        .as("the outermost transaction the failed periodic commit left on the stack must have been rolled back, "
+            + "not leaked as still active")
+        .isFalse();
+  }
+
+  /**
+   * Same reproduction as above, but with {@code commitEvery} higher than the row count so the failure lands
+   * on the TRAILING commit instead of the periodic one.
+   */
+  @Test
+  void aFailedTrailingCommitOnTheOutermostTransactionIsRolledBackNotLeaked() throws Exception {
+    final CSVImporterFormat format = new CSVImporterFormat();
+    final ImporterSettings settings = edgeSettings();
+    final SourceSchema sourceSchema = schemaFor(format, settings);
+    final ImporterContext context = new ImporterContext();
+
+    final RuntimeException commitFailure = new RuntimeException("simulated trailing commit failure");
+    final DatabaseInternal failingOnCommit = commitFailsOnFirstCallWithoutPopping((DatabaseInternal) database, commitFailure);
+
+    final Parser loadParser = csvParserOver("from,to\nv1,v2\n");
+
+    assertThatThrownBy(() -> format.load(sourceSchema, AnalyzedEntity.EntityType.EDGE, loadParser, failingOnCommit, context, settings))
+        .as("a commit failure must propagate")
+        .isSameAs(commitFailure);
+
+    assertThat(database.isTransactionActive())
+        .as("the outermost transaction the failed trailing commit left on the stack must have been rolled back, "
+            + "not leaked as still active")
+        .isFalse();
   }
 
 }

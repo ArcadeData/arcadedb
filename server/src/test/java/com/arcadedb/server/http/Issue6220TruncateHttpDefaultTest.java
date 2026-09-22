@@ -71,8 +71,7 @@ class Issue6220TruncateHttpDefaultTest extends BaseGraphServerTest {
 
     assertThat(database.countType(typeName, false)).isEqualTo(5L);
 
-    final HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+    final HttpURLConnection connection = (HttpURLConnection) new URL(getServerHttpUrl(serverIndex, "/api/v1/command/" + DATABASE_NAME)).openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));

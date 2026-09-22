@@ -124,14 +124,18 @@ final class SecurityCatchUp implements AutoCloseable {
 
   SecurityCatchUp() {
     // Same shape as MembershipSecuritySeeder's worker and for the same reasons: core 0 so an idle server carries
-    // no thread, max 1 so two catch-ups cannot interleave, daemon, one queue slot. DiscardPolicy here rather than
-    // AbortPolicy, because unlike a seed nobody is waiting on the outcome and two catch-ups are the same work:
-    // the one already queued reads the fingerprints when it RUNS and therefore covers the one dropped behind it.
+    // no thread, max 1 so two catch-ups cannot interleave, daemon, one queue slot. A task dropped for want of
+    // room is still safe for the WORK - the one already queued reads the fingerprints when it RUNS and therefore
+    // covers the one dropped behind it - but it is not safe for the once-per-start LATCH: the queued task that
+    // covers the dropped one may itself settle on an arm that releases the latch (NOBODY_TO_ASK), leaving the
+    // dropped request both never made and recorded as made. Rearming unconditionally on every rejection closes
+    // that gap: whichever task runs last leaves the latch telling the truth about whether anybody was asked
+    // (issue #8087).
     this.executor = new ThreadPoolExecutor(0, 1, 30L, TimeUnit.SECONDS, new ArrayBlockingQueue<>(1), r -> {
       final Thread thread = new Thread(r, "arcadedb-raft-security-catchup");
       thread.setDaemon(true);
       return thread;
-    }, new ThreadPoolExecutor.DiscardPolicy());
+    }, (r, exec) -> rearm());
   }
 
   /**
@@ -222,6 +226,16 @@ final class SecurityCatchUp implements AutoCloseable {
   }
 
   /**
+   * Takes the once-per-start latch directly, bypassing {@link #onFirstLeaderObserved}/{@link #submit} entirely
+   * - which, since issue #8087, release it again immediately when there is nothing to queue. Lets a test put the
+   * latch in its taken state to drive {@link #settle} on its own, the same way {@link #rearmForTests} lets one
+   * put it back.
+   */
+  void takeRequestForTests() {
+    requestedSinceStart.set(true);
+  }
+
+  /**
    * A leader-initiated snapshot install has just finished. This is the catch-up path that provably skips the
    * security entries, so the request is made every time rather than once.
    */
@@ -237,8 +251,14 @@ final class SecurityCatchUp implements AutoCloseable {
 
   private void submit(final ArcadeDBServer server, final RaftHAServer raft, final String reason,
       final boolean waitForCatchUp) {
-    if (server == null || raft == null)
+    if (server == null || raft == null) {
+      // Nothing to submit: both callers take the once-per-start latch before calling this (or unconditionally,
+      // for afterSnapshotInstall), on the assumption that a task is about to run and eventually settle it. With
+      // nothing to run behind it, releasing it here is what stops the latch from being taken for the life of
+      // the node with no attempt ever having been made (issue #8087).
+      rearm();
       return;
+    }
     executor.execute(() -> run(server, raft, reason, waitForCatchUp));
   }
 

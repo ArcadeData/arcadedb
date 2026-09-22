@@ -96,8 +96,7 @@ class PostCommandHandlerLargeContentTest extends BaseGraphServerTest {
    * This ensures we're testing the actual HTTP layer that was failing.
    */
   private JSONObject executeCommandViaHTTP(final int serverIndex, final String language, final String command) throws Exception {
-    final HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + getDatabaseName()).openConnection();
+    final HttpURLConnection connection = (HttpURLConnection) new URL(getServerHttpUrl(serverIndex, "/api/v1/command/" + getDatabaseName())).openConnection();
 
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization",

@@ -45,8 +45,7 @@ class AutoCommitParameterTest extends BaseGraphServerTest {
       executeCommand(serverIndex, "sql", "CREATE DOCUMENT TYPE TestDoc");
 
       // Execute INSERT with explicit autoCommit=true
-      HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+      HttpURLConnection connection = (HttpURLConnection) new URL(getServerHttpUrl(serverIndex, "/api/v1/command/" + DATABASE_NAME)).openConnection();
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
@@ -85,8 +84,7 @@ class AutoCommitParameterTest extends BaseGraphServerTest {
       }
 
       // Execute INSERT with explicit autoCommit=false (no transaction)
-      HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+      HttpURLConnection connection = (HttpURLConnection) new URL(getServerHttpUrl(serverIndex, "/api/v1/command/" + DATABASE_NAME)).openConnection();
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
@@ -124,8 +122,7 @@ class AutoCommitParameterTest extends BaseGraphServerTest {
       }
 
       // Execute INSERT without autoCommit parameter (default behavior)
-      HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+      HttpURLConnection connection = (HttpURLConnection) new URL(getServerHttpUrl(serverIndex, "/api/v1/command/" + DATABASE_NAME)).openConnection();
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
@@ -160,8 +157,7 @@ class AutoCommitParameterTest extends BaseGraphServerTest {
       executeCommand(serverIndex, "sql", "INSERT INTO TestDoc4 SET name='query_test', value=555");
 
       // Execute query with autoCommit=true
-      HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME).openConnection();
+      HttpURLConnection connection = (HttpURLConnection) new URL(getServerHttpUrl(serverIndex, "/api/v1/query/" + DATABASE_NAME)).openConnection();
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
@@ -198,8 +194,7 @@ class AutoCommitParameterTest extends BaseGraphServerTest {
       }
 
       // BEGIN transaction
-      HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/begin/" + DATABASE_NAME).openConnection();
+      HttpURLConnection connection = (HttpURLConnection) new URL(getServerHttpUrl(serverIndex, "/api/v1/begin/" + DATABASE_NAME)).openConnection();
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
@@ -216,8 +211,7 @@ class AutoCommitParameterTest extends BaseGraphServerTest {
       }
 
       // Execute with session + autoCommit parameter (should be ignored with warning)
-      connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+      connection = (HttpURLConnection) new URL(getServerHttpUrl(serverIndex, "/api/v1/command/" + DATABASE_NAME)).openConnection();
       connection.setRequestMethod("POST");
       connection.setRequestProperty(ARCADEDB_SESSION_ID, sessionId);
       connection.setRequestProperty("Authorization",
@@ -239,8 +233,7 @@ class AutoCommitParameterTest extends BaseGraphServerTest {
       }
 
       // Commit the session transaction
-      connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/commit/" + DATABASE_NAME).openConnection();
+      connection = (HttpURLConnection) new URL(getServerHttpUrl(serverIndex, "/api/v1/commit/" + DATABASE_NAME)).openConnection();
       connection.setRequestMethod("POST");
       connection.setRequestProperty(ARCADEDB_SESSION_ID, sessionId);
       connection.setRequestProperty("Authorization",
@@ -272,8 +265,7 @@ class AutoCommitParameterTest extends BaseGraphServerTest {
       }
 
       // Execute INSERT with autoCommit=true and retries
-      HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+      HttpURLConnection connection = (HttpURLConnection) new URL(getServerHttpUrl(serverIndex, "/api/v1/command/" + DATABASE_NAME)).openConnection();
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
@@ -313,8 +305,7 @@ class AutoCommitParameterTest extends BaseGraphServerTest {
       }
 
       // Execute query with autoCommit=false (read without transaction)
-      HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME).openConnection();
+      HttpURLConnection connection = (HttpURLConnection) new URL(getServerHttpUrl(serverIndex, "/api/v1/query/" + DATABASE_NAME)).openConnection();
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));

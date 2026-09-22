@@ -120,7 +120,7 @@ class PostClusterAuthSessionHandlerTest extends BaseGraphServerTest {
   void rootWithCredentialsIsRefused() throws Exception {
     final String token = login();
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(URI.create("http://localhost:2480/api/v1/cluster/auth-session"))
+        .uri(URI.create(getServerHttpUrl(0, "/api/v1/cluster/auth-session")))
         .header("Content-Type", "application/json")
         .header("Authorization", basicRoot())
         .POST(HttpRequest.BodyPublishers.ofString(new JSONObject().put("token", token).toString()))
@@ -134,7 +134,7 @@ class PostClusterAuthSessionHandlerTest extends BaseGraphServerTest {
   @Test
   void wrongClusterTokenIsRefused() throws Exception {
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(URI.create("http://localhost:2480/api/v1/cluster/auth-session"))
+        .uri(URI.create(getServerHttpUrl(0, "/api/v1/cluster/auth-session")))
         .header("Content-Type", "application/json")
         .header("X-ArcadeDB-Cluster-Token", "not-the-token")
         .header("X-ArcadeDB-Forwarded-User", "root")
@@ -145,7 +145,7 @@ class PostClusterAuthSessionHandlerTest extends BaseGraphServerTest {
 
   private HttpResponse<String> asPeer(final JSONObject payload) throws Exception {
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(URI.create("http://localhost:2480/api/v1/cluster/auth-session"))
+        .uri(URI.create(getServerHttpUrl(0, "/api/v1/cluster/auth-session")))
         .header("Content-Type", "application/json")
         .header("X-ArcadeDB-Cluster-Token", CLUSTER_TOKEN)
         .header("X-ArcadeDB-Forwarded-User", "root")
@@ -156,7 +156,7 @@ class PostClusterAuthSessionHandlerTest extends BaseGraphServerTest {
 
   private String login() throws Exception {
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(URI.create("http://localhost:2480/api/v1/login"))
+        .uri(URI.create(getServerHttpUrl(0, "/api/v1/login")))
         .header("Authorization", basicRoot())
         .POST(HttpRequest.BodyPublishers.noBody())
         .build();

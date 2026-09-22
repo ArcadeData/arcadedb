@@ -25,6 +25,8 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
@@ -183,6 +185,17 @@ public class RedisQueryEngine implements QueryEngine {
       return executeSingleCommand(query);
     } catch (final RedisException | CommandParsingException e) {
       throw e;
+    } catch (final NeedRetryException | DuplicatedKeyException e) {
+      // Unwrapped rather than folded into the branch below: a conflict a write command's own
+      // `database.transaction(...)` (or the HTTP auto-commit wrapper around this whole call) is set up to
+      // retry is not "an error executing the Redis command" the way a malformed command is. Wrapping it into
+      // CommandParsingException here - as every other exception is, below - defeated retrying at BOTH levels:
+      // neither `LocalDatabase.transaction`'s own `catch (NeedRetryException | DuplicatedKeyException)` nor
+      // DatabaseAbstractHandler's identical one recognizes the wrapped type, so an MVCC conflict that a second
+      // attempt would have committed was answered as a hard failure on the first, whichever level the
+      // transaction that took the conflict belonged to (found while fixing issue #8037's retry-duplication bug
+      // in this same class).
+      throw e;
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error executing Redis command: " + query, e);
       throw new CommandParsingException("Error executing Redis command", e);
@@ -230,16 +243,23 @@ public class RedisQueryEngine implements QueryEngine {
    * Executes commands in a database transaction (atomically).
    */
   private ResultSet executeTransaction(final List<String> commands) {
-    final List<Object> results = new ArrayList<>();
+    // Filled fresh on every attempt and published only once the block has returned, the way
+    // MCPToolUtils.collectInTransaction does: `database.transaction(...)` retries the block up to
+    // arcadedb.txRetries times on an MVCC conflict, rolling the failed attempt back first, and an accumulator
+    // declared outside the block is never reset between attempts - so a single retry publishes the discarded
+    // attempt's replies alongside the committed ones (issue #8037).
+    final List<Object>[] committed = new List[1];
 
     database.transaction(() -> {
+      final List<Object> attemptResults = new ArrayList<>(commands.size());
       for (final String command : commands) {
         final Object result = executeSingleCommandInternal(command);
-        results.add(result);
+        attemptResults.add(result);
       }
+      committed[0] = attemptResults;
     });
 
-    return createResultSet(results);
+    return createResultSet(committed[0]);
   }
 
   /**
@@ -437,9 +457,13 @@ public class RedisQueryEngine implements QueryEngine {
     }
     final String typeName = parts.get(1);
 
+    // Counted into a local inside the block and published only once the block has returned, the same way
+    // executeTransaction() now does: a holder incremented directly retries under `database.transaction(...)`
+    // still carries the rolled-back attempt's count into the one that finally commits (issue #8037).
     final int[] count = {0};
 
     database.transaction(() -> {
+      int created = 0;
       for (int i = 2; i < parts.size(); i++) {
         final JSONObject json = new JSONObject(parts.get(i));
         final DocumentType type = database.getSchema().getType(typeName);
@@ -455,8 +479,9 @@ public class RedisQueryEngine implements QueryEngine {
 
         document.fromJSON(json);
         document.save();
-        count[0]++;
+        created++;
       }
+      count[0] = created;
     });
 
     return count[0];
@@ -575,9 +600,12 @@ public class RedisQueryEngine implements QueryEngine {
     }
 
     final String firstArg = parts.get(1);
+    // Same reasoning as hSet() above: counted into a local inside the block, published only once the block has
+    // returned (issue #8037).
     final int[] deleted = {0};
 
     database.transaction(() -> {
+      int removed = 0;
       // Check if it's RID mode
       if (firstArg.startsWith("#")) {
         for (int i = 1; i < parts.size(); i++) {
@@ -587,7 +615,7 @@ public class RedisQueryEngine implements QueryEngine {
           }
           try {
             database.lookupByRID(new RID(rid), true).delete();
-            deleted[0]++;
+            removed++;
           } catch (Exception e) {
             // Record not found, ignore
           }
@@ -607,10 +635,11 @@ public class RedisQueryEngine implements QueryEngine {
           final IndexCursor cursor = index.get(keys);
           if (cursor.hasNext()) {
             cursor.next().getRecord().delete();
-            deleted[0]++;
+            removed++;
           }
         }
       }
+      deleted[0] = removed;
     });
 
     return deleted[0];
