@@ -88,8 +88,7 @@ class Issue5675CreateIndexIfNotExistsHttpTest extends BaseGraphServerTest {
   /** Posts a SQL command, asserts the HTTP status, and returns the parsed body (the error body on a failure). */
   private JSONObject commandExpecting(final int serverIndex, final int expectedStatus, final String sql)
       throws Exception {
-    final HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
+    final HttpURLConnection connection = (HttpURLConnection) new URL(getServerHttpUrl(serverIndex, "/api/v1/command/" + DATABASE_NAME)).openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));

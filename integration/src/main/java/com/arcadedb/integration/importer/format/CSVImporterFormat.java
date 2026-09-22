@@ -941,8 +941,18 @@ public class CSVImporterFormat extends AbstractImporterFormat {
             // one failure into one more for every remaining row. Left to escape, it reaches the finally below,
             // which corrects the counter and lets the real cause propagate.
             if (txCount >= settings.commitEvery) {
+              // txOpen cleared before the call, but DatabaseContext#popIfNotLastTransaction() does NOT pop the
+              // outermost transaction off the stack, only a nested one, so a commit() that fails on THIS
+              // transaction (the common case: database.begin() above opened it with nothing predating it) can
+              // leave it still active rather than popped. Restored from the live state on failure so the finally
+              // below still rolls it back instead of leaking it (issue #8122).
               txOpen = false;
-              database.commit();
+              try {
+                database.commit();
+              } catch (final RuntimeException | Error commitFailure) {
+                txOpen = database.isTransactionActive();
+                throw commitFailure;
+              }
               committedEdges = context.createdEdges.get();
               database.begin();
               txOpen = true;
@@ -957,8 +967,16 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           if (settings.parsingLimitEntries > 0 && context.parsed.get() >= settings.parsingLimitEntries)
             break;
         }
+        // Same restore-on-failure as the periodic commit above, and for the same reason: a failing commit() does
+        // not always pop the outermost transaction, so txOpen cleared unconditionally before the call would leave
+        // a still-active transaction with nothing armed to roll it back (issue #8122).
         txOpen = false;
-        database.commit();
+        try {
+          database.commit();
+        } catch (final RuntimeException | Error commitFailure) {
+          txOpen = database.isTransactionActive();
+          throw commitFailure;
+        }
         completed = true;
       } finally {
         // A row-content failure is already caught and logged above without escaping; what reaches here is a

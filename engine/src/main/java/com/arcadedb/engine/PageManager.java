@@ -520,11 +520,27 @@ public class PageManager extends LockContext {
 
   public void suspendFlushAndExecute(final Database database, final CallableNoReturn callback)
       throws IOException, InterruptedException {
+    // #8111: waitForCurrentFlushToComplete alone only waits for a batch ALREADY IN FLIGHT - it is a no-op
+    // when the flush thread has not yet picked up the pages a commit just queued. Suspending right after that
+    // leaves those pages sitting in RAM, never written to disk, for the whole window the callback runs in: a
+    // full backup taken from the frozen files then archives a bucket at whatever size it had BEFORE the most
+    // recent commit, sometimes a bare newly-created file with no data pages in it at all. The point-in-time
+    // snapshot path (openSnapshot, above) already carries this exact lesson in its own step 1 - "drains the
+    // flush queue COMPLETELY - not just the in-flight batch" - for the same reason; this is the same drain,
+    // run before the suspension takes hold so it can still make progress, matching that path's ordering.
+    if (!waitAllPagesOfDatabaseAreFlushed(database))
+      throw new IOException(
+          "Cannot freeze the files of database '" + database.getName()
+              + "': the flush queue did not drain within the timeout, so the on-disk image would not reflect "
+              + "the last committed transaction(s)");
+
     // #5068: the suspension is REFCOUNTED, so every caller (backup, verify, HA snapshot serving, nested
     // scopes per #4958) owns its whole window even when the windows overlap on the same database: flushing
     // is resumed (and the deferred batches flushed) only when the LAST suspender exits. The wait for the
     // in-flight batch runs INSIDE the try so an interrupt during the wait still releases this caller's
-    // reference; it is cheap for non-first suspenders (the flush thread is already parked deferring).
+    // reference; it is cheap for non-first suspenders (the flush thread is already parked deferring). It is
+    // also what catches the narrow window between the drain above finishing and this suspension taking
+    // hold, the same way the snapshot path's own second drain (under its locks) catches its equivalent gap.
     flushThread.setSuspended(database, true);
     try {
       flushThread.waitForCurrentFlushToComplete(database);
