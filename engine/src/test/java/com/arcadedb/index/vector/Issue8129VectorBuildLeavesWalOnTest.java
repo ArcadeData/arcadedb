@@ -24,6 +24,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -122,7 +123,33 @@ class Issue8129VectorBuildLeavesWalOnTest {
     assertSessionDurability(true, currentWalFlush(), "after a rollback whose transaction skipped the WAL");
   }
 
+  @Test
+  void aBuildSharingTheCallersTransactionLeavesItsOverrideAsItFoundIt() {
+    seedAndIndex();
+    final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("P[embedding]");
+
+    // A build that joins a transaction somebody else opened: its finally is the only thing standing between the
+    // build's WAL-less override and the caller's own commit, and it must hand back what the caller had set.
+    database.begin();
+    final TransactionContext tx = ((DatabaseInternal) database).getTransaction();
+    tx.setUseWALForThisTransaction(true);
+    typeIndex.build(IndexBuilder.BUILD_BATCH_SIZE, true, null);
+
+    assertThat(((DatabaseInternal) database).getTransaction()).isSameAs(tx);
+    assertThat(tx.getUseWALForThisTransaction()).as("the caller's override after a build that shared its transaction")
+        .isTrue();
+    database.commit();
+
+    assertSessionDurability(true, currentWalFlush(), "after a build that shared the caller's transaction");
+    assertCommitWritesTheWal();
+  }
+
   private void seedAndIndex() {
+    seedRows();
+    createVectorIndex();
+  }
+
+  private void seedRows() {
     database.command("sql", "CREATE VERTEX TYPE P");
     database.command("sql", "CREATE PROPERTY P.pid INTEGER");
     database.command("sql", "CREATE PROPERTY P.embedding ARRAY_OF_FLOATS");
@@ -133,7 +160,9 @@ class Issue8129VectorBuildLeavesWalOnTest {
       for (int i = 0; i < SEED_ROWS; i++)
         database.newVertex("P").set("pid", i).set("views", 0).set("embedding", randomVector(rnd)).save();
     });
+  }
 
+  private void createVectorIndex() {
     database.command("sql", "CREATE INDEX ON P (embedding) LSM_VECTOR METADATA { \"dimensions\": " + DIMENSIONS
         + ", \"similarity\": \"COSINE\" }");
   }
