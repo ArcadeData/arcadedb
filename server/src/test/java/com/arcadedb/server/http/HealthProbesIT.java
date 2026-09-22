@@ -32,7 +32,7 @@ class HealthProbesIT extends BaseGraphServerTest {
   void healthReturns204WhenLive() throws Exception {
     testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/health").openConnection();
+          getServerHttpUrl(serverIndex, "/api/v1/health")).openConnection();
       connection.setRequestMethod("GET");
       try {
         connection.connect();
@@ -48,7 +48,7 @@ class HealthProbesIT extends BaseGraphServerTest {
     testEachServer(serverIndex -> {
       // No Authorization header is set on purpose: liveness must be unauthenticated.
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/health").openConnection();
+          getServerHttpUrl(serverIndex, "/api/v1/health")).openConnection();
       connection.setRequestMethod("GET");
       try {
         connection.connect();
@@ -67,8 +67,45 @@ class HealthProbesIT extends BaseGraphServerTest {
     // byte-identical to today: an ONLINE single-node server returns 204 with an empty body.
     testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://localhost:248" + serverIndex + "/api/v1/ready").openConnection();
+          getServerHttpUrl(serverIndex, "/api/v1/ready")).openConnection();
       connection.setRequestMethod("GET");
+      try {
+        connection.connect();
+        assertThat(connection.getResponseCode()).isEqualTo(204);
+        assertThat(connection.getContentLength()).isLessThanOrEqualTo(0);
+      } finally {
+        connection.disconnect();
+      }
+    });
+  }
+
+  /**
+   * Issue #8133: container healthchecks that use {@code wget --spider} (or any other prober that
+   * issues HEAD instead of GET) must not see a 405. A HEAD request must be routed the same as GET,
+   * with Undertow discarding the body automatically.
+   */
+  @Test
+  void readyRespondsToHeadRequest() throws Exception {
+    testEachServer(serverIndex -> {
+      final HttpURLConnection connection = (HttpURLConnection) new URL(
+          getServerHttpUrl(serverIndex, "/api/v1/ready")).openConnection();
+      connection.setRequestMethod("HEAD");
+      try {
+        connection.connect();
+        assertThat(connection.getResponseCode()).isEqualTo(204);
+        assertThat(connection.getContentLength()).isLessThanOrEqualTo(0);
+      } finally {
+        connection.disconnect();
+      }
+    });
+  }
+
+  @Test
+  void healthRespondsToHeadRequest() throws Exception {
+    testEachServer(serverIndex -> {
+      final HttpURLConnection connection = (HttpURLConnection) new URL(
+          getServerHttpUrl(serverIndex, "/api/v1/health")).openConnection();
+      connection.setRequestMethod("HEAD");
       try {
         connection.connect();
         assertThat(connection.getResponseCode()).isEqualTo(204);
