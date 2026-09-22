@@ -236,6 +236,26 @@ class Issue8152ContinuousAggregateWatermarkTest extends TestHelper {
     assertThat(ca.getStatus()).isEqualTo("ERROR");
   }
 
+  /**
+   * The flag is also a column on {@code schema:continuousAggregates}, which is how an operator tells "never
+   * refreshed" from "anchored at the epoch" - both of which report a watermark of 0.
+   */
+  @Test
+  void theSchemaListingReportsWhetherTheWatermarkIsSet() {
+    createSensorType();
+
+    database.transaction(() -> insert(0L, "A", 20.0));
+    createHourlyAggregate("SELECT sensor_id, ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp "
+        + "FROM SensorReading GROUP BY sensor_id, hour");
+
+    try (final ResultSet rs = database.query("sql", "SELECT FROM schema:continuousAggregates")) {
+      final Result row = rs.next();
+      assertThat(row.<String>getProperty("name")).isEqualTo("hourly_temps");
+      assertThat(row.<Long>getProperty("watermarkTs")).isEqualTo(0L);
+      assertThat(row.<Boolean>getProperty("watermarkSet")).isTrue();
+    }
+  }
+
   private void createSensorType() {
     database.command("sql",
         "CREATE TIMESERIES TYPE SensorReading TIMESTAMP ts TAGS (sensor_id STRING) FIELDS (temperature DOUBLE)");
