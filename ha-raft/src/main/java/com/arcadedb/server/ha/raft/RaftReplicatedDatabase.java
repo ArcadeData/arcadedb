@@ -561,7 +561,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           rollbackRefusedCommit(tx, e);
           throw e;
         } catch (final Exception e) {
-          final TransactionException refusal = new TransactionException("Error on commit of schema transaction (phase 1)", e);
+          // Not necessarily phase 1: this try also covers phase 2 and the schema save that follows it, and a failure
+          // there finds the transaction already concluded - the helper then rolls nothing back.
+          final TransactionException refusal = new TransactionException("Error on commit of schema transaction", e);
           rollbackRefusedCommit(tx, refusal);
           throw refusal;
         } finally {
