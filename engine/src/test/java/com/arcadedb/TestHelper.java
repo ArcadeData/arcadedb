@@ -263,7 +263,16 @@ public abstract class TestHelper {
    * Must be called inside an active transaction, which is where the delta is accumulated.
    */
   public static void deleteRecordAtLowLevel(final Database db, final RID rid) {
-    db.getSchema().getBucketById(rid.getBucketId()).deleteRecord(rid);
+    deleteRecordAtLowLevel(db, rid, false);
+  }
+
+  /**
+   * The {@code force} variant, for a fixture that has to remove a record an ordinary delete refuses - a structurally
+   * broken chunk chain. Same accounting, and the delta is booked only once the delete has actually returned, so a
+   * call that throws (which is what several of these fixtures assert) books nothing.
+   */
+  public static void deleteRecordAtLowLevel(final Database db, final RID rid, final boolean force) {
+    db.getSchema().getBucketById(rid.getBucketId()).deleteRecord(rid, force);
     ((DatabaseInternal) db).getTransaction().updateBucketRecordDelta(rid.getBucketId(), -1);
   }
 
