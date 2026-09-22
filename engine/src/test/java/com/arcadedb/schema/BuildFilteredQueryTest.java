@@ -157,6 +157,52 @@ class BuildFilteredQueryTest {
   }
 
   /**
+   * #8156 (found by CodeRabbit): {@code _} is an identifier character here - {@code SAFE_COLUMN_NAME} is
+   * {@code [A-Za-z0-9_]+} - so a column named {@code timeout_ms} does not carry a {@code TIMEOUT} clause. A boundary
+   * test written with {@code Character.isLetterOrDigit} alone said it did, and the WHERE clause then ended in the
+   * middle of the predicate.
+   */
+  @Test
+  void anUnderscoreIsPartOfTheIdentifierNotAKeywordBoundary() {
+    final ContinuousAggregateImpl ca = buildCA(
+        "SELECT sensor_id FROM SensorReading WHERE timeout_ms > 0 OR limit_reached = true GROUP BY sensor_id");
+    assertThat(ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000, true)).isEqualTo(
+        "SELECT sensor_id FROM SensorReading WHERE `ts` >= 1000 AND (timeout_ms > 0 OR limit_reached = true) "
+            + "GROUP BY sensor_id");
+
+    final ContinuousAggregateImpl leading = buildCA(
+        "SELECT sensor_id FROM SensorReading WHERE ms_timeout > 0 GROUP BY sensor_id");
+    assertThat(ContinuousAggregateRefresher.buildFilteredQuery(leading, 1000, true)).isEqualTo(
+        "SELECT sensor_id FROM SensorReading WHERE `ts` >= 1000 AND (ms_timeout > 0) GROUP BY sensor_id");
+  }
+
+  /**
+   * #8156 (found by CodeRabbit): a backtick-quoted identifier is skipped like any other quoted run, so a column
+   * actually NAMED after a clause keyword does not end the clause.
+   */
+  @Test
+  void aBacktickQuotedIdentifierNamedAfterAClauseKeywordIsNotAClause() {
+    final ContinuousAggregateImpl ca = buildCA(
+        "SELECT sensor_id FROM SensorReading WHERE `limit` > 0 OR `timeout` < 5 GROUP BY sensor_id");
+    assertThat(ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000, true)).isEqualTo(
+        "SELECT sensor_id FROM SensorReading WHERE `ts` >= 1000 AND (`limit` > 0 OR `timeout` < 5) "
+            + "GROUP BY sensor_id");
+  }
+
+  /**
+   * A doubled quote is SQL's escape for the quote character, not the end of the literal, so a clause keyword after
+   * one is still inside it.
+   */
+  @Test
+  void aDoubledQuoteDoesNotEndTheLiteral() {
+    final ContinuousAggregateImpl ca = buildCA(
+        "SELECT sensor_id FROM SensorReading WHERE label = 'it''s GROUP BY me' OR temp > 1 GROUP BY sensor_id");
+    assertThat(ContinuousAggregateRefresher.buildFilteredQuery(ca, 1000, true)).isEqualTo(
+        "SELECT sensor_id FROM SensorReading WHERE `ts` >= 1000 AND (label = 'it''s GROUP BY me' OR temp > 1) "
+            + "GROUP BY sensor_id");
+  }
+
+  /**
    * #8152: a watermark of 0 that HAS been set is a real watermark - the epoch bucket - and must still be filtered
    * on. There is no 2-argument overload that could infer the flag from `watermark > 0`: inferring it is the defect.
    */

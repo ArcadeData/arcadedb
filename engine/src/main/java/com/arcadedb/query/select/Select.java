@@ -221,7 +221,14 @@ public class Select {
       // AND PUSHED THE WHOLE TREE BUILT SO FAR DOWN AS ITS LEFT CHILD. THE GROUPING THE CALLER WROTE WAS GONE BEFORE
       // THE FIRST ROW WAS READ, SILENTLY: a = 2 and (b = 1 or b = 3) RAN AS (a = 2 and b = 1) or b = 3. A NESTED
       // ARRAY IS A PARENTHESIS, SO IT IS PARSED INTO ITS OWN SUBTREE AND GRAFTED IN AS ONE OPAQUE OPERAND
-      rootTreeElement = parseJsonCondition(json.getJSONArray("where"));
+      final SelectTreeNode parsedWhere = parseJsonCondition(json.getJSONArray("where"));
+      // A BARE LEAF GETS THE SAME SYNTHETIC `run` ROOT compile() ADDS FOR THE FLUENT BUILDER. THE EXECUTOR DEPENDS
+      // ON IT - filterWithIndexesFinalNode() READS leaf.getParent().operator AS SOON AS THE LEAF HAS A
+      // CURSOR-BUILDABLE INDEX, AND soleExactLeaf()/isPureAndConjunction() BOTH DOCUMENT `run` AS THE ROOT THEY SEE
+      // - SO A PARENTLESS ROOT LEAF FROM THE JSON READER THREW A NullPointerException ON ANY INDEXED PROPERTY
+      // (FOUND BY CodeRabbit). THE INVARIANT BELONGS IN BOTH PRODUCERS, NOT IN A GUARD IN ONE CONSUMER
+      rootTreeElement = parsedWhere.operator.logicOperator ? parsedWhere
+          : new SelectTreeNode(parsedWhere, SelectOperator.run, null);
     }
 
     if (json.has("limit"))

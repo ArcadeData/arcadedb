@@ -58,6 +58,9 @@ public class ContinuousAggregateRefresher {
       final ContinuousAggregateImpl.Watermark startWatermark = ca.currentWatermark();
       final long watermark = startWatermark.timestamp();
       final boolean watermarkSet = startWatermark.set();
+      // A pre-#8152 schema whose watermark is the ambiguous 0 brings its duplicate rows with it - see
+      // ContinuousAggregateImpl.needsCleanRebuild. This one refresh starts from an empty backing type.
+      final boolean cleanRebuild = ca.needsCleanRebuild();
 
       // Validate interpolated names to prevent backtick injection
       if (!SAFE_COLUMN_NAME.matcher(backingTypeName).matches())
@@ -75,16 +78,18 @@ public class ContinuousAggregateRefresher {
         // Delete rows in the current (possibly incomplete) bucket and all newer buckets. #8152: the guard used to be
         // `watermark > 0`, which skipped the delete for an aggregate legitimately anchored at the epoch and let that
         // one bucket gain a duplicate on every refresh.
-        if (watermarkSet)
+        if (cleanRebuild)
+          database.command("sql", "DELETE FROM `" + backingTypeName + "`");
+        else if (watermarkSet)
           database.command("sql", "DELETE FROM `" + backingTypeName + "` WHERE `" + bucketColumn + "` >= ?",
               new Date(watermark));
 
         // Build the filtered query: append WHERE clause with watermark filter on the source timestamp
-        final String filteredQuery = buildFilteredQuery(ca, watermark, watermarkSet);
+        final String filteredQuery = buildFilteredQuery(ca, watermark, watermarkSet && !cleanRebuild);
 
         // Execute and insert results
         long maxBucketTs = watermark;
-        boolean maxBucketSeen = watermarkSet;
+        boolean maxBucketSeen = watermarkSet && !cleanRebuild;
         try (final ResultSet rs = database.query("sql", filteredQuery)) {
           while (rs.hasNext()) {
             final Result result = rs.next();
@@ -109,13 +114,16 @@ public class ContinuousAggregateRefresher {
 
         // The watermark advances to the max bucket boundary found. The FIRST bucket ever seen installs it even when
         // it is not greater than the initial 0 - that is the whole point of tracking "set" separately (#8152).
-        if (maxBucketSeen && (!watermarkSet || maxBucketTs > watermark))
+        if (maxBucketSeen && (cleanRebuild || !watermarkSet || maxBucketTs > watermark))
           advancedWatermark[0] = maxBucketTs;
       });
 
       // The transaction committed, so the rows the watermark refers to are durable and it can be installed.
       if (advancedWatermark[0] != null)
         ca.setWatermarkTs(advancedWatermark[0]);
+      // The duplicates of the pre-#8152 era are gone with the rows that were just replaced.
+      if (cleanRebuild)
+        ca.cleanRebuildDone();
 
       final long durationMs = (System.nanoTime() - startNs) / 1_000_000;
       ca.recordRefreshSuccess(durationMs);
@@ -125,7 +133,9 @@ public class ContinuousAggregateRefresher {
       // Persist updated watermark only if it actually advanced.
       // If saveConfiguration fails, revert the in-memory watermark to the original value
       // so the next refresh re-processes the same window (delete-first design makes it safe).
-      if (advancedWatermark[0] != null) {
+      // A clean rebuild must persist even if it found no rows to advance the watermark with, so the repair is not
+      // repeated on every restart.
+      if (advancedWatermark[0] != null || cleanRebuild) {
         final LocalSchema schema = (LocalSchema) database.getSchema();
         try {
           schema.saveConfiguration();
@@ -256,8 +266,11 @@ public class ContinuousAggregateRefresher {
           idx++;
         continue;
       }
-      // Skip over quoted string literals to avoid counting parens inside them
-      if (ch == '\'' || ch == '"') {
+      // Skip over quoted string literals AND backtick-quoted identifiers, so neither a paren nor a clause keyword
+      // inside one is counted. #8156 (found by CodeRabbit): the backtick was missing, so `LIMIT` or `TIMEOUT` used
+      // as a quoted column name ended the WHERE clause in the middle of the predicate. A doubled quote is SQL's own
+      // escape and does not close the literal.
+      if (ch == '\'' || ch == '"' || ch == '`') {
         final char quote = ch;
         idx++;
         while (idx < len) {
@@ -266,6 +279,10 @@ public class ContinuousAggregateRefresher {
           if (c2 == '\\') {
             idx++; // skip escaped character
           } else if (c2 == quote) {
+            if (idx < len && upperQuery.charAt(idx) == quote) {
+              idx++; // doubled quote: an escaped quote, not the end of the literal
+              continue;
+            }
             break;
           }
         }
@@ -288,8 +305,8 @@ public class ContinuousAggregateRefresher {
       if (ch == keyword.charAt(0)) {
         final int matchEnd = matchKeywordAt(upperQuery, keyword, idx);
         if (matchEnd > 0) {
-          final boolean leftBound = idx == 0 || !Character.isLetterOrDigit(upperQuery.charAt(idx - 1));
-          final boolean rightBound = matchEnd >= len || !Character.isLetterOrDigit(upperQuery.charAt(matchEnd));
+          final boolean leftBound = idx == 0 || !isIdentifierCharacter(upperQuery.charAt(idx - 1));
+          final boolean rightBound = matchEnd >= len || !isIdentifierCharacter(upperQuery.charAt(matchEnd));
           if (leftBound && rightBound && idx >= fromIdx)
             return idx;
           idx = matchEnd;
@@ -299,6 +316,16 @@ public class ContinuousAggregateRefresher {
       idx++;
     }
     return -1;
+  }
+
+  /**
+   * Whether {@code c} can appear inside an ArcadeDB identifier, which {@code SAFE_COLUMN_NAME} spells as
+   * {@code [A-Za-z0-9_]}. #8156 (found by CodeRabbit): the boundary test used {@code Character.isLetterOrDigit}
+   * alone, so the {@code TIMEOUT} in a column named {@code timeout_ms} looked like a clause keyword and ended the
+   * WHERE clause in the middle of the predicate.
+   */
+  private static boolean isIdentifierCharacter(final char c) {
+    return Character.isLetterOrDigit(c) || c == '_';
   }
 
   /**

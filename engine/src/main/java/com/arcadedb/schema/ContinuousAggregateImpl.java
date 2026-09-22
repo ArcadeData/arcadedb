@@ -47,6 +47,16 @@ public class ContinuousAggregateImpl implements ContinuousAggregate {
    * timestamp beside a stale flag. They only mean anything read together (found in review).
    */
   private volatile Watermark              watermark = Watermark.UNSET;
+  /**
+   * Set while loading a schema written BEFORE #8152 whose watermark is the ambiguous 0 - which, since the defect
+   * kept every such watermark at 0, is every aggregate that ever ran on an affected version. Its backing type holds
+   * one full copy of the aggregate per refresh that has happened, and simply resuming would add one more before the
+   * repaired watermark took hold. The next refresh therefore clears the backing type and rebuilds it once.
+   * <p>
+   * Not persisted: it exists only between reading such a schema and the first refresh that repairs it, after which
+   * the schema is written with the flag this absence stood for.
+   */
+  private volatile boolean                needsCleanRebuild;
   private volatile long                   lastRefreshTime;
   private volatile MaterializedViewStatus status;
   private final    AtomicBoolean          refreshInProgress = new AtomicBoolean(false);
@@ -151,6 +161,18 @@ public class ContinuousAggregateImpl implements ContinuousAggregate {
    */
   void restoreWatermark(final long watermarkTs, final boolean watermarkSet) {
     this.watermark = watermarkSet ? new Watermark(watermarkTs, true) : Watermark.UNSET;
+  }
+
+  /**
+   * {@code true} while this aggregate still carries the duplicate rows of a pre-#8152 database - see
+   * {@link #needsCleanRebuild}. Cleared by the refresh that rebuilds it.
+   */
+  boolean needsCleanRebuild() {
+    return needsCleanRebuild;
+  }
+
+  void cleanRebuildDone() {
+    this.needsCleanRebuild = false;
   }
 
   /**
@@ -282,8 +304,15 @@ public class ContinuousAggregateImpl implements ContinuousAggregate {
         json.getString("timestampColumn"));
     final long loadedWatermarkTs = json.getLong("watermarkTs", 0);
     // A schema written before #8152 carries no flag: fall back to the old reading, where a non-zero watermark is the
-    // only one that counts as set. That is exactly the pre-existing behaviour for every such aggregate.
+    // only one that counts as set. Such an aggregate is healthy - its watermark did advance, so its refreshes did
+    // delete before recomputing.
+    final boolean legacy = !json.has("watermarkSet");
     ca.watermark = new Watermark(loadedWatermarkTs, json.getBoolean("watermarkSet", loadedWatermarkTs != 0));
+    // A LEGACY WATERMARK OF 0 IS THE DEFECT ITSELF (found by CodeRabbit): it cannot be told from "never refreshed",
+    // and because the defect pinned every watermark at 0 it also means the backing type already holds one copy of
+    // the aggregate per refresh that has run. Resuming normally would add one more, so the next refresh rebuilds
+    // from empty instead - which repairs the existing duplication rather than merely declining to add to it.
+    ca.needsCleanRebuild = legacy && loadedWatermarkTs == 0;
     ca.lastRefreshTime = json.getLong("lastRefreshTime", 0);
     ca.status = MaterializedViewStatus.valueOf(json.getString("status", "VALID"));
     return ca;
