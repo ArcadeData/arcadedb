@@ -429,8 +429,15 @@ public class PostgresNetworkExecutor extends Thread {
     if (skipUntilSync)
       return;
 
-    if (errorInTransaction
-        && !endsTransactionBlock(type == 'S' ? preparedStatements.get(portalName) : getPortal(portalName, false))) {
+    // Describe('S') names a PREPARED STATEMENT (registered by PARSE); Describe('P') names a bound PORTAL
+    // (registered by BIND) - two different registries since #6660 / CodeRabbit split them apart so portals
+    // stop sharing mutable state. A statement's column info, once resolved here from its schema, is a
+    // property of the statement itself (independent of any parameter values), so it is cached directly on
+    // the template - every portal bound from it afterwards inherits it via PostgresPortal.bindFrom(), the
+    // same way queryTargetType/aliasToSourceProperty are already memoized per statement.
+    final PostgresPortal portal = type == 'S' ? preparedStatements.get(portalName) : getPortal(portalName, false);
+
+    if (errorInTransaction && !endsTransactionBlock(portal)) {
       // The block is aborted and only the client's COMMIT/ROLLBACK/END ends it, so this Describe never runs -
       // but it is owed a reply, and PostgreSQL's own exec_describe_*_message answers 25P02 rather than nothing.
       // Returning silently here left a client that had recovered past a Sync waiting for a RowDescription that
@@ -443,13 +450,6 @@ public class PostgresNetworkExecutor extends Thread {
       return;
     }
 
-    // Describe('S') names a PREPARED STATEMENT (registered by PARSE); Describe('P') names a bound PORTAL
-    // (registered by BIND) - two different registries since #6660 / CodeRabbit split them apart so portals
-    // stop sharing mutable state. A statement's column info, once resolved here from its schema, is a
-    // property of the statement itself (independent of any parameter values), so it is cached directly on
-    // the template - every portal bound from it afterwards inherits it via PostgresPortal.bindFrom(), the
-    // same way queryTargetType/aliasToSourceProperty are already memoized per statement.
-    final PostgresPortal portal = type == 'S' ? preparedStatements.get(portalName) : getPortal(portalName, false);
     if (portal == null) {
       writeNoData();
       return;
