@@ -41,7 +41,6 @@ import java.math.BigInteger;
 import java.text.ParsePosition;
 import java.text.SimpleDateFormat;
 import java.time.*;
-import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoField;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
@@ -738,24 +737,19 @@ public enum Type {
         else if (value instanceof String valueAsString) {
           if (FileUtils.isLong(valueAsString))
             return DateUtils.date(database, Long.parseLong(value.toString()), LocalDate.class);
-          else if (database != null)
-            try {
-              return LocalDate.parse(valueAsString, DateUtils.getFormatter(database.getSchema().getDateTimeFormat()));
-            } catch (final DateTimeParseException ignore) {
-              try {
-                return LocalDate.parse(valueAsString, DateUtils.getFormatter(database.getSchema().getDateFormat()));
-              } catch (final DateTimeParseException ignore2) {
-                // A DATE column fed a full timestamp keeps the date part rather than being emptied (issue #8090).
-                return DateUtils.parseDateTimeKeepingWallClock(database, valueAsString).toLocalDate();
-              }
-            }
           else
-            // With no database there are no schema patterns to try, so this is the whole chain. Note the contract
-            // change: this branch used to fall off the end and answer the ORIGINAL String when its string-length
-            // guess matched nothing, where it now refuses like every other datetime target (issue #8090). No caller
-            // in the reactor sees it - BaseDocument.getLocalDate goes through convertOrNull - but Type.convert is
-            // public, so an outside caller relying on the silent pass-through gets an IllegalArgumentException.
-            return DateUtils.parseDateTimeKeepingWallClock(null, valueAsString).toLocalDate();
+            // The one chain, not a second copy of it: parseDateTimeKeepingWallClock already tries the schema's
+            // dateTimeFormat and then its dateFormat before the built-in shapes, which is precisely what this branch
+            // used to open-code - and open-coding it is how the two chains drifted apart in the first place, which is
+            // half of what issue #8090 was. A DATE column fed a full timestamp keeps the date part rather than being
+            // emptied, and the wall clock is the right reading of an offset here: a LocalDate has no zone, so the day
+            // written is the day meant.
+            // Note the contract change when there is no database and so no schema pattern to try: this branch used to
+            // fall off the end and answer the ORIGINAL String when its string-length guess matched nothing, where it
+            // now refuses like every other datetime target. No caller in the reactor sees it - BaseDocument.getLocalDate
+            // goes through convertOrNull - but Type.convert is public, so an outside caller relying on the silent
+            // pass-through gets an IllegalArgumentException.
+            return DateUtils.parseDateTimeKeepingWallClock(database, valueAsString).toLocalDate();
         }
       } else if (targetClass.equals(LocalDateTime.class)) {
         if (value instanceof LocalDateTime time) {
