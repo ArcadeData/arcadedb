@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GhostEdgeReporter;
+import com.arcadedb.graph.LightEdge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
@@ -36,11 +37,19 @@ import java.util.Map;
 import java.util.stream.Stream;
 
 /**
- * Procedure: merge.relationship(startNode, relType, matchProps, createProps, endNode)
+ * Procedure: merge.relationship(startNode, relType, matchProps, createProps, endNode, onMatchProps = {})
  * <p>
  * Merges a relationship between two nodes. If a relationship with the specified type
  * and matching properties exists, it returns the existing relationship. Otherwise,
  * it creates a new relationship with both matchProps and createProps.
+ * </p>
+ * <p>
+ * The trailing {@code onMatchProps} is applied to the relationship on the match branch only, mirroring how
+ * {@code createProps} is applied on the create branch - it is how a caller says "set these properties when the
+ * relationship already existed". It is optional and defaults to an empty map, matching APOC's
+ * {@code apoc.merge.relationship(startNode :: NODE, relationshipType :: STRING, identProps :: MAP, onCreateProps ::
+ * MAP, endNode :: NODE, onMatchProps = {} :: MAP)}, whose six-argument form ArcadeDB used to reject outright
+ * (issue #8103).
  * </p>
  * <p>
  * This is the key use case from issue #3256:
@@ -68,9 +77,14 @@ public class MergeRelationship implements CypherProcedure {
     return 5;
   }
 
+  /**
+   * Six, not five: APOC's sixth parameter {@code onMatchProps} is now implemented, so the full-arity call is one this
+   * procedure accepts (issue #8103). It stays optional - {@link #getMinArgs()} is unchanged - and an omitted slot
+   * means "change nothing on match", which is what the five-argument form has always done.
+   */
   @Override
   public int getMaxArgs() {
-    return 5;
+    return 6;
   }
 
   @Override
@@ -99,6 +113,8 @@ public class MergeRelationship implements CypherProcedure {
     final Map<String, Object> matchProps = extractMap(args[2], "matchProps");
     final Map<String, Object> createProps = extractMap(args[3], "createProps");
     final Vertex endNode = extractVertex(args[4], "endNode");
+    // Absent whenever the caller used the five-argument form, which getMinArgs() still allows.
+    final Map<String, Object> onMatchProps = args.length < 6 ? null : extractMap(args[5], "onMatchProps");
 
     final Database database = context.getDatabase();
 
@@ -121,8 +137,9 @@ public class MergeRelationship implements CypherProcedure {
     final Edge existingEdge = findMatchingEdge(latestStartNode, latestEndNode, relType, matchProps);
 
     if (existingEdge != null)
-      // Return existing relationship
-      return createResultStream(existingEdge);
+      // Return the existing relationship, after applying onMatchProps to it - the match branch's counterpart of the
+      // createProps applied below.
+      return createResultStream(applyOnMatchProps(existingEdge, onMatchProps));
 
     // Create new relationship with both matchProps and createProps
     // Note: using bidirectional=true so the edge can be traversed from both ends
@@ -145,6 +162,35 @@ public class MergeRelationship implements CypherProcedure {
     newEdge.save();
 
     return createResultStream(newEdge);
+  }
+
+  /**
+   * Applies {@code onMatchProps} to the relationship the merge matched and returns the instance the caller should
+   * see - the saved mutable edge when anything was written, the argument itself otherwise.
+   * <p>
+   * A {@code null} or empty map writes nothing, so the five-argument form and an explicit {@code {}} both leave the
+   * matched relationship exactly as it was rather than paying for a no-op record update. APOC applies this map on
+   * the match branch only, which is why the create branch below does not consult it (issue #8103).
+   * <p>
+   * An edge of a {@code LIGHTWEIGHT} type has no record and therefore no properties, so there is nothing to apply
+   * the map to. {@code ImmutableLightEdge.modify()} does refuse - "Lightweight edges cannot be modified" - but names
+   * neither this procedure nor the argument that asked for the write, so the refusal is raised here instead. The
+   * create branch already refuses the same configuration the same way, from {@code MutableLightEdge.set()}.
+   */
+  private Edge applyOnMatchProps(final Edge existingEdge, final Map<String, Object> onMatchProps) {
+    if (onMatchProps == null || onMatchProps.isEmpty())
+      return existingEdge;
+
+    if (existingEdge instanceof LightEdge)
+      throw new IllegalStateException(getName() + "(): edge type '" + existingEdge.getTypeName()
+          + "' is declared LIGHTWEIGHT, so its edges cannot have properties and onMatchProps cannot be applied");
+
+    final MutableEdge mutableEdge = existingEdge.modify();
+    for (final Map.Entry<String, Object> entry : onMatchProps.entrySet())
+      mutableEdge.set(entry.getKey(), entry.getValue());
+    mutableEdge.save();
+
+    return mutableEdge;
   }
 
   /**
