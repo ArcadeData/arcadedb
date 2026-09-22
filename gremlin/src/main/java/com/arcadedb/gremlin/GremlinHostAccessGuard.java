@@ -31,6 +31,10 @@ import com.arcadedb.security.SecurityDatabaseUser;
  * The check reads the principal bound to the calling thread, exactly like {@code LocalDatabase.checkPermissionsOnDatabase}:
  * it is a no-op when no user is bound (embedded mode, internal and system contexts), which is what keeps embedded
  * applications working unchanged.
+ * <p>
+ * The flip side: a thread with no bound principal passes. Any new path that runs Gremlin on another thread (a new
+ * executor, a new protocol module) must bind the authenticated user into {@link DatabaseContext} first, as
+ * {@code GremlinPrincipalPropagatingExecutorService} does for the Gremlin Server, or this gate silently allows it.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
