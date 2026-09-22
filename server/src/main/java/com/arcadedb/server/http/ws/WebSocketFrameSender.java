@@ -65,9 +65,11 @@ import java.util.logging.Level;
 public final class WebSocketFrameSender {
   /**
    * Channel attribute holding the per-connection outstanding-bytes counter {@link #sendBudgeted} charges
-   * against (issue #8085).
+   * against (issue #8085). Package-private, not private, so a test in this package can seed an outstanding
+   * balance directly to simulate a frame still in flight, the same way
+   * {@code Issue6762WebSocketEventBusTest.neverCompletingSubscription()} does for the event bus's budget.
    */
-  private static final String PENDING_BYTES = "arcadedb.ws.pendingBytes";
+  static final String PENDING_BYTES = "arcadedb.ws.pendingBytes";
 
   private WebSocketFrameSender() {
   }
@@ -134,17 +136,25 @@ public final class WebSocketFrameSender {
       return false;
     }
 
-    WebSockets.sendText(text, channel, new WebSocketCallback<>() {
-      @Override
-      public void complete(final WebSocketChannel webSocketChannel, final Void unused) {
-        pending.addAndGet(-messageSize);
-      }
+    try {
+      WebSockets.sendText(text, channel, new WebSocketCallback<>() {
+        @Override
+        public void complete(final WebSocketChannel webSocketChannel, final Void unused) {
+          pending.addAndGet(-messageSize);
+        }
 
-      @Override
-      public void onError(final WebSocketChannel webSocketChannel, final Void unused, final Throwable throwable) {
-        pending.addAndGet(-messageSize);
-      }
-    });
+        @Override
+        public void onError(final WebSocketChannel webSocketChannel, final Void unused, final Throwable throwable) {
+          pending.addAndGet(-messageSize);
+        }
+      });
+    } catch (final RuntimeException e) {
+      // The frame never reached Undertow's own queue, so nothing is outstanding: give the reservation back
+      // rather than let a channel that fails synchronously leak budget for the rest of the connection's life.
+      // Mirrors WebSocketEventBus.publish()'s same guard around its own WebSocketFrameSender.send() call.
+      pending.addAndGet(-messageSize);
+      throw e;
+    }
     return true;
   }
 
