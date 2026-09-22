@@ -398,6 +398,12 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
    * @throws BufferUnderflowException when either operand holds fewer than {@code length} bytes to compare
    */
   public int mismatch(final byte[] other, final int length) {
+    if (length == 0)
+      // NOTHING TO COMPARE AND NOTHING TO CONSUME. Returned before checkForFetching() so that an empty run cannot
+      // trigger a fetch sitting exactly at the end of the content, which the getByte() loop this replaces - whose
+      // body simply never ran for an empty run - would not have triggered either
+      return -1;
+
     checkForFetching(length);
     if (length > buffer.remaining() || length > other.length)
       // WHAT THE getByte() RUN THIS REPLACES WOULD THROW ONCE IT WALKED PAST THE LIMIT, JUST RAISED UP FRONT - and
