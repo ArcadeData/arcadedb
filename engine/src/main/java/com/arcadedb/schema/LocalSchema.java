@@ -96,6 +96,26 @@ public class LocalSchema implements Schema {
   public static final String                                 SCHEMA_PREV_FILE_NAME         = "schema.prev.json";
   public static final String                                 CACHED_COUNT_FILE_NAME_LEGACY = "cached-count.json"; // DEPRECATED FROM v25.2.1
   public static final String                                 STATISTICS_FILE_NAME          = "statistics.json";
+  /**
+   * Format version of {@link #STATISTICS_FILE_NAME}, written as a reserved top-level key and bumped whenever a
+   * value the file carries stops being trustworthy when written by an older build. Version 1 means "the cached
+   * record counts in this file were maintained by a build that carries the #7126 fix" (issue #8040): every build
+   * up to and including 26.9.1 folded a replayed Raft entry's record-count delta twice, so a counter it persisted
+   * may be wrong in either direction and nothing in the file says which. A file with no marker - which is every
+   * file written before this change - therefore has its counts dropped on load, and the buckets recompute
+   * authoritatively on their next {@code count()}. The marker is written back on the next clean close, so the
+   * recount is paid once and never again.
+   * <p>
+   * The comparison is {@code >=}, and the contract that makes that right is monotonic: a bump means "counts written
+   * before this version cannot be trusted", never "counts written after it cannot be read". A future change of the
+   * opposite kind - one that makes a NEWER file unsafe for an older build to believe - is not expressible by
+   * bumping this, and would need the older build to refuse what it does not recognise instead.
+   */
+  public static final int                                    STATISTICS_FORMAT_VERSION     = 1;
+  /**
+   * Cannot collide with a bucket name: {@link #checkValidBucketName} rejects ':' as illegal on Windows.
+   */
+  static final String                                        STATISTICS_FORMAT_VERSION_KEY = "@arcadedb:statisticsFormat";
   public static final int                                    BUILD_TX_BATCH_SIZE           = 100_000;
 
   // The rest of the NTFS/Windows-reserved character set beyond '/', '\' and '*', which checkValidBucketName()
@@ -2299,20 +2319,43 @@ public class LocalSchema implements Schema {
         json = new JSONObject(fileContent);
       }
 
+      // #8040: a file written by a build that predates the #7126 fix may carry a record count that was folded
+      // twice on a Raft replay, and nothing in it says which counters those are. The legacy file (<v25.2.1) is
+      // older still, so it is never trusted either. Only the counts are dropped: the page free-space entries are
+      // allocation hints that cost a wrong guess at worst, and the counter is what count(*) answers from.
+      final boolean countsAreTrustworthy = !legacyFile && json.getInt(STATISTICS_FORMAT_VERSION_KEY, 0) >= STATISTICS_FORMAT_VERSION;
+      int droppedCounts = 0;
+
       for (String key : json.keySet()) {
+        if (STATISTICS_FORMAT_VERSION_KEY.equals(key))
+          continue;
+
         final LocalBucket bucket = lookupBucket(key);
         if (bucket != null) {
           if (legacyFile) {
-            bucket.setCachedRecordCount(json.getLong(key));
+            ++droppedCounts;
           } else {
             final JSONObject obj = json.getJSONObject(key);
-            if (!obj.isNull("count"))
-              bucket.setCachedRecordCount(obj.getLong("count"));
+            if (!obj.isNull("count")) {
+              if (countsAreTrustworthy)
+                bucket.setCachedRecordCount(obj.getLong("count"));
+              else
+                ++droppedCounts;
+            }
             if (!obj.isNull("pages"))
               bucket.setPageStatistics(obj.getJSONArray("pages"));
           }
         }
       }
+
+      if (droppedCounts > 0)
+        // WARNING, not INFO: this is the one line that tells an operator why count(*) on this node is about to
+        // change, and #8040 is a report of that drift being mistaken for HA state divergence. A message nobody's
+        // log configuration shows would leave them in exactly the position the fix exists to get them out of.
+        LogManager.instance().log(this, Level.WARNING,
+            "Database '%s': discarded the cached record count of %d bucket(s) because '%s' was written by a build that"
+                + " could persist a wrong count (issue #8040). The affected buckets recompute on their next count().",
+            null, database.getName(), droppedCounts, file.getName());
 
     } catch (Throwable e) {
       LogManager.instance().log(this, Level.WARNING, "Error on reading cached count file", e);
@@ -2329,6 +2372,12 @@ public class LocalSchema implements Schema {
       final JSONObject json = new JSONObject();
       for (Map.Entry<String, LocalBucket> b : bucketMap.entrySet())
         json.put(b.getKey(), b.getValue().getStatistics());
+
+      // Written last and only if no bucket claimed the key: ':' is not a legal bucket name character, so this
+      // cannot happen - and if it somehow did, losing a bucket's statistics to the marker would be the worse
+      // trade. A file with no marker is simply read as untrustworthy, which costs one recount.
+      if (!json.has(STATISTICS_FORMAT_VERSION_KEY))
+        json.put(STATISTICS_FORMAT_VERSION_KEY, STATISTICS_FORMAT_VERSION);
 
       try (final FileWriter file = new FileWriter(new File(directory, STATISTICS_FILE_NAME))) {
         file.write(json.toString());

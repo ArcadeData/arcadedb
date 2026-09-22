@@ -347,6 +347,13 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     private long danglingPlaceholderPointers;
     private long danglingPlaceholderPointersFixed;
     private long totalErrors;
+    /**
+     * Whether the walk's countable tally is an exact answer to "what would {@code count()} return on the state the
+     * cached counter was taken from" (#8040). False as soon as the pass cannot read a slot or a page - the tally is
+     * then short by an unknown amount - or as soon as a repair of its own changes how many slots are countable,
+     * because the cached counter was read before that repair and no bucket delta records it.
+     */
+    private boolean recordCountComparable = true;
 
     private final List<String> warnings               = new ArrayList<>();
     private final List<RID>    deletedRecordsAfterFix = new ArrayList<>();
@@ -1238,8 +1245,20 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     final RepairTransaction repairTx = new RepairTransaction(database,
             fix ? RepairTransaction.configuredBatchPages(database) : 0);
 
+    // #8040: read HERE - before the invalidation just below, and before the nested repair transaction that
+    // repairTx.begin() opens - because this is the value count(*) has been answering with, read from the same
+    // transaction the walk of a read-only run reads its pages through. A bucket the caller's transaction has
+    // pending changes on is not offered for comparison at all (-1, the same "nothing known" sentinel the counter
+    // itself uses): the counter carries the COMMITTED count, the walk sees the transaction's view, and the two
+    // sides would differ by the pending delta alone. That is the state a full-scope CHECK DATABASE FIX reaches by
+    // the time it gets here - DatabaseChecker.deleteCorruptedRecords books a delta per record it removed - and a
+    // run that is repairing a database is the last one that should be inventing findings.
+    final TransactionContext callerTransaction = database.getTransactionIfExists();
+    final long cachedRecordCountBefore =
+            callerTransaction != null && callerTransaction.getBucketRecordDelta(fileId) != 0 ? -1 : cachedRecordCount.get();
+
     if (!fix)
-      return checkInternal(verboseLevel, false, repairTx);
+      return checkInternal(verboseLevel, false, repairTx, cachedRecordCountBefore);
 
     // #6320: the counter count(*) answers from is invalidated BEFORE the first repair, not only after the last one.
     // A repair used to be one transaction, so nothing it did was durable until the end and the invalidation at the
@@ -1255,7 +1274,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     repairTx.begin();
     boolean completed = false;
     try {
-      final Map<String, Object> stats = checkInternal(verboseLevel, true, repairTx);
+      final Map<String, Object> stats = checkInternal(verboseLevel, true, repairTx, cachedRecordCountBefore);
       completed = true;
       return stats;
     } finally {
@@ -1263,7 +1282,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     }
   }
 
-  private Map<String, Object> checkInternal(final int verboseLevel, final boolean fix, final RepairTransaction repairTx) {
+  /**
+   * @param cachedRecordCountBefore the counter {@code count(*)} was answering from when {@link #check} was entered,
+   *                                or -1 when there is nothing to compare the walk's tally against (see #8040 there).
+   */
+  private Map<String, Object> checkInternal(final int verboseLevel, final boolean fix, final RepairTransaction repairTx,
+                                            final long cachedRecordCountBefore) {
     final Map<String, Object> stats = new HashMap<>();
 
     final int totalPages = getTotalPages();
@@ -1337,6 +1361,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             // The slot's offset is not readable, so what it held was never known: it may have been a chunk head whose
             // chain nothing walked, and chunks nobody marked must not be mistaken for orphans.
             chunkReachabilityComplete = false;
+            // ... and count() cannot read it either, so the tally is not the number count(*) should be serving (#8040).
+            totals.recordCountComparable = false;
             warning = "invalid record offset %d in page for record %s".formatted(recordPositionInPage, rid);
             if (fix) {
               deleteRecordInternal(rid, true, true, true);
@@ -1393,6 +1419,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                     category = SlotCategory.DELETED;
                     allocated = false;
                     recordSize[0] = 0;
+                    // A countable slot fewer than the cached counter describes, and deleteRecordInternal books no
+                    // bucket delta: the two numbers are no longer comparable (#8040).
+                    totals.recordCountComparable = false;
                   }
                 }
 
@@ -1419,6 +1448,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                   repairedAwaySlots.add(rid.getPosition());
                   category = SlotCategory.DELETED;
                   allocated = false;
+                  // See the chunk-chain repair above: one countable slot fewer, booked by no bucket delta (#8040).
+                  totals.recordCountComparable = false;
                 }
               }
 
@@ -1440,6 +1471,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
               // A slot that could not even be read may have been a chunk head, and what it reached is now unknown:
               // the sweep must not conclude that the chunks nothing else claims are unreachable.
               chunkReachabilityComplete = false;
+              // Unread, so uncounted, so the tally no longer answers for count(*) - whether or not it is repaired
+              // away below (#8040).
+              totals.recordCountComparable = false;
 
               if (fix && !(e instanceof RecordNotFoundException)) {
                 deleteRecordInternal(rid, true, true, true);
@@ -1511,6 +1545,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // The heads on a page that could not be read never walked their chains: their chunks are unmarked and must
         // not be mistaken for orphans.
         chunkReachabilityComplete = false;
+        // A whole page of slots missing from the tally, so it is short by an unknown amount (#8040).
+        totals.recordCountComparable = false;
         warning = "unknown error on checking page %d: %s".formatted(pageId, e.getMessage());
       }
 
@@ -1534,6 +1570,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // for.
     reconcilePlaceholderPointers(totals, placeholderPointers, repairedAwaySlots, totalPages, verboseLevel, fix, repairTx);
     reclaimOrphanedChunks(totals, chunkSlots, reachableChunks, chunkReachabilityComplete, verboseLevel, fix, repairTx);
+
+    // AFTER both reconciliations, because they are what make the tally the final answer, and BEFORE the
+    // invalidation below, which is the repair it reports (#8040).
+    reconcileCachedRecordCount(totals, stats, cachedRecordCountBefore, fix, verboseLevel);
 
     if (fix)
       // #5149: reconcile the cached record counter that count(*) relies on. Invalidating forces the next
@@ -1683,6 +1723,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
             --totals.totalPlaceholderRecords;
             --totals.totalAllocatedRecords;
             ++totals.totalDeletedRecords;
+            // A pointer IS a countable slot to count(), and freeing it books no bucket delta: the cached counter
+            // was read before this removal, so the two are no longer comparable (#8040).
+            totals.recordCountComparable = false;
           } catch (final Exception e) {
             if (orphanedByThisRun)
               // It was not going to be reported at all, and now it has to be: the pointer stays.
@@ -1717,6 +1760,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         --totals.totalMultiPageRecords;
         ++totals.totalSurrogateRecords;
         ++totals.totalErrors;
+        // Unconditionally, fix or not (#8040). The two lines above have already re-classified the head out of the
+        // countable categories - a surrogate is not counted, the ambiguous FIRST_CHUNK head the slot still carries
+        // is - so from here the tally deliberately disagrees with what count() would answer, whether or not the
+        // repair below goes on to make the slot say what the tally now says.
+        totals.recordCountComparable = false;
 
         // A repair, never a deletion: the record is intact, only the marker that says whose it is was never written.
         // Reported as an error whether or not it is fixed, because unfixed it is one a user can see - the content is
@@ -6234,6 +6282,83 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
       pageIds[j + 1] = kPage;
       pageStats[j + 1] = kStats;
     }
+  }
+
+  /**
+   * Compares the counter {@code count(*)} answers from against the countable slots this pass actually walked, and
+   * reports a disagreement (#8040).
+   * <p>
+   * The pass already reads every slot of the bucket, so the authoritative number is in hand and the comparison is
+   * free. Nothing did it before, which is what let the #7126 double-fold hide: the counter is persisted in
+   * {@code statistics.json} and restored on open, so a node whose counter drifted reported a perfectly clean
+   * {@code CHECK DATABASE} while {@code count(*)} disagreed with a full scan - and, in a cluster, disagreed with
+   * its replicas, which is indistinguishable from HA state divergence until somebody scans by hand. #8040 is that
+   * diagnosis being made the hard way in production.
+   * <p>
+   * <b>What is compared.</b> {@code count()} counts three slot shapes - a record of its own, a placeholder POINTER
+   * and a {@code FIRST_CHUNK} head - which are exactly the ACTIVE, PLACEHOLDER_POINTER and MULTI_PAGE categories of
+   * the walk, so their sum is what {@code count()} would return on the bucket as this pass found it.
+   * <p>
+   * <b>When it stays silent.</b> With a counter that was never computed (-1 - there is nothing to be wrong), with a
+   * bucket the caller's transaction has pending changes on (see {@link #check}), whenever
+   * {@link CheckStats#recordCountComparable} says this run's own repairs or an unreadable page moved one side of the
+   * comparison without the other, and - on a read-only run - when another transaction committed into this bucket
+   * while the walk was running. A false "your counters are wrong" on a database being repaired, or on a live node
+   * somebody is already diagnosing, would be worse than no report at all.
+   * <p>
+   * <b>The repair is the invalidation {@code check(fix=true)} already makes</b>: the next {@code count()} rescans and
+   * republishes. A read-only run only reports, like every other finding here.
+   *
+   * @author Luca Garulli (l.garulli@arcadedata.com)
+   */
+  private void reconcileCachedRecordCount(final CheckStats totals, final Map<String, Object> stats,
+                                          final long cachedRecordCountBefore, final boolean fix, final int verboseLevel) {
+    stats.put("staleRecordCounters", 0L);
+    stats.put("staleRecordCountersFixed", 0L);
+
+    if (cachedRecordCountBefore < 0 || !totals.recordCountComparable)
+      return;
+
+    final long scanned = totals.totalActiveRecords + totals.totalPlaceholderRecords + totals.totalMultiPageRecords;
+
+    if (cachedRecordCountBefore == scanned)
+      return;
+
+    if (!fix && cachedRecordCount.get() != cachedRecordCountBefore)
+      // A commit landed on this bucket while the walk was running: its fold moved the counter, so the number read
+      // at the top and the slots counted since describe different moments and the disagreement proves nothing. The
+      // signal is a real one rather than a guess - a commit that publishes records into this bucket ALWAYS folds
+      // its delta into the counter (TransactionContext.commit2ndPhase, skipped only at -1, which this method
+      // already declines to compare) - so a counter that moved says the walk was not looking at one point in time.
+      // It matters because a read-only CHECK DATABASE is the one form an operator runs on a live node, which is
+      // exactly how #8040 was diagnosed, and a false "your counters are wrong" there would send them looking for
+      // the defect this exists to report.
+      //
+      // Not exact in the other direction, and deliberately so: several commits whose deltas happen to cancel leave
+      // the counter reading what it read before, so a walk torn by those is still compared. Closing that would mean
+      // holding the bucket against writers for the length of a full scan, which is a cost every CHECK DATABASE on
+      // every healthy bucket would pay for a window this narrow; a spurious warning there costs one recount and
+      // says exactly which bucket to look at.
+      //
+      // Under FIX the signal is unavailable - check() sets the counter to -1 before the first repair (#6320), so
+      // nothing folds into it for this to observe - and it is not needed: a repair pass already assumes no
+      // concurrent writers, which is what its own #5149 invalidation comment and the CHECK DATABASE documentation
+      // both say.
+      return;
+
+    ++totals.totalErrors;
+    stats.put("staleRecordCounters", 1L);
+    if (fix)
+      stats.put("staleRecordCountersFixed", 1L);
+
+    final String warning = ("cached record count of bucket '%s' is %d but the bucket holds %d records: count(*) on this"
+            + " bucket %s by %d%s").formatted(componentName, cachedRecordCountBefore, scanned,
+            cachedRecordCountBefore > scanned ? "over-reports" : "under-reports", Math.abs(cachedRecordCountBefore - scanned),
+            fix ? " - the counter is recomputed" : "; run CHECK DATABASE FIX to recompute the counter");
+
+    totals.warnings.add(warning);
+    if (verboseLevel > 0)
+      LogManager.instance().log(this, Level.SEVERE, "- " + warning);
   }
 
   public JSONObject getStatistics() {

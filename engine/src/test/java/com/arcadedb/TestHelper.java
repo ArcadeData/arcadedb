@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.MutablePage;
@@ -245,6 +246,49 @@ public abstract class TestHelper {
       db.close();
 
     assertThat(activeDatabases.isEmpty()).as("Found active databases: " + activeDatabases).isTrue();
+  }
+
+  /**
+   * The raw removal a corruption fixture makes: {@code Bucket.deleteRecord} frees the slot without going through the
+   * record-level delete path, so the record is gone from every scan while whatever referenced it is left dangling -
+   * which is exactly the damage these tests hand to {@code CHECK DATABASE}.
+   * <p>
+   * It is also why the bucket delta has to be booked here. {@code Bucket.deleteRecord} deliberately does not maintain
+   * {@code cachedRecordCount} - the counter {@code count(*)} answers from - and every engine caller of it books the
+   * {@code -1} itself (see {@code DatabaseChecker.deleteCorruptedRecords} and
+   * {@code GraphDatabaseChecker.deleteCorruptedRecord}). A fixture that skips it leaves the counter one too high per
+   * record, which since #8040 {@code CHECK DATABASE} reports - so the run would fail on the fixture rather than on
+   * anything the test is about.
+   * <p>
+   * Must be called inside an active transaction, which is where the delta is accumulated.
+   */
+  public static void deleteRecordAtLowLevel(final Database db, final RID rid) {
+    deleteRecordAtLowLevel(db, rid, false);
+  }
+
+  /**
+   * The {@code force} variant, for a fixture that has to remove a record an ordinary delete refuses - a structurally
+   * broken chunk chain. Same accounting, and the delta is booked only once the delete has actually returned, so a
+   * call that throws (which is what several of these fixtures assert) books nothing.
+   */
+  public static void deleteRecordAtLowLevel(final Database db, final RID rid, final boolean force) {
+    db.getSchema().getBucketById(rid.getBucketId()).deleteRecord(rid, force);
+    ((DatabaseInternal) db).getTransaction().updateBucketRecordDelta(rid.getBucketId(), -1);
+  }
+
+  /**
+   * The companion of {@link #deleteRecordAtLowLevel}: {@code LocalBucket.restoreRecordAtPosition} performs the
+   * physical page write only, and {@code LocalDatabase.restoreRecord} is what folds the matching {@code +1} into the
+   * cached record counter (#6069). A fixture calling the bucket primitive directly owes that fold for the same reason
+   * it owes the {@code -1} on the way out.
+   * <p>
+   * Must be called inside an active transaction.
+   */
+  public static RID restoreRecordAtLowLevel(final Database db, final LocalBucket bucket, final long position,
+      final Record record) {
+    final RID rid = bucket.restoreRecordAtPosition(position, record);
+    ((DatabaseInternal) db).getTransaction().updateBucketRecordDelta(bucket.getFileId(), +1);
+    return rid;
   }
 
   /**

@@ -41,6 +41,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue7126BucketCountReplayTest extends TestHelper {
+  /**
+   * These tests plant a deliberately wrong cached record counter, which is the whole subject here, so the blanket
+   * end-of-test integrity check would report it as the #8040 finding it is.
+   */
+  @Override
+  protected boolean isCheckingDatabaseIntegrity() {
+    return false;
+  }
 
   @Override
   protected void beginTest() {

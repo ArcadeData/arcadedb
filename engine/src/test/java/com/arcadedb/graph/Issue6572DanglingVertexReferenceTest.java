@@ -223,7 +223,7 @@ class Issue6572DanglingVertexReferenceTest extends TestHelper {
   }
 
   private void deleteRecord(final RID rid) {
-    database.transaction(() -> database.getSchema().getBucketById(rid.getBucketId()).deleteRecord(rid));
+    database.transaction(() -> TestHelper.deleteRecordAtLowLevel(database, rid));
     database.transaction(() -> assertThat(database.existsRecord(rid)).isFalse());
   }
 
