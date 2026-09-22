@@ -315,7 +315,9 @@ public class Select {
             + ": the left operand of a comparison must be a property or a parameter");
       // SelectTreeNode.toJSON() writes a `between` range and an `in` candidate list as a plain JSON array of
       // literals. Reading every right-hand array back as a nested condition is what stopped those two operators
-      // round-tripping at all (found alongside #8173).
+      // round-tripping at all (found alongside #8173). LITERALS ONLY, WHICH IS ALL THE WRITER EVER EMITS AND ALL THE
+      // FLUENT BUILDER CAN PRODUCE: a ":property" or "#parameter" INSIDE such a list stays the literal string,
+      // because `between` and `in` evaluate their range/candidates as values, not as runtime operands.
       return array.toList();
     }
     if (operand instanceof String string && string.startsWith(":"))
