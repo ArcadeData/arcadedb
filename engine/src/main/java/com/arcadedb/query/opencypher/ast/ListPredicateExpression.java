@@ -66,7 +66,9 @@ public class ListPredicateExpression implements Expression {
     final Iterable<?> iterable;
     if (listValue instanceof Iterable)
       iterable = (Iterable<?>) listValue;
-    else if (listValue.getClass().isArray())
+    else if (MultiValue.isSequenceArray(listValue))
+      // A byte[] (BINARY) is deliberately excluded: it is one opaque value everywhere in openCypher, the same
+      // rule UNWIND already applies, not a sequence to explode one byte at a time (issue #8098).
       iterable = arrayToList(listValue);
     else
       throw new IllegalArgumentException("List predicate requires an iterable, got: " + listValue.getClass().getSimpleName());
@@ -181,18 +183,13 @@ public class ListPredicateExpression implements Expression {
   }
 
   /**
-   * Boxes any array by its actual component type. The hand-rolled ladder this replaced covered only
-   * {@code Object[]}, {@code int[]}, {@code long[]} and {@code double[]}, so an {@code ARRAY_OF_FLOATS} or
-   * {@code ARRAY_OF_SHORTS} property - or any other component type - produced an empty element list, which
-   * turns {@code all()} into vacuous truth and {@code any()} into false with no error (issue #8036).
-   * <p>
-   * A {@code byte[]} is boxed here one byte at a time, which is what {@code ListComprehensionExpression},
-   * {@code ReduceExpression} and {@code AllReduceExpression} already do through the explicit {@code byte[]} arm
-   * in each of their own ladders. It is deliberately NOT the rule {@code UnwindStep} takes, which excludes a
-   * {@code byte[]} through {@code MultiValue.isSequenceArray()} so that a {@code BINARY} property stays one
-   * opaque value, as it is in SQL. Issue #8098 is where that disagreement gets settled for every clause at
-   * once; until then the behaviour here is pinned by
-   * {@code CypherUnwindArrayComponentTypeIssue8036Test.listPredicatesOverABinaryPropertyEvaluateOncePerByteUntilIssue8098IsSettled}.
+   * Boxes any array by its actual component type via {@link MultiValue#getMultiValueAsList}, so a property typed
+   * {@code ARRAY_OF_FLOATS} or {@code ARRAY_OF_SHORTS} is walked like any other array instead of silently
+   * producing an empty element list - which used to turn {@code all()}/{@code none()} into vacuous truth and
+   * {@code any()}/{@code single()} into false with no error (issue #8036). A {@code byte[]} (BINARY) never
+   * reaches this method: {@link #evaluate} excludes it with {@link MultiValue#isSequenceArray} first, the same
+   * guard every other openCypher call site now applies, so a BINARY property is one opaque value everywhere
+   * (issue #8098) rather than exploding into individual bytes here.
    */
   private List<Object> arrayToList(final Object array) {
     return MultiValue.getMultiValueAsList(array);

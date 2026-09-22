@@ -89,9 +89,10 @@ public class InExpression implements BooleanExpression {
         return null; // x IN null -> null
       if (listValue instanceof Collection<?> coll) {
         valuesToCheck = coll;
-      } else if (listValue.getClass().isArray()) {
+      } else if (MultiValue.isSequenceArray(listValue)) {
         // Includes primitive arrays (long[], int[], double[], ...) coming from JSON numeric-array
-        // query parameters (issue #4284).
+        // query parameters (issue #4284). A byte[] (BINARY) is deliberately excluded: it is one opaque
+        // value everywhere in openCypher, the same rule UNWIND already applies (issue #8098).
         valuesToCheck = MultiValue.getMultiValueAsList(listValue);
       } else
         throw new IllegalArgumentException(
