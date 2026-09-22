@@ -467,6 +467,15 @@ public class ChatStorage {
    * Two colliding usernames' first requests can race and both attempt the write; harmless, since
    * {@link #markPermanentlyAmbiguous} writes an empty file whose only meaning is that it exists, so a
    * double write says nothing a single one did not already say.
+   * <p>
+   * The name keeps {@code legacyName}'s original case on purpose, and is NOT folded to a canonical
+   * spelling (review on PR #8186). The marker lives in the same directory as the legacy directory it
+   * describes, so the filesystem folds the two names by exactly the same rule: where
+   * {@code chats/Alice} and {@code chats/alice} are one directory, {@code .Alice.ambiguous-migration}
+   * and {@code .alice.ambiguous-migration} are one file, and where they are two directories they are
+   * two files. Folding the marker name by hand would break the second case - one record would then
+   * cover two genuinely distinct directories, and an operator resolving one of them and deleting the
+   * marker would silently drop the other's refusal too.
    */
   private File ambiguityMarkerFile(final String legacyName) {
     return Paths.get(rootPath, "chats", "." + legacyName + ".ambiguous-migration").toFile();
