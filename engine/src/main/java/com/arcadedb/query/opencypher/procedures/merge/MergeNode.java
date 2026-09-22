@@ -35,7 +35,7 @@ import java.util.Map;
 import java.util.stream.Stream;
 
 /**
- * Procedure: merge.node(labels, matchProps, createProps, onMatchProps)
+ * Procedure: merge.node(labels, matchProps, createProps = {}, onMatchProps = {})
  * <p>
  * Merges a node with the specified labels. If a node with the given labels
  * and matching properties exists, it returns the existing node - applying
@@ -43,9 +43,17 @@ import java.util.stream.Stream;
  * matchProps and createProps.
  * </p>
  * <p>
+ * Both {@code createProps} and {@code onMatchProps} are optional and default to an empty map, matching APOC's
+ * {@code apoc.merge.node(labels :: LIST<STRING>, identProps :: MAP, onCreateProps = {} :: MAP, onMatchProps = {} ::
+ * MAP)} - a call that omits either is the shape APOC's own documentation example uses (issue #8102).
+ * </p>
+ * <p>
  * Example:
  * <pre>
  * CALL merge.node(['Person'], {name: 'John'}, {age: 30}) YIELD node
+ * RETURN node
+ *
+ * CALL merge.node(['Person'], {name: 'John'}) YIELD node
  * RETURN node
  * </pre>
  * </p>
@@ -65,9 +73,14 @@ public class MergeNode implements CypherProcedure {
     return NAME;
   }
 
+  /**
+   * Two, not three: APOC declares {@code onCreateProps} with a default, so a call that omits it is a call this
+   * procedure has to accept (issue #8102), exactly as {@code refactor.mergeNodes} had to for its own trailing
+   * {@code config} (issue #7427). {@link #extractOptionalMap} supplies the absent map in its place.
+   */
   @Override
   public int getMinArgs() {
-    return 3;
+    return 2;
   }
 
   @Override
@@ -98,8 +111,8 @@ public class MergeNode implements CypherProcedure {
     // Extract arguments
     final List<String> labels = extractLabels(args[0]);
     final Map<String, Object> matchProps = extractMap(args[1], "matchProps");
-    final Map<String, Object> createProps = extractMap(args[2], "createProps");
-    final Map<String, Object> onMatchProps = args.length > 3 ? extractMap(args[3], "onMatchProps") : null;
+    final Map<String, Object> createProps = extractOptionalMap(args, 2, "createProps");
+    final Map<String, Object> onMatchProps = extractOptionalMap(args, 3, "onMatchProps");
 
     if (labels.isEmpty()) {
       throw new IllegalArgumentException(getName() + "(): at least one label is required");
@@ -228,6 +241,19 @@ public class MergeNode implements CypherProcedure {
 
     throw new IllegalArgumentException(
         getName() + "(): labels must be a list or string, got " + arg.getClass().getSimpleName());
+  }
+
+  /**
+   * The map at {@code index}, or the empty map when the caller stopped short of that argument - the value APOC
+   * declares as its default, so the absent slot carries the default itself rather than a {@code null} that only
+   * happens to behave like one downstream. {@code validateArgs} has already run, so a shorter array means the
+   * argument is one APOC declares with a default and not a malformed call (issue #8102).
+   * <p>
+   * An explicitly passed {@code null} still resolves to {@code null}, via {@link #extractMap}; {@link #execute}
+   * sets no property from either.
+   */
+  private Map<String, Object> extractOptionalMap(final Object[] args, final int index, final String paramName) {
+    return index < args.length ? extractMap(args[index], paramName) : Map.of();
   }
 
   @SuppressWarnings("unchecked")
