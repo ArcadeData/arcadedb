@@ -182,6 +182,12 @@ class Issue8166ExportCountsVanishedBlocksTest {
 
       assertThat(context.skippedRecords.get())
           .as("the coarsened type is recorded as a gap, which makes the export a failed outcome").isEqualTo(1);
+      assertThat(context.partialTimeSeriesTypes.get())
+          .as("and named separately, because unlike a skipped record it DID leave rows in the archive")
+          .isEqualTo(1);
+      assertThat(tsTypesInExport())
+          .as("which is the point of the distinction: there really are rows on disk under its name")
+          .contains("Reading");
       assertThat(context.timeSeriesSamples.get())
           .as("and the OTHER type was still exported rather than lost with it").isGreaterThan(0);
 

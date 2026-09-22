@@ -374,11 +374,17 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
           // Fails THIS type, not the whole export (issue #8166, review of PR #8197). A downsample is a scheduled
           // maintenance event and an export of a large database is long, so the two overlap; aborting everything
           // would throw away the vertices, edges, documents and other TIMESERIES types already written and make
-          // the operator re-run the lot to learn about one series. Counted as a skipped record instead, which is
-          // the mechanism issue #6471 already established for a part of the export that could not be written:
-          // every other type is still exported, and Exporter turns a non-zero count into a failed outcome at the
-          // end, so the run is still loudly incomplete rather than silently short - which is the whole point.
+          // the operator re-run the lot to learn about one series. Counted as a skipped record, which is the
+          // mechanism issue #6471 established for a part of the export that could not be written: every other
+          // type is still exported, and Exporter turns a non-zero count into a failed outcome at the end, so the
+          // run is loudly incomplete rather than silently short - which is the whole point.
+          //
+          // And counted a SECOND time, under its own name. The chunks already flushed for this type stay in the
+          // archive - they are real rows, just fewer than the type holds - which is not the shape a skipped
+          // record has, since that one produced no output at all. A consumer reading skippedRecords as "nothing
+          // was written for this" would be wrong here, so partialTimeSeriesTypes says which types those are.
           context.skippedRecords.incrementAndGet();
+          context.partialTimeSeriesTypes.incrementAndGet();
           LogManager.instance().log(this, Level.SEVERE,
               "TIMESERIES type '%s' was downsampled while this export was reading it, so the samples written for "
                   + "it are PARTIAL and at a finer resolution than the store now holds; re-run the export for a "

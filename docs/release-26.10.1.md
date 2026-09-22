@@ -67,7 +67,9 @@ server-fault code.
 Through `EXPORT DATABASE` it fails only the type it happened to - counted as a skipped record, logged at SEVERE
 naming the type, and the export goes on to the remaining types. The run still ends as a failed outcome, because
 a non-zero skipped-record count already does that, so nothing is silent; but a multi-hour export does not throw
-away everything it had written because one series was downsampled under it.
+away everything it had written because one series was downsampled under it. Such a type is also counted under
+`partialTimeSeriesTypes`, because it is a different shape from an ordinary skipped record: that one produced no
+output at all, while this one left real rows in the archive under its own name - just fewer than the type holds.
 
 `EXPORT DATABASE` also reports sealed blocks that retention removed from under it, as
 `vanishedTimeSeriesBlocks` in the export statistics and as a WARNING naming the type. That count is reported

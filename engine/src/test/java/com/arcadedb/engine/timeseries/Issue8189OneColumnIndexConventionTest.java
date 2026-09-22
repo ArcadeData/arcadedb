@@ -101,10 +101,13 @@ class Issue8189OneColumnIndexConventionTest extends TestHelper {
   }
 
   /**
-   * Matches on the SHAPE and not on the name, so renaming the method back in would not slip past: anything that
-   * returns an {@link AggregationResult} is by construction the single-column path, since the multi-column one
-   * returns {@link MultiColumnAggregationResult}. The name {@code aggregate} is matched as well, for an overload
-   * that returns something else again.
+   * Two nets, and deliberately the broader pair. The load-bearing one is the SHAPE - anything returning an
+   * {@link AggregationResult} is by construction the single-column path, since the multi-column one returns
+   * {@link MultiColumnAggregationResult} - so reintroducing the convention under a different name does not slip
+   * past. The NAME is matched as well, which is wider than it needs to be: a future method called
+   * {@code aggregate} for some unrelated purpose would trip this too. That is the intended trade on a class
+   * whose whole subject is one deleted pair of methods - a false positive costs whoever adds it one look at this
+   * javadoc, and a false negative costs the second convention coming back unnoticed.
    */
   private static List<String> singleColumnAggregationMethodsOf(final Class<?> type) {
     return Arrays.stream(type.getDeclaredMethods())

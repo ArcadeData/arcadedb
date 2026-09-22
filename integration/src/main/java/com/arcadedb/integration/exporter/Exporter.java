@@ -112,6 +112,10 @@ public class Exporter {
       // under a running export is not the same kind of gap a skipped record is (issue #8166).
       if (context.vanishedTimeSeriesBlocks.get() > 0)
         result.put("vanishedTimeSeriesBlocks", context.vanishedTimeSeriesBlocks.get());
+      // Reported ALONGSIDE skippedRecords, which is also incremented for each of these and is what fails the
+      // export: this names which of them left partial rows in the file rather than none at all.
+      if (context.partialTimeSeriesTypes.get() > 0)
+        result.put("partialTimeSeriesTypes", context.partialTimeSeriesTypes.get());
       if (skippedRecords > 0)
         result.put("skippedRecords", skippedRecords);
 
