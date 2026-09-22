@@ -189,6 +189,16 @@ public class Issue8167SelectJsonConditionTreeTest extends TestHelper {
         .json(new JSONObject("{\"fromType\":\"D\",\"where\":[\":a\",\"and\",\":b\"]}")))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("must be a condition");
+
+    // A between range of the wrong arity is refused where the JSON is read, not per record deep in evaluation.
+    assertThatThrownBy(() -> database.select()
+        .json(new JSONObject("{\"fromType\":\"D\",\"where\":[\":b\",\"between\",[1,2,3]]}")))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("exactly two values");
+    assertThatThrownBy(() -> database.select()
+        .json(new JSONObject("{\"fromType\":\"D\",\"where\":[\":b\",\"between\",1]}")))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("exactly two values");
   }
 
   /**
