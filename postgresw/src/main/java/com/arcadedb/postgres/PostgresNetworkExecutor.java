@@ -666,6 +666,8 @@ public class PostgresNetworkExecutor extends Thread {
       // beginImplicitTransactionBlock() reading portal.transactionControl afterwards would never see one.
       if (!applyTransactionControl(portal))
         beginImplicitTransactionBlock(portal);
+      // A SET is applied here and not at Parse (issue #8135), for the same reason as the transaction control above.
+      applyPendingSetting(portal);
 
       if (portal.ignoreExecution)
         // SAVEPOINT/RELEASE/SET and BEGIN/COMMIT/ROLLBACK never produce rows: Execute must answer
@@ -2673,12 +2675,17 @@ public class PostgresNetworkExecutor extends Thread {
       } else if (upperCaseText.startsWith("SET ")) {
         // Strip a trailing ';' before dispatch, mirroring what queryCommand() already does for its own
         // queryText on the simple-query protocol - a Parse message keeps the terminator glued onto the
-        // text, which otherwise reaches setConfiguration() attached to the value (issue #6701).
+        // text, which otherwise reaches parseSetCommand() attached to the value (issue #6701).
         // portal.query itself is left untouched: nothing downstream needs the terminator removed.
+        // Parsed here but APPLIED at Execute (issue #8135), the same split as BEGIN/COMMIT/ROLLBACK below: Parse
+        // prepares a statement, it does not run one, so a SET that is only prepared must not change the session,
+        // and every later Bind+Execute of the cached statement must apply it again rather than only answer it.
         String setText = portal.query.trim();
         if (setText.endsWith(";"))
           setText = setText.substring(0, setText.length() - 1);
-        setConfiguration(setText);
+        portal.setting = parseSetCommand(setText);
+        if (portal.setting == null)
+          LogManager.instance().log(this, Level.WARNING, "Invalid SET command format: %s", setText);
         portal.ignoreExecution = true;
       } else if (systemQuery != null) {
         createResultSet(portal, systemQuery.columnName, systemQueryValue(systemQuery.function));
@@ -2848,10 +2855,27 @@ public class PostgresNetworkExecutor extends Thread {
       LogManager.instance().log(this, Level.WARNING, "Invalid SET command format: %s", query);
       return;
     }
+    applySetting(parts[0], parts[1]);
+  }
 
-    final String paramName = parts[0];
-    final String value = parts[1];
+  /**
+   * Applies the {@code SET} a portal carries, at Execute (issue #8135) - {@code parseCommand()} only parses it and
+   * records it on the portal. The marker is cleared once applied, like {@code applyTransactionControl()}'s: a new
+   * Bind of the prepared statement copies it afresh out of the template, so a cached SET re-executed through a new
+   * Bind applies again, while re-running the same already-executed portal does not. Cleared only AFTER it applied:
+   * {@code SET datestyle} can be refused ({@code LocalSchema.setDateTimeFormat()} checks
+   * {@code UPDATE_DATABASE_SETTINGS}), and a marker consumed by the refused attempt would let a retry of the same
+   * portal answer {@code CommandComplete SET} having applied nothing.
+   */
+  private void applyPendingSetting(final PostgresPortal portal) {
+    final String[] setting = portal.setting;
+    if (setting == null)
+      return;
+    applySetting(setting[0], setting[1]);
+    portal.setting = null;
+  }
 
+  private void applySetting(final String paramName, final String value) {
     if ("datestyle".equals(paramName)) {
       if ("ISO".equalsIgnoreCase(value))
         database.getSchema().setDateTimeFormat(DateUtils.DATE_TIME_ISO_8601_FORMAT);
