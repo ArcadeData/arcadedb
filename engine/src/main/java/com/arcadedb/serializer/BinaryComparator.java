@@ -595,7 +595,11 @@ public class BinaryComparator {
     else if (DateUtils.isDate(a) || DateUtils.isDate(b))
       return DateUtils.dateTimeToTimestampInferringStringPrecision(a, ChronoUnit.NANOS)
           .compareTo(DateUtils.dateTimeToTimestampInferringStringPrecision(b, ChronoUnit.NANOS));
-    else if (a.getClass() == b.getClass())
+    else if (a.getClass() == b.getClass() && a instanceof Comparable)
+      // The instanceof guard matters even for two instances of the identical class: a same-class pair of a type
+      // that does NOT implement Comparable would otherwise hit the blind cast below and throw, instead of
+      // reaching the class-name tiebreak two arms down - which answers 0 for a same-class pair, consistent with
+      // there being no other ordering information available (CodeRabbit review, issue #7879).
       return ((Comparable<Object>) a).compareTo(b);
     else if (a instanceof Number numberA && b instanceof Number numberB)
       // A schemaless property mixes boxed widths routinely - any value read back from JSON, or written by a
@@ -613,6 +617,19 @@ public class BinaryComparator {
       try {
         return ((Comparable<Object>) a).compareTo(b);
       } catch (final ClassCastException e) {
+        // The forward attempt failing does not mean the pair is incomparable: RID#compareTo(String) succeeds,
+        // but the reverse call has String#compareTo(Object) blind-cast the RID and throw - and answering that
+        // direction from the class-name tiebreak instead of the real (negated) comparison breaks antisymmetry
+        // (CodeRabbit review, issue #7879). Try the reverse direction before giving up, still only absorbing
+        // ClassCastException - a domain-specific exception from b's own compareTo() (e.g. RID's parse failure)
+        // must propagate exactly as it would have from the forward attempt.
+        if (b instanceof Comparable) {
+          try {
+            return -((Comparable<Object>) b).compareTo(a);
+          } catch (final ClassCastException e2) {
+            // Neither direction knows how to compare the other: genuinely unrelated types, fall through.
+          }
+        }
         return a.getClass().getName().compareTo(b.getClass().getName());
       }
     }
