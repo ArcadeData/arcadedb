@@ -77,6 +77,9 @@ launch() {
   : >"$PROBE_LOG"
   (
     cd "$HOME_DIR"
+    # The caller's own overrides must not leak in: an exported ARCADEDB_OPTS_HEADERS skips the probe, and a
+    # JAVA_OPTS carrying the flag changes the count. Each case sets only what it names.
+    unset ARCADEDB_OPTS_HEADERS JAVA_OPTS
     env JAVA_HOME="$STUB_JDK" ARCADEDB_PID="$WORK_DIR/arcadedb.pid" STUB_JAVA_FEATURE="$feature" "$@" \
       sh "$HOME_DIR/bin/server.sh" >/dev/null 2>&1
   )
