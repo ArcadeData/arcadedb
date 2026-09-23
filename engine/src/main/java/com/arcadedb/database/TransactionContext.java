@@ -264,6 +264,13 @@ public class TransactionContext implements Transaction {
    * goes through (issue #8053).
    */
   private       String                               rollbackOnlyReason    = null;
+  /**
+   * The write refusal ({@link LocalDatabase#refuseWrites}) in force when this transaction began, or {@code null}
+   * (issue #8270). A transaction begun on a database that was still waiting to be wrapped for replication is refused
+   * at commit even when the refusal has been lifted since: the handle it began on may be the plain database, whose
+   * commit would never reach Raft.
+   */
+  private       String                               begunUnderWriteRefusal = null;
   // KEEPS TRACK OF MODIFIED RECORD IN TX. AT 1ST PHASE COMMIT TIME THE RECORD ARE SERIALIZED AND INDEXES UPDATED. THIS DEFERRING IMPROVES SPEED ESPECIALLY
   // WITH GRAPHS WHERE EDGES ARE CREATED AND CHUNKS ARE UPDATED MULTIPLE TIMES IN THE SAME TX
   // TODO: OPTIMIZE modifiedRecordsCache STRUCTURE, MAYBE JOIN IT WITH UPDATED RECORDS?
@@ -329,6 +336,7 @@ public class TransactionContext implements Transaction {
       throw new TransactionException("Transaction already begun");
 
     status = STATUS.BEGUN;
+    begunUnderWriteRefusal = database instanceof LocalDatabase local ? local.getWriteRefusal() : null;
 
     // Read once per transaction (DATABASE-scope, constant for the DB lifetime): keeps the per-append hot path
     // to a plain field read instead of a configuration lookup.
@@ -1996,11 +2004,15 @@ public class TransactionContext implements Transaction {
           + ". Roll it back and retry");
 
     // Issue #8270: a database opened by an HA server before it is wrapped for replication refuses anything that
-    // would change it. Same placement as the rollback-only refusal above and for the same reason: the status has
-    // not moved yet, so the caller's error handling can still roll the transaction back. A read-only transaction
-    // commits as usual.
-    if (database instanceof LocalDatabase local && local.getWriteRefusal() != null && (updatedRecords != null || hasChanges()))
+    // would change it, and so does a transaction that BEGAN while it did, whatever has happened since. Same
+    // placement as the rollback-only refusal above and for the same reason: the status has not moved yet, so the
+    // caller's error handling can still roll the transaction back. A read-only transaction commits as usual.
+    if (database instanceof LocalDatabase local && (begunUnderWriteRefusal != null || local.getWriteRefusal() != null)
+        && (updatedRecords != null || hasChanges())) {
       local.checkWritesAccepted();
+      throw new NeedRetryException("Database '" + local.getName() + "' did not accept writes when this transaction "
+          + "began (" + begunUnderWriteRefusal + "). Retry it");
+    }
 
     // Acquire file locks BEFORE processing updatedRecords so that updateRecordNoLock
     // (which loads pages and follows multi-page record chunk chains) is serialized.
@@ -2627,6 +2639,7 @@ public class TransactionContext implements Transaction {
     status = STATUS.INACTIVE;
     // The refusal belonged to the transaction that is ending here, not to the context, which begin() reuses.
     rollbackOnlyReason = null;
+    begunUnderWriteRefusal = null;
 
     if (explicitLockedFiles != null) {
       database.getTransactionManager().unlockFilesInOrder(explicitLockedFiles, getRequester());

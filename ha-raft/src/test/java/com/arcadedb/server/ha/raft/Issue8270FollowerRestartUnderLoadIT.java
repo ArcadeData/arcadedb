@@ -100,7 +100,7 @@ class Issue8270FollowerRestartUnderLoadIT extends BaseRaftHATest {
     leaderDb.command("sql", "CREATE INDEX ON " + TYPE_NAME + " (id) UNIQUE");
     waitForAllServers();
 
-    final int restarted = (leaderIndex + 1) % getServerCount();
+    final int restarted = leaderIndex == getServerCount() - 1 ? getServerCount() - 2 : getServerCount() - 1;
     final ArcadeDBServer server = getServer(restarted);
 
     LogManager.instance().log(this, Level.INFO, "TEST: stopping node %d", restarted);
@@ -154,7 +154,7 @@ class Issue8270FollowerRestartUnderLoadIT extends BaseRaftHATest {
 
     // Refusing writes is for the window only: once started, the node takes writes again and they replicate.
     final long lastId = nextId.incrementAndGet();
-    final HttpResponse<String> after = post(server.getHttpServer().getPort(), lastId);
+    final HttpResponse<String> after = post(server, lastId);
     assertThat(after.statusCode()).as("a write on node %d after its restart: %s", restarted, after.body()).isEqualTo(200);
     waitForAllServers();
     assertThat(leader.query("sql", "SELECT FROM " + TYPE_NAME + " WHERE id = ?", lastId).hasNext())
@@ -171,15 +171,14 @@ class Issue8270FollowerRestartUnderLoadIT extends BaseRaftHATest {
   private void writeLoop(final ArcadeDBServer server) {
     while (running.get()) {
       final HttpServer http = server.getHttpServer();
-      final int port = http != null ? http.getPort() : 0;
-      if (port <= 0 || server.getStatus() == ArcadeDBServer.STATUS.OFFLINE) {
+      if (http == null || http.getPort() <= 0 || server.getStatus() == ArcadeDBServer.STATUS.OFFLINE) {
         Thread.onSpinWait();
         continue;
       }
       final long id = nextId.incrementAndGet();
       final boolean starting = server.getStatus() == ArcadeDBServer.STATUS.STARTING;
       try {
-        final HttpResponse<String> response = post(port, id);
+        final HttpResponse<String> response = post(server, id);
         if (starting)
           answeredDuringStart.incrementAndGet();
         if (response.statusCode() == 200)
@@ -190,13 +189,13 @@ class Issue8270FollowerRestartUnderLoadIT extends BaseRaftHATest {
     }
   }
 
-  private HttpResponse<String> post(final int port, final long id) throws Exception {
+  private HttpResponse<String> post(final ArcadeDBServer server, final long id) throws Exception {
     final String auth = "Basic " + Base64.getEncoder()
         .encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes(StandardCharsets.UTF_8));
     final String body = new JSONObject().put("language", "sql").put("command", "INSERT INTO " + TYPE_NAME + " SET id = " + id)
         .toString();
     final HttpRequest request = HttpRequest.newBuilder()
-        .uri(URI.create("http://127.0.0.1:" + port + "/api/v1/command/" + getDatabaseName()))
+        .uri(URI.create(getServerHttpUrl(server, "/api/v1/command/" + getDatabaseName())))
         .timeout(Duration.ofSeconds(30))
         .header("Authorization", auth)
         .header("Content-Type", "application/json")

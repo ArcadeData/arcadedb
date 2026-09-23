@@ -98,6 +98,24 @@ class Issue8270WriteRefusalTest extends TestHelper {
   }
 
   @Test
+  void aTransactionBegunWhileWritesWereRefusedIsRefusedAfterTheyAreAccepted() {
+    // A handle resolved while the database waited to be wrapped may be the plain database even after the wrap: the
+    // transaction it began then must not commit locally just because the refusal has been lifted meanwhile.
+    local().refuseWrites(REASON);
+    database.begin();
+    database.newDocument(TYPE).set("name", "begun-refused").save();
+    local().acceptWrites();
+
+    assertThatThrownBy(() -> database.commit()).isInstanceOf(NeedRetryException.class).hasMessageContaining(REASON);
+    database.rollback();
+    assertThat(database.countType(TYPE, true)).isEqualTo(1L);
+
+    // The next transaction begins with writes accepted and commits.
+    database.transaction(() -> database.newDocument(TYPE).set("name", "after").save());
+    assertThat(database.countType(TYPE, true)).isEqualTo(2L);
+  }
+
+  @Test
   void aSchemaChangeIsRefused() {
     local().refuseWrites(REASON);
 
