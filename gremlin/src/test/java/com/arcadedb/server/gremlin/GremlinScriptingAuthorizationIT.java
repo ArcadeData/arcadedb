@@ -115,6 +115,9 @@ class GremlinScriptingAuthorizationIT extends AbstractGremlinServerIT {
 
     assertThat(executeHttp("root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS, writeGraph)).isEqualTo(200);
     assertThat(ioTarget).exists();
+
+    // Reading a host file into the graph is refused too, even when the file exists.
+    assertRefused(DBADMIN_USER, DBADMIN_PASSWORD, writeGraph.replace(".write()", ".read()"));
   }
 
   @Test
