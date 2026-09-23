@@ -427,6 +427,16 @@ public abstract class ContainersTestTemplate {
    * @param timeoutSeconds maximum time to wait
    */
   protected void waitForAllNodesKnowLeader(final List<ServerWrapper> servers, final int timeoutSeconds) {
+    if (!allNodesKnowLeader(servers, timeoutSeconds))
+      logger.warn("Not all nodes know the Raft leader after {}s — proceeding anyway", timeoutSeconds);
+  }
+
+  /**
+   * Same wait as {@link #waitForAllNodesKnowLeader}, but reports the outcome instead of proceeding anyway.
+   *
+   * @return true when every node reported a non-null {@code leaderHttpAddress} within the timeout
+   */
+  protected boolean allNodesKnowLeader(final List<ServerWrapper> servers, final int timeoutSeconds) {
     final long deadline = System.currentTimeMillis() + (timeoutSeconds * 1000L);
     while (System.currentTimeMillis() < deadline) {
       boolean allKnow = true;
@@ -460,16 +470,16 @@ public abstract class ContainersTestTemplate {
       }
       if (allKnow) {
         logger.info("All {} nodes know the Raft leader", servers.size());
-        return;
+        return true;
       }
       try {
         Thread.sleep(500);
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
-        return;
+        return false;
       }
     }
-    logger.warn("Not all nodes know the Raft leader after {}s — proceeding anyway", timeoutSeconds);
+    return false;
   }
 
   /**
@@ -556,6 +566,20 @@ public abstract class ContainersTestTemplate {
       final String serverList,
       final String quorum,
       final Network network) {
+    return createPersistentArcadeContainer(name, serverList, quorum, network, "-Xms2G -Xmx2G", 3L * 1024 * 1024 * 1024);
+  }
+
+  /**
+   * Same as {@link #createPersistentArcadeContainer(String, String, String, Network)} with an explicit heap and
+   * container memory limit, so larger clusters fit on a CI runner.
+   */
+  protected GenericContainer<?> createPersistentArcadeContainer(
+      final String name,
+      final String serverList,
+      final String quorum,
+      final Network network,
+      final String memoryOpts,
+      final long containerMemoryBytes) {
 
     makeContainersDirectories(name);
 
@@ -584,8 +608,8 @@ public abstract class ContainersTestTemplate {
             -Darcadedb.ha.serverList=%s
             -Darcadedb.server.restoreImportAllowLocalUrls=true
             """, name, quorum, serverList))
-        .withEnv("ARCADEDB_OPTS_MEMORY", "-Xms2G -Xmx2G")
-        .withCreateContainerCmdModifier(cmd -> cmd.getHostConfig().withMemory(3L * 1024 * 1024 * 1024))
+        .withEnv("ARCADEDB_OPTS_MEMORY", memoryOpts)
+        .withCreateContainerCmdModifier(cmd -> cmd.getHostConfig().withMemory(containerMemoryBytes))
         .waitingFor(Wait.forHttp("/api/v1/health").forPort(2480).forStatusCode(204));
     containers.add(container);
     return container;
