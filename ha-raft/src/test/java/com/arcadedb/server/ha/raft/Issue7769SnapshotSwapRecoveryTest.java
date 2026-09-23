@@ -424,6 +424,48 @@ class Issue7769SnapshotSwapRecoveryTest {
     assertThat(backup).doesNotExist();
   }
 
+  /**
+   * The two layouts the issue reproduces with {@code SwapRepro} and {@code SwapRepro2}, as a node killed mid-swap
+   * by a binary that recorded no phase leaves them for this one. Before the fix the first lost {@code A.0.bucket}
+   * from both copies and the second emptied the database directory, each with the marker cleared and success
+   * logged. Now no file is lost in either: the first is preserved for an operator, the second only cleaned up.
+   */
+  @ParameterizedTest
+  @ValueSource(booleans = { false, true })
+  void issueReproLayoutsLoseNoFile(final boolean phase2Finished, @TempDir final Path root) throws Exception {
+    final Path db = root.resolve("databases").resolve("mydb");
+    final Path staged = db.resolve(".snapshot-new");
+    final Path backup = db.resolve(".snapshot-backup");
+    Files.createDirectories(staged);
+    Files.createDirectories(backup);
+    Files.writeString(db.resolve(".snapshot-pending"), "");
+    Files.writeString(staged.resolve(".snapshot-complete"), "");
+    Files.writeString(backup.resolve("A.0.bucket"), "OLD-A");
+    Files.writeString(backup.resolve("B.0.bucket"), "OLD-B");
+    Files.writeString(backup.resolve("schema.json"), "OLD-SCHEMA");
+    Files.writeString(db.resolve("A.0.bucket"), "NEW-A");
+    Files.writeString((phase2Finished ? db : staged).resolve("B.0.bucket"), "NEW-B");
+    Files.writeString((phase2Finished ? db : staged).resolve("schema.json"), "NEW-SCHEMA");
+
+    SnapshotInstaller.recoverPendingSnapshotSwaps(root.resolve("databases"));
+
+    assertThat(db.resolve("A.0.bucket")).hasContent("NEW-A");
+    if (phase2Finished) {
+      assertThat(db.resolve("B.0.bucket")).hasContent("NEW-B");
+      assertThat(db.resolve("schema.json")).hasContent("NEW-SCHEMA");
+      assertThat(db.resolve(".snapshot-pending")).doesNotExist();
+      assertThat(staged).doesNotExist();
+      assertThat(backup).doesNotExist();
+    } else {
+      assertThat(staged.resolve("B.0.bucket")).hasContent("NEW-B");
+      assertThat(staged.resolve("schema.json")).hasContent("NEW-SCHEMA");
+      assertThat(backup.resolve("A.0.bucket")).hasContent("OLD-A");
+      assertThat(backup.resolve("B.0.bucket")).hasContent("OLD-B");
+      assertThat(backup.resolve("schema.json")).hasContent("OLD-SCHEMA");
+      assertThat(db.resolve(".snapshot-pending")).exists();
+    }
+  }
+
   @Test
   void legacyAmbiguousSwapKeepsEveryCopyAndItsPendingMarker(@TempDir final Path root) throws Exception {
     final Path db = root.resolve("database");
