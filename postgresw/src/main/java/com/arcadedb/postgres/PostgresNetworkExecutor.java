@@ -927,6 +927,8 @@ public class PostgresNetworkExecutor extends Thread {
         final PostgresCopyStatement copy = PostgresCopyStatement.parse(query.query);
         final Statement inner = "sql".equalsIgnoreCase(query.language) ? parseStatement(copy.getQuery()) : null;
         final int rows = copyOut(copy, query.language, NO_PARAMETERS, inner, profile);
+        // Unlike the ordinary path below, the CopyData/CopyDone are already sent when this commits, so a failed
+        // commit is reported after them - the same order as PostgreSQL, whose finish_xact_command() follows DoCopy()
         commitSimpleQueryTransaction();
         writeCommandComplete("COPY", rows);
         return;
