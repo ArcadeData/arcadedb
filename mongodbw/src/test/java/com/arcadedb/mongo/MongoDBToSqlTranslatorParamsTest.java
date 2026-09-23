@@ -77,7 +77,7 @@ class MongoDBToSqlTranslatorParamsTest {
   }
 
   @Test
-  void everyValueGetsItsOwnPlaceholder() {
+  void siblingFieldsAreJoinedByImplicitAndAndEachValueGetsItsOwnPlaceholder() {
     final StringBuilder sql = new StringBuilder();
     final Map<String, Object> params = new HashMap<>();
 
@@ -86,8 +86,53 @@ class MongoDBToSqlTranslatorParamsTest {
     query.put("second", "b");
     MongoDBToSqlTranslator.buildExpression(sql, params, query);
 
-    assertThat(sql.toString()).contains(":p0").contains(":p1");
-    assertThat(params).hasSize(2).containsValues("a", "b");
+    assertThat(sql.toString()).isEqualTo("`first` = :p0 AND `second` = :p1");
+    assertThat(params).hasSize(2).containsEntry("p0", "a").containsEntry("p1", "b");
+  }
+
+  /**
+   * The separator counts loop iterations rather than switching on entry type, so a plain equality field sibling
+   * with an operator field (which takes the parenthesized {@link MongoDBToSqlTranslator#buildAnd} branch, not the
+   * plain-equality one covered above) must be AND-joined the same way.
+   */
+  @Test
+  void aPlainFieldAndAnOperatorFieldSiblingAreJoinedByAnd() {
+    final StringBuilder sql = new StringBuilder();
+    final Map<String, Object> params = new HashMap<>();
+
+    final Document query = new Document();
+    query.put("name", "Jay");
+    query.put("age", new Document("$gt", 18));
+    MongoDBToSqlTranslator.buildExpression(sql, params, query);
+
+    assertThat(sql.toString()).isEqualTo("`name` = :p0 AND (`age` > :p1)");
+    assertThat(params).hasSize(2).containsEntry("p0", "Jay").containsEntry("p1", 18);
+  }
+
+  /**
+   * A {@code $or} (or {@code $and}) sibling alongside a plain field is also an implicit AND of the two, per
+   * MongoDB's own semantics for a mixed top-level document.
+   */
+  @Test
+  void aFieldAndATopLevelOrSiblingAreJoinedByAnd() {
+    final StringBuilder sql = new StringBuilder();
+    final Map<String, Object> params = new HashMap<>();
+
+    final Document query = new Document();
+    query.put("status", "active");
+    query.put("$or", List.of(new Document("a", 1), new Document("b", 2)));
+    MongoDBToSqlTranslator.buildExpression(sql, params, query);
+
+    assertThat(sql.toString()).isEqualTo("`status` = :p0 AND (`a` = :p1 OR `b` = :p2)");
+    assertThat(params).hasSize(3).containsEntry("p0", "active").containsEntry("p1", 1).containsEntry("p2", 2);
+  }
+
+  @Test
+  void emptyLogicalArraysAreRejectedRatherThanProducingInvalidSql() {
+    assertThatThrownBy(() -> MongoDBToSqlTranslator.buildExpression(new StringBuilder(), new HashMap<>(),
+        new Document("$and", List.of()).append("name", "Jay"))).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> MongoDBToSqlTranslator.buildExpression(new StringBuilder(), new HashMap<>(),
+        new Document("$or", List.of()).append("name", "Jay"))).isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test

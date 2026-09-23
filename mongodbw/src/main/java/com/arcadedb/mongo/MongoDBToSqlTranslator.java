@@ -39,7 +39,11 @@ import java.util.Map;
 public class MongoDBToSqlTranslator {
 
   protected static void buildExpression(final StringBuilder buffer, final Map<String, Object> params, final Document query) {
+    int expressionCount = 0;
     for (final Map.Entry<String, Object> entry : query.entrySet()) {
+      if (expressionCount++ > 0)
+        buffer.append(" AND ");
+
       final Object key = entry.getKey();
       final Object value = entry.getValue();
 
@@ -151,9 +155,13 @@ public class MongoDBToSqlTranslator {
       sql.append(".size() = ");
       buildValue(sql, params, value);
     } else if ("$or".equals(key)) {
-      buildOr(sql, params, (List) value);
+      if (!(value instanceof List list) || list.isEmpty())
+        throw new IllegalArgumentException("Operator $or requires a non-empty array");
+      buildOr(sql, params, list);
     } else if ("$and".equals(key)) {
-      buildAnd(sql, params, key, value);
+      if (!(value instanceof List list) || list.isEmpty())
+        throw new IllegalArgumentException("Operator $and requires a non-empty array");
+      buildAnd(sql, params, key, list);
     } else if ("$not".equals(key)) {
       // Reached only for a top-level "$not" (no preceding field in the buffer), whose operand is a nested
       // {field: {...}} query fragment - buildExpression(Document) below re-enters buildAnd for it and emits its own
