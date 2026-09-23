@@ -39,6 +39,12 @@ import java.util.Locale;
  * cannot know it is unbalanced until the input ends, so it instead records the offset of that brace for the caller to report
  * once parsing is done (issue #6439).
  * <p>
+ * With SQL, a command also ends with no semicolon at the closing brace of a script block (`IF (...) { ... }`, `FOREACH`,
+ * `WHILE`) when more content follows on a new line, unless that content is the `ELSE` of the same `IF`. Every other balanced
+ * brace pair - a map literal, a `CONTENT { ... }` object, a MATCH pattern - sits inside a statement that can continue on the
+ * next line, so it never ends the command: splitting there ran `UPDATE ... SET x = {json}` without the WHERE written on the
+ * following line (issue #8246).
+ * <p>
  * The backslash is an escape character for the purpose of tracking quotes and delimiters - an escaped quote does not close a
  * string and an escaped semicolon does not split a command - but it is <b>kept</b> in the emitted word rather than consumed.
  * The words this parser produces are handed to the query engine, and the engine, not the console, owns string-literal
@@ -52,6 +58,7 @@ public class TerminalParser extends DefaultParser {
 
   private String  lineComment           = SQL_LINE_COMMENT;
   private boolean lineCommentNeedsBlank = true;
+  private boolean scriptBlocks          = true;
   private boolean blockCommentOpen      = false;
   private int     unbalancedBraceOffset = -1;
 
@@ -81,6 +88,9 @@ public class TerminalParser extends DefaultParser {
     lineComment = sql ? SQL_LINE_COMMENT : OTHER_LINE_COMMENT;
     // THE SQL GRAMMAR READS A LINE COMMENT AS `--` FOLLOWED BY A SPACE, SO `1--2` STAYS ARITHMETIC
     lineCommentNeedsBlank = sql;
+    // IF/FOREACH/WHILE BLOCKS ARE SQL SCRIPT: WITH THE OTHER LANGUAGES A BRACE PAIR (A CYPHER `CALL { ... }` SUBQUERY, A MAP
+    // LITERAL) IS ALWAYS PART OF A LONGER STATEMENT (ISSUE #8246)
+    scriptBlocks = sql;
   }
 
   @Override
@@ -103,6 +113,46 @@ public class TerminalParser extends DefaultParser {
     return line.charAt(pos) == '/' && pos + 1 < line.length() && line.charAt(pos + 1) == '*';
   }
 
+  /**
+   * Returns true if the brace pair just closed, opened at {@code openBraceWordOffset} of the current word, is the body of a SQL
+   * script block: the word starts with `IF`, `FOREACH` or `WHILE` and the brace follows the closing parenthesis of the block's
+   * condition, or the `ELSE` of an `IF`. Only such a block can end a command at its closing brace, since every other brace pair
+   * is a literal or a pattern inside a statement that can continue on the next line (issue #8246).
+   */
+  private boolean isScriptBlockBody(final CharSequence word, final int openBraceWordOffset) {
+    if (!scriptBlocks || openBraceWordOffset < 0)
+      return false;
+
+    int start = 0;
+    while (start < word.length() && Character.isWhitespace(word.charAt(start)))
+      ++start;
+    if (!startsWithKeyword(word, start, "if") && !startsWithKeyword(word, start, "foreach") && !startsWithKeyword(word, start, "while"))
+      return false;
+
+    int k = openBraceWordOffset - 1;
+    while (k > start && Character.isWhitespace(word.charAt(k)))
+      --k;
+    if (k <= start)
+      return false;
+    if (word.charAt(k) == ')')
+      return true;
+    return k - 3 > start && startsWithKeyword(word, k - 3, "else") && !Character.isJavaIdentifierPart(word.charAt(k - 4));
+  }
+
+  /**
+   * Returns true if the text at {@code pos} is the given keyword (case-insensitive) as a whole word, i.e. not followed by a
+   * letter, a digit or an underscore.
+   */
+  private static boolean startsWithKeyword(final CharSequence text, final int pos, final String keyword) {
+    final int end = pos + keyword.length();
+    if (pos < 0 || end > text.length())
+      return false;
+    for (int k = 0; k < keyword.length(); ++k)
+      if (Character.toLowerCase(text.charAt(pos + k)) != keyword.charAt(k))
+        return false;
+    return end == text.length() || !Character.isJavaIdentifierPart(text.charAt(end));
+  }
+
   @Override
   public ParsedLine parse(final String line, final int cursor, final ParseContext context) {
     if (line == null)
@@ -118,6 +168,7 @@ public class TerminalParser extends DefaultParser {
     int rawWordStart = 0;
     int braceDepth = 0;
     int openBraceOffset = -1;
+    int openBraceWordOffset = -1;
     boolean insideLineComment = false;
     boolean insideBlockComment = false;
 
@@ -174,8 +225,10 @@ public class TerminalParser extends DefaultParser {
         rawWordStart = i + 1;
       } else {
         if (c == '{') {
-          if (braceDepth == 0)
+          if (braceDepth == 0) {
             openBraceOffset = i;
+            openBraceWordOffset = current.length();
+          }
           braceDepth++;
           current.append(c);
         } else if (c == '}') {
@@ -188,26 +241,21 @@ public class TerminalParser extends DefaultParser {
             openBraceOffset = -1;
           current.append(c);
 
-          // Check if we just closed all braces and there's more content after newlines
-          if (prevDepth == 1 && braceDepth == 0 && current.length() > 0) {
-            // Look ahead to see if there's a newline followed by non-whitespace content
+          // A CLOSED SQL SCRIPT BLOCK (`IF (...) { ... }`) ENDS ITS COMMAND EVEN WITH NO SEMICOLON AFTER IT, WHEN MORE CONTENT
+          // FOLLOWS ON A NEW LINE. ANY OTHER BALANCED BRACE PAIR - A MAP LITERAL, A `CONTENT { ... }`, A MATCH PATTERN - IS IN THE
+          // MIDDLE OF A STATEMENT THAT CAN GO ON ON THE NEXT LINE: SPLITTING THERE RAN `UPDATE ... SET x = {json}` WITHOUT ITS
+          // WHERE ON A NEW LINE, OVERWRITING EVERY RECORD OF THE TYPE (ISSUE #8246)
+          if (prevDepth == 1 && braceDepth == 0 && isScriptBlockBody(current, openBraceWordOffset)) {
             int j = i + 1;
             boolean foundNewline = false;
-            boolean foundContent = false;
-
             while (j < line.length() && Character.isWhitespace(line.charAt(j))) {
-              if (line.charAt(j) == '\n' || line.charAt(j) == '\r') {
+              if (line.charAt(j) == '\n' || line.charAt(j) == '\r')
                 foundNewline = true;
-              }
               j++;
             }
 
-            if (j < line.length() && !this.isDelimiter(line, j)) {
-              foundContent = true;
-            }
-
-            // If we found a newline and then more content (not a semicolon), split here
-            if (foundNewline && foundContent) {
+            // THE ELSE BRANCH OF AN IF CONTINUES THE SAME STATEMENT
+            if (foundNewline && j < line.length() && !this.isDelimiter(line, j) && !startsWithKeyword(line, j, "else")) {
               words.add(current.toString());
               current.setLength(0);
               if (rawWordCursor >= 0 && rawWordLength < 0) {
