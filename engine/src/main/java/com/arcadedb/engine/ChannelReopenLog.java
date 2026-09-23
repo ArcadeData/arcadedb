@@ -19,7 +19,6 @@
 package com.arcadedb.engine;
 
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongSupplier;
 import java.util.logging.Level;
 
@@ -42,10 +41,13 @@ final class ChannelReopenLog {
 
   private static final long NEVER = Long.MIN_VALUE;
 
-  private final LongSupplier nanoClock;
-  private final AtomicLong   total           = new AtomicLong();
-  private final AtomicLong   sinceLastSevere = new AtomicLong();
-  private final AtomicLong   lastSevereNanos = new AtomicLong(NEVER);
+  private final    LongSupplier nanoClock;
+  // GUARDED BY this: A REOPEN IS AN EXCEPTIONAL PATH, SO A MONITOR COSTS NOTHING AND KEEPS THE SEVERE DECISION AND THE
+  // RESET OF THE FOLDED COUNT ONE ATOMIC STEP
+  private          long         sinceLastSevere = 0;
+  private          long         lastSevereNanos = NEVER;
+  // volatile ONLY SO getTotal() CAN BE READ WITHOUT THE MONITOR
+  private volatile long         total           = 0;
 
   ChannelReopenLog() {
     this(System::nanoTime);
@@ -61,21 +63,21 @@ final class ChannelReopenLog {
    * @return the number of earlier reopens folded into this report when it must be logged at {@link Level#SEVERE}
    * (0 for the first one), or -1 when it must be logged at {@link Level#FINE}
    */
-  long record() {
-    total.incrementAndGet();
-    // COUNTED BEFORE THE CAS, SO A CONCURRENT REOPEN THAT LANDS BETWEEN THE WINNING CAS AND THE getAndSet() BELOW IS
-    // FOLDED INTO THIS REPORT RATHER THAN LOST (IT LOGS AT FINE ITSELF)
-    sinceLastSevere.incrementAndGet();
+  synchronized long record() {
+    ++total;
     final long now = nanoClock.getAsLong();
-    final long last = lastSevereNanos.get();
-    if ((last == NEVER || now - last >= SEVERE_INTERVAL_NANOS) && lastSevereNanos.compareAndSet(last, now))
-      // MINUS THIS REOPEN, WHICH IS THE ONE BEING REPORTED
-      return sinceLastSevere.getAndSet(0) - 1;
+    if (lastSevereNanos == NEVER || now - lastSevereNanos >= SEVERE_INTERVAL_NANOS) {
+      lastSevereNanos = now;
+      final long folded = sinceLastSevere;
+      sinceLastSevere = 0;
+      return folded;
+    }
+    ++sinceLastSevere;
     return -1;
   }
 
   /** Every reopen recorded since this file was opened. */
   long getTotal() {
-    return total.get();
+    return total;
   }
 }
