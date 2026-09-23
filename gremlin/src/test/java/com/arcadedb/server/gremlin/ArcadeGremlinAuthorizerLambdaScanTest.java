@@ -19,6 +19,8 @@
 package com.arcadedb.server.gremlin;
 
 import org.apache.tinkerpop.gremlin.process.traversal.Bytecode;
+import org.apache.tinkerpop.gremlin.process.traversal.P;
+import org.apache.tinkerpop.gremlin.process.traversal.TextP;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.__;
 import org.apache.tinkerpop.gremlin.process.traversal.step.GValue;
@@ -73,6 +75,19 @@ class ArcadeGremlinAuthorizerLambdaScanTest {
     final Bytecode array = new Bytecode();
     array.addStep("inject", (Object) new Object[] { 1, Lambda.function("it.get()") });
     assertThat(scan(array)).isTrue();
+  }
+
+  @Test
+  void lambdaInsidePredicateIsFound() {
+    final Bytecode direct = new Bytecode();
+    direct.addStep("has", "name", P.eq(Lambda.function("it.get()")));
+    assertThat(scan(direct)).isTrue();
+
+    final Bytecode connective = new Bytecode();
+    connective.addStep("has", "name", P.gt(1).and(P.within(List.of(Lambda.function("it.get()")))));
+    assertThat(scan(connective)).isTrue();
+
+    assertThat(scan(g.V().has("age", P.gt(30).or(P.lt(10))).has("name", TextP.containing("a")).asAdmin().getBytecode())).isFalse();
   }
 
   @Test

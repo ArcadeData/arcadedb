@@ -21,9 +21,11 @@ package com.arcadedb.server.gremlin;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import org.apache.tinkerpop.gremlin.process.traversal.Bytecode;
+import org.apache.tinkerpop.gremlin.process.traversal.P;
 import org.apache.tinkerpop.gremlin.process.traversal.Traversal;
 import org.apache.tinkerpop.gremlin.process.traversal.TraversalStrategy;
 import org.apache.tinkerpop.gremlin.process.traversal.step.GValue;
+import org.apache.tinkerpop.gremlin.process.traversal.util.ConnectiveP;
 import org.apache.tinkerpop.gremlin.server.auth.AuthenticatedUser;
 import org.apache.tinkerpop.gremlin.server.authz.AuthorizationException;
 import org.apache.tinkerpop.gremlin.server.authz.Authorizer;
@@ -126,7 +128,7 @@ public class ArcadeGremlinAuthorizer implements Authorizer {
 
   /**
    * Whether a lambda travels anywhere in the request: as a step argument, in a nested traversal, behind a
-   * {@link Bytecode.Binding} or a {@link GValue} parameter, inside a collection, map or array argument, or in the configuration of a strategy passed to
+   * {@link Bytecode.Binding} or a {@link GValue} parameter, inside a predicate ({@link P}, including {@code and}/{@code or}), inside a collection, map or array argument, or in the configuration of a strategy passed to
    * {@code withStrategies()}. TinkerPop's {@code BytecodeHelper.getLambdaLanguage} only follows nested bytecode, so it
    * would miss the other carriers. Fails closed: a structure nested deeper than {@value #MAX_LAMBDA_SCAN_DEPTH} levels
    * counts as carrying a lambda.
@@ -147,6 +149,12 @@ public class ArcadeGremlinAuthorizer implements Authorizer {
       return containsLambda(binding.value(), next);
     else if (value instanceof GValue<?> parameter)
       return containsLambda(parameter.get(), next);
+    else if (value instanceof ConnectiveP<?> connective) {
+      for (final P<?> predicate : connective.getPredicates())
+        if (containsLambda(predicate, next))
+          return true;
+    } else if (value instanceof P<?> predicate)
+      return containsLambda(predicate.getBiPredicate(), next) || containsLambda(predicate.getValue(), next);
     else if (value instanceof Traversal<?, ?> traversal)
       return containsLambda(traversal.asAdmin().getBytecode(), next);
     else if (value instanceof TraversalStrategy<?> strategy) {
