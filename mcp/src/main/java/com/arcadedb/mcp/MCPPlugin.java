@@ -25,6 +25,7 @@ import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.http.HttpServer;
 import io.undertow.server.handlers.PathHandler;
 
+import java.nio.file.Paths;
 import java.util.logging.Level;
 
 /**
@@ -69,7 +70,7 @@ public class MCPPlugin implements ServerPlugin {
 
   @Override
   public void configure(final ArcadeDBServer arcadeDBServer, final ContextConfiguration contextConfiguration) {
-    configuration = new MCPConfiguration(arcadeDBServer.getRootPath());
+    configuration = new MCPConfiguration(Paths.get(arcadeDBServer.getConfigPath()));
     configuration.load();
     configuration.warnUnknownDatabaseOverrides(arcadeDBServer.getDatabaseNames());
     this.server = arcadeDBServer;

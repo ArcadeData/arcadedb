@@ -255,7 +255,7 @@ class ApiTokenAuthenticationIT extends BaseGraphServerTest {
       final String tokenValue = createApiToken(serverIndex, "PersistTest", "graph", 0, new JSONObject());
 
       // Read the token file and verify no plaintext token is stored
-      final String configPath = getServer(serverIndex).getRootPath() + "/config";
+      final String configPath = getServer(serverIndex).getConfigPath();
       final File tokenFile = new File(configPath, "server-api-tokens.json");
       assertThat(tokenFile.exists()).isTrue();
 

@@ -38,7 +38,7 @@ class ServerConfigurationIT extends BaseGraphServerTest {
 
     assertThat(cfg.getValueAsBoolean(TX_WAL)).isFalse();
 
-    final File file = new File(getServer(0).getRootPath() + File.separator + ArcadeDBServer.CONFIG_SERVER_CONFIGURATION_FILENAME);
+    final File file = new File(getServer(0).getConfigPath(), ArcadeDBServer.SERVER_CONFIGURATION_FILE_NAME);
     if (file.exists())
       file.delete();
 

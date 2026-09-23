@@ -25,6 +25,7 @@ import com.arcadedb.utility.FileUtils;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Instant;
 import java.util.logging.Level;
@@ -35,7 +36,7 @@ import java.util.logging.Level;
 public class AiConfiguration {
   private static final String DEFAULT_GATEWAY_URL = "https://ai.arcadedb.com";
 
-  private final String rootPath;
+  private final Path configDirectory;
 
   private volatile String subscriptionToken = "";
   private volatile String gatewayUrl        = DEFAULT_GATEWAY_URL;
@@ -45,7 +46,14 @@ public class AiConfiguration {
   private volatile String serverVersion     = "";
 
   public AiConfiguration(final String rootPath) {
-    this.rootPath = rootPath;
+    this(Paths.get(rootPath, "config"));
+  }
+
+  /**
+   * @param configDirectory the server configuration directory ({@code arcadedb.server.configDirectory}, issue #7415)
+   */
+  public AiConfiguration(final Path configDirectory) {
+    this.configDirectory = configDirectory;
   }
 
   public synchronized void load() {
@@ -128,6 +136,6 @@ public class AiConfiguration {
   }
 
   private File getConfigFile() {
-    return Paths.get(rootPath, "config", "ai.json").toFile();
+    return configDirectory.resolve("ai.json").toFile();
   }
 }
