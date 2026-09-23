@@ -329,4 +329,21 @@ class TerminalParserTest {
     assertThat(split("MATCH (n)\nSET n += {a: 1}\nRETURN n;"))
         .containsExactly("MATCH (n)\nSET n += {a: 1}\nRETURN n");
   }
+
+  /**
+   * A comment between the body of an IF and its ELSE must not hide the ELSE: the comment is dropped and the IF stays whole.
+   */
+  @Test
+  void aCommentBetweenAnIfBodyAndItsElseDoesNotSplitThem() {
+    assertThat(split("if($a){\n  return 1;\n}\n-- a comment\nelse {\n  return 2;\n}\nreturn 3;"))
+        .containsExactly("if($a){\n  return 1;\n}\n\nelse {\n  return 2;\n}", "return 3");
+    assertThat(split("if($a){\n  return 1;\n} /* a comment */\nelse {\n  return 2;\n}\nreturn 3;"))
+        .containsExactly("if($a){\n  return 1;\n} \nelse {\n  return 2;\n}", "return 3");
+  }
+
+  @Test
+  void nestedIfBlocksSplitOnlyAtTheOutermostClosingBrace() {
+    assertThat(split("IF ($a) {\n  IF ($b) {\n    return 1;\n  }\n  else {\n    return 2;\n  }\n}\nELSE {\n  return 3;\n}\nreturn 4;"))
+        .containsExactly("IF ($a) {\n  IF ($b) {\n    return 1;\n  }\n  else {\n    return 2;\n  }\n}\nELSE {\n  return 3;\n}", "return 4");
+  }
 }

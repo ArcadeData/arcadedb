@@ -248,12 +248,25 @@ public class TerminalParser extends DefaultParser {
           // MIDDLE OF A STATEMENT THAT CAN CONTINUE ON THE NEXT LINE: SPLITTING THERE RAN `UPDATE ... SET x = {json}` WITHOUT ITS
           // WHERE ON A NEW LINE, OVERWRITING EVERY RECORD OF THE TYPE (ISSUE #8246)
           if (prevDepth == 1 && braceDepth == 0 && isScriptBlockBody(current, openBraceWordOffset)) {
+            // SKIP BLANKS AND COMMENTS: A COMMENT BETWEEN THE BODY OF AN IF AND ITS ELSE MUST NOT HIDE THE ELSE. A SKIPPED LINE
+            // COMMENT ALWAYS ENDS WITH A NEW LINE (OR THE END OF THE TEXT, WHERE NOTHING FOLLOWS TO SPLIT OFF)
             int j = i + 1;
             boolean foundNewline = false;
-            while (j < line.length() && Character.isWhitespace(line.charAt(j))) {
-              if (line.charAt(j) == '\n' || line.charAt(j) == '\r')
+            while (j < line.length()) {
+              final char n = line.charAt(j);
+              if (n == '\n' || n == '\r') {
                 foundNewline = true;
-              j++;
+                j++;
+              } else if (Character.isWhitespace(n))
+                j++;
+              else if (isLineCommentStart(line, j)) {
+                while (j < line.length() && line.charAt(j) != '\n' && line.charAt(j) != '\r')
+                  j++;
+              } else if (isBlockCommentStart(line, j)) {
+                final int end = line.indexOf("*/", j + 2);
+                j = end < 0 ? line.length() : end + 2;
+              } else
+                break;
             }
 
             // THE ELSE BRANCH OF AN IF CONTINUES THE SAME STATEMENT
