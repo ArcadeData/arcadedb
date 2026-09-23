@@ -39,7 +39,11 @@ import java.util.Map;
 public class MongoDBToSqlTranslator {
 
   protected static void buildExpression(final StringBuilder buffer, final Map<String, Object> params, final Document query) {
+    int expressionCount = 0;
     for (final Map.Entry<String, Object> entry : query.entrySet()) {
+      if (expressionCount++ > 0)
+        buffer.append(" AND ");
+
       final Object key = entry.getKey();
       final Object value = entry.getValue();
 

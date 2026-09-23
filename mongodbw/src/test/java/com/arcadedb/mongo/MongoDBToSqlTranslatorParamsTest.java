@@ -77,7 +77,7 @@ class MongoDBToSqlTranslatorParamsTest {
   }
 
   @Test
-  void everyValueGetsItsOwnPlaceholder() {
+  void siblingFieldsAreJoinedByImplicitAndAndEachValueGetsItsOwnPlaceholder() {
     final StringBuilder sql = new StringBuilder();
     final Map<String, Object> params = new HashMap<>();
 
@@ -86,7 +86,7 @@ class MongoDBToSqlTranslatorParamsTest {
     query.put("second", "b");
     MongoDBToSqlTranslator.buildExpression(sql, params, query);
 
-    assertThat(sql.toString()).contains(":p0").contains(":p1");
+    assertThat(sql.toString()).isEqualTo("`first` = :p0 AND `second` = :p1");
     assertThat(params).hasSize(2).containsValues("a", "b");
   }
 
