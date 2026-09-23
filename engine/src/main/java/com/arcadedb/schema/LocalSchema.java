@@ -1148,6 +1148,31 @@ public class LocalSchema implements Schema {
     }
   }
 
+  // KEY PREFIX IN reportedUpgradeWarnings: A TYPE LEFT BEHIND BY AN OLDER VERSION (#8169) IS AN UPGRADE LEFTOVER TOO
+  private static final String BUCKETLESS_TYPE_WARNING_PREFIX = "bucketless-type:";
+
+  /**
+   * #8187: a {@code schema.json} written by a version affected by #8169 carries a dropped type as a real entry with no
+   * buckets, and it was loaded silently: the first sign was an insert failing. A document, vertex or edge type with no
+   * bucket and no subtype can never hold a record, so name it at open together with the remedy. It is not removed
+   * automatically: {@code ALTER TYPE ... BUCKET -<name>} can legitimately leave a type without buckets.
+   */
+  private void warnAboutTypesThatCannotHoldRecords(final Collection<String> typeNames) {
+    for (final String typeName : typeNames) {
+      final LocalDocumentType type = getType(typeName);
+      if (type instanceof LocalTimeSeriesType || !type.getBuckets(false).isEmpty() || !type.getSubTypes().isEmpty())
+        continue;
+      // ONCE PER TYPE FOR THE LIFE OF THIS SCHEMA: UNDER HA loadIncremental() RE-READS THE CONFIGURATION FOR EVERY
+      // REPLICATED DDL, AND THE TYPE IS DELIBERATELY LEFT IN PLACE
+      if (!reportedUpgradeWarnings.add(BUCKETLESS_TYPE_WARNING_PREFIX + typeName))
+        continue;
+      LogManager.instance().log(this, Level.WARNING,
+          "Type '%s' in database '%s' has no buckets and no subtypes, so it cannot hold any record. If it is a type dropped by a version "
+              + "affected by issue #8169, remove it with DROP TYPE `%s`; otherwise add a bucket with ALTER TYPE `%s` BUCKET +<bucket>",
+          null, typeName, database.getName(), typeName, typeName);
+    }
+  }
+
   @Override
   public TimeZone getTimeZone() {
     return timeZone;
@@ -2537,6 +2562,9 @@ public class LocalSchema implements Schema {
 
         if (!typeMap().remove(type.getName(), type))
           throw new SchemaException("Type '" + typeName + "' not found");
+
+        // #8187: A TYPE CREATED LATER UNDER THIS NAME IS A DIFFERENT TYPE AND IS REPORTED ON ITS OWN MERITS
+        reportedUpgradeWarnings.remove(BUCKETLESS_TYPE_WARNING_PREFIX + type.getName());
       } finally {
         typeBeingDropped = previousTypeBeingDropped;
         if (setMultipleUpdate)
@@ -2942,6 +2970,8 @@ public class LocalSchema implements Schema {
         for (final String p : entry.getValue())
           type.addSuperType(getType(p), false);
       }
+
+      warnAboutTypesThatCannotHoldRecords(types.keySet());
 
       // PARSE INDEXES. Warnings for indexes that are not yet present in {@code indexMap} are
       // deferred: the orphan-relinking pass below can match them by bucket prefix when index
