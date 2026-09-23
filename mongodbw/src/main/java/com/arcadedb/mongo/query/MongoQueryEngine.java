@@ -45,6 +45,10 @@ public class MongoQueryEngine implements QueryEngine {
   private static final Set<String> CREATE_KEYS = Set.of("insert", "insertone", "insertmany");
   private static final Set<String> UPDATE_KEYS = Set.of("update", "updateone", "updatemany", "replaceone");
   private static final Set<String> DELETE_KEYS = Set.of("delete", "deleteone", "deletemany", "remove");
+  // "collection" IS THE READ SIGNAL, NOT A COMMAND VERB LIKE THE OTHERS HERE: MongoDBDatabaseWrapper.query(String)
+  // ONLY EVER PERFORMS A FIND, WHOSE PAYLOAD IS {"collection":..., "query":...} WITH NO "find" KEY AT ALL - SO ITS
+  // PRESENCE IS WHAT MARKS THE COMMAND AS A READ. CHECKED AFTER SCHEMA_KEYS (SEE BELOW) SINCE IT IS ON EVERY QUERY
+  // THIS ENGINE ACCEPTS AND WOULD OTHERWISE SWALLOW AN EXPLICIT SCHEMA VERB LIKE "dropCollection"
   private static final Set<String> READ_KEYS   = Set.of("find", "aggregate", "count", "distinct", "collection");
   private static final Set<String> SCHEMA_KEYS = Set.of("createindex", "createcollection", "drop", "dropcollection", "dropindex");
 
