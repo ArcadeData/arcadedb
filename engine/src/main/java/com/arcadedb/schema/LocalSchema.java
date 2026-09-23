@@ -2795,6 +2795,39 @@ public class LocalSchema implements Schema {
     return new TimeSeriesTypeBuilder(database);
   }
 
+  private static String fullTextMetadataKey(final String typeName, final JSONArray properties) {
+    final StringBuilder key = new StringBuilder(typeName);
+    for (int i = 0; i < properties.length(); ++i)
+      key.append('\0').append(properties.getString(i));
+    return key.toString();
+  }
+
+  /**
+   * Returns the one {@link FullTextIndexMetadata} every bucket sub-index of a logical full-text index must share: a
+   * surviving wrapper's if there is one, else the first one this load read. A later bucket sub-index whose persisted
+   * counters disagree with the first one's comes from a schema written while the copies were split, so none of them can
+   * be trusted: the counters are invalidated and the first search rebuilds them from the live data, once.
+   */
+  private FullTextIndexMetadata shareFullTextMetadata(final String key, final FullTextIndexMetadata loaded,
+      final Map<String, FullTextIndexMetadata> live, final Map<String, FullTextIndexMetadata> loadedSoFar) {
+    final FullTextIndexMetadata survivor = live.get(key);
+    if (survivor != null)
+      return survivor;
+
+    final FullTextIndexMetadata first = loadedSoFar.putIfAbsent(key, loaded);
+    if (first == null)
+      return loaded;
+
+    if (first.isCountersValid() && (!loaded.isCountersValid() || loaded.getTotalDocs() != first.getTotalDocs()
+        || loaded.getSumDocLength() != first.getSumDocLength())) {
+      LogManager.instance().log(this, Level.INFO,
+          "BM25 corpus counters of the full-text index on type '%s' %s disagree across its bucket indexes; they will be "
+              + "recomputed on the first search", null, loaded.typeName, loaded.propertyNames);
+      first.setCountersValid(false);
+    }
+    return first;
+  }
+
   protected synchronized void readConfiguration() {
     // The graph this rebuild produces goes into the map typeMap() resolves to, which for a load in flight is the
     // staged one - so the published graph is neither emptied nor mutated here, and the TimeSeries types it holds
@@ -3005,6 +3038,14 @@ public class LocalSchema implements Schema {
       // "Cannot find index" warnings for cases that are then silently relinked, which masks
       // the genuine cases where the file is truly missing (issue #4063).
       final Map<String, List<String>> deferredMissingIndexWarnings = new LinkedHashMap<>();
+      // The BM25 corpus counters of a full-text index are TYPE-wide, so every bucket sub-index of one logical index has to
+      // share ONE FullTextIndexMetadata, as the creation path does. Building one per bucket sub-index here made each copy
+      // count only its own bucket's inserts, ran the once-per-session stale check (a full type scan) once per bucket, and
+      // left REBUILD INDEX ... statsOnly repairing only the first copy. Keyed by type and indexed properties: a type cannot
+      // carry two full-text indexes on the same properties. The live map holds the metadata of the wrappers that survive
+      // this load (loadIncremental keeps its untouched components), which a new sub-index must join rather than fork.
+      final Map<String, FullTextIndexMetadata> liveFullTextMetadata = new HashMap<>();
+      final Map<String, FullTextIndexMetadata> loadedFullTextMetadata = new HashMap<>();
       for (final String typeName : types.keySet()) {
         final JSONObject schemaType = types.getJSONObject(typeName);
         final JSONObject typeIndexesJSON = schemaType.getJSONObject("indexes");
@@ -3013,6 +3054,12 @@ public class LocalSchema implements Schema {
 
           final List<String> orderedIndexes = new ArrayList<>(typeIndexesJSON.keySet());
           orderedIndexes.sort(Comparator.naturalOrder());
+
+          for (final String indexName : orderedIndexes)
+            if (lookupIndex(indexName) instanceof LSMTreeFullTextIndex ftIndex && ftIndex.getFullTextMetadata() != null)
+              liveFullTextMetadata.putIfAbsent(
+                  fullTextMetadataKey(typeName, typeIndexesJSON.getJSONObject(indexName).getJSONArray("properties")),
+                  ftIndex.getFullTextMetadata());
 
           for (final String indexName : orderedIndexes) {
             final JSONObject indexJSON = typeIndexesJSON.getJSONObject(indexName);
@@ -3039,18 +3086,20 @@ public class LocalSchema implements Schema {
                   if (configuredIndexType.equalsIgnoreCase(Schema.INDEX_TYPE.FULL_TEXT.toString())) {
                     // bucketId = -1 ("not set"): the bucket association is already established on the underlying index and read via
                     // its getAssociatedBucketId(); this metadata only carries the full-text/BM25 configuration, not the binding.
-                    final FullTextIndexMetadata ftMeta = new FullTextIndexMetadata(typeName, properties, -1);
-                    ftMeta.fromJSON(indexJSON);
+                    final FullTextIndexMetadata loadedMeta = new FullTextIndexMetadata(typeName, properties, -1);
+                    loadedMeta.fromJSON(indexJSON);
                     // The bucket-level index JSON carries no "typeName" key, so fromJSON() above skipped the base-field
                     // read: take the collations and the manual TypeIndex name from the underlying definition, which
                     // setMetadata(indexJSON) has just populated. Without this the full-text metadata comes back from a
                     // restart missing both, and every site that carries the definition into a new index file through
                     // getMetadataForNewFile() loses them (issue #5742).
-                    ftMeta.inheritCommonSettingsFrom(index.getMetadata());
+                    loadedMeta.inheritCommonSettingsFrom(index.getMetadata());
                     // Same reserved-name guard as the creation path, in case a hand-edited/restored schema reintroduced a property
                     // colliding with the query parser's default-field sentinel.
-                    LSMTreeFullTextIndex.checkReservedPropertyNames(ftMeta.propertyNames);
-                    index = new LSMTreeFullTextIndex((LSMTreeIndex) index, ftMeta);
+                    LSMTreeFullTextIndex.checkReservedPropertyNames(loadedMeta.propertyNames);
+                    index = new LSMTreeFullTextIndex((LSMTreeIndex) index,
+                        shareFullTextMetadata(fullTextMetadataKey(typeName, schemaIndexProperties), loadedMeta,
+                            liveFullTextMetadata, loadedFullTextMetadata));
                     publishIndexDuringLoad(indexName, index);
                   } else if (configuredIndexType.equalsIgnoreCase(Schema.INDEX_TYPE.GEOSPATIAL.toString())) {
                     final int precision = indexJSON.getInt("precision", GeoIndexMetadata.DEFAULT_PRECISION);
