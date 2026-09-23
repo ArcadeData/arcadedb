@@ -128,6 +128,14 @@ class MongoDBToSqlTranslatorParamsTest {
   }
 
   @Test
+  void emptyLogicalArraysAreRejectedRatherThanProducingInvalidSql() {
+    assertThatThrownBy(() -> MongoDBToSqlTranslator.buildExpression(new StringBuilder(), new HashMap<>(),
+        new Document("$and", List.of()).append("name", "Jay"))).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> MongoDBToSqlTranslator.buildExpression(new StringBuilder(), new HashMap<>(),
+        new Document("$or", List.of()).append("name", "Jay"))).isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
   void nonStringValuesKeepTheirJavaTypeInsteadOfBeingStringified() {
     final StringBuilder sql = new StringBuilder();
     final Map<String, Object> params = new HashMap<>();
