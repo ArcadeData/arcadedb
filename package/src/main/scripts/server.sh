@@ -87,6 +87,18 @@ if [ -z "$ARCADEDB_OPTS_GC" ]; then
   ARCADEDB_OPTS_GC=""
 fi
 
+# Compact object headers (JEP 519) shrink every object header and cut allocation. The flag is a product option
+# from Java 25; Java 21 rejects it as an unrecognized option and does not start, and Java 24 accepts it only after
+# -XX:+UnlockExperimentalVMOptions. So it is not added unconditionally: the JVM is asked, and the flag is used only
+# when this JVM starts with it. Kept in its own variable for the same reason as the GC one, so a user who sets
+# JAVA_OPTS does not lose it. Set ARCADEDB_OPTS_HEADERS to override the probe, or to an empty value to opt out.
+if [ -z "${ARCADEDB_OPTS_HEADERS+x}" ]; then
+  ARCADEDB_OPTS_HEADERS=""
+  if "$JAVA" -XX:+UseCompactObjectHeaders -version >/dev/null 2>&1; then
+    ARCADEDB_OPTS_HEADERS="-XX:+UseCompactObjectHeaders"
+  fi
+fi
+
 if [ -z "$JAVA_OPTS_SCRIPT" ]; then
   JAVA_OPTS_SCRIPT="-XX:+HeapDumpOnOutOfMemoryError \
         --add-exports java.management/sun.management=ALL-UNNAMED \
@@ -120,6 +132,7 @@ echo $$ >$ARCADEDB_PID
 # from. It is passed as its own quoted argument so a home path containing spaces stays intact.
 exec "$JAVA" $JAVA_OPTS \
   $ARCADEDB_OPTS_GC \
+  $ARCADEDB_OPTS_HEADERS \
   $ARCADEDB_OPTS_MEMORY \
   $JAVA_OPTS_SCRIPT \
   "-Djava.util.logging.config.file=$ARCADEDB_HOME/config/arcadedb-log.properties" \
