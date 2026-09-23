@@ -481,6 +481,11 @@ public class LocalSchema implements Schema {
     // previous type graph (issue #7961) able to read its records meanwhile.
     // rebuildEverything=true: the loading thread resolves only what it has staged, see isRebuildingEverything().
     beginStagedPublication(true, true);
+    // The dictionary is the one component swapped in before the barrier (see below), so it is also the one a load
+    // that aborts has to put back itself: the file-id array still resolves the previous instance, and serving the
+    // new one by getDictionary() would split name lookups and page reloads across two in-RAM caches.
+    final Dictionary previousDictionary = dictionary;
+    boolean published = false;
     try {
       // NOTHING is cleared (issue #7963). The previous generation - type graph (issue #7961), by-name maps and
       // file-id array alike - stays published, whole, until the new one replaces it at the barrier below, so a query
@@ -544,9 +549,12 @@ public class LocalSchema implements Schema {
       // name and by file id. A lookup that arrives before this point gets the previous generation's component
       // rather than one that has not finished loading itself - or, before issue #7963, than nothing at all.
       commitStagedPublication();
+      published = true;
 
       updateSecurity();
     } finally {
+      if (!published && previousDictionary != null)
+        dictionary = previousDictionary;
       endStagedPublication();
     }
   }
@@ -688,16 +696,24 @@ public class LocalSchema implements Schema {
           while (files.size() < fileId + 1)
             files.add(null);
           final Component component = entry.getValue();
-          // A page flushed while this load ran raised the page count of the component that was published THEN, the
-          // previous generation's. The file itself is the truth, and this lock keeps any later flush waiting until
-          // the new component is the one it resolves.
-          if (component instanceof PaginatedComponent paginated && paginated.getComponentFile() != null)
+          // A page committed or flushed while this load ran raised the page count of the component that was
+          // published THEN, the previous generation's, and not the one staged here. Neither source alone is the
+          // truth: the file lags a commit until the flush thread writes the page (see Dictionary.reload()), and
+          // the previous instance misses nothing only up to this point. So the larger of the two, and
+          // updatePageCount() never lowers what the staged instance already counts. A page flushed after this
+          // point resolves its component under this same lock, so it reaches the new instance; a write that
+          // resolved the previous one before it had written its page before, and the file size covers it.
+          if (component instanceof PaginatedComponent paginated && paginated.getComponentFile() != null) {
+            final Component previous = fileId < files.size() ? files.get(fileId) : null;
+            if (previous instanceof PaginatedComponent previousPaginated && previous.getName().equals(component.getName()))
+              paginated.updatePageCount(previousPaginated.getCommittedPageCount());
             try {
               paginated.updatePageCount((int) (paginated.getComponentFile().getSize() / paginated.getPageSize()));
             } catch (final IOException e) {
               LogManager.instance().log(this, Level.WARNING, "Cannot refresh the page count of '%s' on schema reload", e,
                   component.getName());
             }
+          }
           files.set(fileId, component);
         }
       }
@@ -1311,7 +1327,8 @@ public class LocalSchema implements Schema {
   /**
    * Every component this thread can see, published plus this thread's staged ones, as a snapshot indexed by file
    * id. The file-id counterpart of {@link #bucketsDuringLoad()}; the load's own passes - the hooks, the bloom
-   * filter attach, the orphan sweep - iterate this rather than {@code files}, which during a full load is empty.
+   * filter attach, the orphan sweep - iterate this rather than {@code files}, which during a full load still
+   * carries the generation being replaced (issue #7963).
    */
   private List<Component> filesDuringLoad() {
     final List<Component> snapshot;
