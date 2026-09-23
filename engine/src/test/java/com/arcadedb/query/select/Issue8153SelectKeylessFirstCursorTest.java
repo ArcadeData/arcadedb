@@ -128,6 +128,30 @@ public class Issue8153SelectKeylessFirstCursorTest extends TestHelper {
   }
 
   @Test
+  void equalityLookupHonoursItsLimit() {
+    // THE PER-BUCKET LIMIT USED TO BE size - limit, NEGATIVE, SO EVERY BUCKET WAS READ IN FULL; AND A LIMIT OF 0 ADDED
+    // THE FIRST ENTRY BEFORE CHECKING THE BOUND
+    database.transaction(() -> {
+      for (int i = 0; i < 20; i++)
+        database.newDocument("T").set("b", 7).save();
+    });
+    final TypeIndex index = (TypeIndex) database.getSchema().getType("T").getIndexesByProperties("b").getFirst();
+
+    assertThat(count(index.get(new Object[] { 7 }, 0))).isZero();
+    assertThat(count(index.get(new Object[] { 7 }, 3))).isEqualTo(3);
+    assertThat(count(index.get(new Object[] { 7 }, -1))).isEqualTo(20);
+  }
+
+  private static int count(final IndexCursor cursor) {
+    int n = 0;
+    while (cursor.hasNext()) {
+      cursor.next();
+      ++n;
+    }
+    return n;
+  }
+
+  @Test
   void mergeSamplesKeyMetadataFromTheFirstChildThatHasIt() {
     final TypeIndex index = (TypeIndex) database.getSchema().getType("T").getIndexesByProperties("b").getFirst();
 

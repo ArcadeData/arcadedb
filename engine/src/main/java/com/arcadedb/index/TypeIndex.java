@@ -215,6 +215,9 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       // row limit applied to its output - truncating candidates before the caller's predicate re-checks them silently
       // drops rows that would have survived it. Such an index is asked for, and returns, everything.
       final int effectiveLimit = isResultApproximate() ? -1 : limit;
+      if (effectiveLimit == 0)
+        // THE LOOP BELOW ADDS AN ENTRY BEFORE IT CHECKS THE BOUND, AND A CHILD ASKED FOR 0 ROWS MAY STILL ANSWER ONE
+        return keyedCursor(Collections.emptyList(), keys);
 
       Set<Identifiable> result = null;
 
