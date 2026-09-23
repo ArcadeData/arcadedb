@@ -218,6 +218,30 @@ class Issue8214SimpleQueryCommitsOpenPipelineIT extends PostgresWireProtocolTest
     assertThat(idsOf(type)).as("the explicit block was rolled back as a whole").isEmpty();
   }
 
+  @Test
+  @DisplayName("[#8214] inside an explicit block opened through the extended protocol a simple query commits nothing either")
+  void simpleQueryInsideAnExtendedProtocolExplicitBlockCommitsNothing() throws Exception {
+    final String type = "Issue8214ExtendedBegin";
+    withConnection((out, in) -> {
+      createType(out, in, type);
+
+      // BEGIN through Parse/Bind/Execute takes applyTransactionControl()'s arm, not queryCommand()'s; the 'Q' that
+      // follows must still see the explicit block and leave it open.
+      parseBindExecute(out, "b1", "BEGIN");
+      parseBindExecute(out, "w1", "INSERT INTO " + type + " SET id = 70");
+      sendSimpleQuery(out, "INSERT INTO " + type + " SET id = 71");
+      final List<WireMessage> answers = readUntilReadyForQuery(in);
+      assertThat(commandTagsOf(answers)).containsExactly("BEGIN", "INSERT 0 1", "INSERT 0 1");
+      assertThat(readyForQueryStatusOf(answers)).as("the explicit block is still open").isEqualTo('T');
+
+      sendSimpleQuery(out, "ROLLBACK");
+      assertThat(readyForQueryStatusOf(readUntilReadyForQuery(in))).isEqualTo('I');
+      assertStreamStillInStep(out, in);
+    });
+
+    assertThat(idsOf(type)).as("the explicit block was rolled back as a whole").isEmpty();
+  }
+
   /**
    * A bogus Parse puts the session in skip-until-Sync, and the Sync then takes its discard branch.
    */
