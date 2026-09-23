@@ -20,16 +20,16 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.DatabaseFactory;
 
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.lang.reflect.InvocationTargetException;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -39,9 +39,15 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * skips normal rollback, modelling process interruption rather than an IOException; it does not model power loss.
  */
 class Issue7769SnapshotSwapRecoveryTest {
+  /**
+   * A crash or I/O failure between the durable {@code .snapshot-complete} marker and the first published phase
+   * leaves the originals untouched and no backup, whatever the temporary state file holds (a torn first write
+   * included). The live directory is the intact original, and after a failure the node kept serving and applying
+   * on it, so the staging may be stale: recovery discards it rather than installing it or refusing forever.
+   */
   @ParameterizedTest
   @ValueSource(strings = { "BACKING_UP", "", "BACK", "INSTALLING", "ABSENT" })
-  void unpublishedInitialPhaseNeverDiscardsTheSnapshot(final String temporaryPhase, @TempDir final Path root)
+  void unpublishedInitialPhaseKeepsTheLiveDatabase(final String temporaryPhase, @TempDir final Path root)
       throws Exception {
     final Path db = root.resolve("database");
     final Path staged = db.resolve(".snapshot-new");
@@ -55,16 +61,92 @@ class Issue7769SnapshotSwapRecoveryTest {
     SnapshotInstaller.recoverPendingSnapshotSwaps(root);
     SnapshotInstaller.recoverPendingSnapshotSwaps(root);
 
-    if (temporaryPhase.equals("BACKING_UP")) {
-      assertDatabaseValue(db, "new");
-      assertThat(db.resolve(".snapshot-pending")).doesNotExist();
-      assertThat(staged).doesNotExist();
-    } else {
-      assertDatabaseValue(db, "old");
-      assertThat(staged).isDirectory();
-      assertDatabaseValue(staged, "new");
-      assertThat(db.resolve(".snapshot-pending")).exists();
-    }
+    assertDatabaseValue(db, "old");
+    assertThat(db.resolve(".snapshot-pending")).doesNotExist();
+    assertThat(db.resolve(".snapshot-swap-state")).doesNotExist();
+    assertThat(db.resolve(".snapshot-swap-state.tmp")).doesNotExist();
+    assertThat(staged).doesNotExist();
+    assertThat(db.resolve(".snapshot-backup")).doesNotExist();
+  }
+
+  /**
+   * The first phase write fails (a full volume, the case a resync install exists to heal): the swap moves nothing,
+   * the node keeps serving the old database, and a later recovery must not install the now-stale staging over it.
+   */
+  @Test
+  void failedFirstPhaseWriteNeverInstallsTheStagingLater(@TempDir final Path root) throws Exception {
+    final Path db = root.resolve("database");
+    final Path staged = db.resolve(".snapshot-new");
+    final Path backup = db.resolve(".snapshot-backup");
+    final Path temporary = db.resolve(".snapshot-swap-state.tmp");
+    createDatabase(db, "old");
+    createDatabase(staged, "new");
+    Files.writeString(db.resolve(".snapshot-pending"), "");
+    Files.writeString(staged.resolve(".snapshot-complete"), "");
+    // A non-empty directory in place of the temporary state file makes the first phase write fail.
+    Files.createDirectories(temporary.resolve("blocker"));
+
+    assertThatThrownBy(() -> swap(db, staged, backup)).isInstanceOf(IOException.class);
+    assertDatabaseValue(db, "old");
+    assertThat(backup).doesNotExist();
+
+    // The volume recovers, leaving the empty temporary file a failed write would.
+    Files.delete(temporary.resolve("blocker"));
+    Files.delete(temporary);
+    Files.writeString(temporary, "");
+    SnapshotInstaller.recoverPendingSnapshotSwaps(root);
+
+    assertDatabaseValue(db, "old");
+    assertThat(db.resolve(".snapshot-pending")).doesNotExist();
+    assertThat(temporary).doesNotExist();
+    assertThat(staged).doesNotExist();
+  }
+
+  /** A backup proves originals may have moved, so an unpublished phase next to one cannot be trusted. */
+  @Test
+  void unpublishedPhaseBesideABackupPreservesEveryCopy(@TempDir final Path root) throws Exception {
+    final Path db = root.resolve("database");
+    final Path staged = db.resolve(".snapshot-new");
+    final Path backup = db.resolve(".snapshot-backup");
+    createDatabase(db, "old");
+    createDatabase(staged, "new");
+    Files.createDirectories(backup);
+    Files.writeString(backup.resolve("A.0.bucket"), "old-A");
+    Files.writeString(db.resolve(".snapshot-pending"), "");
+    Files.writeString(staged.resolve(".snapshot-complete"), "");
+    Files.writeString(db.resolve(".snapshot-swap-state.tmp"), "BACKING_UP");
+
+    SnapshotInstaller.recoverPendingSnapshotSwaps(root);
+
+    assertDatabaseValue(db, "old");
+    assertDatabaseValue(staged, "new");
+    assertThat(backup.resolve("A.0.bucket")).hasContent("old-A");
+    assertThat(db.resolve(".snapshot-pending")).exists();
+    assertThat(db.resolve(".snapshot-swap-state.tmp")).hasContent("BACKING_UP");
+  }
+
+  /**
+   * A legacy swap (no recorded phase) whose staging holds only the completion marker finished phase 2: the old
+   * code only started moving staged files after every original was in the backup. Only cleanup remains.
+   */
+  @Test
+  void legacySwapWithEmptyStagingOnlyCleansUp(@TempDir final Path root) throws Exception {
+    final Path db = root.resolve("database");
+    final Path staged = db.resolve(".snapshot-new");
+    final Path backup = db.resolve(".snapshot-backup");
+    createDatabase(db, "new");
+    Files.createDirectories(staged);
+    Files.createDirectories(backup);
+    Files.writeString(backup.resolve("A.0.bucket"), "old-A");
+    Files.writeString(db.resolve(".snapshot-pending"), "");
+    Files.writeString(staged.resolve(".snapshot-complete"), "");
+
+    SnapshotInstaller.recoverPendingSnapshotSwaps(root);
+
+    assertDatabaseValue(db, "new");
+    assertThat(db.resolve(".snapshot-pending")).doesNotExist();
+    assertThat(staged).doesNotExist();
+    assertThat(backup).doesNotExist();
   }
 
   @Test
@@ -113,6 +195,8 @@ class Issue7769SnapshotSwapRecoveryTest {
     assertDatabaseValue(db, "new");
     assertThat(db.resolve(".snapshot-pending")).doesNotExist();
     assertThat(db.resolve(".snapshot-backup")).doesNotExist();
+    assertThat(db.resolve(".snapshot-new")).doesNotExist();
+    assertThat(db.resolve(".snapshot-swap-state")).doesNotExist();
   }
 
   /** Child JVM deliberately exits without running finally blocks after the first new file has moved. */
@@ -220,7 +304,8 @@ class Issue7769SnapshotSwapRecoveryTest {
     SnapshotInstaller.recoverPendingSnapshotSwaps(root);
     SnapshotInstaller.recoverPendingSnapshotSwaps(root);
 
-    assertDatabaseValue(db, "new");
+    // Before the first phase is published nothing has moved: the staging is dropped, never installed.
+    assertDatabaseValue(db, crashPoint.equals("BACKING_UP_UNPUBLISHED") ? "old" : "new");
     assertThat(db.resolve(".snapshot-pending")).doesNotExist();
     assertThat(db.resolve(".snapshot-swap-state")).doesNotExist();
     assertThat(staged).doesNotExist();
@@ -285,14 +370,8 @@ class Issue7769SnapshotSwapRecoveryTest {
     }
   }
 
-  private static void swap(final Path db, final Path staged, final Path backup) throws Throwable {
-    final var method = SnapshotInstaller.class.getDeclaredMethod("atomicSwap", Path.class, Path.class, Path.class);
-    method.setAccessible(true);
-    try {
-      method.invoke(null, db, staged, backup);
-    } catch (final InvocationTargetException e) {
-      throw e.getCause();
-    }
+  private static void swap(final Path db, final Path staged, final Path backup) throws IOException {
+    SnapshotInstaller.atomicSwap(db, staged, backup);
   }
 
   // Bypasses IOException rollback, like process death; this does not simulate loss of the OS page cache.

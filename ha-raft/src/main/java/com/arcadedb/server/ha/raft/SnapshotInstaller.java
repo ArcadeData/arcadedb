@@ -103,13 +103,19 @@ public final class SnapshotInstaller {
   static final String SNAPSHOT_PENDING_FILE  = ArcadeDBServer.SNAPSHOT_PENDING_FILE;
   static final String SNAPSHOT_COMPLETE_FILE = ".snapshot-complete";
   static final String SNAPSHOT_SWAP_STATE_FILE = ".snapshot-swap-state";
+  static final String SNAPSHOT_SWAP_STATE_TMP_FILE = SNAPSHOT_SWAP_STATE_FILE + ".tmp";
 
   private enum SwapPhase {
     BACKING_UP, INSTALLING, INSTALLED, ROLLING_BACK, RESTORING
   }
 
-  // A test can interrupt after a durable phase transition or a file move, without running IOException rollback.
-  static volatile Consumer<String> swapProgressForTesting;
+  /**
+   * Test-only hook invoked after each durable swap-phase transition ({@code <PHASE>_UNPUBLISHED}, then
+   * {@code <PHASE>}) and after each file move ({@code <PHASE>:<file>}). A test throws an {@link Error} or halts
+   * the JVM from it to model a crash at that boundary without running the IOException rollback. {@code null} in
+   * production.
+   */
+  static volatile Consumer<String> swapProgressForTesting = null;
 
   // Reserved staging directory prefix for acquiring a database the node has NEVER seen (issue #4727).
   // A new-database acquire downloads into databases/.acquire-<name>/ and publishes with a single atomic
@@ -528,11 +534,10 @@ public final class SnapshotInstaller {
         // The freshly installed snapshot will not open (corrupt/incompatible files). Roll back to the
         // previous local copy and reopen it so the node is never left with a closed database.
         // The pending marker is intentionally NOT cleared here: it is dropped only on the success path
-        // below. If rollbackToBackup succeeds, the next startup's recoverSingleDatabase sees both
-        // .snapshot-new and .snapshot-backup gone (!hasCompleteMarker && !hasBackup), logs "orphaned
-        // snapshot directory", and clears the marker - so leaving it is harmless and keeps recovery
-        // logic in one place. If the rollback was instead interrupted, that same startup pass restores
-        // the backup. Either way the marker is the single recovery hook.
+        // below. If rollbackToBackup succeeds, the recorded RESTORING phase tells the next recovery pass that
+        // only cleanup remains, and it clears the marker - so leaving it is harmless and keeps recovery logic
+        // in one place. If the rollback was instead interrupted, that same pass resumes it from the recorded
+        // phase. Either way the marker is the single recovery hook.
         LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
             "Installed snapshot for '%s' failed to open; rolling back to the previous local copy", openEx, databaseName);
         rollbackToBackup(dbPath, snapshotBackup);
@@ -838,15 +843,16 @@ public final class SnapshotInstaller {
    * and the registry lock held, mirroring {@link #swapAndReopen}, because the reconciliation moves files under a
    * directory the server may have registered.
    * <p>
-   * If the backup is still there afterwards the reconciliation failed, and the install is refused: the previous
-   * copy stays on disk for the next attempt and for an operator, which is strictly better than proceeding into a
-   * download that may fail for the same reason (a full volume) and leave nothing behind at all.
+   * If the backup or the pending marker is still there afterwards the reconciliation failed, and the install is
+   * refused: whatever it could not resolve stays on disk for the next attempt and for an operator, which is strictly
+   * better than proceeding into a download that may fail for the same reason (a full volume) and leave nothing
+   * behind at all. For the same reason the database is reopened only once the marker is gone.
    */
   private static void reconcileRetainedBackup(final String databaseName, final Path dbPath, final Path snapshotBackup,
       final Path pendingMarker, final ArcadeDBServer server) throws IOException {
     if (!Files.exists(pendingMarker)
         || (!Files.isDirectory(snapshotBackup) && !Files.exists(dbPath.resolve(SNAPSHOT_SWAP_STATE_FILE))
-        && !Files.exists(dbPath.resolve(SNAPSHOT_SWAP_STATE_FILE + ".tmp"))
+        && !Files.exists(dbPath.resolve(SNAPSHOT_SWAP_STATE_TMP_FILE))
         && !Files.exists(dbPath.resolve(SNAPSHOT_NEW_DIR).resolve(SNAPSHOT_COMPLETE_FILE))))
       return;
 
@@ -886,8 +892,8 @@ public final class SnapshotInstaller {
       throw new IOException("Refusing to overwrite unresolved snapshot swap state for '" + databaseName + "'");
 
     if (!looksLikeADatabaseDirectory(dbPath))
-      throw new IOException("Refusing to install a snapshot for '" + databaseName + "': the retained backup was "
-          + "consumed but " + dbPath + " still does not hold a loadable database. Its state is preserved as-is "
+      throw new IOException("Refusing to install a snapshot for '" + databaseName + "': snapshot swap recovery "
+          + "finished but " + dbPath + " still does not hold a loadable database. Its state is preserved as-is "
           + "for inspection rather than overwritten by a fresh download");
   }
 
@@ -1137,8 +1143,9 @@ public final class SnapshotInstaller {
    * deliberately produce exactly that state - marker retained, database reopened - so the node keeps serving. The
    * pass then runs again on the next {@code RaftHAServer.restartRatis}, with the node ONLINE.
    * <p>
-   * <b>The reopen is conditional, and that is the difference from {@link #reconcileRetainedBackup}.</b> An install
-   * wants the database registered and serving when it is done, so it reopens unconditionally. This pass also runs
+   * <b>The reopen is conditional on what this pass closed, and that is the difference from
+   * {@link #reconcileRetainedBackup}.</b> An install wants the database registered and serving when it is done, so
+   * it reopens whenever its reconciliation cleared the marker. This pass also runs
    * at cold start, where {@code ArcadeDBServer.loadDatabases(false)} has <i>deferred</i> the marked directory on
    * purpose and the second {@code loadDatabases(true)} pass - which runs after this one - is what is supposed to
    * pick it up. Reopening unconditionally would register it from inside Ratis's state-machine initialization
@@ -1184,10 +1191,9 @@ public final class SnapshotInstaller {
    * Reopens the database this repair closed, but <b>only if the repair actually reconciled the directory</b> -
    * i.e. only if the {@code .snapshot-pending} marker is gone (review finding on PR #7631).
    * <p>
-   * This is deliberately unlike {@link #swapAndReopen}'s failure arms and {@link #reconcileRetainedBackup}, which
-   * reopen unconditionally. They are rescuing a database from a close <i>they</i> performed in order to serve it
-   * again, over a marker <i>they</i> wrote moments ago on a directory that was healthy before they touched it. This
-   * pass is in the opposite position: the marker predates it, the repair has just failed to make sense of the
+   * This is deliberately unlike {@link #swapAndReopen}'s failure arms, which reopen unconditionally. They are
+   * rescuing a database from a close <i>they</i> performed in order to serve it again, over a marker <i>they</i>
+   * wrote moments ago on a directory that was healthy before they touched it. This pass is in the opposite position: the marker predates it, the repair has just failed to make sense of the
    * directory, and nothing is waiting on the handle - the next pass, or an operator, will deal with it.
    * <p>
    * Reopening anyway would recreate exactly the state this whole issue is about. A marked directory is refused by
@@ -1286,8 +1292,11 @@ public final class SnapshotInstaller {
           deleteDirectoryIfExists(snapshotNew);
         }
         case INSTALLED -> {
-          // Only cleanup remains. In particular, never restore a backup whose deletion may have started.
+          // Every snapshot file is live, but the reopen that validates it never completed (a completed one clears
+          // the marker before deleting anything). Roll forward: the leader's snapshot is authoritative, and
+          // restoring the backup here would only trigger another install.
         }
+        default -> throw new IOException("Unhandled snapshot swap phase " + phase + " in " + dbDir);
         }
         requireRecoveredDatabase(dbDir);
         completeSwapRecovery(dbDir);
@@ -1298,39 +1307,45 @@ public final class SnapshotInstaller {
       final boolean hasBackup = Files.isDirectory(snapshotBackup);
 
       if (hasCompleteMarker && hasBackup) {
-        // Old versions recorded no phase. A live file may be an un-moved original OR an already-installed
-        // snapshot file. Re-running phase 1 would destroy the latter (#7769); leave ambiguous layouts intact.
-        try (final DirectoryStream<Path> live = Files.newDirectoryStream(dbDir,
-            entry -> !entry.getFileName().toString().startsWith(".snapshot"))) {
-          if (live.iterator().hasNext()) {
-            LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
-                "Cannot determine the phase of the legacy snapshot swap for %s. Preserving the live files, "
-                    + "staging, backup and pending marker for manual recovery", null, dbDir);
-            return;
-          }
+        // Old versions recorded no phase. They moved staged files only after every original was in the backup,
+        // so an empty staging directory means phase 2 finished and only cleanup remains.
+        if (!hasStagedSnapshotFiles(snapshotNew)) {
+          LogManager.instance().log(SnapshotInstaller.class, Level.INFO,
+              "Cleaning up completed legacy snapshot swap for: %s", null, dbDir);
+          requireRecoveredDatabase(dbDir);
+          completeSwapRecovery(dbDir);
+          return;
         }
-        // With no live files there is nothing to misclassify: retain the existing backup and install staging.
+        // Otherwise a live file may be an un-moved original OR an already-installed snapshot file. Re-running
+        // phase 1 would destroy the latter (#7769); leave ambiguous layouts intact.
+        if (hasLiveDatabaseFiles(dbDir)) {
+          LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
+              "Cannot determine the phase of the legacy snapshot swap for %s. Preserving the live files, "
+                  + "staging, backup and pending marker for manual recovery", null, dbDir);
+          return;
+        }
+        // No live files: phase 1 finished, so complete the swap from the staging, as recovery always has. (A legacy
+        // rollback that cleared the installed files and failed before restoring any leaves the same layout with a
+        // partial staging; the old binary recorded nothing that could tell the two apart.)
         LogManager.instance().log(SnapshotInstaller.class, Level.INFO,
             "Completing interrupted snapshot swap for: %s", null, dbDir);
         atomicSwap(dbDir, snapshotNew, snapshotBackup);
         requireRecoveredDatabase(dbDir);
         completeSwapRecovery(dbDir);
-        Files.deleteIfExists(dbDir.resolve(SNAPSHOT_COMPLETE_FILE));
         return;
 
       } else if (hasCompleteMarker && !hasBackup) {
-        // A complete staging directory can also predate the first phase publication. Only a marker-only
-        // directory proves there are no snapshot files left to install; otherwise preserve the ambiguity.
-        try (final DirectoryStream<Path> staged = Files.newDirectoryStream(snapshotNew,
-            entry -> !entry.getFileName().toString().equals(SNAPSHOT_COMPLETE_FILE))) {
-          if (staged.iterator().hasNext())
-            throw new IOException("Complete snapshot has no published swap phase in " + dbDir
-                + "; preserving staging and the pending marker");
-        }
+        // Every version creates the backup before moving anything, so the live directory is intact: either a
+        // legacy swap completed and only its cleanup was interrupted, or the swap never started (a crash or an
+        // I/O failure before the first published phase; readSwapPhase ignores that unpublished write). After a
+        // failure the node reopened and kept applying on the live database, so a leftover staging may be stale:
+        // never install it here, drop it and let the next install fetch a current snapshot.
         LogManager.instance().log(SnapshotInstaller.class, Level.INFO,
-            "Cleaning up completed snapshot swap for: %s", null, dbDir);
+            "Discarding the staging of a snapshot swap that did not start, or cleaning up a completed one, for: %s",
+            null, dbDir);
         requireRecoveredDatabase(dbDir);
-        deleteDirectoryIfExists(snapshotNew);
+        completeSwapRecovery(dbDir);
+        return;
 
       } else if (!hasCompleteMarker && hasBackup) {
         // Download was interrupted, backup exists: restore the backup
@@ -1387,37 +1402,51 @@ public final class SnapshotInstaller {
 
   private static void deleteSwapState(final Path dbDir) throws IOException {
     Files.deleteIfExists(dbDir.resolve(SNAPSHOT_SWAP_STATE_FILE));
-    Files.deleteIfExists(dbDir.resolve(SNAPSHOT_SWAP_STATE_FILE + ".tmp"));
+    Files.deleteIfExists(dbDir.resolve(SNAPSHOT_SWAP_STATE_TMP_FILE));
     fsyncDirectory(dbDir);
   }
 
+  /**
+   * Returns the published swap phase, or {@code null} when the swap has not moved anything yet. An unpublished
+   * temporary file without a published predecessor can only be the first BACKING_UP write, possibly torn by the
+   * crash or an I/O failure, and that write precedes the backup directory and every move: with a complete staging
+   * directory and no backup it is ignored, and recovery treats the swap as never started. Any other unpublished or
+   * unreadable state is refused.
+   */
   private static SwapPhase readSwapPhase(final Path dbDir) throws IOException {
     final Path state = dbDir.resolve(SNAPSHOT_SWAP_STATE_FILE);
-    final boolean published = Files.exists(state);
-    final Path source = published ? state : dbDir.resolve(SNAPSHOT_SWAP_STATE_FILE + ".tmp");
-    if (!Files.exists(source))
-      return null;
+    if (!Files.exists(state)) {
+      final Path temporary = dbDir.resolve(SNAPSHOT_SWAP_STATE_TMP_FILE);
+      if (!Files.exists(temporary) || (!Files.isDirectory(dbDir.resolve(SNAPSHOT_BACKUP_DIR))
+          && Files.exists(dbDir.resolve(SNAPSHOT_NEW_DIR).resolve(SNAPSHOT_COMPLETE_FILE))))
+        return null;
+      throw new IOException("Cannot safely resume unpublished swap state in " + temporary + "; preserving all files");
+    }
     try {
-      final SwapPhase phase = SwapPhase.valueOf(Files.readString(source));
-      // Only the initial transition can legitimately have a temporary file without a published predecessor.
-      // No live files have moved yet. Do not interpret an orphaned later transition as committed state.
-      if (!published && (phase != SwapPhase.BACKING_UP
-          || Files.exists(dbDir.resolve(SNAPSHOT_BACKUP_DIR))
-          || !Files.exists(dbDir.resolve(SNAPSHOT_NEW_DIR).resolve(SNAPSHOT_COMPLETE_FILE))))
-        throw new IOException("Cannot safely resume unpublished swap state in " + source + "; preserving all files");
-      return phase;
+      return SwapPhase.valueOf(Files.readString(state).strip());
     } catch (final IllegalArgumentException e) {
-      throw new IOException("Unrecognized snapshot swap state in " + source + "; preserving all files", e);
+      throw new IOException("Unrecognized snapshot swap state in " + state + "; preserving all files", e);
+    }
+  }
+
+  private static boolean hasStagedSnapshotFiles(final Path snapshotNew) throws IOException {
+    try (final DirectoryStream<Path> staged = Files.newDirectoryStream(snapshotNew,
+        entry -> !entry.getFileName().toString().equals(SNAPSHOT_COMPLETE_FILE))) {
+      return staged.iterator().hasNext();
+    }
+  }
+
+  private static boolean hasLiveDatabaseFiles(final Path dbDir) throws IOException {
+    try (final DirectoryStream<Path> live = Files.newDirectoryStream(dbDir,
+        entry -> !entry.getFileName().toString().startsWith(".snapshot"))) {
+      return live.iterator().hasNext();
     }
   }
 
   /** Publish either the previous phase or the next one, never a truncated state file after a crash. */
   private static void writeSwapPhase(final Path dbDir, final SwapPhase phase) throws IOException {
-    final Path temporary = dbDir.resolve(SNAPSHOT_SWAP_STATE_FILE + ".tmp");
-    Files.writeString(temporary, phase.name());
-    try (final FileChannel channel = FileChannel.open(temporary, StandardOpenOption.WRITE)) {
-      channel.force(true);
-    }
+    final Path temporary = dbDir.resolve(SNAPSHOT_SWAP_STATE_TMP_FILE);
+    writeFileForced(temporary, phase.name());
     snapshotSwapProgress(phase.name() + "_UNPUBLISHED");
     // No non-atomic fallback: an unsupported filesystem must refuse the swap rather than lose its phase.
     Files.move(temporary, dbDir.resolve(SNAPSHOT_SWAP_STATE_FILE),
@@ -2018,9 +2047,9 @@ public final class SnapshotInstaller {
    * propagates with dbDir partially swapped and the caller's pending marker still present, so
    * {@link #recoverPendingSnapshotSwaps} finishes the reconciliation on the next startup.
    */
-  private static void atomicSwap(final Path dbDir, final Path newDir, final Path backupDir) throws IOException {
+  static void atomicSwap(final Path dbDir, final Path newDir, final Path backupDir) throws IOException {
     SwapPhase phase = readSwapPhase(dbDir);
-    if (phase == null || !Files.exists(dbDir.resolve(SNAPSHOT_SWAP_STATE_FILE))) {
+    if (phase == null) {
       writeSwapPhase(dbDir, SwapPhase.BACKING_UP);
       phase = SwapPhase.BACKING_UP;
     }
@@ -2148,11 +2177,15 @@ public final class SnapshotInstaller {
    * (issue #4830).
    */
   private static void writeMarkerDurable(final Path marker) throws IOException {
-    Files.writeString(marker, "");
-    try (final FileChannel channel = FileChannel.open(marker, StandardOpenOption.WRITE)) {
+    writeFileForced(marker, "");
+    fsyncDirectory(marker.getParent());
+  }
+
+  private static void writeFileForced(final Path file, final String content) throws IOException {
+    Files.writeString(file, content);
+    try (final FileChannel channel = FileChannel.open(file, StandardOpenOption.WRITE)) {
       channel.force(true);
     }
-    fsyncDirectory(marker.getParent());
   }
 
   /**
