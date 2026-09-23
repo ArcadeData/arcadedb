@@ -36,7 +36,6 @@ import java.time.Duration;
 import java.util.List;
 
 import static com.arcadedb.postgres.PostgresWireMessages.WireMessage;
-import static com.arcadedb.postgres.PostgresWireMessages.errorFields;
 import static com.arcadedb.postgres.PostgresWireMessages.firstDataRowValue;
 import static com.arcadedb.postgres.PostgresWireMessages.messageTypesOf;
 import static com.arcadedb.postgres.PostgresWireMessages.readUntilReadyForQuery;
@@ -46,6 +45,7 @@ import static com.arcadedb.postgres.PostgresWireMessages.sendParse;
 import static com.arcadedb.postgres.PostgresWireMessages.sendSimpleQuery;
 import static com.arcadedb.postgres.PostgresWireMessages.sendSync;
 import static com.arcadedb.postgres.PostgresWireMessages.show;
+import static com.arcadedb.postgres.PostgresWireMessages.sqlStateOf;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
@@ -224,10 +224,6 @@ class Issue8217SetIsSessionScopedIT extends PostgresWireProtocolTestBase {
         assertThat(show(out, in, "user")).as("user is a startup field, not a run-time parameter").isEmpty();
       });
     }
-  }
-
-  private static String sqlStateOf(final List<WireMessage> messages) {
-    return errorFields(messages.stream().filter(m -> m.type() == 'E').findFirst().orElseThrow()).get('C');
   }
 
   private Socket connect() throws Exception {

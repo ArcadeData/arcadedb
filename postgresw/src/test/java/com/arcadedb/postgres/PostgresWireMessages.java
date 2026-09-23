@@ -188,6 +188,13 @@ final class PostgresWireMessages {
   }
 
   /**
+   * The SQLSTATE of the first {@code ErrorResponse} among {@code messages}.
+   */
+  static String sqlStateOf(final List<WireMessage> messages) {
+    return errorFields(messages.stream().filter(m -> m.type() == 'E').findFirst().orElseThrow()).get('C');
+  }
+
+  /**
    * The first column of the first DataRow among {@code messages}, as text.
    */
   static String firstDataRowValue(final List<WireMessage> messages) {

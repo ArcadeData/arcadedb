@@ -2871,7 +2871,9 @@ public class PostgresNetworkExecutor extends Thread {
    * whichever separator - the first '=' or the first case-insensitive ' TO ' - occurs FIRST in the string
    * and splits on that one only, leaving every other occurrence of either inside the value untouched
    * (issue #6423). {@code paramName} is lower-cased for case-insensitive comparison; a quoted {@code value}
-   * has its surrounding quotes stripped. Returns null when the command has neither separator.
+   * has its surrounding quotes stripped. An unquoted {@code DEFAULT} keyword comes back as a null value, meaning "reset
+   * to the default" (issue #8217), so it stays distinct from the quoted string literal {@code 'DEFAULT'}, as in
+   * PostgreSQL. Returns null when the command has neither separator.
    */
   static String[] parseSetCommand(final String query) {
     final int setLength = "SET ".length();
@@ -2909,7 +2911,8 @@ public class PostgresNetworkExecutor extends Thread {
       if (value.length() < 2 || value.charAt(value.length() - 1) != quote)
         return null;
       value = value.substring(1, value.length() - 1);
-    }
+    } else if ("DEFAULT".equalsIgnoreCase(value))
+      value = null;
 
     return new String[] { paramName, value };
   }

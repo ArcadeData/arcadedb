@@ -28,7 +28,6 @@ import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -72,7 +71,7 @@ class Issue6701SetSessionLocalIT extends PostgresWireProtocolTestBase {
         assertThat(messageTypesOf(readUntilReadyForQuery(in)))
             .as("no ErrorResponse for a SET SESSION command").doesNotContain('E');
 
-        assertThat(show(out, in, "datestyle"))
+        assertThat(PostgresWireMessages.show(out, in, "datestyle"))
             .as("SET SESSION datestyle = 'DMY' must resolve the parameter name to plain 'datestyle', "
                 + "not 'session datestyle', so the datestyle special case actually fires")
             .isEqualTo("ISO, DMY");
@@ -94,7 +93,7 @@ class Issue6701SetSessionLocalIT extends PostgresWireProtocolTestBase {
         assertThat(messageTypesOf(readUntilReadyForQuery(in)))
             .as("no ErrorResponse for a SET LOCAL command").doesNotContain('E');
 
-        assertThat(show(out, in, "datestyle"))
+        assertThat(PostgresWireMessages.show(out, in, "datestyle"))
             .as("SET LOCAL datestyle = 'DMY' must resolve the parameter name to plain 'datestyle', "
                 + "not 'local datestyle', so the datestyle special case actually fires")
             .isEqualTo("ISO, DMY");
@@ -118,28 +117,12 @@ class Issue6701SetSessionLocalIT extends PostgresWireProtocolTestBase {
         assertThat(messageTypesOf(messages))
             .as("a trailing ';' must not make setConfiguration() reject the value").doesNotContain('E');
 
-        assertThat(show(out, in, "datestyle"))
+        assertThat(PostgresWireMessages.show(out, in, "datestyle"))
             .as("SET datestyle = 'DMY'; over the extended protocol must still apply, "
                 + "not fail to parse because of the glued-on trailing ';'")
             .isEqualTo("ISO, DMY");
       });
     }
-  }
-
-  /**
-   * Runs {@code SHOW <name>} over the simple-query protocol and returns the one value its single DataRow carries.
-   */
-  private static String show(final DataOutputStream out, final DataInputStream in, final String name) throws Exception {
-    sendSimpleQuery(out, "SHOW " + name);
-    for (final WireMessage message : readUntilReadyForQuery(in))
-      if (message.type() == 'D') {
-        final ByteBuffer row = ByteBuffer.wrap(message.body());
-        row.getShort(); // column count
-        final byte[] value = new byte[row.getInt()];
-        row.get(value);
-        return new String(value, StandardCharsets.UTF_8);
-      }
-    throw new AssertionError("SHOW " + name + " answered no DataRow");
   }
 
   private void authenticate(final DataOutputStream out, final DataInputStream in) throws Exception {

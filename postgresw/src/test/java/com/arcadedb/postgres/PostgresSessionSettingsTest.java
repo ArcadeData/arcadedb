@@ -61,8 +61,38 @@ class PostgresSessionSettingsTest {
     final PostgresSessionSettings settings = new PostgresSessionSettings();
     settings.set("timezone", "Europe/Rome");
     assertThat(settings.show("timezone")).isEqualTo("Europe/Rome");
-    settings.set("timezone", "DEFAULT");
+    settings.set("timezone", null);
     assertThat(settings.show("timezone")).isEqualTo("UTC");
+
+    settings.set("datestyle", "DMY");
+    settings.set("datestyle", null);
+    assertThat(settings.show("datestyle")).isEqualTo("ISO, MDY");
+  }
+
+  @Test
+  void theStringDefaultIsAValueNotAReset() {
+    // Only the unquoted keyword resets; parseSetCommand() hands it over as null, and a quoted 'DEFAULT' as the string.
+    final PostgresSessionSettings settings = new PostgresSessionSettings();
+    settings.set("application_name", "DEFAULT");
+    assertThat(settings.show("application_name")).isEqualTo("DEFAULT");
+  }
+
+  @Test
+  void germanImpliesDayMonthOrderUnlessOneIsNamed() {
+    final PostgresSessionSettings settings = new PostgresSessionSettings();
+    settings.set("datestyle", "German");
+    assertThat(settings.show("datestyle")).isEqualTo("ISO, DMY");
+
+    settings.set("datestyle", "German, YMD");
+    assertThat(settings.show("datestyle")).isEqualTo("ISO, YMD");
+  }
+
+  @Test
+  void standardConformingStringsAlwaysAnswersOn() {
+    // A plain '...' literal is never backslash-interpreted on this server, so SHOW must not claim otherwise.
+    final PostgresSessionSettings settings = new PostgresSessionSettings();
+    settings.set("standard_conforming_strings", "off");
+    assertThat(settings.show("standard_conforming_strings")).isEqualTo("on");
   }
 
   @Test
