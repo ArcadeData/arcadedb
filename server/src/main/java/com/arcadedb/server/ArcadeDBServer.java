@@ -103,7 +103,13 @@ import static com.arcadedb.engine.ComponentFile.MODE.READ_WRITE;
 public class ArcadeDBServer {
   public enum STATUS {OFFLINE, STARTING, ONLINE, SHUTTING_DOWN}
 
+  /**
+   * @deprecated the file lives in {@link #getConfigPath() the configuration directory}, which is not necessarily
+   * {@code <root>/config} (issue #7415): resolve {@link #SERVER_CONFIGURATION_FILE_NAME} against it instead.
+   */
+  @Deprecated
   public static final String                                CONFIG_SERVER_CONFIGURATION_FILENAME = "config/server-configuration.json";
+  public static final String                                SERVER_CONFIGURATION_FILE_NAME       = "server-configuration.json";
 
   /**
    * Prefix that marks reserved internal databases (e.g. the Raft control directory {@code .raft}).
@@ -185,6 +191,9 @@ public class ArcadeDBServer {
   private             FileServerEventLog                    eventLog;
   private             PluginManager                         pluginManager;
   private             String                                serverRootPath;
+  // Issue #7415: resolved once, in the constructor, from arcadedb.server.configDirectory. Every server-side reader
+  // and writer of a configuration file goes through getConfigPath() rather than appending "/config" to the root.
+  private             String                                serverConfigPath;
   // volatile: written by the HA plugin during startPlugins(AFTER_HTTP_ON), i.e. after httpServer.startService()
   // has begun accepting requests. Undertow worker threads reading these (readiness/cluster handlers, getDatabase's
   // HA wrapping) need a happens-before with those writes, otherwise under the JMM they may observe null indefinitely.
@@ -271,6 +280,7 @@ public class ArcadeDBServer {
   public ArcadeDBServer() {
     this.configuration = new ContextConfiguration();
     serverRootPath = ServerPathUtils.setRootPath(configuration);
+    serverConfigPath = resolveConfigPath(configuration, serverRootPath);
     loadConfiguration();
     this.serverName = configuration.getValueAsString(GlobalConfiguration.SERVER_NAME);
     this.replicationLifecycleEventsEnabled = configuration.getValueAsBoolean(GlobalConfiguration.TEST);
@@ -280,6 +290,7 @@ public class ArcadeDBServer {
   public ArcadeDBServer(final ContextConfiguration configuration) {
     this.configuration = configuration;
     serverRootPath = ServerPathUtils.setRootPath(configuration);
+    serverConfigPath = resolveConfigPath(configuration, serverRootPath);
     this.serverName = configuration.getValueAsString(GlobalConfiguration.SERVER_NAME);
     this.replicationLifecycleEventsEnabled = configuration.getValueAsBoolean(GlobalConfiguration.TEST);
     init();
@@ -472,7 +483,7 @@ public class ArcadeDBServer {
     // zero-cost no-op otherwise. This gives every wire protocol query/command spans from one point.
     QueryTracer.Holder.register(new MicrometerQueryTracer(observationRegistry));
 
-    security = new ServerSecurity(this, configuration, serverRootPath + "/config");
+    security = new ServerSecurity(this, configuration, serverConfigPath);
     security.startService();
 
     createDirectories();
@@ -482,7 +493,7 @@ public class ArcadeDBServer {
     security.loadUsers();
 
     // INITIALIZE AI CONFIGURATION (always available, inactive until subscription token is set)
-    aiConfiguration = new AiConfiguration(serverRootPath);
+    aiConfiguration = new AiConfiguration(Paths.get(serverConfigPath));
     aiConfiguration.load();
 
     // START HTTP SERVER IMMEDIATELY. THE HTTP ADDRESS WILL BE USED BY HA
@@ -645,10 +656,18 @@ public class ArcadeDBServer {
 
   private void createDirectories() {
 
-    LogManager.instance().log(this, Level.INFO, "Paths - server root: %s - databases: %s - backups: %s",
-        configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PATH),
+    LogManager.instance().log(this, Level.INFO, "Paths - server root: %s - config: %s - databases: %s - backups: %s",
+        configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PATH), serverConfigPath,
         configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY),
         configuration.getValueAsString(GlobalConfiguration.SERVER_BACKUP_DIRECTORY));
+
+    final File configDir = new File(serverConfigPath);
+    if (!configDir.exists()) {
+      if (!configDir.mkdirs()) {
+        LogManager.instance().log(this, Level.SEVERE, "Failed to create config directory: %s", configDir.getAbsolutePath());
+        throw new ServerException("Unable to create config directory: " + configDir.getAbsolutePath());
+      }
+    }
 
     final File databaseDir = new File(configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY));
     if (!databaseDir.exists()) {
@@ -1441,6 +1460,25 @@ public class ArcadeDBServer {
     return serverRootPath;
   }
 
+  /**
+   * The directory holding the server configuration files: {@code arcadedb.server.configDirectory}, which defaults
+   * to {@code <root path>/config} (issue #7415). Resolved once when the server is constructed.
+   */
+  public String getConfigPath() {
+    return serverConfigPath;
+  }
+
+  /**
+   * Resolves {@code arcadedb.server.configDirectory} against the given configuration, falling back to
+   * {@code <rootPath>/config} when it is unset or blank.
+   */
+  static String resolveConfigPath(final ContextConfiguration configuration, final String rootPath) {
+    final String configured = configuration.getValueAsString(GlobalConfiguration.SERVER_CONFIG_DIRECTORY);
+    if (configured == null || configured.isBlank())
+      return rootPath + File.separator + "config";
+    return configured;
+  }
+
   public HttpServer getHttpServer() {
     return httpServer;
   }
@@ -1978,7 +2016,7 @@ public class ArcadeDBServer {
   }
 
   private void loadConfiguration() {
-    final File file = new File(getRootPath() + File.separator + CONFIG_SERVER_CONFIGURATION_FILENAME);
+    final File file = new File(serverConfigPath, SERVER_CONFIGURATION_FILE_NAME);
     if (file.exists()) {
       try {
         final String content = FileUtils.readFileAsString(file);

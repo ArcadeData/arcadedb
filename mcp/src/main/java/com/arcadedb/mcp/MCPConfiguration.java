@@ -28,6 +28,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -65,7 +66,7 @@ public class MCPConfiguration implements MCPPermissions {
     }
   }
 
-  private final String rootPath;
+  private final Path configDirectory;
 
   private volatile boolean      enabled          = false;
   private volatile boolean      allowReads       = true;
@@ -84,7 +85,14 @@ public class MCPConfiguration implements MCPPermissions {
   private volatile List<String> allowedOrigins   = new CopyOnWriteArrayList<>();
 
   public MCPConfiguration(final String rootPath) {
-    this.rootPath = rootPath;
+    this(Paths.get(rootPath, "config"));
+  }
+
+  /**
+   * @param configDirectory the server configuration directory ({@code arcadedb.server.configDirectory}, issue #7415)
+   */
+  public MCPConfiguration(final Path configDirectory) {
+    this.configDirectory = configDirectory;
   }
 
   public synchronized void load() {
@@ -384,7 +392,7 @@ public class MCPConfiguration implements MCPPermissions {
   }
 
   private File getConfigFile() {
-    return Paths.get(rootPath, "config", "mcp-config.json").toFile();
+    return configDirectory.resolve("mcp-config.json").toFile();
   }
 
   private static Map<String, DatabaseOverride> parseDatabaseOverrides(final JSONObject databases) {

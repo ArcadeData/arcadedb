@@ -1482,6 +1482,17 @@ public enum GlobalConfiguration {
   SERVER_BACKUP_DIRECTORY("arcadedb.server.backupDirectory", SCOPE.JVM, "Directory containing the backups", String.class,
       "${arcadedb.server.rootPath}/backups"),
 
+  // Issue #7415: read once, when the server is constructed, and not re-read afterwards. The server configuration
+  // file (server-configuration.json) is itself one of the files this directory holds, so it cannot relocate it.
+  SERVER_CONFIG_DIRECTORY("arcadedb.server.configDirectory", SCOPE.JVM, """
+      Directory containing the server configuration files: server-configuration.json, the security files \
+      (server-users.jsonl, server-groups.json, server-api-tokens.json), backup.json, ai.json, mcp-config.json and \
+      gremlin-server.yaml. Defaults to the 'config' directory under the server root path. Set it, as a system property \
+      or environment variable, to keep the configuration on a persistent volume (e.g. next to the databases on \
+      Kubernetes). The logging configuration (arcadedb-log.properties) is not read from here: it is loaded by the JVM \
+      through -Djava.util.logging.config.file""",
+      String.class, "${arcadedb.server.rootPath}/config"),
+
   SERVER_RESTORE_IMPORT_ALLOW_LOCAL_URLS("arcadedb.server.restoreImportAllowLocalUrls", SCOPE.SERVER,
       "Allow the 'restore database' and 'import database' server commands to fetch from local-file ('file://') URLs and from private, loopback or link-local network hosts. Disabled by default to prevent SSRF and local-file-read via a client-supplied URL; enable only when the operator explicitly trusts these sources",
       Boolean.class, false),
