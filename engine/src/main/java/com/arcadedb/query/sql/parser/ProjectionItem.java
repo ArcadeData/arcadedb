@@ -45,6 +45,10 @@ public class ProjectionItem extends SimpleNode {
   // per record for nothing (#8260). `Identifier` is documented immutable and reusable, and `expression` here is itself
   // immutable once set by the parser, so caching the result is safe; `setExpression` invalidates it since a caller can
   // rebind the expression on an already-used node (e.g. `splitForAggregation`).
+  // Unsynchronized on purpose: a parsed ProjectionItem from the SQL statement cache is never executed directly.
+  // SelectExecutionPlanner.init() and ExecutionPlanCache.get() both copy() the projection (down through
+  // Projection.copy() -> ProjectionItem.copy()) before building or reusing a plan, so each execution gets its own,
+  // thread-confined ProjectionItem/cache-field instance - there is no concurrent writer to race with.
   private Identifier cachedDefaultAlias;
 
   public ProjectionItem(final Expression expression, final Identifier alias, final NestedProjection nestedProjection) {
