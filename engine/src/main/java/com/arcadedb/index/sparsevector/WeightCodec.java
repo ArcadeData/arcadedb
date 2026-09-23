@@ -26,8 +26,9 @@ package com.arcadedb.index.sparsevector;
  * Decoded weight is {@code weight_min + (level / 253) * (weight_max - weight_min)}, so the
  * end-points of the per-block range are exactly representable.
  * <p>
- * <b>fp16</b>: IEEE 754 half-precision. Sentinel {@code 0xFE00} marks tombstones (a NaN
- * payload outside the legal NaN range used by ordinary fp16 conversions).
+ * <b>fp16</b>: IEEE 754 half-precision. Sentinel {@code 0xFE00} marks tombstones; it collides with
+ * the fp16 image of negative NaN, so {@link #toFp16} refuses NaN outright rather than risk a weight
+ * silently encoding to the sentinel.
  * <p>
  * <b>fp32</b>: native float. Sentinel {@code NaN with bit-pattern 0x7FC0_DEAD} marks
  * tombstones (a quiet-NaN with a payload that no normal computation produces).
