@@ -383,6 +383,20 @@ public class TransactionManager {
       walFile.notifyPageFlushed();
   }
 
+  /**
+   * #8139: the per-reopen lines are throttled (see {@code ChannelReopenLog}), so a recovery scan on an interrupted
+   * thread reports how many channel reopens it went through once, when the scan is over.
+   */
+  private void reportRecoveryReopens() {
+    long reopens = 0;
+    for (final WALFile file : activeWALFilePool)
+      if (file != null)
+        reopens += file.getReopenCount();
+    if (reopens > 0)
+      LogManager.instance().log(this, Level.WARNING,
+          "Recovery of database '%s' reopened WAL channels closed by a thread interrupt %d times", null, database, reopens);
+  }
+
   public void checkIntegrity() {
     LogManager.instance().log(this, Level.WARNING, "Started recovery of database '%s'", null, database);
 
@@ -521,6 +535,8 @@ public class TransactionManager {
           }
           walPositions[lowerTx] = nextTx;
         }
+
+        reportRecoveryReopens();
 
         // Only update the next-tx counter if recovery actually applied a transaction. When
         // lastTxId is still -1 the counter must keep the persistedLastTxId value loaded by the
