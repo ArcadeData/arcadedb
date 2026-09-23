@@ -395,11 +395,17 @@ public class MathExpression extends SimpleNode {
         } else if (left instanceof Number number && right instanceof Number number1) {
           result = apply(number, this, number1);
         } else if (DateUtils.isDate(left) || DateUtils.isDate(right)) {
-          final ChronoUnit highestPrecision = DateUtils.getHigherPrecision(left, right);
-          final Long leftAsLong = DateUtils.dateTimeToTimestamp(left, highestPrecision);
-          final Long rightAsLong = DateUtils.dateTimeToTimestamp(right, highestPrecision);
-          final Number r = apply(leftAsLong, rightAsLong);
-          result = Duration.of(r.longValue(), highestPrecision);
+          if (left == null || right == null) {
+            // mirrors the Number branch above: `date - null` keeps the date (as `date + null` and `number - null`
+            // already do), and `null - date` has no meaningful negative of a date to fall back to, so it stays null
+            result = left;
+          } else {
+            final ChronoUnit highestPrecision = DateUtils.getHigherPrecision(left, right);
+            final Long leftAsLong = DateUtils.dateTimeToTimestamp(left, highestPrecision);
+            final Long rightAsLong = DateUtils.dateTimeToTimestamp(right, highestPrecision);
+            final Number r = apply(leftAsLong, rightAsLong);
+            result = Duration.of(r.longValue(), highestPrecision);
+          }
         } else if (left instanceof Collection) {
           final Collection<Object> coll = (Collection<Object>) left;
           coll.remove(right);
