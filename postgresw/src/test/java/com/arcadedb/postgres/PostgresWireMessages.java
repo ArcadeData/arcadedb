@@ -21,6 +21,7 @@ package com.arcadedb.postgres;
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -175,6 +176,37 @@ final class PostgresWireMessages {
       i++; // skip this field's terminator
     }
     return fields;
+  }
+
+  /**
+   * Runs {@code SHOW <name>} over the simple-query protocol and returns the one text value its single DataRow carries
+   * (issue #8217: a SET is session-scoped, so the connection that ran it is where its effect is read back).
+   */
+  static String show(final DataOutputStream out, final DataInputStream in, final String name) throws Exception {
+    sendSimpleQuery(out, "SHOW " + name);
+    return firstDataRowValue(readUntilReadyForQuery(in));
+  }
+
+  /**
+   * The SQLSTATE of the first {@code ErrorResponse} among {@code messages}.
+   */
+  static String sqlStateOf(final List<WireMessage> messages) {
+    return errorFields(messages.stream().filter(m -> m.type() == 'E').findFirst().orElseThrow()).get('C');
+  }
+
+  /**
+   * The first column of the first DataRow among {@code messages}, as text.
+   */
+  static String firstDataRowValue(final List<WireMessage> messages) {
+    for (final WireMessage message : messages)
+      if (message.type() == 'D') {
+        final ByteBuffer row = ByteBuffer.wrap(message.body());
+        row.getShort(); // column count
+        final byte[] value = new byte[row.getInt()];
+        row.get(value);
+        return new String(value, StandardCharsets.UTF_8);
+      }
+    throw new AssertionError("no DataRow among " + messageTypesOf(messages));
   }
 
   private static void sendMessage(final DataOutputStream out, final char type, final ByteArrayOutputStream body) throws Exception {

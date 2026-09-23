@@ -18,10 +18,6 @@
  */
 package com.arcadedb.postgres;
 
-import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.utility.DateUtils;
-
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -52,28 +48,18 @@ import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
  * </ul>
  * These tests speak the wire protocol directly over a raw socket so the extended-query {@code Parse} path
  * is actually exercised (a JDBC client normally sends {@code SET} over the simple-query protocol, which
- * would not reach the second bug at all), and observe the {@code datestyle} special case's side effect
- * ({@link com.arcadedb.schema.Schema#setDateTimeFormat}) directly on the server-side database rather than
- * relying on {@code connectionProperties}, which this class never exposes back to the client.
+ * would not reach the second bug at all). Each observes the {@code datestyle} it set through {@code SHOW datestyle}
+ * on the same connection: a {@code SET} is session-scoped (issue #8217), so the connection that ran it is the only
+ * place its effect is visible. {@code DMY} is used because it is not the default order, so a {@code SET} that did
+ * not take effect cannot pass.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue6701SetSessionLocalIT extends PostgresWireProtocolTestBase {
 
-  @AfterEach
-  @Override
-  public void endTest() {
-    // Restore the schema-wide format so this test can't leak state into any other test class that shares
-    // the same database.
-    getServerDatabase(0, getDatabaseName()).getSchema().setDateTimeFormat(GlobalConfiguration.DATE_TIME_FORMAT.getValueAsString());
-    super.endTest();
-  }
-
   @Test
   @DisplayName("[#6701] SET SESSION <name> = <value> over the simple-query protocol resolves to the plain parameter name")
   void setSessionModifierIsHonoredOverSimpleProtocol() throws Exception {
-    resetDateTimeFormat();
-
     try (final Socket socket = new Socket()) {
       socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
@@ -81,23 +67,21 @@ class Issue6701SetSessionLocalIT extends PostgresWireProtocolTestBase {
       authenticate(out, in);
 
       assertTimeoutPreemptively(Duration.ofSeconds(10), () -> {
-        sendSimpleQuery(out, "SET SESSION datestyle = 'ISO'");
+        sendSimpleQuery(out, "SET SESSION datestyle = 'DMY'");
         assertThat(messageTypesOf(readUntilReadyForQuery(in)))
             .as("no ErrorResponse for a SET SESSION command").doesNotContain('E');
+
+        assertThat(PostgresWireMessages.show(out, in, "datestyle"))
+            .as("SET SESSION datestyle = 'DMY' must resolve the parameter name to plain 'datestyle', "
+                + "not 'session datestyle', so the datestyle special case actually fires")
+            .isEqualTo("ISO, DMY");
       });
     }
-
-    assertThat(getServerDatabase(0, getDatabaseName()).getSchema().getDateTimeFormat())
-        .as("SET SESSION datestyle = 'ISO' must resolve the parameter name to plain 'datestyle', "
-            + "not 'session datestyle', so the datestyle special case actually fires")
-        .isEqualTo(DateUtils.DATE_TIME_ISO_8601_FORMAT);
   }
 
   @Test
   @DisplayName("[#6701] SET LOCAL <name> = <value> over the simple-query protocol resolves to the plain parameter name")
   void setLocalModifierIsHonoredOverSimpleProtocol() throws Exception {
-    resetDateTimeFormat();
-
     try (final Socket socket = new Socket()) {
       socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
@@ -105,23 +89,21 @@ class Issue6701SetSessionLocalIT extends PostgresWireProtocolTestBase {
       authenticate(out, in);
 
       assertTimeoutPreemptively(Duration.ofSeconds(10), () -> {
-        sendSimpleQuery(out, "SET LOCAL datestyle = 'ISO'");
+        sendSimpleQuery(out, "SET LOCAL datestyle = 'DMY'");
         assertThat(messageTypesOf(readUntilReadyForQuery(in)))
             .as("no ErrorResponse for a SET LOCAL command").doesNotContain('E');
+
+        assertThat(PostgresWireMessages.show(out, in, "datestyle"))
+            .as("SET LOCAL datestyle = 'DMY' must resolve the parameter name to plain 'datestyle', "
+                + "not 'local datestyle', so the datestyle special case actually fires")
+            .isEqualTo("ISO, DMY");
       });
     }
-
-    assertThat(getServerDatabase(0, getDatabaseName()).getSchema().getDateTimeFormat())
-        .as("SET LOCAL datestyle = 'ISO' must resolve the parameter name to plain 'datestyle', "
-            + "not 'local datestyle', so the datestyle special case actually fires")
-        .isEqualTo(DateUtils.DATE_TIME_ISO_8601_FORMAT);
   }
 
   @Test
   @DisplayName("[#6701] a semicolon-terminated SET over the extended query protocol is honored, not rejected")
   void trailingSemicolonIsStrippedOverExtendedProtocol() throws Exception {
-    resetDateTimeFormat();
-
     try (final Socket socket = new Socket()) {
       socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
@@ -131,20 +113,16 @@ class Issue6701SetSessionLocalIT extends PostgresWireProtocolTestBase {
       assertTimeoutPreemptively(Duration.ofSeconds(10), () -> {
         // Sent as its own Parse+Bind+Execute+Sync round trip, the extended-query dispatch in
         // parseCommand() (not queryCommand()'s simple-query dispatch, which already strips a trailing ';').
-        final List<WireMessage> messages = runExtendedQuery(out, in, "SET datestyle = 'ISO';");
+        final List<WireMessage> messages = runExtendedQuery(out, in, "SET datestyle = 'DMY';");
         assertThat(messageTypesOf(messages))
             .as("a trailing ';' must not make setConfiguration() reject the value").doesNotContain('E');
+
+        assertThat(PostgresWireMessages.show(out, in, "datestyle"))
+            .as("SET datestyle = 'DMY'; over the extended protocol must still apply, "
+                + "not fail to parse because of the glued-on trailing ';'")
+            .isEqualTo("ISO, DMY");
       });
     }
-
-    assertThat(getServerDatabase(0, getDatabaseName()).getSchema().getDateTimeFormat())
-        .as("SET datestyle = 'ISO'; over the extended protocol must still flip the format to ISO 8601, "
-            + "not fail to parse because of the glued-on trailing ';'")
-        .isEqualTo(DateUtils.DATE_TIME_ISO_8601_FORMAT);
-  }
-
-  private void resetDateTimeFormat() {
-    getServerDatabase(0, getDatabaseName()).getSchema().setDateTimeFormat(GlobalConfiguration.DATE_TIME_FORMAT.getValueAsString());
   }
 
   private void authenticate(final DataOutputStream out, final DataInputStream in) throws Exception {
