@@ -101,11 +101,11 @@
       function processNotificationQueue() {
         while (notificationQueue.length > 0 && isToastReady) {
           var n = notificationQueue.shift();
-          showNotification(n.title, n.message, n.type, n.delay);
+          showNotification(n.title, n.message, n.type, n.delay, n.tag);
         }
       }
 
-      function showNotification(title, message, type, delay) {
+      function showNotification(title, message, type, delay, tag) {
         var container = document.getElementById('toastContainer');
         if (!container) return;
 
@@ -117,6 +117,7 @@
         var toastEl = document.createElement('div');
         toastEl.className = 'toast studio-toast';
         toastEl.setAttribute('role', 'alert');
+        if (tag) toastEl.setAttribute('data-notify-tag', tag);
         toastEl.innerHTML =
           '<div class="toast-header">' +
             '<i class="fa ' + iconClass + ' me-2" style="color:' + iconColor + '"></i>' +
@@ -137,12 +138,35 @@
         toastEl.addEventListener('hidden.bs.toast', function() { toastEl.remove(); });
       }
 
-      function globalNotify(title, message, type, delay) {
+      function globalNotify(title, message, type, delay, tag) {
         if (!isToastReady) {
-          notificationQueue.push({ title: title, message: message, type: type, delay: delay });
+          notificationQueue.push({ title: title, message: message, type: type, delay: delay, tag: tag });
           return;
         }
-        showNotification(title, message, type, delay);
+        showNotification(title, message, type, delay, tag);
+      }
+
+      // Dismisses any currently visible (or still-queued) toast created with the given tag.
+      // Used to clear a still-open "Session Expired" warning once the user logs back in,
+      // since Bootstrap warning toasts don't auto-hide on their own (see #8231).
+      function dismissNotification(tag) {
+        if (!tag) return;
+
+        for (var i = notificationQueue.length - 1; i >= 0; i--) {
+          if (notificationQueue[i].tag === tag) notificationQueue.splice(i, 1);
+        }
+
+        var container = document.getElementById('toastContainer');
+        if (!container) return;
+        // Compare the attribute directly instead of interpolating `tag` into a CSS selector string.
+        var toasts = container.querySelectorAll('.studio-toast');
+        for (var j = 0; j < toasts.length; j++) {
+          var el = toasts[j];
+          if (el.getAttribute('data-notify-tag') !== tag) continue;
+          var instance = bootstrap.Toast.getInstance(el);
+          if (instance) instance.hide();
+          else el.remove();
+        }
       }
     </script>
 
