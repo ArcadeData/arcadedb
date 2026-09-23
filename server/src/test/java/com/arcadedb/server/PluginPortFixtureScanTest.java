@@ -120,6 +120,32 @@ class PluginPortFixtureScanTest {
   }
 
   @Test
+  void anIntermediateClassDeclaredInTwoPackagesIsReportedNotGuessed() throws IOException {
+    // Which AbstractFooIT FooIT extends depends on its imports, which a textual scan cannot follow. Either guess could
+    // hide a broken fixture, so the ambiguity itself is the offence.
+    write("a/AbstractFooIT", "public abstract class AbstractFooIT extends BaseFooServerTest {\n}");
+    write("b/AbstractFooIT", "public abstract class AbstractFooIT extends BaseGraphServerTest {\n}");
+    write("a/FooIT", "class FooIT extends AbstractFooIT {\n  void c() { PLUGINS.setValue(" + ENTRY + "); }\n}");
+
+    assertThat(scan().offenders()).singleElement().asString()
+        .startsWith("a/FooIT.java: extends a chain through AbstractFooIT, which is declared in more than one package");
+  }
+
+  @Test
+  void aFullyQualifiedSuperclassResolves() throws IOException {
+    write("FooIT", "class FooIT extends com.example.BaseFooServerTest {\n  void c() { PLUGINS.setValue(" + ENTRY + "); }\n}");
+
+    assertThat(scan().offenders()).isEmpty();
+  }
+
+  @Test
+  void aPortThatOnlyEndsInTheDefaultDigitsIsNotTheDefault() throws IOException {
+    write("DialIT", "class DialIT extends BaseFooServerTest {\n  void c() { PLUGINS.setValue(" + ENTRY + "); connect(\"localhost\", 19999); }\n}");
+
+    assertThat(scan().offenders()).isEmpty();
+  }
+
+  @Test
   void dialingTheProductionDefaultIsFlagged() throws IOException {
     write("DialIT", "class DialIT extends BaseFooServerTest {\n  void c() { PLUGINS.setValue(" + ENTRY + "); connect(\"localhost\", 9999); }\n}");
 

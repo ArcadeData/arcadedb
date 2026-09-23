@@ -24,6 +24,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -55,7 +56,7 @@ public final class PluginPortFixtureScan {
   public static final String RAFT_HA_BASE = "BaseRaftHATest";
 
   private static final Pattern CLASS_DECLARATION = Pattern.compile(
-      "(?m)^(?:public\\s+|protected\\s+|abstract\\s+|final\\s+)*class\\s+(\\w+)(?:<[^>{]*>)?\\s+extends\\s+(\\w+)");
+      "(?m)^(?:public\\s+|protected\\s+|abstract\\s+|final\\s+)*class\\s+(\\w+)(?:<[^>{]*>)?\\s+extends\\s+([\\w.]+)");
 
   /**
    * @param fixtures  every file that starts the plugin, i.e. what the scan actually checked
@@ -86,12 +87,15 @@ public final class PluginPortFixtureScan {
         sources.put(testSources.relativize(file).toString().replace('\\', '/'), Files.readString(file, StandardCharsets.UTF_8));
     }
 
-    // Top-level class -> superclass, so a fixture that inherits from an intermediate abstract class still resolves.
+    // Top-level class -> superclass, so a fixture that inherits from an intermediate abstract class still resolves. The
+    // scan is textual and cannot follow imports, so a simple name declared in more than one package cannot be resolved:
+    // such a name is recorded as ambiguous and any fixture whose chain reaches it is reported, never guessed.
     final Map<String, String> superclasses = new HashMap<>();
+    final Set<String> ambiguous = new HashSet<>();
     for (final String source : sources.values()) {
       final Matcher declaration = CLASS_DECLARATION.matcher(source);
-      if (declaration.find())
-        superclasses.put(declaration.group(1), declaration.group(2));
+      if (declaration.find() && superclasses.put(declaration.group(1), simpleName(declaration.group(2))) != null)
+        ambiguous.add(declaration.group(1));
     }
 
     final Pattern startsPlugin = Pattern.compile("\"[\\w-]+:" + Pattern.quote(pluginClassName) + "\"");
@@ -114,7 +118,14 @@ public final class PluginPortFixtureScan {
 
       final Matcher declaration = CLASS_DECLARATION.matcher(source);
       // Start from this file's own declared parent: the name-keyed map may hold a same-named class of another package.
-      final String parent = declaration.find() ? declaration.group(2) : null;
+      final String parent = declaration.find() ? simpleName(declaration.group(2)) : null;
+
+      final String unresolvable = firstAmbiguousAncestor(parent, superclasses, ambiguous);
+      if (unresolvable != null) {
+        offenders.add(name + ": extends a chain through " + unresolvable
+            + ", which is declared in more than one package, so the scan cannot tell which base it reaches");
+        continue;
+      }
 
       if (inherits(parent, RAFT_HA_BASE, superclasses)) {
         if (!source.contains("allocateFixturePorts("))
@@ -131,6 +142,23 @@ public final class PluginPortFixtureScan {
         offenders.add(name + ": dials the production default port " + defaultPort);
     }
     return new Result(fixtures, offenders);
+  }
+
+  /** The first name on {@code parent}'s ancestor chain that the tree declares more than once, or null. */
+  private static String firstAmbiguousAncestor(final String parent, final Map<String, String> superclasses,
+      final Set<String> ambiguous) {
+    String current = parent;
+    for (int depth = 0; current != null && depth <= superclasses.size(); depth++) {
+      if (ambiguous.contains(current))
+        return current;
+      current = superclasses.get(current);
+    }
+    return null;
+  }
+
+  /** {@code com.arcadedb.server.BaseGraphServerTest} -> {@code BaseGraphServerTest}; a simple name is returned as is. */
+  private static String simpleName(final String typeName) {
+    return typeName.substring(typeName.lastIndexOf('.') + 1);
   }
 
   /** Whether {@code parent}, or any ancestor of it declared in the scanned tree, is {@code base}. */
