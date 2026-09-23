@@ -71,6 +71,7 @@ import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicLong;
@@ -93,6 +94,9 @@ public class BinarySerializer {
   private final BinaryComparator comparator = new BinaryComparator();
   private       Class<?>         dateImplementation;
   private       Class<?>         dateTimeImplementation;
+  // #8158: java.util.Date and java.util.Calendar stop at the millisecond, so a DATETIME_MICROS/DATETIME_NANOS column
+  // is materialised as LocalDateTime under them - the class the write side already converts those columns to
+  private       Class<?>         subMillisDateTimeImplementation;
   private       DataEncryption   dataEncryption;
 
   // Cached WKT writer for fast Point serialization (avoid recreating writer for each Point)
@@ -849,11 +853,12 @@ public class BinarySerializer {
           ChronoUnit.MILLIS);
       break;
     case BinaryTypes.TYPE_DATETIME_MICROS:
-      value = DateUtils.dateTime(database, content.getUnsignedNumber(), ChronoUnit.MICROS, dateTimeImplementation,
+      value = DateUtils.dateTime(database, content.getUnsignedNumber(), ChronoUnit.MICROS, subMillisDateTimeImplementation,
           ChronoUnit.MICROS);
       break;
     case BinaryTypes.TYPE_DATETIME_NANOS:
-      value = DateUtils.dateTime(database, content.getUnsignedNumber(), ChronoUnit.NANOS, dateTimeImplementation, ChronoUnit.NANOS);
+      value = DateUtils.dateTime(database, content.getUnsignedNumber(), ChronoUnit.NANOS, subMillisDateTimeImplementation,
+          ChronoUnit.NANOS);
       break;
     case BinaryTypes.TYPE_DECIMAL:
       final int scale = (int) content.getNumber();
@@ -1480,6 +1485,10 @@ public class BinarySerializer {
   /** See {@link #setDateImplementation(Object)}. */
   public void setDateTimeImplementation(final Object dateTimeImplementation) {
     this.dateTimeImplementation = toClass(dateTimeImplementation);
+    this.subMillisDateTimeImplementation =
+        this.dateTimeImplementation.equals(Date.class) || this.dateTimeImplementation.equals(Calendar.class) ?
+            LocalDateTime.class :
+            this.dateTimeImplementation;
   }
 
   private static Class<?> toClass(final Object implementation) {

@@ -36,6 +36,8 @@ public class MultiIndexCursor implements IndexCursor {
   // and tombstone skips on a cursor that may only ever be asked for its key types.
   private final BinaryComparator   comparator;
   private final boolean            ascendingOrder;
+  // #8153: false FOR A PLAIN UNION OF CHILDREN THAT MAY COME FROM DIFFERENT INDEXES, WHOSE KEYS ARE NOT COMPARABLE
+  private final boolean            ordered;
   private       int                browsed         = 0;
   private       Object[]           nextKeys;
   private       int                nextCursorIndex = -1;
@@ -43,12 +45,28 @@ public class MultiIndexCursor implements IndexCursor {
   private       List<Identifiable> cursorsNextValues;
 
   public MultiIndexCursor(final List<IndexCursor> cursors, final int limit, final boolean ascendingOrder) {
+    this(cursors, limit, ascendingOrder, true);
+  }
+
+  /**
+   * @param ordered true to k-way merge the children by key, which requires every child to scan the same index; false to
+   *                return the union of the children one after another, without comparing their keys - the only sound
+   *                choice when they come from different indexes, like the leaves of an {@code or} over different
+   *                properties (#8153)
+   */
+  public MultiIndexCursor(final List<IndexCursor> cursors, final int limit, final boolean ascendingOrder,
+      final boolean ordered) {
     this.cursors = cursors;
     this.limit = limit;
     this.ascendingOrder = ascendingOrder;
+    this.ordered = ordered;
     try {
-      this.keyTypes = cursors.getFirst().getBinaryKeyTypes();
-      this.comparator = firstComparator(cursors);
+      // #8153: FROM THE FIRST CHILD THAT CARRIES KEY TYPES, NOT BLINDLY FROM THE FIRST ONE: A KEY-LESS CHILD (AN EMPTY
+      // CURSOR, OR ANY CURSOR THAT DOES NOT KNOW ITS INDEX) USED TO HAND THE MERGE AN EMPTY keyTypes ARRAY, AND THE
+      // FIRST COMPARISON BETWEEN TWO REAL KEYS INDEXED PAST ITS END
+      final IndexCursor keyed = firstKeyed(cursors);
+      this.keyTypes = keyed != null ? keyed.getBinaryKeyTypes() : cursors.getFirst().getBinaryKeyTypes();
+      this.comparator = keyed != null ? keyed.getComparator() : firstComparator(cursors);
       initCursors();
     } catch (final RuntimeException e) {
       // #5662: the caller handed the children over, so a constructor that does not complete must not leave them open -
@@ -62,6 +80,7 @@ public class MultiIndexCursor implements IndexCursor {
     this.cursors = new ArrayList<>(indexes.size());
     this.limit = limit;
     this.ascendingOrder = ascendingOrder;
+    this.ordered = true;
     try {
       for (final Index i : indexes) {
         if (!(i instanceof RangeIndex))
@@ -83,6 +102,7 @@ public class MultiIndexCursor implements IndexCursor {
     this.cursors = new ArrayList<>(indexes.size());
     this.limit = limit;
     this.ascendingOrder = ascendingOrder;
+    this.ordered = true;
     try {
       for (final Index i : indexes) {
         if (!(i instanceof RangeIndex))
@@ -152,10 +172,15 @@ public class MultiIndexCursor implements IndexCursor {
       if (nextCursorIndex == -1) {
         nextCursorIndex = i;
         nextKeys = cursor.getKeys();
+        if (!ordered)
+          // UNION: DRAIN THE FIRST LIVE CHILD BEFORE MOVING TO THE NEXT
+          break;
         continue;
       }
 
-      final int cmp = LSMTreeIndexMutable.compareKeys(cursor.getComparator(), keyTypes, cursor.getKeys(), nextKeys);
+      // #8153: THE MERGE'S OWN COMPARATOR, SAMPLED WITH keyTypes FROM THE SAME CHILD, RATHER THAN THIS CHILD'S, WHICH A
+      // KEY-LESS CURSOR ANSWERS WITH null
+      final int cmp = LSMTreeIndexMutable.compareKeys(comparator, keyTypes, cursor.getKeys(), nextKeys);
       if (ascendingOrder) {
         if (cmp < 0) {
           nextCursorIndex = i;
@@ -255,6 +280,16 @@ public class MultiIndexCursor implements IndexCursor {
   @Override
   public byte[] getBinaryKeyTypes() {
     return keyTypes;
+  }
+
+  private static IndexCursor firstKeyed(final List<IndexCursor> cursors) {
+    for (final IndexCursor cursor : cursors)
+      if (cursor != null) {
+        final byte[] types = cursor.getBinaryKeyTypes();
+        if (types != null && types.length > 0 && cursor.getComparator() != null)
+          return cursor;
+      }
+    return null;
   }
 
   private static BinaryComparator firstComparator(final List<IndexCursor> cursors) {
