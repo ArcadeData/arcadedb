@@ -1319,7 +1319,8 @@ public class CoreApiSpec implements OpenApiContributor {
     error.addProperty("status", SpecBuilders.integer("""
         HTTP status the buffered encoding would have used for the same failure - 400 or 408 for a malformed or \
         truncated body, and for an engine failure raised after the stream started the status the standard error \
-        mapping gives it: 409 for a duplicated key, 503 for a retryable conflict, 403, 404, 500 (issue #7396)."""));
+        mapping gives it: 409 for a duplicated key, 503 for a retryable conflict, 413 for a body past \
+        arcadedb.server.httpBodyContentMaxSize, 403, 404, 500 (issue #7396)."""));
     error.addProperty("exceptionArgs", SpecBuilders.string("""
         Structured arguments of the failure, as the buffered error body carries them: present only for a failure \
         that has any, e.g. 'index|keys|rid' for a duplicated key."""));

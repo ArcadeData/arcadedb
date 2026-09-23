@@ -121,10 +121,11 @@ import java.util.logging.Level;
  *     plus the {@code status} it would have sent it under. A 200 is already on the wire by then and cannot be
  *     taken back, so the status travels in band and the line is the only terminator a consumer gets - a stream
  *     that ends with neither {@code summary} nor {@code error} did not arrive whole. An engine failure raised
- *     after the stream started carries the status the buffered encoding would have chosen for it, decided by the
- *     same classifier ({@code AbstractServerHttpHandler.classifyError}, issue #7396), together with its
- *     {@code exceptionArgs} where it has any; the counters and the bookmark travel as they do on every other
- *     failure.</li>
+ *     after the stream started carries exactly the error body the buffered encoding would have sent for it and the
+ *     status it would have sent it under, both decided by the same classifier
+ *     ({@code AbstractServerHttpHandler.classifyError}, issue #7396) - label in {@code error}, the message chain in
+ *     {@code detail} (concealed in production mode), {@code exceptionArgs} where it has any; the counters and the
+ *     bookmark travel as they do on every other failure.</li>
  * </ul>
  * A progress line is an upper bound on what is durable, exactly like the partial-commit counters below: vertices
  * are committed at each flush, but {@code GraphBatch} buffers edges and writes them at close, so an edge-phase
@@ -802,21 +803,17 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
           "Streaming batch load on database '%s' failed after the response had already started", raised,
           databaseName);
       try {
-        // The status the buffered encoding would have sent for this same failure - 409 for a duplicated key, 503
-        // for a retryable conflict, 403, 404 - decided by the one classifier every handler answers with, not by
-        // a copy of it (issue #7396). The exception it reports is the one the buffered body names too: a
-        // transaction wrapper is looked through to the failure it carries.
+        // The body the buffered encoding sends for this same failure, built by the same code from the same
+        // decision - the one classifier every handler answers with, not a copy of it (issue #7396). So the status
+        // is the fine-grained one (409 for a duplicated key, 503 for a retryable conflict, 403, 404, 413), 'error'
+        // is the classified label, 'exception' names the classified throwable (a transaction wrapper is looked
+        // through), 'exceptionArgs' carries the duplicate's index|keys|rid or the leader address, and the message
+        // chain travels in 'detail' - which production mode conceals here exactly as it does there, instead of
+        // the raw message this line used to carry in every mode (issue #8236, PR #8237 review).
         final ErrorClassification classification = classifyError(raised);
-        final Throwable reported = classification.reported();
-        final JSONObject error = new JSONObject()
-            .put("error", reported.getMessage() != null ? reported.getMessage() : reported.toString())
-            .put("exception", reported.getClass().getName())
+        final JSONObject error = new JSONObject(buildErrorBody(!isProductionMode(), classification.message(),
+            classification.reported(), classification.exceptionArgs(), getCorrelationId(exchange)))
             .put("status", classification.status());
-        // The structured arguments the buffered body carries for the same failure - the index, key and RID of a
-        // duplicate, the leader address of a leadership refusal - which the remote driver rebuilds typed
-        // exceptions from.
-        if (classification.exceptionArgs() != null)
-          error.put("exceptionArgs", classification.exceptionArgs());
         // What a client reconciles with, and what the buffered encoding still delivers for this same failure:
         // its counters travel in the error body, and its bookmark is emitted by the finally in execute(). Both
         // were dropped here, which is the one place this encoding was worse than the one it extends
