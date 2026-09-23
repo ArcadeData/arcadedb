@@ -25,18 +25,11 @@ import com.arcadedb.event.BeforeRecordDeleteListener;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.server.BaseGraphServerTest;
-import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.OutputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.nio.charset.StandardCharsets;
-import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -213,60 +206,9 @@ public class Issue8037RedisRetryReplyDuplicationTest extends BaseRedisServerTest
     return database.query("sql", "select count(*) as c from " + typeName).next().<Long>getProperty("c");
   }
 
-  /** Extracts the "value" property from the first result in the response: {"result": [{"value": <result>}]}. */
-  private Object getResultValue(final JSONObject response) {
-    final JSONArray results = response.getJSONArray("result");
-    if (results.isEmpty())
-      return null;
-    final JSONObject firstResult = results.getJSONObject(0);
-    if (firstResult.isNull("value"))
-      return null;
-    return firstResult.get("value");
-  }
-
-  private int getResultValueAsInt(final JSONObject response) {
-    final Object value = getResultValue(response);
-    if (value instanceof Number number)
-      return number.intValue();
-    return Integer.parseInt(value.toString());
-  }
-
-  /**
-   * Not a drop-in duplicate of {@link BaseGraphServerTest#executeCommand}: that one hardcodes the "studio"
-   * serializer, which wraps the reply as {@code result: {...}} (an object) rather than the raw
-   * {@code result: [...]} array shape {@link #getResultValue} parses below and the actual redis client/HTTP
-   * caller this test is reproducing gets - checked while addressing a review suggestion to reuse the base
-   * method, which changes {@code getResultValue} into a runtime type-error rather than compiling to something
-   * silently wrong. Kept separate on purpose; the only thing this repeats from the base method is asking the
-   * server for its actual bound port (issue #6560) rather than assuming 2480+serverIndex.
-   */
-  @Override
-  protected JSONObject executeCommand(final int serverIndex, final String language, final String command) throws Exception {
-    final HttpURLConnection connection = (HttpURLConnection) new URL(
-        "http://127.0.0.1:" + getServer(serverIndex).getHttpServer().getPort() + "/api/v1/command/" + getDatabaseName()).openConnection();
-    connection.setRequestMethod("POST");
-    connection.setRequestProperty("Authorization",
-        "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
-    connection.setRequestProperty("Content-Type", "application/json");
-    connection.setDoOutput(true);
-
-    final JSONObject request = new JSONObject();
-    request.put("language", language);
-    request.put("command", command);
-
-    try (OutputStream os = connection.getOutputStream()) {
-      os.write(request.toString().getBytes(StandardCharsets.UTF_8));
-    }
-
-    final int responseCode = connection.getResponseCode();
-    if (responseCode != 200) {
-      final String error = new String(connection.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
-      throw new RuntimeException("HTTP " + responseCode + ": " + error);
-    }
-
-    final String response = new String(connection.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-    return new JSONObject(response);
-  }
+  // getResultValue()/getResultValueAsInt()/executeCommand() are inherited from BaseRedisServerTest: they answer
+  // the same {"result": [{"value": <result>}]} shape the redis client/HTTP caller this test reproduces actually
+  // gets, unlike BaseGraphServerTest#executeCommand's "studio"-serialized {@code result: {...}} object shape.
 
   @Override
   protected void populateDatabase() {

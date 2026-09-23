@@ -19,9 +19,17 @@
 package com.arcadedb.redis;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.ServerPlugin;
+
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 
 /**
  * Base for the tests that start the Redis plugin. The plugin is started on port {@code 0}, so the operating system
@@ -68,5 +76,80 @@ public abstract class BaseRedisServerTest extends BaseGraphServerTest {
         if (plugin instanceof RedisProtocolPlugin p && p.getPort() > 0)
           return p.getPort();
     throw new IllegalStateException("The Redis plugin is not listening: it has not bound a port, so there is none to address");
+  }
+
+  // --- HTTP HELPERS FOR THE "redis" QUERY LANGUAGE, SHARED SO A TEST DRIVING BOTH THE RESP WIRE PATH (Jedis) AND
+  // THE QUERY LANGUAGE (HTTP) FOR THE SAME COMMAND DOES NOT HAVE TO CARRY ITS OWN COPY (#8271) ---
+
+  protected JSONObject executeQuery(final int serverIndex, final String language, final String command) throws Exception {
+    return executeHttp(serverIndex, "query", language, command);
+  }
+
+  protected JSONObject executeCommand(final int serverIndex, final String language, final String command) throws Exception {
+    return executeHttp(serverIndex, "command", language, command);
+  }
+
+  private JSONObject executeHttp(final int serverIndex, final String endpoint, final String language, final String command)
+      throws Exception {
+    // Ask the server which port it actually bound (issue #6560), rather than assuming the 2480+serverIndex
+    // default: SERVER_HTTP_INCOMING_PORT is a range (2480-2489 by default) and binds the first free port in
+    // it, so with 2480 already held by anything else - another local ArcadeDB instance, an IDE debug session
+    // for a different project - this test's own server listens elsewhere. A port-less/wrong-port URL would
+    // then reach that foreign server instead, and every test in this class would fail with a confusing
+    // "403 Too many failed authentication attempts" / "User/Password not valid" that reads as an auth bug
+    // rather than a port collision. Same pattern as #6437's fix for ConsoleAsyncInsertTest.
+    final HttpURLConnection connection = (HttpURLConnection) new URL(
+        "http://127.0.0.1:" + getServer(serverIndex).getHttpServer().getPort() + "/api/v1/" + endpoint + "/" + getDatabaseName())
+        .openConnection();
+    connection.setRequestMethod("POST");
+    connection.setRequestProperty("Authorization",
+        "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+    connection.setRequestProperty("Content-Type", "application/json");
+    connection.setDoOutput(true);
+
+    final JSONObject request = new JSONObject();
+    request.put("language", language);
+    request.put("command", command);
+
+    try (OutputStream os = connection.getOutputStream()) {
+      os.write(request.toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    final int responseCode = connection.getResponseCode();
+    if (responseCode != 200) {
+      final String error = new String(connection.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
+      throw new RuntimeException("HTTP " + responseCode + ": " + error);
+    }
+
+    final String response = new String(connection.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+    return new JSONObject(response);
+  }
+
+  /**
+   * Extracts the "value" property from the first result in the response. The response format is:
+   * {@code {"result": [{"value": <result>}]}}
+   */
+  protected Object getResultValue(final JSONObject response) {
+    final JSONArray results = response.getJSONArray("result");
+    if (results.isEmpty())
+      return null;
+    final JSONObject firstResult = results.getJSONObject(0);
+    if (firstResult.isNull("value"))
+      return null;
+    return firstResult.get("value");
+  }
+
+  protected int getResultValueAsInt(final JSONObject response) {
+    final Object value = getResultValue(response);
+    if (value instanceof Number number)
+      return number.intValue();
+    return Integer.parseInt(value.toString());
+  }
+
+  protected long getResultValueAsLong(final JSONObject response) {
+    final Object value = getResultValue(response);
+    if (value instanceof Number number)
+      return number.longValue();
+    return Long.parseLong(value.toString());
   }
 }

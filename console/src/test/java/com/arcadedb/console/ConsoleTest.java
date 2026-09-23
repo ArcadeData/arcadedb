@@ -228,6 +228,46 @@ class ConsoleTest {
   }
 
   /**
+   * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/8275">...</a>: a script is loaded line by line, and the only
+   * reasons {@code executeLoad} used to keep accumulating past one line were an open block comment or an unbalanced '{' - not
+   * a statement missing its terminating ';'. A statement written over several lines with no brace in it therefore ran
+   * truncated at the end of its first line: {@code UPDATE Doc SET data = 'x'} on its own updated every record, and
+   * {@code WHERE id = 1;} then ran as a separate, meaningless command.
+   */
+  @Test
+  void loadScriptWithMultiLineStatementNotSplitOnNewline() throws Exception {
+    assertThat(console.parse("connect " + DB_NAME)).isTrue();
+    assertThat(console.parse("create document type Doc")).isTrue();
+    assertThat(console.parse("insert into Doc set id = 1, data = 'a'")).isTrue();
+    assertThat(console.parse("insert into Doc set id = 2, data = 'b'")).isTrue();
+
+    final File script = new File("./target/issue-8275.sql");
+    try {
+      Files.writeString(script.toPath(), """
+          UPDATE Doc SET data = 'x'
+          WHERE id = 1;
+          """);
+
+      final StringBuilder buffer = new StringBuilder();
+      console.setOutput(buffer::append);
+
+      assertThat(console.parse("load " + script.getAbsolutePath())).isTrue();
+      assertThat(buffer.toString()).doesNotContain("ERROR");
+
+      buffer.setLength(0);
+      assertThat(console.parse("select from Doc where id = 1")).isTrue();
+      assertThat(buffer.toString()).contains("|data|x").doesNotContain("ERROR");
+
+      // THE WHERE CLAUSE MUST HAVE APPLIED: id = 2 IS UNCHANGED, NOT ALSO OVERWRITTEN TO 'x'
+      buffer.setLength(0);
+      assertThat(console.parse("select from Doc where id = 2")).isTrue();
+      assertThat(buffer.toString()).contains("|data|b").doesNotContain("|data|x").doesNotContain("ERROR");
+    } finally {
+      script.delete();
+    }
+  }
+
+  /**
    * Issue <a href="https://github.com/ArcadeData/arcadedb/issues/6439">...</a>: {@code executeLoad} re-buffers one statement at a time, resetting
    * after every executed command, so an unclosed '{' must be reported at its real position in the FILE - here line 4 - not at
    * "line 1" relative to the buffer that happened to be accumulating when the error was found.

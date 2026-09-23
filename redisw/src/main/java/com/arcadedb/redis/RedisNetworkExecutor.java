@@ -32,7 +32,6 @@ import com.arcadedb.network.binary.ChannelBinaryServer;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalEdgeType;
 import com.arcadedb.schema.LocalVertexType;
-import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.network.PreAuthConnectionGate;
@@ -433,44 +432,10 @@ public class RedisNetworkExecutor extends Thread {
     final String k = (String) list.get(1);
     final long by = list.size() > 2 ? Long.parseLong((String) list.get(2)) : 1L;
 
-    final long newValue = ((Number) computeVariable(k, stored -> {
-      final long number = requireIntegralValue(stored).longValue();
-      try {
-        return Math.subtractExact(number, by);
-      } catch (final ArithmeticException e) {
-        throw new RedisException("increment or decrement would overflow", e);
-      }
-    })).longValue();
+    final long newValue = ((Number) computeVariable(k, RedisCounterOperations.decrementBy(by))).longValue();
 
     value.append(":");
     value.append(newValue);
-  }
-
-  /**
-   * Normalizes a stored Redis value for DECR/DECRBY and the non-decimal path of INCR/INCRBY: a
-   * {@code null} key reads as {@code 0}, and a non-{@code Number} stored value (always a {@code String}
-   * here) is parsed as a 64-bit integer. Anything that isn't - or can't be parsed as - an integral value,
-   * such as a fractional string or a {@code Double} left behind by INCRBYFLOAT, is rejected with real
-   * Redis' own "value is not an integer or out of range" (issue #6942 code review) rather than emitting an
-   * invalid RESP integer reply.
-   */
-  private static Number requireIntegralValue(final Object stored) {
-    if (stored == null)
-      return 0L;
-
-    Object number = stored;
-    if (!(number instanceof Number)) {
-      try {
-        number = Long.parseLong(number.toString());
-      } catch (final NumberFormatException e) {
-        throw new RedisException("value is not an integer or out of range");
-      }
-    }
-
-    if (!(number instanceof Long || number instanceof Integer || number instanceof Short || number instanceof Byte))
-      throw new RedisException("value is not an integer or out of range");
-
-    return (Number) number;
   }
 
   private void exists(final List<Object> list) {
@@ -678,35 +643,8 @@ public class RedisNetworkExecutor extends Thread {
 
     // The read, the addition and the write are ONE atomic operation on the key - see computeVariable() for why a
     // get followed by a set is not good enough here (issue #7776).
-    final Number newValue = (Number) computeVariable(k, stored -> {
-      // INCRBYFLOAT has no integral restriction - it promotes an integral value to float and accepts any
-      // stored value it can read as a float ("3.3" included, issue #6942 code review) - while INCR/INCRBY
-      // reuse the DECR/DECRBY validation in requireIntegralValue().
-      final Number number;
-      if (decimal) {
-        if (stored == null)
-          number = 0L;
-        else if (stored instanceof Number storedNumber)
-          number = storedNumber;
-        else {
-          try {
-            number = Double.parseDouble(stored.toString());
-          } catch (final NumberFormatException e) {
-            throw new RedisException("value is not a valid float");
-          }
-        }
-      } else
-        number = requireIntegralValue(stored);
-
-      if (!decimal) {
-        try {
-          return Math.addExact(number.longValue(), by.longValue());
-        } catch (final ArithmeticException e) {
-          throw new RedisException("increment or decrement would overflow", e);
-        }
-      }
-      return Type.increment(number, by);
-    });
+    final Number newValue = (Number) computeVariable(k,
+        decimal ? RedisCounterOperations.incrementByFloat(by.doubleValue()) : RedisCounterOperations.incrementBy(by.longValue()));
 
     if (decimal) {
       final String text = newValue.toString();

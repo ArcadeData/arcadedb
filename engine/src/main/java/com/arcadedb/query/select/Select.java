@@ -277,18 +277,22 @@ public class Select {
     if (parsedOperator == null)
       throw new IllegalArgumentException("Unsupported operator '" + parsedOperatorName + "' in condition " + condition);
 
-    // #8173: THE ARITY GATE USED TO COME FIRST AND REFUSE EVERY NON-TRIPLE WITH A GENERIC MESSAGE, WHICH IS WHAT
-    // SelectCompiled.json() ITSELF EMITS FOR A `not` NODE (ITS RIGHT OPERAND IS null, SO toJSON() WRITES TWO
+    // #8173/#8256: THE ARITY GATE USED TO COME FIRST AND REFUSE EVERY NON-TRIPLE WITH A GENERIC MESSAGE, WHICH IS
+    // WHAT SelectCompiled.json() ITSELF EMITS FOR A UNARY NODE (ITS RIGHT OPERAND IS null, SO toJSON() WRITES TWO
     // ELEMENTS). THE HELPFUL MESSAGE #8059 ADDED FOR `not` SAT BELOW THE GATE AND WAS THEREFORE UNREACHABLE FOR THE
     // ONE SHAPE THAT NEEDED IT. THE OPERATOR IS NOW READ BEFORE THE ARITY IS JUDGED, SO EACH ARITY ERROR NAMES ITS
-    // OWN CAUSE - AND THE UNARY SHAPE IS ACCEPTED, WHICH CLOSES THE json() -> json(JSONObject) ROUND TRIP #6817
-    // ESTABLISHED FOR EVERY OPERATOR INSTEAD OF ALL BUT ONE
-    final boolean unary = parsedOperator == SelectOperator.not;
+    // OWN CAUSE - AND unary IS READ OFF THE OPERATOR ITSELF (SelectOperator.unary) RATHER THAN NAMING JUST `not`,
+    // WHICH IS WHAT LEFT is_null AND is_not_null - THE OTHER TWO OPERATORS WHOSE right IS ALWAYS null - REFUSED BY
+    // THIS SAME GATE (#8256)
+    final boolean unary = parsedOperator.unary;
     if (unary && condition.length() == 3)
       throw new IllegalArgumentException(
-          "Operator 'not' is unary and takes no right operand: write it as [left, \"not\"], not as "
-              + "[left, \"not\", right]. To negate a comparison, use the complementary operator instead "
-              + "(for example '<>' for '=', 'is null' for 'is not null')");
+          "Operator '" + parsedOperatorName + "' is unary and takes no right operand: write it as [left, \""
+              + parsedOperatorName + "\"], not as [left, \"" + parsedOperatorName + "\", right]"
+              + (parsedOperator == SelectOperator.not
+              ? ". To negate a comparison, use the complementary operator instead "
+              + "(for example '<>' for '=', 'is null' for 'is not null')"
+              : ""));
     if (!unary && condition.length() == 2)
       throw new IllegalArgumentException("Operator '" + parsedOperatorName
           + "' is binary and requires a right operand: " + condition);
@@ -333,12 +337,23 @@ public class Select {
       // because `between` and `in` evaluate their range/candidates as values, not as runtime operands.
       return array.toList();
     }
-    if (operand instanceof String string && string.startsWith(":"))
-      return new SelectPropertyValue(string.substring(1));
-    if (operand instanceof String string && string.startsWith("#"))
+    if (operand instanceof String string && (string.startsWith(":") || string.startsWith("#"))) {
+      final char sigil = string.charAt(0);
+      // #8257: SelectTreeNode.toJSON() ESCAPES A LITERAL STRING THAT BEGINS WITH ':' OR '#' BY DOUBLING THE LEADING
+      // CHARACTER, BECAUSE WRITTEN VERBATIM IT WOULD BE INDISTINGUISHABLE FROM A PROPERTY/PARAMETER REFERENCE ON
+      // READ - `where s = ':alice'` USED TO ROUND-TRIP INTO `where s = <value of property alice>`. STRIP EXACTLY
+      // THE ONE CHARACTER THE WRITER ADDED; A LITERAL IS ONLY LEGAL ON THE RIGHT, LIKE EVERY OTHER LITERAL
+      if (string.length() > 1 && string.charAt(1) == sigil) {
+        if (leftSide)
+          throw new IllegalArgumentException("Unsupported value " + operand);
+        return string.substring(1);
+      }
+      if (sigil == ':')
+        return new SelectPropertyValue(string.substring(1));
       // #8167: THE LEFT SIDE USED TO ROUTE THIS THROUGH parameter(), WHICH ASSIGNS THE FLUENT BUILDER'S
       // propertyValue - THE *RIGHT*-HAND SLOT - SO A PARAMETER WRITTEN ON THE LEFT LANDED ON THE WRONG SIDE
       return new SelectParameterValue(this, string.substring(1));
+    }
     if (leftSide)
       throw new IllegalArgumentException("Unsupported value " + operand);
     return operand;
