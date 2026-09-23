@@ -30,6 +30,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -304,23 +306,27 @@ class Issue7530RecoveryClosesOpenDatabaseTest {
    * through the same registry lock, reopen, 503 window and maintenance slot that a failing close does. What is
    * pinned is the guard, and the guard is the same code for either origin.
    */
-  @Test
+  @ParameterizedTest
+  @ValueSource(booleans = { true, false })
   @Timeout(180)
-  void anUncheckedFailureRepairingOneDatabaseDoesNotEndTheScan(@TempDir final Path root) throws Exception {
+  void anUncheckedFailureRepairingOneDatabaseDoesNotEndTheScan(final boolean failFirst,
+      @TempDir final Path root) throws Exception {
     final Path databasesDir = startServer(root);
 
-    // Two marked directories. The one that blows up is named so it sorts first is not something the directory
-    // stream guarantees, so the barrier fails only the first database it is called for, whichever that is.
+    // Exercise failure on either visit: directory-stream order differs across filesystems, and both fixtures
+    // must be independently recoverable when they are the visit that does not throw.
     final Path first = stageSyntheticInterruptedSwap(databasesDir);
     final Path second = databasesDir.resolve(DEFERRED_DB);
     Files.createDirectories(second.resolve(SnapshotInstaller.SNAPSHOT_NEW_DIR));
     Files.writeString(second.resolve(SnapshotInstaller.SNAPSHOT_NEW_DIR).resolve(SnapshotInstaller.SNAPSHOT_COMPLETE_FILE), "");
     Files.writeString(second.resolve(SnapshotInstaller.SNAPSHOT_PENDING_FILE), "");
     Files.writeString(second.resolve("data.dat"), "old-data");
+    Files.writeString(second.resolve("schema.json"), "{}");
 
     final AtomicBoolean alreadyFailed = new AtomicBoolean(false);
+    final AtomicBoolean firstVisit = new AtomicBoolean(true);
     SnapshotInstaller.recoveryBarrierForTesting = () -> {
-      if (alreadyFailed.compareAndSet(false, true))
+      if (firstVisit.getAndSet(false) == failFirst && alreadyFailed.compareAndSet(false, true))
         throw new IllegalStateException("simulated unchecked failure while repairing this database");
     };
 
@@ -426,12 +432,14 @@ class Issue7530RecoveryClosesOpenDatabaseTest {
     Files.writeString(snapshotNew.resolve(SnapshotInstaller.SNAPSHOT_COMPLETE_FILE), "");
     Files.createDirectories(dbDir.resolve(SnapshotInstaller.SNAPSHOT_BACKUP_DIR));
     Files.writeString(dbDir.resolve(SnapshotInstaller.SNAPSHOT_PENDING_FILE), "");
+    // Live still contains the originals: an explicit phase makes this distinguishable from a legacy phase-2 crash.
+    Files.writeString(dbDir.resolve(SnapshotInstaller.SNAPSHOT_SWAP_STATE_FILE), "BACKING_UP");
     return dbDir;
   }
 
   /**
    * A pending swap over synthetic files, for the assertions that are about the node-wide flag rather than about a
-   * database: no server registration is involved, so nothing has to be openable.
+   * database: no server registration is involved. A schema file satisfies the recovery completeness check.
    */
   private static Path stageSyntheticInterruptedSwap(final Path databasesDir) throws IOException {
     final Path dbDir = databasesDir.resolve(SYNTHETIC_DB);
@@ -442,6 +450,7 @@ class Issue7530RecoveryClosesOpenDatabaseTest {
     Files.createDirectories(snapshotBackup);
     Files.writeString(dbDir.resolve(SnapshotInstaller.SNAPSHOT_PENDING_FILE), "");
     Files.writeString(snapshotNew.resolve(SnapshotInstaller.SNAPSHOT_COMPLETE_FILE), "");
+    Files.writeString(snapshotNew.resolve("schema.json"), "{}");
     Files.writeString(snapshotNew.resolve("data.dat"), "new-snapshot-data");
     Files.writeString(snapshotBackup.resolve("data.dat"), "old-data");
     return dbDir;

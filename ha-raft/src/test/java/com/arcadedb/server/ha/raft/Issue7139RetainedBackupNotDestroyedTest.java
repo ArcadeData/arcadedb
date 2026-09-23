@@ -23,6 +23,8 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -53,6 +55,62 @@ import static org.mockito.Mockito.when;
 class Issue7139RetainedBackupNotDestroyedTest {
 
   private static final String DB = "mydb";
+
+  /** A published phase recovery cannot act on must survive a new install, even when no backup remains. */
+  @Test
+  void aNewInstallPreservesAnUnresolvedPublishedPhaseEvenWithoutABackup(@TempDir final Path databasesDir)
+      throws Exception {
+    final Path dbPath = databasesDir.resolve(DB);
+    Files.createDirectories(dbPath);
+    Files.writeString(dbPath.resolve("schema.json"), "{}");
+    Files.writeString(dbPath.resolve("data.dat"), "retained-data");
+    Files.writeString(dbPath.resolve(".snapshot-pending"), "");
+    Files.writeString(dbPath.resolve(".snapshot-swap-state"), "UNKNOWN");
+    final Path staged = Files.createDirectories(dbPath.resolve(".snapshot-new"));
+    Files.writeString(staged.resolve(".snapshot-complete"), "");
+    Files.writeString(staged.resolve("data.dat"), "new-data");
+
+    assertThatThrownBy(() -> SnapshotInstaller.install(DB, dbPath.toString(), () -> null, () -> null, null,
+        serverThatCannotDownload(databasesDir)))
+        .isInstanceOf(IOException.class).hasMessageContaining("unresolved snapshot swap state");
+
+    assertThat(dbPath.resolve("data.dat")).hasContent("retained-data");
+    assertThat(dbPath.resolve(".snapshot-pending")).exists();
+    assertThat(dbPath.resolve(".snapshot-swap-state")).hasContent("UNKNOWN");
+    assertThat(staged.resolve("data.dat")).hasContent("new-data");
+  }
+
+  /**
+   * #7769: a crash or I/O failure after the staging was marked complete but before the first phase was published
+   * moved nothing. The next install discards that possibly stale staging instead of refusing forever, then
+   * proceeds with its own attempt (whose download fails here, leaving the live database untouched).
+   */
+  @ParameterizedTest
+  @ValueSource(strings = { ".snapshot-swap-state.tmp", "ABSENT" })
+  void aNewInstallDiscardsAStagedSnapshotWhosePhaseWasNeverPublished(final String stateFile,
+      @TempDir final Path databasesDir) throws Exception {
+    final Path dbPath = databasesDir.resolve(DB);
+    Files.createDirectories(dbPath);
+    Files.writeString(dbPath.resolve("schema.json"), "{}");
+    Files.writeString(dbPath.resolve("data.dat"), "retained-data");
+    Files.writeString(dbPath.resolve(".snapshot-pending"), "");
+    if (!stateFile.equals("ABSENT"))
+      Files.writeString(dbPath.resolve(stateFile), "BACK");
+    final Path staged = Files.createDirectories(dbPath.resolve(".snapshot-new"));
+    Files.writeString(staged.resolve(".snapshot-complete"), "");
+    Files.writeString(staged.resolve("schema.json"), "{}");
+    Files.writeString(staged.resolve("data.dat"), "new-data");
+
+    assertThatThrownBy(() -> SnapshotInstaller.install(DB, dbPath.toString(), () -> null, () -> null, null,
+        serverThatCannotDownload(databasesDir)))
+        .isInstanceOf(IOException.class).hasMessageNotContaining("unresolved snapshot swap state");
+
+    assertThat(dbPath.resolve("data.dat")).hasContent("retained-data");
+    assertThat(dbPath.resolve(".snapshot-pending")).doesNotExist();
+    assertThat(dbPath.resolve(".snapshot-swap-state")).doesNotExist();
+    assertThat(dbPath.resolve(".snapshot-swap-state.tmp")).doesNotExist();
+    assertThat(dbPath.resolve(".snapshot-backup")).doesNotExist();
+  }
 
   // -------------------------------------------------------------------------------------------------
   // Part 1: a new install must not destroy a backup a failed rollback left behind
