@@ -798,9 +798,9 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         // commit the very 200 this branch exists to avoid sending.
         throw t;
 
-      final Throwable raised = t instanceof BatchResponseWriteException && t.getCause() != null ? t.getCause() : t;
+      final Throwable reported = t instanceof BatchResponseWriteException ? t.getCause() : t;
       LogManager.instance().log(this, Level.WARNING,
-          "Streaming batch load on database '%s' failed after the response had already started", raised,
+          "Streaming batch load on database '%s' failed after the response had already started", reported,
           databaseName);
       try {
         // The body the buffered encoding sends for this same failure, built by the same code from the same
@@ -810,7 +810,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         // through), 'exceptionArgs' carries the duplicate's index|keys|rid or the leader address, and the message
         // chain travels in 'detail' - which production mode conceals here exactly as it does there, instead of
         // the raw message this line used to carry in every mode (issue #8236, PR #8237 review).
-        final ErrorClassification classification = classifyError(raised);
+        final ErrorClassification classification = classifyError(reported);
         final JSONObject error = new JSONObject(buildErrorBody(!isProductionMode(), classification.message(),
             classification.reported(), classification.exceptionArgs(), getCorrelationId(exchange)))
             .put("status", classification.status());
