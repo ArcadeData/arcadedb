@@ -82,7 +82,9 @@ class BatchStreamingApiSpecTest {
         .as("the status the buffered encoding would have used travels in band, since 200 is already sent, and "
             + "the bookmark is on the FAILED line too - a batch is not atomic, so a failed load still committed "
             + "the chunks a READ_YOUR_WRITES client has to read back")
-        .containsKeys("status", "commitIndex", "statusMapped");
+        .containsKeys("status", "commitIndex", "exceptionArgs")
+        // Issue #7396: the in-band status is always the classified one now, so the flag saying it was not is gone.
+        .doesNotContainKey("statusMapped");
     assertThat(((Schema<?>) event.getProperties().get("summary")).getProperties())
         .as("so does the read-your-writes bookmark, which can no longer be a response header")
         .containsKey("commitIndex");

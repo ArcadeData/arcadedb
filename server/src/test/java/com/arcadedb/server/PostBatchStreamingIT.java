@@ -498,9 +498,24 @@ class PostBatchStreamingIT extends BaseGraphServerTest {
     assertThat(error.getString("exception"))
         .as("the exception class is the discriminator once the status line can no longer carry one")
         .contains("DuplicatedKeyException");
-    assertThat(error.getBoolean("statusMapped"))
-        .as("the in-band status is not the fine-grained one the buffered encoding would have mapped")
+    // Issue #7396: the in-band status is the one the buffered encoding answers the same failure with, decided
+    // by the same classifier - not the unclassified 500 fallback flagged 'statusMapped: false' it used to be.
+    assertThat(error.getInt("status"))
+        .as("a duplicated key is a 409 on the buffered encoding, so it is a 409 in band too (line=%s)", error)
+        .isEqualTo(409);
+    assertThat(error.has("statusMapped"))
+        .as("the flag only ever said the status was NOT exact; it is exact now, so it is gone")
         .isFalse();
+    assertThat(error.getString("exceptionArgs"))
+        .as("the duplicate's index|keys|rid travel in band as the buffered body carries them")
+        .contains("|");
+    assertThat(error.getString("error"))
+        .as("'error' is the classified label the buffered body carries, not the raw exception message - the message "
+            + "chain is in 'detail', which production mode conceals on both encodings (PR #8237 review)")
+        .isEqualTo("Found duplicate key in index");
+    assertThat(error.getString("detail"))
+        .as("outside production mode the message chain is still there, in the field the buffered body uses")
+        .contains("Duplicated key");
     assertThat(error.getLong("verticesCreated"))
         .as("the counters a client reconciles with must survive a failure of this shape too")
         .isEqualTo(2);

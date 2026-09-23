@@ -736,7 +736,7 @@ class PostBatchHandlerIT extends BaseGraphServerTest {
 
   private HttpURLConnection openBatchConnection(final int serverIndex, final String contentType,
       final String queryParams) throws Exception {
-    String url = "http://127.0.0.1:248" + serverIndex + "/api/v1/batch/graph";
+    String url = "http://127.0.0.1:" + getServerHttpPort(serverIndex) + "/api/v1/batch/graph";
     if (queryParams != null && !queryParams.isEmpty())
       url += "?" + queryParams;
 
