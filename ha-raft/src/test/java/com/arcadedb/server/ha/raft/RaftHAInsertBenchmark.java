@@ -27,8 +27,8 @@ import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.ServerPlugin;
+import com.arcadedb.server.StaticBaseServerTest;
 import com.arcadedb.server.TestServerHelper;
-import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -51,8 +51,6 @@ import java.util.logging.Level;
 @Tag("benchmark")
 class RaftHAInsertBenchmark {
 
-  private static final int    BASE_RAFT_PORT = 3434;
-  private static final int    BASE_HTTP_PORT = 3480;
   private static final String DB_NAME        = "benchdb";
   private static final String VERTEX_TYPE    = "Sensor";
   private static final int    WARMUP_COUNT   = 500;
@@ -61,6 +59,15 @@ class RaftHAInsertBenchmark {
   private static final int    TX_BATCH_SIZE  = 100;
   private static final int    ASYNC_THREADS  = 8;
   private static final String ROOT_PASSWORD  = BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
+
+  /**
+   * The current scenario's Raft ports in {@code [0, scenarioServerCount)} and HTTP ports after them,
+   * drawn afresh by {@link #cleanUp(int)} in ONE call so the two families cannot coincide. The former fixed
+   * {@code 3434 + i} / {@code 3480 + i} were answered by whatever already held them, and Ratis answers a Raft bind
+   * failure with {@code System.exit(1)} (issue #8222).
+   */
+  private int[] ports              = new int[0];
+  private int   scenarioServerCount;
 
   @Test
   void runBenchmark() throws Exception {
@@ -426,12 +433,12 @@ class RaftHAInsertBenchmark {
     config.setValue(GlobalConfiguration.SERVER_ROOT_PATH, "./target");
     config.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, ROOT_PASSWORD);
     config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST, "localhost");
-    config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, String.valueOf(BASE_HTTP_PORT + index));
+    config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, String.valueOf(httpPort(index)));
     config.setValue(GlobalConfiguration.HA_ENABLED, haEnabled);
 
     if (haEnabled) {
       config.setValue(GlobalConfiguration.HA_CLUSTER_NAME, "bench-cluster");
-      config.setValue(GlobalConfiguration.HA_RAFT_PORT, BASE_RAFT_PORT + index);
+      config.setValue(GlobalConfiguration.HA_RAFT_PORT, raftPort(index));
       config.setValue(GlobalConfiguration.HA_QUORUM, "MAJORITY");
 
       // Three-part format: host:raftPort:httpPort (enables follower HTTP forwarding)
@@ -439,7 +446,7 @@ class RaftHAInsertBenchmark {
       for (int i = 0; i < serverCount; i++) {
         if (i > 0)
           serverList.append(",");
-        serverList.append("localhost:").append(BASE_RAFT_PORT + i).append(":").append(BASE_HTTP_PORT + i);
+        serverList.append("localhost:").append(raftPort(i)).append(":").append(httpPort(i));
       }
       config.setValue(GlobalConfiguration.HA_SERVER_LIST, serverList.toString());
     }
@@ -456,13 +463,24 @@ class RaftHAInsertBenchmark {
   private void cleanUp(final int serverCount) {
     TestServerHelper.checkActiveDatabases();
     GlobalConfiguration.resetAll();
-    // Allow the OS time to release ports from the previous scenario before binding new ones
-    CodeUtils.sleep(1_000);
-    for (int i = 0; i < serverCount; i++) {
+    // The previous scenario's legacy Raft storage is named after ITS ports, so it goes before those are replaced.
+    for (int i = 0; i < scenarioServerCount; i++)
+      FileUtils.deleteRecursively(new File("./target/raft-storage-localhost_" + raftPort(i)));
+    for (int i = 0; i < serverCount; i++)
       FileUtils.deleteRecursively(new File("./target/databases" + i));
-      FileUtils.deleteRecursively(new File("./target/raft-storage-localhost_" + (BASE_RAFT_PORT + i)));
-    }
     new File("./target/config/server-users.jsonl").delete();
+
+    // Fresh ports for every scenario: nothing has to wait for the previous scenario's ports to be released.
+    ports = StaticBaseServerTest.allocateFreePorts(2 * serverCount);
+    scenarioServerCount = serverCount;
+  }
+
+  private int raftPort(final int index) {
+    return ports[index];
+  }
+
+  private int httpPort(final int index) {
+    return ports[scenarioServerCount + index];
   }
 
   // ---------------------------------------------------------------------------

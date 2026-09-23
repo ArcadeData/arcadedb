@@ -25,6 +25,7 @@ import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.exception.DatabaseNotAvailableException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
+import com.arcadedb.server.StaticBaseServerTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
@@ -33,7 +34,6 @@ import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
-import java.net.ServerSocket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.Executors;
@@ -157,12 +157,11 @@ class Issue7129PendingSnapshotStartupTest {
     if (completeDownload)
       Files.writeString(live.resolve(".snapshot-new/.snapshot-complete"), "");
 
-    final int raftPort;
-    final int httpPort;
-    try (final ServerSocket raftSocket = new ServerSocket(0); final ServerSocket httpSocket = new ServerSocket(0)) {
-      raftPort = raftSocket.getLocalPort();
-      httpPort = httpSocket.getLocalPort();
-    }
+    // Not an OS-assigned port: that comes from the ephemeral range, where any outgoing connection can take it before
+    // Ratis binds it, and Ratis answers the bind failure with System.exit(1), killing the fork (issue #8222).
+    final int[] ports = StaticBaseServerTest.allocateFreePorts(2);
+    final int raftPort = ports[0];
+    final int httpPort = ports[1];
     final ArcadeDBServer server = newServer();
     server.getConfiguration().setValue(GlobalConfiguration.HA_ENABLED, true);
     if (defaultDatabase)
