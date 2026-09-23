@@ -1995,6 +1995,13 @@ public class TransactionContext implements Transaction {
       throw new TransactionException("Transaction cannot be committed: " + rollbackOnlyReason
           + ". Roll it back and retry");
 
+    // Issue #8270: a database opened by an HA server before it is wrapped for replication refuses anything that
+    // would change it. Same placement as the rollback-only refusal above and for the same reason: the status has
+    // not moved yet, so the caller's error handling can still roll the transaction back. A read-only transaction
+    // commits as usual.
+    if (database instanceof LocalDatabase local && local.getWriteRefusal() != null && (updatedRecords != null || hasChanges()))
+      local.checkWritesAccepted();
+
     // Acquire file locks BEFORE processing updatedRecords so that updateRecordNoLock
     // (which loads pages and follows multi-page record chunk chains) is serialized.
     // Without this, concurrent updateRecordNoLock calls could both load the same page

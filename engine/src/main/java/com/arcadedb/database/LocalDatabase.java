@@ -881,6 +881,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   }
 
   public void checkPermissionsOnDatabase(final SecurityDatabaseUser.DATABASE_ACCESS access) {
+    // Issue #8270: a schema or settings change that only rewrites the configuration - ALTER PROPERTY, ALTER TYPE,
+    // ALTER DATABASE - reaches neither a commit nor recordFileChanges(), and this is the one check every one of them
+    // makes first. Checked before the security early-returns below, which skip it for an unsecured database.
+    if (access != SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SECURITY)
+      checkWritesAccepted();
+
     if (security == null)
       return;
 
@@ -2454,6 +2460,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public <RET> RET recordFileChanges(final Callable<Object> callback) {
+    // A schema change is a write too (issue #8270): refused before anything is created or saved.
+    checkWritesAccepted();
     return (RET) executeInWriteLock(callback);
   }
 
@@ -3211,6 +3219,43 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   public boolean isFencedForRecovery() {
     return fenceReason != null;
+  }
+
+  /**
+   * Why this database refuses writes right now, or {@code null} when it accepts them (issue #8270).
+   * <p>
+   * Set by a server that has opened the database before it can replicate it: on a node configured for high
+   * availability the databases are opened, and the network listeners started, before the HA plugin wraps each
+   * database for replication. A commit or a schema change reaching this instance in that window would be applied
+   * here and nowhere else, and the Raft replay that follows would then splice the cluster's committed pages over it
+   * at the same page versions. Unlike {@link #fenceReason} it does not block reads, and it is lifted as soon as the
+   * database is wrapped.
+   */
+  private volatile String writeRefusal = null;
+
+  /**
+   * Refuses every commit carrying changes, and every schema change, with a retryable {@link NeedRetryException}
+   * naming {@code reason}, until {@link #acceptWrites()} is called. Reads are unaffected.
+   */
+  public void refuseWrites(final String reason) {
+    writeRefusal = reason;
+  }
+
+  /** Lifts a {@link #refuseWrites(String)} refusal. */
+  public void acceptWrites() {
+    writeRefusal = null;
+  }
+
+  /** The reason {@link #refuseWrites(String)} was given, or {@code null} when this database accepts writes. */
+  public String getWriteRefusal() {
+    return writeRefusal;
+  }
+
+  /** Throws the retryable refusal of {@link #refuseWrites(String)}, if one is in place. */
+  public void checkWritesAccepted() {
+    final String refusal = writeRefusal;
+    if (refusal != null)
+      throw new NeedRetryException("Database '" + name + "' does not accept writes yet: " + refusal);
   }
 
   protected void checkDatabaseIsOpen() {
