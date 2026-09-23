@@ -957,6 +957,19 @@ public class Console {
                     continue;
                 }
 
+                // #8275: THE ONLY OTHER REASONS TO KEEP ACCUMULATING USED TO BE THE TWO CHECKS ABOVE, SO A STATEMENT WRITTEN
+                // OVER SEVERAL LINES WITH NO BRACE IN IT RAN TRUNCATED AT THE END OF ITS FIRST LINE - `UPDATE Doc SET data =
+                // 'x'` ON ITS OWN LINE, THEN `WHERE id = 1;` AS A SEPARATE COMMAND. THE REAL TERMINATOR IS ';', SO KEEP
+                // ACCUMULATING WHILE parser'S TRAILING WORD - EVERYTHING SINCE THE LAST DELIMITER - STILL CARRIES REAL
+                // CONTENT. A BUFFER THAT ENDS CLEANLY AT A ';' (OR IS ONLY WHITESPACE/A DROPPED COMMENT) LEAVES THAT TRAILING
+                // WORD BLANK, SO A NORMAL ONE-STATEMENT-PER-LINE SCRIPT IS UNAFFECTED
+                final List<String> words = parsedLine.words();
+                if (!words.isEmpty() && !words.getLast().isBlank()) {
+                    // THE LAST STATEMENT IN THE BUFFER IS NOT YET TERMINATED BY ';': IT CONTINUES ON THE NEXT LINE
+                    byteReadFromFile += line.length() + 1;
+                    continue;
+                }
+
                 pending.setLength(0);
                 execute(parsedLine, true, pendingStartLine - 1);
 
