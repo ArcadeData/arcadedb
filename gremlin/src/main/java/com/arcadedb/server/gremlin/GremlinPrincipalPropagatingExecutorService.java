@@ -77,6 +77,8 @@ public class GremlinPrincipalPropagatingExecutorService extends AbstractExecutor
     for (final String databaseName : server.getDatabaseNames()) {
       try {
         final DatabaseInternal database = (DatabaseInternal) server.getDatabase(databaseName);
+        // LOAD-BEARING: the engine's permission gates (GremlinHostAccessGuard, checkPermissionsOnDatabase) allow a thread
+        // with no bound user, so any other pool that runs Gremlin must bind the principal exactly like this.
         DatabaseContext.INSTANCE.init(database).setCurrentUser(user.getDatabaseUser(database));
         bound.add(database);
       } catch (final Exception e) {
