@@ -60,8 +60,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Tag("slow")
 class TimeSeriesGrpcHaConcurrentInsertIT extends BaseRaftHATest {
 
-  // One gRPC port per server, handed out free by the OS for every test instance rather than fixed (issue #7496).
-  private final int[] grpcPorts = allocateFreePorts(2);
+  // One gRPC port per server, drawn free for every test instance rather than fixed (issue #7496), from the same
+  // ledger as the Raft ports so the two can never coincide (issue #8203).
+  private final int[] grpcPorts = allocateFixturePorts(2);
 
   private static final int    NUM_THREADS       = 3;
   private static final int    POINTS_PER_THREAD = 2000;

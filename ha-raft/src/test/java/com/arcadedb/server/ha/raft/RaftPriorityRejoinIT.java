@@ -51,7 +51,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Tag("slow")
 class RaftPriorityRejoinIT extends BaseRaftHATest {
 
-  private static final int BASE_RAFT_PORT = 2434;
   private static final int BASE_HTTP_PORT = 2480;
 
   @Override
@@ -73,7 +72,7 @@ class RaftPriorityRejoinIT extends BaseRaftHATest {
     for (int i = 0; i < getServerCount(); i++) {
       if (i > 0)
         sb.append(",");
-      sb.append("localhost:").append(BASE_RAFT_PORT + i)
+      sb.append("localhost:").append(raftPort(i))
           .append(":").append(BASE_HTTP_PORT + i)
           .append(":").append(priorities[i]);
     }

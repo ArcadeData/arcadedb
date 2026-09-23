@@ -64,11 +64,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class Issue6070GraphBatchLoadLeaderGuardIT extends BaseRaftHATest {
 
-  // One gRPC port per server, handed out free by the OS for every test instance rather than fixed (issue #7496).
+  // One gRPC port per server, drawn free for every test instance rather than fixed (issue #7496), from the same
+  // ledger as the Raft ports so the two can never coincide (issue #8203).
   // A hand-picked base cannot be kept apart from every other class's: this class was first moved off 51091, which it
   // shared with TimeSeriesGrpcForwardedInsertTypeIT, onto 51161 - which Issue7308GrpcRestoreImportLeaderRoutingIT
   // also used.
-  private final int[] grpcPorts = allocateFreePorts(3);
+  private final int[] grpcPorts = allocateFixturePorts(3);
 
   private static final String VERTEX_TYPE = "Issue6070LeaderGuardNode";
 

@@ -159,15 +159,6 @@ class Issue3890RaftMtlsIT extends BaseRaftHATest {
   }
 
   private SSLSocket connect(final SSLContext context) throws IOException {
-    return RaftTestPki.connect(context, "localhost", raftPortOf(0));
-  }
-
-  /**
-   * Derives the Raft port from the peer id ({@code localhost_<raftPort>}) rather than duplicating the base
-   * port constant, so this test cannot drift away from what the cluster actually bound.
-   */
-  private int raftPortOf(final int serverIndex) {
-    final String peerId = peerIdForIndex(serverIndex);
-    return Integer.parseInt(peerId.substring(peerId.lastIndexOf('_') + 1));
+    return RaftTestPki.connect(context, "localhost", raftPort(0));
   }
 }

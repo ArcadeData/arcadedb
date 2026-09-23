@@ -42,7 +42,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class Issue6091GrpcRoutingTableIT extends BaseRaftHATest {
 
-  private static final int BASE_RAFT = 2434;
   private static final int BASE_HTTP = 2480;
   private static final int BASE_GRPC = 50071;
 
@@ -59,7 +58,7 @@ class Issue6091GrpcRoutingTableIT extends BaseRaftHATest {
     for (int i = 0; i < getServerCount(); i++) {
       if (i > 0)
         sb.append(",");
-      sb.append("localhost:{raft:").append(BASE_RAFT + i)
+      sb.append("localhost:{raft:").append(raftPort(i))
           .append(",http:").append(BASE_HTTP + i)
           .append(",grpc:").append(BASE_GRPC + i).append("}");
     }
