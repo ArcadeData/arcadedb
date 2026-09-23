@@ -66,7 +66,6 @@ import com.arcadedb.server.network.PreAuthConnectionGate;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.micrometer.core.instrument.Metrics;
-import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
 import com.arcadedb.utility.StringUtils;
@@ -151,7 +150,9 @@ public class PostgresNetworkExecutor extends Thread {
   // (issue #7233). Still sampled once per connection, which is what they always were.
   private final boolean                     DEBUG;
   private final boolean                     QUOTED_IDENTIFIERS;
-  private final Map<String, Object>         connectionProperties  = new HashMap<>();
+  // What this connection's SET commands and startup packet established, and what SHOW answers (issue #8217). Per
+  // connection, as a PostgreSQL SET is session-scoped: nothing a client sets here reaches the schema or another session.
+  private final PostgresSessionSettings     sessionSettings       = new PostgresSessionSettings();
   // The exact query spellings to answer with nothing, and the application_name values that gated them, used
   // to be listed here: see PostgresCatalog, which answers those questions by shape for every client (#6412).
 
@@ -2861,8 +2862,8 @@ public class PostgresNetworkExecutor extends Thread {
    * must resolve to the same {@code datestyle} parameter name as a plain {@code SET datestyle = 'ISO'}, not
    * a literal {@code "session datestyle"}/{@code "local datestyle"} that no special case ever matches.
    * ArcadeDB has no notion of transaction-scoped config distinct from session-scoped config, so both
-   * modifiers - and no modifier at all - end up folded into the same connection-wide
-   * {@link #connectionProperties} map; that already matches the de facto behavior of a plain {@code SET}
+   * modifiers - and no modifier at all - end up folded into the same connection's
+   * {@link PostgresSessionSettings}; that already matches the de facto behavior of a plain {@code SET}
    * today.
    * <p>
    * A command can only use one of the two separators, but its value may legitimately contain the other
@@ -2870,7 +2871,9 @@ public class PostgresNetworkExecutor extends Thread {
    * whichever separator - the first '=' or the first case-insensitive ' TO ' - occurs FIRST in the string
    * and splits on that one only, leaving every other occurrence of either inside the value untouched
    * (issue #6423). {@code paramName} is lower-cased for case-insensitive comparison; a quoted {@code value}
-   * has its surrounding quotes stripped. Returns null when the command has neither separator.
+   * has its surrounding quotes stripped. An unquoted {@code DEFAULT} keyword comes back as a null value, meaning "reset
+   * to the default" (issue #8217), so it stays distinct from the quoted string literal {@code 'DEFAULT'}, as in
+   * PostgreSQL. Returns null when the command has neither separator.
    */
   static String[] parseSetCommand(final String query) {
     final int setLength = "SET ".length();
@@ -2908,7 +2911,8 @@ public class PostgresNetworkExecutor extends Thread {
       if (value.length() < 2 || value.charAt(value.length() - 1) != quote)
         return null;
       value = value.substring(1, value.length() - 1);
-    }
+    } else if ("DEFAULT".equalsIgnoreCase(value))
+      value = null;
 
     return new String[] { paramName, value };
   }
@@ -2927,9 +2931,9 @@ public class PostgresNetworkExecutor extends Thread {
    * records it on the portal. The marker is cleared once applied, like {@code applyTransactionControl()}'s: a new
    * Bind of the prepared statement copies it afresh out of the template, so a cached SET re-executed through a new
    * Bind applies again, while re-running the same already-executed portal does not. Cleared only AFTER it applied:
-   * {@code SET datestyle} can be refused ({@code LocalSchema.setDateTimeFormat()} checks
-   * {@code UPDATE_DATABASE_SETTINGS}), and a marker consumed by the refused attempt would let a retry of the same
-   * portal answer {@code CommandComplete SET} having applied nothing.
+   * a SET can be refused ({@link PostgresSessionSettings#set} refuses a read-only parameter or an invalid value, as
+   * PostgreSQL does), and a marker consumed by the refused attempt would let a retry of the same portal answer
+   * {@code CommandComplete SET} having applied nothing.
    */
   private void applyPendingSetting(final PostgresPortal portal) {
     final String[] setting = portal.setting;
@@ -2939,15 +2943,15 @@ public class PostgresNetworkExecutor extends Thread {
     portal.setting = null;
   }
 
+  /**
+   * Records a {@code SET} in this connection's own settings (issue #8217). It never touches the database: a
+   * {@code SET datestyle} used to rewrite the schema's date-time format, shared by every session on every protocol,
+   * and needed {@code UPDATE_DATABASE_SETTINGS} for a statement PostgreSQL treats as purely per-session. Dates already
+   * travel in ISO whatever that format says ({@code PostgresType.toText()}), so the schema write bought this
+   * connection nothing.
+   */
   private void applySetting(final String paramName, final String value) {
-    if ("datestyle".equals(paramName)) {
-      if ("ISO".equalsIgnoreCase(value))
-        database.getSchema().setDateTimeFormat(DateUtils.DATE_TIME_ISO_8601_FORMAT);
-      else
-        LogManager.instance().log(this, Level.INFO, "datestyle '%s' not supported", value);
-    }
-
-    connectionProperties.put(paramName, value);
+    sessionSettings.set(paramName, value);
   }
 
   /**
@@ -2970,15 +2974,7 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   private String getShowConfigValue(final String varName) {
-    return switch (varName) {
-      case "server_version" -> PG_SERVER_VERSION;
-      case "standard_conforming_strings" -> "on";
-      case "integer_datetimes" -> "on";
-      case "client_encoding" -> "UTF8";
-      case "server_encoding" -> "UTF8";
-      case "timezone" -> "UTC";
-      default -> "";
-    };
+    return sessionSettings.show(varName);
   }
 
   private void sendServerParameter(final String name, final String value) {
@@ -3106,9 +3102,11 @@ public class PostgresNetworkExecutor extends Thread {
       case "replication":
         // NOT SUPPORTED, IGNORE IT
         break;
+      default:
+        // A run-time parameter (DateStyle, TimeZone, application_name, ...): the connection starts with it set, and
+        // SHOW answers it (issue #8217).
+        sessionSettings.setFromStartup(paramName, paramValue);
       }
-
-      connectionProperties.put(paramName, paramValue);
     }
   }
 
@@ -3136,6 +3134,8 @@ public class PostgresNetworkExecutor extends Thread {
   static String sqlStateFor(final Throwable error) {
     if (error instanceof PostgresCopyStatement.CopyException copy)
       return copy.sqlState;
+    if (error instanceof PostgresSessionSettings.SettingException setting)
+      return setting.sqlState;
     return switch (ErrorCategory.of(error)) {
       case RETRY -> "40001";          // serialization_failure - the code drivers auto-retry on
       case ARITHMETIC -> arithmeticSqlState(error);

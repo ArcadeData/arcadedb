@@ -45,6 +45,14 @@ class PostgresSetCommandParsingTest {
   }
 
   @Test
+  void unquotedDefaultKeywordIsANullValue() {
+    // Issue #8217: the keyword resets the parameter, while the quoted string 'DEFAULT' is an ordinary value.
+    assertThat(PostgresNetworkExecutor.parseSetCommand("SET search_path TO DEFAULT")).containsExactly("search_path", null);
+    assertThat(PostgresNetworkExecutor.parseSetCommand("SET search_path = default")).containsExactly("search_path", null);
+    assertThat(PostgresNetworkExecutor.parseSetCommand("SET application_name = 'DEFAULT'")).containsExactly("application_name", "DEFAULT");
+  }
+
+  @Test
   void simpleEqualsAssignment() {
     assertThat(PostgresNetworkExecutor.parseSetCommand("SET datestyle = 'ISO'")).containsExactly("datestyle", "ISO");
   }
