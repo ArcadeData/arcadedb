@@ -96,6 +96,19 @@ class Issue8260DefaultAliasCacheTest extends TestHelper {
     assertThat(second).containsExactlyInAnyOrderEntriesOf(Map.of("TRUCK", 1L));
   }
 
+  @Test
+  void unaliasedAggregateProjectionSharesTheCachedIdentifierWithItsSplitCopySafely() {
+    // count(*) WITHOUT "AS": splitForAggregation() copies this ProjectionItem into a pre-aggregate/aggregate/final
+    // split, and the final item's explicit alias is set from the ORIGINAL item's (now cached) default alias
+    // (ProjectionItem.splitForAggregation: `result.alias = getProjectionAlias();`), so the two items end up sharing
+    // the same Identifier instance. Run it more than once to also exercise that shared instance across repeated
+    // executions of the same cached statement.
+    for (int run = 0; run < 3; run++) {
+      final Map<String, Long> counts = groupCounts("SELECT mode, count(*) FROM Sale GROUP BY mode", "mode", "count(*)");
+      assertThat(counts).containsExactlyInAnyOrderEntriesOf(Map.of("AIR", 2L, "SHIP", 1L, "RAIL", 3L));
+    }
+  }
+
   private Map<String, Long> groupCounts(final String query, final String keyProperty, final String countProperty) {
     final Map<String, Long> result = new LinkedHashMap<>();
     try (ResultSet rs = database.query("SQL", query)) {
