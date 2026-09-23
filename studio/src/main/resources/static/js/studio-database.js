@@ -228,7 +228,7 @@ function handleSessionExpired() {
     showLoginPopup();
 
   if (typeof globalNotify === "function")
-    globalNotify("Session Expired", "Your session has expired. Please log in again.", "warning");
+    globalNotify("Session Expired", "Your session has expired. Please log in again.", "warning", null, "session-expired");
 
   // Allow the next 401 (after the user logs back in) to be handled again.
   setTimeout(function () { sessionExpirationHandled = false; }, 2000);
@@ -288,6 +288,10 @@ function login() {
       globalCredentials = "Bearer " + token;
       globalBasicAuth = basicAuth;
       globalUsername = username;
+
+      // A "Session Expired" warning from an earlier expiration is now stale: dismiss it.
+      if (typeof dismissNotification === "function")
+        dismissNotification("session-expired");
 
       console.log("Session stored, calling updateDatabases");
 
