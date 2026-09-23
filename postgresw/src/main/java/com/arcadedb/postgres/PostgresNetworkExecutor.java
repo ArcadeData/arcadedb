@@ -187,6 +187,11 @@ public class PostgresNetworkExecutor extends Thread {
    * {@code errorInTransaction} survives.
    */
   private boolean  skipUntilSync              = false;
+  /**
+   * The type of the frontend message being handled, for the main loop's catch-all: it decides whether an exception
+   * escaping a handler raises {@link #skipUntilSync} (extended protocol) or not (simple query protocol).
+   */
+  private char     currentMessageType         = 0;
 
   private interface ReadMessageCallback {
     void read(char type, long length) throws IOException;
@@ -309,6 +314,7 @@ public class PostgresNetworkExecutor extends Thread {
             // again (issue #6410): before the read blocked, false only meant "no byte yet".
             if (!readMessage("any", (type, length) -> {
               consecutiveErrors = 0;
+              currentMessageType = type;
 
               switch (type) {
               case 'P' -> parseCommand();
@@ -331,12 +337,18 @@ public class PostgresNetworkExecutor extends Thread {
               return;
 
           } catch (final Exception e) {
-            // An exception escaping a handler outright, rather than through its own catch. The message type is no
-            // longer in scope here, so this is the conservative answer for both protocols: raising skipUntilSync
-            // means the Sync that ends an extended-protocol pipeline discards it instead of committing a block one
-            // of whose messages blew up unanswered. The simple query protocol catches everything inside
-            // queryCommand(), so what reaches here from it is a dead socket, where the flag is never read again.
-            setExtendedProtocolError();
+            // An exception escaping a handler outright, rather than through its own catch. For an extended-protocol
+            // message, raising skipUntilSync means the Sync that ends the pipeline discards it instead of committing
+            // a block one of whose messages blew up unanswered. Not for a 'Q' (issue #8175): queryCommand() discards
+            // every simple query while skipUntilSync is set, and a client that only speaks the simple protocol never
+            // sends the Sync that would clear it, so every statement it sent afterwards would go unanswered.
+            // currentMessageType is stale when readMessage() fails before its callback runs, but every such failure
+            // is a PostgresProtocolException, which closes the connection just below: the stale value picks a flag
+            // nothing reads again.
+            if (currentMessageType == 'Q')
+              setErrorInTx();
+            else
+              setExtendedProtocolError();
 
             if (e instanceof PostgresProtocolException) {
               LogManager.instance().log(this, Level.SEVERE, e.getMessage(), e);
@@ -847,7 +859,20 @@ public class PostgresNetworkExecutor extends Thread {
     return commandContext;
   }
 
-  private void queryCommand() {
+  private void queryCommand() throws IOException {
+    if (skipUntilSync) {
+      // A 'Q' interleaved into an extended-protocol pipeline that failed and has not reached its Sync yet (issue
+      // #8175). PostgreSQL's backend loop drops every message but Sync and Terminate while ignore_till_sync is set,
+      // 'Q' included: the message is read, nothing runs and nothing is answered, not even a ReadyForQuery. Running
+      // it here let a COMMIT persist the block the Sync is about to discard, and an ordinary statement execute and
+      // be acknowledged inside it. The body is consumed so the next message is read from its own boundary; the
+      // Sync that follows rolls the block back and, for an explicit block, leaves errorInTransaction to it.
+      // readUntilTerminator() rather than readString(): nothing reads the text, and a statement longer than the
+      // buffer must be discarded like any other rather than fail with a protocol error that closes the connection.
+      readUntilTerminator(0);
+      return;
+    }
+
     final QueryProfile profile = new QueryProfile();
     QueryProfile.pushCurrent(profile);
     Query query = null;
