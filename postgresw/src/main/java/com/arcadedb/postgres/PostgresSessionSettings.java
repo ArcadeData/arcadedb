@@ -75,6 +75,9 @@ final class PostgresSessionSettings {
     switch (key) {
     case "server_version", "server_encoding", "integer_datetimes" ->
         throw new SettingException("parameter \"" + key + "\" cannot be changed", "55P02"); // cant_change_runtime_param
+    case "client_encoding" -> {
+      // Accepted, as drivers send it routinely, but not stored: show() answers UTF8, what the server really sends.
+    }
     case DATESTYLE -> dateOrder = "DEFAULT".equalsIgnoreCase(value) ? DEFAULT_DATE_ORDER : parseDateOrder(value);
     default -> {
       if ("DEFAULT".equalsIgnoreCase(value))
@@ -135,8 +138,8 @@ final class PostgresSessionSettings {
       }
       case "SQL", "POSTGRES", "GERMAN" ->
           LogManager.instance().log(this, Level.INFO, "DateStyle output '%s' not supported, dates are sent as ISO", token);
-      case "MDY", "US", "NONEUROPEAN" -> order = "MDY";
-      case "DMY", "EUROPEAN" -> order = "DMY";
+      case "MDY", "US", "NONEURO", "NONEUROPEAN" -> order = "MDY";
+      case "DMY", "EURO", "EUROPEAN" -> order = "DMY";
       case "YMD" -> order = "YMD";
       default -> throw new SettingException("invalid value for parameter \"DateStyle\": \"" + value + "\"", "22023"); // invalid_parameter_value
       }

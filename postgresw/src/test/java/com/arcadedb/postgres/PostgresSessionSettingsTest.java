@@ -91,6 +91,12 @@ class PostgresSessionSettingsTest {
 
     settings.set("datestyle", "European");
     assertThat(settings.show("datestyle")).isEqualTo("ISO, DMY");
+
+    settings.set("datestyle", "NonEuro");
+    assertThat(settings.show("datestyle")).isEqualTo("ISO, MDY");
+
+    settings.set("datestyle", "Euro");
+    assertThat(settings.show("datestyle")).as("PostgreSQL's short alias of European").isEqualTo("ISO, DMY");
   }
 
   @Test
