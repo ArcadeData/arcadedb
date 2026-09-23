@@ -170,6 +170,23 @@ test("the sparse path sends sparse=true, checks the indices, and refuses efSearc
   assert.match(positional.error, /has 2 dimensions, but index 'Sparse\[dims,weights\]' has 8/);
 });
 
+test("a sparse index declared without dimensions (listed as 0) checks neither the vector length nor the indices", () => {
+  const inferred = ctx.vecSearchableIndexes([
+    { name: "Open", indexes: [{ name: "Open[d,w]", typeName: "Open", type: "LSM_SPARSE_VECTOR", properties: ["d", "w"], dimensions: 0, scoring: "score_higher_is_better:dot_product" }] }
+  ]);
+  assert.equal(inferred.vector[0].dimensions, 0);
+
+  // positional weights of any length go through: the server infers the dimensions from the data and bounds nothing
+  const positional = ctx.vecBuildRequest("search", { indexName: "Open[d,w]", queryVector: "0, 0.5, 0, 0, 0.25" }, inferred, BOUNDS);
+  assert.equal(positional.error, undefined);
+  assert.deepEqual(plain(positional.body), { indexName: "Open[d,w]", sparse: true, queryVector: [0, 0.5, 0, 0, 0.25] });
+
+  // and so does a dimension id far beyond anything a bounded index would accept
+  const farIndex = ctx.vecBuildRequest("search", { indexName: "Open[d,w]", queryVector: "1", queryIndices: "100000" }, inferred, BOUNDS);
+  assert.equal(farIndex.error, undefined);
+  assert.deepEqual(plain(farIndex.body.queryIndices), [100000]);
+});
+
 test("an unparseable vector names the offending element", () => {
   const r = ctx.vecBuildRequest("search", { indexName: "Doc[embedding]", queryVector: "1, x, 0" }, INDEXES, BOUNDS);
   assert.equal(r.error, "'queryVector' element 2 is not a number: x");
