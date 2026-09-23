@@ -40,6 +40,13 @@ public class ProjectionItem extends SimpleNode {
   public Boolean          aggregate;
   public NestedProjection nestedProjection;
 
+  // Cache for the default alias (no explicit `AS`), computed from `expression` on first use. `expression.getDefaultAlias()`
+  // allocates and escapes a fresh Identifier on every call, so on a full-scan GROUP BY without an alias this is called once
+  // per record for nothing (#8260). `Identifier` is documented immutable and reusable, and `expression` here is itself
+  // immutable once set by the parser, so caching the result is safe; `setExpression` invalidates it since a caller can
+  // rebind the expression on an already-used node (e.g. `splitForAggregation`).
+  private Identifier cachedDefaultAlias;
+
   public ProjectionItem(final Expression expression, final Identifier alias, final NestedProjection nestedProjection) {
     this.expression = expression;
     this.alias = alias;
@@ -74,6 +81,7 @@ public class ProjectionItem extends SimpleNode {
 
   public void setExpression(final Expression expression) {
     this.expression = expression;
+    cachedDefaultAlias = null;
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -156,7 +164,9 @@ public class ProjectionItem extends SimpleNode {
       return alias;
     if (all)
       return new Identifier("*");
-    return expression.getDefaultAlias();
+    if (cachedDefaultAlias == null)
+      cachedDefaultAlias = expression.getDefaultAlias();
+    return cachedDefaultAlias;
   }
 
   public boolean isExpand() {
