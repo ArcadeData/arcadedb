@@ -20,8 +20,10 @@ package com.arcadedb.query.opencypher.procedures.refactor;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.opencypher.procedures.CypherProcedure;
 import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -31,8 +33,10 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
@@ -300,5 +304,96 @@ class RefactorCloneNodesWithRelationshipsTest {
         "MATCH (c:Person)-[r:KNOWS]->(e:Person {name:'External'}) WHERE id(c) = $cloneId RETURN r",
         java.util.Map.of("cloneId", output.getIdentity().toString()));
     assertThat(clonedEdges.hasNext()).isFalse();
+  }
+
+  /**
+   * Issue #7427: APOC declares {@code apoc.refactor.cloneNodesWithRelationships(nodes :: LIST<NODE>, config = {} ::
+   * MAP)}, so code migrated from Neo4j routinely omits the config. The procedure used to declare the config
+   * mandatory and rejected that call outright.
+   */
+  @Test
+  void clonesNodeWithItsRelationshipsWhenTheConfigArgumentIsOmitted() {
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").set("name", "A").set("age", 30L).save();
+    final MutableVertex first = database.newVertex("Person").set("name", "First").save();
+    final MutableVertex second = database.newVertex("Person").set("name", "Second").save();
+    a.newEdge("KNOWS", first).save();
+    a.newEdge("KNOWS", second).save();
+    database.commit();
+
+    database.begin();
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (a:Person {name:'A'}) CALL apoc.refactor.cloneNodesWithRelationships([a]) YIELD input, output, error "
+            + "RETURN input, output, error");
+    final Result result = rs.next();
+    final Object error = result.getProperty("error");
+    final Vertex input = result.getProperty("input");
+    final Vertex output = result.getProperty("output");
+    database.commit();
+
+    assertThat(error).isNull();
+    assertThat(output.getIdentity()).isNotEqualTo(input.getIdentity());
+    assertThat(output.getTypeName()).isEqualTo("Person");
+    assertThat(output.getString("name")).isEqualTo("A");
+    assertThat(output.getLong("age")).isEqualTo(30L);
+
+    final ResultSet neighbours = database.query("opencypher",
+        "MATCH (c:Person)-[:KNOWS]->(n:Person) WHERE id(c) = $cloneId RETURN n.name AS name ORDER BY name",
+        Map.of("cloneId", output.getIdentity().toString()));
+    final List<String> names = new ArrayList<>();
+    while (neighbours.hasNext())
+      names.add(neighbours.next().getProperty("name"));
+    assertThat(names).containsExactly("First", "Second");
+  }
+
+  /**
+   * Issue #7427: omitting the config must be indistinguishable from passing {@code {}} - including for the
+   * plain, non-{@code apoc.}-prefixed name, which resolves to the same instance.
+   */
+  @Test
+  void omittedConfigIsIndistinguishableFromAnEmptyMap() {
+    database.begin();
+    database.newVertex("Person").set("name", "A").set("secret", "s").save();
+    database.commit();
+
+    database.begin();
+    final ResultSet omitted = database.command("opencypher",
+        "MATCH (a:Person {name:'A'}) CALL refactor.cloneNodesWithRelationships([a]) YIELD output RETURN output");
+    final Vertex cloneWithoutConfig = omitted.next().getProperty("output");
+    database.commit();
+
+    database.begin();
+    final ResultSet explicit = database.command("opencypher",
+        "MATCH (a:Person {name:'A'}) WHERE a.secret = 's' CALL refactor.cloneNodesWithRelationships([a], {}) "
+            + "YIELD output RETURN output");
+    final Vertex cloneWithEmptyConfig = explicit.next().getProperty("output");
+    database.commit();
+
+    assertThat(cloneWithoutConfig.getPropertyNames()).isEqualTo(cloneWithEmptyConfig.getPropertyNames());
+    assertThat(cloneWithoutConfig.getString("secret")).isEqualTo("s");
+    assertThat(cloneWithEmptyConfig.getString("secret")).isEqualTo("s");
+  }
+
+  /**
+   * Issue #7427, the direct-caller entry point: {@code execute()} is public, so the arity gate every caller passes
+   * through is {@code validateArgs}. It has to accept 1 and 2 arguments and keep rejecting 0 and 3, with the
+   * declared bounds appearing in the message.
+   */
+  @Test
+  void arityGateAcceptsOneOrTwoArgumentsAndStillRejectsTheRest() {
+    final CypherProcedure procedure = CypherProcedureRegistry.get("apoc.refactor.cloneNodesWithRelationships");
+
+    assertThat(procedure.getMinArgs()).isEqualTo(1);
+    assertThat(procedure.getMaxArgs()).isEqualTo(2);
+
+    assertThatCode(() -> procedure.validateArgs(new Object[] { List.of() })).doesNotThrowAnyException();
+    assertThatCode(() -> procedure.validateArgs(new Object[] { List.of(), Map.of() })).doesNotThrowAnyException();
+
+    assertThatThrownBy(() -> procedure.validateArgs(new Object[] {}))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("expects 1-2 arguments but got 0");
+    assertThatThrownBy(() -> procedure.validateArgs(new Object[] { List.of(), Map.of(), Map.of() }))
+        .isInstanceOf(CommandSemanticException.class)
+        .hasMessageContaining("expects 1-2 arguments but got 3");
   }
 }

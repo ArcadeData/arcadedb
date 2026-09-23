@@ -24,7 +24,15 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Holds time-bucketed aggregation results.
+ * Holds time-bucketed aggregation results, addressed by BUCKET INDEX rather than by bucket timestamp.
+ * <p>
+ * <b>Nothing in the engine produces one any more.</b> It was the return type of the single-column
+ * {@code TimeSeriesEngine.aggregate} / {@code TimeSeriesSealedStore.aggregate} pair, which issue #8189 deleted:
+ * they carried a second column-index convention and had no caller in {@code src/main}, because the three wire
+ * protocols and the SQL push-down all go through {@code aggregateMulti} and its
+ * {@link MultiColumnAggregationResult}. The class is kept rather than deleted with them because it is public
+ * API an embedded caller may hold, and because {@link #merge} is the one written statement of the NaN policy
+ * for a merged bucket - see {@code TimeSeriesNaN} - which its tests still pin.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

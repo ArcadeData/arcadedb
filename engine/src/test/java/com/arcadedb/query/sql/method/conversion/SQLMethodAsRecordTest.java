@@ -20,10 +20,13 @@ package com.arcadedb.query.sql.method.conversion;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import org.junit.jupiter.api.Test;
+
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -75,5 +78,39 @@ class SQLMethodAsRecordTest extends TestHelper {
   void notStringAsNull() {
     final Object result = method.execute(10, null, null, null);
     assertThat(result).isEqualTo(null);
+  }
+
+  @Test
+  void fromArrayOfRIDs() {
+    // Issue #7877: an array receiver (split(), a JSON array parameter) must resolve to records like a List does,
+    // not answer null.
+    database.transaction(() -> {
+      final MutableDocument doc1 = database.newDocument("Doc").save();
+      final MutableDocument doc2 = database.newDocument("Doc").save();
+
+      final Object result = method.execute(new RID[] { doc1.getIdentity(), doc2.getIdentity() }, null, null, null);
+      assertThat(result).isInstanceOf(List.class);
+      final List<?> list = (List<?>) result;
+      assertThat(list).hasSize(2);
+      assertThat(((Record) list.get(0)).getIdentity()).isEqualTo(doc1.getIdentity());
+      assertThat(((Record) list.get(1)).getIdentity()).isEqualTo(doc2.getIdentity());
+    });
+  }
+
+  @Test
+  void fromListDoesNotMutateCallersList() {
+    // Issue #7877: asRecord() used to rewrite the caller's List in place with list.set(), which threw on an
+    // immutable List and mutated a value the caller may still hold.
+    database.transaction(() -> {
+      final MutableDocument doc = database.newDocument("Doc").save();
+      final List<Object> immutableList = List.of(doc.getIdentity());
+
+      final Object result = method.execute(immutableList, null, null, null);
+
+      assertThat(result).isNotSameAs(immutableList);
+      assertThat(immutableList.get(0)).isEqualTo(doc.getIdentity());
+      final List<?> list = (List<?>) result;
+      assertThat(((Record) list.get(0)).getIdentity()).isEqualTo(doc.getIdentity());
+    });
   }
 }

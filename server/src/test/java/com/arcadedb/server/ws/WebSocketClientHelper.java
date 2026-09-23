@@ -41,6 +41,7 @@ import org.xnio.XnioWorker;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
@@ -134,6 +135,16 @@ public class WebSocketClientHelper implements AutoCloseable {
   public void sendWithoutWaiting(final String payload) throws IOException {
     final var sendChannel = this.channel.send(WebSocketFrameType.TEXT);
     new StringWriteChannelListener(payload).setup(sendChannel);
+  }
+
+  /**
+   * Queues one BINARY frame and returns at once. The {@code /ws} protocol carries JSON text frames only, so the
+   * only reason this exists is to drive the listener's binary path from a test (issue #8065). Non-blocking on
+   * purpose: an oversize frame is answered by closing the connection, and a blocking write would then be racing
+   * that close.
+   */
+  public void sendBinaryWithoutWaiting(final byte[] payload) {
+    WebSockets.sendBinary(ByteBuffer.wrap(payload), this.channel, null);
   }
 
   public String popMessage() {

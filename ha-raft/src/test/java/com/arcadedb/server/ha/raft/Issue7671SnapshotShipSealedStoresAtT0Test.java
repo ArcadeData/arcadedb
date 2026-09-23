@@ -306,7 +306,7 @@ class Issue7671SnapshotShipSealedStoresAtT0Test {
    * survive the two being confused: {@code TimeSeriesSealedStore.listSealedFiles} maps an unreadable directory to
    * an EMPTY array, so a transient listing failure would have produced an archive whose {@code schema.json}
    * declares a TIMESERIES type with no sealed-store entry beside it - the same hole a {@code DROP TYPE} race used
-   * to open, reached without any DDL at all (claude-review on PR #7708).
+   * to open, reached without any DDL at all (code review on PR #7708).
    */
   @Test
   void aDirectoryThatCannotBeListedFailsTheShipInsteadOfReadingAsNoSealedStores() {

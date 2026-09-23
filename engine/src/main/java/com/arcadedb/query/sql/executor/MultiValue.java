@@ -40,6 +40,7 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Objects;
 import java.util.Set;
 import java.util.logging.Level;
 import java.util.stream.StreamSupport;
@@ -74,6 +75,23 @@ public class MultiValue {
    */
   public static boolean isMultiValue(final Object iObject) {
     return iObject != null && isMultiValue(iObject.getClass());
+  }
+
+  /**
+   * Checks if the object is an array that is a SEQUENCE of values, i.e. any array but a {@code byte[]}: that is how a
+   * {@code BINARY} property is represented - an opaque blob rather than a sequence - and iterating it one byte at a
+   * time would turn a megabyte into a million elements. Shared by {@code ExpandStep} and {@code UnwindStep} so that
+   * the two steps cannot drift apart on what an array is.
+   *
+   * @param iObject Object to check
+   *
+   * @return true if it's an array whose component type is not {@code byte}, otherwise false
+   */
+  public static boolean isSequenceArray(final Object iObject) {
+    if (iObject == null)
+      return false;
+    final Class<?> type = iObject.getClass();
+    return type.isArray() && type.getComponentType() != byte.class;
   }
 
   public static boolean isIterable(final Object iObject) {
@@ -651,8 +669,13 @@ public class MultiValue {
   protected static void removeFromCollection(final Object iObject, final Collection<Object> coll, final Object iToRemove,
       final boolean iAllOccurrences) {
     if (iAllOccurrences && !(iObject instanceof Set)) {
-      // BROWSE THE COLLECTION ONE BY ONE TO REMOVE ALL THE OCCURRENCES
-      coll.removeIf(iToRemove::equals);
+      // BROWSE THE COLLECTION ONE BY ONE TO REMOVE ALL THE OCCURRENCES. Objects.equals and not iToRemove::equals:
+      // binding a method reference on a null receiver throws from Objects.requireNonNull before the first element is
+      // even looked at, so removeAll(null) used to be an NPE where remove(null) - which lands on the plain
+      // coll.remove(null) below - was always harmless (issue #7889). The ARGUMENT stays the receiver of the
+      // comparison, which is both what the method reference did and what Collection.remove(Object) specifies, so an
+      // asymmetric equals() keeps answering what it answered before.
+      coll.removeIf(element -> Objects.equals(iToRemove, element));
     } else
       coll.remove(iToRemove);
 

@@ -142,7 +142,7 @@ public class VectorApiSpec implements OpenApiContributor {
     // exactly as GET /query and the time-series reads do. The document said nothing about any of it, which
     // reads to a client generator as "this route has nothing to do with transactions" - and left the one signal
     // that says an answer came from outside the caller's transaction invisible here (issue #7714,
-    // claude-review on PR #7730).
+    // code review on PR #7730).
     success.addHeaderObject(SpecBuilders.SESSION_HEADER, SpecBuilders.sessionEchoHeader());
     success.addHeaderObject(SpecBuilders.SESSION_EXPIRED_HEADER, SpecBuilders.sessionExpiredHeader());
 

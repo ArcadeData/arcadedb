@@ -105,16 +105,19 @@ public class PathExpandConfig extends AbstractPathProcedure {
 
     // Expand paths
     final List<List<Object>> allPaths = new ArrayList<>();
-    final List<Object> currentPath = new ArrayList<>();
-    final Set<RID> visited = new HashSet<>();
-
-    currentPath.add(startNode);
-    visited.add(startNode.getIdentity());
 
     if (bfs) {
       expandBFS(startNode, relTypes, labelFilter, minLevel, maxLevel, limit, allPaths, context);
     } else {
-      expandDFS(startNode, relTypes, labelFilter, 0, minLevel, maxLevel, currentPath, visited, allPaths, context, limit);
+      // Only the depth-first walk carries this state, and bfs defaults to true
+      final List<Object> currentPath = new ArrayList<>();
+      final Set<RID> visited = new HashSet<>();
+      final RidHashSet ghostNodes = new RidHashSet(16);
+
+      currentPath.add(startNode);
+      visited.add(startNode.getIdentity());
+
+      expandDFS(startNode, relTypes, labelFilter, 0, minLevel, maxLevel, currentPath, visited, ghostNodes, allPaths, context, limit);
     }
 
     // Convert paths to results (respect limit)
@@ -132,6 +135,7 @@ public class PathExpandConfig extends AbstractPathProcedure {
 
     final List<List<Object>> frontier = new ArrayList<>();
     final RidHashSet visited = new RidHashSet();
+    final RidHashSet ghostNodes = new RidHashSet(16);
 
     final List<Object> initialPath = new ArrayList<>();
     initialPath.add(startNode);
@@ -150,7 +154,7 @@ public class PathExpandConfig extends AbstractPathProcedure {
 
         if (currentLevel < maxLevel) {
           final Vertex lastNode = (Vertex) path.getLast();
-          expandFromNode(lastNode, relTypes, labelFilter, path, visited, nextFrontier);
+          expandFromNode(lastNode, relTypes, labelFilter, path, visited, ghostNodes, nextFrontier);
         }
       }
 
@@ -161,21 +165,27 @@ public class PathExpandConfig extends AbstractPathProcedure {
   }
 
   private void expandFromNode(final Vertex node, final String[] relTypes, final String[] labelFilter,
-      final List<Object> currentPath, final RidHashSet visited, final List<List<Object>> nextFrontier) {
+      final List<Object> currentPath, final RidHashSet visited, final RidHashSet ghostNodes,
+      final List<List<Object>> nextFrontier) {
 
     // Expand in both directions
     for (final Vertex.DIRECTION direction : new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN }) {
-      final Iterable<Edge> edges = relTypes != null && relTypes.length > 0
-          ? node.getEdges(direction, relTypes)
-          : node.getEdges(direction);
+      final Iterable<Edge> edges = node.getEdges(direction, relTypes != null ? relTypes : NO_TYPES);
 
       for (final Edge edge : edges) {
         try {
-          final Vertex neighbor = direction == Vertex.DIRECTION.OUT ? edge.getInVertex() : edge.getOutVertex();
-          final RID neighborId = neighbor.getIdentity();
+          // The neighbour is tested by its RID and loaded only once it is going into the path (issue #7976)
+          final RID neighborId = direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut();
 
-          if (!visited.contains(neighborId) && matchesLabels(neighbor, labelFilter)) {
+          if (!visited.contains(neighborId) && matchesLabels(node.getDatabase(), neighborId, labelFilter)) {
+            // Resolved before the RID is marked visited: a RID marked visited by a load that then failed would make
+            // every later edge to the same ghost short-circuit, so only the first one would ever be reported
+            final Vertex neighbor = resolveNeighbor(neighborId, ghostNodes);
+            if (neighbor == null)
+              continue;
+
             visited.add(neighborId);
+
             final List<Object> newPath = new ArrayList<>(currentPath);
             newPath.add(edge);
             newPath.add(neighbor);
@@ -188,9 +198,12 @@ public class PathExpandConfig extends AbstractPathProcedure {
     }
   }
 
+  // `visited` here is a boxing Set<RID> rather than the primitive RidHashSet the breadth-first walks use, and has to
+  // stay one: this is a depth-first path enumeration, so it UNMARKS a vertex on backtracking, and an open-addressed
+  // set with linear probing cannot remove an entry without tombstones - which RidHashSet deliberately does not carry
   private void expandDFS(final Vertex current, final String[] relTypes, final String[] labelFilter,
       final int currentDepth, final int minDepth, final int maxDepth,
-      final List<Object> currentPath, final Set<RID> visited,
+      final List<Object> currentPath, final Set<RID> visited, final RidHashSet ghostNodes,
       final List<List<Object>> allPaths, final CommandContext context, final int limit) {
 
     if (allPaths.size() >= limit) {
@@ -206,9 +219,7 @@ public class PathExpandConfig extends AbstractPathProcedure {
     }
 
     for (final Vertex.DIRECTION direction : new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN }) {
-      final Iterable<Edge> edges = relTypes != null && relTypes.length > 0
-          ? current.getEdges(direction, relTypes)
-          : current.getEdges(direction);
+      final Iterable<Edge> edges = current.getEdges(direction, relTypes != null ? relTypes : NO_TYPES);
 
       for (final Edge edge : edges) {
         if (allPaths.size() >= limit) {
@@ -216,10 +227,14 @@ public class PathExpandConfig extends AbstractPathProcedure {
         }
 
         try {
-          final Vertex neighbor = direction == Vertex.DIRECTION.OUT ? edge.getInVertex() : edge.getOutVertex();
-          final RID neighborId = neighbor.getIdentity();
+          // The neighbour is tested by its RID and loaded only once it is going into the path (issue #7976)
+          final RID neighborId = direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut();
 
-          if (!visited.contains(neighborId) && matchesLabels(neighbor, labelFilter)) {
+          if (!visited.contains(neighborId) && matchesLabels(current.getDatabase(), neighborId, labelFilter)) {
+            final Vertex neighbor = resolveNeighbor(neighborId, ghostNodes);
+            if (neighbor == null)
+              continue;
+
             visited.add(neighborId);
             currentPath.add(edge);
             currentPath.add(neighbor);
@@ -227,7 +242,7 @@ public class PathExpandConfig extends AbstractPathProcedure {
             // try-finally so the path/visited bookkeeping is unwound even if the recursion throws.
             try {
               expandDFS(neighbor, relTypes, labelFilter, currentDepth + 1, minDepth, maxDepth,
-                  currentPath, visited, allPaths, context, limit);
+                  currentPath, visited, ghostNodes, allPaths, context, limit);
             } finally {
               currentPath.removeLast();
               currentPath.removeLast();
@@ -235,7 +250,8 @@ public class PathExpandConfig extends AbstractPathProcedure {
             }
           }
         } catch (final RecordNotFoundException e) {
-          // Only the outer edge.get*Vertex() above can land here; the recursion has its own per-edge catches.
+          // Only edge.getIn()/getOut() (a ghost edge record, surfaced by its lazy load) can land here now; a ghost
+          // VERTEX is caught and remembered inside resolveNeighbor. The recursion has its own per-edge catches.
           GhostEdgeReporter.reportSkipped(e);
         }
       }

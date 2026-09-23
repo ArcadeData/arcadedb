@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher;
 
+import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
@@ -94,7 +95,7 @@ class Issue394Test {
     // This leaves a ghost pointer in Account's edge segment - simulating the HA race.
     database.transaction(() -> {
       final Bucket bucket = database.getSchema().getBucketById(edgeRID.getBucketId());
-      bucket.deleteRecord(edgeRID);
+      TestHelper.deleteRecordAtLowLevel(database, edgeRID);
     });
 
     // MERGE on the edge pattern must not throw RecordNotFoundException.
@@ -159,7 +160,7 @@ class Issue394Test {
       ghostRID = ((Edge) rs.next().getProperty("r")).getIdentity();
     }
     database.transaction(() ->
-        database.getSchema().getBucketById(ghostRID.getBucketId()).deleteRecord(ghostRID)
+        TestHelper.deleteRecordAtLowLevel(database, ghostRID)
     );
 
     // Add a second valid edge with identical properties.

@@ -69,6 +69,30 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
 
   private static final HttpString SESSION_EXPIRED_HEADER = new HttpString(SESSION_EXPIRED);
 
+  /**
+   * Response header saying that the client-managed session transaction this request ran in published a COMMIT
+   * while the request was executing, so part of the client's block is already durable (issue #8062).
+   * <p>
+   * A statement with an explicit batch boundary - {@code UPDATE/DELETE/MOVE VERTEX ... BATCH n} - calls
+   * {@code commit(); begin();} in the MIDDLE of the session's transaction and re-begins straight afterwards, so
+   * from the client's side the session looks exactly as it did going in. {@code RemoteDatabase.transaction()}'s
+   * retry loop cannot see it from anything it holds: its entire view of the transaction is the session id, and
+   * that does not change. Without this header it re-runs a block whose earlier half is already on disk and then
+   * reports clean success - the defect issue #7916 fixed for the two EMBEDDED retry loops, which detect it
+   * locally with {@link TransactionContext#isPartiallyCommitted(TransactionContext, long)}.
+   * <p>
+   * This header is that same predicate, evaluated on the server where the {@link TransactionContext} lives and
+   * sent to the one loop that cannot evaluate it itself. It is emitted on a FAILING response as much as on a
+   * successful one, because the guard is consulted exactly when something went wrong. It is additive: a client
+   * that ignores it behaves as it did before, and an older server that never sends it leaves the client's guard
+   * off, which is today's behaviour.
+   * <p>
+   * Only ever emitted with the value {@code "true"}; its ABSENCE is the negative.
+   */
+  public static final String SESSION_PARTIAL_COMMIT = "arcadedb-session-partial-commit";
+
+  private static final HttpString SESSION_PARTIAL_COMMIT_HEADER = new HttpString(SESSION_PARTIAL_COMMIT);
+
   /** A session id is a UUID, 36 characters. See {@link #sanitizedSessionId}. */
   private static final int MAX_ECHOED_SESSION_ID_LENGTH = 64;
 
@@ -106,6 +130,31 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
       }
 
       activeSession = setTransactionInThreadLocal(exchange, database, user);
+
+      // #8062: the session's transaction is the object a BATCH boundary commits and re-begins under this
+      // request, and its commit counter is the only witness that it happened - LocalDatabase.begin() reuses the
+      // same context object for the next transaction and the counter is never reset. Sampled here, before a
+      // single byte of the body runs, and compared when the response is committed. A response-commit listener
+      // rather than the finally block below, so the answer is read at the last possible moment and the header
+      // still lands on a response the handler wrote itself (the NDJSON streaming encoding of issue #7306),
+      // exactly as the read-your-writes bookmark does.
+      //
+      // That costs one captured lambda per SESSION-BOUND request - deliberately, and it is the reason the
+      // registration sits behind the activeSession null check rather than inside the listener: a request with
+      // no session (the overwhelming majority, every auto-commit command and every read) allocates nothing and
+      // pays one reference comparison. For a request that does have one, the allocation buys a verdict that
+      // survives a handler writing its own response, which the finally block cannot give: the alternative is a
+      // signal that is simply missing whenever the response was streamed. A session-bound request has already
+      // parsed a JSON body and will build a JSON response, so this is not the allocation that decides its cost
+      // (code review on PR #8138).
+      if (activeSession != null && reportsSessionPartialCommit()) {
+        final TransactionContext sessionTxAtStart = activeSession.transaction;
+        final long sessionCommitCountAtStart = sessionTxAtStart != null ? sessionTxAtStart.getCommitCount() : 0;
+        exchange.addResponseCommitListener(ex -> {
+          if (TransactionContext.isPartiallyCommitted(sessionTxAtStart, sessionCommitCountAtStart))
+            ex.getResponseHeaders().put(SESSION_PARTIAL_COMMIT_HEADER, "true");
+        });
+      }
 
       current = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
       if (current == null)
@@ -344,7 +393,7 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
    * which THREAD the request is answered on and that one decides what the id RESOLVES to, so tightening one
    * without the other would answer a request on the IO thread and then block it on the session lock anyway, or
    * dispatch one that was never going to touch a session. A value that turns out not to resolve has by then
-   * cost a dispatch, which is the cheap half of the trade (claude-review on PR #7723).
+   * cost a dispatch, which is the cheap half of the trade (code review on PR #7723).
    */
   protected boolean carriesSessionId(final HttpServerExchange exchange) {
     final HeaderValues sessionId = exchange.getRequestHeaders().get(SESSION_ID_HEADER);
@@ -412,6 +461,27 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
   }
 
   /**
+   * Whether this operation reports a commit published under the caller's session transaction in the
+   * {@link #SESSION_PARTIAL_COMMIT} response header (issue #8062). True for every route that RUNS work inside
+   * the caller's transaction, which is where a {@code BATCH n} boundary can fire.
+   * <p>
+   * False for {@code /commit}, the one route whose whole job is to move that counter: it calls
+   * {@code database.commit()} on the session's own transaction, so the counter moves on every successful call
+   * and the header would be set on all of them. It would not mislead this driver - {@code RemoteDatabase}
+   * clears the latch in {@code begin()} and the transaction is over by then either way - but the header would
+   * be saying "part of your block is durable, do not replay it" about a transaction that committed in full and
+   * has nothing left to replay. A wire signal that is true of the case it was written for and also of a case it
+   * was not is the one that gets misread later.
+   * <p>
+   * {@code /rollback} needs no exemption: {@code TransactionContext} bumps the counter in exactly one place
+   * ({@code resetAndFireCallbacks}, reached from the commit paths only), so a rollback cannot move it. Left as
+   * true so a future change that DID make it move would surface here rather than pass silently.
+   */
+  protected boolean reportsSessionPartialCommit() {
+    return true;
+  }
+
+  /**
    * Extracts the autoCommit parameter from the request payload.
    *
    * @param payload The request payload (may be null)
@@ -472,12 +542,12 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
    * value, so response splitting is not reachable - but a session id is a UUID, and anything that is not one is
    * a client that is already wrong, so nothing is lost by reducing what is echoed to the characters a UUID is
    * made of and a length no id exceeds. That also keeps an arbitrary caller-chosen string out of whatever reads
-   * these headers downstream, which is a log scraper as often as it is a client (claude-review on PR #7730).
+   * these headers downstream, which is a log scraper as often as it is a client (code review on PR #7730).
    */
   private static String sanitizedSessionId(final String sessionId) {
     // The common case by far is an id that needs nothing done to it - a UUID this server issued, echoed back by
     // a client whose session has since expired. Scanned first and returned UNCHANGED when it is already clean,
-    // so the ordinary degrade allocates nothing (claude-review on PR #7730).
+    // so the ordinary degrade allocates nothing (code review on PR #7730).
     final int length = sessionId.length();
     if (length <= MAX_ECHOED_SESSION_ID_LENGTH) {
       int i = 0;

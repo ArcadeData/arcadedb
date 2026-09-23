@@ -29,6 +29,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Trigger;
 import com.arcadedb.schema.TriggerImpl;
 
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -67,7 +68,7 @@ public class CreateTriggerStatement extends DDLStatement {
       throw new CommandSQLParsingException("Trigger timing (BEFORE/AFTER) is required");
     }
 
-    final String timingStr = timing.getStringValue().toUpperCase();
+    final String timingStr = timing.getStringValue().toUpperCase(Locale.ROOT);
     if (!"BEFORE".equals(timingStr) && !"AFTER".equals(timingStr)) {
       throw new CommandSQLParsingException("Trigger timing must be BEFORE or AFTER");
     }
@@ -76,7 +77,7 @@ public class CreateTriggerStatement extends DDLStatement {
       throw new CommandSQLParsingException("Trigger event (CREATE/READ/UPDATE/DELETE) is required");
     }
 
-    final String eventStr = event.getStringValue().toUpperCase();
+    final String eventStr = event.getStringValue().toUpperCase(Locale.ROOT);
     if (!"CREATE".equals(eventStr) && !"READ".equals(eventStr) &&
         !"UPDATE".equals(eventStr) && !"DELETE".equals(eventStr)) {
       throw new CommandSQLParsingException("Trigger event must be CREATE, READ, UPDATE, or DELETE");
@@ -90,7 +91,7 @@ public class CreateTriggerStatement extends DDLStatement {
       throw new CommandSQLParsingException("Trigger action type (SQL/JAVASCRIPT/JAVA) is required");
     }
 
-    final String actionTypeStr = actionType.getStringValue().toUpperCase();
+    final String actionTypeStr = actionType.getStringValue().toUpperCase(Locale.ROOT);
     if (!"SQL".equals(actionTypeStr) && !"JAVASCRIPT".equals(actionTypeStr) && !"JAVA".equals(actionTypeStr)) {
       throw new CommandSQLParsingException("Trigger action type must be SQL, JAVASCRIPT, or JAVA");
     }
@@ -136,9 +137,9 @@ public class CreateTriggerStatement extends DDLStatement {
     }
 
     // Parse enums
-    final Trigger.TriggerTiming triggerTiming = Trigger.TriggerTiming.valueOf(timing.getStringValue().toUpperCase());
-    final Trigger.TriggerEvent triggerEvent = Trigger.TriggerEvent.valueOf(event.getStringValue().toUpperCase());
-    final Trigger.ActionType triggerActionType = Trigger.ActionType.valueOf(actionType.getStringValue().toUpperCase());
+    final Trigger.TriggerTiming triggerTiming = Trigger.TriggerTiming.valueOf(timing.getStringValue().toUpperCase(Locale.ROOT));
+    final Trigger.TriggerEvent triggerEvent = Trigger.TriggerEvent.valueOf(event.getStringValue().toUpperCase(Locale.ROOT));
+    final Trigger.ActionType triggerActionType = Trigger.ActionType.valueOf(actionType.getStringValue().toUpperCase(Locale.ROOT));
 
     // Create trigger
     final Trigger trigger = new TriggerImpl(
@@ -186,7 +187,7 @@ public class CreateTriggerStatement extends DDLStatement {
       builder.append(actionCodeQuoted);
     else
       // actionCodeQuoted IS ONLY SET BY THE PARSER. A STATEMENT BUILT ANY OTHER WAY (SETTING actionCode DIRECTLY)
-      // WOULD OTHERWISE RENDER THE BARE WORD "null" HERE INSTEAD OF A QUOTED LITERAL (CLAUDE-REVIEW, ISSUE #7800)
+      // WOULD OTHERWISE RENDER THE BARE WORD "null" HERE INSTEAD OF A QUOTED LITERAL (CODE REVIEW, ISSUE #7800)
       appendQuotedStringLiteral(builder, actionCode);
   }
 

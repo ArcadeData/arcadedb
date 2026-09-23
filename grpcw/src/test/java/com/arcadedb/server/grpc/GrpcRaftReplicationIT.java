@@ -52,9 +52,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class GrpcRaftReplicationIT extends BaseRaftHATest {
 
-  private static final int    BASE_GRPC_PORT = 51051;
-  private static final int    ROW_COUNT      = 500;
-  private static final String VERTEX_TYPE    = "GrpcReplicatedVertex";
+  // One gRPC port per server, drawn free for every test instance rather than fixed (issue #7496), from the same
+  // ledger as the Raft ports so the two can never coincide (issue #8203).
+  private final int[] grpcPorts = allocateFixturePorts(2);
+
+  private static final int    ROW_COUNT   = 500;
+  private static final String VERTEX_TYPE = "GrpcReplicatedVertex";
 
   private static final Metadata.Key<String> USER_HEADER     =
       Metadata.Key.of("x-arcade-user", Metadata.ASCII_STRING_MARSHALLER);
@@ -89,7 +92,7 @@ class GrpcRaftReplicationIT extends BaseRaftHATest {
     final int index = Integer.parseInt(serverName.substring(serverName.lastIndexOf('_') + 1));
 
     config.setValue("arcadedb.grpc.enabled", "true");
-    config.setValue("arcadedb.grpc.port", String.valueOf(BASE_GRPC_PORT + index));
+    config.setValue("arcadedb.grpc.port", String.valueOf(grpcPorts[index]));
     config.setValue("arcadedb.grpc.host", "localhost");
     config.setValue("arcadedb.grpc.reflection.enabled", "false");
     config.setValue("arcadedb.grpc.health.enabled", "false");
@@ -130,7 +133,7 @@ class GrpcRaftReplicationIT extends BaseRaftHATest {
     waitForAllServers();
 
     channel = ManagedChannelBuilder
-        .forAddress("localhost", BASE_GRPC_PORT + leaderIndex)
+        .forAddress("localhost", grpcPorts[leaderIndex])
         .usePlaintext()
         .maxInboundMessageSize(64 * 1024 * 1024)
         .build();
@@ -192,7 +195,7 @@ class GrpcRaftReplicationIT extends BaseRaftHATest {
     waitForAllServers();
 
     channel = ManagedChannelBuilder
-        .forAddress("localhost", BASE_GRPC_PORT + leaderIndex)
+        .forAddress("localhost", grpcPorts[leaderIndex])
         .usePlaintext()
         .maxInboundMessageSize(64 * 1024 * 1024)
         .build();

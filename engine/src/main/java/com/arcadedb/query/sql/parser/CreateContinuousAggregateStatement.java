@@ -24,6 +24,8 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
+import java.util.Map;
+
 public class CreateContinuousAggregateStatement extends DDLStatement {
   public Identifier name;
   public SelectStatement selectStatement;
@@ -36,6 +38,7 @@ public class CreateContinuousAggregateStatement extends DDLStatement {
   public ResultSet executeDDL(final CommandContext context) {
     final Database database = context.getDatabase();
     final String caName = name.getStringValue();
+    final boolean existedBefore = database.getSchema().existsContinuousAggregate(caName);
 
     database.getSchema().buildContinuousAggregate()
         .withName(caName)
@@ -47,17 +50,38 @@ public class CreateContinuousAggregateStatement extends DDLStatement {
     final ResultInternal r = new ResultInternal();
     r.setProperty("operation", "create continuous aggregate");
     r.setProperty("name", caName);
+    r.setProperty("created", !existedBefore);
     result.add(r);
     return result;
   }
 
+  /**
+   * Overrides the two-arg form (not just the no-arg debug one) so this renders as SQL wherever a statement is
+   * rendered through {@code toString(Map, StringBuilder)} - an enclosing {@code IF}/script block included - instead
+   * of throwing {@code UnsupportedOperationException}, and so a parameterised sub-select renders BOUND rather than
+   * with its placeholders raw. Same class of bug as issue #7794 on {@code CREATE TRIGGER} (issue #7912).
+   */
   @Override
-  public String toString() {
-    final StringBuilder sb = new StringBuilder("CREATE CONTINUOUS AGGREGATE ");
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
+    builder.append("CREATE CONTINUOUS AGGREGATE ");
     if (ifNotExists)
-      sb.append("IF NOT EXISTS ");
-    sb.append(name);
-    sb.append(" AS ").append(selectStatement);
-    return sb.toString();
+      builder.append("IF NOT EXISTS ");
+    name.toString(params, builder);
+    builder.append(" AS ");
+    selectStatement.toString(params, builder);
+  }
+
+  @Override
+  public CreateContinuousAggregateStatement copy() {
+    final CreateContinuousAggregateStatement result = new CreateContinuousAggregateStatement();
+    result.name = name == null ? null : name.copy();
+    result.selectStatement = selectStatement == null ? null : selectStatement.copy();
+    result.ifNotExists = ifNotExists;
+    return result;
+  }
+
+  @Override
+  protected Object[] getIdentityElements() {
+    return new Object[] { name, selectStatement, ifNotExists };
   }
 }

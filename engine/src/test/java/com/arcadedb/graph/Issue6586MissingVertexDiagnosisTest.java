@@ -531,7 +531,7 @@ class Issue6586MissingVertexDiagnosisTest extends TestHelper {
     assertThat(target.getPropertyNames()).as("the buffer must be materialised for this fixture to mean anything")
         .isNotNull();
 
-    database.getSchema().getBucketById(targetRID.getBucketId()).deleteRecord(targetRID);
+    TestHelper.deleteRecordAtLowLevel(database, targetRID);
 
     target.delete();
   }
@@ -550,7 +550,7 @@ class Issue6586MissingVertexDiagnosisTest extends TestHelper {
   }
 
   private void deleteRecordOf(final RID rid) {
-    database.transaction(() -> database.getSchema().getBucketById(rid.getBucketId()).deleteRecord(rid));
+    database.transaction(() -> TestHelper.deleteRecordAtLowLevel(database, rid));
     database.transaction(() -> assertThat(database.existsRecord(rid)).isFalse());
   }
 

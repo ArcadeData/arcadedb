@@ -30,7 +30,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * The server-side half of the tag-value rule (claude-review on PR #7323, issue #7305).
+ * The server-side half of the tag-value rule (code review on PR #7323, issue #7305).
  * <p>
  * {@code TimeSeriesPoint} refuses an unstorable tag in the Java client, but the proto types tags as
  * {@code map<string, GrpcValue>} and any gRPC client can put a bytes, list or map value there. The server has

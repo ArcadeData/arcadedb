@@ -243,7 +243,7 @@ class Issue7702InterleavedTagAndFieldOrderTest extends TestHelper {
   /**
    * The rendering refuses a second TIMESTAMP column itself rather than dropping it, so the statement it produces
    * cannot depend on the caller having run {@code validate()} first - which {@code toSQL()} does, making this
-   * unreachable through it (claude review on PR #7757).
+   * unreachable through it (code review on PR #7757).
    */
   @Test
   void theRenderingRefusesASecondTimestampColumnRatherThanDroppingIt() {

@@ -353,7 +353,10 @@ public class SuffixIdentifier extends SimpleNode {
     switch (target) {
     case Result result -> setValueAsResult(result, value, context);
     case Identifiable identifiable -> setValueAsIdentifiable(identifiable, value, context);
-    case JSONObject json -> setValueAsMap(json.toMap(), value, context);
+    // No JSONObject arm: it implements Map<String, Object>, so the Map one takes it, and takes the object ITSELF.
+    // That is the fix - the arm that used to sit here passed json.toMap(), a fresh LinkedHashMap built out of the
+    // element tree, so the write landed in a copy nothing ever read back: the same lost write as #8027, one level
+    // down (PR #8093 review).
     case Map map -> setValueAsMap(map, value, context);
     default -> throw new IllegalStateException("Unexpected value: " + target);
     }

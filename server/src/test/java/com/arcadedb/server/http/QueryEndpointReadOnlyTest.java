@@ -37,8 +37,7 @@ class QueryEndpointReadOnlyTest extends BaseGraphServerTest {
     testEachServer(serverIndex -> {
       executeCommand(serverIndex, "sql", "CREATE DOCUMENT TYPE ReadOnlyTest IF NOT EXISTS");
 
-      final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME).openConnection();
+      final HttpURLConnection connection = (HttpURLConnection) new URL(getServerHttpUrl(serverIndex, "/api/v1/query/" + DATABASE_NAME)).openConnection();
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
@@ -65,8 +64,7 @@ class QueryEndpointReadOnlyTest extends BaseGraphServerTest {
     testEachServer(serverIndex -> {
       executeCommand(serverIndex, "sql", "CREATE DOCUMENT TYPE ReadOnlyTest2 IF NOT EXISTS");
 
-      final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME).openConnection();
+      final HttpURLConnection connection = (HttpURLConnection) new URL(getServerHttpUrl(serverIndex, "/api/v1/query/" + DATABASE_NAME)).openConnection();
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
@@ -94,8 +92,7 @@ class QueryEndpointReadOnlyTest extends BaseGraphServerTest {
       executeCommand(serverIndex, "sql", "CREATE DOCUMENT TYPE ReadOnlyTest3 IF NOT EXISTS");
       executeCommand(serverIndex, "sql", "INSERT INTO ReadOnlyTest3 SET name='readable'");
 
-      final HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME).openConnection();
+      final HttpURLConnection connection = (HttpURLConnection) new URL(getServerHttpUrl(serverIndex, "/api/v1/query/" + DATABASE_NAME)).openConnection();
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));

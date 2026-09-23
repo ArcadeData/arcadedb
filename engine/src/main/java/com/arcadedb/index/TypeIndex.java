@@ -19,6 +19,7 @@
 package com.arcadedb.index;
 
 import com.arcadedb.database.DatabaseContext;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.IndexCursorCollection;
 import com.arcadedb.database.RID;
@@ -52,6 +53,9 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   private       boolean             valid            = true;
   private       IndexInternal       associatedIndex;
   private       IndexMetadata       metadata;
+
+  // #8153: CACHED BY keyedCursor(), SEE THERE
+  private BinaryComparator comparator;
 
   public TypeIndex(final String logicName, final DocumentType type) {
     this.logicName = logicName;
@@ -152,7 +156,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
           while (cursor.hasNext()) {
             if (unique) {
               result = Set.of(cursor.next());
-              return new IndexCursorCollection(result);
+              return keyedCursor(result, keys);
             }
 
             if (result == null)
@@ -161,7 +165,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
           }
         }
       }
-      return new IndexCursorCollection(result != null ? result : Collections.emptyList());
+      return keyedCursor(result != null ? result : Collections.emptyList(), keys);
     }
   }
 
@@ -211,13 +215,17 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       // row limit applied to its output - truncating candidates before the caller's predicate re-checks them silently
       // drops rows that would have survived it. Such an index is asked for, and returns, everything.
       final int effectiveLimit = isResultApproximate() ? -1 : limit;
+      if (effectiveLimit == 0)
+        // THE LOOP BELOW ADDS AN ENTRY BEFORE IT CHECKS THE BOUND, AND A CHILD ASKED FOR 0 ROWS MAY STILL ANSWER ONE
+        return keyedCursor(Collections.emptyList(), keys);
 
       Set<Identifiable> result = null;
 
       for (final Index index : getIndexesByKeys(keys)) {
         // #5662: try-with-resources - the limit returns from inside the loop, abandoning the cursor partway
+        // ONLY THE ROWS STILL MISSING ARE ASKED OF THIS BUCKET: THE OLD size - limit WAS NEGATIVE, I.E. UNLIMITED
         try (final IndexCursor cursor = index.get(keys,
-            effectiveLimit > -1 ? (result != null ? result.size() : 0) - effectiveLimit : -1)) {
+            effectiveLimit > -1 ? effectiveLimit - (result != null ? result.size() : 0) : -1)) {
           while (cursor.hasNext()) {
             if (result == null)
               result = effectiveLimit > -1 ? new HashSet<>(effectiveLimit) : new HashSet<>();
@@ -225,12 +233,26 @@ public class TypeIndex implements RangeIndex, IndexInternal {
             result.add(cursor.next());
 
             if (effectiveLimit > -1 && result.size() >= effectiveLimit)
-              return new IndexCursorCollection(result);
+              return keyedCursor(result, keys);
           }
         }
       }
-      return new IndexCursorCollection(result != null ? result : Collections.emptyList());
+      return keyedCursor(result != null ? result : Collections.emptyList(), keys);
     }
+  }
+
+  /**
+   * #8153: an equality lookup answers with the key it was asked for and the key types and comparator of this index, like
+   * every range cursor over it, so a {@link MultiIndexCursor} merging both kinds can compare them.
+   */
+  private IndexCursor keyedCursor(final Collection<Identifiable> result, final Object[] keys) {
+    if (indexesOnBuckets.isEmpty())
+      return new IndexCursorCollection(result);
+    BinaryComparator cmp = comparator;
+    if (cmp == null)
+      // RESOLVED ONCE: THE SERIALIZER, AND SO ITS COMPARATOR, LIVES AS LONG AS THE DATABASE. A RACE ONLY RESOLVES IT TWICE
+      comparator = cmp = ((DatabaseInternal) type.getSchema().getEmbedded().getDatabase()).getSerializer().getComparator();
+    return new IndexCursorCollection(result, keys, indexesOnBuckets.getFirst().getBinaryKeyTypes(), cmp);
   }
 
   @Override

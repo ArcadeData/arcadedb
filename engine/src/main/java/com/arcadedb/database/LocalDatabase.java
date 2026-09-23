@@ -48,6 +48,7 @@ import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.exception.DatabaseMetadataException;
+import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.InvalidDatabaseInstanceException;
@@ -134,6 +135,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.UnaryOperator;
 import java.util.logging.Level;
 import java.util.stream.Stream;
 
@@ -264,7 +266,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       this.executionPlanCache = new ExecutionPlanCache(this,
           configuration.getValueAsInteger(GlobalConfiguration.SQL_STATEMENT_CACHE));
       this.cypherStatementCache =
-          new CypherStatementCache(configuration.getValueAsInteger(GlobalConfiguration.OPENCYPHER_STATEMENT_CACHE));
+          new CypherStatementCache(this, configuration.getValueAsInteger(GlobalConfiguration.OPENCYPHER_STATEMENT_CACHE));
       this.cypherPlanCache = new CypherPlanCache(this,
           configuration.getValueAsInteger(GlobalConfiguration.OPENCYPHER_PLAN_CACHE));
 
@@ -305,7 +307,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   protected void open() {
     if (!new File(databasePath).exists())
-      throw new DatabaseOperationException("Database '" + databasePath + "' does not exist");
+      // The narrower type, not the generic DatabaseOperationException: "you named a database that is not here" is
+      // permanent and the caller's, and a protocol that can say so - HTTP's 404, Bolt's DatabaseNotFound - could
+      // otherwise tell it apart only by matching on this message's wording (issue #7874).
+      throw new DatabaseNotFoundException("Database '" + databasePath + "' does not exist");
 
     if (configurationFile.exists()) {
       try {
@@ -667,6 +672,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   public void incrementStatsReadTx() {
     stats.readTx.incrementAndGet();
+  }
+
+  public void incrementStatsTxRollbacks() {
+    stats.txRollbacks.incrementAndGet();
   }
 
   @Override
@@ -1209,8 +1218,32 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       if (record instanceof MutableDocument)
         transaction.registerNewRecord(record);
 
-      if (record instanceof MutableDocument doc)
-        indexer.createDocument(doc, doc.getType(), bucket);
+      if (record instanceof MutableDocument doc) {
+        // THE CREATE IS ATOMIC WITHIN THE TRANSACTION (issue #7467). Everything above has already written the
+        // record: the body is in the bucket's page, the identity is assigned, the bucket delta is incremented and
+        // the transaction's record cache holds it - and only NOW does indexer.createDocument run the unique
+        // check. A DuplicatedKeyException from it used to leave all of that in the transaction, so a caller that
+        // tallies the refusal and carries on - the /ws insert session, the gRPC insert stream, an HTTP batch, a
+        // SQL script with its own error handling - committed a record that exists in the bucket, is counted by
+        // count(*), is NOT in the unique index that was supposed to forbid it, and was acknowledged to the
+        // client as not written. Three views of the system, and no single one of them reveals the problem.
+        //
+        // The undo covers every unchecked throwable rather than the duplicate alone - an Error included, since
+        // nothing about a Lucene analyzer running out of stack makes the half-written record less corrupting:
+        // anything raised past bucket.createRecord leaves exactly the same residue, and enumerating the types
+        // would leave the next one out. Both arms rethrow, so nothing is swallowed (claude-review on PR #7936).
+        final TransactionIndexContext indexChanges = transaction.getIndexChanges();
+        indexChanges.armRecordUndo();
+        try {
+          indexer.createDocument(doc, doc.getType(), bucket);
+        } catch (final RuntimeException | Error e) {
+          indexChanges.undoRecordChanges();
+          undoRecordWrite(record, bucket, transaction, e);
+          throw e;
+        } finally {
+          indexChanges.disarmRecordUndo();
+        }
+      }
 
       ((RecordInternal) record).unsetDirty();
 
@@ -1229,6 +1262,51 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           wrappedDatabaseInstance.rollback();
       }
     }
+  }
+
+  /**
+   * Takes the record body back out of the transaction after the indexing of a record just written refused it
+   * (issue #7467). Shared by {@link #createRecordNoLock} and {@code restoreRecordInTransaction}, which write the
+   * body, assign the identity, fold the bucket delta and register the new record in the same order and only then
+   * hand it to the indexer - so they leave the same residue behind and it comes back the same way.
+   * <p>
+   * The mirror image of those statements, undone in the reverse order, plus the identity reset that makes the
+   * same object cleanly re-insertable - which is what {@link TransactionContext#rollback} does for the whole
+   * transaction and what a caller retrying the row after fixing it needs here.
+   * <p>
+   * An implicit transaction rolls back anyway, so this changes nothing for one; the case it exists for is a
+   * caller inside its OWN transaction that intends to keep going.
+   * <p>
+   * <b>When the physical free itself fails</b> the transaction is marked rollback-only (CodeRabbit on PR #7936).
+   * Logging a warning and carrying on would have left the caller free to commit precisely the state this method
+   * exists to prevent - a body in the bucket whose index entries have just been taken away - so the answer is
+   * not "the compensation succeeded": {@link TransactionContext#setRollbackOnly} makes the later commit fail
+   * instead - in {@link TransactionContext#commit1stPhase(boolean)}, the method every commit path converges on,
+   * the replicated one included (issue #8053) - and the caller's own error handling reaches the rollback that
+   * discards the whole transaction. The failure is attached to {@code cause} as a suppressed exception rather
+   * than thrown in its place, because {@code cause} is the reason the record was refused and that is what the
+   * caller is reporting. A direct rollback from here is not an option: this method does not own the transaction.
+   *
+   * @param cause the throwable the indexer raised, which is about to be rethrown by the caller
+   */
+  private void undoRecordWrite(final Record record, final LocalBucket bucket, final TransactionContext transaction,
+      final Throwable cause) {
+    final RID rid = record.getIdentity();
+    try {
+      bucket.deleteRecord(rid, false);
+    } catch (final Exception e) {
+      cause.addSuppressed(e);
+      transaction.setRollbackOnly(
+          "record " + rid + " could not be taken back after its indexing refused it (" + e.getMessage() + ")");
+      LogManager.instance().log(this, Level.SEVERE,
+          "Cannot take back record %s after its indexing refused it: the transaction is marked rollback-only, "
+              + "because committing it would publish a record no index entry points at. %s", rid, e.getMessage());
+    }
+
+    transaction.updateBucketRecordDelta(bucket.getFileId(), -1);
+    transaction.removeRecordFromCache(rid);
+    transaction.unregisterNewRecord(record);
+    ((RecordInternal) record).setIdentity(null);
   }
 
   @Override
@@ -1273,9 +1351,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // #6127: the schema contract, applied exactly as createRecordNoLock applies it. RESTORE used to skip both of
         // these on the grounds that an emergency repair must never be blocked - but a record written past its own
         // MANDATORY/NOTNULL constraints cannot even be UPDATEd afterwards (updateRecord validates too, so every later
-        // write throws until the missing property is supplied), and CHECK DATABASE is a structural check that never
-        // looks at schema constraints, so nothing downstream catches it either. Refusing up front costs the caller one
-        // explicit `SET name = '<unknown>'` and yields a record the rest of the engine can actually work with.
+        // write throws until the missing property is supplied), and CHECK DATABASE was then a purely structural check
+        // that never looked at schema constraints, so nothing downstream caught it either. Refusing up front costs the
+        // caller one explicit `SET name = '<unknown>'` and yields a record the rest of the engine can actually work
+        // with. CHECK DATABASE does report such a record since #7952, whatever wrote it - which is the safety net for
+        // the copies already on disk, not a reason to relax this refusal.
         setDefaultValues(record);
 
         if (record instanceof MutableDocument doc)
@@ -1341,15 +1421,32 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       //
       // Registered BEFORE indexing, matching createRecordNoLock's order: indexer.createDocument can throw inline
       // (Index.put -> checkIsValid on a dropped/invalidated index, or convertKeys on a key it cannot coerce), and
-      // registering after would skip the rollback identity reset on exactly those paths. Note this is NOT the
-      // unique-constraint path - a duplicate key is detected at commit, by which point both calls have run.
+      // registering after would skip the rollback identity reset on exactly those paths. The unique constraint
+      // reaches the same call too: against COMMITTED state it is decided at commit, but against a key THIS
+      // transaction has already queued it is decided inline - which is what two RESTOREs of one key in one
+      // transaction do (issue #7467, claude-review on PR #7936).
       transaction.registerNewRecord(record);
 
       // #6120: the index entries. Without this the restored record is returned by a full scan but not by any
       // index-resolved query, and a UNIQUE index never learns the key came back - so a later restore or insert
       // could hand the same key to a second record unchallenged. Deliberately the same call createRecordNoLock
       // makes: a restored record is indexed exactly like an inserted one, duplicate rejection included.
-      indexer.createDocument(doc, doc.getType(), bucket);
+      //
+      // And undone exactly as createRecordNoLock undoes it (issue #7467): everything above has already written
+      // the record, so an exception here would leave a body in the bucket that no index entry points at - the
+      // same three-way disagreement between the scan, the index and the answer given to the caller, on a
+      // RESTORE instead of on a CREATE.
+      final TransactionIndexContext indexChanges = transaction.getIndexChanges();
+      indexChanges.armRecordUndo();
+      try {
+        indexer.createDocument(doc, doc.getType(), bucket);
+      } catch (final RuntimeException | Error e) {
+        indexChanges.undoRecordChanges();
+        undoRecordWrite(record, bucket, transaction, e);
+        throw e;
+      } finally {
+        indexChanges.disarmRecordUndo();
+      }
     }
 
     ((RecordInternal) record).unsetDirty();
@@ -1752,11 +1849,19 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     for (int retry = 0; retry < attempts; ++retry) {
       boolean createdNewTx = true;
 
+      // Declared OUTSIDE the try so the catch can read them; sampled just after begin(), so they refer to the
+      // transaction this attempt's block actually runs in. See the guard in the catch below (#7916).
+      TransactionContext txAtStart = null;
+      long commitCountAtStart = 0;
+
       try {
         if (joinCurrentTx && wrappedDatabaseInstance.isTransactionActive())
           createdNewTx = false;
         else
           wrappedDatabaseInstance.begin();
+
+        txAtStart = wrappedDatabaseInstance.getTransactionIfExists();
+        commitCountAtStart = txAtStart != null ? txAtStart.getCommitCount() : 0;
 
         txBlock.execute();
 
@@ -1786,6 +1891,20 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
         if (error != null)
           error.call(e);
+
+        // #7916: a block that already published part of its work cannot be re-run - the rollback above could not
+        // take that part back, and a second pass would apply it twice and then report clean success. The commit
+        // came from a statement with an explicit batch boundary (UPDATE/DELETE/MOVE VERTEX ... BATCH n), which
+        // re-begins straight after, so isTransactionActive() alone cannot see it. The conflict goes to the
+        // caller, who is the only one who knows how to compensate for the half that stands.
+        if (TransactionContext.isPartiallyCommitted(txAtStart, commitCountAtStart)) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Transaction block on database '%s' committed part of its work before failing (a statement with a BATCH "
+                  + "boundary): NOT retrying, because replaying it would apply the already durable half a second "
+                  + "time. Propagating %s to the caller",
+              null, name, e.getClass().getSimpleName());
+          throw e;
+        }
 
         if (e instanceof DuplicatedKeyException) {
           // #4959: a genuine duplicate is deterministic and fails identically on every attempt. Only a
@@ -2479,6 +2598,21 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       return value;
     });
     return previous[0];
+  }
+
+  /**
+   * One {@code ConcurrentHashMap.compute}, so the read, the computation and the write are a single atomic operation
+   * on this node (issue #7776). {@code remapping} runs while the map holds the key's bin, which is why the contract
+   * on {@link DatabaseInternal#computeGlobalVariable} requires it to be short and to not re-enter this map.
+   */
+  @Override
+  public Object computeGlobalVariable(String name, final UnaryOperator<Object> remapping) {
+    if (name == null)
+      throw new IllegalArgumentException("Variable name cannot be null");
+    if (name.startsWith("$"))
+      name = name.substring(1);
+    SQLQueryEngine.validateVariableName(name);
+    return globalVariables.compute(name, (key, current) -> remapping.apply(current));
   }
 
   @Override

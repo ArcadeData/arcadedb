@@ -658,14 +658,117 @@ public final class Labels {
     if (!(value instanceof String label))
       throw new CommandSemanticException("A dynamic label expression in " + clause + " must evaluate to a string or a "
           + "list of strings, but it evaluated to " + value.getClass().getSimpleName() + " (" + value + ")");
-    if (label.isBlank())
-      throw new CommandSemanticException(
-          "A dynamic label expression in " + clause + " evaluated to a blank label, which is not a usable type name");
+    return requireUsableLabelName(label, "a dynamic label expression in " + clause);
+  }
+
+  /**
+   * Refuses a label that cannot be used as the name of a vertex type, naming {@code source} so the message says
+   * where the label came from.
+   * <p>
+   * Two names are unusable. A blank one is not a type name at all. A name containing {@link #LABEL_SEPARATOR} is
+   * worse than unusable: that character is how {@link #ensureCompositeType} encodes the boundary between the
+   * labels of a composite type, so a label carrying it makes two different label sets compute the same type name -
+   * {@code [A~B, C]} and {@code [A, B~C]} both produce {@code A~B~C} - and a write under one of them silently
+   * matches a node created under the other. The composite then collects both spellings as supertypes, and
+   * {@link #getLabels} stops recognising the type as the composite of its own supertype set and reports the
+   * synthetic name itself (issue #8100).
+   * <p>
+   * This is the shared half of the check {@link #appendDynamicLabels} has applied to {@code SET n:$(expr)} since
+   * issue #7059; {@code ensureCompositeType} applies it to every other write path, and {@code merge.node} applies
+   * it to its own arguments before it computes a type name from them.
+   *
+   * @param label  the label to check
+   * @param source a noun phrase naming where the label came from, read as the subject of "... produced it", e.g.
+   *               {@code "a label passed to merge.node()"}
+   *
+   * @return {@code label}, when it is usable
+   *
+   * @throws CommandSemanticException when the label is blank or contains {@link #LABEL_SEPARATOR}
+   */
+  public static String requireUsableLabelName(final String label, final String source) {
+    requireNonBlankLabelName(label, source);
+    if (NO_LABEL_TYPE.equals(label))
+      throw reservedSentinelLabel();
     if (label.contains(LABEL_SEPARATOR))
-      throw new CommandSemanticException("A dynamic label expression in " + clause + " evaluated to '" + label
-          + "', but '" + LABEL_SEPARATOR + "' is reserved as the separator between the labels of a composite type "
+      throw new CommandSemanticException("'" + label + "' cannot be used as a label - " + source + " produced it - "
+          + "because '" + LABEL_SEPARATOR + "' is reserved as the separator between the labels of a composite type "
           + "and cannot appear inside a single label");
     return label;
+  }
+
+  /**
+   * Applies {@link #requireUsableLabelName} to every label a statement is about to <i>introduce</i>.
+   * <p>
+   * The distinction is the whole point of validating here rather than inside {@link #ensureCompositeType}. That
+   * method is handed the vertex's resulting label set, which on a relabelling includes the labels it already
+   * carries, and a type somebody created under a name containing {@link #LABEL_SEPARATOR} - {@code CREATE VERTEX
+   * TYPE `a~b`} in SQL - is a label a vertex may legitimately already answer to, which openCypher has to keep
+   * reading and relabelling (issue #6363). Refusing it there would have moved such a vertex out of its own type on
+   * the next {@code SET}. Only a label the statement is adding is refused.
+   *
+   * @param labels the labels the statement writes
+   * @param source a noun phrase naming the clause, e.g. {@code "a label in CREATE"}
+   *
+   * @throws CommandSemanticException when any of them cannot be used as a label
+   */
+  public static void requireUsableLabelNames(final List<String> labels, final String source) {
+    if (labels == null)
+      return;
+    for (int i = 0; i < labels.size(); i++)
+      requireUsableLabelName(labels.get(i), source);
+  }
+
+  private static CommandSemanticException reservedSentinelLabel() {
+    return new CommandSemanticException(
+        "'" + NO_LABEL_TYPE + "' is a reserved type name and cannot be used as a label");
+  }
+
+  /**
+   * The blank half of {@link #requireUsableLabelName}, for the one caller that has to apply the two checks at
+   * different points.
+   * <p>
+   * {@code TypeBuilder.create()} refuses a null or empty type name but not a whitespace-only one, so such a type
+   * can already exist in a database written by SQL or the Java API. The DDL auto-create in
+   * {@code OpenCypherQueryEngine} therefore has to refuse a blank label before it asks whether the type exists,
+   * while still applying the separator check only when it is about to create one (CodeRabbit on the #8100 PR).
+   *
+   * @param label  the label to check
+   * @param source a noun phrase naming where the label came from, read as the subject of "... produced one"
+   *
+   * @return {@code label}, when it is not blank
+   *
+   * @throws CommandSemanticException when the label is null or blank
+   */
+  public static String requireNonBlankLabelName(final String label, final String source) {
+    if (label == null || label.isBlank())
+      throw new CommandSemanticException(
+          "A blank label is not a usable type name, and " + source + " produced one");
+    return label;
+  }
+
+  /**
+   * Rejects a relationship (edge) type name carrying {@link #LABEL_SEPARATOR}.
+   * <p>
+   * ArcadeDB shares one type namespace between vertex and edge types. An edge type named e.g. {@code A~B} is
+   * cosmetic on its own - an edge type is never composite, so there is no label set for it to collapse - but it
+   * collides with the vertex namespace: once it exists, the composite vertex type that the ordinary label set
+   * {@code [A, B]} computes can never be created, so {@code CREATE (n:A:B)} fails for good with no way to recover
+   * short of dropping the edge type (issue #8118, a follow-up to the vertex-label guards in
+   * {@link #requireUsableLabelName} and {@link #requireUsableLabel}).
+   * <p>
+   * Callers apply this only on the path that would create a brand-new type ({@code !schema.existsType(...)}), never
+   * unconditionally, so that writing to or indexing an edge type that already exists keeps working regardless of
+   * its name.
+   *
+   * @param relationshipType the relationship type name about to be created
+   *
+   * @throws CommandSemanticException if the name contains {@link #LABEL_SEPARATOR}
+   */
+  public static void requireUsableRelationshipTypeName(final String relationshipType) {
+    if (relationshipType != null && relationshipType.contains(LABEL_SEPARATOR))
+      throw new CommandSemanticException("Relationship type '" + relationshipType + "' cannot contain '"
+          + LABEL_SEPARATOR + "', which is reserved as the separator between the labels of a composite vertex type "
+          + "and would otherwise collide with the vertex type namespace");
   }
 
   /**
@@ -684,9 +787,13 @@ public final class Labels {
    * name match), but a single-label {@code CREATE (:`~NO_LABEL~`)} bypasses that entirely and would otherwise
    * land the vertex on the sentinel type itself - the exact {@code V}/{@code Vertex} collision this class exists
    * to close, reopened under a name a query merely has to spell correctly instead of guess (issue #6395 review).
-   * Every write path that can introduce a new label - {@code CreateStep}, {@code MergeStep}, {@code SetStep}'s
-   * {@code SET n:Label}, and the {@code merge.node} procedure - creates its type through this one method, so the
-   * guard here closes all of them at once.
+   * A label containing {@link #LABEL_SEPARATOR} is <i>not</i> refused here, deliberately. {@code labels} is the
+   * vertex's resulting label set, so on a relabelling it carries the labels the vertex already had, and a type
+   * created under such a name outside openCypher - {@code CREATE VERTEX TYPE `a~b`} in SQL - has to keep being
+   * readable and relabellable (issue #6363). The separator guard therefore lives at the points a statement
+   * <i>introduces</i> a label: {@link #requireUsableLabelNames} in {@code CreateStep} and {@code MergeStep}, the
+   * per-label check in {@code SetClauseApplier}, {@link #appendDynamicLabels} for {@code SET n:$(expr)}, and the
+   * {@code merge.node} procedure's own argument validation (issue #8100).
    *
    * @param schema the database schema
    * @param labels list of labels for the vertex (duplicates are ignored)
@@ -702,8 +809,7 @@ public final class Labels {
     final Set<String> uniqueLabels = new TreeSet<>(labels);
 
     if (uniqueLabels.contains(NO_LABEL_TYPE))
-      throw new CommandSemanticException(
-          "'" + NO_LABEL_TYPE + "' is a reserved type name and cannot be used as a label");
+      throw reservedSentinelLabel();
 
     // Handle single label case (including after deduplication)
     if (uniqueLabels.size() == 1) {

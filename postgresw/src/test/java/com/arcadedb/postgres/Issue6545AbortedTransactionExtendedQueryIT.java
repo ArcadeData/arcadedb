@@ -18,8 +18,6 @@
  */
 package com.arcadedb.postgres;
 
-import com.arcadedb.GlobalConfiguration;
-
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -56,7 +54,7 @@ class Issue6545AbortedTransactionExtendedQueryIT extends PostgresWireProtocolTes
   @DisplayName("[#6545] a Bind sent while the transaction is aborted is refused with an ErrorResponse, not silently dropped")
   void bindWhileAbortedIsRefusedNotSilentlyDropped() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -85,11 +83,11 @@ class Issue6545AbortedTransactionExtendedQueryIT extends PostgresWireProtocolTes
         assertThat(fields.get('C')).as("SQLSTATE 25P02 in_failed_sql_transaction").isEqualTo("25P02");
         assertThat(fields.get('M')).contains("current transaction is aborted");
 
-        // 5. The session must still be aborted: a Sync now must still show status 'E' at the point Sync is
-        // processed, i.e. the refusal above did not clear errorInTransaction by itself.
+        // 5. The session must still be aborted: Sync rolls the doomed transaction back but does not end the
+        // block, so the status it reports is 'E' until the client's own COMMIT/ROLLBACK/END (issue #7851).
         sendSync(out);
         assertThat(readyForQueryStatusOf(readUntilReadyForQuery(in)))
-            .as("the connection was still aborted when Sync ran").isIn('E', 'T');
+            .as("the connection is still aborted after Sync").isEqualTo('E');
 
         // 6. The session is fully usable again after an explicit ROLLBACK.
         sendSimpleQuery(out, "ROLLBACK");

@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.engine.timeseries.AggregationMetrics;
+import com.arcadedb.engine.timeseries.AggregationType;
 import com.arcadedb.engine.timeseries.MultiColumnAggregationRequest;
 import com.arcadedb.engine.timeseries.MultiColumnAggregationResult;
 import com.arcadedb.engine.timeseries.TagFilter;
@@ -35,6 +36,7 @@ import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -180,7 +182,14 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
       if (i > 0)
         sb.append(", ");
       final MultiColumnAggregationRequest req = requests.get(i);
-      sb.append(req.type().name().toLowerCase()).append("(col").append(req.columnIndex()).append(")");
+      sb.append(req.type().name().toLowerCase(Locale.ROOT));
+      // COUNT's request names no column - it counts rows on both halves of the push-down - so it prints as the
+      // query spelled it rather than as the placeholder index it carries (issue #8140). Every other request
+      // prints the ENGINE ROW position it aggregates, which is what the record holds.
+      if (req.type() == AggregationType.COUNT)
+        sb.append("(*)");
+      else
+        sb.append("(col").append(req.columnIndex()).append(")");
     }
     if (context.isProfiling()) {
       sb.append("\n").append(spaces).append("    (").append(getCostFormatted()).append(", ").append(getRowCountFormatted()).append(")");

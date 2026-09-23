@@ -975,6 +975,35 @@ public class VectorLocationIndex {
   }
 
   /**
+   * Drop the location of a vector id WITHOUT recording a tombstone, i.e. make the index forget the id ever existed
+   * (issue #7931).
+   * <p>
+   * The single caller is the rollback compensation for an id a transaction allocated during its commit replay and
+   * then never committed: the page entry that id was written to is discarded with the transaction's pages, so a
+   * tombstone would be a tombstone for nothing - it would keep the id in {@link #getDeletedCount()} forever and
+   * charge the graph a dead node it never had. The id itself is burnt, never handed out again, which is what makes
+   * forgetting it safe.
+   * <p>
+   * Deliberately NOT a general-purpose eviction: issue #5559 removed eviction from this index precisely because a
+   * live id whose location is gone reads as deleted to a page-falling-back reader. This is only correct because
+   * the entry on the page goes away at the same time.
+   * <p>
+   * Safe to call for an id this generation of the index never held - a compaction or a rebuild can have
+   * republished it since the caller recorded the id - because {@link #removeLocation} returns on absence without
+   * touching anything. The compensation relies on that: it forgets an aborted allocation unconditionally, since
+   * an id minted by a replay that never committed can never be legitimate in ANY generation.
+   *
+   * @param vectorId The vector ID to forget
+   *
+   * @return true if a location was resident and has been released
+   */
+  public boolean forget(final int vectorId) {
+    synchronized (writeLock) {
+      return removeLocation(vectorId);
+    }
+  }
+
+  /**
    * Return whether the given id has been tombstoned, without touching the pages.
    *
    * @param vectorId The vector ID

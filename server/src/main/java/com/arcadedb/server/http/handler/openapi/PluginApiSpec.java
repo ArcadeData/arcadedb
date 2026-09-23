@@ -69,6 +69,7 @@ public class PluginApiSpec implements OpenApiContributor {
       "/api/v1/cluster/leader", "/api/v1/cluster/stepdown", "/api/v1/cluster/leave",
       "/api/v1/cluster/verify/{database}", "/api/v1/cluster/resync/{database}",
       "/api/v1/cluster/bootstrap-state", "/api/v1/cluster/capabilities",
+      "/api/v1/cluster/security-seed",
       "/api/v1/ha/snapshot/{database}", "/api/v1/ha/snapshot/{database}/checksums");
 
   /**
@@ -96,6 +97,7 @@ public class PluginApiSpec implements OpenApiContributor {
     openAPI.getPaths().addPathItem("/api/v1/cluster/resync/{database}", createResyncPath());
     openAPI.getPaths().addPathItem("/api/v1/cluster/bootstrap-state", createBootstrapStatePath());
     openAPI.getPaths().addPathItem("/api/v1/cluster/capabilities", createCapabilitiesPath());
+    openAPI.getPaths().addPathItem("/api/v1/cluster/security-seed", createSecuritySeedPath());
     openAPI.getPaths().addPathItem("/api/v1/ha/snapshot/{database}", createSnapshotPath());
     openAPI.getPaths().addPathItem("/api/v1/ha/snapshot/{database}/checksums", createChecksumsPath());
 
@@ -109,6 +111,8 @@ public class PluginApiSpec implements OpenApiContributor {
     openAPI.getComponents().addSchemas("VerifyDatabaseClusterResult", createVerifyClusterResultSchema());
     openAPI.getComponents().addSchemas("BootstrapStateResponse", createBootstrapStateResponseSchema());
     openAPI.getComponents().addSchemas("PeerCapabilitiesResponse", createPeerCapabilitiesResponseSchema());
+    openAPI.getComponents().addSchemas("SecuritySeedRequest", createSecuritySeedRequestSchema());
+    openAPI.getComponents().addSchemas("SecuritySeedResponse", createSecuritySeedResponseSchema());
   }
 
   private PathItem createScrapePath() {
@@ -353,6 +357,49 @@ public class PluginApiSpec implements OpenApiContributor {
     return pathItem;
   }
 
+  private PathItem createSecuritySeedPath() {
+    final Operation post = SpecBuilders.operation("seedClusterSecurityDocuments", "Cluster",
+        "Have the leader replicate the cluster security documents",
+        """
+            Asks the Raft LEADER to submit server-users.jsonl, server-groups.json and \
+            server-api-tokens.json to the cluster, and answers with the ones that did not commit.
+
+            Two callers need it, and both are cluster-internal. A node that has just admitted a peer \
+            reads the outcome here instead of running a seed of its own, so an admission is seeded once \
+            rather than from two nodes under two different monitors (issue #7834). A node that came back \
+            while it was still a Raft member - a rolling restart, a drain and reschedule, a pod whose \
+            ordinal is in the static server list - sends the fingerprints of the documents it holds, and \
+            is re-seeded only if they differ from the leader's (issue #7833); the three documents live \
+            outside the database directory, so no snapshot install carries them.
+
+            Answered 409 by a node that is not the leader, naming the one it believes leads. Answered \
+            503 with the failedSeeds array when the seed ran but a document did not commit, which is the \
+            same contract POST /api/v1/cluster/peer answers with.
+
+            Restricted to the root user; peers satisfy this by forwarding as root with the cluster \
+            token. """ + RAFT_REQUIRED);
+    post.setRequestBody(SpecBuilders.jsonBody("What to seed, and what the caller already holds",
+        "SecuritySeedRequest", false));
+
+    final ApiResponses responses = SpecBuilders.standardResponses("200",
+        SpecBuilders.jsonResponse("The seed outcome", "SecuritySeedResponse"),
+        "400", "401", "403", "500");
+    responses.addApiResponse("409", SpecBuilders.errorResponse(
+        "This node is not the Raft leader; the answer names the one it believes leads"));
+    // The partial-seed 503 carries the SAME body as the 200 - upToDate/seeded/failedSeeds - and failedSeeds is
+    // the part a client acts on, so declaring a generic error here hid the one field that matters
+    // (CodeRabbit on PR #7854). The other 503 this route can answer, "the seed could not be run at all", puts
+    // its reason in `error`, which the schema carries as an optional property rather than a second shape.
+    responses.addApiResponse("503", SpecBuilders.jsonResponse(
+        "The seed ran but one or more documents did not commit (see failedSeeds), or it could not be run at all "
+            + "(see error)", "SecuritySeedResponse"));
+    post.setResponses(responses);
+
+    final PathItem pathItem = new PathItem();
+    pathItem.setPost(post);
+    return pathItem;
+  }
+
   private PathItem createSnapshotPath() {
     final Operation get = SpecBuilders.operation("downloadDatabaseSnapshot", "Cluster",
         "Download a database snapshot",
@@ -416,9 +463,19 @@ public class PluginApiSpec implements OpenApiContributor {
     // was declared as an un-named object here, so a generated client got an empty model (issue #7577).
     final ApiResponse checksums = new ApiResponse();
     checksums.setDescription("Per-file checksums, keyed by file name. No envelope: the map IS the body");
-    checksums.setContent(new Content().addMediaType(SpecBuilders.JSON,
-        new MediaType().schema(SpecBuilders.mapOf(SpecBuilders.integer("CRC of the file's contents"),
-            "File name to checksum"))));
+    final Schema<Object> checksumMap = SpecBuilders.mapOf(SpecBuilders.integer("CRC of the file's contents"),
+        "File name to checksum");
+    // The one key that is not a file name (issue #7956). A file that disappears between the directory listing and
+    // the read - a TimeSeries sealed store dropped by retention, a component file dropped by index compaction -
+    // used to take the whole answer down as a 500; it is now left out and NAMED here, so a comparison can say "this
+    // answer does not cover these" instead of reading a silently short map as agreement. Absent when there are
+    // none. It cannot collide with a file name because the map is keyed by File.getName(), which never contains a
+    // path separator. Spelled as a literal rather than shared from SnapshotHttpHandler.UNREADABLE_FILES_KEY because
+    // this module does not depend on ha-raft, exactly as the route strings above are.
+    checksumMap.addProperty("/unreadableFiles", SpecBuilders.arrayOf(SpecBuilders.string("File name"),
+        "Files listed in the database directory that were gone by the time this answer tried to read them, so it "
+            + "does not cover them. Absent when the answer is complete."));
+    checksums.setContent(new Content().addMediaType(SpecBuilders.JSON, new MediaType().schema(checksumMap)));
     get.setResponses(SpecBuilders.standardResponses("200", checksums,
         "400", "401", "403", "404", "500", "503"));
 
@@ -536,13 +593,72 @@ public class PluginApiSpec implements OpenApiContributor {
     // undeclared 'required' entry pointing the other way: a client generated from this contract could not read
     // the one field that says whether THIS node is serving traffic (issue #7577 sweep).
     schema.addProperty("localResync", localResyncSchema());
+    // The two remaining readiness inputs, plus the liveness one. #7136 wrote the invariant into localResync's
+    // description and delivered it for the resync inputs; these three were still reported nowhere, so a node
+    // whose state machine had halted - or whose log writer had failed - read green here while '/api/v1/ready'
+    // was pinned at 503 (issue #7872). Nullable objects rather than booleans, because what an operator does
+    // next is decided by the index and the reason, not by the fact that something is wrong.
+    schema.addProperty("criticalHalt", criticalHaltSchema());
+    schema.addProperty("raftLogFailure", raftLogFailureSchema());
+    schema.addProperty("crashLoopEscalated", SpecBuilders.bool("""
+        True once the health monitor has given up restarting this node's HA layer (issue #7622). The liveness \
+        counterpart of the two above: this is what makes '/api/v1/health' answer unhealthy."""));
     // 'databasePresence' is written only by a leader answering '?presence=true'; everything else above is on
-    // every answer, with 'leaderId' and 'leaderHttpAddress' carrying an explicit null rather than going absent
-    // (issue #7578).
+    // every answer, with 'leaderId', 'leaderHttpAddress', 'criticalHalt' and 'raftLogFailure' carrying an
+    // explicit null rather than going absent (issues #7578, #7872).
     schema.setRequired(List.of("implementation", "clusterName", "localPeerId", "capabilities", "raftState",
         "isLeader", "leaderReady", "leaderId", "leaderHttpAddress", "electionCount", "lastElectionTime",
         "uptime", "localAppliedIndex", "localCommitIndex", "localReplicationLag", "peers", "databases",
-        "localResync", "alerts"));
+        "localResync", "criticalHalt", "raftLogFailure", "crashLoopEscalated", "alerts"));
+    return schema;
+  }
+
+  /**
+   * The critical error that halted this node's replication state machine, or null (issue #7872).
+   * <p>
+   * Terminal and not recoverable in place: the halt trips an asynchronous server stop, and the recovery is that
+   * restart. It is published because that stop can fail, leaving a process up and answering HTTP with a state
+   * machine that applies nothing.
+   */
+  private Schema<?> criticalHaltSchema() {
+    final Schema<Object> schema = SpecBuilders.object("""
+        Why this node's replication state machine halted, or null while it is applying entries. Present on every \
+        answer. A non-null value means this node's databases are frozen at 'index' and will not advance again in \
+        this process: restart it.""");
+    schema.addProperty("index", SpecBuilders.integer(
+        "The Raft index being applied when the halt tripped, or -1 when the entry carried none"));
+    schema.addProperty("reason", SpecBuilders.string(
+        "One line naming what could not be applied. 'unknown Raft log entry type' means a newer peer is writing a "
+            + "format this build cannot read, and the answer is to upgrade this node; anything else is a bug. Raw "
+            + "exception text, so it is shown to the root user only: another caller reads a placeholder here while "
+            + "still getting 'index' and 'timestamp'"));
+    schema.addProperty("timestamp", SpecBuilders.integer("When it tripped, as epoch milliseconds"));
+    schema.setNullable(true);
+    // Recorded in one step, so a halt that is reported is reported whole.
+    schema.setRequired(List.of("index", "reason", "timestamp"));
+    return schema;
+  }
+
+  /**
+   * The persistent Raft log-write failure that has wedged this node, or null (issue #7872, publishing the #7037
+   * signal that issue #7118 already gates readiness on).
+   */
+  private Schema<?> raftLogFailureSchema() {
+    final Schema<Object> schema = SpecBuilders.object("""
+        The persistent Raft log-write failure wedging this node, or null while the log writer is healthy. Present \
+        on every answer. A non-null value means Ratis is rejecting every append, so the node can neither catch up \
+        nor become caught up; the usual cause is a full Raft storage volume, and it clears by itself once the \
+        health monitor restarts the writer in place.""");
+    schema.addProperty("index", SpecBuilders.integer(
+        "The Raft index of the entry whose write failed, or -1 when the failure was on a log segment"));
+    schema.addProperty("cause", SpecBuilders.string(
+        "The failure Ratis reported, as its own text, which routinely names the Raft storage path - so it is shown "
+            + "to the root user only: another caller reads a placeholder here while still getting 'index' and "
+            + "'timestamp'"));
+    schema.addProperty("timestamp", SpecBuilders.integer("When it was first reported, as epoch milliseconds"));
+    schema.setNullable(true);
+    // Recorded in one step, so a failure that is reported is reported whole.
+    schema.setRequired(List.of("index", "cause", "timestamp"));
     return schema;
   }
 
@@ -580,16 +696,23 @@ public class PluginApiSpec implements OpenApiContributor {
 
   /**
    * This node's own resync / WAL-gap quarantine state (issue #7136). The invariant it exists to expose is that
-   * anything making {@code /api/v1/ready} answer 503 is visible here, so a client watching a rolling restart
-   * reads {@code inProgress} rather than polling the probe.
+   * anything making {@code /api/v1/ready} answer 503 is visible in this document, so a client watching a rolling
+   * restart reads the document rather than polling the probe.
+   * <p>
+   * This member carries the resync inputs of that invariant, which is all #7136 delivered. The two terminal ones
+   * are {@code criticalHalt} and {@code raftLogFailure} (issue #7872): a node in either state has
+   * {@code inProgress: false} here and is still pinned at 503, so a rule keyed on this member alone reads it as
+   * healthy and waits forever.
    */
   private Schema<?> localResyncSchema() {
     final Schema<Object> schema = SpecBuilders.object("""
         This node's resync state. Present on every answer. The database names it carries are reduced to the \
         ones the caller is authorized on, so a caller scoped to one database cannot learn another tenant's \
         database name from a status poll.""");
-    schema.addProperty("inProgress", SpecBuilders.bool(
-        "True while this node is not ready to serve traffic. The same answer '/api/v1/ready' gives"));
+    schema.addProperty("inProgress", SpecBuilders.bool("""
+        True while a resync is holding this node out of the ready set. NOT the whole answer '/api/v1/ready' \
+        gives: a node halted by a critical error or wedged by a log-write failure has this false and answers 503 \
+        anyway, so read it together with 'criticalHalt' and 'raftLogFailure' (issue #7872)."""));
     schema.addProperty("snapshotDownloadQueued", SpecBuilders.bool("A snapshot install is waiting to start"));
     schema.addProperty("snapshotDownloadInProgress", SpecBuilders.bool("A snapshot is being installed now"));
     schema.addProperty("divergedDatabases", SpecBuilders.arrayOf(SpecBuilders.string("Database name"),
@@ -795,6 +918,48 @@ public class PluginApiSpec implements OpenApiContributor {
         "Databases on this peer. Empty when it holds none"));
     schema.addProperty("peerId", SpecBuilders.string("Peer that reported the state"));
     schema.setRequired(List.of("databases", "peerId"));
+    return schema;
+  }
+
+  private Schema<?> createSecuritySeedRequestSchema() {
+    final Schema<Object> schema = SpecBuilders.object("What the caller wants seeded, and what it already holds");
+    schema.addProperty("reason", SpecBuilders.string(
+        "Why the seed was asked for, for the leader's log line. Optional."));
+    schema.addProperty("catchUp", SpecBuilders.bool(
+        "True when the caller is a node repairing ITSELF after coming back, false (or absent) for a node "
+            + "reporting on an admission it performed. What it changes is REUSE: a catch-up is never answered "
+            + "by a seed that completed for somebody else, while an admission may be, since its request "
+            + "follows the membership change that already seeded for it. A catch-up can still complete "
+            + "without anything being submitted - that is what the fingerprint comparison is for, and it "
+            + "answers upToDate before any seeder is asked."));
+    schema.addProperty("fingerprints", createSecuritySeedFingerprintsSchema());
+    return schema;
+  }
+
+  private Schema<?> createSecuritySeedFingerprintsSchema() {
+    final Schema<Object> schema = SpecBuilders.object(
+        "The caller's own document digests. When all three match the leader's, nothing is submitted and the "
+            + "answer is upToDate. Omit them to have every document seeded, which is what an admission does - "
+            + "the admitting node does not hold the joining peer's copies.");
+    schema.addProperty("users", SpecBuilders.string("Digest of server-users.jsonl as the caller holds it"));
+    schema.addProperty("groups", SpecBuilders.string("Digest of server-groups.json as the caller holds it"));
+    schema.addProperty("apiTokens", SpecBuilders.string("Digest of server-api-tokens.json as the caller holds it"));
+    return schema;
+  }
+
+  private Schema<?> createSecuritySeedResponseSchema() {
+    final Schema<Object> schema = SpecBuilders.object("What the leader did about the request");
+    schema.addProperty("upToDate", SpecBuilders.bool(
+        "True when the caller's fingerprints already matched the leader's and nothing was submitted"));
+    schema.addProperty("seeded", SpecBuilders.bool("True when the documents were submitted to the cluster"));
+    schema.addProperty("failedSeeds", SpecBuilders.arrayOf(SpecBuilders.string("Document name"),
+        "The documents that did not commit, empty when all of them did"));
+    schema.addProperty("error", SpecBuilders.string(
+        "Why the seed could not be run or its outcome could not be read. Present only on the 503 that carries "
+            + "no failedSeeds, since in that case which documents failed is exactly what is not known."));
+    // failedSeeds is not required: the "could not be run at all" 503 names the reason in `error` instead, and
+    // claiming an empty list there would tell a client that nothing failed.
+    schema.setRequired(List.of("seeded"));
     return schema;
   }
 

@@ -20,7 +20,6 @@ package com.arcadedb.remote.grpc;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.remote.RemoteGraphBatch;
-import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -44,10 +43,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * survive a chunk boundary are resolved by the server, which holds them for the whole stream, rather than by
  * the client round-tripping an id mapping per flush.
  */
-public class Issue6070GrpcGraphBatchIT extends BaseGraphServerTest {
+public class Issue6070GrpcGraphBatchIT extends BaseGrpcClientServerTest {
 
-  private static final int    GRPC_PORT = 50051;
-  private static final int    HTTP_PORT = 2480;
   private static final String PERSON    = "Issue6070Person";
   private static final String KNOWS     = "Issue6070Knows";
 
@@ -62,8 +59,8 @@ public class Issue6070GrpcGraphBatchIT extends BaseGraphServerTest {
 
   @BeforeEach
   void openAndPrepare() {
-    grpcServer = new RemoteGrpcServer("localhost", GRPC_PORT, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
-    grpc = new RemoteGrpcDatabase(grpcServer, "localhost", GRPC_PORT, HTTP_PORT, getDatabaseName(), "root",
+    grpcServer = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    grpc = new RemoteGrpcDatabase(grpcServer, "localhost", getServerGrpcPort(), getServerHttpPort(), getDatabaseName(), "root",
         DEFAULT_PASSWORD_FOR_TESTS);
 
     grpc.command("sql", "CREATE VERTEX TYPE `" + PERSON + "` IF NOT EXISTS");

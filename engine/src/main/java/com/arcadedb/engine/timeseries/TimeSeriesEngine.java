@@ -52,13 +52,6 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public class TimeSeriesEngine implements AutoCloseable {
 
-  /**
-   * A projection of NO columns: every read path builds a row as {@code columnIndices.length + 1} slots with the
-   * timestamp in slot 0, so this asks for the timestamp alone and decodes not one value column. Used by
-   * {@link #hasRowsInRange}, which only needs to know whether a row exists.
-   */
-  private static final int[]           EMPTY_PROJECTION = new int[0];
-
   private final DatabaseInternal       database;
   private final String                 typeName;
   private final List<ColumnDefinition> columns;
@@ -296,10 +289,40 @@ public class TimeSeriesEngine implements AutoCloseable {
     try {
       CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
     } catch (final CompletionException e) {
-      if (e.getCause() instanceof IOException ioe)
-        throw ioe;
-      throw new IOException("Parallel batch shard write failed", e.getCause());
+      throw unwrapShardFailure(e, "Parallel batch shard write failed");
     }
+  }
+
+  /**
+   * Turns the {@link CompletionException} a fan-out over {@link #shardExecutor} reports into the exception the
+   * caller would have seen had the work run on its own thread.
+   * <p>
+   * THE POINT IS THAT A SHARD COUNT IS NOT A DIAGNOSIS (issue #8190). Every one of these fan-outs is taken only
+   * when {@code shardCount > 1}: with one shard the same work runs inline and its exception reaches the caller
+   * unchanged. Wrapping the cause here therefore made the SAME failure a different type depending on how the
+   * type was declared - an {@code IllegalArgumentException} for a {@code columnIndex} that names no value column
+   * arrived as itself, and as a 400 / {@code INVALID_ARGUMENT}, on a 1-shard type, and as an
+   * {@code IOException}, and a 500 / {@code INTERNAL}, on a 4-shard one, with the real message one
+   * {@code getCause()} away. An unchecked cause and an {@link Error} are therefore rethrown AS THEMSELVES, and
+   * an {@code IOException} cause is returned unwrapped as it always was.
+   * <p>
+   * Throws rather than returns for the two unchecked cases so that every call site stays the single
+   * {@code throw unwrapShardFailure(e, ...)} that makes the method's exhaustiveness visible; the returned
+   * {@code IOException} is the only outcome the compiler needs the caller to handle.
+   *
+   * @param what the wrapper message for a checked cause that is not itself an {@code IOException}
+   *
+   * @return the {@code IOException} the caller must throw
+   */
+  private static IOException unwrapShardFailure(final CompletionException e, final String what) {
+    final Throwable cause = e.getCause();
+    if (cause instanceof IOException ioe)
+      return ioe;
+    if (cause instanceof RuntimeException re)
+      throw re;
+    if (cause instanceof Error err)
+      throw err;
+    return new IOException(what, cause);
   }
 
   /**
@@ -541,17 +564,23 @@ public class TimeSeriesEngine implements AutoCloseable {
   /**
    * Whether any row of this type falls in {@code [fromTs, toTs]} (issue #7709).
    * <p>
-   * Folded over {@link #forEachRow} with a visitor that stops on the first row, rather than given a walk of its
-   * own: the sealed layer already drops a block whose directory entry puts it outside the range, so the answer
-   * costs one block read at most - and a "no" costs none at all.
+   * Each shard is asked in turn and the first "yes" ends the question, so a type whose rows are spread over every
+   * shard is answered by the first one. The per-shard answer costs one sealed block read at most - a block whose
+   * directory entry puts it outside the range is dropped on the entry - plus, only when the sealed layer has
+   * nothing to offer, the mutable-bucket pages up to the first row in range. See
+   * {@link TimeSeriesShard#hasRowsInRange} for why that is a walk of its own rather than a fold of
+   * {@link #forEachRow}: this used to be the latter, and issue #7897 made it pay a full mutable-bucket scan per
+   * shard whatever the visitor decided (issue #7965).
    * <p>
    * This is what scopes {@code /label/__name__/values} to the requested range, which is a metric name rather than
    * a tag value and so has no declaration to read.
    */
   public boolean hasRowsInRange(final long fromTs, final long toTs, final AggregationMetrics metrics)
       throws IOException {
-    // forEachRow answers false when the visitor stopped it, which here means it had a row to offer.
-    return !forEachRow(fromTs, toTs, EMPTY_PROJECTION, null, metrics, row -> false);
+    for (final TimeSeriesShard shard : shards)
+      if (shard.hasRowsInRange(fromTs, toTs, metrics))
+        return true;
+    return false;
   }
 
   /**
@@ -594,55 +623,6 @@ public class TimeSeriesEngine implements AutoCloseable {
 
     TimeSeriesSealedStore.trimToDescendingLimit(merged, need);
     return merged;
-  }
-
-  /**
-   * Aggregates across all shards.
-   * <p>
-   * <b>Validates nothing.</b> {@code columnIndex} is used as given: a column no storage layer can read as a
-   * number answers {@link TimeSeriesNaN#ABSENT} per row rather than being refused, and an index the row does
-   * not reach does the same. The refusal that makes an unreadable column a named error instead of a silent gap
-   * is {@link TimeSeriesGateway#requireAggregatableColumn}, which every caller-facing surface applies before it
-   * builds a request; a caller reaching this method directly wants the same check first, or it gets the gap.
-   * No production surface calls this - the three wire protocols and the SQL push-down all go through
-   * {@link #aggregateMulti} - so this note is for whoever adds the first one (issue #7725).
-   *
-   * @param columnIndex 0-based index among non-timestamp columns (i.e. column 0 = first non-ts column).
-   *                    This differs from {@link MultiColumnAggregationRequest#columnIndex()} which uses
-   *                    the full schema index (including the timestamp column).
-   */
-  public AggregationResult aggregate(final long fromTs, final long toTs, final int columnIndex,
-      final AggregationType aggType, final long bucketIntervalMs, final TagFilter tagFilter) throws IOException {
-    // Use lazy iteration to avoid loading all data into memory
-    final Iterator<Object[]> iter = iterateQuery(fromTs, toTs, null, tagFilter);
-    final AggregationResult result = new AggregationResult();
-
-    final long singleBucketTs = singleBucketAnchor(fromTs);
-
-    while (iter.hasNext()) {
-      final Object[] row = iter.next();
-      final long ts = (long) row[0];
-      final long bucketTs = bucketIntervalMs > 0 ? Math.floorDiv(ts, bucketIntervalMs) * bucketIntervalMs : singleBucketTs;
-      final double value;
-
-      // Same unboxing as the multi-column path, for the reason TimeSeriesNaN.asMeasurement gives: the value
-      // an aggregate sees must not depend on whether the sample has been compacted yet (issue #7725). Note the
-      // +1 - this method's columnIndex counts non-timestamp columns, unlike
-      // MultiColumnAggregationRequest.columnIndex().
-      value = columnIndex + 1 < row.length ? TimeSeriesNaN.asMeasurement(row[columnIndex + 1]) : TimeSeriesNaN.ABSENT;
-
-      accumulateToBucket(result, bucketTs, value, aggType);
-    }
-
-    // Finalize AVG: divide accumulated sums by the counts of real samples. A bucket with none keeps the absent
-    // marker its sum already is (issue #7089).
-    if (aggType == AggregationType.AVG) {
-      for (int i = 0; i < result.size(); i++)
-        if (result.getCount(i) > 0)
-          result.updateValue(i, result.getValue(i) / result.getCount(i));
-    }
-
-    return result;
   }
 
   /**
@@ -816,9 +796,7 @@ public class TimeSeriesEngine implements AutoCloseable {
         try {
           CompletableFuture.allOf(futures).join();
         } catch (final CompletionException e) {
-          if (e.getCause() instanceof IOException ioe)
-            throw ioe;
-          throw new IOException("Parallel shard aggregation failed", e.getCause());
+          throw unwrapShardFailure(e, "Parallel shard aggregation failed");
         }
 
         // Merge metrics after all futures have completed (avoids race condition)
@@ -910,6 +888,11 @@ public class TimeSeriesEngine implements AutoCloseable {
   /**
    * The value one MUTABLE row contributes to one aggregation request, unboxed the way the sealed layer unboxes
    * the same sample (issue #7725).
+   * <p>
+   * {@code columnIndex} indexes the ROW directly, which is what {@link MultiColumnAggregationRequest} has
+   * always documented itself to carry. The sealed layer maps the same number back to a schema column, so the
+   * two halves answer the same column for the same request whatever position the declaration gives the
+   * TIMESTAMP column (issue #8140).
    * <p>
    * A COUNT contributes one per row without reading the column at all, matching the sealed layer, which does
    * not even resolve a schema index for such a request. Everything else goes through
@@ -1152,9 +1135,7 @@ public class TimeSeriesEngine implements AutoCloseable {
     try {
       CompletableFuture.allOf(sealedFutures).join();
     } catch (final CompletionException e) {
-      if (e.getCause() instanceof IOException ioe)
-        throw ioe;
-      throw new IOException("Parallel shard integrity check failed", e.getCause());
+      throw unwrapShardFailure(e, "Parallel shard integrity check failed");
     }
 
     // Merged in shard order, once both halves of every shard are known, so the report's shard-ordering does not
@@ -1295,29 +1276,5 @@ public class TimeSeriesEngine implements AutoCloseable {
    */
   static long singleBucketAnchor(final long fromTs) {
     return fromTs == Long.MIN_VALUE ? 0L : fromTs;
-  }
-
-  private void accumulateToBucket(final AggregationResult result, final long bucketTs, final double value,
-      final AggregationType type) {
-    final int idx = result.findBucketIndex(bucketTs);
-    if (idx >= 0) {
-      final double existing = result.getValue(idx);
-      final long count = result.getCount(idx);
-      // NaN policy (issue #7089): SUM/AVG skip an absent sample the way MIN/MAX below do, and the count kept
-      // alongside is of the samples that contributed - what the AVG is divided by once the scan is over.
-      final double merged = switch (type) {
-        case SUM, AVG -> TimeSeriesNaN.sum(existing, count, value);
-        case COUNT -> existing + 1;
-        // NaN policy (issue #4596): NaN is treated as absent and skipped, so a real value always
-        // wins over a NaN running value (e.g. when the bucket was seeded with a NaN first sample).
-        case MIN -> Double.isNaN(value) ? existing : Double.isNaN(existing) ? value : Math.min(existing, value);
-        case MAX -> Double.isNaN(value) ? existing : Double.isNaN(existing) ? value : Math.max(existing, value);
-      };
-      result.updateValue(idx, merged);
-      result.updateCount(idx, type == AggregationType.COUNT ? count + 1 : TimeSeriesNaN.countIfPresent(count, value));
-    } else {
-      result.addBucket(bucketTs, type == AggregationType.COUNT ? 1.0 : value,
-          type == AggregationType.COUNT ? 1 : TimeSeriesNaN.countIfPresent(0, value));
-    }
   }
 }

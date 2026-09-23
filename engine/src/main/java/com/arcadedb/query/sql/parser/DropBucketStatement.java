@@ -58,13 +58,27 @@ public class DropBucketStatement extends DDLStatement {
       try {
         bucketName = database.getSchema().getBucketById(id.getValue().intValue()).getName();
       } catch (SchemaException e) {
-        if (ifExists)
-          return new InternalResultSet();
+        if (ifExists) {
+          final InternalResultSet rs = new InternalResultSet();
+          final ResultInternal result = new ResultInternal(database);
+          result.setProperty("operation", "drop bucket");
+          result.setProperty("bucketId", id.getValue().intValue());
+          result.setProperty("dropped", false);
+          rs.add(result);
+          return rs;
+        }
         throw new CommandExecutionException("Bucket '" + name + "' not found");
       }
     } else {
-      if (ifExists && !database.getSchema().existsBucket(name.getStringValue()))
-        return new InternalResultSet();
+      if (ifExists && !database.getSchema().existsBucket(name.getStringValue())) {
+        final InternalResultSet rs = new InternalResultSet();
+        final ResultInternal result = new ResultInternal(database);
+        result.setProperty("operation", "drop bucket");
+        result.setProperty("bucketName", name.getStringValue());
+        result.setProperty("dropped", false);
+        rs.add(result);
+        return rs;
+      }
       bucketName = name.getStringValue();
     }
 
@@ -82,6 +96,7 @@ public class DropBucketStatement extends DDLStatement {
     result.setProperty("operation", "drop bucket");
     result.setProperty("bucketName", bucketName);
     result.setProperty("bucketId", fileId);
+    result.setProperty("dropped", true);
     rs.add(result);
     return rs;
   }

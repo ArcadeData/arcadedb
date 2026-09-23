@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.TagFilter;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
+import com.arcadedb.engine.timeseries.TimeSeriesGateway;
 import com.arcadedb.engine.timeseries.TimeSeriesNaN;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
@@ -117,7 +118,15 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
         }
       }
 
-      final List<ColumnDefinition> columns = tsType.getTsColumns();
+      // The engine row is { timestamp, non-TIMESTAMP columns in schema order... } whatever position the
+      // TIMESTAMP column occupies in the declaration - TimeSeriesBucket.readRow writes position 0 from the
+      // row's own timestamp slot and then walks the schema SKIPPING that column. Mapping row[i] onto
+      // getTsColumns().get(i) is therefore only right while the TIMESTAMP column is declared first, which
+      // issue #7702 stopped being true of every declaration the grammar accepts: a plain SELECT * answered a
+      // TAG's value under the timestamp's name and the timestamp under the TAG's (issue #7899). The same
+      // helper every wire surface names its columns from, so SQL and HTTP cannot disagree, and resolved once
+      // per pull rather than once per row.
+      final List<ColumnDefinition> columns = TimeSeriesGateway.selectedColumns(tsType.getTsColumns(), null);
 
       return new ResultSet() {
         private int count = 0;
@@ -167,7 +176,7 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
               // Only NaN, not every non-finite: an infinity IS a value in SQL arithmetic, and the JSON layer
               // folds it in only because JSON cannot write one. Asked of TimeSeriesNaN rather than spelled out
               // here, so the two SQL boundaries cannot drift apart from the storage layer's own definition of
-              // absence (claude-review on PR #7747). A non-floating Number can never be NaN, so the widened
+              // absence (code review on PR #7747). A non-floating Number can never be NaN, so the widened
               // instanceof costs nothing but covers Float without a second arm.
               if (value instanceof Number n && TimeSeriesNaN.isAbsent(n.doubleValue()))
                 value = null;

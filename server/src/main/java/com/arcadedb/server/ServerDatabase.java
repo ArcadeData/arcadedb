@@ -38,6 +38,7 @@ import com.arcadedb.database.async.AsyncQuiesce;
 import com.arcadedb.database.async.DatabaseAsyncExecutor;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
+import com.arcadedb.engine.BackupDirectoryResolver;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.FileManager;
@@ -74,6 +75,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.concurrent.Callable;
+import java.util.function.UnaryOperator;
 
 /**
  * Wrapper of database returned from the server when runs embedded that prevents the close(), drop() and kill() by the user.
@@ -94,8 +96,17 @@ public class ServerDatabase implements DatabaseInternal {
     // this server's databases is wrapped here, in the one constructor ArcadeDBServer uses for all four of its open
     // paths, so binding it here covers them all; setWrapper delegates down to the embedded instance, which is the
     // same map the statement reads through whichever wrapper layer it happens to hold.
-    if (server != null)
+    if (server != null) {
       wrapped.setWrapper(MaintenanceCoordinator.WRAPPER_NAME, server.getBackupCoordinator());
+      // AND THE ONE DEFINITION OF WHERE THIS SERVER KEEPS ITS BACKUPS (issue #7863), for the same reason and
+      // through the same channel: 'BACKUP DATABASE' resolved it from arcadedb.server.backupDirectory alone, so an
+      // archive it wrote while config/backup.json named a different directory was invisible to 'list backups' and
+      // out of reach of 'delete backup' and 'restore backup'. Resolved on CALL rather than captured here, so a
+      // 'set backup config' that moves the directory is seen by the next statement, and so the control plane's
+      // chain stays the single authority instead of being copied into a field at open time.
+      wrapped.setWrapper(BackupDirectoryResolver.WRAPPER_NAME,
+          (BackupDirectoryResolver) () -> new ServerControlPlane(server).resolveBackupDirectory().toString());
+    }
   }
 
   private ServerQueryProfiler getProfiler() {
@@ -750,6 +761,11 @@ public class ServerDatabase implements DatabaseInternal {
   @Override
   public Object setGlobalVariableIfPresent(final String name, final Object value) {
     return wrapped.setGlobalVariableIfPresent(name, value);
+  }
+
+  @Override
+  public Object computeGlobalVariable(final String name, final UnaryOperator<Object> remapping) {
+    return wrapped.computeGlobalVariable(name, remapping);
   }
 
   @Override

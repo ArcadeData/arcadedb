@@ -124,7 +124,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     else if (command_lc.startsWith(DROP_USER))
       dropUser(extractTarget(command, DROP_USER));
     else if (command_lc.startsWith(CONNECT_CLUSTER))
-      connectCluster(extractTarget(command, CONNECT_CLUSTER));
+      return connectCluster(extractTarget(command, CONNECT_CLUSTER));
     else if (DISCONNECT_CLUSTER.equals(command_lc))
       disconnectCluster();
     else if (command_lc.startsWith(SET_DATABASE_SETTING))
@@ -203,9 +203,31 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     Metrics.counter("http.drop-user").increment();
   }
 
-  private void connectCluster(final String serverAddress) {
-    controlPlane.connectCluster(serverAddress);
+  /**
+   * {@code connect cluster} answers 503 when the join succeeded but a security document could not be seeded to
+   * the new peer, which is the status {@code POST /api/v1/cluster/peer} already gives the identical condition
+   * (issue #7532, absorbing #7550). Before this the two verbs disagreed: that route answered 503 and named the
+   * documents, while this one answered 200 and left the failure in a SEVERE log line, so an operator driving
+   * the join through {@code POST /api/v1/server} had nothing their automation could branch on.
+   * <p>
+   * {@code result} is still present and still says the server joined, for the same reason the add-peer route
+   * keeps it: that half did happen, and a caller that treated the whole call as a no-op would be wrong about
+   * the cluster's membership. The counter is incremented either way - the command ran.
+   */
+  private ExecutionResponse connectCluster(final String serverAddress) {
+    final ServerControlPlane.ConnectClusterResult result = controlPlane.connectCluster(serverAddress);
     Metrics.counter("http.connect-cluster").increment();
+
+    final JSONObject response = new JSONObject().put("result", "ok");
+    if (!result.hasFailedSeeds())
+      return new ExecutionResponse(200, response.toString());
+
+    // error/detail, not one long error: AbstractServerHttpHandler.error2json uses that split everywhere, and
+    // Studio's globalNotifyError renders 'error' as the notification TITLE and 'detail' as its body.
+    response.put("error", result.errorMessage());
+    response.put("detail", result.detailMessage());
+    response.put("failedSeeds", new JSONArray(result.failedSeeds()));
+    return new ExecutionResponse(503, response.toString());
   }
 
   private void disconnectCluster() {
@@ -237,7 +259,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   }
 
   private String extractTarget(String command, String keyword) {
-    final int pos = command.toLowerCase().indexOf(keyword);
+    final int pos = command.toLowerCase(Locale.ROOT).indexOf(keyword);
     if (pos == -1)
       return "";
 

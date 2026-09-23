@@ -19,7 +19,6 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Int32Value;
 import com.google.protobuf.Timestamp;
@@ -52,9 +51,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Covers vertex/edge CRUD, streaming modes, transaction edge cases,
  * bulk insert variants, data type round-trips, and projection settings.
  */
-public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
-
-  private static final int GRPC_PORT = 50051;
+public class ArcadeDbGrpcServiceCoverageIT extends BaseGrpcServerTest {
 
   private static final Metadata.Key<String> USER_HEADER =
       Metadata.Key.of("x-arcade-user", Metadata.ASCII_STRING_MARSHALLER);
@@ -78,7 +75,7 @@ public class ArcadeDbGrpcServiceCoverageIT extends BaseGraphServerTest {
 
   @BeforeEach
   void setupGrpcClient() {
-    channel = ManagedChannelBuilder.forAddress("localhost", GRPC_PORT)
+    channel = ManagedChannelBuilder.forAddress("localhost", getServerGrpcPort())
         .usePlaintext()
         .build();
 

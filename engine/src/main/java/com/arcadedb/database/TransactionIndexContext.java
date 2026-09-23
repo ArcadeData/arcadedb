@@ -24,6 +24,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.IndexKeyEquality;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.vector.LSMVectorIndex;
@@ -66,10 +67,153 @@ public class TransactionIndexContext {
    */
   private final Map<String, IndexInternal>                                   indexPerLane     = new HashMap<>();
 
+  /**
+   * Monotonic write-order stamp handed to every entry {@link #addIndexKeyLock} queues, so an entry can be compared
+   * with another by WHEN it was written and not only by what key it carries. See {@link IndexKey#sequence}.
+   */
+  private       int                                                          sequence;
+
+  /**
+   * The lanes of one index, reachable by the index ITSELF rather than by any of the names it has answered to
+   * (issue #7967).
+   * <p>
+   * {@link #getIndexKeyLanes} used to answer by walking {@link #indexEntries} and asking {@link #indexPerLane} who
+   * owned each lane. That is O(distinct indexes this transaction has touched) - and it is paid on EVERY dense
+   * vector search issued from a transaction that has written to some OTHER index, for a search whose own index was
+   * never written to and whose honest answer is "nothing". Keeping the answer here makes that the one hash lookup
+   * it should always have been, and the lanes of an index that HAS been written to are found the same way.
+   * <p>
+   * An {@link IdentityHashMap} and not a {@link HashMap}: the question is which lanes belong to THIS object, which
+   * is exactly the comparison the walk it replaces made ({@code owner != index}), and an index is free to define
+   * equality however it likes without that becoming an aliasing bug here.
+   */
+  private final IdentityHashMap<IndexInternal, List<TreeMap<ComparableKey, Map<IndexKey, IndexKey>>>> orderedLanesPerIndex = new IdentityHashMap<>();
+
+  /**
+   * Whether any lane in {@link #indexEntries} has no owner recorded in {@link #indexPerLane}, which is only ever
+   * true for lanes restored wholesale by {@link #setKeys}. Those cannot be resolved by identity - there is no
+   * reference to resolve - so while one is present {@link #getIndexKeyLanes} falls back to the by-name walk rather
+   * than answering from {@link #orderedLanesPerIndex} and silently missing it.
+   */
+  private       boolean                                                      lanesWithoutOwner;
+
+  /**
+   * How many times the lanes have CHANGED, in any way that could change what a reader of them would see: an entry
+   * queued, an entry taken back, a lane dropped, the whole set replaced (issue #7967).
+   * <p>
+   * The stamp a cached read-your-own-writes view is kept under. A view built while this read {@code v} describes
+   * the lanes exactly as long as it still reads {@code v}, so a cache keyed on it cannot go stale - which matters
+   * because a stale one is not a slow search, it is a wrong answer. Deliberately bumped by the REMOVAL paths too,
+   * where nothing is queued and {@link #sequence} therefore does not move.
+   */
+  private       long                                                         laneVersion;
+
+  /** Per-index cached read view, valid only while {@link #laneVersion} still reads {@link #cachedViewVersion}. */
+  private       IdentityHashMap<IndexInternal, Object>                       cachedViews;
+  private       long                                                         cachedViewVersion = -1L;
+
+  /** The cached stand-in for "this transaction has written nothing to this index". See {@link #cacheIndexView}. */
+  public static final Object NO_VIEW = new Object();
+
+  /**
+   * The journal of what one record's indexing added, so it can be taken back exactly (issue #7467).
+   * <p>
+   * {@code LocalDatabase.createRecordNoLock} writes the record body, assigns its identity and increments the
+   * bucket delta BEFORE {@code DocumentIndexer.createDocument} runs the unique check, so a
+   * {@link DuplicatedKeyException} raised there used to leave the record in the transaction with no index entry
+   * to find it by. Every caller that tallies the failure and carries on - the {@code /ws} insert session, the
+   * gRPC stream, an HTTP batch, a SQL script with its own error handling - then committed a record that the
+   * index denies and the acknowledgement denies. Undoing the record body is only half of the retraction: the
+   * indexes BEFORE the one that refused already hold an entry for it, and those have to go back too.
+   * <p>
+   * Reverse order, and restoring the DISPLACED entry rather than simply dropping ours, is what makes it exact: a
+   * unique index keys its per-key map on the key alone, so an {@code ADD} can overwrite an earlier {@code REMOVE}
+   * (a delete-then-reinsert of the same key in one transaction) and the {@code REPLACE}/{@code oldRid} that
+   * records it. Dropping ours would take the earlier operation with it and leave a stale index entry behind.
+   * <p>
+   * The list is REUSED across records - only its size is reset - so an insert-heavy workload allocates the
+   * holders once rather than once per record. Nothing is recorded while disarmed, which is every path but the one
+   * that is about to have to undo.
+   */
+  private final List<RecordUndoEntry>                                        recordUndo       = new ArrayList<>();
+  /** How many of {@link #recordUndo} belong to the record being indexed right now; -1 when disarmed. */
+  private       int                                                          recordUndoSize   = -1;
+
+  /**
+   * One journalled index-map mutation. Mutable and reused: {@link #recordUndo} hands the same holders back out
+   * for the next record rather than allocating a new one per index key.
+   */
+  private static final class RecordUndoEntry {
+    /** The append-only lane the entry was appended to, or {@code null} when this is an ordered-lane entry. */
+    private List<IndexKey>                                  lane;
+    /** The lane this entry belongs to, so an undo that empties the lane can drop it. */
+    private String                                          indexName;
+    /** Ordered lane: the per-index key map, the per-key value map, and what our put displaced from it. */
+    private TreeMap<ComparableKey, Map<IndexKey, IndexKey>> keys;
+    private ComparableKey                                   key;
+    private Map<IndexKey, IndexKey>                         values;
+    private IndexKey                                        added;
+    private IndexKey                                        displaced;
+
+    private void ordered(final String indexName, final TreeMap<ComparableKey, Map<IndexKey, IndexKey>> keys,
+        final ComparableKey key, final Map<IndexKey, IndexKey> values, final IndexKey added, final IndexKey displaced) {
+      this.lane = null;
+      this.indexName = indexName;
+      this.keys = keys;
+      this.key = key;
+      this.values = values;
+      this.added = added;
+      this.displaced = displaced;
+    }
+
+    private void appended(final String indexName, final List<IndexKey> lane) {
+      this.lane = lane;
+      this.indexName = indexName;
+      this.keys = null;
+      this.key = null;
+      this.values = null;
+      this.added = null;
+      this.displaced = null;
+    }
+
+    /** Drops the references the holder is keeping alive, so a reused journal pins nothing between records. */
+    private void clear() {
+      this.lane = null;
+      this.indexName = null;
+      this.keys = null;
+      this.key = null;
+      this.values = null;
+      this.added = null;
+      this.displaced = null;
+    }
+  }
+
   public static class IndexKey {
     public final boolean           unique;
     public final Object[]          keyValues;
     public final RID               rid;
+    /**
+     * Where this entry sits in the transaction's WRITE order, counted by {@link #sequence} (issue #7971).
+     * <p>
+     * The ordered lane replays its entries in {@code ComparableKey} order, which for most indexes is exactly what
+     * the receiving structure wants. It is not what a structure that holds ONE value per RID wants: a dense vector
+     * index that is handed two embeddings of the same record - two different keys, so nothing dedups them - would
+     * otherwise keep whichever key sorted last, i.e. a hash of the vector's contents rather than the rewrite the
+     * application actually ran last. Carrying the write order on the entry lets {@link #commit()} pick the last
+     * write for a RID instead of the last key.
+     * <p>
+     * Zero on every entry a lane restored wholesale by {@link #setKeys} carries, which records no write order. The
+     * per-RID pick then falls back to the first entry in key order - exactly what that path did before this field
+     * existed, so it is left no worse than it was rather than silently given a wrong answer.
+     * <p>
+     * <b>Deliberately NOT part of {@link #equals}/{@link #hashCode}</b>, and it must stay that way. The per-key map
+     * in {@code addIndexKeyLock} identifies an entry by its key (and, on a non-unique index, its RID) so that a
+     * later operation on the same key REPLACES the earlier one - which is what collapses a {@code REMOVE} onto the
+     * {@code ADD} it retires. Including the write order in equality would make every entry distinct, the map would
+     * accumulate one per write instead of one per key, and the dedup this class is built around would quietly stop
+     * happening (PR #8001 review).
+     */
+    public final int               sequence;
     public       RID               oldRid; // for REPLACE created from same-bucket REMOVE→ADD: the old RID being replaced
     public       IndexKeyOperation operation;
 
@@ -78,10 +222,16 @@ public class TransactionIndexContext {
     }
 
     public IndexKey(final boolean unique, final IndexKeyOperation operation, final Object[] keyValues, final RID rid) {
+      this(unique, operation, keyValues, rid, 0);
+    }
+
+    public IndexKey(final boolean unique, final IndexKeyOperation operation, final Object[] keyValues, final RID rid,
+        final int sequence) {
       this.unique = unique;
       this.operation = operation;
       this.keyValues = keyValues;
       this.rid = rid;
+      this.sequence = sequence;
     }
 
     @Override
@@ -91,15 +241,15 @@ public class TransactionIndexContext {
       if (!(o instanceof IndexKey indexKey))
         return false;
       if (unique)
-        return Arrays.equals(keyValues, indexKey.keyValues);
-      return Objects.equals(rid, indexKey.rid) && Arrays.equals(keyValues, indexKey.keyValues);
+        return IndexKeyEquality.sameTuple(keyValues, indexKey.keyValues);
+      return Objects.equals(rid, indexKey.rid) && IndexKeyEquality.sameTuple(keyValues, indexKey.keyValues);
     }
 
     @Override
     public int hashCode() {
       if (unique)
-        return Objects.hash(Arrays.hashCode(keyValues));
-      return Objects.hash(rid, Arrays.hashCode(keyValues));
+        return Objects.hash(IndexKeyEquality.hashTuple(keyValues));
+      return Objects.hash(rid, IndexKeyEquality.hashTuple(keyValues));
     }
 
     @Override
@@ -156,12 +306,12 @@ public class TransactionIndexContext {
       if (o == null || getClass() != o.getClass())
         return false;
       final ComparableKey that = (ComparableKey) o;
-      return Arrays.equals(values, that.values);
+      return IndexKeyEquality.sameTuple(values, that.values);
     }
 
     @Override
     public int hashCode() {
-      return Arrays.hashCode(values);
+      return IndexKeyEquality.hashTuple(values);
     }
 
     @Override
@@ -211,9 +361,51 @@ public class TransactionIndexContext {
   }
 
   public void removeIndex(final String indexName) {
-    indexEntries.remove(indexName);
+    final TreeMap<ComparableKey, Map<IndexKey, IndexKey>> ordered = indexEntries.remove(indexName);
     unorderedEntries.remove(indexName);
-    indexPerLane.remove(indexName);
+    final IndexInternal owner = indexPerLane.remove(indexName);
+    if (ordered != null)
+      forgetOrderedLane(owner, ordered);
+    ++laneVersion;
+  }
+
+  /** Drops one ordered lane from the identity view, and the index's entry with its last lane. */
+  // The reference comparison below is the POINT of this method, not an oversight: see the block comment on it.
+  @SuppressWarnings("PMD.CompareObjectsWithEquals")
+  private void forgetOrderedLane(final IndexInternal owner,
+      final TreeMap<ComparableKey, Map<IndexKey, IndexKey>> lane) {
+    if (owner == null) {
+      // A lane restored by setKeys: it was never in the identity view, and its absence is what lanesWithoutOwner
+      // already accounts for. Recomputed rather than cleared, because another such lane may still be present.
+      lanesWithoutOwner = indexEntries.size() > countOwnedOrderedLanes();
+      return;
+    }
+    final List<TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> lanes = orderedLanesPerIndex.get(owner);
+    if (lanes == null)
+      return;
+
+    // BY IDENTITY, never List.remove(Object) (PR #8001 review). TreeMap inherits equals() from AbstractMap, so it
+    // compares by CONTENT - and two empty ones are always equal. An index can own more than one lane (a compaction
+    // that renames it mid-transaction opens a second one under the new name), and the lane reaching here has just
+    // been emptied, so a content-equality removal could evict the OTHER lane of the same index instead. That lane
+    // would still be in indexEntries and still be replayed by commit(), but no longer reachable through the
+    // identity fast path: a read-your-own-writes search would silently answer with part of the transaction's own
+    // writes missing. Which is the failure mode this map is an IdentityHashMap to avoid in the first place.
+    for (int i = 0; i < lanes.size(); i++)
+      if (lanes.get(i) == lane) {
+        lanes.remove(i);
+        break;
+      }
+
+    if (lanes.isEmpty())
+      orderedLanesPerIndex.remove(owner);
+  }
+
+  private int countOwnedOrderedLanes() {
+    int owned = 0;
+    for (final List<TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> lanes : orderedLanesPerIndex.values())
+      owned += lanes.size();
+    return owned;
   }
 
   /**
@@ -325,29 +517,34 @@ public class TransactionIndexContext {
       }
     }
 
+    // SECOND PASS over indexEntries, and it handles only the ADDs. Every REMOVE - for a vector index as much as for
+    // any other - was already replayed through index.removeReplay() by the pass above, which is why the vector
+    // batch below can skip a RID whose last entry is a REMOVE without leaving it untombstoned: the tombstone has
+    // happened, and skipping only avoids adding it straight back (PR #8001 review asked for this to be said here
+    // rather than only at the skip itself).
+    //
+    // Per dense vector index, the winning entry per RID across ALL of that index's lanes. Identity-keyed for the
+    // same reason the lane map is: which index a batch belongs to is a question about the object.
+    final Map<LSMVectorIndex, Map<RID, IndexKey>> vectorBatches = new IdentityHashMap<>();
+
     for (final Map.Entry<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> entry : indexEntries.entrySet()) {
       final IndexInternal index = resolveIndex(entry.getKey());
       final Map<ComparableKey, Map<IndexKey, IndexKey>> keys = entry.getValue();
 
       // Batch optimization for vector indexes (issue #3864): collect all ADD operations
-      // and process them in a single putBatch call with one lock acquisition
-      if (index instanceof LSMVectorIndex vectorIndex && keys.size() > 1) {
-        final List<Object[]> batchKeys = new ArrayList<>(keys.size());
-        final List<RID> batchRids = new ArrayList<>(keys.size());
-
-        for (final Map.Entry<ComparableKey, Map<IndexKey, IndexKey>> keyValueEntries : keys.entrySet()) {
-          for (final IndexKey key : keyValueEntries.getValue().values()) {
-            if (key.operation == IndexKey.IndexKeyOperation.ADD ||
-                key.operation == IndexKey.IndexKeyOperation.REPLACE) {
-              batchKeys.add(key.keyValues);
-              batchRids.add(key.rid);
-            }
-          }
-        }
-
-        if (!batchKeys.isEmpty())
-          vectorIndex.putBatch(batchKeys, batchRids);
-
+      // and process them in a single putBatch call with one lock acquisition.
+      //
+      // Accumulated ACROSS LANES and flushed after this loop, not per lane (PR #8001 review). One index can own
+      // more than one lane - it renames itself when a compaction swaps in the component file it is named after, and
+      // the next write opens a lane under the new name (issue #6105) - so a record rewritten either side of that
+      // rename has an entry in each. Deduplicating per lane would then hand putBatch one winner from each, which is
+      // the very thing this dedup exists to prevent: the record indexed under two of the embeddings it held.
+      if (index instanceof LSMVectorIndex vectorIndex) {
+        // merge, not putAll: a later lane's entry only wins if it was written later, which is the whole point.
+        final Map<RID, IndexKey> batch = vectorBatches.computeIfAbsent(vectorIndex, i -> new LinkedHashMap<>());
+        for (final Map.Entry<RID, IndexKey> winner : lastWritePerRidOf(keys).entrySet())
+          batch.merge(winner.getKey(), winner.getValue(),
+              (previous, current) -> current.sequence > previous.sequence ? current : previous);
         continue;
       }
 
@@ -380,8 +577,69 @@ public class TransactionIndexContext {
       }
     }
 
+    // ONE embedding per record, and the LAST one written is the one the record holds (issue #7971).
+    //
+    // A dense vector index keeps a single live vector per RID - remove() tombstones every vector id the RID
+    // resolves to - so several ADDs for one RID are not several entries to insert, they are one entry written
+    // several times inside this transaction. Replaying them all persists a vector id per rewrite, leaves the
+    // record indexed under every embedding it ever held during the transaction, and lets the ComparableVector
+    // order of the TreeMap being walked - a hash of the vector's contents - decide which of them a search ranks it
+    // by. The write-order stamp is what turns that back into "the last write wins": the survivor is chosen by WHEN
+    // it was queued, not by where its key sorted, nor by which lane it landed in.
+    // Through putBatch unconditionally, including a lane carrying a single entry - which took putReplay directly
+    // before the cross-lane accumulation above made that distinction unrepresentable. Measured rather than assumed
+    // (PR #8001 review asked for it): 20k single-row transactions against a 128-dimension index run in 684 ms
+    // through putBatch and 685 ms through a putReplay fast path, i.e. the two ArrayLists and the map entry cost
+    // nothing measurable next to the page write and WAL append each row already pays for.
+    for (final Map.Entry<LSMVectorIndex, Map<RID, IndexKey>> batch : vectorBatches.entrySet()) {
+      final Map<RID, IndexKey> winners = batch.getValue();
+      if (winners.isEmpty())
+        continue;
+
+      final List<Object[]> batchKeys = new ArrayList<>(winners.size());
+      final List<RID> batchRids = new ArrayList<>(winners.size());
+      for (final IndexKey key : winners.values()) {
+        if (key.operation == IndexKey.IndexKeyOperation.REMOVE)
+          // The transaction's last word on this RID was a removal, and the pass above has already replayed it.
+          // Re-adding it here is what made a record deleted after being added come back (PR #8001 review).
+          continue;
+        batchKeys.add(key.keyValues);
+        batchRids.add(key.rid);
+      }
+      if (batchKeys.isEmpty())
+        continue;
+      batch.getKey().putBatch(batchKeys, batchRids);
+    }
+
     indexEntries.clear();
     indexPerLane.clear();
+    orderedLanesPerIndex.clear();
+    lanesWithoutOwner = false;
+    sequence = 0;
+    ++laneVersion;
+    if (cachedViews != null)
+      cachedViews.clear();
+  }
+
+  /**
+   * The LAST entry written for each RID within one lane, whatever it was. Merged across the lanes of one index by
+   * {@link #commit()}, which is where "last write wins" actually has to hold.
+   * <p>
+   * {@code REMOVE} entries are weighed in, not filtered out (PR #8001 review). The commit replays every
+   * {@code REMOVE} before any {@code ADD}, so a removal cancels an addition only by DISPLACING it in the per-key
+   * map - which requires the two to share a {@code ComparableKey}. They usually do, because
+   * {@code LSMVectorIndex.removalKey()} queues the vector being retired. When it cannot - the caller had no usable
+   * old value and the removal rides the placeholder - they do not, and a pass that considered only
+   * {@code ADD}/{@code REPLACE} would re-add a RID the transaction had deleted. Keeping the last entry of ANY kind
+   * and letting the caller drop a RID whose last word was a removal answers that without depending on the keys
+   * lining up.
+   */
+  private static Map<RID, IndexKey> lastWritePerRidOf(final Map<ComparableKey, Map<IndexKey, IndexKey>> keys) {
+    final Map<RID, IndexKey> winners = new LinkedHashMap<>(keys.size());
+    for (final Map.Entry<ComparableKey, Map<IndexKey, IndexKey>> keyValueEntries : keys.entrySet())
+      for (final IndexKey key : keyValueEntries.getValue().values())
+        winners.merge(key.rid, key, (previous, current) -> current.sequence > previous.sequence ? current : previous);
+    return winners;
   }
 
   public void addFilesToLock(final IntHashSet modifiedFiles) {
@@ -452,6 +710,11 @@ public class TransactionIndexContext {
 
   public void setKeys(final Map<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> keysTx) {
     indexEntries = keysTx;
+    // These lanes carry no index reference, so they cannot be resolved by identity: getIndexKeyLanes falls back to
+    // the by-name walk while any of them is present (issue #7967).
+    orderedLanesPerIndex.clear();
+    lanesWithoutOwner = !keysTx.isEmpty();
+    ++laneVersion;
   }
 
   public boolean isEmpty() {
@@ -481,14 +744,16 @@ public class TransactionIndexContext {
         // being called by commit time (issue #6105).
         indexPerLane.put(indexName, index);
       }
-      lane.add(new IndexKey(false, operation, keysValues, rid));
+      lane.add(new IndexKey(false, operation, keysValues, rid, sequence++));
+      ++laneVersion;
+      journalAppend(indexName, lane);
       return;
     }
 
     TreeMap<ComparableKey, Map<IndexKey, IndexKey>> keys = indexEntries.get(indexName);
 
     final ComparableKey k = new ComparableKey(keysValues);
-    final IndexKey v = new IndexKey(index.isUnique(), operation, keysValues, rid);
+    final IndexKey v = new IndexKey(index.isUnique(), operation, keysValues, rid, sequence++);
 
     Map<IndexKey, IndexKey> values;
     if (keys == null) {
@@ -496,6 +761,8 @@ public class TransactionIndexContext {
       indexEntries.put(indexName, keys);
       // See the sibling call in the append-only branch above (issue #6105).
       indexPerLane.put(indexName, index);
+      // ...and the same lane reachable by the index itself, which is how a reader finds it in O(1) (issue #7967).
+      orderedLanesPerIndex.computeIfAbsent(index, i -> new ArrayList<>(2)).add(keys);
 
       values = new HashMap<>();
       keys.put(k, values);
@@ -550,18 +817,215 @@ public class TransactionIndexContext {
       }
     }
 
-    values.put(v, v);
+    final IndexKey displaced = values.put(v, v);
+    ++laneVersion;
+    journalPut(indexName, keys, k, values, v, displaced);
+  }
+
+  /**
+   * Starts journalling what the next {@code addIndexKeyLock} calls add, so {@link #undoRecordChanges()} can take
+   * them back. Always paired with {@link #disarmRecordUndo()} in a {@code finally}: see {@link #recordUndo}.
+   * <p>
+   * Not re-entrant, and does not need to be. The one caller indexes ONE record between the two calls, on the
+   * thread the transaction is bound to, and nothing it invokes indexes another.
+   */
+  public void armRecordUndo() {
+    recordUndoSize = 0;
+  }
+
+  /** Stops journalling and drops what was journalled. Idempotent. */
+  public void disarmRecordUndo() {
+    recordUndoSize = -1;
+  }
+
+  /**
+   * Takes back every index entry journalled since {@link #armRecordUndo()}, restoring the map to the state it was
+   * in - the displaced entries included - and leaving no empty lane behind, so {@code isEmpty()} and
+   * {@code addFilesToLock} answer as though the record had never been indexed.
+   */
+  public void undoRecordChanges() {
+    for (int i = recordUndoSize - 1; i >= 0; i--) {
+      final RecordUndoEntry undo = recordUndo.get(i);
+
+      if (undo.lane != null) {
+        // Append-only lane: our entry is the one we appended, and nothing was displaced to restore.
+        undo.lane.remove(undo.lane.size() - 1);
+        if (undo.lane.isEmpty()) {
+          unorderedEntries.remove(undo.indexName);
+          indexPerLane.remove(undo.indexName);
+        }
+        continue;
+
+      }
+
+      if (undo.displaced != null)
+        undo.values.put(undo.displaced, undo.displaced);
+      else {
+        undo.values.remove(undo.added);
+        if (undo.values.isEmpty()) {
+          undo.keys.remove(undo.key);
+          if (undo.keys.isEmpty()) {
+            indexEntries.remove(undo.indexName);
+            forgetOrderedLane(indexPerLane.remove(undo.indexName), undo.keys);
+          }
+        }
+      }
+    }
+    recordUndoSize = 0;
+    // Entries went away, so any view cached over them describes lanes that no longer exist. sequence does not move
+    // on this path - nothing was queued - which is exactly why the cache is keyed on laneVersion and not on it.
+    ++laneVersion;
+  }
+
+  private void journalAppend(final String indexName, final List<IndexKey> lane) {
+    if (recordUndoSize >= 0)
+      nextUndoEntry().appended(indexName, lane);
+  }
+
+  private void journalPut(final String indexName, final TreeMap<ComparableKey, Map<IndexKey, IndexKey>> keys,
+      final ComparableKey key, final Map<IndexKey, IndexKey> values, final IndexKey added, final IndexKey displaced) {
+    if (recordUndoSize >= 0)
+      nextUndoEntry().ordered(indexName, keys, key, values, added, displaced);
+  }
+
+  /** The next holder of the reused journal, growing the list only the first time that depth is reached. */
+  private RecordUndoEntry nextUndoEntry() {
+    if (recordUndoSize == recordUndo.size())
+      recordUndo.add(new RecordUndoEntry());
+    return recordUndo.get(recordUndoSize++);
   }
 
   public void reset() {
     indexEntries.clear();
     unorderedEntries.clear();
     indexPerLane.clear();
+    orderedLanesPerIndex.clear();
+    lanesWithoutOwner = false;
+    sequence = 0;
+    ++laneVersion;
+    if (cachedViews != null)
+      cachedViews.clear();
+    // The holders stay - they are the reusable journal - but not the maps and keys they point at, which the
+    // three clears above have just made garbage.
+    for (int i = 0; i < recordUndo.size(); i++)
+      recordUndo.get(i).clear();
+    recordUndoSize = -1;
   }
 
   /** Looks a lane up by its KEY, with the same caveat as {@link #getTotalEntriesByIndex}. */
   public TreeMap<ComparableKey, Map<IndexKey, IndexKey>> getIndexKeys(final String indexName) {
     return indexEntries.get(indexName);
+  }
+
+  /**
+   * Every lane belonging to {@code index}, in the order {@link #commit()} replays them - regardless of the names
+   * those lanes were opened under (issue #7378).
+   * <p>
+   * A lane is keyed by the name the index answered to when its FIRST entry was queued, and an {@code LSM_VECTOR}
+   * index renames itself when a compaction swaps in the component file it is named after. That compaction runs on
+   * the async executor, so it can land mid-transaction - which is issue #6105 on the write side, and is why
+   * {@link #indexPerLane} remembers the index rather than the name.
+   * <p>
+   * It also means one index can own MORE THAN ONE lane. {@code addIndexKeyLock} opens a fresh lane whenever
+   * {@code index.getName()} is a name this transaction has not seen, so a transaction that writes, is renamed
+   * under it, and writes again leaves two lanes for one index - one under each name. {@link #commit()} replays
+   * both, because it resolves every lane through {@link #laneIndexName}. A reader that stopped at the first
+   * match would see only one of them and would answer a search with part of the transaction's own writes
+   * missing, which is precisely the defect the overlay in {@code LSMVectorIndex} exists to close. So this returns
+   * all of them.
+   * <p>
+   * The walk is over {@link #indexEntries} and not over {@code indexPerLane}: the former is a
+   * {@link LinkedHashMap} in lane-creation order, which is the order {@code commit()} replays in and therefore
+   * the order a reader has to merge in for "the last write to a RID wins" to mean the same thing on both sides.
+   * {@code indexPerLane} is a {@link HashMap} and its iteration order says nothing.
+   * <p>
+   * Cost is one hash lookup per lane this transaction has opened - O(1) for the ordinary transaction that has
+   * touched one index, O(distinct indexes touched) for one that has touched several, and it is paid even when the
+   * answer is empty. See issue #7967.
+   *
+   * @return the lanes, in replay order; empty when this transaction has queued nothing for {@code index}
+   */
+  public List<TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> getIndexKeyLanes(final IndexInternal index) {
+    if (!lanesWithoutOwner) {
+      // One hash lookup, whatever this transaction has written to and however many names this index has answered
+      // to (issue #7967). Registered lane by lane as they are opened, so the answer is the identical set the walk
+      // below produces - and the empty answer, which is what every search from a transaction that never touched
+      // this index gets, costs the same lookup rather than a scan of every other index's lanes.
+      final List<TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> lanes = orderedLanesPerIndex.get(index);
+      return lanes == null ? List.of() : lanes;
+    }
+
+    // A lane restored wholesale by setKeys is present: it carries no index reference, so identity cannot find it
+    // and the by-name rule laneIndexName applies is the only one that can. Unreachable today - setKeys is only
+    // used by commitFromReplica, whose status is never BEGUN - but the two must not drift.
+    List<TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> lanes = null;
+
+    for (final Map.Entry<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> lane : indexEntries.entrySet()) {
+      final IndexInternal owner = indexPerLane.get(lane.getKey());
+      if (owner == null ? !lane.getKey().equals(index.getName()) : owner != index)
+        continue;
+
+      if (lanes == null)
+        lanes = new ArrayList<>(2);
+      lanes.add(lane.getValue());
+    }
+
+    return lanes == null ? List.of() : lanes;
+  }
+
+  /**
+   * The read-your-own-writes view this transaction last built for {@code index}, or {@code null} when it has none
+   * or the lanes have changed since (issue #7967).
+   * <p>
+   * Building that view costs one pass over everything the transaction has queued for the index plus a conversion
+   * per pending row, and the search paths rebuilt it from scratch on EVERY search - so a transaction that ingests
+   * and queries in turn paid its whole write set again per query. The view is a pure function of the lanes, so it
+   * stays valid for exactly as long as they do not change, and {@link #laneVersion} moves on every change that
+   * could alter it: an entry queued, an entry taken back, a lane dropped, the whole set replaced. A view returned
+   * here is therefore the same object the caller would have rebuilt, never an older one.
+   * <p>
+   * Typed as {@code Object} on purpose. What the view IS belongs to the index that builds it - this class holds
+   * it for the lifetime of a version and looks at nothing inside it - and the alternative is to widen an
+   * index-internal type into this package to name it.
+   */
+  public Object cachedIndexView(final IndexInternal index) {
+    if (cachedViews == null || cachedViewVersion != laneVersion)
+      return null;
+    return cachedViews.get(index);
+  }
+
+  /**
+   * Remembers {@code view} as {@code index}'s read-your-own-writes view of the lanes AS THEY STAND NOW. Discarded
+   * by the next change to them. See {@link #cachedIndexView}.
+   * <p>
+   * A {@code null} view - "this transaction has written nothing to this index" - is worth caching too, and is in
+   * fact the answer most worth caching: it is the one a search from a transaction busy with OTHER indexes gets,
+   * over and over. {@link #NO_VIEW} stands in for it, because a null value in the map is indistinguishable from an
+   * absent key.
+   */
+  public void cacheIndexView(final IndexInternal index, final Object view) {
+    if (cachedViews == null)
+      cachedViews = new IdentityHashMap<>();
+    else if (cachedViewVersion != laneVersion)
+      cachedViews.clear();
+    cachedViewVersion = laneVersion;
+    cachedViews.put(index, view == null ? NO_VIEW : view);
+  }
+
+  /**
+   * The append-only lane of an index that opted out of the key-ordered map, in the order its entries were queued -
+   * which is the order {@link #commit()} replays them in, and therefore the order anything reading its own writes
+   * back has to apply them in (issue #7966).
+   * <p>
+   * Returned live rather than copied: the caller is the transaction's own thread, the only thread that can append
+   * to it, and a sparse-vector search resolves this once per query over a lane that holds one entry per non-zero
+   * dimension written. Same lookup-by-KEY caveat as {@link #getTotalEntriesByIndex}, and for the same reason it
+   * does not bite: {@code LSM_SPARSE_VECTOR} is the only index on this lane and it never renames itself.
+   *
+   * @return the lane, or {@code null} when this transaction has queued nothing for that index
+   */
+  public List<IndexKey> getUnorderedIndexKeys(final String indexName) {
+    return unorderedEntries.get(indexName);
   }
 
   /**

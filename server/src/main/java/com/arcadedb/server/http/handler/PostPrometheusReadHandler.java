@@ -28,6 +28,7 @@ import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.http.RequestBodyTooLargeException;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.Label;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.LabelMatcher;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.MatchType;
@@ -78,6 +79,18 @@ public class PostPrometheusReadHandler extends AbstractBinaryHttpHandler {
     return false;
   }
 
+  /**
+   * Answered here rather than inherited from {@link AbstractObservabilityHandler}, which this handler cannot
+   * extend because its binary body already spends its one superclass (issue #7859). The reason is that class's:
+   * a remote-read never writes into the caller's transaction, so the 413 it raises when the answer would exceed
+   * {@code arcadedb.server.maxResultRows} must not destroy a transaction the client opened with {@code /begin}
+   * and still believes it owns.
+   */
+  @Override
+  protected boolean participatesInSessionTransaction() {
+    return false;
+  }
+
   @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
       final Database db, final JSONObject payload) throws Exception {
@@ -88,10 +101,15 @@ public class PostPrometheusReadHandler extends AbstractBinaryHttpHandler {
     if (rawBytes == null || rawBytes.length == 0)
       return new ExecutionResponse(400, "{ \"error\" : \"Request body is empty\"}");
 
-    // Snappy decompress
+    // Snappy decompress, under the decoded-body budget (issue #8084): the read side decodes a body exactly as the
+    // write side does, so it carries the same exposure and takes the same bound. See PostPrometheusWriteHandler for
+    // why the 413 is rethrown past the 400 below.
     final byte[] decompressed;
     try {
-      decompressed = Snappy.uncompress(rawBytes);
+      decompressed = CompressedBodyDecoder.snappyUncompress(rawBytes,
+          CompressedBodyDecoder.maxDecompressedSize(httpServer.getServer().getConfiguration()));
+    } catch (final RequestBodyTooLargeException e) {
+      throw e;
     } catch (final Exception e) {
       return new ExecutionResponse(400, "{ \"error\" : \"Invalid Snappy-compressed data\"}");
     }
@@ -192,25 +210,30 @@ public class PostPrometheusReadHandler extends AbstractBinaryHttpHandler {
         final List<Object[]> groupRows = entry.getValue();
         final Object[] firstRow = groupRows.getFirst();
 
-        // Build labels — row[i] corresponds to columns.get(i)
+        // Build labels. The row is { timestamp, non-TIMESTAMP columns in schema order... }, so a TAG column's
+        // value sits at 1 + its ordinal AMONG THE NON-TIMESTAMP COLUMNS - not at its schema index, which is the
+        // same number only while the TIMESTAMP column is declared first (issue #7899).
         final List<Label> labels = new ArrayList<>();
         labels.add(new Label("__name__", metricName));
-        for (int i = 0; i < columns.size(); i++) {
-          final ColumnDefinition col = columns.get(i);
+        int nonTsIdx = 0;
+        for (final ColumnDefinition col : columns) {
+          if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+            continue;
           if (col.getRole() == ColumnDefinition.ColumnRole.TAG) {
-            final Object tagVal = firstRow[i];
+            final Object tagVal = 1 + nonTsIdx < firstRow.length ? firstRow[1 + nonTsIdx] : null;
             if (tagVal != null)
               labels.add(new Label(col.getName(), tagVal.toString()));
           }
+          nonTsIdx++;
         }
 
         // Build samples
         final List<Sample> samples = new ArrayList<>();
-        final int valueColIndex = findFieldColumnIndex(columns, "value");
+        final int valueRowIndex = findFieldRowIndex(columns, "value");
         for (final Object[] row : groupRows) {
           final long ts = (long) row[0];
           double value = 0;
-          if (valueColIndex >= 0 && row[valueColIndex] instanceof Number n)
+          if (valueRowIndex >= 0 && valueRowIndex < row.length && row[valueRowIndex] instanceof Number n)
             value = n.doubleValue();
           samples.add(new Sample(value, ts));
         }
@@ -235,11 +258,8 @@ public class PostPrometheusReadHandler extends AbstractBinaryHttpHandler {
   }
 
   /**
-   * Returns the zero-based index among non-timestamp columns for use with TagFilter,
-   * which accesses row[columnIndex + 1].
-   */
-  /**
-   * The column at the given position among the non-timestamp columns.
+   * The column at the given position among the non-timestamp columns - the indexing {@code TagFilter} uses,
+   * which accesses {@code row[columnIndex + 1]}.
    */
   private static ColumnDefinition nonTimestampColumn(final List<ColumnDefinition> columns, final int nonTsIndex) {
     int nonTsIdx = -1;
@@ -265,24 +285,39 @@ public class PostPrometheusReadHandler extends AbstractBinaryHttpHandler {
     return -1;
   }
 
-  private static int findFieldColumnIndex(final List<ColumnDefinition> columns, final String name) {
-    for (int i = 0; i < columns.size(); i++) {
-      final ColumnDefinition col = columns.get(i);
+  /**
+   * The POSITION IN THE ROW of the named FIELD column, or -1 when the type declares none: the row the scan
+   * hands back is {@code { timestamp, non-TIMESTAMP columns in schema order... }}, so it is one past the
+   * column's ordinal among the non-timestamp columns and not its schema index (issue #7899). Read as a schema
+   * index, a type declaring its TIMESTAMP column anywhere but first reported the neighbouring column's content
+   * as the sample - and where that neighbour was the timestamp itself, a sample of about 1.7e12.
+   */
+  private static int findFieldRowIndex(final List<ColumnDefinition> columns, final String name) {
+    int nonTsIdx = 0;
+    for (final ColumnDefinition col : columns) {
+      if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+        continue;
       if (col.getRole() == ColumnDefinition.ColumnRole.FIELD && col.getName().equals(name))
-        return i;
+        return 1 + nonTsIdx;
+      nonTsIdx++;
     }
     return -1;
   }
 
+  /** Groups rows by their TAG values, indexed the way {@link #findFieldRowIndex} explains. */
   private static String buildLabelKey(final List<ColumnDefinition> columns, final Object[] row) {
     final StringBuilder sb = new StringBuilder();
-    for (int i = 0; i < columns.size(); i++) {
-      if (columns.get(i).getRole() == ColumnDefinition.ColumnRole.TAG) {
+    int nonTsIdx = 0;
+    for (final ColumnDefinition col : columns) {
+      if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+        continue;
+      if (col.getRole() == ColumnDefinition.ColumnRole.TAG) {
         if (!sb.isEmpty())
           sb.append('|');
-        final Object val = row[i];
+        final Object val = 1 + nonTsIdx < row.length ? row[1 + nonTsIdx] : null;
         sb.append(val != null ? val.toString() : "");
       }
+      nonTsIdx++;
     }
     return sb.toString();
   }

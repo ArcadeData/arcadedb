@@ -46,6 +46,7 @@ import com.arcadedb.integration.importer.SourceSchema;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalEdgeType;
+import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.schema.Property;
@@ -123,6 +124,20 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
    */
   private int timeSeriesSamplesSinceCommit;
 
+  /**
+   * The exported schema object, kept from the {@code "schema"} line so the schema-level members - triggers,
+   * materialized views, continuous aggregates, function libraries and extensions - can be restored once the RECORDS
+   * are in (issue #7886).
+   * <p>
+   * After the records, not with the types, and that ordering is the point. A trigger restored first fires on every
+   * record the import then loads, re-applying by hand what the source database had already applied and written into
+   * the very export being restored. A materialized view or continuous aggregate restored first is maintained
+   * incrementally against rows that are arriving for the second time, on top of the backing type the export
+   * restores as an ordinary type with its own rows. Both members are definitions the restore reinstates, not work
+   * it repeats.
+   */
+  private JSONObject importedSchema;
+
   @Override
   public void load(SourceSchema sourceSchema,
       EntityType entityType,
@@ -161,6 +176,7 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       ridIndex = new CompressedRID2RIDIndex(database, 1000, 1000);
       pendingLinkReconciliation.clear();
       timeSeriesSamplesSinceCommit = 0;
+      importedSchema = null;
 
       if (!database.isTransactionActive())
         database.begin();
@@ -236,6 +252,10 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       // references when their owning record was loaded (see the field comment on pendingLinkReconciliation).
       // Every RID mapping is known by now, so this is the only point where they can be reliably fixed up.
       reconcileUnresolvedLinks(database, context, skipOnRowError, ownsTransaction);
+
+      // LAST, after every record has landed and every forward link has been reconciled - see the field comment on
+      // importedSchema for why these five members cannot be restored alongside the types (issue #7886).
+      restoreSchemaMembers(database, context);
     } catch (ImportException e) {
       // A per-record failure in default "abort" mode must fail the whole import loudly (issue #6468): rolling
       // back the in-flight batch here - instead of committing it below - is what keeps a partial import from
@@ -470,9 +490,85 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
           }
         });
 
+    // Kept for the post-record pass that restores the schema-level members (issue #7886), and kept HERE rather
+    // than on entry: every line above can throw, and under -onRowError skip the caller catches that, rolls the
+    // line back and carries on. A field set on entry would then have survived a schema line that was skipped, and
+    // the post-record pass would have restored triggers and views onto types this import never created.
+    this.importedSchema = importedSchema;
+
     // final report
     databaseSchema.getTypes()
         .forEach(type -> logger.logLine(2, " - Created type %s: %s", type.getName(), type.toJSON()));
+  }
+
+  /**
+   * Restores the schema members that live beside {@code "types"} in the export: triggers, materialized views,
+   * continuous aggregates, {@code DEFINE FUNCTION} libraries and module extensions (issue #7886).
+   * <p>
+   * The exporter writes {@code LocalSchema.toJSON()} verbatim, so the file has carried all five all along. The
+   * import read {@code settings} and {@code types} out of it and silently dropped the rest: a restored database
+   * came back with no triggers, no views, no aggregates and no functions, reporting success and zero warnings.
+   * <p>
+   * The work itself is {@link LocalSchema#restoreSchemaMembersFromJSON}, the same method the schema-file loader
+   * uses, so a member added there is restored here too rather than having to be remembered twice. Merging rather
+   * than replacing: an import INTO a database that already has views of its own must not drop them because the
+   * export carried none.
+   * <p>
+   * Type-level {@code externalBuckets} is deliberately NOT restored, and that is not the same omission: it maps the
+   * SOURCE database's bucket names to the source's own paired {@code _ext} files, which the target does not have.
+   * The target derives its own map from the property flag - {@code createProperty(name, json)} calls
+   * {@code setExternal(true)}, which creates the paired bucket - so copying the source's would overwrite a correct
+   * map with names from another database.
+   */
+  private void restoreSchemaMembers(final DatabaseInternal database, final ImporterContext context) {
+    if (importedSchema == null)
+      // No "schema" line in this source: nothing was exported to restore.
+      return;
+
+    final int triggers = exportedMemberCount("triggers");
+    final int views = exportedMemberCount("materializedViews");
+    final int aggregates = exportedMemberCount("continuousAggregates");
+    final int libraries = exportedMemberCount("functions");
+    final int extensions = exportedMemberCount("extensions");
+
+    if (triggers + views + aggregates + libraries + extensions == 0)
+      // The export carries none of the five, which is the common case: an exporter writes the keys whether or not
+      // the database had anything under them. Returning here keeps a JSONL import that restores nothing from
+      // writing the schema configuration one more time than it used to.
+      return;
+
+    final LocalSchema schema = database.getSchema().getEmbedded();
+
+    final int failures = schema.restoreSchemaMembersFromJSON(importedSchema, LocalSchema.SchemaMemberSource.IMPORTED_FILE);
+    if (failures > 0) {
+      // Warnings and not errors, and counted rather than thrown: by this point every type and every record is in,
+      // and refusing the whole restore over one trigger whose type the target already had under another name is
+      // the trade #7032 already declined for the bucket-selection strategy.
+      context.warnings.addAndGet(failures);
+      LogManager.instance().log(this, Level.WARNING,
+          "%d schema member(s) of the export could not be restored: see the entries logged above. The types and the "
+              + "records are unaffected", null, failures);
+    }
+
+    schema.saveConfiguration();
+
+    // Counted off the EXPORT rather than off the target's schema: the target's own counts include whatever predated
+    // the import - a function library registered programmatically from native Java code is in every database's
+    // schema and was never part of any export - so reporting them would credit the restore with members it did not
+    // bring. What this line answers is "what did the file carry", with the failures the call above reported.
+    logger.logLine(2, " - Restored schema members: %d trigger(s), %d materialized view(s), %d continuous "
+            + "aggregate(s), %d function library(ies), %d extension(s)%s",
+        triggers, views, aggregates, libraries, extensions,
+        failures > 0 ? " - " + failures + " could not be restored" : "");
+  }
+
+  /**
+   * How many entries the export's schema object carries under {@code member}, or zero when it carries the key with
+   * nothing in it - which is what {@code LocalSchema.toJSON()} writes for a database that has none.
+   */
+  private int exportedMemberCount(final String member) {
+    final JSONObject entries = importedSchema.getJSONObject(member, null);
+    return entries != null ? entries.length() : 0;
   }
 
   /**
@@ -559,8 +655,22 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
   /**
    * Appends one chunk of TIMESERIES samples, as written by {@code JsonlExporterFormat.exportTimeSeries} (issue
-   * #7032). Each sample is the type's columns in schema order, timestamp first - a TimeSeries row has no RID, so
-   * there is nothing to remap and nothing to record in {@code ridIndex}.
+   * #7032). A TimeSeries row has no RID, so there is nothing to remap and nothing to record in
+   * {@code ridIndex}.
+   * <p>
+   * <b>The sample is an ENGINE ROW</b>, not a schema row: position 0 is the timestamp and positions 1..n are
+   * the NON-TIMESTAMP columns in schema order, which is the layout {@code TimeSeriesEngine.forEachRow} hands
+   * the exporter and the layout {@code TimeSeriesEngine.appendBatch} takes back. This used to read the array as
+   * if it followed the schema, taking the timestamp from the TIMESTAMP column's SCHEMA position - the same
+   * array under both readings while that position is 0, and a different one as soon as it is not. Issue #7702
+   * made a later position spellable in {@code CREATE TIMESERIES TYPE}, so an export of such a type either could
+   * not be restored at all (a STRING column before the timestamp raised a bare {@code ClassCastException}) or
+   * was restored with the timestamp and that column's value exchanged (issue #7899).
+   * <p>
+   * No format-version bump comes with the correction, and none is needed: the exporter emits - and always
+   * emitted - the engine layout, so an export written by an earlier build is byte-identical under both
+   * readings for every type whose TIMESTAMP column is first, and no earlier build could export a type whose
+   * TIMESTAMP column is not.
    */
   private void loadTimeSeriesSamples(final DatabaseInternal database, final ImporterContext context,
       final JSONObject chunk) throws IOException {
@@ -573,12 +683,6 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
       throw new ImportException("TimeSeries engine for type '" + typeName + "' is not initialized");
 
     final List<ColumnDefinition> columns = tsType.getTsColumns();
-    int timestampIdx = 0;
-    for (int i = 0; i < columns.size(); i++)
-      if (columns.get(i).getRole() == ColumnDefinition.ColumnRole.TIMESTAMP) {
-        timestampIdx = i;
-        break;
-      }
 
     final JSONArray samples = chunk.getJSONArray("s");
     final int rows = samples.length();
@@ -600,12 +704,14 @@ public class JsonlImporterFormat extends AbstractImporterFormat {
 
     for (int r = 0; r < rows; r++) {
       final JSONArray sample = samples.getJSONArray(r);
-      timestamps[r] = ((Number) sample.get(timestampIdx)).longValue();
+      // Position 0 is the timestamp and the rest follow it in non-timestamp schema order, which is exactly the
+      // order appendBatch wants its value columns in - see the engine-row note on this method.
+      timestamps[r] = ((Number) sample.get(0)).longValue();
       int valueIdx = 0;
-      for (int c = 0; c < columns.size(); c++) {
-        if (c == timestampIdx)
+      for (final ColumnDefinition column : columns) {
+        if (column.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
           continue;
-        values[valueIdx][r] = decodeSampleValue(sample.get(c), columns.get(c).getDataType());
+        values[valueIdx][r] = decodeSampleValue(sample.get(valueIdx + 1), column.getDataType());
         valueIdx++;
       }
     }

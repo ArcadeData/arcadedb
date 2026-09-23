@@ -198,7 +198,7 @@ class Issue7732AppendKeepsTheCallerTransactionTest extends TestHelper {
 
   /**
    * The third site in {@code TimeSeriesShard}'s constructor: crash recovery, which runs on every open of a shard
-   * whose bucket was left mid-compaction (claude-review on PR #7747). Unlike the two above it commits on
+   * whose bucket was left mid-compaction (code review on PR #7747). Unlike the two above it commits on
    * {@code database} rather than on the wrapped instance - a local repair must not be replicated - so the failure
    * is injected by handing the ENGINE a database whose commit fails, which is where that call resolves from.
    * <p>

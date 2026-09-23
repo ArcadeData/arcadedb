@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.log.LogManager;
 import org.apache.ratis.client.RaftClient;
@@ -25,6 +26,7 @@ import org.apache.ratis.protocol.RaftClientReply;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.protocol.SetConfigurationRequest;
+import org.apache.ratis.protocol.exceptions.GroupMismatchException;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -47,15 +49,34 @@ import java.util.logging.Level;
 class RaftClusterManager {
 
   /**
-   * How long {@link #setConfigurationWithRetry} keeps re-issuing a membership change before giving up.
+   * How long {@link #setConfigurationWithRetry} keeps re-issuing a membership change before giving up, when the
+   * operator has not set {@link GlobalConfiguration#HA_MEMBERSHIP_CHANGE_TIMEOUT}.
    * <p>
-   * It is NOT the whole cost of a failed add: the shared {@link RaftClient} carries its own
-   * {@code RetryLimited(maxAttempts=60, sleepTime=1s)} policy, so a single {@code setConfiguration} call can
-   * block for about a minute, and this deadline is only consulted between attempts. That is why a failure
-   * here is reported with the budget named and a sentence saying what it means (issue #7514), and why the
-   * probe in {@code RaftHAServer.ensurePeerReachable} exists to keep the common mistake from reaching it.
+   * Since issue #7561 this IS the whole cost of a failed change, which it was not before. Two things made the
+   * observed cost ~150 s against a 90 s budget:
+   * <ul>
+   *   <li>the shared {@link RaftClient} carries {@code RetryLimited(maxAttempts=60, sleepTime=1s)}, so a single
+   *       {@code setConfiguration} call blocked for about a minute before throwing;</li>
+   *   <li>the deadline was consulted only BETWEEN attempts, so an attempt that ended at t&#8776;89 s started
+   *       another one that ran to t&#8776;150 s.</li>
+   * </ul>
+   * Both are closed: the membership change now runs on its own short-retry client
+   * ({@link RaftHAServer#newMembershipClient()}), which caps one call at THREE attempts rather than sixty, and
+   * {@link #setConfigurationWithRetry} refuses to START an attempt that the longest attempt so far says cannot
+   * finish inside what is left. The probe in {@code RaftHAServer.ensurePeerReachable} (issue #7514) still keeps
+   * the common mistake - naming a server that is not running - from reaching any of this at all.
+   * <p>
+   * <b>What one attempt can cost, in the units an operator has to budget in.</b> The common failure here is a
+   * synchronous rejection, which comes back in milliseconds; the worst case is an RPC that hangs at the
+   * transport, and there the ceiling is three attempts of {@link RaftHAServer#CLIENT_REQUEST_TIMEOUT_MS} plus
+   * the two sleeps between them - about 31 seconds, not "a couple". So a budget set below that buys one attempt
+   * and the report, which is the right trade for a load-balancer idle timeout but is worth knowing rather than
+   * discovering.
    */
   static final long DEFAULT_SET_CONFIGURATION_BUDGET_MS = 90_000;
+
+  /** How far {@link #isPermanent} follows a failure's cause chain. Deeper than any Ratis failure nests. */
+  private static final int MAX_CAUSE_DEPTH = 16;
 
   private final RaftHAServer raftHAServer;
   private final long         setConfigurationBudgetMs;
@@ -428,8 +449,9 @@ class RaftClusterManager {
   }
 
   /**
-   * Issues a {@code setConfiguration} call with bounded (90s) retry, re-evaluating {@code argsSupplier}
-   * on every attempt.
+   * Issues a {@code setConfiguration} call, retrying within {@link #setConfigurationBudgetMs}
+   * ({@link GlobalConfiguration#HA_MEMBERSHIP_CHANGE_TIMEOUT}, 90 s by default) and re-evaluating
+   * {@code argsSupplier} on every attempt.
    * <p>
    * Rebuilding the arguments each attempt is what makes {@code COMPARE_AND_SET} removals safe: a retry
    * after a CAS mismatch (a concurrent membership change) re-snapshots the current configuration so the
@@ -437,11 +459,58 @@ class RaftClusterManager {
    * elected leader has not yet committed an entry from its own term and therefore transiently rejects
    * configuration changes. A {@code null} from the supplier means the goal is already met and the call
    * returns successfully.
+   * <p>
+   * The budget bounds the WHOLE call and not merely the gaps between attempts (issue #7561): see
+   * {@link #canAttemptAgain} for the arm that stops the overshoot and {@link #isPermanent} for the failure
+   * that is not waited out at all.
    */
   private void setConfigurationWithRetry(final Supplier<SetConfigurationRequest.Arguments> argsSupplier,
       final String operationDesc, final String hint) {
-    final long deadline = System.currentTimeMillis() + setConfigurationBudgetMs;
+    // A client of this operation's own, so one setConfiguration call is bounded by MEMBERSHIP_RETRY_POLICY -
+    // three attempts, so at worst three RPC timeouts - instead of by the shared client's RetryLimited(60, 1s),
+    // which is what made the deadline below unobservable for a whole minute at a time (issue #7561). Null on a
+    // harness that never started a Raft server, and then the shared client is the only one there is.
+    //
+    // Built inside the try so a failure to build it is reported as the ConfigurationException every other
+    // failure of this method is (review of PR #7941): a caller catching that type must not have an unwrapped
+    // runtime exception come out of one path and not the others.
+    final RaftClient dedicated;
+    try {
+      dedicated = raftHAServer.newMembershipClient();
+    } catch (final RuntimeException e) {
+      throw new ConfigurationException("Failed to " + operationDesc
+          + ": the Raft client for the membership change could not be built: " + describe(e), e);
+    }
+
+    try {
+      final RaftClient client = dedicated != null ? dedicated : raftHAServer.getClient();
+      if (client == null)
+        // Both null means this node has no Raft client at all, which is a node whose Raft server has not
+        // started. Said out loud rather than left to NPE out of client.admin() two frames down.
+        throw new ConfigurationException("Failed to " + operationDesc
+            + ": this node has no Raft client, so its Raft server has not started yet. Retry once the node has"
+            + " joined the cluster.");
+      setConfigurationWithRetry(client, argsSupplier, operationDesc, hint);
+    } finally {
+      if (dedicated != null)
+        try {
+          dedicated.close();
+        } catch (final IOException e) {
+          LogManager.instance().log(this, Level.FINE,
+              "Could not close the membership-change client after %s: %s", operationDesc, e.getMessage());
+        }
+    }
+  }
+
+  private void setConfigurationWithRetry(final RaftClient client,
+      final Supplier<SetConfigurationRequest.Arguments> argsSupplier, final String operationDesc, final String hint) {
+    final long startedAt = System.currentTimeMillis();
+    final long deadline = startedAt + setConfigurationBudgetMs;
     long sleepMs = 200;
+    // The longest attempt observed so far. An attempt is only started when the budget still has room for one
+    // that long: the deadline used to be checked only BETWEEN attempts, so an attempt beginning just inside it
+    // ran to completion outside it and the caller waited out one whole extra attempt (issue #7561).
+    long longestAttemptMs = 0;
 
     while (true) {
       try {
@@ -452,20 +521,33 @@ class RaftClusterManager {
         if (args == null)
           return;
 
-        final RaftClientReply reply = raftHAServer.getClient().admin().setConfiguration(args);
+        final long attemptStartedAt = System.currentTimeMillis();
+        final RaftClientReply reply;
+        try {
+          reply = client.admin().setConfiguration(args);
+        } finally {
+          longestAttemptMs = Math.max(longestAttemptMs, System.currentTimeMillis() - attemptStartedAt);
+        }
         if (reply.isSuccess())
           return;
 
-        if (System.currentTimeMillis() < deadline) {
+        final Throwable failure = reply.getException();
+        if (isPermanent(failure))
+          throw new ConfigurationException(permanentMessage(operationDesc, startedAt, failure));
+
+        if (canAttemptAgain(deadline, sleepMs, longestAttemptMs)) {
           LogManager.instance().log(this, Level.FINE,
-              "setConfiguration failed for %s, retrying in %d ms: %s", operationDesc, sleepMs, reply.getException());
+              "setConfiguration failed for %s, retrying in %d ms: %s", operationDesc, sleepMs, failure);
           Thread.sleep(sleepMs);
           sleepMs = Math.min(sleepMs * 2, 2_000);
           continue;
         }
-        throw new ConfigurationException(gaveUpMessage(operationDesc, hint, reply.getException()));
+        throw new ConfigurationException(gaveUpMessage(operationDesc, hint, startedAt, failure));
       } catch (final IOException e) {
-        if (System.currentTimeMillis() < deadline) {
+        if (isPermanent(e))
+          throw new ConfigurationException(permanentMessage(operationDesc, startedAt, e), e);
+
+        if (canAttemptAgain(deadline, sleepMs, longestAttemptMs)) {
           LogManager.instance().log(this, Level.FINE,
               "setConfiguration I/O error for %s, retrying in %d ms", operationDesc, sleepMs);
           try {
@@ -477,12 +559,62 @@ class RaftClusterManager {
           sleepMs = Math.min(sleepMs * 2, 2_000);
           continue;
         }
-        throw new ConfigurationException(gaveUpMessage(operationDesc, hint, e), e);
+        throw new ConfigurationException(gaveUpMessage(operationDesc, hint, startedAt, e), e);
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
         throw new ConfigurationException("Interrupted while waiting to " + operationDesc, e);
       }
     }
+  }
+
+  /**
+   * Whether the budget still has room for the backoff AND one more attempt as long as the longest one so far
+   * (issue #7561).
+   * <p>
+   * The predicate is deliberately on the LONGEST attempt rather than the last: attempt durations here are
+   * bimodal - a synchronous rejection returns in microseconds, a round that waits out the client's retry policy
+   * takes seconds - and sizing the decision on a fast rejection would let the slow shape start again with no
+   * room to finish, which is the overshoot this replaces. A zero {@code longestAttemptMs} (nothing has been
+   * attempted yet, or the attempt was instantaneous) leaves the backoff and the deadline, so a zero budget still
+   * reaches the give-up branch on the first pass exactly as it did before.
+   */
+  private static boolean canAttemptAgain(final long deadline, final long backoffMs, final long longestAttemptMs) {
+    return System.currentTimeMillis() + backoffMs + longestAttemptMs < deadline;
+  }
+
+  /**
+   * Whether {@code failure} says the membership change can NEVER commit, so retrying it until the budget runs
+   * out only makes the operator wait (issue #7539, scope item 3).
+   * <p>
+   * Exactly one Ratis failure qualifies today, and the narrowness is the point. A
+   * {@link GroupMismatchException} means the peer answered from a DIFFERENT Raft group - a node configured for
+   * another cluster, which is one of the four causes issue #7539 lists and the only one of them that says so on
+   * the wire. Everything else that arrives here is or may be progress: {@code ReconfigurationInProgressException}
+   * is the leader holding a {@code Mode.ADD} open while the new peer catches up, {@code LeaderNotReadyException}
+   * and {@code NotLeaderException} are an election settling, and a {@code SetConfigurationException} on the
+   * removal path is the compare-and-set precondition that the next attempt re-snapshots. Classifying any of those
+   * as permanent would turn a slow but succeeding join into a refusal.
+   */
+  private static boolean isPermanent(final Throwable failure) {
+    // Bounded rather than walked to the end: a Ratis failure wraps a handful of causes at most, and a bound is
+    // the one cycle guard that needs no identity comparison of two Throwables.
+    Throwable cause = failure;
+    for (int depth = 0; cause != null && depth < MAX_CAUSE_DEPTH; cause = cause.getCause(), depth++)
+      if (cause instanceof GroupMismatchException)
+        return true;
+    return false;
+  }
+
+  /**
+   * The report for a failure that cannot be retried into a success (issue #7539). Says how long the request
+   * actually took, because the whole point of the classification is that it is a fraction of the budget.
+   */
+  private String permanentMessage(final String operationDesc, final long startedAt, final Throwable failure) {
+    return "Failed to " + operationDesc + " after " + (System.currentTimeMillis() - startedAt)
+        + " ms: the peer answered from a different Raft group, so it belongs to another cluster and this membership"
+        + " change can never commit. Check that it is started with the same " + GlobalConfiguration.HA_CLUSTER_NAME.getKey()
+        + " as this node. Not retried within the " + setConfigurationBudgetMs + " ms budget, because no number of"
+        + " retries changes which cluster a peer belongs to. Raft reported: " + describe(failure);
   }
 
   /**
@@ -498,11 +630,12 @@ class RaftClusterManager {
    * The Ratis text is kept, last and labelled. It is genuinely diagnostic - the attempt count and the retry
    * policy are in it - and dropping it would trade one incomplete report for another.
    */
-  private String gaveUpMessage(final String operationDesc, final String hint, final Throwable ratisFailure) {
+  private String gaveUpMessage(final String operationDesc, final String hint, final long startedAt,
+      final Throwable ratisFailure) {
     final StringBuilder message = new StringBuilder(256);
     message.append("Failed to ").append(operationDesc)
         .append(": the Raft configuration change did not commit within ").append(setConfigurationBudgetMs)
-        .append(" ms.");
+        .append(" ms (gave up after ").append(System.currentTimeMillis() - startedAt).append(" ms).");
     if (hint != null && !hint.isBlank())
       message.append(' ').append(hint);
     message.append(" Raft reported: ").append(describe(ratisFailure));

@@ -21,6 +21,7 @@ package com.arcadedb.schema;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.Arrays;
+import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -154,7 +155,7 @@ public class GeoIndexMetadata extends IndexMetadata {
       if (!(tokenization instanceof String name))
         throw new IllegalArgumentException("Geospatial index tokenization must be a string, got: " + tokenization);
       try {
-        setTokenization(TOKENIZATION.valueOf(name.toUpperCase()));
+        setTokenization(TOKENIZATION.valueOf(name.toUpperCase(Locale.ROOT)));
       } catch (final IllegalArgumentException e) {
         throw new IllegalArgumentException("Invalid geospatial index tokenization '" + name + "'. Supported values: "
             + Arrays.toString(TOKENIZATION.values()), e);
@@ -178,7 +179,7 @@ public class GeoIndexMetadata extends IndexMetadata {
   public static TOKENIZATION readTokenization(final JSONObject indexJSON) {
     final String value = indexJSON.getString("tokenization", LEGACY_TOKENIZATION.name());
     try {
-      return TOKENIZATION.valueOf(value.toUpperCase());
+      return TOKENIZATION.valueOf(value.toUpperCase(Locale.ROOT));
     } catch (final IllegalArgumentException e) {
       return LEGACY_TOKENIZATION;
     }

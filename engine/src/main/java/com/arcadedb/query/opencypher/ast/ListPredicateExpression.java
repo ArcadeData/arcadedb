@@ -20,10 +20,10 @@ package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -66,7 +66,9 @@ public class ListPredicateExpression implements Expression {
     final Iterable<?> iterable;
     if (listValue instanceof Iterable)
       iterable = (Iterable<?>) listValue;
-    else if (listValue.getClass().isArray())
+    else if (MultiValue.isSequenceArray(listValue))
+      // A byte[] (BINARY) is deliberately excluded: it is one opaque value everywhere in openCypher, the same
+      // rule UNWIND already applies, not a sequence to explode one byte at a time (issue #8098).
       iterable = arrayToList(listValue);
     else
       throw new IllegalArgumentException("List predicate requires an iterable, got: " + listValue.getClass().getSimpleName());
@@ -180,22 +182,17 @@ public class ListPredicateExpression implements Expression {
     return null;
   }
 
+  /**
+   * Boxes any array by its actual component type via {@link MultiValue#getMultiValueAsList}, so a property typed
+   * {@code ARRAY_OF_FLOATS} or {@code ARRAY_OF_SHORTS} is walked like any other array instead of silently
+   * producing an empty element list - which used to turn {@code all()}/{@code none()} into vacuous truth and
+   * {@code any()}/{@code single()} into false with no error (issue #8036). A {@code byte[]} (BINARY) never
+   * reaches this method: {@link #evaluate} excludes it with {@link MultiValue#isSequenceArray} first, the same
+   * guard every other openCypher call site now applies, so a BINARY property is one opaque value everywhere
+   * (issue #8098) rather than exploding into individual bytes here.
+   */
   private List<Object> arrayToList(final Object array) {
-    final List<Object> list = new ArrayList<>();
-    if (array instanceof Object[]) {
-      for (final Object o : (Object[]) array)
-        list.add(o);
-    } else if (array instanceof int[]) {
-      for (final int i : (int[]) array)
-        list.add(i);
-    } else if (array instanceof long[]) {
-      for (final long l : (long[]) array)
-        list.add(l);
-    } else if (array instanceof double[]) {
-      for (final double d : (double[]) array)
-        list.add(d);
-    }
-    return list;
+    return MultiValue.getMultiValueAsList(array);
   }
 
   @Override

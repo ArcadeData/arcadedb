@@ -257,6 +257,14 @@ function initGraph() {
           loadNodeNeighbors("in", ele.data("id"));
         },
       },
+      {
+        // Expand a chosen subset instead of everything (issue #7847). The three commands above are the whole
+        // neighbourhood at once, which on a node with thousands of edges buries the graph it was meant to show.
+        content: '<span class="fa fa-filter fa-2x"></span>',
+        select: function (ele) {
+          expandNodePrompt(ele.data("id"));
+        },
+      },
     ],
   });
 
@@ -577,8 +585,79 @@ function removeGraphElement(ele) {
   }
 }
 
-function loadNodeNeighbors(direction, rid) {
+/**
+ * A RID as it can be embedded in a SQL statement, or null when it is not one.
+ *
+ * Every RID these builders receive comes from a Cytoscape node this Studio rendered from a server answer, so it
+ * is already well formed - the check is here because the alternative to validating is concatenating whatever
+ * reached the node data into a command, and a validated shape costs nothing on a path that runs once per click.
+ */
+function sqlRid(rid) {
+  return typeof rid === "string" && /^#\d+:\d+$/.test(rid) ? rid : null;
+}
+
+/**
+ * The command that counts this node's edges per type in one direction, so the expansion picker can show how big
+ * each choice is BEFORE it is made (issue #7847).
+ *
+ * Aggregated on the server on purpose: the whole point is not to pull a supernode's edges down in order to find
+ * out how many there are.
+ */
+function edgeTypeCountsCommand(direction, rid) {
+  const safeRid = sqlRid(rid);
+  if (safeRid === null) return null;
+  return "select @type as type, count(*) as total from (select expand( " + direction + "E() ) from " + safeRid + ") group by @type";
+}
+
+/**
+ * The expansion itself: every edge of this node in `direction`, or only those of the chosen types, with an
+ * optional ceiling.
+ *
+ * The type names travel as named PARAMETERS rather than as quoted literals. A type name is free-form - it can
+ * contain a quote - and the escaping convention for a SQL string literal here is backslash rather than doubling,
+ * which is exactly the kind of detail a builder gets wrong once and then carries. A parameter has no convention
+ * to get wrong. The limit cannot be one (it is not an expression position), so it is coerced to a positive
+ * integer and omitted when it is not one.
+ *
+ * Returns { command, params } or null when the RID is not one.
+ */
+function neighborExpansionCommand(direction, rid, edgeTypes, limit) {
+  const safeRid = sqlRid(rid);
+  if (safeRid === null) return null;
+
+  const params = {};
+  let args = "";
+  const types = Array.isArray(edgeTypes) ? edgeTypes : [];
+  for (let i = 0; i < types.length; i++) {
+    const name = "t" + i;
+    params[name] = types[i];
+    args += (i > 0 ? ", " : "") + ":" + name;
+  }
+
+  let command = "select expand( " + direction + "E(" + args + ") ) from " + safeRid;
+
+  const ceiling = parseInt(limit, 10);
+  if (ceiling > 0) command += " limit " + ceiling;
+
+  return { command: command, params: params };
+}
+
+/**
+ * Adds a node's neighbours to the graph.
+ *
+ * @param direction "out", "in" or "both"
+ * @param rid       the node to expand
+ * @param edgeTypes optional array of edge type names; empty or absent means every type
+ * @param limit     optional ceiling on the number of edges fetched
+ */
+function loadNodeNeighbors(direction, rid, edgeTypes, limit) {
   let database = getCurrentDatabase();
+
+  const expansion = neighborExpansionCommand(direction, rid, edgeTypes, limit);
+  if (expansion === null) {
+    globalNotify("Error", "Cannot expand '" + escapeHtml(String(rid)) + "': not a record id", "danger");
+    return;
+  }
 
   $("#executeSpinner").show();
 
@@ -590,7 +669,8 @@ function loadNodeNeighbors(direction, rid) {
       url: "api/v1/command/" + encodeDatabaseName(database),
       data: JSON.stringify({
         language: "sql",
-        command: "select expand( " + direction + "E() ) from " + rid,
+        command: expansion.command,
+        params: expansion.params,
         serializer: "studio",
       }),
       beforeSend: function (xhr) {
@@ -602,12 +682,19 @@ function loadNodeNeighbors(direction, rid) {
 
       let reachedMax = false;
       for (let i in data.result.vertices) {
+        let vertex = data.result.vertices[i];
+
+        // Already on the canvas. Cytoscape THROWS on a second element with the same id, and the throw would
+        // escape before endBatch(), leaving the graph wedged mid-batch. Overlapping expansions used to be an
+        // edge case; with the relationship picker, expanding one type and then another from the same node is
+        // the ordinary way to use it, so the two expansions share their endpoints by construction (#7939
+        // review). Checked before the ceiling so a re-expansion cannot be counted against it.
+        if (globalRenderedVerticesRID[vertex.r]) continue;
+
         if (Object.keys(globalRenderedVerticesRID).length >= globalGraphMaxResult) {
           reachedMax = true;
           break;
         }
-
-        let vertex = data.result.vertices[i];
 
         assignTypeColor(vertex.t);
         assignProperties(vertex);
@@ -629,6 +716,9 @@ function loadNodeNeighbors(direction, rid) {
         let edge = data.result.edges[i];
 
         if (!globalRenderedVerticesRID[edge.i] || !globalRenderedVerticesRID[edge.o]) continue;
+        // Same duplicate-id throw as the vertices above, and reached the same way: a self-loop, or a second
+        // expansion of a node whose edge is already drawn.
+        if (globalCy.getElementById(edge.r).nonempty()) continue;
 
         assignTypeColor(edge.t);
         assignProperties(edge);
@@ -671,6 +761,205 @@ function loadNodeNeighbors(direction, rid) {
     .always(function (data) {
       $("#executeSpinner").hide();
     });
+}
+
+/**
+ * Turns the per-type count answer into rows the picker renders, biggest first.
+ *
+ * Biggest first because the reason the picker exists is a node with thousands of edges: the type that would
+ * flood the canvas is the one the operator has to see, and it must not be the row they have to scroll to.
+ */
+function parseEdgeTypeCounts(data) {
+  const rows = [];
+  // Two shapes, because two serializers produce them. 'record' - what the count query asks for, it being an
+  // aggregate and not a graph - answers a flat array in `result`. The 'studio' serializer every other call on
+  // this page uses answers an OBJECT, {vertices, edges, records}, and puts a non-element row in `records`; a
+  // reader that knew only the array shape found nothing there and the picker reported "no connections" for
+  // every node (PR #7939 review). Both are read, so the parser survives the call site changing serializer.
+  const payload = data && data.result ? data.result : [];
+  const result = Array.isArray(payload) ? payload : Array.isArray(payload.records) ? payload.records : [];
+  for (let i = 0; i < result.length; i++) {
+    const type = result[i].type;
+    if (type == null) continue;
+    rows.push({ type: String(type), total: Number(result[i].total) || 0 });
+  }
+  rows.sort(function (a, b) {
+    return b.total - a.total || a.type.localeCompare(b.type);
+  });
+  return rows;
+}
+
+/**
+ * The word an operator reads for a direction. One source for it, because the picker names a direction in three
+ * places - the row label, the timeout message, the tooltip - and a message built by concatenation produced
+ * "ingoing" where the table beside it said "incoming" (PR #7939 review).
+ */
+function directionLabel(direction) {
+  return direction === "in" ? "incoming" : "outgoing";
+}
+
+/** Groups the picker's checked rows back into one expansion per direction. */
+function groupSelectedEdgeTypes(selected) {
+  const grouped = { out: [], in: [] };
+  for (let i = 0; i < selected.length; i++) {
+    const choice = selected[i];
+    if (grouped[choice.direction] && grouped[choice.direction].indexOf(choice.type) < 0)
+      grouped[choice.direction].push(choice.type);
+  }
+  return grouped;
+}
+
+/**
+ * Opens the expansion picker for a node (issue #7847).
+ *
+ * The three radial commands beside it expand the WHOLE neighbourhood, which on a node with many connections
+ * produces the hairball the issue was reported with: the graph stops showing anything. This asks the server how
+ * many edges of each type the node has - an aggregate, so a supernode's edges are not pulled down just to be
+ * counted - and lets the operator expand only what they came for, with a ceiling.
+ */
+function expandNodePrompt(rid) {
+  const safeRid = sqlRid(rid);
+  if (safeRid === null) {
+    globalNotify("Error", "Cannot expand '" + escapeHtml(String(rid)) + "': not a record id", "danger");
+    return;
+  }
+
+  const database = getCurrentDatabase();
+  const counts = { out: null, in: null };
+  // Told apart from "answered, and the answer was no edges": both end up as an empty array, and the picker's
+  // empty state says "this node has no connections", which contradicts the error toast that just fired. What
+  // a failed direction means is that the connections are UNKNOWN, not that there are none (PR #7939 review).
+  const failed = { out: false, in: false };
+
+  $("#executeSpinner").show();
+
+  // The picker opens only once BOTH directions have answered, so a request that never resolves would leave the
+  // spinner up and the picker unopened, with nothing said. A hung socket has no answer of its own to wait for,
+  // and jQuery sets no timeout by default; the ceiling is generous because the request is an aggregate over a
+  // supernode's edges, and a timeout lands in the .fail arm below, which reports it and opens the picker on
+  // whichever direction did answer (PR #7939 review).
+  const COUNT_TIMEOUT_MS = 120000;
+
+  ["out", "in"].forEach(function (direction) {
+    jQuery
+      .ajax({
+        type: "POST",
+        url: "api/v1/command/" + encodeDatabaseName(database),
+        data: JSON.stringify({
+          language: "sql",
+          command: edgeTypeCountsCommand(direction, safeRid),
+          // 'record', not the 'studio' serializer the expansions use: these rows are an aggregate, with no
+          // element in them to expand into a graph document, and the flat array is what the counts are.
+          serializer: "record",
+        }),
+        timeout: COUNT_TIMEOUT_MS,
+        beforeSend: function (xhr) {
+          xhr.setRequestHeader("Authorization", globalCredentials);
+        },
+      })
+      .done(function (data) {
+        counts[direction] = parseEdgeTypeCounts(data);
+      })
+      .fail(function (jqXHR, textStatus) {
+        // One direction failing must not strand the picker: report it and carry on with the other, which is
+        // still a usable answer.
+        counts[direction] = [];
+        failed[direction] = true;
+        globalNotify(
+          "Error",
+          textStatus === "timeout"
+            ? "Counting the " + directionLabel(direction) + " relationships timed out"
+            : escapeHtml(jqXHR.responseText),
+          "danger"
+        );
+      })
+      .always(function () {
+        if (counts.out === null || counts.in === null) return;
+        $("#executeSpinner").hide();
+        // Nothing was learned in either direction. The two toasts have already said why; a picker reporting
+        // "no connections" on top of them would be the one statement that is not true.
+        if (failed.out && failed.in) return;
+        showExpandNodeModal(safeRid, counts.out, counts.in);
+      });
+  });
+}
+
+/** The picker itself: one row per (direction, edge type) with its edge count, plus a ceiling. */
+function showExpandNodeModal(rid, outRows, inRows) {
+  if (outRows.length === 0 && inRows.length === 0) {
+    globalNotify("Expand", "This node has no connections to expand", "info");
+    return;
+  }
+
+  let rows = "";
+  let total = 0;
+
+  function appendRows(direction, list, arrow, label) {
+    for (let i = 0; i < list.length; i++) {
+      const row = list[i];
+      total += row.total;
+      rows +=
+        '<tr><td style="width:2rem;">' +
+        '<input class="form-check-input expand-edge-type" type="checkbox" checked ' +
+        'data-direction="' + direction + '" data-type="' + escapeHtml(row.type) + '"></td>' +
+        '<td style="width:6rem;" title="' + label + '">' + arrow + " " + label + "</td>" +
+        "<td><b>" + escapeHtml(row.type) + "</b></td>" +
+        '<td class="text-end">' + row.total + "</td></tr>";
+    }
+  }
+
+  appendRows("out", outRows, '<i class="fa fa-arrow-right"></i>', directionLabel("out"));
+  appendRows("in", inRows, '<i class="fa fa-arrow-left"></i>', directionLabel("in"));
+
+  const html =
+    '<div class="text-muted small mb-2">' +
+    escapeHtml(rid) +
+    " has <b>" +
+    total +
+    "</b> connection(s). Choose which ones to add to the graph.</div>" +
+    '<div class="table-responsive" style="max-height:18rem; overflow-y:auto;">' +
+    '<table class="table table-sm table-striped mb-0" id="expandNodeTable"><tbody>' +
+    rows +
+    "</tbody></table></div>" +
+    '<div class="mt-3">' +
+    '<label for="expandNodeLimit" class="form-label" style="font-size:0.85rem;">Max elements per direction</label>' +
+    '<input type="number" min="1" class="form-control" id="expandNodeLimit" value="' +
+    globalGraphMaxResult +
+    '">' +
+    "</div>";
+
+  globalPrompt("Expand " + rid, html, "Expand", function () {
+    const selected = [];
+    $("#expandNodeTable input.expand-edge-type:checked").each(function () {
+      // attr(), not data(): jQuery's data() coerces a data-* attribute that LOOKS like a literal, so an edge
+      // type genuinely named "null", "true" or "42" would arrive as the value rather than as its name and the
+      // expansion would ask for something that does not exist (PR #7939 review).
+      selected.push({ direction: $(this).attr("data-direction"), type: $(this).attr("data-type") });
+    });
+
+    if (selected.length === 0) {
+      globalNotify("Expand", "No relationship selected, nothing to add", "info");
+      return;
+    }
+
+    // A non-positive ceiling means "no ceiling" to the command builder, which is what the three unfiltered
+    // radial commands rely on - but a 0 TYPED INTO A FIELD LABELLED "max elements" means the opposite, and
+    // silently expanding without a limit is the one reading the operator did not ask for. Refused here rather
+    // than reinterpreted in the builder, so the builder's contract stays what the other callers need
+    // (PR #7939 review).
+    const limit = parseInt($("#expandNodeLimit").val(), 10);
+    if (!(limit > 0)) {
+      globalNotify("Expand", "Max elements must be at least 1", "info");
+      return;
+    }
+
+    const grouped = groupSelectedEdgeTypes(selected);
+
+    // One request per direction rather than one per type: outE('A','B') is a single traversal, and the graph
+    // then lays out both additions together instead of jumping once per type.
+    if (grouped.out.length > 0) loadNodeNeighbors("out", rid, grouped.out, limit);
+    if (grouped.in.length > 0) loadNodeNeighbors("in", rid, grouped.in, limit);
+  });
 }
 
 function addNodeFromRecord(rid) {

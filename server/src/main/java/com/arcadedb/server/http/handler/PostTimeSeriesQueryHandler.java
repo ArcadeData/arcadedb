@@ -40,6 +40,7 @@ import io.undertow.server.HttpServerExchange;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.logging.Level;
 
 /**
@@ -269,16 +270,16 @@ public class PostTimeSeriesQueryHandler extends DatabaseAbstractHandler {
         final String fieldName = TimeSeriesHandlerUtils.requireString(req, "field", reqPath + ".field");
         final AggregationType aggType = TimeSeriesHandlerUtils.resolveAggregationType(req, i);
         final String alias = TimeSeriesHandlerUtils.optString(req, "alias",
-            fieldName + "_" + aggType.name().toLowerCase(), reqPath + ".alias");
+            fieldName + "_" + aggType.name().toLowerCase(Locale.ROOT), reqPath + ".alias");
 
         // The shared helper, as the Grafana handler and the gRPC aggregation path already use: this was the last
         // site outside the gateway still hand-rolling the lookup, and therefore the last place the full-schema vs
-        // non-timestamp index conventions could be confused (claude-review on PR #7323).
+        // non-timestamp index conventions could be confused (code review on PR #7323).
         final int colIndex = TimeSeriesHandlerUtils.findColumnIndex(fieldName, columns);
 
         if (colIndex < 0)
           // JSONObject rather than concatenation: fieldName is caller text, and a double quote in it would turn a
-          // hand-built body into one no client can parse (claude-review on PR #7680).
+          // hand-built body into one no client can parse (code review on PR #7680).
           return TimeSeriesHandlerUtils.badRequest(
               new IllegalArgumentException("Field '" + fieldName + "' not found in type"));
 
@@ -286,7 +287,10 @@ public class PostTimeSeriesQueryHandler extends DatabaseAbstractHandler {
         // 500 after it (issue #7725). The catch below renders it as the same named 400 as the refusals above.
         TimeSeriesGateway.requireAggregatableColumn(columns.get(colIndex), aggType);
 
-        requests.add(new MultiColumnAggregationRequest(colIndex, aggType, alias));
+        // Never the canonical constructor: the factory is what turns the schema index into the ENGINE ROW
+        // position the request carries - the two are the same number only while the TIMESTAMP column is
+        // declared first - and what gives a COUNT no column at all (issue #8140).
+        requests.add(MultiColumnAggregationRequest.of(columns, colIndex, aggType, alias));
         aggNames.put(alias);
       }
     } catch (final IllegalArgumentException e) {

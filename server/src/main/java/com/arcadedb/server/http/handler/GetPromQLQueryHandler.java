@@ -42,20 +42,10 @@ import io.undertow.server.HttpServerExchange;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class GetPromQLQueryHandler extends DatabaseAbstractHandler {
+public class GetPromQLQueryHandler extends AbstractObservabilityHandler {
 
   public GetPromQLQueryHandler(final HttpServer httpServer) {
     super(httpServer);
-  }
-
-  /**
-   * A read: an auto-commit wrapper would only add a commit with nothing to commit, so an unresolvable session
-   * id degrades to a session-less read rather than being refused - see
-   * {@link DatabaseAbstractHandler#rejectsUnresolvableSession()}.
-   */
-  @Override
-  protected boolean requiresTransaction() {
-    return false;
   }
 
   /**

@@ -131,15 +131,21 @@ class Issue6839TsSealedBlobRecoveryTest {
 
   /**
    * The repair is attempted for the engine-unavailable state alone. A blob naming a type that is not a TimeSeries
-   * type at all is still refused and logged - there is nothing there an engine could be initialised over, and
-   * writing the payload to a file named after it would be worse than dropping it.
+   * type at all is still refused - there is nothing there an engine could be initialised over, and writing the
+   * payload to a file named after it would be worse than dropping it.
+   * <p>
+   * It used to be refused by being logged and stepped over, which let the entry be checkpointed over a payload
+   * that was consumed and will never be re-shipped; issue #8172 turned that into the same accumulate-then-throw
+   * #8070 gave the failed repair below, so the refusal now reaches the caller.
    */
   @Test
   void aBlobForANonTimeSeriesTypeIsStillRefused() throws Exception {
     database.getSchema().createDocumentType("NotATimeSeries");
 
-    new ArcadeStateMachine().applySealedBlobs(database,
-        List.of(new TsSealedBlob("NotATimeSeries", 0, "NotATimeSeries_shard_0.ts.sealed", new byte[] { 1, 2, 3 })));
+    assertThatThrownBy(() -> new ArcadeStateMachine().applySealedBlobs(database,
+        List.of(new TsSealedBlob("NotATimeSeries", 0, "NotATimeSeries_shard_0.ts.sealed", new byte[] { 1, 2, 3 }))))
+        .isInstanceOf(SealedStoreNotInstalledException.class)
+        .hasMessageContaining("NotATimeSeries");
 
     assertThat(new File(databasePath, "NotATimeSeries_shard_0.ts.sealed"))
         .as("nothing may be written for a type that has no sealed store").doesNotExist();
@@ -201,15 +207,21 @@ class Issue6839TsSealedBlobRecoveryTest {
 
   /**
    * The failure arm. A blob that is itself unusable cannot repair anything, and what matters is what the apply
-   * path does about it: log it, leave the type exactly as unavailable as it was, and RETURN - not throw, because
-   * the same entry may carry blobs for other types that are perfectly repairable.
+   * path does about it: log it, leave the type exactly as unavailable as it was, and REFUSE THE ENTRY.
+   * <p>
+   * It used to return normally, and issue #8070 is what that cost: a Raft entry is applied once and never
+   * re-shipped, so the entry was checkpointed as applied, the blob that WAS the repair was consumed, and the type
+   * stayed engine-less for the life of the node with nothing left to resend. The refusal now reaches
+   * {@code handleUnexpectedApplyError}, which quarantines the database and arms the targeted snapshot resync.
+   * The "one unrepairable type must not abort the entry" contract is unchanged and pinned by
+   * {@code Issue8070FailedSealedRepairRefusesTheEntryTest}: the throw happens after every blob has been attempted.
    * <p>
    * It also pins the freshened reason. {@code initEngine()} now records why THIS attempt failed, so an operator
    * reading {@code CHECK DATABASE} after a failed repair sees the new cause rather than the original one - here,
    * a header the sealed store rejects, not the flipped magic byte that started it.
    */
   @Test
-  void aBlobThatCannotBeOpenedLeavesTheTypeUnavailableWithoutThrowing() throws Exception {
+  void aBlobThatCannotBeOpenedLeavesTheTypeUnavailableAndRefusesTheEntry() throws Exception {
     buildTypeAndCaptureItsSealedFile();
 
     breakTheSealedFileAndReopen();
@@ -221,8 +233,11 @@ class Issue6839TsSealedBlobRecoveryTest {
 
     // A blob long enough to be written and read back, and nothing the sealed store can make sense of.
     final byte[] garbage = new byte[512];
-    new ArcadeStateMachine().applySealedBlobs(database,
-        List.of(new TsSealedBlob(TYPE_NAME, 0, SEALED_FILE, garbage)));
+    assertThatThrownBy(() -> new ArcadeStateMachine().applySealedBlobs(database,
+        List.of(new TsSealedBlob(TYPE_NAME, 0, SEALED_FILE, garbage))))
+        .as("an entry whose repair did not take effect must not be recorded as applied (issue #8070)")
+        .isInstanceOf(SealedStoreNotInstalledException.class)
+        .hasMessageContaining(TYPE_NAME);
 
     assertThat(broken.isEngineAvailable()).as("an unusable blob must not appear to have repaired anything")
         .isFalse();

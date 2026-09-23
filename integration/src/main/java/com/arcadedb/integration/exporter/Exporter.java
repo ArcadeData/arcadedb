@@ -24,11 +24,9 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.integration.exporter.format.AbstractExporterFormat;
 import com.arcadedb.integration.exporter.format.JsonlExporterFormat;
 import com.arcadedb.integration.importer.ConsoleLogger;
-import com.arcadedb.log.LogManager;
 
 import java.lang.reflect.InvocationTargetException;
 import java.util.*;
-import java.util.logging.Level;
 
 public class Exporter {
   protected ExporterSettings       settings           = new ExporterSettings();
@@ -110,6 +108,14 @@ public class Exporter {
         result.put("edges", context.edges.get());
       if (context.timeSeriesSamples.get() > 0)
         result.put("timeSeriesSamples", context.timeSeriesSamples.get());
+      // Reported, never fatal - see ExporterContext.vanishedTimeSeriesBlocks for why retention removing blocks
+      // under a running export is not the same kind of gap a skipped record is (issue #8166).
+      if (context.vanishedTimeSeriesBlocks.get() > 0)
+        result.put("vanishedTimeSeriesBlocks", context.vanishedTimeSeriesBlocks.get());
+      // Reported ALONGSIDE skippedRecords, which is also incremented for each of these and is what fails the
+      // export: this names which of them left partial rows in the file rather than none at all.
+      if (context.partialTimeSeriesTypes.get() > 0)
+        result.put("partialTimeSeriesTypes", context.partialTimeSeriesTypes.get());
       if (skippedRecords > 0)
         result.put("skippedRecords", skippedRecords);
 
@@ -128,10 +134,13 @@ public class Exporter {
     } catch (final Exception e) {
       throw new ExportException("Error on writing to '" + settings.file + "'", e);
     } finally {
-      if (database != null) {
-        stopExporting();
-        closeDatabase();
-      }
+      // stopExporting() cancels the progress Timer, whose thread is NOT a daemon, so it has to run whenever
+      // startExporting() ran - which is unconditionally. Gating it behind "the database was opened" left the
+      // timer alive on exactly the path where the database could NOT be opened, and a live non-daemon thread
+      // keeps the JVM up: the CLI reported the failure and then hung forever (issue #7903). closeDatabase() is
+      // the one that needs the null check, and it makes it itself.
+      stopExporting();
+      closeDatabase();
     }
   }
 
@@ -161,10 +170,11 @@ public class Exporter {
 
     final DatabaseFactory factory = new DatabaseFactory(settings.databaseURL);
 
-    if (!factory.exists()) {
-      LogManager.instance().log(this, Level.SEVERE, "Database '%s' not found", null, settings.databaseURL);
-      return;
-    }
+    // Throws rather than logging and returning: returning here left `database` null, the export ran on it anyway,
+    // and the first thing the format did with it raised a NullPointerException naming neither the database nor the
+    // reason (issue #7903). Same shape as Backup.openDatabase().
+    if (!factory.exists())
+      throw new ExportException("Database '%s' not found".formatted(settings.databaseURL));
 
     logger.logLine(0, "Opening database '%s'...", settings.databaseURL);
     database = (DatabaseInternal) factory.open();
@@ -210,32 +220,41 @@ public class Exporter {
     case JsonlExporterFormat.NAME:
       return new JsonlExporterFormat(database, settings, context, logger);
 
-    case "graphml": {
-      try {
-        final Class<AbstractExporterFormat> clazz = (Class<AbstractExporterFormat>) Class.forName(
-            "com.arcadedb.gremlin.integration.exporter.format.GraphMLExporterFormat");
-        return clazz.getConstructor(DatabaseInternal.class, ExporterSettings.class, ExporterContext.class, ConsoleLogger.class)
-            .newInstance(database, settings, context, logger);
-      } catch (final InstantiationException | IllegalAccessException | InvocationTargetException | NoSuchMethodException |
-                     ClassNotFoundException e) {
-        LogManager.instance().log(this, Level.SEVERE, "Impossible to find exporter for 'graphml' ", e);
-      }
-    }
+    case "graphml":
+      return gremlinExporterFormat("graphml", "com.arcadedb.gremlin.integration.exporter.format.GraphMLExporterFormat");
 
-    case "graphson": {
-      try {
-        final Class<AbstractExporterFormat> clazz = (Class<AbstractExporterFormat>) Class.forName(
-            "com.arcadedb.gremlin.integration.exporter.format.GraphSONExporterFormat");
-        return clazz.getConstructor(DatabaseInternal.class, ExporterSettings.class, ExporterContext.class, ConsoleLogger.class)
-            .newInstance(database, settings, context, logger);
-      } catch (final InstantiationException | IllegalAccessException | InvocationTargetException | NoSuchMethodException |
-                     ClassNotFoundException e) {
-        LogManager.instance().log(this, Level.SEVERE, "Impossible to find exporter for 'graphson' ", e);
-      }
-    }
+    case "graphson":
+      return gremlinExporterFormat("graphson", "com.arcadedb.gremlin.integration.exporter.format.GraphSONExporterFormat");
 
     default:
       throw new ExportException("Format '" + settings.format + "' not supported");
+    }
+  }
+
+  /**
+   * The exporter for a format the optional {@code arcadedb-gremlin} module supplies, resolved by name because
+   * {@code arcadedb-integration} deliberately does not depend on it.
+   * <p>
+   * The mirror of {@code SourceDiscovery}'s import-side lookup, and it had the mirror defect: each {@code case}
+   * logged {@code SEVERE} and then ran off the end of its own block, so {@code case "graphml"} FELL THROUGH into
+   * {@code case "graphson"}. With the module absent both lookups fail together and only the log misleads - it
+   * reports about graphson for a graphml request - but with the module present and only {@code GraphMLExporterFormat}
+   * failing to construct, the fall-through returned a GraphSONExporterFormat and wrote a GraphSON archive into the
+   * file the operator named {@code .graphml} (issue #7781). One {@code return} per format makes that unreachable by
+   * construction, and the refusal names the format actually requested plus the module that supplies it.
+   */
+  @SuppressWarnings("unchecked")
+  private AbstractExporterFormat gremlinExporterFormat(final String format, final String className) {
+    try {
+      final Class<AbstractExporterFormat> clazz = (Class<AbstractExporterFormat>) Class.forName(className);
+      return clazz.getConstructor(DatabaseInternal.class, ExporterSettings.class, ExporterContext.class, ConsoleLogger.class)
+          .newInstance(database, settings, context, logger);
+    } catch (final InstantiationException | IllegalAccessException | InvocationTargetException | NoSuchMethodException |
+                   ClassNotFoundException | ClassCastException e) {
+      // ClassCastException too - see SourceDiscovery.gremlinFormatImporter() for why the unchecked cast needs it.
+      throw new ExportException(
+          "Cannot export in '" + format + "' format: its exporter is provided by the optional arcadedb-gremlin module, "
+              + "which is not available on this classpath", e);
     }
   }
 }

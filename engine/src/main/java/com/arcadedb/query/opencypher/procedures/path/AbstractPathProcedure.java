@@ -18,10 +18,17 @@
  */
 package com.arcadedb.query.opencypher.procedures.path;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.RID;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.EdgeIdentitySet;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.utility.RidHashSet;
 
 import java.util.*;
 
@@ -31,6 +38,17 @@ import java.util.*;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public abstract class AbstractPathProcedure implements CypherProcedure {
+  /**
+   * The "no edge-type filter" argument. {@code getEdges}, {@code getConnectedVertexRIDs} and their iterators all read
+   * a null and an empty array the same way, so this is a sentinel, not a behaviour change - and sharing one empty
+   * array is safe where sharing {@link #BOTH_DIRECTIONS} would not be, because an array of length zero has nothing a
+   * stray write could reach.
+   */
+  protected static final String[] NO_TYPES = new String[0];
+
+  // Private, not protected: `final` on an array fixes the reference and nothing else, so a shared array with
+  // elements in it, handed to subclasses, is one stray write away from corrupting every caller of every path walk
+  private static final Vertex.DIRECTION[] BOTH_DIRECTIONS = { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN };
 
   protected Vertex extractVertex(final Object arg, final String paramName) {
     if (arg == null)
@@ -121,15 +139,180 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
     return path;
   }
 
-  protected boolean matchesLabels(final Vertex vertex, final String[] labels) {
+  /**
+   * Walks the component reachable from {@code startNode} breadth-first, collecting the vertices - and, only when
+   * {@code reachableEdges} is non-null, the edges - it reaches.
+   * <p>
+   * Shared by {@code path.subgraphAll}, {@code path.subgraphNodes} and anything else that needs a reachable
+   * component, because the expensive part is not the walk but what the walk loads, and getting that wrong once is
+   * enough (issue #7976). Three rules keep the loaded set down to what the caller asked for:
+   * <ul>
+   *   <li><b>A neighbour is identified by its RID, not by its record.</b> Both RIDs of an adjacency entry sit
+   *   inline in the edge segment, so the "have I been here already?" test - which rejects the large majority of
+   *   entries in any graph that is not a tree - costs two primitive comparisons and touches no record at all. The
+   *   previous walk asked the edge for {@code getInVertex()}/{@code getOutVertex()} FIRST and deduplicated
+   *   afterwards, so a component with E adjacency entries and V vertices loaded ~2E vertex records instead of V,
+   *   plus an edge record for every one of them.</li>
+   *   <li><b>A label filter is answered from the schema, not from the record.</b> A vertex's label is its type, and
+   *   its type is determined by the bucket its RID names, so a neighbour excluded by {@code labelFilter} is never
+   *   loaded.</li>
+   *   <li><b>Edges are collected only when the caller yields them.</b> Under a plain {@code YIELD nodes} the walk
+   *   uses the neighbour-RID iterator, which reads the adjacency entries without materialising a single edge.</li>
+   * </ul>
+   * An adjacency entry whose far endpoint has no record is dropped whole - neither the vertex nor the edge reaching
+   * it is reported - but this walk never pays to find that out up front: a traversed edge is always appended to
+   * {@code reachableEdges} the moment it is seen (deduplicated by identity), and a closing pass at the end of the
+   * walk drops every edge whose endpoint did not, for whatever reason, make it into {@code reachableNodes} - a
+   * ghost endpoint and one the {@code labelFilter} excludes are the same case from the closing pass's point of
+   * view, and neither has to be resolved just to learn that (issue #7982: {@code relationships} used to keep an
+   * edge whose {@code labelFilter}-excluded endpoint was never in {@code nodes}, which also meant loading exactly
+   * the vertex record the filter exists to avoid loading). Under a plain {@code YIELD nodes} a filtered-out
+   * neighbour is still never read, which remains the filter's whole value there.
+   * <p>
+   * The walk is level-synchronous rather than a queue of (vertex, level) pairs: the level is a property of the
+   * wave, so tracking it per entry allocates one wrapper per vertex to carry a number the loop already knows.
+   *
+   * @param startNode      the vertex the component is measured from; always the first entry of the result
+   * @param relTypes       edge types to follow, or {@code null}/empty for all of them
+   * @param labelFilter    vertex labels to accept, or {@code null}/empty for all of them
+   * @param maxLevel       maximum number of hops from {@code startNode}
+   * @param reachableNodes collects the reached vertices, in breadth-first order
+   * @param reachableEdges collects the traversed edges, or {@code null} to skip building them entirely
+   */
+  protected void collectReachableComponent(final Vertex startNode, final String[] relTypes, final String[] labelFilter,
+      final int maxLevel, final List<Vertex> reachableNodes, final List<Edge> reachableEdges) {
+    final Database database = startNode.getDatabase();
+    final String[] edgeTypes = relTypes != null ? relTypes : NO_TYPES;
+    final boolean collectEdges = reachableEdges != null;
+
+    final RidHashSet visitedNodes = new RidHashSet();
+    final RidHashSet ghostNodes = new RidHashSet(16);
+    final EdgeIdentitySet visitedEdges = collectEdges ? new EdgeIdentitySet() : null;
+
+    visitedNodes.add(startNode.getIdentity());
+    reachableNodes.add(startNode);
+
+    List<Vertex> frontier = new ArrayList<>();
+    frontier.add(startNode);
+
+    for (int level = 0; level < maxLevel && !frontier.isEmpty(); ++level) {
+      final List<Vertex> nextFrontier = new ArrayList<>();
+
+      for (final Vertex current : frontier) {
+        if (collectEdges) {
+          // The edges are part of the answer: materialise them, but still take the neighbour from the edge's RID
+          // rather than from its record, so an already-visited neighbour costs nothing
+          for (final Vertex.DIRECTION direction : BOTH_DIRECTIONS) {
+            for (final Edge edge : current.getEdges(direction, edgeTypes)) {
+              try {
+                // Reading the endpoint is what forces a lazily loaded edge, so a ghost edge record surfaces here
+                final RID neighborId = direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut();
+
+                // Recorded unconditionally: the closing pass after the walk is what decides whether the endpoint
+                // earned this edge a place in the answer, so no endpoint has to be resolved here just for that
+                if (visitedEdges.add(edge.getIdentity()))
+                  reachableEdges.add(edge);
+
+                visitNeighbor(database, neighborId, labelFilter, visitedNodes, ghostNodes, reachableNodes, nextFrontier);
+              } catch (final RecordNotFoundException e) {
+                GhostEdgeReporter.reportSkipped(e);
+              }
+            }
+          }
+        } else {
+          // Only the nodes are asked for: walk the adjacency entries without loading a single edge record
+          for (final RID neighborId : current.getConnectedVertexRIDs(Vertex.DIRECTION.BOTH, edgeTypes))
+            visitNeighbor(database, neighborId, labelFilter, visitedNodes, ghostNodes, reachableNodes, nextFrontier);
+        }
+      }
+
+      frontier = nextFrontier;
+    }
+
+    if (collectEdges) {
+      // Close relationships over the final node set: cheap, because reachableNodes is already the RID set the
+      // answer commits to, and this is what keeps an edge from naming a vertex the same result does not contain
+      // (issue #7982) - whether that vertex was excluded by labelFilter or never existed in the first place
+      final RidHashSet finalNodeIds = new RidHashSet(reachableNodes.size());
+      for (final Vertex node : reachableNodes)
+        finalNodeIds.add(node.getIdentity());
+
+      reachableEdges.removeIf(edge -> !finalNodeIds.contains(edge.getOut()) || !finalNodeIds.contains(edge.getIn()));
+    }
+  }
+
+  /**
+   * The neighbour vertex behind a RID, or {@code null} when that RID names no record.
+   * <p>
+   * A missing endpoint is remembered in {@code ghostNodes}, so the second edge into the same ghost costs a set probe
+   * instead of another failed load and another report - which matters on a vertex with a high ghost fan-in, where
+   * "report every encounter" means one failed load per edge. It is a set of its own rather than the walk's visited
+   * set because the two answer different questions: a ghost was never reached, and marking it as though it had been
+   * makes a later edge to it look ordinary (issue #7976).
+   */
+  protected Vertex resolveNeighbor(final RID neighborId, final RidHashSet ghostNodes) {
+    if (ghostNodes.contains(neighborId))
+      return null;
+
+    try {
+      return neighborId.asVertex();
+    } catch (final RecordNotFoundException e) {
+      ghostNodes.add(neighborId);
+      GhostEdgeReporter.reportSkipped(e);
+      return null;
+    }
+  }
+
+  /**
+   * Adds a neighbour to the walk unless it has been seen already or its label is filtered out. The vertex record is
+   * loaded only once both tests have passed, which is what keeps the walk's loads proportional to the component
+   * rather than to its adjacency entries: a neighbour the {@code labelFilter} excludes is never resolved, here or
+   * later, because a closing pass over {@code reachableNodes} (not this method) is what keeps a collected edge from
+   * naming such a neighbour (issue #7982) - so there is nothing this method needs to know about that neighbour
+   * beyond "not part of {@code nodes}".
+   * <p>
+   * A RID with no record behind it is recorded in {@code ghostNodes} rather than in {@code visitedNodes}: the two
+   * answer different questions, and conflating them would mark a missing vertex as reached - so the FIRST edge to
+   * a ghost would be dropped and every later one silently kept, which is worse than either consistent outcome.
+   */
+  private void visitNeighbor(final Database database, final RID neighborId, final String[] labelFilter,
+      final RidHashSet visitedNodes, final RidHashSet ghostNodes, final List<Vertex> reachableNodes,
+      final List<Vertex> nextFrontier) {
+    // Before any set is touched: RidHashSet reads the bucket and offset off the RID without checking it for null
+    if (neighborId == null || visitedNodes.contains(neighborId) || ghostNodes.contains(neighborId))
+      return;
+
+    if (!matchesLabels(database, neighborId, labelFilter))
+      return;
+
+    final Vertex neighbor = resolveNeighbor(neighborId, ghostNodes);
+    if (neighbor == null)
+      return;
+
+    visitedNodes.add(neighborId);
+    reachableNodes.add(neighbor);
+    nextFrontier.add(neighbor);
+  }
+
+  /**
+   * Tells whether a vertex's label is one the caller accepts, answered from the RID alone: a vertex's label is its
+   * type name, and a bucket belongs to exactly one type, so the schema knows the answer without the record being
+   * read. That is the whole point - it replaced a {@code Vertex}-based overload that could only answer once the
+   * record was in hand, which meant loading precisely the vertices the filter exists to leave out.
+   */
+  protected boolean matchesLabels(final Database database, final RID vertexId, final String[] labels) {
     if (labels == null || labels.length == 0)
       return true;
 
-    final String vertexType = vertex.getTypeName();
-    for (final String label : labels) {
+    final DocumentType type = database.getSchema().getTypeByBucketId(vertexId.getBucketId());
+    if (type == null)
+      return false;
+
+    final String vertexType = type.getName();
+    for (final String label : labels)
       if (vertexType.equals(label))
         return true;
-    }
+
     return false;
   }
 

@@ -286,7 +286,7 @@ it.
 
 ### Cycle 1 - `26c891e3`
 
-`claude` (PR issue comment, the gating surface on this org's repos): no blocking findings. It verified
+Code review (PR issue comment, the gating surface on this org's repos): no blocking findings. It verified
 `conflictsWith`'s new asymmetric relation against the pairwise cases, the `int[]` multiset's copy-on-write
 property, the reservation being taken after validation and permission checks, and confirmed the
 `StatementCache` reasoning behind the `this.url` fix independently. One non-blocking observation - the
@@ -329,7 +329,7 @@ No deferred items. Nothing was skipped as a disagreement.
 
 ### Cycle 2 - `e5aadf50`
 
-`claude`: no correctness bug found. It traced all 4x4 `conflictsWith` pairs by hand against the stated
+Code review: no correctness bug found. It traced all 4x4 `conflictsWith` pairs by hand against the stated
 invariant, confirmed the `int[]` copy-on-write swap never publishes a partially-updated array to
 `isInProgress`, confirmed the reservation ordering matches `BackupDatabaseStatement`, and confirmed the
 `this.url` removal is a real fix rather than a style change. Two non-blocking notes, both explicitly "no

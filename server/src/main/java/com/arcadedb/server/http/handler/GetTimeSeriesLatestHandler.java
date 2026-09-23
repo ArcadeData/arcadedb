@@ -139,7 +139,7 @@ public class GetTimeSeriesLatestHandler extends DatabaseAbstractHandler {
         // gRPC TimeSeriesLatest RPC added in #7305. Left alone, this loop resolved to JSONArray.put(Object),
         // which does NOT take the NaN-rewriting put(Number) overload, and the endpoint answered the token NaN
         // where its gRPC twin answered null - the two protocols disagreeing on exactly the value this change
-        // is about (claude-review on PR #7323).
+        // is about (code review on PR #7323).
         putSampleValue(latestArray, val);
       result.put("latest", latestArray);
     }

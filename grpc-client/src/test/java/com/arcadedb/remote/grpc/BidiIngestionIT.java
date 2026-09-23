@@ -24,10 +24,7 @@ import com.arcadedb.server.grpc.InsertOptions;
 import com.arcadedb.server.grpc.InsertOptions.ConflictMode;
 import com.arcadedb.server.grpc.InsertOptions.TransactionMode;
 import com.arcadedb.server.grpc.InsertSummary;
-import com.arcadedb.server.BaseGraphServerTest;
-import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -45,7 +42,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Integration tests for bidirectional streaming ingestion via gRPC.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
-class BidiIngestionIT extends BaseGraphServerTest {
+class BidiIngestionIT extends BaseGrpcClientServerTest {
 
   private static final String TYPE = "BidiTest";
 
@@ -59,23 +56,13 @@ class BidiIngestionIT extends BaseGraphServerTest {
         "GRPC:com.arcadedb.server.grpc.GrpcServerPlugin");
   }
 
-  @BeforeAll
-  void setupServer() {
-    grpcServer = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
-  }
-
-  @AfterAll
-  void teardownServer() {
-    if (grpcServer != null) {
-      grpcServer.close();
-    }
-  }
-
   @BeforeEach
   @Override
   public void beginTest() {
     super.beginTest();
-    database = new RemoteGrpcDatabase(grpcServer, "localhost", 50051, 2480, getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
+    // Per test, after the server started: the gRPC port is assigned by the operating system on every start (#8209).
+    grpcServer = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    database = new RemoteGrpcDatabase(grpcServer, "localhost", getServerGrpcPort(), getServerHttpPort(), getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
 
     database.command("sql", "CREATE VERTEX TYPE `" + TYPE + "` IF NOT EXISTS BUCKETS 8");
     database.command("sql", "CREATE PROPERTY `" + TYPE + "`.id IF NOT EXISTS STRING");
@@ -93,6 +80,8 @@ class BidiIngestionIT extends BaseGraphServerTest {
       try { database.rollback(); } catch (Throwable ignore) {}
       database.close();
     }
+    if (grpcServer != null)
+      grpcServer.close();
     super.endTest();
   }
 

@@ -41,7 +41,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 public class Issue6412PreAuthCapIT extends PostgresWireProtocolTestBase {
 
-  private static final int POSTGRES_PORT = 5432;
   private static final int MAX_PREAUTH   = 2;
 
   @Override
@@ -124,7 +123,7 @@ public class Issue6412PreAuthCapIT extends PostgresWireProtocolTestBase {
 
   private Socket openSocket() throws Exception {
     final Socket socket = new Socket();
-    socket.connect(new InetSocketAddress("localhost", POSTGRES_PORT), 5_000);
+    socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 5_000);
     socket.setSoTimeout(30_000);
     return socket;
   }

@@ -55,7 +55,7 @@ import java.util.concurrent.locks.Lock;
  * package shares. That is what makes this pause and {@link TimeSeriesSealedInstallLock} - which takes the WRITE
  * half of a subset of the same locks, concurrently, by design - unable to close a cycle. Read its javadoc before
  * changing either walk: the order used to be each acquirer's own walk of the schema, which is not stable enough
- * to be held to (claude-review on PR #7474).
+ * to be held to (code review on PR #7474).
  * <p>
  * Take it BEFORE any flush suspension or point-in-time window, never inside one: a compaction sitting in Phase
  * 4c holds the write lock while it commits, and a commit that cannot proceed because the caller has already

@@ -38,6 +38,7 @@ import com.arcadedb.server.http.handler.batch.TempIdVertexRefResolver;
 import com.arcadedb.server.http.handler.batch.VertexRefResolver;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
+import io.undertow.server.RequestTooBigException;
 import io.undertow.server.ServerConnection;
 import io.undertow.util.HeaderValues;
 import io.undertow.util.Headers;
@@ -335,7 +336,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // Determine format from Content-Type
     final HeaderValues contentTypeHeader = exchange.getRequestHeaders().get("Content-Type");
     final String contentType = contentTypeHeader != null && !contentTypeHeader.isEmpty()
-        ? contentTypeHeader.getFirst().toLowerCase()
+        ? contentTypeHeader.getFirst().toLowerCase(Locale.ROOT)
         : "application/x-ndjson";
 
     // Response encoding, negotiated exactly the way #7306 negotiated the streaming query. Read before any work
@@ -349,7 +350,8 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     // The counter is what tells a body that ended early from one that ended (issue #5470): not every premature
     // end of a request body surfaces as an IOException, and a load that silently stops half-way must never be
     // answered with a 200.
-    final CountingInputStream inputStream = new CountingInputStream(exchange, exchange.getInputStream());
+    final CountingInputStream inputStream = new CountingInputStream(exchange, exchange.getInputStream(),
+        httpServer.getServer().getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE));
 
     // Applies to the forwarding path too: while the leader is busy the follower cannot drain the client
     // socket either, so its own watchdog would kill the upload it is relaying (issue #5470).
@@ -572,6 +574,26 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
       error.put("partialCommit", verticesCreated > 0 || edgesCreated > 0);
       addLineAccounting(error, stream, vertexRefs, inputStream);
       return new ExecutionResponse(400, error.toString());
+    } catch (final RequestTooBigException e) {
+      // BEFORE the IOException arm below, which it extends. This is not a client that went away: it is this
+      // server declining to read past arcadedb.server.httpBodyContentMaxSize, which bounds the INCOMING side of
+      // a bulk load exactly as the note left on the removed arcadedb.ha.proxyMaxBodySize in GlobalConfiguration
+      // says it does (issue #7772). The arm below would report it as a truncated upload and point the operator
+      // at the streaming read timeout, which is the wrong knob and the wrong diagnosis.
+      //
+      // Rethrown rather than answered here, so the 413 is built in the one place that builds it for every other
+      // route - sendMappedErrorResponse - instead of a fourth hand-written copy. The counts go to the log
+      // because they cannot go to the client: GraphBatch commits incrementally, so a refusal mid-load leaves
+      // durable records the operator has to be able to account for, and the response usually cannot be
+      // delivered at all (see the note on this exception in AbstractServerHttpHandler).
+      LogManager.instance().log(this, Level.WARNING,
+          "Batch load on database '%s' was refused after %d vertices and %d edges because the request body exceeded "
+              + "'%s' (currently %d bytes). Raise that setting or split the payload",
+          null, databaseName, verticesCreated, edgesCreated,
+          GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE.getKey(),
+          httpServer.getServer().getConfiguration()
+              .getValueAsLong(GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE));
+      throw e;
     } catch (final IOException e) {
       // The request body could not be read to the end: the client went away, a proxy cut the upload, or the
       // connection watchdog fired because the server spent longer than its budget committing instead of
@@ -1324,14 +1346,31 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
   // reproduce a request body that fails on a probe and then offers bytes anyway (issue #6180).
   static class CountingInputStream extends FilterInputStream {
     private final HttpServerExchange exchange;
+    /**
+     * {@code arcadedb.server.httpBodyContentMaxSize}, or a value {@code <= 0} when the deployment turned the cap
+     * off. The streaming load buffers nothing, so nothing else on this route would ever have stopped it: the
+     * declared-length check in {@code HttpServer.createBodySizeLimitHandler} cannot see a body that declares no
+     * length, and that is how a chunked bulk load used to be read without any bound at all (issue #7772).
+     */
+    private final long              maxBodySize;
     private       long              bytesRead;
     private       boolean           endOfBody;
     /** The failure that ended this body, or {@code null} while it is still readable. */
     private       IOException       bodyFailure;
 
+    /**
+     * An UNCAPPED counter, for the callers that wrap a stream whose size is already bounded by something else -
+     * the leader-forwarding relay of a body this node has itself already accepted, and the unit tests that drive
+     * the counting and truncation behaviour directly.
+     */
     CountingInputStream(final HttpServerExchange exchange, final InputStream in) {
+      this(exchange, in, -1);
+    }
+
+    CountingInputStream(final HttpServerExchange exchange, final InputStream in, final long maxBodySize) {
       super(in);
       this.exchange = exchange;
+      this.maxBodySize = maxBodySize;
     }
 
     @Override
@@ -1344,9 +1383,10 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         bodyFailure = e;
         throw e;
       }
-      if (read >= 0)
+      if (read >= 0) {
         ++bytesRead;
-      else
+        refuseIfOverCap();
+      } else
         endOfBody = true;
       return read;
     }
@@ -1361,11 +1401,26 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         bodyFailure = e;
         throw e;
       }
-      if (read > 0)
+      if (read > 0) {
         bytesRead += read;
-      else if (read < 0)
+        refuseIfOverCap();
+      } else if (read < 0)
         endOfBody = true;
       return read;
+    }
+
+    /**
+     * Refuses the rest of a body that has already delivered more than the configured cap. Recorded as this
+     * body's failure like any other, so a subsequent read reports the same reason rather than a truncation, and
+     * thrown as the type the rest of the server maps to a 413.
+     */
+    private void refuseIfOverCap() throws IOException {
+      if (maxBodySize > 0 && bytesRead > maxBodySize) {
+        bodyFailure = new RequestTooBigException(
+            "Request body size exceeds the maximum allowed size of " + maxBodySize + " bytes. Configure '"
+                + GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE.getKey() + "' to increase the limit");
+        throw bodyFailure;
+      }
     }
 
     /**

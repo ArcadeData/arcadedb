@@ -18,6 +18,7 @@
  */
 package com.arcadedb.postgres;
 
+import com.arcadedb.query.sql.parser.Identifier;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -123,9 +124,56 @@ class PostgresCopyStatementTest {
     assertCopyException("COPY (SELECT 1) STDOUT", PostgresCopyStatement.SQLSTATE_SYNTAX_ERROR, "expected TO");
     assertCopyException("COPY (SELECT 1) TO STDOUT garbage", PostgresCopyStatement.SQLSTATE_SYNTAX_ERROR, "'garbage'");
     assertCopyException("COPY t (a, b TO STDOUT", PostgresCopyStatement.SQLSTATE_SYNTAX_ERROR, "column list");
-    // The table form splices its names between back-ticks in a SELECT: a name holding one is refused, not spliced.
-    assertCopyException("COPY \"t` WHERE 1=1 --\" TO STDOUT", PostgresCopyStatement.SQLSTATE_SYNTAX_ERROR, "back-tick");
-    assertCopyException("COPY t (\"a`, b\") TO STDOUT", PostgresCopyStatement.SQLSTATE_SYNTAX_ERROR, "back-tick");
+  }
+
+  /**
+   * Found in the review of issue #7858: the query form reads to the closing {@code )} with
+   * {@code matchingParenthesis}, which scanned a back-tick identifier with {@code indexOf} - so an ESCAPED
+   * back-tick ended it, and a {@code )} inside that identifier became the outer query's terminator. The same
+   * escaping rule the tokenizer and {@link Identifier#quote} use applies there too.
+   */
+  @Test
+  void anEscapedBackTickInsideTheQueryFormDoesNotEndTheIdentifierOrTheQuery() {
+    // `a`b)` is one identifier holding a back-tick and a ')'. The query must be read whole, up to the REAL ')'.
+    final String name = Identifier.quote("a`b)");
+    assertThat(PostgresCopyStatement.parse("COPY (SELECT FROM " + name + ") TO STDOUT").getQuery())
+        .isEqualTo("SELECT FROM " + name);
+
+    // A double-quoted identifier escapes by doubling the quote, which the same scan still reads correctly.
+    assertThat(PostgresCopyStatement.parse("COPY (SELECT FROM \"a\"\"b)\") TO STDOUT").getQuery())
+        .isEqualTo("SELECT FROM \"a\"\"b)\"");
+  }
+
+  /**
+   * Issue #7858: the table form splices its names between back-ticks in a generated SELECT, and used to guard that
+   * splice by refusing the back-tick on the stated ground that ArcadeDB's SQL cannot escape inside an identifier.
+   * It can - that is what #7740 established and what {@link Identifier#quote} does - so the guard refused a name
+   * that has a correct rendering, and let through the OTHER character that carries meaning inside a back-tick
+   * quoted identifier: the backslash, which the grammar
+   * ({@code QUOTED_IDENTIFIER : BACKTICK ( ~[`\\] | '\\' . )+ BACKTICK}) reads as an escape.
+   */
+  @Test
+  void bothCharactersThatCarryMeaningInsideABackTickIdentifierAreEscapedRatherThanOneRefusedAndOneIgnored() {
+    // A name holding a back-tick is rendered, not refused, and what it renders to cannot end the identifier early.
+    assertThat(PostgresCopyStatement.parse("COPY \"t` WHERE 1=1 --\" TO STDOUT").getQuery())
+        .isEqualTo("SELECT FROM `t\\` WHERE 1=1 --`");
+    assertThat(PostgresCopyStatement.parse("COPY t (\"a`, b\") TO STDOUT").getQuery())
+        .isEqualTo("SELECT `a\\`, b` FROM `t`");
+
+    // The backslash used to be spliced raw: `a\b` unescapes to `ab`, so the statement read a type the server
+    // knows under a name the client never asked for, or failed "type not found".
+    assertThat(PostgresCopyStatement.parse("COPY \"a\\b\" TO STDOUT").getQuery()).isEqualTo("SELECT FROM `a\\\\b`");
+    assertThat(PostgresCopyStatement.parse("COPY t (\"a\\b\") TO STDOUT").getQuery()).isEqualTo("SELECT `a\\\\b` FROM `t`");
+
+    // And a name ENDING in a backslash used to escape the closing back-tick, so the identifier did not end where
+    // the builder assumed and ran into whatever parseTail() appended after it - the statement-boundary break the
+    // back-tick guard existed to prevent, left open for the one character it did not test.
+    assertThat(PostgresCopyStatement.parse("COPY \"x\\\" TO STDOUT").getQuery()).isEqualTo("SELECT FROM `x\\\\`");
+
+    // Every rendering above is what the engine's own identifier quoting produces, which is the point: this is the
+    // escaping, not a copy of it.
+    assertThat(PostgresCopyStatement.parse("COPY \"a\\b\" TO STDOUT").getQuery())
+        .isEqualTo("SELECT FROM " + Identifier.quote("a\\b"));
   }
 
   /**

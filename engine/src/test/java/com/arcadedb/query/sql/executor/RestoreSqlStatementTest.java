@@ -76,7 +76,7 @@ class RestoreSqlStatementTest extends TestHelper {
     database.transaction(() -> rid[0] = database.newDocument(DOC_TYPE).set("name", "original").save().getIdentity());
 
     final LocalBucket bucket = (LocalBucket) db.getSchema().getBucketById(rid[0].getBucketId());
-    database.transaction(() -> bucket.deleteRecord(rid[0]));
+    database.transaction(() -> TestHelper.deleteRecordAtLowLevel(database, rid[0]));
     assertThat(bucket.existsRecord(rid[0])).isFalse();
 
     database.transaction(() -> {
@@ -107,7 +107,7 @@ class RestoreSqlStatementTest extends TestHelper {
     });
 
     final LocalBucket bucket = (LocalBucket) db.getSchema().getBucketById(hub[0].getBucketId());
-    database.transaction(() -> bucket.deleteRecord(hub[0]));
+    database.transaction(() -> TestHelper.deleteRecordAtLowLevel(database, hub[0]));
     database.transaction(() -> assertThatThrownBy(() -> database.lookupByRID(hub[0], true)).isInstanceOf(RecordNotFoundException.class));
 
     database.transaction(() -> {
@@ -153,7 +153,7 @@ class RestoreSqlStatementTest extends TestHelper {
     // Raw-delete ONLY the edge record - the vertices' adjacency lists still reference it, exactly the scenario this
     // statement is for.
     final LocalBucket edgeBucket = (LocalBucket) db.getSchema().getBucketById(edgeRid[0].getBucketId());
-    database.transaction(() -> edgeBucket.deleteRecord(edgeRid[0]));
+    database.transaction(() -> TestHelper.deleteRecordAtLowLevel(database, edgeRid[0]));
     assertThat(edgeBucket.existsRecord(edgeRid[0])).isFalse();
 
     database.transaction(() -> {
@@ -190,7 +190,7 @@ class RestoreSqlStatementTest extends TestHelper {
     final LocalBucket edgeBucket = (LocalBucket) db.getSchema().getBucketById(edgeRid[0].getBucketId());
     // A RID that was never a real vertex.
     final RID fakeVertex = new RID(v1[0].getBucketId(), 999_999L);
-    database.transaction(() -> edgeBucket.deleteRecord(edgeRid[0]));
+    database.transaction(() -> TestHelper.deleteRecordAtLowLevel(database, edgeRid[0]));
 
     assertThatThrownBy(() -> database.transaction(() -> database.command("sql",
         "RESTORE EDGE " + EDGE_TYPE + " RID " + edgeRid[0] + " FROM " + v1[0] + " TO " + fakeVertex))).isInstanceOf(

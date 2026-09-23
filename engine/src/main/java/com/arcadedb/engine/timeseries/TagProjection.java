@@ -122,7 +122,7 @@ final class TagProjection {
   }
 
   /**
-   * Enforces the precondition {@link #narrow} depends on (claude-review on PR #7747).
+   * Enforces the precondition {@link #narrow} depends on (code review on PR #7747).
    * <p>
    * A real check and not an {@code assert}, although this is a contract between engine paths rather than anything
    * a user can reach: assertions are off in every default production JVM, and the failure mode a violation

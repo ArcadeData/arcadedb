@@ -242,7 +242,7 @@ public enum PostgresType {
   private static Boolean parseBooleanText(final String value) {
     if (value == null)
       throw new PostgresProtocolException("Cannot parse null BOOLEAN text value");
-    return switch (value.toLowerCase()) {
+    return switch (value.toLowerCase(Locale.ROOT)) {
       case "t", "true", "1", "y", "yes", "on" -> Boolean.TRUE;
       case "f", "false", "0", "n", "no", "off" -> Boolean.FALSE;
       default -> throw new PostgresProtocolException("Cannot parse BOOLEAN text value: " + value);
@@ -935,7 +935,13 @@ public enum PostgresType {
       } else if (element instanceof Number || element instanceof Boolean) {
         sb.append(element);
       } else if (element instanceof Character) {
-        sb.append("'").append(element).append("'");
+        // A Postgres array literal quotes an element with the DOUBLE quote and nothing else: a single quote is
+        // an ordinary data character there, so wrapping the character in single quotes (issue #7801) shipped
+        // {'a','b'}, which every decoder - this enum's own parseArrayFromString included - reads back as the
+        // three-character strings 'a' and 'b'. Quoted like every other textual element, {"a","b"} decodes to a
+        // and b, and a character that would otherwise break the literal - a comma, a brace, a quote, a
+        // backslash - is escaped.
+        appendQuoted(sb, element.toString());
       } else if (element instanceof Date date) {
         // Format Date as PostgreSQL-compatible timestamp in arrays
         LocalDateTime ldt = LocalDateTime.ofInstant(date.toInstant(), ZoneOffset.UTC);

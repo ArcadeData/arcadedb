@@ -19,7 +19,6 @@
 package com.arcadedb.mongo;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.mongodb.MongoClient;
 import com.mongodb.MongoClientOptions;
 import com.mongodb.MongoCredential;
@@ -41,9 +40,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * a counter without consuming the iterator, so every query still started at element 0), and {@code find().sort(...)}
  * was never read by the {@code find} command handler at all, so results came back in unspecified order.
  */
-public class MongoDBSortAndSkipTest extends BaseGraphServerTest {
+public class MongoDBSortAndSkipTest extends BaseMongoServerTest {
 
-  private static final int                       DEF_PORT = 27017;
   private              MongoClient               client;
   private              MongoCollection<Document> collection;
 
@@ -58,7 +56,7 @@ public class MongoDBSortAndSkipTest extends BaseGraphServerTest {
   public void beginTest() {
     super.beginTest();
     getDatabase(0);
-    client = new MongoClient(new ServerAddress("localhost", DEF_PORT),
+    client = new MongoClient(new ServerAddress("localhost", getServerMongoPort()),
         MongoCredential.createPlainCredential("root", getDatabaseName(), DEFAULT_PASSWORD_FOR_TESTS.toCharArray()),
         MongoClientOptions.builder().serverSelectionTimeout(5000).build());
     client.getDatabase(getDatabaseName()).createCollection("doc");

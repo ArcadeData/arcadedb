@@ -32,6 +32,7 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
+import java.nio.channels.ClosedChannelException;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.channels.OverlappingFileLockException;
@@ -59,15 +60,20 @@ public class WALFile extends LockContext {
 
   public static final long MAGIC_NUMBER = 9371515385058702L;
 
-  private final    RandomAccessFile file;
+  // #7768: not final any more - a thread interrupt closes the channel underneath this instance and
+  // reopenChannel() replaces the trio. volatile because getSize() and the recovery readers run outside
+  // the monitor that acquire()/close() hold.
+  private volatile RandomAccessFile file;
   private final    String           filePath;
-  private final    FileChannel      channel;
-  private final    FileLock         lock;
+  private volatile FileChannel      channel;
+  private volatile FileLock         lock;
   private volatile boolean          active            = true;
   private volatile boolean          open;
   private final    AtomicInteger    pagesToFlush      = new AtomicInteger();
   private          long             statsPagesWritten = 0;
   private          long             statsBytesWritten = 0;
+  // #8139: THROTTLES THE REOPEN DIAGNOSTIC, WHICH A RECOVERY SCAN ON AN INTERRUPTED THREAD HITS ONCE PER READ
+  private final    ChannelReopenLog reopenLog         = new ChannelReopenLog();
 
   public static class WALTransaction {
     public long      txId;
@@ -138,6 +144,139 @@ public class WALFile extends LockContext {
    */
   boolean acquiredLock() {
     return lock != null;
+  }
+
+  /**
+   * Reopens the channel after a {@link ClosedChannelException} closed it by accident (issue #7768). This is
+   * the WAL-side twin of {@code PaginatedComponentFile.reopenChannelUnderWriteLock()} (issue #4930): a thread
+   * interrupted anywhere inside a commit makes NIO close the channel from under this instance -
+   * {@code AbstractInterruptibleChannel.begin()} fires the interruptor even when the flag is ALREADY set, so
+   * no timing race is needed - and before this fix nothing ever repaired the descriptor. The
+   * {@code WALFile} stayed in {@code TransactionManager}'s active pool with {@code open == true} and a dead
+   * channel, so every later transaction that hashed to that slot stalled for the whole WAL write timeout and
+   * then failed. The bytes already in the log are untouched by this: only the descriptor died.
+   * <p>
+   * Only an ACCIDENTAL close is repaired, for the same two reasons #4930 lists. A file closed on purpose
+   * ({@link #close()}/{@link #drop()} set {@code open = false}) must stay closed, and a path that no longer
+   * exists on disk must not be re-created - {@code RandomAccessFile(path, "rw")} would otherwise resurrect a
+   * WAL file a concurrent instance's cleanup deleted, which is exactly the file {@code checkWALFiles()} has
+   * to fence the database over (issue #7479).
+   * <p>
+   * Synchronized, and double-checked inside, so concurrent callers reopen the channel once instead of leaking
+   * a descriptor each. {@link #close()} and {@link #acquire(Callable)} hold the same monitor, so a reopen can
+   * never interleave with a deliberate close.
+   */
+  private synchronized void reopenChannel() throws IOException {
+    if (!open)
+      throw new ClosedChannelException();
+
+    if (channel != null && channel.isOpen())
+      // ANOTHER THREAD ALREADY REOPENED IT
+      return;
+
+    if (!new File(filePath).exists())
+      throw new FileNotFoundException(
+          "WAL file '" + filePath + "' no longer exists on disk, refusing to re-create it after a ClosedChannelException");
+
+    if (file != null)
+      try {
+        file.close();
+      } catch (final IOException e) {
+        // Not fatal: the descriptor is already dead and this only releases what is left of it. Logged
+        // rather than dropped so a handle that genuinely refuses to close is still traceable.
+        LogManager.instance().log(this, Level.FINE, "Error on closing the dead handle of WAL file '%s'", e, filePath);
+      }
+
+    this.file = new RandomAccessFile(filePath, "rw");
+    this.channel = file.getChannel();
+    // Closing a channel releases every lock this JVM holds on the underlying file, so the #7479 advisory
+    // lock died with it and has to be taken again. Best-effort exactly as at construction time.
+    this.lock = acquireLock();
+  }
+
+  /**
+   * Re-runs an I/O operation after {@link #reopenChannel()} has replaced a channel a thread interrupt closed
+   * (issue #7768), clearing and then restoring the interrupt flag around it. The clear is mandatory:
+   * {@code ClosedByInterruptException} leaves the flag set, and the very next interruptible operation on the
+   * fresh channel would close that one too. The restore is mandatory as well, so the cancellation stays
+   * observable to the caller that asked for it.
+   * <p>
+   * {@code cause} is the close that triggered the recovery. It is logged with the diagnostic, and attached
+   * as a suppressed exception if the retry fails too, so a refused reopen never hides what closed the
+   * channel in the first place.
+   */
+  private <T> T retryAfterReopen(final ClosedChannelException cause, final String operation, final ChannelOperation<T> io)
+      throws IOException {
+    final long folded = reopenLog.record();
+    if (folded < 0)
+      LogManager.instance().log(this, Level.FINE,
+          "WAL file '%s' was closed on %s (interrupted thread?). Reopen it and retry...", cause, filePath, operation);
+    else
+      LogManager.instance().log(this, Level.SEVERE,
+          "WAL file '%s' was closed on %s (interrupted thread?). Reopen it and retry... (%d more reopens of this file logged at FINE since the last report)",
+          cause, filePath, operation, folded);
+
+    final boolean wasInterrupted = Thread.interrupted();
+    try {
+      reopenChannel();
+      return io.run();
+    } catch (final IOException retryFailed) {
+      // Keep the close that started all this attached to whatever the recovery ran into - a refused reopen
+      // reports why it refused, and losing the original leaves no trace of what closed the channel.
+      retryFailed.addSuppressed(cause);
+      throw retryFailed;
+    } finally {
+      if (wasInterrupted)
+        Thread.currentThread().interrupt();
+    }
+  }
+
+  /**
+   * How many times this file reopened a channel a thread interrupt closed (issue #8139), so a recovery scan can report
+   * the total once when it finishes instead of relying on the throttled per-reopen lines.
+   */
+  public long getReopenCount() {
+    return reopenLog.getTotal();
+  }
+
+  @FunctionalInterface
+  private interface ChannelOperation<T> {
+    T run() throws IOException;
+  }
+
+  /**
+   * Single funnel for every positional read in this class, so a channel an interrupt closed is reopened and
+   * the read retried on all of them (issue #7768) rather than only on the commit path.
+   */
+  private int readChunk(final ByteBuffer buffer, final long pos) throws IOException {
+    // Recorded before the attempt for the same reason append() records its start offset: an interrupted
+    // read may already have transferred bytes into the buffer before throwing, and the retry reads from
+    // the SAME file offset - so without rewinding the buffer to where this attempt began, those bytes
+    // would be written twice and the caller's readPos/position bookkeeping would drift apart.
+    final int positionBeforeAttempt = buffer.position();
+    try {
+      return channel.read(buffer, pos);
+    } catch (final ClosedChannelException e) {
+      return retryAfterReopen(e, "read", () -> {
+        buffer.position(positionBeforeAttempt);
+        return channel.read(buffer, pos);
+      });
+    }
+  }
+
+  /**
+   * {@code fsync} of this WAL file, with the same reopen-and-retry recovery as every other channel operation
+   * here (issue #7768).
+   */
+  void force(final boolean metaData) throws IOException {
+    try {
+      channel.force(metaData);
+    } catch (final ClosedChannelException e) {
+      retryAfterReopen(e, "force", () -> {
+        channel.force(metaData);
+        return null;
+      });
+    }
   }
 
   public synchronized void close() throws IOException {
@@ -275,6 +414,16 @@ public class WALFile extends LockContext {
     this.active = active;
   }
 
+  /**
+   * Whether this file is still the one its pool slot writes to, as opposed to having been rotated out and
+   * left waiting for its pending pages to flush. Used by the WAL-pool diagnostic in
+   * {@code TransactionManager.writeTransactionToWAL} (#7768). Package-private, like {@link #acquiredLock()}
+   * above it: nothing outside {@code com.arcadedb.engine} has any use for it.
+   */
+  boolean isActive() {
+    return active;
+  }
+
   public WALTransaction getTransaction(long pos) {
     final WALTransaction tx = new WALTransaction();
 
@@ -361,7 +510,7 @@ public class WALFile extends LockContext {
 
         long readPos = pos;
         while (buffer.hasRemaining()) {
-          final int n = channel.read(buffer, readPos);
+          final int n = readChunk(buffer, readPos);
           if (n == -1)
             return null; // truncated WAL: EOF before delta is complete
           readPos += n;
@@ -420,7 +569,7 @@ public class WALFile extends LockContext {
         chunk.limit(toRead);
         int read = 0;
         while (read < toRead) {
-          final int n = channel.read(chunk, scanPos + read);
+          final int n = readChunk(chunk, scanPos + read);
           if (n == -1)
             break;
           read += n;
@@ -571,10 +720,13 @@ public class WALFile extends LockContext {
 
     statsBytesWritten += buffer.size();
 
+    // This instance's own channel, exactly as the channel.force() calls these replaced: the `file`
+    // parameter is this same object at the only call site (TransactionManager.tryWriteTransactionToWALFile
+    // passes it twice), but the fsync has always been of `this` and this fix does not change that.
     if (sync == FlushType.YES_NOMETADATA)
-      channel.force(false);
+      force(false);
     else if (sync == FlushType.YES_FULL)
-      channel.force(true);
+      force(true);
 
     database.executeCallbacks(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE);
   }
@@ -584,7 +736,11 @@ public class WALFile extends LockContext {
   }
 
   public long getSize() throws IOException {
-    return channel.size();
+    try {
+      return channel.size();
+    } catch (final ClosedChannelException e) {
+      return retryAfterReopen(e, "getSize", () -> channel.size());
+    }
   }
 
   public String getFilePath() {
@@ -633,7 +789,7 @@ public class WALFile extends LockContext {
   private void readFully(final ByteBuffer buffer, final long pos) throws IOException {
     long readPos = pos;
     while (buffer.hasRemaining()) {
-      final int n = channel.read(buffer, readPos);
+      final int n = readChunk(buffer, readPos);
       if (n == -1)
         throw new EOFException("EOF reading " + buffer.capacity() + " bytes at position " + pos + " of WAL file " + filePath);
       readPos += n;
@@ -641,13 +797,40 @@ public class WALFile extends LockContext {
   }
 
   protected void append(final ByteBuffer buffer) throws IOException {
+    // Recorded BEFORE the first write attempt so the #7768 retry below can restart from the same offset.
+    // -1 means channel.size() itself is what the interrupt killed, so nothing was written and the reopened
+    // channel's own size is the right place to start.
+    long startPos = -1;
+    try {
+      startPos = channel.size();
+      appendAt(buffer, startPos);
+    } catch (final ClosedChannelException e) {
+      // #7768: a thread interrupt closed the channel mid-append. Reopen it and write the record again from
+      // the offset the first attempt started at - NOT from the reopened channel's size(), which already
+      // counts however many bytes the interrupted write managed to put down. Restarting past them would
+      // leave that torn prefix in the log ahead of the complete record, which is exactly the corruption the
+      // #4508 gap detector reports. Rewriting over them is safe: these are positional writes into a region
+      // no committed record has ever claimed.
+      final long retryFrom = startPos;
+      retryAfterReopen(e, "append", () -> {
+        appendAt(buffer, retryFrom >= 0 ? retryFrom : channel.size());
+        return null;
+      });
+    }
+  }
+
+  /**
+   * Writes {@code buffer} in full at {@code startPos}.
+   * <p>
+   * #4958: loop until the buffer is fully written. A single channel.write may write only part of the record,
+   * leaving a torn entry that the #4508 gap detector would then flag as corruption. Single-writer assumption
+   * (same as the pre-loop code that wrote at channel.size() once): appends to a WALFile are externally
+   * serialized by acquire(); two concurrent appenders would both seed writePos from the same channel.size()
+   * and interleave. The local writePos only tolerates PARTIAL writes, not writers.
+   */
+  private void appendAt(final ByteBuffer buffer, final long startPos) throws IOException {
     buffer.rewind();
-    // #4958: loop until the buffer is fully written. A single channel.write may write only part of the
-    // record, leaving a torn entry that the #4508 gap detector would then flag as corruption.
-    // Single-writer assumption (same as the pre-loop code that wrote at channel.size() once): appends to a
-    // WALFile are externally serialized by acquire(); two concurrent appenders would both seed writePos from
-    // the same channel.size() and interleave. The local writePos only tolerates PARTIAL writes, not writers.
-    long writePos = channel.size();
+    long writePos = startPos;
     while (buffer.hasRemaining())
       writePos += channel.write(buffer, writePos);
   }

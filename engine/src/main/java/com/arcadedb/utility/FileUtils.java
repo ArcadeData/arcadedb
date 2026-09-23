@@ -44,11 +44,15 @@ import java.nio.channels.FileChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.FileSystemException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.util.ArrayDeque;
 import java.util.Arrays;
+import java.util.Deque;
 import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -63,7 +67,21 @@ public class FileUtils {
   public static final String UTF8_BOM = "\uFEFF";
 
   /** One warning per JVM when the file store cannot replace files atomically (see {@link #publishAtomically}). */
-  private static final AtomicBoolean NON_ATOMIC_MOVE_REPORTED = new AtomicBoolean();
+  private static final AtomicBoolean NON_ATOMIC_MOVE_REPORTED   = new AtomicBoolean();
+  /** One warning per JVM when the platform cannot fsync a directory (see {@link #forceDirectory}). */
+  private static final AtomicBoolean NO_DIRECTORY_SYNC_REPORTED = new AtomicBoolean();
+  /**
+   * Whether this platform has no way to fsync a directory at all, which is Windows: a directory is not a file
+   * there, so opening one as a channel throws and no equivalent call exists.
+   * <p>
+   * Decided ONCE, from the platform itself, rather than latched the first time an open happens to fail. Inferring
+   * it from a failure would let ONE uncooperative directory - a network mount, a directory with unusual
+   * permissions - turn off the fsync for every other database in the JVM, silently dropping the machine-crash
+   * guarantee everywhere on the evidence of a single call (code review on PR #7855). A non-Windows file store
+   * that still refuses simply pays one exception per publish and is logged; that cost is local to it.
+   */
+  private static final boolean       NO_DIRECTORY_SYNC_ON_THIS_PLATFORM =
+      System.getProperty("os.name", "").toLowerCase(Locale.ENGLISH).contains("win");
 
   public static String getStringContent(final Object iValue) {
     if (iValue == null)
@@ -473,6 +491,10 @@ public class FileUtils {
    * partial/spliced one. If a crash happens mid-write, the previous valid file is left untouched.
    * When the underlying filesystem cannot perform an atomic move, it falls back to a
    * {@code REPLACE_EXISTING} move (still a single rename, just without the cross-crash guarantee).
+   * <p>
+   * The parent directory is fsync'd after the rename, so the guarantee holds across a MACHINE crash and not only a
+   * process one - the rename is directory metadata, and forcing the file does not make it durable (issue #7465). On
+   * a platform that will not fsync a directory (Windows) the attempt is skipped; see {@link #forceDirectory}.
    */
   public static void atomicWriteFile(final File file, final String content) throws IOException {
     atomicWriteFile(file, content.getBytes(StandardCharsets.UTF_8));
@@ -489,7 +511,7 @@ public class FileUtils {
     // required for the ATOMIC_MOVE below to actually be atomic instead of falling back to a copy.
     final Path target = file.toPath().toAbsolutePath();
     final Path dir = target.getParent();
-    Files.createDirectories(dir);
+    createDirectoriesDurably(dir);
 
     final Path tmp = Files.createTempFile(dir, file.getName() + ".", ".tmp");
     try {
@@ -507,7 +529,8 @@ public class FileUtils {
   /**
    * Publishes a byte-identical copy of {@code source} at {@code target} atomically, so a reader of
    * {@code target} sees either its previous complete content or the full copy, never a partial one, and
-   * {@code source} is never unlinked in the process.
+   * {@code source} is never unlinked in the process. As in {@link #atomicWriteFile(File, byte[])}, the parent
+   * directory is fsync'd after the rename so the published name survives a power failure (issue #7465).
    * <p>
    * A hard link is attempted first: it makes {@code target} a second name for the bytes already on disk,
    * which costs one inode operation instead of a full read + write + fsync of the source, and is
@@ -523,7 +546,7 @@ public class FileUtils {
     final Path from = source.toPath().toAbsolutePath();
     final Path to = target.toPath().toAbsolutePath();
     final Path dir = to.getParent();
-    Files.createDirectories(dir);
+    createDirectoriesDurably(dir);
 
     // Unique by construction, so the link below never races another writer for the name.
     final Path tmp = dir.resolve(target.getName() + "." + UUID.randomUUID() + ".tmp");
@@ -564,6 +587,94 @@ public class FileUtils {
                 + "missing or partial. Consider hosting the database on a file store that supports atomic renames.", null, target);
       Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
     }
+
+    // The rename is a DIRECTORY-metadata update, and the fsync the caller already did on the temporary file does not
+    // make it durable: after a machine crash the new content can be on disk while the directory still names the old
+    // file, or nothing at all (issue #7465). Forcing the parent directory is what turns "the previous complete file
+    // or the new complete file" from a statement about a process crash into one about a power failure, which is what
+    // both helpers' javadocs claim.
+    forceDirectory(target.getParent());
+  }
+
+  /**
+   * Creates {@code dir} and any missing ancestor, making each new directory's ENTRY durable as it goes.
+   * <p>
+   * {@link Files#createDirectories} is not enough on its own for the guarantee {@link #atomicWriteFile} states. A
+   * directory's name lives in its PARENT, so a power failure right after a publish into a freshly created nested
+   * path can lose the new directory - and with it the file that was just fsync'd and atomically renamed inside it,
+   * however carefully (CodeRabbit on PR #7855). Creating one level at a time and forcing the parent after each
+   * level is what makes the whole path durable rather than only its last component.
+   * <p>
+   * Costs one {@code isDirectory} stat when the directory already exists, which is every publish after the first.
+   */
+  private static void createDirectoriesDurably(final Path dir) throws IOException {
+    if (Files.isDirectory(dir))
+      return;
+
+    // Deepest missing ancestor LAST out of the deque, so every level is created into a parent that exists by then.
+    final Deque<Path> missing = new ArrayDeque<>();
+    for (Path path = dir; path != null && !Files.isDirectory(path); path = path.getParent())
+      missing.push(path);
+
+    for (final Path path : missing) {
+      try {
+        Files.createDirectory(path);
+      } catch (final FileAlreadyExistsException e) {
+        // Another thread or process created it between the check and the call: a race this loop is allowed to
+        // lose, since the directory it wanted now exists. Anything ELSE under that name - a regular file - is a
+        // genuine error, and is reported exactly as createDirectories() would have reported it.
+        if (!Files.isDirectory(path))
+          throw e;
+        continue;
+      }
+      forceDirectory(path.getParent());
+    }
+  }
+
+  /**
+   * fsyncs a DIRECTORY, so a rename published into it survives a power failure rather than only a process crash.
+   * <p>
+   * There is no portable API for this. Opening a directory as a read-only {@link FileChannel} and forcing it is the
+   * POSIX idiom and works on Linux and macOS; on Windows the open itself throws, since a directory is not a file
+   * there, and the platform has no equivalent call - which {@link #NO_DIRECTORY_SYNC_ON_THIS_PLATFORM} answers once,
+   * from the platform, so Windows does not build and discard an exception per publish.
+   * <p>
+   * Everywhere else the attempt is made and its failure TOLERATED, per call: a durability improvement that cannot be
+   * had on one file store must neither fail the write nor be inferred into a verdict about the others. The first
+   * refusal of the JVM is logged at FINE.
+   * <p>
+   * An I/O error from {@code force} itself is treated the same way. The bytes and the rename are already on the file
+   * store at this point; failing the caller here would turn a weaker durability guarantee into a failed schema save,
+   * which is the worse of the two outcomes.
+   *
+   * @param dir the directory to force; ignored when {@code null}
+   *
+   * @return {@code true} when the directory was fsync'd, {@code false} when it could not be. Returned for the test
+   * that asserts the fsync actually happens on the platforms that support it - no caller acts on it
+   */
+  public static boolean forceDirectory(final Path dir) {
+    if (dir == null || NO_DIRECTORY_SYNC_ON_THIS_PLATFORM)
+      return false;
+
+    // metaData=true: the point of the call is precisely the directory's METADATA, its name entries.
+    try (final FileChannel channel = FileChannel.open(dir, StandardOpenOption.READ)) {
+      channel.force(true);
+      return true;
+    } catch (final IOException | UnsupportedOperationException e) {
+      // IOException covers both the open ("access is denied" on a file store that will not present a directory as a
+      // channel) and the force itself; UnsupportedOperationException is a provider refusing the open outright.
+      // Narrow on purpose: an unexpected RuntimeException from a custom FileSystemProvider is a fault worth
+      // surfacing, not something to absorb into a FINE log (code review on PR #7855).
+      reportNoDirectorySync(dir);
+      return false;
+    }
+  }
+
+  private static void reportNoDirectorySync(final Path dir) {
+    if (NO_DIRECTORY_SYNC_REPORTED.compareAndSet(false, true))
+      LogManager.instance().log(FileUtils.class, Level.FINE,
+          "Cannot fsync directory '%s': an atomically published file is durable against a process crash but, after a "
+              + "power failure, the rename that published it may be lost.", null, dir);
   }
 
   /**

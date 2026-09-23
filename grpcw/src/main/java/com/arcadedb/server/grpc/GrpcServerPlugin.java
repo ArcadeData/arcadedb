@@ -44,6 +44,7 @@ import io.micrometer.core.instrument.Metrics;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
@@ -119,7 +120,7 @@ public class GrpcServerPlugin implements ServerPlugin {
       return;
     }
 
-    String mode = getConfigString(config, CONFIG_MODE, "standard").toLowerCase();
+    String mode = getConfigString(config, CONFIG_MODE, "standard").toLowerCase(Locale.ROOT);
 
     try {
       switch (mode) {
@@ -194,7 +195,8 @@ public class GrpcServerPlugin implements ServerPlugin {
 
     // Build status message
     StringBuilder status = new StringBuilder();
-    status.append("gRPC server started on ").append(host).append(":").append(port);
+    // The bound port, not the configured one: 0 asks the operating system for a free port (issue #8209)
+    status.append("gRPC server started on ").append(host).append(":").append(grpcServer.getPort());
     status.append(" (mode: standard");
 
     if (getConfigBoolean(config, CONFIG_TLS_ENABLED, false)) {
@@ -313,6 +315,12 @@ public class GrpcServerPlugin implements ServerPlugin {
     // Publish gRPC metrics into the server's shared JVM-wide registry so the same exporters that
     // scrape the rest of the server (Prometheus, OTLP, JMX, Studio) also see gRPC telemetry.
     serverBuilder.intercept(new GrpcMetricsInterceptor(Metrics.globalRegistry));
+    // Carries back the verdict "your own transaction published a commit under this call", which the retry loop
+    // RemoteGrpcDatabase inherits from RemoteDatabase needs in order NOT to replay a block whose earlier half
+    // is already durable (issue #8134). Registered unconditionally and on this shared path, so both the
+    // standard and the xDS builder get it: dropping this line does not fail a call, it silently returns the
+    // guard to the state issue #8134 reports - a BATCH-boundary block replayed after a conflict.
+    serverBuilder.intercept(new GrpcSessionPartialCommitInterceptor());
 
     // Add compression interceptor if force compression is enabled
     if (getConfigBoolean(config, CONFIG_COMPRESSION_FORCE, false)) {
@@ -470,6 +478,15 @@ public class GrpcServerPlugin implements ServerPlugin {
    */
   public ArcadeDbGrpcService getService() {
     return grpcService;
+  }
+
+  /**
+   * The port the standard gRPC server ACTUALLY bound, which is not necessarily the configured one: {@code 0} asks the
+   * operating system for a free port (issue #8209). Returns -1 when the server is not running.
+   */
+  public int getPort() {
+    final Server s = grpcServer;
+    return s != null && !s.isShutdown() ? s.getPort() : -1;
   }
 
   /**

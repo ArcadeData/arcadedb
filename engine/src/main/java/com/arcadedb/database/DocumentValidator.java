@@ -50,13 +50,22 @@ public class DocumentValidator {
     // arithmetic in newDeadline() for types that never use REGEXP at all would be pure waste on that hot path.
     long regexDeadline = 0;
     boolean regexDeadlineComputed = false;
+    boolean deferred = false;
     for (Property entry : document.getType().getPolymorphicProperties()) {
       if (!regexDeadlineComputed && entry.getRegexp() != null) {
         regexDeadline = TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(document.getDatabase()));
         regexDeadlineComputed = true;
       }
-      validateField(document, entry, regexDeadline);
+      deferred |= validateFieldInternal(document, entry, regexDeadline);
     }
+
+    // The document satisfies every existence constraint it has: if it was provisional - created moments ago by this
+    // same statement, missing a property a later clause was going to supply (issue #7945) - this is the write that
+    // completed it, and the end-of-statement check has nothing left to do for it. Skipped entirely unless some
+    // statement somewhere in this JVM is holding a provisional record right now, so the ordinary write path pays
+    // one volatile read.
+    if (!deferred && DeferredExistenceChecks.anyScopeArmed() && document.getIdentity() != null)
+      DeferredExistenceChecks.completed(document);
   }
 
   /**
@@ -70,17 +79,109 @@ public class DocumentValidator {
     validateField(document, p, TimeBoundRegex.newDeadline(GlobalConfiguration.COMMAND_REGEX_TIMEOUT.getValueAsLong(document.getDatabase())));
   }
 
+  /**
+   * Validates one field, discarding whether the check was deferred - see {@link DeferredExistenceChecks}. That is
+   * correct for a caller validating a whole document field by field, which is what {@link #validate} does and the
+   * reason this overload exists. A caller validating a single field in isolation, in the middle of an openCypher
+   * write statement, would register the record as provisional without anything ever reporting it complete again,
+   * leaving it to be taken back at the end of the statement; no caller does that today.
+   */
   public static void validateField(final MutableDocument document, final Property p, final long regexDeadline) throws ValidationException {
-    if (p.isMandatory() && !document.has(p.getName()))
-      throwValidationException(document.getType(), p, "is mandatory, but not found on record: " + document);
+    validateFieldInternal(document, p, regexDeadline);
+  }
+
+  /**
+   * The kinds of existence constraint a property can carry, i.e. the ones that are about the property being there
+   * at all rather than about the value it holds.
+   */
+  public enum ExistenceConstraint {
+    MANDATORY, NOT_NULL
+  }
+
+  /**
+   * The existence constraint the document fails to satisfy on this property, or null when it satisfies both.
+   * <p>
+   * The single definition of that rule. It has three callers who must agree on it exactly: the write path below,
+   * which refuses (or defers) the write; {@link DeferredExistenceChecks}, which asks the same question again of the
+   * same record once the statement that deferred it has finished; and {@code DatabaseChecker}, which asks it of
+   * every record already in the database (issue #7952). Written three times, a later constraint kind added to one
+   * would be silently invisible to the others - which is the drift this method exists to make impossible. Only the
+   * rule is shared; the write path phrases its own error, because it is raised at a different moment and says a
+   * different thing about the record - the two that describe a record already written share
+   * {@link #describeUnmetExistenceConstraint}.
+   * <p>
+   * Takes a {@link Document} rather than a {@link MutableDocument} because the end-of-statement caller re-reads the
+   * record and holds the immutable form; nothing in the rule needs more than {@code has()} and {@code get()}.
+   */
+  public static ExistenceConstraint unmetExistenceConstraint(final Document document, final Property p) {
+    final String name = p.getName();
+    if (p.isMandatory() && !document.has(name))
+      return ExistenceConstraint.MANDATORY;
+    if (p.isNotNull() && document.has(name) && document.get(name) == null)
+      return ExistenceConstraint.NOT_NULL;
+    return null;
+  }
+
+  /**
+   * The properties of a type that carry an existence constraint at all - the only ones
+   * {@link #unmetExistenceConstraint} can answer anything but null for - polymorphic properties included.
+   * <p>
+   * Empty for a type that declares none, and that is what it is for (issue #7952): it lets a whole-database scan
+   * decide it has no question to ask of a type WITHOUT reading a single record of it, which is how the check stays
+   * free for the databases - the large majority - that define no {@code MANDATORY}/{@code NOTNULL} property.
+   * <p>
+   * An array rather than a list because the caller is a per-record scan loop: it walks this once per record and an
+   * iterator per record is an allocation per record on the one path whose cost is proportional to the size of the
+   * database. Computed once per type by the caller, never per record.
+   */
+  public static Property[] existenceConstrainedProperties(final DocumentType type) {
+    return type.getPolymorphicProperties().stream()
+        .filter(p -> p.isMandatory() || p.isNotNull())
+        .toArray(Property[]::new);
+  }
+
+  /**
+   * How one unsatisfied existence constraint reads for a record that IS ALREADY IN THE DATABASE, or null when the
+   * record satisfies it. Shared by the two callers that describe such a record - {@link DeferredExistenceChecks} at
+   * the end of the statement that left it incomplete, and {@code DatabaseChecker} when a scan meets it later
+   * (#7952) - so an operator reads the same sentence about the same defect whichever of them reported it.
+   * <p>
+   * Names the property and not the value, deliberately: a NOT NULL violation has no value to quote, and a MANDATORY
+   * one has no property to quote it from. The RID is left to the caller, which has its own place for it.
+   */
+  public static String describeUnmetExistenceConstraint(final Document record, final Property property) {
+    final ExistenceConstraint unmet = unmetExistenceConstraint(record, property);
+    if (unmet == null)
+      return null;
+
+    final String named = "property '" + record.getType().getName() + "." + property.getName() + "'";
+    return unmet == ExistenceConstraint.MANDATORY ?
+        named + " is mandatory, but was never set" :
+        named + " cannot be null";
+  }
+
+  /**
+   * @return true when an existence constraint the document does not satisfy has been deferred to the end of the
+   * statement instead of being raised here - see {@link DeferredExistenceChecks}
+   */
+  private static boolean validateFieldInternal(final MutableDocument document, final Property p, final long regexDeadline)
+      throws ValidationException {
+    boolean deferred = false;
+
+    final ExistenceConstraint unmetExistence = unmetExistenceConstraint(document, p);
+    if (unmetExistence != null) {
+      if (DeferredExistenceChecks.defer(document))
+        deferred = true;
+      else if (unmetExistence == ExistenceConstraint.MANDATORY)
+        throwValidationException(document.getType(), p, "is mandatory, but not found on record: " + document);
+      else
+        // NULLITY
+        throwValidationException(document.getType(), p, "cannot be null, record: " + document);
+    }
 
     final Object fieldValue = document.get(p.getName());
 
-    if (fieldValue == null) {
-      if (p.isNotNull() && document.has(p.getName()))
-        // NULLITY
-        throwValidationException(document.getType(), p, "cannot be null, record: " + document);
-    } else {
+    if (fieldValue != null) {
       if (p.getRegexp() != null)
         // REGEXP - bounded against catastrophic backtracking (issue #5886): this runs on every insert/update of
         // a validated property, reachable through any write path (REST, any wire protocol) with no query
@@ -119,6 +220,8 @@ public class DocumentValidator {
           throwValidationException(document.getType(), p, "is immutable and cannot be altered. Field value is: " + fieldValue);
       }
     }
+
+    return deferred;
   }
 
   private static void validateMaxValue(MutableDocument document, Property p, Object fieldValue) {
@@ -166,10 +269,9 @@ public class DocumentValidator {
       if (fieldValue.toString().length() > maxAsInteger)
         throwValidationException(document.getType(), p, "contains more characters than " + max + " requested");
     }
-    case DATE, DATETIME -> {
-      final Database database = document.getDatabase();
-      final Date maxAsDate = (Date) Type.convert(database, max, Date.class);
-      final Date fieldValueAsDate = (Date) Type.convert(database, fieldValue, Date.class);
+    case DATE, DATETIME, DATETIME_SECOND, DATETIME_MICROS, DATETIME_NANOS -> {
+      final Date maxAsDate = boundAsDate(document, p, max, "max");
+      final Date fieldValueAsDate = boundAsDate(document, p, fieldValue, "value");
       if (fieldValueAsDate.compareTo(maxAsDate) > 0)
         throwValidationException(document.getType(), p,
             "contains the date " + fieldValue + " which is after the last acceptable date (" + max + ")");
@@ -248,10 +350,9 @@ public class DocumentValidator {
           yield new ValidationResult(true, "contains fewer characters than " + min + " requested");
         yield new ValidationResult(false, null);
       }
-      case DATE, DATETIME -> {
-        final Database database = document.getDatabase();
-        final Date minAsDate = (Date) Type.convert(database, min, Date.class);
-        final Date fieldValueAsDate = (Date) Type.convert(database, fieldValue, Date.class);
+      case DATE, DATETIME, DATETIME_SECOND, DATETIME_MICROS, DATETIME_NANOS -> {
+        final Date minAsDate = boundAsDate(document, p, min, "min");
+        final Date fieldValueAsDate = boundAsDate(document, p, fieldValue, "value");
         if (fieldValueAsDate.compareTo(minAsDate) < 0)
           yield new ValidationResult(true,
               "contains the date " + fieldValue + " which precedes the first acceptable date (" + min + ")");
@@ -396,6 +497,41 @@ public class DocumentValidator {
       }
     }
     break;
+    }
+  }
+
+  /**
+   * Reads one side of a DATE/DATETIME {@code min}/{@code max} comparison, reporting a value neither side can read as
+   * the schema layer's own {@link ValidationException} rather than letting the conversion's
+   * {@link IllegalArgumentException} escape validation.
+   * <p>
+   * This is a write-time check, so the STRICT conversion is the right one - a bound or a value that cannot be read
+   * must not be quietly treated as absent. What issue #8090 changed is only how that failure is reported: the
+   * conversion used to answer {@code null} here, which then became an NPE on the comparison below. Naming the side
+   * that could not be read turns that into something the caller can act on.
+   * <p>
+   * The precision-bearing types reach here at all now: {@code DATETIME_MICROS} and its siblings used to fall through
+   * to the {@code default} arm, which reports a violation UNCONDITIONALLY, so setting a MIN or a MAX on such a
+   * property failed every subsequent write to it whatever the value was - on the very type issue #8090 was reported
+   * on.
+   * <p>
+   * {@link Date} is the frame deliberately, not for convenience: the two sides arrive by different routes - the
+   * bound is always a String out of the schema, the value is whatever the write path stored - and {@code Date} is
+   * where those routes agree. A stored {@code LocalDateTime} converts back through the same UTC convention that
+   * produced it, and a bound String is read in the database's own zone, so both name the same instant. Reading both
+   * into {@code LocalDateTime} instead does NOT agree: that conversion is a wall clock for one side and a UTC
+   * rendering for the other, and the comparison comes out skewed by the offset.
+   * <p>
+   * The cost is that a bound is compared at millisecond precision even on a {@code DATETIME_MICROS} property.
+   * Tightening that means settling which frame a date bound is written in, which is a question of its own and not
+   * one this fix answers.
+   */
+  private static Date boundAsDate(final Document document, final Property p, final Object value, final String side) {
+    try {
+      return (Date) Type.convert(document.getDatabase(), value, Date.class);
+    } catch (final IllegalArgumentException e) {
+      throwValidationException(document.getType(), p, "has a " + side + " that is not a readable date: " + value);
+      return null; // unreachable: throwValidationException always throws
     }
   }
 

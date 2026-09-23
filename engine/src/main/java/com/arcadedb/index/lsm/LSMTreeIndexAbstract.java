@@ -41,7 +41,6 @@ import com.arcadedb.utility.RidHashSet;
 
 import java.io.File;
 import java.io.IOException;
-import java.math.BigDecimal;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
@@ -546,12 +545,43 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     if (convertedKeys == null)
       return null;
 
-    for (int i = 0; i < convertedKeys.length; ++i) {
-      if (convertedKeys[i] instanceof String string)
-        // OPTIMIZATION: ALWAYS CONVERT STRINGS TO BYTE[]
-        convertedKeys[i] = string.getBytes(DatabaseFactory.getDefaultCharset());
-    }
-    return convertedKeys;
+    // IN PLACE, into the array convertKeysToDeclaredTypes just allocated: no caller of THIS method keeps the narrowed
+    // form, so there is nothing to preserve and nothing to gain from a second array on an index get/put/remove.
+    return encodeStrings(convertedKeys, convertedKeys);
+  }
+
+  /**
+   * Layers only the disk-storage {@code byte[]}-for-{@code String} probe encoding on top of keys ALREADY narrowed by
+   * {@link #convertKeysToDeclaredTypes}, into a NEW array so the narrowed one survives untouched.
+   * <p>
+   * For the one caller that needs BOTH forms of the same bound - {@code LSMTreeIndexCursor}, which seeds
+   * {@code lookupInPage} with the encoded form and compares deserialized keys against the narrowed one. It used to
+   * build them independently, which ran the declared-type narrowing and the collation folding twice over every
+   * component of every bound on every seek (issue #7840). Everything else goes through {@link #convertKeys}, which
+   * needs no copy.
+   *
+   * @param declaredTypeKeys keys already narrowed to the index's declared types, or {@code null}
+   *
+   * @return a new array with each {@code String} component encoded, or {@code null} when the input is
+   * {@code null} itself
+   */
+  protected static Object[] encodeKeysForPageProbe(final Object[] declaredTypeKeys) {
+    if (declaredTypeKeys == null)
+      return null;
+
+    return encodeStrings(declaredTypeKeys, new Object[declaredTypeKeys.length]);
+  }
+
+  /**
+   * Writes each component of {@code source} into {@code target}, encoding the {@code String} ones the way the pages
+   * store them. {@code target} may BE {@code source}, which is how {@link #convertKeys} avoids a second array.
+   */
+  private static Object[] encodeStrings(final Object[] source, final Object[] target) {
+    for (int i = 0; i < source.length; ++i)
+      // OPTIMIZATION: ALWAYS CONVERT STRINGS TO BYTE[]
+      target[i] = source[i] instanceof String string ? string.getBytes(DatabaseFactory.getDefaultCharset()) : source[i];
+
+    return target;
   }
 
   /**
@@ -583,7 +613,13 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       if (keys[i] == null)
         continue;
 
-      convertedKeys[i] = Type.convert(database, keys[i], BinaryTypes.getClassFromType(keyTypes[i]));
+      // convertIndexKeyOrNull(), not convert(): the keys reaching here are whatever the records hold, and on a
+      // schemaless property (a Cypher label, say) that can include a date the type this index settled on cannot
+      // read. Such a row indexes under a null key and the build carries on; refusing it would make one heterogeneous
+      // record fail CREATE INDEX outright (issue #8090, which made convert() itself strict). NOT convertOrNull():
+      // that would extend the same mercy to every other mismatch, silently indexing a non-numeric string under a
+      // null LONG key where it has always failed the build.
+      convertedKeys[i] = Type.convertIndexKeyOrNull(database, keys[i], BinaryTypes.getClassFromType(keyTypes[i]));
 
       if (convertedKeys[i] instanceof String string && caseInsensitiveKeys != null && i < caseInsensitiveKeys.length
           && caseInsensitiveKeys[i])
@@ -1042,50 +1078,19 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
    * partial key is a range and no hash can answer for a range.
    * <p>
    * It is NOT simply {@link #writeKeys}: a hash needs bytes that are equal whenever the INDEX considers the keys equal,
-   * and for one type the serialized form is stricter than the comparator. See {@link #canonicalizeForHashing}.
+   * and for one type - DECIMAL - the serialized form is stricter than the comparator. That reconciliation lives in
+   * {@link BinaryComparator#canonicalizeForByteEquality(Object[])}, shared with the HASH index, which has the same
+   * hazard over its whole key path rather than only in a bloom filter (issue #7767).
+   * <p>
+   * Applied to the HASH only here: the bytes written into a page are untouched.
    */
   Binary serializeKeyForHashing(final Binary scratch, final Object[] convertedKeys) {
     if (convertedKeys == null || convertedKeys.length != binaryKeyTypes.length)
       return null;
 
     scratch.clear();
-    writeKeys(scratch, canonicalizeForHashing(convertedKeys));
+    writeKeys(scratch, BinaryComparator.canonicalizeForByteEquality(convertedKeys));
     return scratch;
-  }
-
-  /**
-   * Rewrites the key components whose serialized form distinguishes values the comparator treats as EQUAL, so that
-   * equal keys always hash alike.
-   * <p>
-   * {@code convertKeys} already normalises the type of every component - a lookup with an Integer against a LONG index
-   * becomes a Long - which is what keeps the numeric types honest here. DECIMAL is the exception: converting to
-   * {@link BigDecimal} keeps whatever scale the caller supplied, serialization writes that scale
-   * ({@code putNumber(scale)} then the unscaled bytes), but {@link com.arcadedb.serializer.BinaryComparator} compares
-   * with {@code BigDecimal.compareTo}, which ignores it. So {@code 1.0} and {@code 1.00} are the SAME key to the index
-   * and two different byte strings to the hash - and a lookup for one would skip the series holding the other. On a
-   * unique DECIMAL index that is a duplicate slipping past the duplicate check.
-   * <p>
-   * {@code stripTrailingZeros} maps every {@code compareTo}-equal BigDecimal to one representation, so equal keys reach
-   * the hash as equal bytes. It is applied to the HASH only: the bytes written into a page are untouched.
-   * <p>
-   * Returns {@code convertedKeys} itself when nothing needs rewriting, which is every index that has no DECIMAL
-   * component - i.e. this costs an instanceof per component and no allocation on the common path.
-   */
-  private Object[] canonicalizeForHashing(final Object[] convertedKeys) {
-    Object[] canonical = convertedKeys;
-
-    for (int i = 0; i < convertedKeys.length; i++)
-      if (convertedKeys[i] instanceof BigDecimal decimal) {
-        final BigDecimal stripped = decimal.stripTrailingZeros();
-        // Equal scales mean equal unscaled values too (same number, same scale), so the bytes already match.
-        if (stripped.scale() != decimal.scale()) {
-          if (canonical == convertedKeys)
-            canonical = convertedKeys.clone();
-          canonical[i] = stripped;
-        }
-      }
-
-    return canonical;
   }
 
   private void writeKeys(final Binary buffer, final Object[] keys) {

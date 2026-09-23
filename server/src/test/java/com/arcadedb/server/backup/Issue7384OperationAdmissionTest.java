@@ -200,13 +200,16 @@ class Issue7384OperationAdmissionTest {
         if (one != two)
           assertThat(one.conflictsWith(two)).isFalse();
 
-    // AND THE ONLY KINDS THAT CAN SURVIVE TOGETHER ARE THE NON-DESTRUCTIVE ONES: A RESTORE OR A DROP IS ALONE OR
-    // NOT THERE (DROP JOINED THAT PAIR IN #7641, THE SAME WAY RESTORE ALWAYS HAS), AND BACKUP, IMPORT AND EXPORT
-    // COEXIST IN ANY COMBINATION (EXPORT JOINED THEM IN #7450)
-    assertThat(admitted).isIn(EnumSet.of(Operation.BACKUP), EnumSet.of(Operation.RESTORE), EnumSet.of(Operation.IMPORT),
-        EnumSet.of(Operation.EXPORT), EnumSet.of(Operation.DROP),
-        EnumSet.of(Operation.BACKUP, Operation.IMPORT), EnumSet.of(Operation.BACKUP, Operation.EXPORT),
-        EnumSet.of(Operation.IMPORT, Operation.EXPORT),
-        EnumSet.of(Operation.BACKUP, Operation.IMPORT, Operation.EXPORT));
+    // AND A KIND THAT REFUSES EVERY OTHER KIND MUST HAVE BEEN ADMITTED ALONE: A RESTORE, A DROP OR A CLOSE TAKES
+    // THE DATABASE AWAY FROM EVERYONE ELSE, WHILE BACKUP, IMPORT AND EXPORT COEXIST IN ANY COMBINATION.
+    //
+    // DERIVED FROM conflictsWith RATHER THAN LISTED AS A SET OF LEGAL EnumSets, BECAUSE THAT LIST HAD TO BE
+    // EXTENDED BY HAND EVERY TIME A KIND WAS ADDED AND WENT STALE WHEN ONE WAS NOT: EXPORT JOINED IN #7450, DROP
+    // IN #7641, AND CLOSE IN #7469 WITHOUT THE LIST FOLLOWING - WHICH LEFT THIS TEST FAILING ON main FOR THE ONE
+    // OUTCOME THE LIST DID NOT NAME. WRITTEN THIS WAY IT NEEDS NO EDIT WHEN THE NEXT KIND IS ENROLLED.
+    for (final Operation one : admitted)
+      if (EnumSet.complementOf(EnumSet.of(one)).stream().allMatch(one::conflictsWith))
+        assertThat(admitted).as("%s refuses every other kind, so it can only be admitted alone", one)
+            .containsExactly(one);
   }
 }

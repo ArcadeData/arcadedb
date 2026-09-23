@@ -32,6 +32,8 @@ import com.arcadedb.utility.DateUtils;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.math.MathContext;
 import java.math.RoundingMode;
 import java.time.Duration;
 import java.time.temporal.ChronoUnit;
@@ -171,10 +173,59 @@ public class MathExpression extends SimpleNode {
         return left / right;
       }
 
+      /**
+       * The exact quotient whenever the division terminates, and only otherwise a bounded one.
+       * <p>
+       * {@code left.divide(right, RoundingMode.HALF_UP)} - what this used to be - produces the quotient AT THE
+       * SCALE OF THE LEFT OPERAND. That is invisible while both operands carry fractional digits, and silently
+       * destructive the moment the left one does not: {@code new BigDecimal(BigInteger)} has scale 0 by
+       * construction, so every division with a {@code BigInteger} on the left answered a whole number -
+       * {@code 1 / 2} was {@code 1} and {@code 7 / 2} was {@code 4} (issue #8041). Nothing in the answer said a
+       * rounding had happened, and the integer arms of this same operator go out of their way to avoid exactly
+       * that, returning a {@code double} when the quotient is inexact.
+       * <p>
+       * {@code divide(BigDecimal)} with no rounding argument is the exact one: it answers the quotient with the
+       * preferred scale {@code left.scale() - right.scale()}, widening it as far as the exact result needs, and
+       * throws {@link ArithmeticException} only when the quotient has a non-terminating decimal expansion
+       * ({@code 1 / 3}). That is the one case that HAS to round, and it rounds at {@code DECIMAL128} - 34
+       * significant digits, the same precision the IEEE 754 decimal128 format carries - rather than at whatever
+       * scale the left operand happens to have, UNLESS that scale asks for more, in which case it rounds there
+       * instead (issue #8165: the alternative is to round at 34 digits and then pad the rest with zeros, which
+       * asserts precision that was never computed). {@code DECIMAL128} rounds HALF_EVEN where the old code said
+       * HALF_UP; that is deliberate and reaches only the 34th significant digit of a quotient that has no exact
+       * form anyway (PR #8093 review). The wider-than-34 arm keeps HALF_UP, because there it IS the old code -
+       * {@code divide(right, left.scale(), HALF_UP)} - and the point of that arm is to be no less accurate.
+       * <p>
+       * The left operand's scale is then reinstated as a FLOOR, which is what keeps this a pure bug fix rather
+       * than a formatting change for everyone (PR #8093 review). {@code 10.00 / 2.00} answered {@code 5.00}
+       * before, because HALF_UP at the left scale pads as well as rounds, and the exact quotient is {@code 5} at
+       * scale 0 - numerically the same, but {@code toString()} differs, and code that displays money reads that
+       * difference. Taking the wider of the two scales reproduces the old answer EXACTLY wherever the old answer
+       * was exact, and only widens where it used to round, which is the whole of issue #8041.
+       */
       @Override
       public Number apply(final BigDecimal left, final BigDecimal right) {
         checkDivisorNotZero(this, right.signum() == 0);
-        return left.divide(right, RoundingMode.HALF_UP);
+
+        BigDecimal quotient;
+        try {
+          quotient = left.divide(right);
+        } catch (final ArithmeticException e) {
+          // Non-terminating decimal expansion: there is no exact answer to give, so bound the precision.
+          // DECIMAL128's 34 significant digits are a FLOOR on that bound, not a ceiling (issue #8165): a left
+          // operand carrying more fractional digits than DECIMAL128 gives is asking for digits this call would
+          // then have to invent, and the setScale() below would invent them as zeros - fabricated precision
+          // standing exactly where the pre-#8093 `divide(right, HALF_UP)` put correctly rounded digits. When the
+          // left operand asks for more, divide AT its scale, so every digit of the answer was computed.
+          quotient = left.divide(right, MathContext.DECIMAL128);
+          if (quotient.scale() < left.scale())
+            quotient = left.divide(right, left.scale(), RoundingMode.HALF_UP);
+        }
+
+        // Never narrower than the left operand, never rounded to reach it: setScale() here only ever pads with
+        // zeros, because it runs only when the quotient already has fewer fractional digits than the target -
+        // and, after the widening above, only ever for an EXACT quotient, where the padding is exact too.
+        return quotient.scale() < left.scale() ? quotient.setScale(left.scale()) : quotient;
       }
 
       @Override
@@ -662,12 +713,33 @@ public class MathExpression extends SimpleNode {
       return null;
     }
 
+    /**
+     * The arithmetic promotion chain, the twin of {@link Type#castComparableNumber} on the comparison side.
+     * <p>
+     * {@code Byte} and {@code BigInteger} used to be missing from every arm in both positions, so
+     * {@code abs(:big) + 1}, {@code 1 + :big} and even {@code :big + :big} fell off the end into the
+     * {@code IllegalArgumentException} below - which, not being one of the classified engine exceptions, reached
+     * the caller as an HTTP 500 rather than as a 400 naming the values (issue #7917). Both types reach here
+     * routinely: a {@code BigInteger} from {@code abs()}/{@code sqrt()}/{@code pow()}, from an openCypher inline
+     * property and from any bound Java parameter, a {@code Byte} from a property declared {@code BYTE} and from a
+     * bound parameter. Comparing the identical pair has worked since #7669; only the arithmetic path was left
+     * behind, which is what made the gap look arbitrary from outside.
+     * <p>
+     * Promotions mirror {@code castComparableNumber}'s for the pairs it covers - a {@code BigInteger} has no
+     * narrower common type with any other {@code Number}, so both operands meet in {@code BigDecimal}, with the
+     * non-finite guards {@code floatToBigDecimal}/{@code BigDecimal.valueOf(double)} need (NaN and the infinities
+     * have no {@code BigDecimal} form at all). What this deliberately does NOT do is route the whole method
+     * through {@code castComparableNumber}: that chain answers a different question and meets {@code Integer} and
+     * {@code Float} at {@code double} (#7614), so reusing it wholesale would silently change the type every
+     * existing mixed-width expression returns. The two chains stay separate, and this javadoc is the pointer
+     * between them.
+     */
     public Number apply(final Number a, final Operator operation, final Number b) {
       if (a == null || b == null)
         throw new IllegalArgumentException("Cannot increment a null value");
 
-      if (a instanceof Integer || a instanceof Short) {
-        if (b instanceof Integer || b instanceof Short) {
+      if (a instanceof Integer || a instanceof Short || a instanceof Byte) {
+        if (b instanceof Integer || b instanceof Short || b instanceof Byte) {
           return operation.apply(a.intValue(), b.intValue());
         } else if (b instanceof Long) {
           return operation.apply(a.longValue(), b.longValue());
@@ -676,9 +748,13 @@ public class MathExpression extends SimpleNode {
         else if (b instanceof Double)
           return operation.apply(a.doubleValue(), b.doubleValue());
         else if (b instanceof BigDecimal decimal)
-          return operation.apply(new BigDecimal((Integer) a), decimal);
+          // a.intValue(), not (Integer) a: this arm has always also accepted a Short, which that cast threw a
+          // ClassCastException on, and now a Byte as well.
+          return operation.apply(new BigDecimal(a.intValue()), decimal);
+        else if (b instanceof BigInteger bigInteger)
+          return operation.apply(new BigDecimal(a.intValue()), new BigDecimal(bigInteger));
       } else if (a instanceof Long) {
-        if (b instanceof Integer || b instanceof Long || b instanceof Short)
+        if (b instanceof Integer || b instanceof Long || b instanceof Short || b instanceof Byte)
           return operation.apply(a.longValue(), b.longValue());
         else if (b instanceof Float)
           return operation.apply(a.floatValue(), b.floatValue());
@@ -686,22 +762,38 @@ public class MathExpression extends SimpleNode {
           return operation.apply(a.doubleValue(), b.doubleValue());
         else if (b instanceof BigDecimal decimal)
           return operation.apply(new BigDecimal((Long) a), decimal);
+        else if (b instanceof BigInteger bigInteger)
+          return operation.apply(new BigDecimal(a.longValue()), new BigDecimal(bigInteger));
       } else if (a instanceof Float float1) {
-        if (b instanceof Short || b instanceof Integer || b instanceof Long || b instanceof Float)
+        if (b instanceof Byte || b instanceof Short || b instanceof Integer || b instanceof Long || b instanceof Float)
           return operation.apply(a.floatValue(), b.floatValue());
         else if (b instanceof Double)
           // The decimal form, not .doubleValue(), which would carry the single precision error along (issue #7609).
           return operation.apply(Type.widenFloat(float1), b.doubleValue());
         else if (b instanceof BigDecimal decimal)
           return operation.apply(Type.floatToBigDecimal(float1), decimal);
+        else if (b instanceof BigInteger bigInteger) {
+          // floatToBigDecimal() throws NumberFormatException on NaN/Infinity, which BigDecimal cannot represent,
+          // so a non-finite float meets the BigInteger in double instead - the same guard Type's own Float/
+          // BigInteger arm carries (#7669).
+          if (Float.isFinite(float1))
+            return operation.apply(Type.floatToBigDecimal(float1), new BigDecimal(bigInteger));
+          return operation.apply(Type.widenFloat(float1), Type.finiteDoubleValue(bigInteger));
+        }
 
       } else if (a instanceof Double double1) {
         if (b instanceof Float float2)
           return operation.apply(a.doubleValue(), Type.widenFloat(float2));
-        else if (b instanceof Short || b instanceof Integer || b instanceof Long || b instanceof Double)
+        else if (b instanceof Byte || b instanceof Short || b instanceof Integer || b instanceof Long || b instanceof Double)
           return operation.apply(a.doubleValue(), b.doubleValue());
         else if (b instanceof BigDecimal decimal)
           return operation.apply(BigDecimal.valueOf(double1), decimal);
+        else if (b instanceof BigInteger bigInteger) {
+          // Same non-finite guard as the Float arm above: BigDecimal.valueOf(double) throws on NaN/Infinity.
+          if (Double.isFinite(double1))
+            return operation.apply(BigDecimal.valueOf(double1), new BigDecimal(bigInteger));
+          return operation.apply(double1, Type.finiteDoubleValue(bigInteger));
+        }
 
       } else if (a instanceof BigDecimal bigDecimal) {
         if (b instanceof Integer integer)
@@ -710,12 +802,34 @@ public class MathExpression extends SimpleNode {
           return operation.apply(bigDecimal, new BigDecimal(long1));
         else if (b instanceof Short short1)
           return operation.apply(bigDecimal, new BigDecimal(short1));
+        else if (b instanceof Byte byte1)
+          return operation.apply(bigDecimal, new BigDecimal(byte1.intValue()));
         else if (b instanceof Float float1)
           return operation.apply(bigDecimal, Type.floatToBigDecimal(float1));
         else if (b instanceof Double double1)
           return operation.apply(bigDecimal, BigDecimal.valueOf(double1));
         else if (b instanceof BigDecimal decimal)
           return operation.apply(bigDecimal, decimal);
+        else if (b instanceof BigInteger bigInteger)
+          return operation.apply(bigDecimal, new BigDecimal(bigInteger));
+
+      } else if (a instanceof BigInteger bigInteger) {
+        // The left-hand counterpart of every `b instanceof BigInteger` arm above, and the reason `:big + 1` and
+        // `:big + :big` both threw: there was no top-level BigInteger arm at all.
+        if (b instanceof Integer || b instanceof Long || b instanceof Short || b instanceof Byte)
+          return operation.apply(new BigDecimal(bigInteger), new BigDecimal(b.longValue()));
+        else if (b instanceof Float float1) {
+          if (Float.isFinite(float1))
+            return operation.apply(new BigDecimal(bigInteger), Type.floatToBigDecimal(float1));
+          return operation.apply(Type.finiteDoubleValue(bigInteger), Type.widenFloat(float1));
+        } else if (b instanceof Double double1) {
+          if (Double.isFinite(double1))
+            return operation.apply(new BigDecimal(bigInteger), BigDecimal.valueOf(double1));
+          return operation.apply(Type.finiteDoubleValue(bigInteger), double1);
+        } else if (b instanceof BigDecimal decimal)
+          return operation.apply(new BigDecimal(bigInteger), decimal);
+        else if (b instanceof BigInteger bigInteger1)
+          return operation.apply(new BigDecimal(bigInteger), new BigDecimal(bigInteger1));
       }
 
       throw new IllegalArgumentException(

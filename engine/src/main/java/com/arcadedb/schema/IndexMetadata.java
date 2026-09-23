@@ -26,6 +26,7 @@ import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
@@ -330,6 +331,37 @@ public class IndexMetadata {
    */
   public boolean hasIndexedProperties() {
     return propertyNames != null && !propertyNames.isEmpty();
+  }
+
+  /**
+   * The canonical spelling of a collation keyword, and the one chokepoint every path that sets one goes through.
+   * <p>
+   * Two things used to go wrong here, both silently. The keyword was upper-cased with the no-argument
+   * {@code toUpperCase()}, so on a Turkish, Azeri or Lithuanian server {@code "ci"} became {@code "Cİ"} (a DOTTED
+   * capital I, U+0130) which matches {@link #COLLATION_CI} nowhere - and the result was not rejected, it was stored.
+   * {@code CREATE INDEX ... (n COLLATE ci) UNIQUE} therefore built an ordinary case-SENSITIVE index: the unique
+   * constraint stopped rejecting {@code 'alpha'} next to {@code 'Alpha'}, and {@code WHERE n = 'ALPHA'} answered
+   * zero rows. Because the collation list is PERSISTED, moving the database to a normal-locale server did not
+   * repair an index already built (issue #7900).
+   * <p>
+   * {@code Locale.ROOT} fixes the first half. Refusing a keyword this engine does not implement fixes the second,
+   * and covers every other way a wrong one can arrive - a typo included - instead of only the locale one.
+   * <p>
+   * {@link #fromJSON} deliberately does NOT come through here. It is the load-from-disk path, and an index built
+   * before this fix can carry the corrupted {@code "Cİ"} on disk: validating there would turn a database that
+   * opens today - silently case-sensitive, but open - into one that refuses to. Such an index stays wrong until
+   * it is rebuilt, which is what the issue records; the chokepoint's job is to stop a NEW one being written.
+   */
+  public static String normalizeCollation(final String collation) {
+    if (collation == null)
+      return COLLATION_DEFAULT;
+
+    final String normalized = collation.trim().toUpperCase(Locale.ROOT);
+    if (COLLATION_CI.equals(normalized) || COLLATION_DEFAULT.equals(normalized))
+      return normalized;
+
+    throw new IllegalArgumentException(
+        "Unsupported collation '" + collation + "'. Supported collations are: " + COLLATION_CI + ", " + COLLATION_DEFAULT);
   }
 
   /**

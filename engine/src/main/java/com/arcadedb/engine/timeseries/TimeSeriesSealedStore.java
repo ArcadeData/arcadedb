@@ -18,6 +18,7 @@
  */
 package com.arcadedb.engine.timeseries;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.engine.timeseries.codec.DeltaOfDeltaCodec;
 import com.arcadedb.engine.timeseries.codec.DictionaryCodec;
@@ -49,6 +50,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -69,7 +71,7 @@ import java.util.zip.CRC32;
  * - [27..]   block entries (inline metadata + compressed column data)
  * <p>
  * Block entry layout:
- * - magic "TSB2" (4), minTs (8), maxTs (8), sampleCount (4), colSizes (4*colCount)
+ * - magic "TSB3" (4), minTs (8), maxTs (8), sampleCount (4), blockId (8), colSizes (4*colCount)
  * - numericColCount (4), [min (8) + max (8) + sum (8) + count (8)] * numericColCount (schema order, no colIdx)
  * - tag metadata: tagColCount (2), per TAG column: distinctCount (2), per value: len (2) + UTF-8 bytes
  * - compressed column data bytes
@@ -83,33 +85,48 @@ import java.util.zip.CRC32;
  * over that block through decompression instead of the header. Every path that WRITES a block emits the current layout, so a
  * legacy block is upgraded by whichever rewrite touches it next (compaction, downsampling, truncation).
  * <p>
+ * "TSB3" (issue #8043) is "TSB2" plus the block's own {@link BlockEntry#blockId}, written between the sample count
+ * and the column sizes. It is the identity a walk that released the directory lock finds its block again by, and
+ * the reason it is on DISK rather than in a counter is that the directory is rebuilt wholesale by a reload - an HA
+ * follower installing the leader's sealed file - and an identity a reload invents is no identity at all.
+ * <p>
  * The file header's version byte is what refuses a file to a build that predates a layout: version 1 (issue #7089)
  * says "blocks are self-describing, TSBL or TSB2", and a version-0 file, which can only hold TSBL blocks, is read
- * as it stands and stamped 1 the next time its header is rewritten.
+ * as it stands and stamped 1 the next time its header is rewritten. Version 2 (issue #8043) says a block may also
+ * be TSB3, and IS a refusal rather than a courtesy: a build that does not know the magic stops its directory scan
+ * at the first such block, which is indistinguishable from an empty store - so a file this build writes must be
+ * refused by an older one loudly, at the header, instead of read as holding nothing.
  * <p>
  * <b>High-Availability / Replication note:</b>
  * Sealed store files ({@code .ts.sealed}) are written via {@link RandomAccessFile} and
  * {@link FileChannel} directly to the local filesystem, <em>bypassing</em> ArcadeDB's
- * page-level replication infrastructure. This is by design: compacted time-series data
- * is derived (it is produced by compacting the replicated mutable {@link TimeSeriesBucket}
- * pages) and therefore does not need to be replicated separately. Each HA node independently
- * performs its own compaction from its own replicated mutable buckets, eventually reaching
- * an equivalent sealed store. In-flight mutable data (the {@code .tstb} bucket files) is
- * fully replicated through the normal {@link com.arcadedb.engine.PaginatedComponent} path.
- * The consequence is that, immediately after a failover, a follower that has not yet
- * compacted may serve queries from the mutable bucket only until its maintenance scheduler
- * runs the next compaction cycle.
+ * page-level replication infrastructure. In-flight mutable data (the {@code .tstb} bucket files) is
+ * fully replicated through the normal {@link com.arcadedb.engine.PaginatedComponent} path; the sealed
+ * store is replicated OUT OF BAND instead, as whole-file blobs (issue #4382) or, when one does not fit a
+ * single Raft entry, as an ordered sequence of slices (issue #4416), both installed by
+ * {@code ArcadeStateMachine.applySealedBlobs} through {@link #installSealedFileBytes(byte[])}.
+ * <p>
+ * A follower does NOT compact for itself. {@code TimeSeriesMaintenanceScheduler.runMaintenance} returns
+ * immediately on a replicated database that is not the leader, and the individual engine operations self-gate
+ * again through {@code runWithCompactionReplication}, because compaction mutates the replicated mutable bucket
+ * as well as the sealed store and two nodes doing it independently would diverge. So a follower's
+ * {@code .ts.sealed} is byte-for-byte the leader's, which is what makes {@link BlockEntry#blockId} the same
+ * identity on every node holding a copy of the shard.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class TimeSeriesSealedStore implements AutoCloseable {
 
-  public static final  int CURRENT_VERSION  = 1;
+  public static final  int CURRENT_VERSION  = 2;
   private static final int MAGIC_VALUE       = 0x54534958; // "TSIX"
   // "TSBL": the layout every block had before issue #7089, whose statistics section is a [min, max, sum] triplet.
   private static final int BLOCK_MAGIC_VALUE    = 0x5453424C;
-  // "TSB2": the current layout, whose statistics section is a [min, max, sum, count] quadruple (issue #7089).
+  // "TSB2": the layout of issue #7089, whose statistics section is a [min, max, sum, count] quadruple.
   private static final int BLOCK_MAGIC_VALUE_V2 = 0x54534232;
+  // "TSB3": the current layout, TSB2 plus the block's own identity (issue #8043). See BlockEntry.blockId.
+  private static final int BLOCK_MAGIC_VALUE_V3 = 0x54534233;
+  // Bytes the identity takes in a TSB3 block record, between the sample count and the column sizes.
+  private static final int BLOCK_ID_BYTES       = 8;
   // Bytes one column's statistics take in each layout.
   private static final int LEGACY_STATS_BYTES   = 8 + 8 + 8;
   private static final int STATS_BYTES          = 8 + 8 + 8 + 8;
@@ -146,9 +163,107 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   private volatile long             globalMinTs    = Long.MAX_VALUE;  // volatile: read without write lock
   private volatile long             globalMaxTs    = Long.MIN_VALUE;  // volatile: read without write lock
   private          boolean          headerDirty;
-  // Counts how many times downsampleBlocks actually rewrote the sealed file (i.e., selected at least one
-  // block to downsample). Used by tests to assert idempotency: a steady-state cycle must not rewrite.
-  private          long             downsampleRewriteCount;
+  /**
+   * Counts how many times {@link #downsampleBlocks} actually rewrote the sealed file - i.e. selected at least one
+   * block to coarsen. Written under the directory WRITE lock and read under the read lock, so a walk that is
+   * between two blocks cannot see a torn value.
+   * <p>
+   * It answers two questions. Tests read it through {@link #getDownsampleRewriteCount()} to assert idempotency:
+   * a steady-state maintenance cycle, with nothing new old enough to reduce, must not rewrite (issue #4599). And
+   * {@link BlockDirectorySnapshot} stamps it, so {@link #walkBlocks} can tell a block a retention truncate DROPPED
+   * from one a downsample REPLACED with coarser rows - the first leaves the walk correctly short, the second
+   * leaves it unable to produce a consistent answer at all (issue #8166).
+   */
+  private          long             downsampleEpoch;
+  /**
+   * The cutoff RETENTION has provably swept past, so a vanished block can be attributed to the pass that actually
+   * removed it rather than to whichever maintenance pass happened to run (issue #8166, review of PR #8197).
+   * <p>
+   * {@link #downsampleEpoch} alone answers "did ANY downsample run since the snapshot", not "was THIS block
+   * coarsened". A long walk - an {@code EXPORT DATABASE} over a large series - can span both a retention pass
+   * that legitimately drops one of its blocks AND an unrelated downsample cycle elsewhere in the store, and
+   * would then refuse an answer it could have given honestly. This closes it: {@link #truncateBefore} drops every
+   * block OLDER than its cutoff, so a block with {@code maxTimestamp < retentionRemovedBelowTs} is gone because
+   * of retention, whatever else ran.
+   * <p>
+   * <b>It is monotonic, and only a LOWER boundary can be.</b> A retention cutoff is permanent and forward-only,
+   * and time moves forward, so no legitimate later write lands below one already swept and the claim cannot
+   * become false. The mirror boundary - for a truncate that drops the NEWEST blocks - cannot have that property,
+   * and was removed after the review of PR #8197: the store goes on compacting blocks past any such line by
+   * design, so it would pin itself near "now" and excuse every later block as retired. Its only producer made
+   * that certain, because {@code truncateToBlockCount} is not a retention decision at all - both its callers are
+   * ROLLBACK paths in {@code TimeSeriesShard} (crash recovery of an interrupted compaction, and a failed
+   * {@code compact()}), undoing the store's own speculative state rather than retiring a time range, after which
+   * the shard resumes compacting above the line just drawn. A walk crossing one now takes the ordinary route:
+   * refused if a downsample also ran, counted if not.
+   * <p>
+   * Written under the directory WRITE lock, and only AFTER the rewrite that moves it has actually landed - see
+   * {@link #truncateBefore}. Recording it first left the store permanently believing a range had been retired
+   * when a failed atomic move had dropped nothing, which is the same silently-short answer in a new disguise.
+   */
+  private          long             retentionRemovedBelowTs = Long.MIN_VALUE;
+
+  /**
+   * A fresh {@link BlockEntry#blockId} (issue #8043).
+   * <p>
+   * DRAWN AT RANDOM rather than counted, and that is the whole difference between an identity and the sequence
+   * it replaced. The id is now written to the file, so it outlives the process that minted it and travels with the
+   * block to every node that holds a copy of the shard - and two stores that never met must not be able to mint
+   * the same one. A counter guarantees they do: every store starts at zero, so a node that compacted locally
+   * before it became a follower holds blocks numbered exactly like the ones in the file the leader then ships it,
+   * and a walk crossing that install would resolve its snapshot entry to a DIFFERENT block and read the wrong
+   * rows. That is strictly worse than the skip issue #8043 is about: a short answer is at least missing, not
+   * wrong. Sixty-four random bits make the collision negligible without any coordination at all.
+   * <p>
+   * Zero is never minted, so it stays available as "no identity" for a block read from a pre-#8043 file.
+   */
+  private static long newBlockId() {
+    long id;
+    do {
+      id = ThreadLocalRandom.current().nextLong();
+    } while (id == BlockEntry.NO_BLOCK_ID);
+    return id;
+  }
+
+  /**
+   * The {@link BlockEntry#blockId} of a block read from a file written before issue #8043, DERIVED from what that
+   * file records rather than invented (review of PR #8095).
+   * <p>
+   * A legacy block carries no id, and minting a random one for it would be the very defect #8043 fixes, narrowed
+   * to the blocks that predate the fix: {@link #loadDirectory} would hand the same block a different id on every
+   * load, so a walk crossing an HA install of a file that still holds un-rewritten legacy blocks would resolve
+   * none of them and drop its tail silently - exactly the window a rolling upgrade opens, before the leader's
+   * maintenance has rewritten those blocks even once.
+   * <p>
+   * Derived, it closes that window with no migration and no rewrite. The inputs are the block's own record -
+   * where it starts, and what its header declares - so the id is the same on every load of the same file, and,
+   * because a follower's sealed file is byte-for-byte the leader's, the same on every node holding a copy. It is
+   * unique within a file because no two blocks start at the same offset. And it survives the leader's next
+   * compaction the way any other id does: {@link #writeRetainedBlock} carries it into the "TSB3" record it
+   * writes, so the derived value is what gets persisted and the block never goes back to being derived.
+   * <p>
+   * It is deliberately NOT derived for a block that already carries one. An id in the file is the block's
+   * identity even when a rewrite moves it, and re-deriving would throw that away at the first change of offset.
+   */
+  private static long legacyBlockId(final long blockStartOffset, final long minTs, final long maxTs,
+      final int sampleCount, final int[] colSizes) {
+    long id = mix64(blockStartOffset);
+    id = mix64(id ^ minTs);
+    id = mix64(id ^ maxTs);
+    id = mix64(id ^ sampleCount);
+    for (final int size : colSizes)
+      id = mix64(id ^ size);
+    // Zero is the "no identity" marker, so the one input that would produce it is nudged rather than returned.
+    return id == BlockEntry.NO_BLOCK_ID ? 0x9E3779B97F4A7C15L : id;
+  }
+
+  /** The SplitMix64 finalizer: avalanche over 64 bits, a handful of instructions, no state. */
+  private static long mix64(final long value) {
+    long z = value + 0x9E3779B97F4A7C15L;
+    z = (z ^ (z >>> 30)) * 0xBF58476D1CE4E5B9L;
+    z = (z ^ (z >>> 27)) * 0x94D049BB133111EBL;
+    return z ^ (z >>> 31);
+  }
 
   static final class BlockEntry {
     final long     minTimestamp;
@@ -178,6 +293,45 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     // assigned by loadDirectory ALONE, which left every entry this process wrote holding zero in both, and the
     // only thing keeping that from being read was crcValidated short-circuiting the two readers below.
     final long     blockStartOffset; // file offset where the block's metadata begins
+    /**
+     * "This record carries no id", which is what a block written before issue #8043 looks like: {@link
+     * #loadDirectory} sees it and derives one through {@link #legacyBlockId} instead. Never the id of a live
+     * entry - neither {@link #newBlockId()} nor {@link #legacyBlockId} returns it.
+     */
+    static final long NO_BLOCK_ID = 0L;
+
+    /**
+     * What this block IS, as opposed to what it currently looks like (issue #7973, made durable by #8043).
+     * <p>
+     * {@link #resolveLiveBlock} has to find a snapshot entry again in a directory every rewrite replaces wholesale,
+     * and it used to do that by the {@code (minTimestamp, maxTimestamp, sampleCount)} triple - which is the set of
+     * properties a verbatim copy happens to preserve, not an identifier. Two blocks carrying all three values are
+     * indistinguishable under that rule and the walk reads one of them twice; nothing in the tree writes such a
+     * pair today, but that is a statement about the writers rather than an invariant this type enforces, and since
+     * #7897 the resolution is load-bearing for correctness.
+     * <p>
+     * Assigned once from {@link #newBlockId()}, and PRESERVED - not reassigned - by every path that copies a
+     * block verbatim, which is the single {@link #writeRetainedBlock}. It is a constructor parameter, and reaches
+     * {@link #writeNewBlockToFile} as one too, for the reason {@code blockStartOffset} is (#6360 item 3): a field
+     * a caller assigns afterwards is a field a caller can forget, and the compiler makes every site say whether it
+     * is building a new block or copying one.
+     * <p>
+     * <b>It is written to the file</b> (the "TSB3" block magic), and that is issue #8043. It used to be a
+     * process-local counter that {@link #loadDirectory} re-minted for every entry it read, which made it useless
+     * on the one path that needs it most: an HA sealed-blob install ({@code installSealedFile}) clears the whole
+     * directory and reloads it, so after an install no snapshot entry matched any live entry, every remaining
+     * block of a walk in flight resolved to {@code null}, and {@code walkBlocks} skipped it as gone. It was not
+     * gone - a follower's sealed file is byte-for-byte the leader's and the blob is shipped precisely because the
+     * leader just compacted, so the leader's file normally holds the same blocks and more. An {@code EXPORT
+     * DATABASE} or a PromQL range crossing that install therefore returned the blocks before it and silently
+     * nothing after it. Recorded on disk, the id survives the reload, survives a restart, and is the same id on
+     * every node holding a copy of the shard.
+     * <p>
+     * A block in a pre-#8043 record has none to read, and {@link #legacyBlockId} DERIVES one from what that
+     * record does carry rather than inventing it, so the window between an upgrade and the first rewrite of those
+     * blocks is closed too (review of PR #8095).
+     */
+    final long     blockId;
     int            storedCRC;        // CRC32 over metadata + compressed columns, as stored after the data
     volatile boolean crcValidated;   // true once the CRC has been checked (volatile: read without lock)
     // Coarsest granularity (ms) this block has already been downsampled to; 0 = raw / never downsampled.
@@ -198,7 +352,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
      * record one cannot silently inherit the other.
      */
     BlockEntry(final long minTs, final long maxTs, final int sampleCount, final int columnCount,
-        final double[] mins, final double[] maxs, final double[] sums, final long[] counts, final long blockStartOffset) {
+        final double[] mins, final double[] maxs, final double[] sums, final long[] counts, final long blockStartOffset,
+        final long blockId) {
+      this.blockId = blockId;
       this.minTimestamp = minTs;
       this.maxTimestamp = maxTs;
       this.sampleCount = sampleCount;
@@ -225,7 +381,28 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     }
   }
 
+  /**
+   * Decoded columns of the blocks this store has already read, so a repeated read decodes once (issue #8179).
+   * Per store, hence per shard: see the configuration setting's own description for what that means for the
+   * footprint of a whole type.
+   */
+  private final TimeSeriesDecodedColumnCache decodedColumnCache;
+
+  /**
+   * Opens a store whose decoded-column budget comes from the JVM-wide setting.
+   * <p>
+   * The database-aware overload is what production uses, because
+   * {@link GlobalConfiguration#TIMESERIES_DECODED_BLOCK_CACHE_RAM} is {@code SCOPE.DATABASE} and a budget read off
+   * the global would make a per-database override inert. This one exists for callers that have no database in hand,
+   * which is every direct test of this class.
+   */
   public TimeSeriesSealedStore(final String basePath, final List<ColumnDefinition> columns) throws IOException {
+    this(basePath, columns, GlobalConfiguration.decodedBlockCacheBytes(null));
+  }
+
+  public TimeSeriesSealedStore(final String basePath, final List<ColumnDefinition> columns,
+      final long decodedColumnCacheBytes) throws IOException {
+    this.decodedColumnCache = new TimeSeriesDecodedColumnCache(decodedColumnCacheBytes);
     this.basePath = basePath;
     this.columns = columns;
 
@@ -292,16 +469,18 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       // Build tag metadata section
       final byte[] tagMeta = buildTagMetadata(tagDistinctValues, colCount);
 
-      // Block header: magic(4) + minTs(8) + maxTs(8) + sampleCount(4) + colSizes(4*colCount)
+      // Block header: magic(4) + minTs(8) + maxTs(8) + sampleCount(4) + blockId(8) + colSizes(4*colCount)
       //              + numericColCount(4) + [min(8) + max(8) + sum(8) + count(8)] * numericColCount
       //              + tag metadata
+      final long blockId = newBlockId();
       final int statsSize = 4 + STATS_BYTES * numericColCount;
-      final int metaSize = 4 + 8 + 8 + 4 + 4 * colCount + statsSize + tagMeta.length;
+      final int metaSize = 4 + 8 + 8 + 4 + BLOCK_ID_BYTES + 4 * colCount + statsSize + tagMeta.length;
       final ByteBuffer metaBuf = ByteBuffer.allocate(metaSize);
-      metaBuf.putInt(BLOCK_MAGIC_VALUE_V2);
+      metaBuf.putInt(BLOCK_MAGIC_VALUE_V3);
       metaBuf.putLong(minTs);
       metaBuf.putLong(maxTs);
       metaBuf.putInt(sampleCount);
+      metaBuf.putLong(blockId);
       for (final byte[] col : compressedColumns)
         metaBuf.putInt(col.length);
 
@@ -334,7 +513,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       // #6360 item 3: the offset is given to the entry rather than patched onto it afterwards, so the entry
       // describes where its block is no matter which side of a restart wrote it.
       final BlockEntry entry = new BlockEntry(minTs, maxTs, sampleCount, colCount, columnMins, columnMaxs, columnSums,
-          columnCounts, blockStart);
+          columnCounts, blockStart, blockId);
       entry.tagDistinctValues = tagDistinctValues;
       // Write compressed column data
       for (int c = 0; c < colCount; c++) {
@@ -436,8 +615,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
   /**
    * Returns an iterator over sealed blocks overlapping the given time range.
-   * Eagerly collects all matching rows under the read lock to prevent stale
-   * file offsets after atomic file replacement by concurrent writers.
+   * Eagerly collects all matching rows before returning, so the caller iterates a list rather than the file. The
+   * read lock is taken per block and re-resolves the entry against the live directory first, so an atomic file
+   * replacement by a concurrent writer cannot be read through a stale offset (see {@link #walkBlocks}).
    * <p>
    * Optimizations:
    * - Binary search on block directory to skip to first matching block
@@ -476,21 +656,116 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * series (issue #7354). Returns {@code false} when the visitor asked to stop.
    * <p>
    * This is the loop; {@code iterateRange} is this method with an {@code ArrayList} for a visitor, which is why
-   * the two cannot drift apart. Same read lock over all file I/O, same binary search into the block directory,
-   * same early termination, same per-row tag filtering.
+   * the two cannot drift apart. Same per-block read lock over the file I/O, same binary search into the block
+   * directory, same early termination, same per-row tag filtering.
    * <p>
-   * <b>The visitor runs under the directory read lock</b>, which is what buys the bounded residency: the rows are
-   * produced as the file is read rather than after. That is a shared lock, so it blocks no other reader, but a
-   * writer that needs it - a truncate or a downsample replacing the file - waits for the whole fold rather than
-   * for a copy. A visitor is therefore expected to fold, not to compute: the cost per row belongs to the caller's
-   * answer, and anything expensive should collect and be done afterwards, at which point {@code iterateRange} is
-   * the method that was wanted.
+   * <b>The visitor runs with no lock held</b>, one block behind the read: each block's COLUMNS are decoded under
+   * the directory read lock, the lock is released, and only then are the rows built from them and handed over.
+   * That is what bounds what a writer waits for - a compaction swap, a truncate, a downsample replacing the file - at one block's decode
+   * instead of at the caller's total work. It used to be the other way round, and an {@code EXPORT DATABASE}
+   * writing a gzip chunk per {@code TIMESERIES_CHUNK_SIZE} rows therefore held this lock across its own file I/O
+   * for the whole export (issue #7897). The residency is unchanged: one block, which is what the decode
+   * materialises either way.
    *
    * @param metrics counts the blocks this scan actually decompressed and the rows it materialised, or {@code null}
    */
   public boolean forEachRow(final long fromTs, final long toTs, final int[] columnIndices, final TagFilter tagFilter,
       final AggregationMetrics metrics, final TimeSeriesRowVisitor visitor) throws IOException {
-    return walkBlocks(fromTs, toTs, columnIndices, tagFilter, metrics, visitor, false);
+    return forEachRow(snapshotBlockDirectory(fromTs, toTs), fromTs, toTs, columnIndices, tagFilter, metrics, visitor);
+  }
+
+  /**
+   * {@link #forEachRow(long, long, int[], TagFilter, AggregationMetrics, TimeSeriesRowVisitor)} over a directory
+   * snapshot the caller already took, so the blocks this walks are the ones that existed at the caller's own
+   * instant rather than at this call's (issue #7897).
+   * <p>
+   * {@link TimeSeriesShard#forEachRow} needs that: it reads the mutable bucket in the same window it takes the
+   * snapshot in, and a compaction landing between the two would otherwise seal the bucket's rows into blocks this
+   * walk would then hand over a second time.
+   */
+  boolean forEachRow(final BlockDirectorySnapshot directorySnapshot, final long fromTs, final long toTs,
+      final int[] columnIndices, final TagFilter tagFilter, final AggregationMetrics metrics,
+      final TimeSeriesRowVisitor visitor) throws IOException {
+    return walkBlocks(directorySnapshot, fromTs, toTs, columnIndices, tagFilter, metrics, visitor, false);
+  }
+
+  /**
+   * The directory entries of the blocks that can hold a row in {@code [fromTs, toTs]}, copied out, for a walk that
+   * reads those blocks one at a time instead of holding one lock over all of them (issue #7897).
+   * <p>
+   * Bounded by the RANGE and not by the store, because the copy is per call and a point query against a long-lived
+   * shard should not pay for its whole history: the two binary searches that find the slice run here, under the
+   * lock, against the live list, so what comes back is the run of blocks {@link #walkBlocks} was going to look at
+   * anyway (code review on PR #7970). An unbounded range - which is what an {@code EXPORT DATABASE} asks for -
+   * copies everything, as it must.
+   * <p>
+   * The entries are shared rather than copied. The fields the walk reads OUTSIDE the lock - the timestamps, the
+   * sample count and {@code tagDistinctValues} - are all assigned before the entry is published into
+   * {@code blockDirectory} under the directory WRITE lock, so taking the snapshot under the read lock is the
+   * happens-before edge that makes them visible; the two that are written afterwards, {@code storedCRC} and
+   * {@code crcValidated}, are read only inside the per-block lock window, where they always were
+   * (grep: {@code \.storedCRC\s*=|\.crcValidated\s*=} has 5 hits, 3 of them in the constructor).
+   * <p>
+   * The snapshot is a list of blocks to TRY, not a promise they are all still there: {@link #walkBlocks}
+   * re-resolves each one against the live directory before reading it.
+   */
+  BlockDirectorySnapshot snapshotBlockDirectory(final long fromTs, final long toTs) {
+    directoryLock.readLock().lock();
+    try {
+      final int dirSize = blockDirectory.size();
+      if (dirSize == 0)
+        return BlockDirectorySnapshot.EMPTY;
+
+      // First block whose maxTimestamp >= fromTs. Everything before it ends before the range begins.
+      int lo = 0, hi = dirSize;
+      while (lo < hi) {
+        final int mid = (lo + hi) >>> 1;
+        if (blockDirectory.get(mid).maxTimestamp < fromTs)
+          lo = mid + 1;
+        else
+          hi = mid;
+      }
+      final int first = lo;
+
+      // First block whose minTimestamp > toTs. The directory is ordered by minTimestamp, so everything from there
+      // on starts after the range ends.
+      lo = first;
+      hi = dirSize;
+      while (lo < hi) {
+        final int mid = (lo + hi) >>> 1;
+        if (blockDirectory.get(mid).minTimestamp <= toTs)
+          lo = mid + 1;
+        else
+          hi = mid;
+      }
+      final int end = lo;
+
+      if (first >= end)
+        return BlockDirectorySnapshot.EMPTY;
+
+      return new BlockDirectorySnapshot(new ArrayList<>(blockDirectory.subList(first, end)), first, downsampleEpoch);
+    } finally {
+      directoryLock.readLock().unlock();
+    }
+  }
+
+  /**
+   * A run of directory entries copied out of {@code blockDirectory}, together with the index the run STARTED at
+   * (issue #7897, narrowed to the range on PR #7970).
+   * <p>
+   * {@code firstIndex} is what lets {@link #resolveLiveBlock} try reference identity at the entry's own position
+   * in the live directory before falling back to a search: without it the slice's own indices would name the
+   * wrong blocks.
+   * <p>
+   * {@code downsampleEpoch} is what lets {@link #walkBlocks} tell the two reasons a block can fail to resolve
+   * apart (issue #8166). A block that is simply GONE - dropped by a retention {@code truncateBefore} - leaves a
+   * walk correctly short, and it is counted and stepped over. A block replaced by a DOWNSAMPLE has not gone
+   * anywhere: its rows are in the store, coarsened, and no answer that mixes them with the fine rows this walk
+   * has already emitted is a consistent one. Comparing the epoch the snapshot was taken at against the store's
+   * current one says whether a downsample can have been the cause, without keeping per-block state for it.
+   */
+  record BlockDirectorySnapshot(List<BlockEntry> blocks, int firstIndex, long downsampleEpoch) {
+    static final BlockDirectorySnapshot EMPTY = new BlockDirectorySnapshot(List.of(), 0, 0L);
   }
 
   /**
@@ -523,120 +798,258 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    */
   public boolean forEachTagCombination(final long fromTs, final long toTs, final int[] columnIndices,
       final AggregationMetrics metrics, final TimeSeriesRowVisitor visitor) throws IOException {
-    return walkBlocks(fromTs, toTs, columnIndices, null, metrics, visitor, true);
+    return forEachTagCombination(snapshotBlockDirectory(fromTs, toTs), fromTs, toTs, columnIndices, metrics, visitor);
   }
 
   /**
-   * The block walk both {@link #forEachRow} and {@link #forEachTagCombination} are: one binary search into the
-   * directory, one early termination, one read lock over all the file I/O. {@code combinationsOnly} decides only
-   * whether a block that can be answered from its directory entry is read anyway.
+   * {@link #forEachTagCombination(long, long, int[], AggregationMetrics, TimeSeriesRowVisitor)} over a directory
+   * snapshot the caller already took, for the reason
+   * {@link #forEachRow(BlockDirectorySnapshot, long, long, int[], TagFilter, AggregationMetrics, TimeSeriesRowVisitor)} gives.
    */
-  private boolean walkBlocks(final long fromTs, final long toTs, final int[] columnIndices,
-      final TagFilter tagFilter, final AggregationMetrics metrics, final TimeSeriesRowVisitor visitor,
-      final boolean combinationsOnly) throws IOException {
-    // Hold the read lock for all file I/O to prevent stale offsets after
-    // atomic file replacement by concurrent writers (truncate/downsample).
-    directoryLock.readLock().lock();
-    try {
-      final int tsColIdx = findTimestampColumnIndex();
-      final int dirSize = blockDirectory.size();
-      // See scanRange: a condition on a column outside the projection is applied, not silently refused (#7733).
-      final TagProjection projection = TagProjection.of(columnIndices, tagFilter);
+  boolean forEachTagCombination(final BlockDirectorySnapshot directorySnapshot, final long fromTs, final long toTs,
+      final int[] columnIndices, final AggregationMetrics metrics, final TimeSeriesRowVisitor visitor)
+      throws IOException {
+    return walkBlocks(directorySnapshot, fromTs, toTs, columnIndices, null, metrics, visitor, true);
+  }
 
-      // Loop-invariant for the whole walk, so built once rather than per block: a projection does not vary from
-      // block to block, and neither does the timestamp column (claude-review on PR #7730). Named apart from the
-      // TagProjection above because they answer different questions: this one is the membership test the
-      // combinations fast path reads a DECLARATION through, and never widens - #7710's walk takes no filter.
-      BitSet combinationColumns = null;
-      int combinationWidth = 0;
-      if (combinationsOnly && columnIndices != null) {
-        combinationColumns = new BitSet();
-        for (final int idx : columnIndices)
-          combinationColumns.set(idx);
-        combinationWidth = columnIndices.length;
+  /**
+   * The block walk both {@link #forEachRow} and {@link #forEachTagCombination} are: one pass over the snapshot's
+   * blocks - which {@link #snapshotBlockDirectory} has already clipped to the range - one early termination, and
+   * one read lock PER BLOCK over that block's file I/O.
+   * {@code combinationsOnly} decides only whether a block that can be answered from its directory entry is read
+   * anyway.
+   * <p>
+   * The lock is per block rather than over the whole walk because the visitor is the caller's code and its cost is
+   * therefore unbounded from here (issue #7897): a block's COLUMNS are decoded under the lock, the lock is
+   * dropped, and the rows are built from those columns and handed over with nothing held. Building them after the
+   * release rather than before is what keeps {@code materializedRows} honest for a visitor that stops on the first
+   * row. A directory entry is immutable once built, so the parts of the walk that read only the entry - the range
+   * test, the tag-filter block test, the declared-combination shortcut - need no lock at all; only the decode
+   * does, and it re-resolves the entry through {@link #resolveLiveBlock} first, because between two blocks the
+   * file may have been swapped under it.
+   */
+  private boolean walkBlocks(final BlockDirectorySnapshot directorySnapshot, final long fromTs, final long toTs,
+      final int[] columnIndices, final TagFilter tagFilter, final AggregationMetrics metrics,
+      final TimeSeriesRowVisitor visitor, final boolean combinationsOnly) throws IOException {
+    final List<BlockEntry> snapshot = directorySnapshot.blocks();
+    final int dirSize = snapshot.size();
+    if (dirSize == 0)
+      return true;
+
+    final int tsColIdx = findTimestampColumnIndex();
+    // See scanRange: a condition on a column outside the projection is applied, not silently refused (#7733).
+    final TagProjection projection = TagProjection.of(columnIndices, tagFilter);
+
+    // Loop-invariant for the whole walk, so built once rather than per block: a projection does not vary from
+    // block to block, and neither does the timestamp column (code review on PR #7730). Named apart from the
+    // TagProjection above because they answer different questions: this one is the membership test the
+    // combinations fast path reads a DECLARATION through, and never widens - #7710's walk takes no filter.
+    BitSet combinationColumns = null;
+    int combinationWidth = 0;
+    if (combinationsOnly && columnIndices != null) {
+      combinationColumns = new BitSet();
+      for (final int idx : columnIndices)
+        combinationColumns.set(idx);
+      combinationWidth = columnIndices.length;
+    }
+
+    // No binary search here any more: the snapshot IS the run of blocks the range can reach, clipped by the two
+    // searches snapshotBlockDirectory ran under the lock. The two bound tests below are kept because a block at
+    // either end of that run can still be out of range on the OTHER bound.
+    for (int blockIdx = 0; blockIdx < dirSize; blockIdx++) {
+      final BlockEntry entry = snapshot.get(blockIdx);
+
+      // Blocks are sorted, so if minTs > toTs all remaining are past range
+      if (entry.minTimestamp > toTs)
+        break;
+
+      if (entry.maxTimestamp < fromTs)
+        continue;
+
+      final BlockMatchResult tagMatch = tagFilter != null
+          ? blockMatchesTagFilter(entry, tagFilter)
+          : BlockMatchResult.FAST_PATH;
+      if (tagMatch == BlockMatchResult.SKIP) {
+        if (metrics != null)
+          metrics.addSkippedBlock();
+        continue;
       }
 
-      // Binary search: find first block whose maxTimestamp >= fromTs
-      int startBlockIdx = 0;
-      if (dirSize > 0) {
-        int lo = 0, hi = dirSize - 1;
-        while (lo < hi) {
-          final int mid = (lo + hi) >>> 1;
-          if (blockDirectory.get(mid).maxTimestamp < fromTs)
-            lo = mid + 1;
-          else
-            hi = mid;
-        }
-        startBlockIdx = lo;
-      }
-
-      for (int blockIdx = startBlockIdx; blockIdx < dirSize; blockIdx++) {
-        final BlockEntry entry = blockDirectory.get(blockIdx);
-
-        // Early termination: blocks are sorted, so if minTs > toTs all remaining are past range
-        if (entry.minTimestamp > toTs)
-          break;
-
-        if (entry.maxTimestamp < fromTs)
-          continue;
-
-        final BlockMatchResult tagMatch = tagFilter != null
-            ? blockMatchesTagFilter(entry, tagFilter)
-            : BlockMatchResult.FAST_PATH;
-        if (tagMatch == BlockMatchResult.SKIP) {
-          if (metrics != null)
-            metrics.addSkippedBlock();
-          continue;
-        }
-
-        if (combinationsOnly) {
+      // The read lock covers this block's RESOLUTION and its DECODE, and nothing else - not the next block's, and
+      // not the visitor. What comes out of it is the block's columns, which is the residency this walk has always
+      // had; the rows are built from them afterwards, one at a time, so a visitor that stops on the first one
+      // still costs one Object[] and not a block of them (Issue7354BoundedTagScanTest).
+      //
+      // The combinations fast path is INSIDE this window too (issue #8043). It used to run ahead of it, off the
+      // snapshot entry, which made the two arms of the same walk answer different questions: the decode arm
+      // dropped a block that no longer resolved, while the fast path reported a tag combination for it anyway. It
+      // also read the declaration off an entry the store may already have replaced. Both arms now ask the live
+      // directory the same question first, and the fast path still costs no file read and no decode - it just
+      // pays the same uncontended read lock the decode already paid.
+      long[] ts = null;
+      Object[][] decompCols = null;
+      int start = 0;
+      int end = 0;
+      Object[] combination = null;
+      boolean vanished = false;
+      boolean coarsened = false;
+      directoryLock.readLock().lock();
+      try {
+        final BlockEntry live = resolveLiveBlock(entry, directorySnapshot.firstIndex() + blockIdx);
+        // A null live entry means the block left the directory while this walk was between two blocks. It no
+        // longer means "a sealed file was installed under this walk" - since issue #8043 the block's identity is
+        // in the file, so a block the leader's copy still holds resolves - and the two causes that remain are
+        // NOT the same answer (issue #8166), which is what the epoch below separates.
+        if (live == null) {
+          vanished = true;
+          // Retention is asked FIRST, and it answers definitively: a truncate removed every block past the
+          // boundary it moved, so a block inside that range is gone whatever else ran in the meantime. Only a
+          // block retention cannot account for is attributed to a REPLACEMENT, which is what keeps a walk that
+          // meets BOTH passes from refusing an answer it could have given (review of PR #8197).
+          coarsened = !removedByRetention(entry) && downsampleEpoch != directorySnapshot.downsampleEpoch();
+        } else {
           // The whole point of issue #7710: one row off the directory entry, with no file read and no decode.
-          final Object[] combination = declaredSingleCombination(entry, combinationColumns, combinationWidth, tsColIdx,
-              fromTs, toTs);
-          if (combination != null) {
-            if (metrics != null)
-              metrics.addSkippedBlock();
-            if (!visitor.visit(combination))
-              return false;
-            continue;
+          if (combinationsOnly)
+            combination = declaredSingleCombination(live, combinationColumns, combinationWidth, tsColIdx, fromTs, toTs);
+
+          if (combination == null) {
+            final long[] decodedTs = decompressTimestamps(live, tsColIdx);
+            final int from = lowerBound(decodedTs, fromTs);
+            final int to = upperBound(decodedTs, toTs);
+
+            if (from < to) {
+              if (metrics != null) {
+                if (tagMatch == BlockMatchResult.SLOW_PATH)
+                  metrics.addSlowPathBlock();
+                else
+                  metrics.addFastPathBlock();
+              }
+
+              ts = decodedTs;
+              start = from;
+              end = to;
+              decompCols = decompressColumns(live, projection.scanIndices(), tsColIdx);
+            }
           }
         }
-
-        final long[] ts = decompressTimestamps(entry, tsColIdx);
-        final int start = lowerBound(ts, fromTs);
-        final int end = upperBound(ts, toTs);
-
-        if (start >= end)
-          continue;
-
-        if (metrics != null) {
-          if (tagMatch == BlockMatchResult.SLOW_PATH)
-            metrics.addSlowPathBlock();
-          else
-            metrics.addFastPathBlock();
-        }
-
-        final Object[][] decompCols = decompressColumns(entry, projection.scanIndices(), tsColIdx);
-        final int resultCols = decompCols.length + 1;
-
-        for (int i = start; i < end; i++) {
-          final Object[] row = new Object[resultCols];
-          row[0] = ts[i];
-          for (int c = 0; c < decompCols.length; c++)
-            row[c + 1] = decompCols[c][i];
-          // Use matchesMapped() so the filter works correctly when the row is a subset of the columns.
-          if (tagMatch == BlockMatchResult.SLOW_PATH && !tagFilter.matchesMapped(row, projection.scanIndices()))
-            continue;
-          if (metrics != null)
-            metrics.addMaterializedRows(1);
-          if (!visitor.visit(projection.narrow(row)))
-            return false;
-        }
+      } finally {
+        directoryLock.readLock().unlock();
       }
-      return true;
-    } finally {
-      directoryLock.readLock().unlock();
+
+      // Raised rather than counted when a DOWNSAMPLE is what moved the store (issue #8166). Downsampling does
+      // not remove these rows, it replaces them with coarser ones, so the rows already handed to the visitor and
+      // the rows still to come are at two different resolutions and no walk can join them into one answer. See
+      // TimeSeriesWalkCoarsenedException for why no hand-over fixes that, only hides it.
+      if (coarsened)
+        throw new TimeSeriesWalkCoarsenedException(
+            "Sealed block [" + entry.minTimestamp + ".." + entry.maxTimestamp + "] of '" + getSealedFileName()
+                + "' was replaced by a downsample while this read was in flight, so no answer it can still produce"
+                + " mixes one resolution: the rows already returned are the fine ones and the rows remaining are"
+                + " their coarser replacements. Run the read again to get a whole answer at one resolution");
+
+      // Counted, not merely skipped (issue #8043): a walk whose answer is SHORT because the store moved under it
+      // is otherwise indistinguishable from one that simply matched no row, and a silently short answer to an
+      // EXPORT DATABASE is the worst available outcome. This arm is now a RETENTION truncate alone, for which a
+      // short answer is the correct one: those rows really are gone.
+      if (vanished) {
+        if (metrics != null)
+          metrics.addVanishedBlock();
+        continue;
+      }
+
+      if (combination != null) {
+        if (metrics != null)
+          metrics.addSkippedBlock();
+        if (!visitor.visit(combination))
+          return false;
+        continue;
+      }
+
+      // Null only because the window above declined the block - no row of it was in range.
+      // decompressColumns has one return and it is a toArray, so it never hands back null itself.
+      if (decompCols == null)
+        continue;
+
+      final int resultCols = decompCols.length + 1;
+      for (int i = start; i < end; i++) {
+        final Object[] row = new Object[resultCols];
+        row[0] = ts[i];
+        for (int c = 0; c < decompCols.length; c++)
+          row[c + 1] = decompCols[c][i];
+        // Use matchesMapped() so the filter works correctly when the row is a subset of the columns.
+        if (tagMatch == BlockMatchResult.SLOW_PATH && !tagFilter.matchesMapped(row, projection.scanIndices()))
+          continue;
+        if (metrics != null)
+          metrics.addMaterializedRows(1);
+        if (!visitor.visit(projection.narrow(row)))
+          return false;
+      }
     }
+    return true;
+  }
+
+  /**
+   * The live directory entry for a block the walk holds a snapshot of, or {@code null} when that block is no
+   * longer in the store (issue #7897).
+   * <p>
+   * A snapshot entry carries file offsets, and a walk that releases the directory lock between blocks may find
+   * those offsets belong to a file that has since been replaced - by a compaction swap, by a truncate, by a
+   * downsample. Reference identity at the same index settles the case where nothing happened, in one comparison,
+   * which is the common one: most walks meet no writer at all.
+   * <p>
+   * <b>It is not the case this method exists for.</b> Every directory-rewriting path replaces the WHOLE list with
+   * fresh entries - {@code commitTempCompactionFile} does {@code blockDirectory.clear()} followed by
+   * {@code addAll(newBlockDirectory)}, on every {@code compact()}, for blocks it merely copied verbatim as much as
+   * for the ones it built. So the race this fix is about, a walk crossing a compaction, is exactly the race in
+   * which the identity check fails for every remaining block and the search below answers all of them.
+   * <p>
+   * That search is by {@link BlockEntry#blockId}, the id a block is born with, keeps through every verbatim copy
+   * ({@link #writeRetainedBlock}) and - since issue #8043 - carries in the file, so it survives the wholesale
+   * directory reload an HA sealed-file install performs. It used to be by the
+   * {@code (minTimestamp, maxTimestamp, sampleCount)} triple, which is the set of properties such a copy happens
+   * to preserve rather than an identifier: two blocks carrying all three values answer to each other's entry, and
+   * the walk reads one of them twice and the other never (issue #7973). Nothing in the tree writes such a pair
+   * today - a compaction's new blocks carry strictly newer timestamps - but that is a statement about what the
+   * writers happen to do, not an invariant this type enforces.
+   * <p>
+   * The narrowing is still a binary search on {@code minTimestamp}, which the directory is ordered by and which a
+   * retained block keeps, followed by the run of entries sharing it - so it costs O(log n) per block, not O(n).
+   * A block that answers to none of them was not retained: a truncate dropped it or a downsample replaced it with
+   * a coarser one, and either way the rows this walk was about to read are no longer the rows the store holds.
+   *
+   * @param hintIdx the index the block occupied in the snapshot, which is still its index unless the directory was
+   *                rewritten
+   */
+  /**
+   * Whether a retention truncate provably removed this block, read against the two boundaries
+   * {@link #retentionRemovedBelowTs} records. Called under the directory read lock, which is what makes reading
+   * it a consistent view of what retention has done.
+   */
+  private boolean removedByRetention(final BlockEntry snapshotEntry) {
+    return snapshotEntry.maxTimestamp < retentionRemovedBelowTs;
+  }
+
+  private BlockEntry resolveLiveBlock(final BlockEntry snapshotEntry, final int hintIdx) {
+    final int liveSize = blockDirectory.size();
+    if (hintIdx < liveSize && blockDirectory.get(hintIdx) == snapshotEntry)
+      return snapshotEntry;
+
+    int lo = 0, hi = liveSize;
+    while (lo < hi) {
+      final int mid = (lo + hi) >>> 1;
+      if (blockDirectory.get(mid).minTimestamp < snapshotEntry.minTimestamp)
+        lo = mid + 1;
+      else
+        hi = mid;
+    }
+    for (int i = lo; i < liveSize; i++) {
+      final BlockEntry live = blockDirectory.get(i);
+      if (live.minTimestamp != snapshotEntry.minTimestamp)
+        break;
+      if (live.blockId == snapshotEntry.blockId)
+        return live;
+    }
+    return null;
   }
 
   /**
@@ -762,7 +1175,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    * one column's declared set (issue #7660), and {@link #declaredSingleCombination}, which reads a whole
    * single-valued combination off the entry (issue #7710). They arrived on separate branches with a byte-identical
    * copy each; widening this predicate to another codec or type in only one of them would silently reintroduce
-   * exactly the class of defect both issues are about (claude-review on PR #7730).
+   * exactly the class of defect both issues are about (code review on PR #7730).
    */
   private static boolean declaredDistinctValuesAreExact(final ColumnDefinition column) {
     return column.getRole() == ColumnDefinition.ColumnRole.TAG && column.getDataType() == Type.STRING
@@ -1098,45 +1511,6 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   /**
-   * Push-down aggregation on sealed blocks.
-   */
-  public AggregationResult aggregate(final long fromTs, final long toTs, final int columnIndex,
-      final AggregationType type, final long bucketIntervalMs) throws IOException {
-    final AggregationResult result = new AggregationResult();
-    final int tsColIdx = findTimestampColumnIndex();
-    final int targetColSchemaIdx = findNonTsColumnSchemaIndex(columnIndex);
-
-    final long singleBucketTs = TimeSeriesEngine.singleBucketAnchor(fromTs);
-
-    // Hold the read lock for the entire scan including file I/O to prevent stale offsets
-    // after atomic file replacement by concurrent writers (truncate/downsample).
-    directoryLock.readLock().lock();
-    try {
-      for (final BlockEntry entry : blockDirectory) {
-        if (entry.maxTimestamp < fromTs || entry.minTimestamp > toTs)
-          continue;
-
-        final long[] timestamps = decompressTimestamps(entry, tsColIdx);
-        final double[] values = decompressDoubleColumn(entry, targetColSchemaIdx);
-
-        for (int i = 0; i < timestamps.length; i++) {
-          if (timestamps[i] < fromTs || timestamps[i] > toTs)
-            continue;
-
-          final long bucketTs = bucketIntervalMs > 0
-              ? Math.floorDiv(timestamps[i], bucketIntervalMs) * bucketIntervalMs
-              : singleBucketTs;
-
-          accumulateSample(result, bucketTs, values[i], type);
-        }
-      }
-      return result;
-    } finally {
-      directoryLock.readLock().unlock();
-    }
-  }
-
-  /**
    * Push-down multi-column aggregation on sealed blocks.
    * Processes compressed blocks directly without creating Object[] row arrays.
    * When a block fits entirely within a single time bucket, uses block-level
@@ -1149,14 +1523,21 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final int tsColIdx = findTimestampColumnIndex();
     final int reqCount = requests.size();
 
-    // Pre-compute schema column indices for each request
+    // Pre-compute schema column indices for each request.
+    //
+    // MultiColumnAggregationRequest.columnIndex() is a position in the ENGINE ROW, not in the schema: this
+    // layer stores a block column per SCHEMA position, so it has to map back (issue #8140). It used to read the
+    // number as a schema index, which the mutable half never did, so the two halves answered different columns
+    // for the same request unless the TIMESTAMP column happened to be declared first.
     final int[] schemaColIndices = new int[reqCount];
     final boolean[] isCount = new boolean[reqCount];
     for (int r = 0; r < reqCount; r++) {
       isCount[r] = requests.get(r).type() == AggregationType.COUNT;
       if (!isCount[r])
-        schemaColIndices[r] = requests.get(r).columnIndex();
+        schemaColIndices[r] = findAggregationSchemaIndex(requests.get(r).columnIndex());
       else
+        // COUNT counts rows without resolving a column, so it needs no schema index - and must not be given
+        // one, since its columnIndex names nothing.
         schemaColIndices[r] = -1;
     }
 
@@ -1438,6 +1819,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
       // Only update in-memory state after the successful file swap
       blockDirectory.clear();
+      decodedColumnCache.clear();
       blockDirectory.addAll(newDirectory);
       globalMinTs = Long.MAX_VALUE;
       globalMaxTs = Long.MIN_VALUE;
@@ -1445,6 +1827,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         if (e.minTimestamp < globalMinTs) globalMinTs = e.minTimestamp;
         if (e.maxTimestamp > globalMaxTs) globalMaxTs = e.maxTimestamp;
       }
+      // HERE, and not beside the decision at the top of the method (review of PR #8197). The boundary is a claim
+      // that a range of timestamps is GONE, and until the move above lands nothing has gone: a failed write or a
+      // failed swap leaves the live file and this directory intact, and the method rethrows. Advancing it first
+      // left the store permanently believing a range had been retired when it had not - and because the claim is
+      // monotonic there is no path back, so a later downsample inside that range would be excused as retention
+      // and a walk crossing it answered silently short, which is the defect issue #8166 exists to close.
+      retentionRemovedBelowTs = Math.max(retentionRemovedBelowTs, timestamp);
 
       indexFile = new RandomAccessFile(oldFile, "rw");
       indexChannel = indexFile.getChannel();
@@ -1645,7 +2034,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     }
 
     // Rewrite sealed file: toKeep blocks (raw copy) + new downsampled blocks
-    downsampleRewriteCount++;
+    downsampleEpoch++;
     rewriteWithBlocks(toKeep, newBlocksCompressed, newBlocksMeta, newBlocksStats, newBlocksTagDV, granularityMs);
     } finally {
       directoryLock.writeLock().unlock();
@@ -1701,7 +2090,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           final long[] meta = newMeta.get(b);
           final BlockEntry entry = writeNewBlockToFile(tempFile, (int) meta[2], meta[0], meta[1],
               newCompressed.get(b), newStats.get(b), colCount,
-              newTagDistinctValues != null ? newTagDistinctValues.get(b) : null);
+              newTagDistinctValues != null ? newTagDistinctValues.get(b) : null, newBlockId());
           // Mark the freshly downsampled block so future cycles at the same (or finer) granularity skip it.
           entry.downsampledGranularityMs = newBlocksGranularityMs;
           newDirectory.add(entry);
@@ -1732,6 +2121,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
     // Only update in-memory state after the successful file swap
     blockDirectory.clear();
+    decodedColumnCache.clear();
     blockDirectory.addAll(newDirectory);
     globalMinTs = Long.MAX_VALUE;
     globalMaxTs = Long.MIN_VALUE;
@@ -1751,12 +2141,30 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     for (int c = 0; c < colCount; c++)
       compressedCols[c] = readBytes(oldEntry.columnOffsets[c], oldEntry.columnSizes[c]);
 
+    target.add(writeRetainedBlock(tempFile, oldEntry, compressedCols, colCount));
+  }
+
+  /**
+   * Writes a block a rewrite is KEEPING into the temp file, and returns the entry that describes it there.
+   * <p>
+   * The one definition of "this is the same block, somewhere else in the file", shared by every path that retains
+   * one: {@link #truncateBefore}, {@link #truncateToBlockCount} and {@link #downsampleBlocks}' retained arm reach
+   * it through {@link #copyBlockToFile}, and {@link #writeTempCompactionFile} calls it directly because it has
+   * already read the bytes under the directory lock. Compaction used to carry its own copy of the three lines,
+   * which is how the {@code downsampledGranularityMs} hand-off came to be written twice and how a THIRD property
+   * to carry across - {@link BlockEntry#blockId}, issue #7973 - would have had two places to be forgotten in.
+   * <p>
+   * Everything that makes the block what it is comes from {@code oldEntry}; only the offsets change, because only
+   * the file did.
+   */
+  private BlockEntry writeRetainedBlock(final RandomAccessFile tempFile, final BlockEntry oldEntry,
+      final byte[][] compressedCols, final int colCount) throws IOException {
     final BlockEntry newEntry = writeNewBlockToFile(tempFile, oldEntry.sampleCount, oldEntry.minTimestamp,
         oldEntry.maxTimestamp, compressedCols, blockStatsOf(oldEntry, compressedCols), colCount,
-        oldEntry.tagDistinctValues);
+        oldEntry.tagDistinctValues, oldEntry.blockId);
     // Preserve the in-memory downsampling marker across the file rewrite so idempotency survives compaction.
     newEntry.downsampledGranularityMs = oldEntry.downsampledGranularityMs;
-    target.add(newEntry);
+    return newEntry;
   }
 
   /**
@@ -1766,7 +2174,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    */
   private BlockEntry writeNewBlockToFile(final RandomAccessFile tempFile, final int sampleCount,
       final long minTs, final long maxTs, final byte[][] compressedCols, final BlockStats stats,
-      final int colCount, final String[][] tagDistinctValues) throws IOException {
+      final int colCount, final String[][] tagDistinctValues, final long blockId) throws IOException {
 
     // Same codec-keyed rule as writeBlock() - see the comment there.
     int numericColCount = 0;
@@ -1777,12 +2185,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final byte[] tagMeta = buildTagMetadata(tagDistinctValues, colCount);
 
     final int statsSize = 4 + STATS_BYTES * numericColCount;
-    final int metaSize = 4 + 8 + 8 + 4 + 4 * colCount + statsSize + tagMeta.length;
+    final int metaSize = 4 + 8 + 8 + 4 + BLOCK_ID_BYTES + 4 * colCount + statsSize + tagMeta.length;
     final ByteBuffer metaBuf = ByteBuffer.allocate(metaSize);
-    metaBuf.putInt(BLOCK_MAGIC_VALUE_V2);
+    metaBuf.putInt(BLOCK_MAGIC_VALUE_V3);
     metaBuf.putLong(minTs);
     metaBuf.putLong(maxTs);
     metaBuf.putInt(sampleCount);
+    metaBuf.putLong(blockId);
     for (final byte[] col : compressedCols)
       metaBuf.putInt(col.length);
     metaBuf.putInt(numericColCount);
@@ -1810,7 +2219,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     // #6360 item 3: the temp file becomes the live file by an atomic move, so an offset into it is the offset the
     // block will have - exactly as the column offsets set below already are.
     final BlockEntry newEntry = new BlockEntry(minTs, maxTs, sampleCount, colCount, stats.mins(), stats.maxs(),
-        stats.sums(), stats.counts(), blockStart);
+        stats.sums(), stats.counts(), blockStart, blockId);
     newEntry.tagDistinctValues = tagDistinctValues;
     for (int c = 0; c < colCount; c++) {
       newEntry.columnOffsets[c] = dataOffset;
@@ -1899,16 +2308,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         if (spec.isRetained()) {
           final int i = spec.idx();
           final BlockEntry old = retained.get(i);
-          entry = writeNewBlockToFile(tempFile, old.sampleCount, old.minTimestamp, old.maxTimestamp,
-              retainedBytes.get(i), blockStatsOf(old, retainedBytes.get(i)), colCount, old.tagDistinctValues);
-          // Preserve the in-memory downsampling marker across compaction's file rewrite.
-          entry.downsampledGranularityMs = old.downsampledGranularityMs;
+          entry = writeRetainedBlock(tempFile, old, retainedBytes.get(i), colCount);
         } else {
           final int b = spec.idx();
           final long[] meta = newMeta.get(b);
           entry = writeNewBlockToFile(tempFile, (int) meta[2], meta[0], meta[1],
               newCompressed.get(b), newStats.get(b), colCount,
-              newTagDistinctValues != null ? newTagDistinctValues.get(b) : null);
+              newTagDistinctValues != null ? newTagDistinctValues.get(b) : null, newBlockId());
         }
         newDirectory.add(entry);
       }
@@ -1956,6 +2362,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       indexChannel = indexFile.getChannel();
 
       blockDirectory.clear();
+      decodedColumnCache.clear();
       blockDirectory.addAll(newBlockDirectory);
 
       globalMinTs = Long.MAX_VALUE;
@@ -2014,7 +2421,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         final long[] meta = newMeta.get(b);
         final BlockEntry entry = writeNewBlockToFile(tempFile, (int) meta[2], meta[0], meta[1],
             newCompressed.get(b), newStats.get(b), colCount,
-            newTagDV != null ? newTagDV.get(b) : null);
+            newTagDV != null ? newTagDV.get(b) : null, newBlockId());
         directory.add(entry);
         if (meta[0] < curGlobalMin)
           curGlobalMin = meta[0];
@@ -2125,6 +2532,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
       // Only update in-memory state after the successful file swap
       blockDirectory.clear();
+      decodedColumnCache.clear();
       blockDirectory.addAll(newDirectory);
       globalMinTs = Long.MAX_VALUE;
       globalMaxTs = Long.MIN_VALUE;
@@ -2159,6 +2567,22 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     } finally {
       directoryLock.readLock().unlock();
     }
+  }
+
+  /**
+   * Drops the decoded columns this store holds (issue #8179).
+   * <p>
+   * Only the paths that replace the whole FILE need this. A path that rewrites blocks - compaction, downsampling,
+   * retention - mints a new {@link BlockEntry#blockId} for every block whose content changed, so its stale entries
+   * are unreachable rather than wrong; clearing there as well just stops them holding budget.
+   */
+  void clearDecodedColumnCache() {
+    decodedColumnCache.clear();
+  }
+
+  /** The decoded-column cache, so a test can assert on what a second read of the same blocks did (issue #8179). */
+  TimeSeriesDecodedColumnCache getDecodedColumnCache() {
+    return decodedColumnCache;
   }
 
   public int getBlockCount() {
@@ -2635,7 +3059,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   private static boolean isBlockMagic(final int magic) {
-    return magic == BLOCK_MAGIC_VALUE || magic == BLOCK_MAGIC_VALUE_V2;
+    return magic == BLOCK_MAGIC_VALUE || magic == BLOCK_MAGIC_VALUE_V2 || magic == BLOCK_MAGIC_VALUE_V3;
   }
 
   /**
@@ -2753,7 +3177,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   long getDownsampleRewriteCount() {
     directoryLock.readLock().lock();
     try {
-      return downsampleRewriteCount;
+      return downsampleEpoch;
     } finally {
       directoryLock.readLock().unlock();
     }
@@ -2869,7 +3293,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
   /**
    * {@link #listSealedFiles(File)} without the empty-array fallback, so a caller that cares can tell a directory
-   * it could NOT list apart from one holding no sealed store (claude-review on PR #7474).
+   * it could NOT list apart from one holding no sealed store (code review on PR #7474).
    * <p>
    * The two are the same answer to {@code listSealedFiles} and must not be to a checksum or a backup: answering
    * "this database has no sealed store" for a directory that could not be read produces a file set that is
@@ -2948,7 +3372,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       indexFile = new RandomAccessFile(target, "rw");
       indexChannel = indexFile.getChannel();
 
+      // What this node held a moment ago, so the image can be compared against it below.
+      final Set<Long> previousBlockIds = new HashSet<>(blockDirectory.size());
+      for (final BlockEntry entry : blockDirectory)
+        previousBlockIds.add(entry.blockId);
+
       blockDirectory.clear();
+      decodedColumnCache.clear();
       globalMinTs = Long.MAX_VALUE;
       globalMaxTs = Long.MIN_VALUE;
       headerDirty = false;
@@ -2956,9 +3386,90 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         loadDirectory();
       else
         writeEmptyHeader();
+
+      adoptRewriteHistoryOf(previousBlockIds);
     } finally {
       directoryLock.writeLock().unlock();
     }
+  }
+
+  /**
+   * Reads, off the image this node has just adopted, what the LEADER did to it - so a walk in flight over the
+   * blocks it replaces gets the same answer it would have got had the rewrite happened here (review of PR #8197).
+   * <p>
+   * <b>Why the install needs this at all.</b> {@link #downsampleEpoch} only ever sees a downsample THIS process
+   * ran, and the one that matters most happens on another node: a follower adopts the leader's sealed file
+   * wholesale, so if the leader downsampled between a walk's snapshot and that install, the image arrives
+   * carrying coarse blocks with new ids while this node's epoch has not moved. Its snapshot entries then resolve
+   * to nothing, the walk counts them as retention loss and answers short - issue #8166 exactly, reached through
+   * the one path where this process did no downsampling at all.
+   * <p>
+   * <b>Why the directory's geometry cannot answer it instead.</b> The obvious test - "does the live directory
+   * still span this block's range?" - looks right and is not: downsampling MOVES timestamps, folding each row
+   * onto its bucket floor, so the coarse blocks can sit entirely BELOW the fine ones they replaced. A store whose
+   * rows span 1000..6000 downsampled to ten-second buckets holds one block at timestamp 0. Containment, overlap
+   * and every other range test answer "outside" for a block that was replaced rather than removed.
+   * <p>
+   * <b>What the image does say.</b> Two things, neither needing a byte of new file format:
+   * <ul>
+   *   <li>Nothing below the new directory's first block, and nothing above its last, exists any more. That is a
+   *       statement about the live store whatever caused it, so it is recorded as a retention boundary - and it
+   *       is what keeps an install of a leader-RETIRED image from being mistaken for a coarsening one, since the
+   *       blocks it dropped all lie below the new first block.</li>
+   *   <li>Ids that went away WHILE OTHERS ARRIVED mean the leader rewrote those blocks rather than retiring
+   *       them: compaction, truncation and a plain re-install all preserve the ids of what they keep (issues
+   *       #7973 and #8043), so the only way an id disappears and a new one takes its place is that the rows
+   *       behind it were rebuilt. The epoch moves and those blocks are refused. Ids that went away with nothing
+   *       arriving are a retirement, and take the boundary above instead.</li>
+   * </ul>
+   * An image that only ADDS blocks - the ordinary case, a leader shipping its latest compaction - loses no id
+   * and moves neither, so nothing changes and a walk crossing it reads straight through, which is what issue
+   * #8043 fixed and what {@code Issue8043SealedWalkAcrossInstallTest} pins.
+   * <p>
+   * <b>The precondition, which lives in another module.</b> Telling the two apart by what replaced the lost ids
+   * needs ONE install to carry ONE rewrite session per shard. {@code RaftReplicatedDatabase} ships a
+   * {@code TsSealedBlob} or slice sequence per rewrite and Raft applies them in log order, so a retirement and a
+   * downsample never arrive coalesced into a single image. The one place a follower does adopt a coalesced file
+   * is a full snapshot resync, which copies it directly and never reaches this method - it closes and reopens
+   * the whole database instead, which invalidates any walk far more bluntly. If a future path ever installs a
+   * coalesced image here, this method would read it as a rewrite and refuse a walk that could have been answered
+   * short: conservative, but worth knowing about (review of PR #8197).
+   */
+  private void adoptRewriteHistoryOf(final Set<Long> previousBlockIds) {
+    boolean gainedNewIds = false;
+    for (final BlockEntry entry : blockDirectory)
+      if (!previousBlockIds.remove(entry.blockId))
+        gainedNewIds = true;
+    // Whatever is left is a block this node held and the image does not.
+    final boolean lostIds = !previousBlockIds.isEmpty();
+
+    if (lostIds && gainedNewIds) {
+      // Blocks went away AND blocks arrived in their place: the leader REWROTE them, and the rows behind them
+      // are still in the store under ids this node's snapshots have never seen. The epoch moves, so a walk
+      // holding one of the old ids is refused rather than answered short.
+      //
+      // No retention boundary is recorded for this case, and that is the whole reason the two are told apart
+      // here rather than by the bounds alone: downsampling FOLDS each row onto its bucket floor, so the coarse
+      // blocks can sit entirely below the fine ones and "nothing above the new last block exists any more" -
+      // true of timestamps - would excuse every replaced block as retired.
+      downsampleEpoch++;
+      return;
+    }
+
+    // Nothing arrived in their place, so ids that went away were RETIRED. Where the image now starts is then a
+    // permanent, forward-only claim of the same shape truncateBefore makes, and recording it is what keeps an
+    // install of a leader-RETIRED image from being mistaken for a coarsening one.
+    //
+    // Only when ids actually went away: an image that merely APPENDS retires nothing, and its first block is
+    // wherever this shard's history happens to begin rather than a line retention swept past.
+    if (!lostIds)
+      return;
+
+    retentionRemovedBelowTs = blockDirectory.isEmpty()
+        // The image holds nothing, so nothing this node held survives it - and "removed" is the honest word for
+        // every one of those blocks, not "replaced".
+        ? Long.MAX_VALUE
+        : Math.max(retentionRemovedBelowTs, blockDirectory.getFirst().minTimestamp);
   }
 
   /**
@@ -3025,7 +3536,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
    *
    * @param projection the projected NON-timestamp column indices, as the set {@link #walkBlocks} built ONCE for
    *                   the whole walk - it does not vary per block, and neither does {@code tsColIdx}, in a method
-   *                   whose entire purpose is to do no per-block work (claude-review on PR #7730). {@code null}
+   *                   whose entire purpose is to do no per-block work (code review on PR #7730). {@code null}
    *                   means every column, which is never answerable from the declaration because a value column
    *                   has none
    * @param width      how many columns {@code projection} selects, i.e. the row's width minus the timestamp
@@ -3052,7 +3563,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
       // Read inside the loop, not before it: a type with NO tag columns declares nothing, and its blocks carry a
       // null here - yet such a block holds exactly one (empty) combination and needs no read at all. Checking the
-      // array up front turned the simplest case of all into a full decompression (claude-review on PR #7730).
+      // array up front turned the simplest case of all into a full decompression (code review on PR #7730).
       if (entry.tagDistinctValues == null || c >= entry.tagDistinctValues.length
           || !declaredDistinctValuesAreExact(columns.get(c)))
         return null;
@@ -3184,14 +3695,20 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
     // Rebuild block directory by scanning block metadata records
     blockDirectory.clear();
+    decodedColumnCache.clear();
     final long fileLength = indexFile.length();
     long pos = HEADER_SIZE;
 
-    final int baseMetaSize = 4 + 8 + 8 + 4 + 4 * colCount; // magic + minTs + maxTs + sampleCount + colSizes
+    // magic + minTs + maxTs + sampleCount + colSizes: what every generation of the record carries. A TSB3 block
+    // (issue #8043) carries BLOCK_ID_BYTES more, between the sample count and the column sizes, and the magic is
+    // the first thing read - so one positional read asks for the larger of the two and the magic then says how
+    // much of it belongs to this block's header.
+    final int shortestBaseMetaSize = 4 + 8 + 8 + 4 + 4 * colCount;
 
-    while (pos + baseMetaSize <= fileLength) {
-      final ByteBuffer metaBuf = ByteBuffer.allocate(baseMetaSize);
-      if (indexChannel.read(metaBuf, pos) < baseMetaSize)
+    while (pos + shortestBaseMetaSize <= fileLength) {
+      final int readSize = (int) Math.min(shortestBaseMetaSize + (long) BLOCK_ID_BYTES, fileLength - pos);
+      final ByteBuffer metaBuf = ByteBuffer.allocate(readSize);
+      if (indexChannel.read(metaBuf, pos) < readSize)
         break;
       metaBuf.flip();
 
@@ -3201,14 +3718,30 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       // The magic says which statistics layout follows: the pre-#7089 triplet, or the current quadruple.
       final boolean legacyStats = blockMagic == BLOCK_MAGIC_VALUE;
       final int statsBytes = legacyStats ? LEGACY_STATS_BYTES : STATS_BYTES;
+      // ... and whether the record carries the block's own identity (issue #8043).
+      final boolean carriesBlockId = blockMagic == BLOCK_MAGIC_VALUE_V3;
+      final int baseMetaSize = shortestBaseMetaSize + (carriesBlockId ? BLOCK_ID_BYTES : 0);
+      if (readSize < baseMetaSize)
+        break; // a TSB3 record the file ends in the middle of: the same unfinished write a short read means
 
       final long minTs = metaBuf.getLong();
       final long maxTs = metaBuf.getLong();
       final int sampleCount = metaBuf.getInt();
+      // Read here because the record puts it here, kept until the column sizes are in: a file written before
+      // #8043 records no identity and the one derived for it takes them as an input (see legacyBlockId).
+      final long persistedBlockId = carriesBlockId ? metaBuf.getLong() : BlockEntry.NO_BLOCK_ID;
 
       final int[] colSizes = new int[colCount];
       for (int c = 0; c < colCount; c++)
         colSizes[c] = metaBuf.getInt();
+
+      // DERIVED for a legacy block, never invented: an id this method made up afresh on every load would be the
+      // #8043 defect again, narrowed to the blocks that predate the fix. The next rewrite of such a block
+      // (compaction, downsampling, truncation) writes TSB3 carrying this same value, so it is persisted from
+      // then on rather than re-derived.
+      final long blockId = carriesBlockId
+          ? persistedBlockId
+          : legacyBlockId(pos, minTs, maxTs, sampleCount, colSizes);
 
       // Read stats section: numericColCount(4) + [min(8) + max(8) + sum(8)] * numericColCount (schema order)
       long statsPos = pos + baseMetaSize;
@@ -3300,7 +3833,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         }
       }
 
-      final BlockEntry entry = new BlockEntry(minTs, maxTs, sampleCount, colCount, mins, maxs, sums, counts, pos);
+      final BlockEntry entry = new BlockEntry(minTs, maxTs, sampleCount, colCount, mins, maxs, sums, counts, pos,
+          blockId);
       entry.tagDistinctValues = blockTagDistinctValues;
       long dataPos = tagEndPos;
       for (int c = 0; c < colCount; c++) {
@@ -3326,12 +3860,33 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   }
 
   private long[] decompressTimestamps(final BlockEntry entry, final int tsColIdx) throws IOException {
+    // Before the cache lookup, not after it: the flag it checks is sticky, so a validated block costs one volatile
+    // read here, and a block reaching a reader for the first time is still refused before any of its bytes are used.
     validateBlockCRC(entry);
+
+    final long[] cached = (long[]) decodedColumnCache.get(entry.blockId, tsColIdx,
+        TimeSeriesDecodedColumnCache.SHAPE_RAW);
+    if (cached != null)
+      return cached;
+
     final byte[] compressed = readBytes(entry.columnOffsets[tsColIdx], entry.columnSizes[tsColIdx]);
-    return DeltaOfDeltaCodec.decode(compressed);
+    final long[] decoded = DeltaOfDeltaCodec.decode(compressed);
+    decodedColumnCache.put(entry.blockId, tsColIdx, TimeSeriesDecodedColumnCache.SHAPE_RAW, decoded);
+    return decoded;
   }
 
   private double[] decompressDoubleColumn(final BlockEntry entry, final int schemaColIdx) throws IOException {
+    final double[] cached = (double[]) decodedColumnCache.get(entry.blockId, schemaColIdx,
+        TimeSeriesDecodedColumnCache.SHAPE_DOUBLE);
+    if (cached != null)
+      return cached;
+
+    final double[] decoded = decodeDoubleColumn(entry, schemaColIdx);
+    decodedColumnCache.put(entry.blockId, schemaColIdx, TimeSeriesDecodedColumnCache.SHAPE_DOUBLE, decoded);
+    return decoded;
+  }
+
+  private double[] decodeDoubleColumn(final BlockEntry entry, final int schemaColIdx) throws IOException {
     final byte[] compressed = readBytes(entry.columnOffsets[schemaColIdx], entry.columnSizes[schemaColIdx]);
     final ColumnDefinition col = columns.get(schemaColIdx);
 
@@ -3348,7 +3903,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     }
 
     throw new IllegalArgumentException(
-        "decompressDoubleColumn: codec " + col.getCompressionHint() + " is not a numeric codec (column " + schemaColIdx + ")");
+        "decodeDoubleColumn: codec " + col.getCompressionHint() + " is not a numeric codec (column " + schemaColIdx + ")");
   }
 
   /**
@@ -3412,17 +3967,28 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         continue;
       }
 
-      final byte[] compressed = readBytes(entry.columnOffsets[c], entry.columnSizes[c]);
       final ColumnDefinition col = columns.get(c);
 
-      final RawColumn decoded = switch (col.getCompressionHint()) {
-        case GORILLA_XOR -> new RawColumn(col, GorillaXORCodec.decode(compressed), null, null);
-        case SIMPLE8B -> new RawColumn(col, null, Simple8bCodec.decode(compressed), null);
-        case DICTIONARY -> new RawColumn(col, null, null, DictionaryCodec.decode(compressed));
-        default -> new RawColumn(col, null, null, null);
-      };
+      // The CACHE holds the codec's own array; the RawColumn around it is rebuilt per call, being three references
+      // and no data.
+      Object values = decodedColumnCache.get(entry.blockId, c, TimeSeriesDecodedColumnCache.SHAPE_RAW);
+      if (values == null) {
+        final byte[] compressed = readBytes(entry.columnOffsets[c], entry.columnSizes[c]);
+        values = switch (col.getCompressionHint()) {
+          case GORILLA_XOR -> GorillaXORCodec.decode(compressed);
+          case SIMPLE8B -> Simple8bCodec.decode(compressed);
+          case DICTIONARY -> DictionaryCodec.decode(compressed);
+          default -> null;
+        };
+        decodedColumnCache.put(entry.blockId, c, TimeSeriesDecodedColumnCache.SHAPE_RAW, values);
+      }
 
-      result.add(decoded);
+      result.add(switch (col.getCompressionHint()) {
+        case GORILLA_XOR -> new RawColumn(col, (double[]) values, null, null);
+        case SIMPLE8B -> new RawColumn(col, null, (long[]) values, null);
+        case DICTIONARY -> new RawColumn(col, null, null, (String[]) values);
+        default -> new RawColumn(col, null, null, null);
+      });
       nonTsIdx++;
     }
     return result.toArray(new RawColumn[0]);
@@ -3480,9 +4046,15 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         continue;
       }
 
-      final byte[] compressed = readBytes(entry.columnOffsets[c], entry.columnSizes[c]);
+      Object[] boxed = (Object[]) decodedColumnCache.get(entry.blockId, c,
+          TimeSeriesDecodedColumnCache.SHAPE_BOXED);
+      if (boxed == null) {
+        final byte[] compressed = readBytes(entry.columnOffsets[c], entry.columnSizes[c]);
+        boxed = decodeColumn(columns.get(c), compressed);
+        decodedColumnCache.put(entry.blockId, c, TimeSeriesDecodedColumnCache.SHAPE_BOXED, boxed);
+      }
 
-      result.add(decodeColumn(columns.get(c), compressed));
+      result.add(boxed);
       nonTsIdx++;
     }
     return result.toArray(new Object[0][]);
@@ -3641,6 +4213,23 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     return 0;
   }
 
+  /**
+   * The schema column a {@link MultiColumnAggregationRequest#columnIndex()} names, given that the number is a
+   * position in the ENGINE ROW: {@code [timestamp, non-TIMESTAMP columns in schema order...]} (issue #8140).
+   * <p>
+   * Row position 0 is the timestamp, which no aggregation but COUNT can read - every caller-facing surface
+   * refuses it through {@link TimeSeriesGateway#requireAggregatableColumn}, and the SQL push-down declines
+   * itself for the same reason - so reaching here with it is a caller that skipped that check. It is refused by
+   * name rather than silently decoding the timestamp column as if it were a measurement, which is the shape
+   * of the bug this method exists to close.
+   */
+  private int findAggregationSchemaIndex(final int rowIndex) {
+    if (rowIndex <= 0)
+      throw new IllegalArgumentException("Aggregation row index " + rowIndex
+          + " does not name a value column: position 0 of an engine row is the timestamp");
+    return findNonTsColumnSchemaIndex(rowIndex - 1);
+  }
+
   private int findNonTsColumnSchemaIndex(final int nonTsIndex) {
     int count = 0;
     for (int i = 0; i < columns.size(); i++) {
@@ -3652,29 +4241,4 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     }
     throw new IllegalArgumentException("Column index " + nonTsIndex + " out of range");
   }
-
-  private void accumulateSample(final AggregationResult result, final long bucketTs, final double value,
-      final AggregationType type) {
-    final int idx = result.findBucketIndex(bucketTs);
-    if (idx >= 0) {
-      final double existing = result.getValue(idx);
-      final long count = result.getCount(idx);
-      // NaN policy (issue #7089): SUM/AVG skip an absent sample the way MIN/MAX below do, and the count kept
-      // alongside is of the samples that contributed - what the AVG is divided by once the scan is over.
-      final double merged = switch (type) {
-        case SUM, AVG -> TimeSeriesNaN.sum(existing, count, value);
-        case COUNT -> existing + 1;
-        // NaN policy (issue #4596): NaN is treated as absent and skipped, so a real value always
-        // wins over a NaN running value (consistent with the row-iter, merge and SIMD paths).
-        case MIN -> Double.isNaN(value) ? existing : Double.isNaN(existing) ? value : Math.min(existing, value);
-        case MAX -> Double.isNaN(value) ? existing : Double.isNaN(existing) ? value : Math.max(existing, value);
-      };
-      result.updateValue(idx, merged);
-      result.updateCount(idx, type == AggregationType.COUNT ? count + 1 : TimeSeriesNaN.countIfPresent(count, value));
-    } else {
-      result.addBucket(bucketTs, type == AggregationType.COUNT ? 1 : value,
-          type == AggregationType.COUNT ? 1 : TimeSeriesNaN.countIfPresent(0, value));
-    }
-  }
-
 }

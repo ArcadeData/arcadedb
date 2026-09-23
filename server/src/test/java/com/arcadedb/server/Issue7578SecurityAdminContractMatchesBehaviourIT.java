@@ -44,7 +44,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * agrees. The distinction matters most here of all: these three routes had no schemas at all before this PR, so
  * every {@code required} list in {@code SecurityAdminApiSpec} was written by reading handlers rather than by
  * observing them, and this is the one API where a field name a client gets wrong silently grants or fails to
- * revoke access (claude-review on PR #7749 named it as the remaining gap).
+ * revoke access (code review on PR #7749 named it as the remaining gap).
  * <p>
  * Every expectation is read out of the document itself, so the assertions cannot drift from it: a name added to
  * a {@code required} list and not to the response fails here, and so does a response member the schema never

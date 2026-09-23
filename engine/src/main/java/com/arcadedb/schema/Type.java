@@ -38,10 +38,9 @@ import com.arcadedb.utility.MultiIterator;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
-import java.text.ParseException;
+import java.text.ParsePosition;
 import java.text.SimpleDateFormat;
 import java.time.*;
-import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoField;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
@@ -111,6 +110,15 @@ public enum Type {
       new Class<?>[] { double[].class, Double[].class }),
   ;
 
+  /**
+   * The three built-in date/time patterns, kept as public API because callers outside the engine format with them.
+   * <p>
+   * They no longer drive any PARSING. Each write path used to pick one of them by comparing the input string's
+   * LENGTH against theirs, which is how a literal one character longer than a pattern - anything with a fractional
+   * second - matched nothing and was silently stored as {@code null} (issue #8090). Parsing now goes through
+   * {@link com.arcadedb.utility.DateUtils#parseDateTime}, whose SQL-timestamp format subsumes all three, so adding
+   * a constant here will not widen what the engine accepts.
+   */
   public static final  String              DATE_FORMAT_DAYS    = "yyyy-MM-dd";
   public static final  String              DATE_FORMAT_SECONDS = "yyyy-MM-dd HH:mm:ss";
   public static final  String              DATE_FORMAT_MILLIS  = "yyyy-MM-dd HH:mm:ss.SSS";
@@ -317,14 +325,123 @@ public enum Type {
 
   /**
    * Same as {@link #convert(Database, Object, Class)}, but a failed conversion returns {@code null} instead of
-   * throwing: {@code convert()} only ever lets {@link IllegalArgumentException} escape (every other exception is
-   * already caught internally and treated as {@code null}), so this unifies both failure shapes into one contract
-   * for callers - typically a comparison across incompatible types - that need "no defined ordering" rather than a
-   * raw parse exception (#5900).
+   * throwing, for callers - typically a comparison across incompatible types - that need "no defined ordering"
+   * rather than a raw parse exception (#5900).
+   * <p>
+   * This is now the ONLY way to get a {@code null} out of a failed conversion, and choosing between the two methods
+   * is a real decision. {@code convert()} used to answer {@code null} for every exception that was not an
+   * {@link IllegalArgumentException} - which is how a date literal it could not parse was silently stored as
+   * {@code null} by an {@code INSERT} that reported success (issue #8090). It now refuses instead, so a WRITE path
+   * must call {@code convert()} and a path that merely coerces values it did not write - a comparison, an index key
+   * on a schemaless property where one heterogeneous row must not fail {@code CREATE INDEX} - calls this one.
    */
   public static Object convertOrNull(final Database database, final Object value, final Class<?> targetClass) {
+    return convertOrNull(database, value, targetClass, null);
+  }
+
+  /**
+   * Best-effort {@link #convert} that keeps the ORIGINAL value when it cannot be converted, rather than refusing it
+   * or answering {@code null}.
+   * <p>
+   * This is the third of the three policies, and the one a client materializing a record it did not write needs. The
+   * remote client runs with no {@link Database} in scope, so it cannot consult the schema's date patterns: a value
+   * the server formatted with a custom pattern is simply not readable on that side. Handing back what the server
+   * sent lets the caller deal with it; {@code null} would discard a value that arrived intact, and refusing would
+   * fail the whole read over one column. {@code convert()} answered the original value here by falling off the end
+   * of its branches, which issue #8090 turned into a refusal - this restores it as a stated contract rather than as
+   * a side effect of where the branches happened to stop.
+   * <p>
+   * Two shapes of giving up are kept, not one. The date that motivates the policy arrives as a REFUSAL, and only a
+   * date's refusal is kept - anything else propagates. But {@code convert()} can also give up SILENTLY, through its
+   * own blanket handler, and that answers {@code null} for any target: a {@code List} handed to an {@code Integer}
+   * column, say. The original is kept there too, for the same reason and with no date about it - the contract is
+   * "never answers {@code null} for a non-null input", which is what {@code convertOrKeepNeverAnswersNullForANonNullValue}
+   * pins.
+   */
+  public static Object convertOrKeep(final Database database, final Object value, final Class<?> targetClass,
+      final Property property) {
+    try {
+      final Object converted = convert(database, value, targetClass, property);
+      // A null out of a non-null in means convert() gave up internally - its blanket handler still answers null for
+      // the failures that are neither IllegalArgumentException nor DateTimeException. Keeping the original there too
+      // is what this method promises; letting that null through would discard a value that arrived intact by a route
+      // this method cannot see.
+      return converted == null && value != null ? value : converted;
+    } catch (final IllegalArgumentException e) {
+      // Only a DATE/TIME parse failure is kept. That is the one this method exists for: the client has no schema in
+      // scope, so a value the server formatted with a pattern it cannot see is unreadable HERE rather than wrong.
+      // Every other refusal - a value of a shape no branch can take at all - failed the read before issue #8090 and
+      // still does: widening the leniency to those would turn a genuinely mismatched field into a silent
+      // pass-through, which is not what having no schema to read dates with has anything to do with.
+      if (!isUnreadableDate(e))
+        throw e;
+
+      LogManager.instance().log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, value, targetClass);
+      return value;
+    }
+  }
+
+  public static Object convertOrKeep(final Database database, final Object value, final Class<?> targetClass) {
+    return convertOrKeep(database, value, targetClass, null);
+  }
+
+  /**
+   * Same as {@link #convert(Database, Object, Class)}, but an unreadable DATE/TIME value answers {@code null}
+   * instead of throwing. This is the rule for an INDEX KEY, and it is deliberately narrower than
+   * {@link #convertOrNull(Database, Object, Class)}.
+   * <p>
+   * A key reaching an index is whatever the records already hold, and on a schemaless property (a Cypher label, say)
+   * that can include a date the index's settled type cannot read. Such a row has to index under a null key and let
+   * the build carry on: refusing it would make one heterogeneous record fail {@code CREATE INDEX} outright, and,
+   * since {@code build()} rethrows, would also fail an ordinary {@code INSERT} that used to index a null key and
+   * continue - a regression {@code convert()} becoming strict in issue #8090 would otherwise have caused.
+   * <p>
+   * Every OTHER refusal still fails the build, exactly as it did before that change: a non-numeric string reaching a
+   * {@code LONG} key raised {@link NumberFormatException} through {@code convert()} then and still does. Using
+   * {@code convertOrNull()} here instead would swallow those too, silently indexing a genuinely mismatched value
+   * under a null key - a widening that has nothing to do with the date parsing this rule exists for.
+   */
+  public static Object convertIndexKeyOrNull(final Database database, final Object value, final Class<?> targetClass) {
     try {
       return convert(database, value, targetClass);
+    } catch (final IllegalArgumentException e) {
+      if (!isUnreadableDate(e))
+        throw e;
+
+      LogManager.instance().log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, value, targetClass);
+      return null;
+    }
+  }
+
+  /**
+   * Answers whether a refusal out of {@code convert()} is a date/time value it could not read, as opposed to a value
+   * of a shape the target type cannot take at all. Only the date arm wraps its cause, so the cause is what tells the
+   * two apart - see the {@link DateTimeException} catch in {@code convert()}.
+   */
+  private static boolean isUnreadableDate(final IllegalArgumentException e) {
+    return e.getCause() instanceof DateTimeException;
+  }
+
+  /**
+   * The targets whose conversion reads a date or a time, and so the ones for which a {@link DateTimeException} out
+   * of {@code convert()} means "this value cannot be read" rather than something unrelated that happened to be
+   * raised under the same try.
+   */
+  private static boolean isDateTimeTarget(final Class<?> targetClass) {
+    return targetClass.equals(Date.class) || targetClass.equals(Calendar.class) || targetClass.equals(LocalDate.class)
+        || targetClass.equals(LocalDateTime.class) || targetClass.equals(ZonedDateTime.class)
+        || targetClass.equals(Instant.class);
+  }
+
+  /**
+   * {@link #convertOrNull(Database, Object, Class)} carrying the target {@link Property}, so a datetime keeps being
+   * truncated to the precision the column declares while a value that cannot be converted still answers
+   * {@code null} instead of throwing.
+   */
+  public static Object convertOrNull(final Database database, final Object value, final Class<?> targetClass,
+      final Property property) {
+    try {
+      return convert(database, value, targetClass, property);
     } catch (final IllegalArgumentException e) {
       return null;
     }
@@ -378,6 +495,14 @@ public enum Type {
     return item;
   }
 
+  /**
+   * Note for anyone adding a branch to the body below: the {@code catch (DateTimeException)} at the end covers the
+   * WHOLE of it, not only the date branches, which are scattered through it. What keeps that honest is the target -
+   * a DATE/TIME target refuses, everything else keeps the {@code null} it would have had - so a new branch throwing
+   * a {@link DateTimeException} for an unrelated reason is not silently escalated into a refusal. It does mean the
+   * decision is made on the target rather than on which branch raised it, so a new DATE/TIME target belongs in
+   * {@code isDateTimeTarget} as well as here.
+   */
   public static Object convert(final Database database, final Object value, Class<?> targetClass, final Property property) {
     if (value == null)
       return null;
@@ -663,7 +788,7 @@ public enum Type {
         else if (value instanceof Instant instant)
           return instant.atOffset(ZoneOffset.UTC).toLocalDate();
         else if (value instanceof Number number)
-          return DateUtils.date(database, number.longValue(), LocalDate.class);
+          return DateUtils.date(database, DateUtils.numberToEpochUnits(number), LocalDate.class);
         else if (value instanceof Date date)
           // floorDiv, not '/': see DateUtils.dateToEpochDays. This is the DEFAULT coercion for a DATE column
           // (getJavaImplementation answers LocalDate), so a pre-epoch java.util.Date assigned to an ordinary DATE
@@ -675,24 +800,26 @@ public enum Type {
         else if (value instanceof String valueAsString) {
           if (FileUtils.isLong(valueAsString))
             return DateUtils.date(database, Long.parseLong(value.toString()), LocalDate.class);
-          else if (database != null)
-            try {
-              return LocalDate.parse(valueAsString, DateUtils.getFormatter(database.getSchema().getDateTimeFormat()));
-            } catch (final DateTimeParseException ignore) {
-              return LocalDate.parse(valueAsString, DateUtils.getFormatter(database.getSchema().getDateFormat()));
-            }
-          else {
-            // GUESS FORMAT BY STRING LENGTH
-            if (valueAsString.length() == DATE_FORMAT_DAYS.length())
-              return LocalDate.parse(valueAsString, DateUtils.getFormatter(DATE_FORMAT_DAYS));
-          }
+          else
+            // The one chain, not a second copy of it: parseDateTimeKeepingWallClock already tries the schema's
+            // dateTimeFormat and then its dateFormat before the built-in shapes, which is precisely what this branch
+            // used to open-code - and open-coding it is how the two chains drifted apart in the first place, which is
+            // half of what issue #8090 was. A DATE column fed a full timestamp keeps the date part rather than being
+            // emptied, and the wall clock is the right reading of an offset here: a LocalDate has no zone, so the day
+            // written is the day meant.
+            // Note the contract change when there is no database and so no schema pattern to try: this branch used to
+            // fall off the end and answer the ORIGINAL String when its string-length guess matched nothing, where it
+            // now refuses like every other datetime target. No caller in the reactor sees it - BaseDocument.getLocalDate
+            // goes through convertOrNull - but Type.convert is public, so an outside caller relying on the silent
+            // pass-through gets an IllegalArgumentException.
+            return DateUtils.parseDateTimeKeepingWallClock(database, valueAsString).toLocalDate();
         }
       } else if (targetClass.equals(LocalDateTime.class)) {
         if (value instanceof LocalDateTime time) {
           if (property != null)
-            return time.truncatedTo(DateUtils.getPrecisionFromType(property.getType()));
+            return truncateToPropertyPrecision(time, property);
         } else if (value instanceof Number number) {
-          return DateUtils.date(database, number.longValue(), LocalDateTime.class);
+          return DateUtils.date(database, DateUtils.numberToEpochUnits(number), LocalDateTime.class);
         } else if (value instanceof Date date)
           return DateUtils.dateTime(database, date.getTime(), ChronoUnit.MILLIS, LocalDateTime.class,
               property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
@@ -700,40 +827,30 @@ public enum Type {
           return DateUtils.dateTime(database, calendar.getTimeInMillis(), ChronoUnit.MILLIS, LocalDateTime.class,
               property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
         else if (value instanceof String valueAsString) {
-          if (!FileUtils.isLong(valueAsString)) {
-            if (database != null)
-              try {
-                return LocalDateTime.parse(valueAsString);
-              } catch (DateTimeParseException e) {
-                try {
-                  // Handle timezone-aware strings (e.g. from Cypher datetime()): strip timezone
-                  return ZonedDateTime.parse(valueAsString).toLocalDateTime();
-                } catch (DateTimeParseException e2) {
-                  try {
-                    return LocalDateTime.parse(valueAsString,
-                        DateUtils.getFormatter(database.getSchema().getDateTimeFormat()));
-                  } catch (final DateTimeParseException ignore) {
-                    return LocalDateTime.parse(valueAsString, DateUtils.getFormatter(database.getSchema().getDateFormat()));
-                  }
-                }
-              }
-            else {
-              // GUESS FORMAT BY STRING LENGTH
-              if (valueAsString.length() == DATE_FORMAT_DAYS.length())
-                return LocalDateTime.parse(valueAsString, DateUtils.getFormatter(DATE_FORMAT_DAYS));
-              else if (valueAsString.length() == DATE_FORMAT_SECONDS.length())
-                return LocalDateTime.parse(valueAsString, DateUtils.getFormatter(DATE_FORMAT_SECONDS));
-              else if (valueAsString.length() == DATE_FORMAT_MILLIS.length())
-                return LocalDateTime.parse(valueAsString, DateUtils.getFormatter(DATE_FORMAT_MILLIS));
-            }
-          }
+          if (!FileUtils.isLong(valueAsString))
+            // DateUtils.parseDateTime(), not a private copy of its fallback chain: this branch used to carry its own
+            // and the two drifted apart, so a literal the bulk GraphBatch path accepted was rejected here (and vice
+            // versa). The shared chain also brings the SQL-timestamp spelling with a fractional second, which no
+            // format on either side accepted - and, because the exception it threw was not an IllegalArgumentException,
+            // the blanket handler below turned that rejection into a silently stored NULL (issue #8090).
+            //
+            // Truncated to the declared precision exactly as the LocalDateTime branch above truncates, so that a
+            // literal carrying more digits than the column holds reads back the same before and after a reload
+            // instead of keeping digits the serializer is about to drop.
+            //
+            // ...KeepingWallClock: this branch has always dropped the offset of an offset-bearing string rather than
+            // rebasing it onto the database's zone, because Cypher's datetime() renders itself with a Z and
+            // `SET n.t = datetime('2026-01-01T00:00:00')` must read back 00:00 (issue #4125). Only the ACCEPTED
+            // FORMATS are unified here; the zone disagreement with the bulk path is its own change.
+            return truncateToPropertyPrecision(DateUtils.parseDateTimeKeepingWallClock(database, valueAsString),
+                property);
         }
       } else if (targetClass.equals(ZonedDateTime.class)) {
         if (value instanceof ZonedDateTime time) {
           if (property != null)
-            return time.truncatedTo(DateUtils.getPrecisionFromType(property.getType()));
+            return truncateToPropertyPrecision(time, property);
         } else if (value instanceof Number number)
-          return DateUtils.dateTime(database, number.longValue(), ChronoUnit.MILLIS, ZonedDateTime.class,
+          return DateUtils.dateTime(database, DateUtils.numberToEpochUnits(number), ChronoUnit.MILLIS, ZonedDateTime.class,
               property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
         else if (value instanceof Date date)
           return DateUtils.dateTime(database, date.getTime(), ChronoUnit.MILLIS, ZonedDateTime.class,
@@ -742,32 +859,21 @@ public enum Type {
           return DateUtils.dateTime(database, calendar.getTimeInMillis(), ChronoUnit.MILLIS, ZonedDateTime.class,
               property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
         if (value instanceof String valueAsString) {
-          if (!FileUtils.isLong(valueAsString)) {
-            if (database != null)
-              try {
-                return ZonedDateTime.parse(valueAsString, DateUtils.getFormatter(database.getSchema().getDateTimeFormat()));
-              } catch (final DateTimeParseException ignore) {
-                return ZonedDateTime.parse(valueAsString, DateUtils.getFormatter(database.getSchema().getDateFormat()));
-              }
-            else {
-              // GUESS FORMAT BY STRING LENGTH
-              if (valueAsString.length() == DATE_FORMAT_DAYS.length())
-                return ZonedDateTime.parse(valueAsString, DateUtils.getFormatter(DATE_FORMAT_DAYS));
-              else if (valueAsString.length() == DATE_FORMAT_SECONDS.length())
-                return ZonedDateTime.parse(valueAsString, DateUtils.getFormatter(DATE_FORMAT_SECONDS));
-              else if (valueAsString.length() == DATE_FORMAT_MILLIS.length())
-                return ZonedDateTime.parse(valueAsString, DateUtils.getFormatter(DATE_FORMAT_MILLIS));
-            }
-          }
+          if (!FileUtils.isLong(valueAsString))
+            // parseZonedDateTime keeps an offset the input carries rather than dropping it, so the same moment
+            // denotes the same instant whether it arrives ISO- or space-separated, and anchors an offset-free input
+            // to the database's zone. Before issue #8090 this branch answered NULL for every string: the schema
+            // patterns it tried carry no zone, so a ZonedDateTime could never be resolved from one.
+            return truncateToPropertyPrecision(DateUtils.parseZonedDateTime(database, valueAsString), property);
         }
       } else if (targetClass.equals(Instant.class)) {
         switch (value) {
         case Instant instant -> {
           if (property != null)
-            return instant.truncatedTo(DateUtils.getPrecisionFromType(property.getType()));
+            return truncateToPropertyPrecision(instant, property);
         }
         case Number number -> {
-          return DateUtils.dateTime(database, number.longValue(), ChronoUnit.MILLIS, Instant.class,
+          return DateUtils.dateTime(database, DateUtils.numberToEpochUnits(number), ChronoUnit.MILLIS, Instant.class,
               property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
         }
         case Date date -> {
@@ -777,6 +883,24 @@ public enum Type {
         case Calendar calendar -> {
           return DateUtils.dateTime(database, calendar.getTimeInMillis(), ChronoUnit.MILLIS, Instant.class,
               property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
+        }
+        case String valueAsString -> {
+          // This branch had no String case at all, so `arcadedb.dateTimeImplementation=java.time.Instant` left a
+          // datetime literal in the record as the raw String it arrived as. It now goes through the same shared
+          // chain as every other datetime target (issue #8090).
+          //
+          // isLong: an all-digits string falls through to the original value, as it already does in the
+          // LocalDateTime and ZonedDateTime branches above. Only the LocalDate branch reads such a string as an
+          // epoch count, so the three disagree about what a numeric string means for a datetime target. That
+          // predates this issue and is left alone here rather than settled in passing - it is a question about
+          // epoch semantics, not about which spellings parse, which is what #8090 is.
+          if (!FileUtils.isLong(valueAsString)) {
+            // parseZonedDateTime, not parseDateTime().atZone(): an Instant IS an instant, so an offset the value
+            // carries has to survive. The wall-clock chain drops it - deliberately, for LocalDateTime (issue #4125) -
+            // and re-anchoring what is left to the database's zone lands on a different moment than the value named.
+            final Instant parsed = DateUtils.parseZonedDateTime(database, valueAsString).toInstant();
+            return truncateToPropertyPrecision(parsed, property);
+          }
         }
         default -> {
         }
@@ -816,6 +940,29 @@ public enum Type {
     } catch (final IllegalArgumentException e) {
       // PASS THROUGH
       throw e;
+    } catch (final DateTimeException e) {
+      // A date/time value that cannot be parsed must fail the write, not empty the column. This is the date/time
+      // family's equivalent of the NumberFormatException the arm above already lets through, and it was the reason a
+      // well-formed INSERT could report success while storing NULL: DateTimeParseException extends DateTimeException
+      // -> RuntimeException, not IllegalArgumentException, so it missed the pass-through arm and landed in the
+      // blanket one below, where the only trace left was a Level.FINE line that is off by default (issue #8090).
+      //
+      // ParseException is deliberately NOT caught here: the SimpleDateFormat paths now report a non-match by
+      // answering null through parseFully(), so nothing under this try can raise one, and naming it would suggest
+      // a path that no longer exists.
+      //
+      // The arm spans the whole try, since the date branches are scattered through it and wrapping each one would
+      // put six copies of this decision in the file. What makes that safe is the target, not the position: only a
+      // DATE/TIME target refuses. A DateTimeException raised by some future non-date branch for an unrelated reason
+      // keeps the answer it would have had, rather than being escalated to a refusal by an arm it merely passed
+      // under.
+      if (!isDateTimeTarget(targetClass)) {
+        LogManager.instance().log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, value, targetClass);
+        return null;
+      }
+
+      throw new IllegalArgumentException(
+          "Error in conversion of value '" + value + "' to type '" + targetClass.getSimpleName() + "': " + e.getMessage(), e);
     } catch (final Exception e) {
       LogManager.instance().log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, value, targetClass);
       return null;
@@ -1818,7 +1965,7 @@ public enum Type {
     return convert(null, value, javaDefaultType);
   }
 
-  private static Date convertToDate(final Database database, final Object value) throws ParseException {
+  private static Date convertToDate(final Database database, final Object value) {
     if (value instanceof Date date)
       return date;
     if (value instanceof Number number)
@@ -1838,26 +1985,76 @@ public enum Type {
     else if (value instanceof String valueAsString) {
       if (FileUtils.isLong(valueAsString))
         return new Date(Long.parseLong(value.toString()));
-      else if (database != null)
-        // Locale.ENGLISH, not the JVM default: a schema pattern with a textual field (MMM, EEE) has to parse the same
-        // on every server, exactly as DateUtils.getFormatter() pins it for the java.time paths (issues #7112, #7144).
-        // SimpleDateFormat rather than a DateTimeFormatter here because this branch keeps SimpleDateFormat's lenient
-        // resolution and its default-time-zone anchoring, which java.time does not reproduce.
-        try {
-          return new SimpleDateFormat(database.getSchema().getDateTimeFormat(), Locale.ENGLISH).parse(valueAsString);
-        } catch (final ParseException ignore) {
-          return new SimpleDateFormat(database.getSchema().getDateFormat(), Locale.ENGLISH).parse(valueAsString);
-        }
-      else {
-        // GUESS FORMAT BY STRING LENGTH
-        if (valueAsString.length() == DATE_FORMAT_DAYS.length())
-          return new SimpleDateFormat(DATE_FORMAT_DAYS, Locale.ENGLISH).parse(valueAsString);
-        else if (valueAsString.length() == DATE_FORMAT_SECONDS.length())
-          return new SimpleDateFormat(DATE_FORMAT_SECONDS, Locale.ENGLISH).parse(valueAsString);
-        else if (valueAsString.length() == DATE_FORMAT_MILLIS.length())
-          return new SimpleDateFormat(DATE_FORMAT_MILLIS, Locale.ENGLISH).parse(valueAsString);
-      }
+      else if (database != null) {
+        final Date fromDateTimeFormat = parseFully(database.getSchema().getDateTimeFormat(), valueAsString);
+        if (fromDateTimeFormat != null)
+          return fromDateTimeFormat;
+        final Date fromDateFormat = parseFully(database.getSchema().getDateFormat(), valueAsString);
+        if (fromDateFormat != null)
+          return fromDateFormat;
+        return dateFromSharedChain(database, valueAsString);
+      } else
+        return dateFromSharedChain(null, valueAsString);
     }
     throw new IllegalArgumentException("Object of class " + value.getClass() + " cannot be converted to Date");
+  }
+
+  /**
+   * Parses {@code valueAsString} with a schema pattern, answering {@code null} unless the pattern consumed the WHOLE
+   * string. {@code SimpleDateFormat.parse(String)} stops at the first character it cannot use and reports success on
+   * what it read, so the schema's default {@code yyyy-MM-dd HH:mm:ss} "successfully" parsed
+   * {@code '2024-02-29 13:45:10.123456'} by throwing the fraction away - a silent precision loss that hid the same
+   * defect issue #8090 reported as a silent NULL on the {@link LocalDateTime} path. A partial match now yields to the
+   * shared {@link DateUtils#parseDateTime} chain, which does understand the fraction.
+   * <p>
+   * Locale.ENGLISH, not the JVM default: a schema pattern with a textual field (MMM, EEE) has to parse the same on
+   * every server, exactly as DateUtils.getFormatter() pins it for the java.time paths (issues #7112, #7144).
+   * SimpleDateFormat rather than a DateTimeFormatter here because this branch keeps SimpleDateFormat's lenient
+   * resolution and its default-time-zone anchoring, which java.time does not reproduce.
+   */
+  private static Date parseFully(final String pattern, final String valueAsString) {
+    final ParsePosition position = new ParsePosition(0);
+    final Date parsed = new SimpleDateFormat(pattern, Locale.ENGLISH).parse(valueAsString, position);
+    return parsed != null && position.getIndex() == valueAsString.length() ? parsed : null;
+  }
+
+  /**
+   * Last resort of {@link #convertToDate}: the shared {@link DateUtils#parseDateTime} chain, which accepts the ISO
+   * forms and the SQL-timestamp spelling with a fractional second that {@code SimpleDateFormat} leaves unparsed.
+   * This branch used to guess the format from the string's length and then, on a miss, fall off the end of the
+   * method and let the caller's blanket handler answer {@code null} (issue #8090).
+   * <p>
+   * The result is anchored to the database's zone so it denotes the same instant {@code SimpleDateFormat} would
+   * have produced for the same wall-clock, and its sub-millisecond digits are dropped because {@link Date} cannot
+   * hold them.
+   */
+  private static Date dateFromSharedChain(final Database database, final String valueAsString) {
+    // parseZonedDateTime for the same reason as the Instant branch: a Date is an instant, so an offset the value
+    // carries is kept rather than swapped for the database's zone.
+    //
+    // ...without the schema patterns, though: convertToDate has already tried both, through SimpleDateFormat, which
+    // is the parser a Date target is defined by (see the branch above). Letting the chain walk them a second time
+    // with a DateTimeFormatter would be deterministic wasted work on the commonest DATETIME target, and a second
+    // interpretation of the same pattern that could answer differently from the first. Only the ISO and
+    // SQL-timestamp shapes are left to try here.
+    return Date.from(DateUtils.parseZonedDateTime(database, valueAsString, false).toInstant());
+  }
+
+  /**
+   * Truncates a parsed datetime to the precision the target property declares, so a literal carrying more digits
+   * than the column can hold reads back identically before and after a reload instead of briefly keeping digits the
+   * serializer is about to drop. This mirrors what the {@link LocalDateTime}/{@link ZonedDateTime} value branches
+   * already do; only the string branches were missing it. A no-op when the value is not bound to a property.
+   */
+  private static LocalDateTime truncateToPropertyPrecision(final LocalDateTime value, final Property property) {
+    return property == null ? value : value.truncatedTo(DateUtils.getPrecisionFromType(property.getType()));
+  }
+
+  private static ZonedDateTime truncateToPropertyPrecision(final ZonedDateTime value, final Property property) {
+    return property == null ? value : value.truncatedTo(DateUtils.getPrecisionFromType(property.getType()));
+  }
+
+  private static Instant truncateToPropertyPrecision(final Instant value, final Property property) {
+    return property == null ? value : value.truncatedTo(DateUtils.getPrecisionFromType(property.getType()));
   }
 }

@@ -98,8 +98,11 @@ public class ListSliceExpression implements Expression {
    */
   public static Object slice(final Object listValue, final Integer fromIndex, final Integer toIndex) {
     // Treat Collections and Java arrays (incl. primitive arrays from numeric-array parameters,
-    // issue #4284) uniformly as Cypher lists without copying upfront.
-    final boolean isListLike = listValue instanceof Collection || listValue.getClass().isArray();
+    // issue #4284) uniformly as Cypher lists without copying upfront. A byte[] (BINARY) is
+    // deliberately excluded: it is one opaque value everywhere in openCypher, the same rule UNWIND
+    // already applies, so slicing one falls through to the same "cannot slice" error any other
+    // non-list, non-string type gets (issue #8098).
+    final boolean isListLike = listValue instanceof Collection || MultiValue.isSequenceArray(listValue);
     final int size;
     if (isListLike)
       size = MultiValue.getSize(listValue);

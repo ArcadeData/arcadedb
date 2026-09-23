@@ -19,7 +19,6 @@
 package com.arcadedb.remote.grpc;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -34,7 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class RemoteGrpcTransactionExplicitLockIT extends BaseGraphServerTest {
+class RemoteGrpcTransactionExplicitLockIT extends BaseGrpcClientServerTest {
 
   private RemoteGrpcServer server;
   private RemoteGrpcDatabase database;
@@ -49,8 +48,8 @@ class RemoteGrpcTransactionExplicitLockIT extends BaseGraphServerTest {
   @Override
   public void beginTest() {
     super.beginTest();
-    server = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
-    database = new RemoteGrpcDatabase(server, "localhost", 50051, 2480, getDatabaseName(), "root",
+    server = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    database = new RemoteGrpcDatabase(server, "localhost", getServerGrpcPort(), getServerHttpPort(), getDatabaseName(), "root",
         DEFAULT_PASSWORD_FOR_TESTS);
 
     // Create test schema

@@ -73,6 +73,12 @@ jobs:
         run: ./.github/scripts/check-release-upload-assets.py
       - name: Check CI scripts
         run: ./.github/scripts/tests/test-ci-scripts.sh
+      # The issue-automation scripts act on what a model returned after reading untrusted issue
+      # text, so their guards - the label and candidate whitelists, the single-level rule, the
+      # severity the umbrella inherits, the re-verification before closing an issue - fail
+      # silently: nothing breaks, they just stop refusing what they were written to refuse.
+      - name: Check issue workflow scripts
+        run: ./.github/scripts/tests/test-issue-workflow-scripts.js
       - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
 
   build-and-package:
@@ -109,10 +115,10 @@ jobs:
             ${{ runner.os }}-maven-
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Get project version
         id: get-version
@@ -1300,7 +1306,7 @@ jobs:
           coverage-reports: ${{ steps.coverage-files-generator.outputs.COVERAGE_FILES }}
 
       - name: Upload coverage reports to Codecov
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           fail_ci_if_error: false
           disable_search: true

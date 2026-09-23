@@ -518,7 +518,7 @@ class Issue7615AsyncCommandBatchCommitConflictTest extends TestHelper {
   }
 
   /**
-   * claude-review found that {@code pendingUnreplayableTasks} classified purely by {@code requiresActiveTx()},
+   * The code review found that {@code pendingUnreplayableTasks} classified purely by {@code requiresActiveTx()},
    * which answers "does this task need {@code begin()} called first," not "did this task write something
    * {@code commitBatch()} cannot replay." A pure read like {@link DatabaseAsyncScanBucket} (dispatched via
    * {@code scanType()}) defaults {@code requiresActiveTx() == true} while writing nothing at all - landing mid-batch

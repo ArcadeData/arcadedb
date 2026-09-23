@@ -39,6 +39,7 @@ import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.MutableEdgeSegment;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.IndexReplayConclusion;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
@@ -137,6 +138,15 @@ public class TransactionContext implements Transaction {
   // re-inserted in a later transaction instead of being treated as an update of a missing record (issue #4562).
   private final List<Record>                         newRecords            = new ArrayList<>();
   private final TransactionIndexContext              indexChanges;
+  // #7931/#7933: what an index hands over so this transaction's CONCLUSION can be applied to the non-transactional
+  // state its replay touched. The replay runs inside commit1stPhase BEFORE the page versions are validated, so a
+  // transaction that then loses the MVCC check has already carried out every one of its index operations -
+  // harmless for an index whose replay only writes transaction-local pages, not harmless for one that also mutates
+  // process-wide in-memory state. Lazily allocated: only the two vector index families register anything here, so
+  // an ordinary transaction never pays for it. Keyed by index so each one keeps a single journal for the whole
+  // replay rather than one per operation, and insertion-ordered so a failure logged while concluding names them in
+  // a stable order. See IndexReplayConclusion.
+  private       Map<IndexInternal, IndexReplayConclusion> indexReplayConclusion = null;
   private final Map<PageId, ImmutablePage>           immutablePages        = new HashMap<>(64);
   private final RidHashSet                            deletedRecordsInTx    = new RidHashSet();
   private       Map<PageId, MutablePage>             modifiedPages;
@@ -187,6 +197,19 @@ public class TransactionContext implements Transaction {
   private       long                                 slotRebaseTrackedBytes;
   private       boolean                              useWAL;
   /**
+   * Overrides {@link #useWAL} for THIS transaction only when set; {@code null} to follow the session's setting.
+   * <p>
+   * {@link #setUseWAL(boolean)} is the session's durability choice and deliberately outlives the transaction it was
+   * made in - a caller that switches the WAL off for a bulk load expects every transaction of that load to run
+   * without it. Engine-internal bulk work (a vector index build, a graph persist) wants the opposite: no WAL for the
+   * pages IT writes, and the session left exactly as it was found. Setting the session flag for that leaked into every
+   * later transaction on the thread, because this context is reused across begin()/commit() cycles (issue #8129: after
+   * an {@code LSM_VECTOR} build, commits on that thread were no longer written to the WAL at all).
+   * <p>
+   * Cleared by {@link #reset()} with the rest of the per-transaction state, so it cannot outlive its transaction.
+   */
+  private       Boolean                              useWALOverride;
+  /**
    * Milliseconds this transaction's commit waits for its file locks, overriding
    * {@link GlobalConfiguration#COMMIT_LOCK_TIMEOUT} when set; {@code null} to use the configured value.
    * <p>
@@ -223,7 +246,7 @@ public class TransactionContext implements Transaction {
    * code, and a changed value means that code published this transaction - which is exactly what a statement that
    * commits mid-execution ({@code BatchStep}'s {@code BATCH n}, {@code TRUNCATE TYPE}, {@code REBUILD INDEX}) does.
    * <p>
-   * Counts COMMITS, deliberately not begins (claude-review on PR #7850). A begin counter would also move for a
+   * Counts COMMITS, deliberately not begins (code review on PR #7850). A begin counter would also move for a
    * rollback followed by a fresh begin inside one statement, and the two mean opposite things to the async batch:
    * after a commit the buffered writes are durable and must be dropped silently, after a rollback they are gone and
    * their submitters must be told. Keyed on the commit, the rollback case simply does not match and keeps the
@@ -235,6 +258,12 @@ public class TransactionContext implements Transaction {
   // Whether the 1st phase in progress ends by replaying the queued index operations - always true for an
   // originating commit. See isIndexChangesReplayed().
   private       boolean                              indexChangesReplayed  = true;
+  /**
+   * Why this transaction can no longer be published, or {@code null} while it still can. Written by
+   * {@link #setRollbackOnly} and read by {@link #commit1stPhase(boolean)} - the one method every commit path
+   * goes through (issue #8053).
+   */
+  private       String                               rollbackOnlyReason    = null;
   // KEEPS TRACK OF MODIFIED RECORD IN TX. AT 1ST PHASE COMMIT TIME THE RECORD ARE SERIALIZED AND INDEXES UPDATED. THIS DEFERRING IMPROVES SPEED ESPECIALLY
   // WITH GRAPHS WHERE EDGES ARE CREATED AND CHUNKS ARE UPDATED MULTIPLE TIMES IN THE SAME TX
   // TODO: OPTIMIZE modifiedRecordsCache STRUCTURE, MAYBE JOIN IT WITH UPDATED RECORDS?
@@ -325,6 +354,8 @@ public class TransactionContext implements Transaction {
     if (status != STATUS.BEGUN)
       throw new TransactionException("Transaction already in commit phase");
 
+    // The rollback-only refusal is NOT repeated here: it lives in commit1stPhase (issue #8053), which this
+    // method calls next and which every other commit path reaches directly.
     final TransactionPhase1 phase1 = commit1stPhase(true);
     if (phase1 != null) {
       commit2ndPhase(phase1);
@@ -339,16 +370,80 @@ public class TransactionContext implements Transaction {
 
   /**
    * How many transactions have been successfully COMMITTED on THIS context object, monotonically increasing for its
-   * whole life (issue #7667). Snapshot it, run code that may commit, and compare: a different value means the
-   * transaction the snapshot referred to was published, so anything buffered against it is already durable and must
-   * neither be replayed onto whatever transaction is open now nor reported as lost. A rollback deliberately does
-   * NOT move it - see the field's own comment. Never reset by {@link #reset()}, which would make a later commit
-   * hand back a value a stale snapshot could match.
+   * whole life (issue #7667), plus any batch boundary crossed on a nested context directly under it (issue #8188,
+   * see {@link #reportBatchBoundaryOfNestedTransaction()}). Snapshot it, run code that may commit, and compare: a
+   * different value means work was published under the transaction the snapshot referred to, so it is already
+   * durable and must neither be replayed onto whatever transaction is open now nor reported as lost. A rollback
+   * deliberately does NOT move it - see the field's own comment. Never reset by {@link #reset()}, which would make
+   * a later commit hand back a value a stale snapshot could match.
    *
-   * @return the number of transactions committed on this context so far
+   * @return the number of transactions committed under this context so far
    */
   public long getCommitCount() {
     return commitCount;
+  }
+
+  /**
+   * Records on THIS context a {@code BATCH n} boundary that a nested transaction directly under it just published
+   * and was popped for (issue #8188). Called by {@code BatchStep}, and only by it.
+   * <p>
+   * The witness a retry loop needs is "part of the block I am about to replay is already durable", and for a
+   * nested transaction the counter carrying it dies with the context: {@code commit()} pops it and the
+   * {@code begin()} straight after pushes a fresh one, so the loop's sampled context - the enclosing transaction,
+   * because the block opened its own - never sees the move. That is the shape of every server path, where the
+   * request already holds a transaction and a {@code BEGIN ... COMMIT RETRY} script nests inside it.
+   * <p>
+   * Deliberately reported HERE, from the one statement that commits inside a caller's unit, rather than carried up
+   * by every pop: the engine opens and commits nested transactions of its own for housekeeping that has nothing to
+   * do with the caller's block - {@code Dictionary.getIdByName} registering a new property name is the one that
+   * proved it - and replaying a block over those is not only safe, it is what the retry is for. A blanket carry
+   * turned each of them into a refusal to retry.
+   */
+  public void reportBatchBoundaryOfNestedTransaction() {
+    ++commitCount;
+  }
+
+  /**
+   * Whether a block that ran with {@code txAtStart} open, at commit count {@code commitCountAtStart}, has already
+   * published part of its work - which makes it UNSAFE TO RE-RUN (issue #7916).
+   * <p>
+   * The retry loops that re-execute a whole block after a conflict ({@code LocalDatabase.transaction},
+   * {@code DatabaseAsyncTransaction.executeTransaction}, {@code RemoteDatabase.transaction} over HTTP and gRPC,
+   * and the SQL {@code COMMIT RETRY} clause's {@code RetryStep}) roll back and start again. A rollback can only take back
+   * what is still buffered, and a statement with an EXPLICIT batch boundary - {@code UPDATE}, {@code DELETE} or
+   * {@code MOVE VERTEX} with {@code BATCH n} - calls {@code db.commit(); db.begin();} in the MIDDLE of the
+   * caller's transaction, so everything up to the last boundary is already durable. It also leaves a transaction
+   * open behind it, so on return the database looks exactly as it did going in and neither loop can tell from
+   * {@code isTransactionActive()} that anything happened. Re-running the block then applies that durable half a
+   * SECOND time and reports clean success.
+   * <p>
+   * {@code TRUNCATE TYPE} and {@code REBUILD TYPE} batch too, but both already suppress it while a caller
+   * transaction is active (issue #6220), so they join the caller's unit and a rollback really does take their
+   * work back. {@code BATCH n} deliberately does not suppress it: the clause IS the caller asking for
+   * intermediate commits, and honouring it is the point of writing it - which is why the answer here is to
+   * refuse the REPLAY rather than to refuse the combination.
+   * <p>
+   * {@link #getCommitCount()} is what tells them: {@code LocalDatabase.begin()} reuses this same context object
+   * for the next transaction and the counter is never reset, so a value that moved across the block means exactly
+   * "a commit was published under you". A rollback deliberately does not move it, so this cannot answer true for
+   * a block that only ever failed.
+   * <p>
+   * Asked of the SAMPLED context, never of whatever is on the thread's transaction stack now: an internal commit
+   * inside a NESTED transaction pops that context and the following {@code begin()} pushes a fresh one, so "is
+   * the current context still the one I started with" answers yes for a plain rollback and no for a nesting
+   * change that published nothing. The counter on the sampled object answers the question actually being asked,
+   * at every nesting depth, and a context is never reused once popped - nesting is covered because a batch
+   * boundary crossed one level down is reported UP to the context that survives it (issue #8188, see
+   * {@link #reportBatchBoundaryOfNestedTransaction()}), so a block that opens its own transaction - as a
+   * {@code BEGIN ... COMMIT RETRY} script nested inside a server request's does - is still seen to have published.
+   *
+   * @param txAtStart          the transaction context that was open when the block started, or {@code null} if none
+   * @param commitCountAtStart {@code txAtStart.getCommitCount()} sampled at that moment
+   *
+   * @return {@code true} when part of the block is already durable and the block must NOT be re-run
+   */
+  public static boolean isPartiallyCommitted(final TransactionContext txAtStart, final long commitCountAtStart) {
+    return txAtStart != null && txAtStart.getCommitCount() != commitCountAtStart;
   }
 
   public LocalTransactionExplicitLock lock() {
@@ -404,6 +499,53 @@ public class TransactionContext implements Transaction {
     newRecords.add(record);
   }
 
+  /**
+   * Refuses this transaction's future {@link #commit()}, because something has left it in a state that must not
+   * be published (issue #7467, CodeRabbit on PR #7936). The transaction stays ACTIVE and usable for reading and
+   * for rolling back - a direct rollback from here would tear it down underneath a caller that owns it and may
+   * be part way through its own unwinding.
+   * <p>
+   * The one caller is {@code LocalDatabase.undoRecordWrite}, when the physical free of a record whose indexing
+   * refused it could not run: the body is then in the bucket and its index entries are gone, which is exactly
+   * the three-way disagreement the undo exists to prevent. A warning would leave the caller free to commit it;
+   * this makes the commit fail instead, and the caller's own error handling reach the rollback that does
+   * discard the whole thing.
+   * <p>
+   * Read by {@link #commit1stPhase(boolean)} - every commit path reaches that method, {@link #commit()} only
+   * some of them (issue #8053).
+   * <p>
+   * The FIRST reason wins, so the message names what went wrong rather than what noticed it last. Cleared by
+   * {@link #reset()}, which every conclusion of a transaction routes through, so the context is reusable for the
+   * next {@code begin()}.
+   */
+  public void setRollbackOnly(final String reason) {
+    if (rollbackOnlyReason == null)
+      rollbackOnlyReason = reason;
+  }
+
+  /** Why {@link #commit1stPhase(boolean)} will refuse this transaction, or {@code null} when it will not. */
+  public String getRollbackOnlyReason() {
+    return rollbackOnlyReason;
+  }
+
+  /**
+   * Takes back the registration of a record whose creation is being undone, because the indexing that followed it
+   * refused it (issue #7467). Without this the retracted record would still be walked by {@link #rollback()},
+   * which is harmless in itself but keeps a reference to an object the transaction no longer has anything to do
+   * with, for as long as the transaction lives.
+   * <p>
+   * Reference comparison, not {@code equals}: two brand-new documents of the same type carrying the same
+   * properties compare equal, and only one of them is being retracted. Searched from the END, where the record
+   * just registered is, so the case this exists for costs one comparison.
+   */
+  public void unregisterNewRecord(final Record record) {
+    for (int i = newRecords.size() - 1; i >= 0; i--)
+      if (newRecords.get(i) == record) {
+        newRecords.remove(i);
+        return;
+      }
+  }
+
   public void updateRecordInCache(final Record record) {
     if (database.isReadYourWrites()) {
       final RID rid = record.getIdentity();
@@ -454,6 +596,24 @@ public class TransactionContext implements Transaction {
   }
 
   /**
+   * Overrides, for THIS transaction only, whether its commit is written to the WAL. See the {@code useWALOverride}
+   * field: unlike {@link #setUseWAL(boolean)} it never outlives the transaction it was set in.
+   *
+   * @param useWAL {@code false} to skip the WAL, {@code true} to force it, {@code null} to go back to the session's
+   *               setting
+   */
+  public void setUseWALForThisTransaction(final Boolean useWAL) {
+    this.useWALOverride = useWAL;
+  }
+
+  /**
+   * @return the per-transaction WAL override, or {@code null} when the session's setting applies
+   */
+  public Boolean getUseWALForThisTransaction() {
+    return useWALOverride;
+  }
+
+  /**
    * Overrides, for THIS transaction only, how long its commit waits for the file locks it needs. See the
    * {@code commitLockTimeout} field.
    *
@@ -476,8 +636,23 @@ public class TransactionContext implements Transaction {
     this.walFlush = flush;
   }
 
+  /**
+   * @return whether THIS transaction's commit is written to the WAL: the per-transaction override when one is set,
+   * otherwise the session's setting. To save the session's setting and put it back later through
+   * {@link #setUseWAL(boolean)}, read {@link #isSessionUseWAL()} instead: this value may carry a one-transaction
+   * override, and restoring it would make that override permanent (issue #8129).
+   */
   @Override
   public boolean isUseWAL() {
+    final Boolean override = useWALOverride;
+    return override != null ? override : useWAL;
+  }
+
+  /**
+   * @return the session's WAL setting, the one {@link #setUseWAL(boolean)} writes, ignoring any per-transaction
+   * override. The value to capture when saving the setting to restore it later.
+   */
+  public boolean isSessionUseWAL() {
     return useWAL;
   }
 
@@ -491,6 +666,16 @@ public class TransactionContext implements Transaction {
     LogManager.instance()
         .log(this, Level.FINE, "Rollback transaction newPages=%s modifiedPages=%s (threadId=%d)", newPages, modifiedPages,
             Thread.currentThread().threadId());
+
+    // #7931: FIRST, and only from here. The pages this transaction wrote are about to be dropped, so anything its
+    // index replay published outside them has to come back with them - and the file locks that make that safe
+    // against a concurrent writer of the same index are still held until reset(). Deliberately not in reset():
+    // the other non-committed conclusions route through reset() precisely BECAUSE their changes are durable (a
+    // failure past the WAL append, a remotely-committed apply), and undoing the index state there would drop
+    // effects that recovery is going to replay. Running here is also what stops reset() - reached at the end of
+    // this method - from taking the opposite branch and PUBLISHING a deferred replay buffer (#7933): this clears
+    // the registrations, so the reset() below finds nothing left to conclude.
+    undoIndexReplay();
 
     if (database.isOpen() && database.getSchema().getDictionary() != null) {
       if (modifiedPages != null) {
@@ -1597,6 +1782,17 @@ public class TransactionContext implements Transaction {
       lockedFiles = null;
     }
     releaseInsertSlotReservations();
+    // #7933: dropped, neither undone nor published. A kill abandons this transaction's pages without a rollback, so
+    // its index replay has no conclusion to apply either - and leaving the registration behind would have the next
+    // reset() of this REUSED context publish a buffer belonging to a transaction that was killed.
+    //
+    // #7934 review: the asymmetry with rollback() - which undoes - is deliberate, not an oversight. The only caller
+    // is LocalDatabase.kill(), a CRASH SIMULATION, and a crash reverses nothing in memory: it takes the process with
+    // it. What makes that faithful here rather than merely cheap is that the simulation discards the schema and with
+    // it every index instance, so an eagerly-published replay (LSMVectorIndex's) dies with the object that holds it
+    // and is re-read from disk on the reopen. This context is the one thing that DOES outlive the kill, which is
+    // exactly what the drop is for.
+    indexReplayConclusion = null;
     modifiedPages = null;
     newPages = null;
     edgeAppendsBySegment = null;
@@ -1610,6 +1806,7 @@ public class TransactionContext implements Transaction {
     newPageCounters.clear();
     immutablePages.clear();
     commitLockTimeout = null;
+    useWALOverride = null;
   }
 
   /**
@@ -1773,6 +1970,15 @@ public class TransactionContext implements Transaction {
 
   /**
    * Locks the files in order, then checks all the pre-conditions.
+   * <p>
+   * <b>Where the rollback-only refusal lives (issue #8053).</b> This method, not {@link #commit()}: it is the
+   * one every commit path converges on, and it is already the method that decides whether there is anything to
+   * publish. {@code commit()} used to hold the only copy, and {@code commit()} is not what an HA node calls -
+   * {@code RaftReplicatedDatabase.commit()} drives phase 1 and phase 2 itself so it can put the WAL bytes on
+   * the wire between them, and so committed the very transaction the marker exists to refuse, on the
+   * deployment where it does not merely land locally but is applied on every follower. Checked BEFORE the
+   * status moves to {@code COMMIT_1ST_PHASE}, so the transaction is still rollback-able by the caller's own
+   * error handling, which is what {@link #setRollbackOnly} expects of it.
    *
    * @param isLeader whether this node is the current Raft leader - no longer consulted for index replay (#6964,
    *                 always replayed below), still consulted further down to gate the edge-append/slot-merge
@@ -1784,6 +1990,10 @@ public class TransactionContext implements Transaction {
 
     if (status != STATUS.BEGUN)
       throw new TransactionException("Transaction in phase " + status);
+
+    if (rollbackOnlyReason != null)
+      throw new TransactionException("Transaction cannot be committed: " + rollbackOnlyReason
+          + ". Roll it back and retry");
 
     // Acquire file locks BEFORE processing updatedRecords so that updateRecordNoLock
     // (which loads pages and follows multi-page record chunk chains) is serialized.
@@ -1851,6 +2061,13 @@ public class TransactionContext implements Transaction {
       }
 
       if (!hasChanges()) {
+        // #7934 review: returning without reset() does NOT strand an index replay conclusion registered by the
+        // updateRecordNoLock above - which can register one, since a deferred UPDATE indexes here rather than at
+        // save() time. Every caller of this method concludes the transaction on the null it gets back: commit()
+        // through resetAndFireCallbacks(), and the Raft path through an explicit tx.reset() on its own read-only
+        // arm. Both reach reset(), which publishes. Publishing is also the right answer rather than a tolerated
+        // one: a replay that indexed anything dirtied the record's own page, so "a buffer exists" and "nothing
+        // changed" cannot both be true, and an empty buffer publishes nothing.
         if (lockedFiles != null) {
           database.getTransactionManager().unlockFilesInOrder(lockedFiles, getRequester());
           lockedFiles = null;
@@ -1999,7 +2216,7 @@ public class TransactionContext implements Transaction {
 
       Binary result = null;
 
-      if (useWAL) {
+      if (isUseWAL()) {
         txId = database.getTransactionManager().getNextTransactionId();
         //LogManager.instance().log(this, Level.FINE, "Creating buffer for TX %d (threadId=%d)", txId, Thread.currentThread().threadId());
         result = database.getTransactionManager().createTransactionBuffer(txId, pages);
@@ -2237,12 +2454,21 @@ public class TransactionContext implements Transaction {
       // modified records are intentionally NOT reloaded: their in-memory content is exactly what the
       // cluster committed, so there is nothing to restore.
       reset();
-    else if (database.getEmbedded() instanceof LocalDatabase localDatabase && localDatabase.isFencedForRecovery())
+    else if (database.getEmbedded() instanceof LocalDatabase localDatabase && localDatabase.isFencedForRecovery()) {
       // A fence-REFUSED commit (this tx appended nothing; the fence came from an earlier failure) cannot
       // roll back its record state: rollback()'s record reload would hit the fence choke point itself and
       // replace the fence error with a confusing secondary failure. Release resources only - the database
       // is unusable until close/reopen anyway, so user-held record state is moot.
+      //
+      // #7934 review: the INDEX replay is the one thing that does have to come back, and the reason is in the
+      // first line of this comment - this transaction appended nothing, so unlike every other branch that
+      // reaches reset(), its changes are not durable and must not be published. This is the only piece of
+      // rollback() that is safe to run here: it is index-scoped, it never touches the dictionary or reloads a
+      // record, so it cannot reach the fence choke point that makes the rest of rollback() unusable. Running it
+      // is also what stops the reset() below from taking the publish branch.
+      undoIndexReplay();
       reset();
+    }
     else
       // #4940: the failure happened BEFORE anything durable exists. Restore user-held records exactly like
       // a phase-1 failure does: reload the modified records to their committed content and reset the
@@ -2270,6 +2496,103 @@ public class TransactionContext implements Transaction {
       }
   }
 
+  /**
+   * The journal {@code index} already registered for this transaction's index replay, or null if it has not
+   * registered one yet. See {@link IndexReplayConclusion}.
+   */
+  public IndexReplayConclusion getIndexReplayConclusion(final IndexInternal index) {
+    return indexReplayConclusion != null ? indexReplayConclusion.get(index) : null;
+  }
+
+  /**
+   * Registers what this transaction's conclusion has to do to the non-transactional state of {@code index}'s
+   * replay - undo it on a rollback, publish it on anything else. One per index per transaction: the index
+   * accumulates into the journal it gets back from {@link #getIndexReplayConclusion(IndexInternal)} for the rest
+   * of the replay.
+   */
+  public void addIndexReplayConclusion(final IndexInternal index, final IndexReplayConclusion conclusion) {
+    if (indexReplayConclusion == null)
+      indexReplayConclusion = new LinkedHashMap<>(4);
+    indexReplayConclusion.put(index, conclusion);
+  }
+
+  /**
+   * Reverses the non-transactional side effects of the index replay, while the transaction still holds its file
+   * locks - {@link #reset()} is what releases those, and it runs after this.
+   * <p>
+   * Order is registration order and carries no meaning: each journal covers one index, and an index's state is
+   * independent of every other one's.
+   * <p>
+   * A failure here must never replace the exception that caused the rollback (the same rule
+   * {@link #concludePhase2} applies to rollback failures), so each journal is isolated: one that throws is logged
+   * and the rest still run.
+   * <p>
+   * {@code Throwable}, not {@code Exception}, and for a sharper reason than breadth: a compensation guards its
+   * invariants with {@code assert}, whose {@code AssertionError} is an {@link Error}. Assertions are on under
+   * Surefire, so an invariant that broke would escape this loop, escape {@code rollback()} - which is called from
+   * bare {@code finally} blocks that do not catch it - and skip {@link #reset()}, the only thing that releases
+   * this transaction's file locks. A tripwire must not be able to wedge the database it is guarding.
+   */
+  private void undoIndexReplay() {
+    final Map<IndexInternal, IndexReplayConclusion> conclusions = indexReplayConclusion;
+    if (conclusions == null)
+      return;
+
+    // Cleared BEFORE the loop, not after: an undo is allowed to reach code that reads this map back, and a second
+    // conclusion of the same journal - by the reset() at the end of rollback(), say - must find nothing.
+    indexReplayConclusion = null;
+
+    for (final Map.Entry<IndexInternal, IndexReplayConclusion> entry : conclusions.entrySet())
+      try {
+        entry.getValue().undoIndexReplay();
+      } catch (final Throwable e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Error while compensating the replay of index '%s' of the rolled back tx %d (the primary error is "
+                + "propagated)", e, entry.getKey().getName(), txId);
+      }
+  }
+
+  /**
+   * The other half of {@link #undoIndexReplay()}: this transaction's changes STAND, so whatever its index replay
+   * deferred has to be published now (issue #7933).
+   * <p>
+   * Called from {@link #reset()}, which is the single point every non-rolled-back conclusion reaches - the commit,
+   * and the failure regimes {@link #concludePhase2} routes through {@code reset()} precisely because their changes
+   * are durable regardless: a failure past the WAL append that recovery will replay, and a local apply that failed
+   * after the cluster had already committed. {@code rollback()} cannot reach it: it runs
+   * {@link #undoIndexReplay()} first, which clears the registrations before its own {@code reset()} gets here.
+   * <p>
+   * The fence-REFUSED branch of {@code concludePhase2} is the one arm that reaches {@code reset()} without durable
+   * changes - it appended nothing - and it therefore runs {@link #undoIndexReplay()} itself before getting here.
+   * Durability, not the route taken, is what decides which of the two conclusions applies.
+   * <p>
+   * Runs BEFORE {@code reset()} releases the file locks, which is deliberately the SAME lock state the eager
+   * replay it replaces ran in: a deferred publication must not be able to reach a lock ordering the eager one
+   * could not, and the index it publishes into is free to take whatever internal lock it already took at replay
+   * time, no more.
+   * <p>
+   * A failure is degraded to a warning for the same reason the undo degrades one: this runs after the commit has
+   * already been decided, and nothing here can un-decide it. {@code Throwable} rather than {@code Exception}
+   * because an escaping {@link AssertionError} - assertions ARE enabled under Surefire - would skip the rest of
+   * {@code reset()}, and the rest of {@code reset()} is what releases this transaction's file locks.
+   */
+  private void publishIndexReplay() {
+    final Map<IndexInternal, IndexReplayConclusion> conclusions = indexReplayConclusion;
+    if (conclusions == null)
+      return;
+
+    indexReplayConclusion = null;
+
+    for (final Map.Entry<IndexInternal, IndexReplayConclusion> entry : conclusions.entrySet())
+      try {
+        entry.getValue().publishIndexReplay();
+      } catch (final Throwable e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Error while publishing the deferred replay of index '%s' of the committed tx %d", e,
+            entry.getKey().getName(), txId);
+      }
+  }
+
   public void addIndexOperation(final IndexInternal index, final TransactionIndexContext.IndexKey.IndexKeyOperation operation,
       final Object[] keys, final RID rid) {
     indexChanges.addIndexKeyLock(index, operation, keys, rid);
@@ -2286,9 +2609,17 @@ public class TransactionContext implements Transaction {
   }
 
   public void reset() {
+    // #7933: FIRST, while the file locks below are still held. This is the point every conclusion that is NOT a
+    // rollback passes through - the commit, and each durable-but-locally-failed regime concludePhase2 routes here -
+    // so it is where a replay that deferred its non-transactional writes gets to make them. A rollback never
+    // reaches it with anything registered: undoIndexReplay() ran first and cleared the map.
+    publishIndexReplay();
+
     remotelyCommitted = false;
     phase2WalAppended = false;
     status = STATUS.INACTIVE;
+    // The refusal belonged to the transaction that is ending here, not to the context, which begin() reuses.
+    rollbackOnlyReason = null;
 
     if (explicitLockedFiles != null) {
       database.getTransactionManager().unlockFilesInOrder(explicitLockedFiles, getRequester());
@@ -2323,6 +2654,7 @@ public class TransactionContext implements Transaction {
     afterCommitCallbacks = null;
     registeredCallbackKeys = null;
     commitLockTimeout = null;
+    useWALOverride = null;
     txId = -1;
   }
 

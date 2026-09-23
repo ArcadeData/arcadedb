@@ -93,16 +93,46 @@ public class GraphSONImporterFormat extends CSVImporterFormat {
 
     if (usesNonRidIds) {
       // Use custom import that handles non-RID IDs
-      importWithIdMapping(lines, database);
+      importWithIdMapping(lines, database, context);
     } else {
-      // Use standard TinkerPop import for RID-format IDs
+      // Use standard TinkerPop import for RID-format IDs.
+      //
+      // No ownership guard here, unlike importWithIdMapping() above, and not an oversight: this branch never pushes a
+      // transaction level of its own. ArcadeGraphTransaction#doOpen() does call database.begin(), but
+      // AbstractThreadLocalTransaction only calls it when isOpen() is false, and ArcadeGraphTransaction#isOpen()
+      // reads database.isTransactionActive() - the database's own live state, not a flag of its own. So an already
+      // active transaction is JOINED rather than nested under, and #7771's mechanism (a level nobody pops, which the
+      // caller's next commit() then commits in place of their own) cannot arise. Same reason GraphMLImporterFormat,
+      // which takes this route for every file, needed nothing.
       // Convert the lines back to an InputStream
       final String content = String.join("\n", lines);
-      try (final InputStream is = new ByteArrayInputStream(content.getBytes(StandardCharsets.UTF_8))) {
-        final ArcadeGraph graph = ArcadeGraph.open(database);
-        graph.io(IoCore.graphson()).reader().create().readGraph(is, graph);
-      } catch (final IOException e) {
-        throw new ImportException("Error on importing GraphSON", e);
+
+      // TinkerPop's own GraphSON reader reports no per-record progress on this route, so the statistics this format
+      // owes the caller (context.parsed/createdVertices/createdEdges - see ImporterContext#toMap()) are taken as a
+      // before/after delta across the whole schema instead of counted as the reader writes (issue #8054).
+      final long verticesBefore = countRecordsOfKind(database, VertexType.class);
+      final long edgesBefore = countRecordsOfKind(database, EdgeType.class);
+
+      // The before/after delta is taken in a finally, not just after a successful read: TinkerPop's reader can
+      // fail partway through with a RuntimeException (a malformed record, a schema conflict) rather than the
+      // IOException caught below, and on the caller-owned-transaction path #8073 added, whatever it already wrote
+      // stays durable until the caller resolves the transaction either way - so the count must still reach the
+      // caller even when readGraph() throws, the same way Neo4jImporter/OrientDBImporter/RDFImporterFormat
+      // preserve an accurate counter across a partial failure elsewhere in this same code path.
+      try {
+        try (final InputStream is = new ByteArrayInputStream(content.getBytes(StandardCharsets.UTF_8))) {
+          final ArcadeGraph graph = ArcadeGraph.open(database);
+          graph.io(IoCore.graphson()).reader().create().readGraph(is, graph);
+        } catch (final IOException e) {
+          throw new ImportException("Error on importing GraphSON", e);
+        }
+      } finally {
+        final long createdVertices = countRecordsOfKind(database, VertexType.class) - verticesBefore;
+        final long createdEdges = countRecordsOfKind(database, EdgeType.class) - edgesBefore;
+
+        context.createdVertices.addAndGet(createdVertices);
+        context.createdEdges.addAndGet(createdEdges);
+        context.parsed.addAndGet(createdVertices + createdEdges);
       }
     }
   }
@@ -115,13 +145,70 @@ public class GraphSONImporterFormat extends CSVImporterFormat {
    * 2. Builds a mapping from original IDs to new ArcadeDB RIDs
    * 3. Creates edges using the ID mapping
    */
-  private void importWithIdMapping(final List<String> lines, final DatabaseInternal database) {
+  private void importWithIdMapping(final List<String> lines, final DatabaseInternal database, final ImporterContext context) {
     final Map<Object, RID> idMapping = new HashMap<>();
     final List<EdgeData> pendingEdges = new ArrayList<>();
 
-    // First pass: create vertices and collect edge data
-    database.begin();
+    // WHETHER THE TRANSACTIONS BELOW ARE THIS IMPORT'S TO BEGIN, COMMIT AND ROLL BACK - SEE
+    // ImporterContext#importOwnsTransaction. ASKED ONCE, BEFORE THE FIRST begin(), BECAUSE AFTER THAT A TRANSACTION
+    // IS ALWAYS ACTIVE AND THE ANSWER WOULD ALWAYS BE "THE CALLER'S".
+    final boolean ownsTransaction = context.importOwnsTransaction(database);
 
+    // First pass: create vertices and collect edge data
+    inTransaction(database, ownsTransaction, () -> createVertices(lines, database, idMapping, pendingEdges, context));
+
+    // Second pass: create edges using the ID mapping
+    if (!pendingEdges.isEmpty())
+      inTransaction(database, ownsTransaction, () -> createEdges(pendingEdges, database, idMapping, context));
+  }
+
+  /**
+   * Runs one pass of the import in the transaction it belongs in, and leaves nothing of its own behind when it
+   * throws.
+   * <p>
+   * The two passes used to be a bare {@code database.begin()} ... {@code database.commit()} pair with no
+   * {@code try}/{@code finally} and no ownership guard, and several ordinary conditions throw from inside them: a
+   * label naming an existing non-vertex/non-edge type, a malformed line, any failure out of {@code save()}. The
+   * transaction then stayed pushed on the caller's {@code DatabaseContext} stack - {@code LocalDatabase#begin()}
+   * PUSHES an independent level rather than joining the caller's - so the caller's own next {@code commit()} popped
+   * and committed the TOP one, the importer's. The failed import's partial work became durable while the caller's
+   * own records were eventually rolled back: the two halves swapped (issue #7771).
+   * <p>
+   * Nothing is begun or committed when the caller already owns a live transaction. That is the other half of the
+   * same answer: a nested {@code commit()} is independently durable, so even a SUCCESSFUL import would have
+   * published itself on its own schedule, whatever the caller's transaction later decided. Writing into the
+   * caller's transaction instead makes the import part of their unit of work, which is what
+   * {@code Importer(Database, String)} promises.
+   * <p>
+   * {@code database.transaction(block, true)} is deliberately not reused for this: its generic {@code catch} rolls
+   * back whatever is active even when it JOINED the caller's transaction rather than creating one, which is the very
+   * thing this must not do (the #7860 / #7328 mechanism).
+   */
+  private static void inTransaction(final DatabaseInternal database, final boolean ownsTransaction, final Runnable pass) {
+    if (!ownsTransaction) {
+      pass.run();
+      return;
+    }
+
+    database.begin();
+    // Whether the level just pushed is still the current one. Cleared right BEFORE the commit, not after:
+    // LocalDatabase#commit() pops in a finally whether or not the commit itself succeeded, so after a commit that
+    // threw the transaction database.isTransactionActive() reports is no longer ours and rolling it back would
+    // reach past our own level for whatever is underneath it (issue #7328).
+    boolean txOpen = true;
+    try {
+      pass.run();
+      txOpen = false;
+      database.commit();
+    } finally {
+      if (txOpen && database.isTransactionActive())
+        database.rollback();
+    }
+  }
+
+  /** The vertex pass: one vertex per line, with its outgoing edges collected into {@code pendingEdges}. */
+  private void createVertices(final List<String> lines, final DatabaseInternal database, final Map<Object, RID> idMapping,
+      final List<EdgeData> pendingEdges, final ImporterContext context) {
     for (final String line : lines) {
       final JSONObject vertexJson = new JSONObject(line);
       final Object originalId = vertexJson.get("id");
@@ -152,6 +239,11 @@ public class GraphSONImporterFormat extends CSVImporterFormat {
       }
 
       vertex.save();
+      context.createdVertices.incrementAndGet();
+      // Incremented here, after save() succeeds, not at the top of the loop: matching createEdges()'s own
+      // placement right after edge.save() so a line that fails before this point (malformed JSON, a label naming
+      // a non-vertex type) doesn't count as parsed when nothing was actually created from it (issue #8116 review).
+      context.parsed.incrementAndGet();
       final RID newRid = vertex.getIdentity();
       idMapping.put(originalId, newRid);
 
@@ -173,59 +265,60 @@ public class GraphSONImporterFormat extends CSVImporterFormat {
         }
       }
     }
+  }
 
-    database.commit();
+  /** The edge pass: the edges collected by {@link #createVertices}, resolved through the original-id mapping. */
+  private void createEdges(final List<EdgeData> pendingEdges, final DatabaseInternal database,
+      final Map<Object, RID> idMapping, final ImporterContext context) {
+    for (final EdgeData edgeData : pendingEdges) {
+      final RID outRid = idMapping.get(edgeData.outV);
+      final RID inRid = idMapping.get(edgeData.inV);
 
-    // Second pass: create edges using the ID mapping
-    if (!pendingEdges.isEmpty()) {
-      database.begin();
-
-      for (final EdgeData edgeData : pendingEdges) {
-        final RID outRid = idMapping.get(edgeData.outV);
-        final RID inRid = idMapping.get(edgeData.inV);
-
-        if (outRid == null) {
-          LogManager.instance().log(this, Level.WARNING,
-              "Skipping edge: source vertex with ID '%s' not found", edgeData.outV);
-          continue;
-        }
-
-        if (inRid == null) {
-          LogManager.instance().log(this, Level.WARNING,
-              "Skipping edge: target vertex with ID '%s' not found", edgeData.inV);
-          continue;
-        }
-
-        // Ensure edge type exists
-        if (!database.getSchema().existsType(edgeData.label)) {
-          database.getSchema().createEdgeType(edgeData.label);
-        } else if (!(database.getSchema().getType(edgeData.label) instanceof EdgeType)) {
-          throw new ImportException("Type '" + edgeData.label + "' is not an edge type");
-        }
-
-        // Create edge
-        final Vertex outVertex = outRid.asVertex();
-        final MutableEdge edge = outVertex.newEdge(edgeData.label, inRid.asVertex());
-
-        // Store original edge ID if present
-        if (edgeData.edgeId != null) {
-          edge.set(ORIGINAL_ID_PROPERTY, String.valueOf(edgeData.edgeId));
-        }
-
-        // Copy edge properties
-        if (edgeData.properties != null) {
-          for (final String propName : edgeData.properties.keySet()) {
-            final Object propValue = extractPropertyValue(edgeData.properties, propName);
-            if (propValue != null) {
-              edge.set(propName, propValue);
-            }
-          }
-        }
-
-        edge.save();
+      if (outRid == null) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Skipping edge: source vertex with ID '%s' not found", edgeData.outV);
+        continue;
       }
 
-      database.commit();
+      if (inRid == null) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Skipping edge: target vertex with ID '%s' not found", edgeData.inV);
+        continue;
+      }
+
+      // Ensure edge type exists
+      if (!database.getSchema().existsType(edgeData.label)) {
+        database.getSchema().createEdgeType(edgeData.label);
+      } else if (!(database.getSchema().getType(edgeData.label) instanceof EdgeType)) {
+        throw new ImportException("Type '" + edgeData.label + "' is not an edge type");
+      }
+
+      // Create edge
+      final Vertex outVertex = outRid.asVertex();
+      final MutableEdge edge = outVertex.newEdge(edgeData.label, inRid.asVertex());
+
+      // Store original edge ID if present
+      if (edgeData.edgeId != null) {
+        edge.set(ORIGINAL_ID_PROPERTY, String.valueOf(edgeData.edgeId));
+      }
+
+      // Copy edge properties
+      if (edgeData.properties != null) {
+        for (final String propName : edgeData.properties.keySet()) {
+          final Object propValue = extractPropertyValue(edgeData.properties, propName);
+          if (propValue != null) {
+            edge.set(propName, propValue);
+          }
+        }
+      }
+
+      edge.save();
+      context.createdEdges.incrementAndGet();
+      // createVertices() above already counts context.parsed once per vertex actually created, so this pass adds
+      // one per edge actually created, matching the TinkerPop-reader route's context.parsed = createdVertices +
+      // createdEdges - without this, parsedRecords on this route counted vertices only, understating the report
+      // for a source whose lines embed outgoing edges (issue #8116 review).
+      context.parsed.incrementAndGet();
     }
   }
 

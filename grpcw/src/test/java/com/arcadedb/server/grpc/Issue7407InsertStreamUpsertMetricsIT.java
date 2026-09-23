@@ -20,7 +20,6 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
-import com.arcadedb.server.BaseGraphServerTest;
 import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
 import io.micrometer.core.instrument.Metrics;
@@ -42,7 +41,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue7407InsertStreamUpsertMetricsIT extends BaseGraphServerTest {
+public class Issue7407InsertStreamUpsertMetricsIT extends BaseGrpcServerTest {
   private static final int ROWS = 20;
 
   private String              typeName;

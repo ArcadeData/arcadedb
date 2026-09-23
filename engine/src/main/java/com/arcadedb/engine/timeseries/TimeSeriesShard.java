@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.Component;
 import com.arcadedb.engine.OwnTransaction;
+import com.arcadedb.engine.timeseries.TimeSeriesSealedStore.BlockDirectorySnapshot;
 import com.arcadedb.engine.timeseries.codec.DeltaOfDeltaCodec;
 import com.arcadedb.engine.timeseries.codec.DictionaryCodec;
 import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
@@ -53,6 +54,18 @@ import java.util.function.Consumer;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class TimeSeriesShard implements AutoCloseable {
+
+  /**
+   * A projection of NO value columns, for {@link #hasRowsInRange}: every read path builds a row as
+   * {@code columnIndices.length + 1} slots with the timestamp in slot 0, so this asks for the timestamp alone and
+   * decodes not one value. Shared rather than allocated per shard per call - the probe visits every shard.
+   */
+  private static final int[]                NO_COLUMNS            = new int[0];
+  /**
+   * The visitor {@link #hasRowsInRange} is: the first row it is offered is the answer, so it always asks to stop.
+   * Stateless, hence one instance rather than a lambda captured per call.
+   */
+  private static final TimeSeriesRowVisitor STOP_AT_THE_FIRST_ROW = row -> false;
 
   private final int                    shardIndex;
   private final String                 typeName;
@@ -192,7 +205,8 @@ public class TimeSeriesShard implements AutoCloseable {
     // registered: retrying initEngine() after the sealed file is repaired reuses this very component and produced
     // a type reporting isEngineAvailable() == true whose every read threw FileNotFoundException (issue #6839).
     // The failure at initHeaderPage() a few lines above already propagates without closing, for the same reason.
-    this.sealedStore = new TimeSeriesSealedStore(shardPath, columns);
+    this.sealedStore = new TimeSeriesSealedStore(shardPath, columns,
+        GlobalConfiguration.decodedBlockCacheBytes(database.getConfiguration()));
 
     // Crash recovery: if a compaction was interrupted, truncate any partial sealed blocks.
     //
@@ -203,7 +217,7 @@ public class TimeSeriesShard implements AutoCloseable {
     // Its own transaction, tracked, for the reason the two blocks above track theirs: a failed commit() has
     // already popped it, and a shard is commonly constructed from inside a caller's transaction - the comment on
     // initHeaderPage says so - which is the transaction a bare isTransactionActive() would have rolled back
-    // (issue #7732, claude-review on PR #7747).
+    // (issue #7732, code review on PR #7747).
     final OwnTransaction recovery = OwnTransaction.begin(database);
     try {
       if (mutableBucket.isCompactionInProgress()) {
@@ -381,6 +395,12 @@ public class TimeSeriesShard implements AutoCloseable {
    * Both iterators are eagerly materialized under the read lock to prevent
    * concurrent {@link #compact()} from clearing the mutable bucket and causing
    * stale reads after the lock is released.
+   * <p>
+   * The window DOES freeze the sealed store's block directory for this method, and that is what separates it from
+   * {@link #forEachRow} (issue #8052, correcting a paragraph that was on this method and described that one).
+   * {@code sealedStore.iterateRange} materialises its rows into an {@code ArrayList} before it returns, inside the
+   * read lock taken here, so no retention pass and no replicated install can land part-way through its answer. The
+   * price is the one {@code forEachRow} refuses to pay: every matching row of the range is resident at once.
    */
   public Iterator<Object[]> iterateRange(final long fromTs, final long toTs, final int[] columnIndices,
                                          final TagFilter tagFilter) throws IOException {
@@ -472,8 +492,41 @@ public class TimeSeriesShard implements AutoCloseable {
    * {@code iterateRange} materialises it - a lazy read of it could see pages a concurrent {@code compact()} has
    * cleared - and it is bounded by the bucket, not by the series.
    * <p>
+   * <b>The visitor never runs under {@code compactionLock}</b> (issue #7897). The lock is held to take the sealed
+   * store's directory snapshot and to read the mutable bucket, both of which cost what the shard holds rather than
+   * what the caller does with it, and is released before a single row is handed over. It used to be held across
+   * the whole visit, which made the time a compaction waited - and therefore the time {@link #appendSamples}
+   * queued behind that waiting writer - the caller's total work: an {@code EXPORT DATABASE} writing a gzip chunk
+   * from inside the visitor stalled ingest for the whole export. The two are taken in ONE window because they have
+   * to be consistent with each other: a compaction landing between them would seal the bucket's rows into blocks
+   * the sealed walk then visits as well, and the same sample would be handed over twice.
+   * <p>
+   * What that costs is the mutable bucket read a visitor stopping inside the SEALED layer used to skip - it is now
+   * read before the walk starts rather than after it ends. It is bounded by the bucket, which is what every
+   * {@code iterateRange} caller already pays on every call, and every caller here reads every row anyway: the one
+   * that stopped early was {@link TimeSeriesEngine#hasRowsInRange}, and it has {@link #hasRowsInRange} of its own
+   * now (issue #7965). A future early-stopping caller wanting the same laziness back wants that shape too - a walk
+   * whose visitor is the shard's own and therefore bounded - and not a lock released between the two layers.
+   * <p>
    * The rows arrive sealed-then-mutable, NOT merged by timestamp. Merging is what forces every shard's rows to be
    * resident at once; a folding answer does not need the order, and one that does wants {@code iterateQuery}.
+   * <p>
+   * <b>What the window does NOT freeze is the sealed store's block directory</b> (issue #8052 moved this here from
+   * {@link #iterateRange}, where the hazard cannot occur). The sealed walk takes {@code directoryLock} one block at
+   * a time and holds nothing of this shard's in between, so a pass that rewrites the sealed file - a retention
+   * {@code truncateBefore} or {@code downsampleBlocks}, both of which run under
+   * {@code TimeSeriesEngine.runSealedMaintenanceReplicated} holding this shard's compaction WRITE lock, or an HA
+   * follower installing the leader's sealed file - can land between two of this walk's blocks instead of waiting
+   * behind the whole of it. Taking the compaction write lock does not serialize it against this method, because
+   * this method no longer holds the read lock once the snapshot is taken; that is the trade issue #7897 made, and
+   * what it buys is that a caller's own work can no longer park a compaction, and with it every append.
+   * <p>
+   * A block is therefore re-resolved against the live directory before it is read, by the identity it carries in
+   * the file (issue #8043). A block that still exists is read wherever the rewrite put it, which is what makes a
+   * replicated install lossless: the leader's file holds the same blocks and normally more. A block a retention
+   * pass really did delete resolves to nothing and is skipped - its rows are gone - and counted in
+   * {@code AggregationMetrics.vanishedBlocks}, so a caller that cannot tolerate a short answer can see that it got
+   * one.
    *
    * @param metrics optional counters, may be {@code null}. Every visited row is counted in
    *                {@code materializedRows}, but only the SEALED layer contributes block counts - the mutable
@@ -482,19 +535,69 @@ public class TimeSeriesShard implements AutoCloseable {
    */
   public boolean forEachRow(final long fromTs, final long toTs, final int[] columnIndices, final TagFilter tagFilter,
       final AggregationMetrics metrics, final TimeSeriesRowVisitor visitor) throws IOException {
+    final BlockDirectorySnapshot sealedBlocks;
+    final List<Object[]> mutableRows;
     compactionLock.readLock().lock();
     try {
-      if (!sealedStore.forEachRow(fromTs, toTs, columnIndices, tagFilter, metrics, visitor))
-        return false;
-
+      sealedBlocks = sealedStore.snapshotBlockDirectory(fromTs, toTs);
       // Filtered by the bucket, on the page: see scanRange (issue #7733).
-      for (final Object[] row : mutableBucket.scanRange(fromTs, toTs, columnIndices, tagFilter, null)) {
-        if (metrics != null)
-          metrics.addMaterializedRows(1);
-        if (!visitor.visit(row))
-          return false;
-      }
-      return true;
+      mutableRows = mutableBucket.scanRange(fromTs, toTs, columnIndices, tagFilter, null);
+    } finally {
+      compactionLock.readLock().unlock();
+    }
+
+    if (!sealedStore.forEachRow(sealedBlocks, fromTs, toTs, columnIndices, tagFilter, metrics, visitor))
+      return false;
+
+    for (final Object[] row : mutableRows) {
+      if (metrics != null)
+        metrics.addMaterializedRows(1);
+      if (!visitor.visit(row))
+        return false;
+    }
+    return true;
+  }
+
+  /**
+   * Whether either layer holds a row in {@code [fromTs, toTs]} (issue #7965).
+   * <p>
+   * A walk of its own rather than a fold of {@link #forEachRow} with a visitor that stops on the first row,
+   * because the two differ in what the shard is allowed to hold a lock across. {@code forEachRow} hands rows to
+   * the CALLER's code, whose cost is unbounded from here - an {@code EXPORT DATABASE} writing a gzip chunk from
+   * inside the visitor - so issue #7897 had to release {@code compactionLock} before the first row, which in turn
+   * forced both layers to be read in one window up front: a compaction landing between them would seal the
+   * bucket's rows into blocks the sealed walk then hands over as well. The cost of that window is a full
+   * {@code mutableBucket.scanRange} of every shard, paid whether the answer needed it or not.
+   * <p>
+   * Here there is no caller code to run: the answer is a boolean, the probe stops at the first row either layer
+   * produces, and the whole thing is bounded by one block decode plus the pages up to that row. So it holds the
+   * read lock across both layers - the shape #7897 replaced, which was never the problem - and the consistency
+   * question does not arise. The sealed layer is asked FIRST because it is the half that can answer without
+   * reading anything at all: a block whose directory entry puts it outside the range is dropped on the entry.
+   * <p>
+   * The mutable bucket is iterated rather than scanned, so a bucket holding thousands of rows costs the pages up
+   * to the first match and not a materialised list of all of them. That laziness is safe only under the lock -
+   * {@code iterateRange} would otherwise walk into pages a concurrent {@code compact()} has cleared, which is why
+   * {@link #forEachRow} materialises instead - and it never escapes this method.
+   * <p>
+   * No tag filter: the one caller asks whether a metric NAME has a sample in a window, and the bucket's lazy
+   * iterator takes no filter. A filtered existence check would want one, and should add it here rather than fold
+   * {@code forEachRow} again.
+   *
+   * @param metrics optional counters, may be {@code null}. Both layers are charged for what they actually read -
+   *                the blocks decoded and the bucket pages opened - so a probe answered by the sealed layer
+   *                reports no page at all
+   */
+  public boolean hasRowsInRange(final long fromTs, final long toTs, final AggregationMetrics metrics)
+      throws IOException {
+    compactionLock.readLock().lock();
+    try {
+      // forEachRow answers false when the visitor stopped it, which here means the layer had a row to offer.
+      if (!sealedStore.forEachRow(sealedStore.snapshotBlockDirectory(fromTs, toTs), fromTs, toTs, NO_COLUMNS, null,
+          metrics, STOP_AT_THE_FIRST_ROW))
+        return true;
+
+      return mutableBucket.iterateRange(fromTs, toTs, NO_COLUMNS, metrics).hasNext();
     } finally {
       compactionLock.readLock().unlock();
     }
@@ -512,24 +615,36 @@ public class TimeSeriesShard implements AutoCloseable {
    * <p>
    * A caller folding these rows into a set of combinations, each with the earliest timestamp it was observed at,
    * reaches the same answer {@link #forEachRow} would give it - without reading the samples.
+   * <p>
+   * Same exposure as {@link #forEachRow} to a sealed file rewritten mid-walk, and the same answer to it: see the
+   * paragraph there. Both arms of the sealed walk re-resolve a block before they use it, including the one that
+   * answers from the directory entry alone - it used to answer off the snapshot entry instead, which made this
+   * method report a series for a block {@code forEachRow} would have refused to read a row from (issue #8043).
    */
   public boolean forEachTagCombination(final long fromTs, final long toTs, final int[] columnIndices,
       final AggregationMetrics metrics, final TimeSeriesRowVisitor visitor) throws IOException {
+    // One window for both layers, then the visit with nothing held - see forEachRow for why each half is the way
+    // it is (issue #7897).
+    final BlockDirectorySnapshot sealedBlocks;
+    final List<Object[]> mutableRows;
     compactionLock.readLock().lock();
     try {
-      if (!sealedStore.forEachTagCombination(fromTs, toTs, columnIndices, metrics, visitor))
-        return false;
-
-      for (final Object[] row : mutableBucket.scanRange(fromTs, toTs, columnIndices)) {
-        if (metrics != null)
-          metrics.addMaterializedRows(1);
-        if (!visitor.visit(row))
-          return false;
-      }
-      return true;
+      sealedBlocks = sealedStore.snapshotBlockDirectory(fromTs, toTs);
+      mutableRows = mutableBucket.scanRange(fromTs, toTs, columnIndices);
     } finally {
       compactionLock.readLock().unlock();
     }
+
+    if (!sealedStore.forEachTagCombination(sealedBlocks, fromTs, toTs, columnIndices, metrics, visitor))
+      return false;
+
+    for (final Object[] row : mutableRows) {
+      if (metrics != null)
+        metrics.addMaterializedRows(1);
+      if (!visitor.visit(row))
+        return false;
+    }
+    return true;
   }
 
   /**

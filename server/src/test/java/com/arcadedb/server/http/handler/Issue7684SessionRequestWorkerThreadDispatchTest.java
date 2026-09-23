@@ -121,7 +121,7 @@ class Issue7684SessionRequestWorkerThreadDispatchTest {
         new PostVectorFullTextSearchHandler(null),
         // Both reach DatabaseAbstractHandler through AbstractBinaryHttpHandler, which answers true handler-wide.
         // Safe today, and listed anyway: a sweep that omits the subclasses that already exist cannot claim to
-        // stop a new one (claude-review on PR #7748).
+        // stop a new one (code review on PR #7748).
         new PostPrometheusReadHandler(null), new PostPrometheusWriteHandler(null) };
 
     for (final DatabaseAbstractHandler handler : handlers)

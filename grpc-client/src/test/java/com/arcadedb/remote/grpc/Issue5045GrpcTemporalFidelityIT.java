@@ -22,7 +22,6 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -42,10 +41,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * The client {@code ProtoUtils.fromGrpcValue} now reconstructs the temporal type from the
  * {@code logical_type} tag the server sets, symmetrically with the UTC-anchored encode side.
  */
-public class Issue5045GrpcTemporalFidelityIT extends BaseGraphServerTest {
+public class Issue5045GrpcTemporalFidelityIT extends BaseGrpcClientServerTest {
 
-  private static final int    GRPC_PORT   = 50051;
-  private static final int    HTTP_PORT   = 2480;
   private static final String VERTEX_TYPE = "Temporal5045";
 
   private RemoteGrpcServer   grpcServer;
@@ -59,8 +56,8 @@ public class Issue5045GrpcTemporalFidelityIT extends BaseGraphServerTest {
 
   @BeforeEach
   void openAndPrepare() {
-    grpcServer = new RemoteGrpcServer("localhost", GRPC_PORT, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
-    grpc = new RemoteGrpcDatabase(grpcServer, "localhost", GRPC_PORT, HTTP_PORT, getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
+    grpcServer = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    grpc = new RemoteGrpcDatabase(grpcServer, "localhost", getServerGrpcPort(), getServerHttpPort(), getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
     grpc.command("sql", "CREATE VERTEX TYPE `" + VERTEX_TYPE + "` IF NOT EXISTS");
     grpc.command("sql", "CREATE PROPERTY `" + VERTEX_TYPE + "`.d IF NOT EXISTS DATE");
     grpc.command("sql", "CREATE PROPERTY `" + VERTEX_TYPE + "`.dt IF NOT EXISTS DATETIME");

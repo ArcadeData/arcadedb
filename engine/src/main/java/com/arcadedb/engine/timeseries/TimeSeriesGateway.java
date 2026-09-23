@@ -550,6 +550,35 @@ public final class TimeSeriesGateway {
   }
 
   /**
+   * The position of a column's value inside an ENGINE ROW, given its SCHEMA index: {@code 0} for the TIMESTAMP
+   * column, and {@code 1 + <ordinal among the non-TIMESTAMP columns>} for every other one. This is the number
+   * {@link MultiColumnAggregationRequest#columnIndex()} carries (issue #8140).
+   * <p>
+   * {@code TimeSeriesBucket.readRow} writes the timestamp into position 0 and then walks the schema SKIPPING
+   * the TIMESTAMP column, so the two numbers coincide only while that column is declared FIRST - which issue
+   * #7702 stopped being a property of every declaration {@code CREATE TIMESERIES TYPE} can spell. All four
+   * surfaces that build an aggregation request resolve the caller's field name to a schema index (to validate
+   * the column with {@link #requireAggregatableColumn}) and then convert it here, so the request they hand the
+   * engine means the same thing on the mutable half, which indexes the row directly, and on the sealed half,
+   * which maps back to the schema column.
+   *
+   * @param schemaIndex the column's index in {@code columns}, as {@link #findColumnIndex} returns it
+   *
+   * @throws IndexOutOfBoundsException if {@code schemaIndex} does not name a column
+   */
+  public static int aggregationRowIndex(final List<ColumnDefinition> columns, final int schemaIndex) {
+    final ColumnDefinition target = columns.get(schemaIndex);
+    if (target.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
+      return 0;
+
+    int ordinal = 0;
+    for (int i = 0; i < schemaIndex; i++)
+      if (columns.get(i).getRole() != ColumnDefinition.ColumnRole.TIMESTAMP)
+        ordinal++;
+    return ordinal + 1;
+  }
+
+  /**
    * Refuses an aggregation over a column no storage layer can read as a number, naming the column and saying
    * why (issue #7725).
    * <p>
@@ -576,13 +605,24 @@ public final class TimeSeriesGateway {
    * The columns a projection selects, in the order the engine returns their values: the timestamp column
    * first, then the selected non-timestamp columns in schema order. {@code columnIndices} is the result of
    * {@link #resolveColumnIndices(List, List)}; {@code null} means every column.
+   * <p>
+   * The {@code null} case used to answer the raw schema list, which is the same list only while the TIMESTAMP
+   * column is declared FIRST (issue #7899). {@code TimeSeriesBucket.readRow} puts the timestamp in position 0
+   * and then walks the schema SKIPPING the TIMESTAMP column, so a type declaring it anywhere else - which
+   * issue #7702 made spellable in {@code CREATE TIMESERIES TYPE} - had its response columns named after the
+   * neighbouring column's values on every surface that reads this for the full row: {@code GET /ts/latest},
+   * {@code POST /ts/query}, the Grafana frames, and both gRPC time-series RPCs.
    */
   public static List<ColumnDefinition> selectedColumns(final List<ColumnDefinition> columns,
       final int[] columnIndices) {
-    if (columnIndices == null)
+    // The common declaration - and every one written before issue #7702 - already spells the row order, so it
+    // is handed back without copying it.
+    if (columnIndices == null && !columns.isEmpty()
+        && columns.getFirst().getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
       return columns;
 
-    final List<ColumnDefinition> selected = new ArrayList<>(columnIndices.length + 1);
+    final List<ColumnDefinition> selected =
+        new ArrayList<>(columnIndices != null ? columnIndices.length + 1 : columns.size());
     for (final ColumnDefinition column : columns)
       if (column.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP) {
         selected.add(column);
@@ -594,11 +634,14 @@ public final class TimeSeriesGateway {
     for (final ColumnDefinition column : columns) {
       if (column.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP)
         continue;
-      for (final int wanted : columnIndices)
-        if (wanted == nonTsIdx) {
-          selected.add(column);
-          break;
-        }
+      if (columnIndices == null)
+        selected.add(column);
+      else
+        for (final int wanted : columnIndices)
+          if (wanted == nonTsIdx) {
+            selected.add(column);
+            break;
+          }
       nonTsIdx++;
     }
 
@@ -626,7 +669,7 @@ public final class TimeSeriesGateway {
    * {@code toString()} means something - a string, a number, a boolean, an enum, a temporal - and silently
    * corrupts for anything whose does not. A {@code byte[]} is the sharp case: it has no {@code toString()}
    * override, so it would be stored as {@code [B@6bc7c054}, a different meaningless value on every run
-   * (claude-review on PR #7323). Iterables and maps are refused with it: their text form is stable but is not
+   * (code review on PR #7323). Iterables and maps are refused with it: their text form is stable but is not
    * a tag value anyone means.
    * <p>
    * {@link Iterable} rather than {@link Collection} because the HTTP {@code tags} object hands over JSON types

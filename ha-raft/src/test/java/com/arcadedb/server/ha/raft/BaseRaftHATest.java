@@ -46,7 +46,6 @@ import java.util.logging.Level;
  */
 public abstract class BaseRaftHATest extends BaseGraphServerTest {
 
-  private static final int  BASE_RAFT_PORT          = 2434;
   // 15s, down from 30s and originally from 120s, and set from a measurement rather than from a suspicion
   // (issues #6267 and #6343).
   //
@@ -132,13 +131,92 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
    * arrives while one is still in flight.
    */
   private static final long LEADER_ELECTION_TIMEOUT_MS = 30_000;
+  /**
+   * How long {@link #awaitReplicationIsCompleted(int)} waits, in total, for a leader to publish an applied index and
+   * for the target server to reach it. The 30 s it has always had: unlike {@link #RESYNC_RETRY_TIMEOUT_MS} this
+   * budget has never been measured, so issue #7518 only made its give-ups visible - through
+   * {@link #logSlowWait(Object, String, long, boolean, long)}, which names THIS budget in the line - and left the
+   * number alone until those lines say something about it.
+   */
+  static final long REPLICATION_CATCH_UP_TIMEOUT_MS = 30_000;
+
+  /**
+   * Every port this fixture has handed out, Raft and otherwise, in {@code [0, handedOutCount)}: the ledger that keeps a
+   * gRPC or Bolt port of this fixture from ever being handed out again as one of its Raft ports.
+   */
+  private int[] handedOutPorts = new int[8];
+  private int   handedOutCount;
+  /** This fixture's Raft ports by server index, drawn on first use and kept for the life of the test instance. */
+  private int[] raftPorts      = new int[0];
+
+  /**
+   * The Raft port of server {@code index}, drawn free for this test instance rather than pinned to {@code 2434 + index}
+   * (issue #8203). When a fixed Raft port is already held - a server lingering from an earlier class, another HA suite
+   * on the same machine - Ratis does not throw: it answers the bind failure with {@code System.exit(1)}, which kills
+   * the whole failsafe fork and every test left in it.
+   * <p>
+   * The ports are drawn lazily, on the first call, because {@link #getServerCount()} is not reliable while the fixture
+   * is being constructed. They stay the same for the life of the instance, so a restarted node comes back on the port
+   * its peers know, and an index beyond {@link #getServerCount()} (a node joining later) extends the allocation without
+   * moving anyone.
+   */
+  protected final synchronized int raftPort(final int index) {
+    if (index >= raftPorts.length) {
+      final int[] more = allocateFixturePorts(Math.max(getServerCount(), index + 1) - raftPorts.length);
+      final int[] grown = Arrays.copyOf(raftPorts, raftPorts.length + more.length);
+      System.arraycopy(more, 0, grown, raftPorts.length, more.length);
+      raftPorts = grown;
+    }
+    return raftPorts[index];
+  }
+
+  /**
+   * {@code count} ports free right now and distinct from every port this fixture has handed out before - its Raft ports
+   * included. Fixtures that bind another listener (gRPC, Bolt, ...) take its ports from here rather than from
+   * {@code allocateFreePorts} directly: two separate {@code allocateFreePorts} calls cannot see each other's ports
+   * once their probe sockets are closed, so a gRPC port and a Raft port of the same cluster could otherwise coincide,
+   * and a Raft bind failure exits the JVM.
+   */
+  protected final synchronized int[] allocateFixturePorts(final int count) {
+    final int[] result = new int[count];
+    int taken = 0;
+    for (int round = 0; taken < count && round < 16; round++)
+      for (final int candidate : drawFreePorts(count - taken))
+        if (!isHandedOut(candidate) && !contains(result, taken, candidate))
+          result[taken++] = candidate;
+    if (taken < count)
+      throw new IllegalStateException("Cannot find " + count + " free ports distinct from the " + handedOutCount
+          + " this fixture already uses");
+
+    if (handedOutCount + count > handedOutPorts.length)
+      handedOutPorts = Arrays.copyOf(handedOutPorts, Math.max(handedOutPorts.length * 2, handedOutCount + count));
+    System.arraycopy(result, 0, handedOutPorts, handedOutCount, count);
+    handedOutCount += count;
+    return result;
+  }
+
+  /** Where {@link #allocateFixturePorts(int)} draws candidates from: a seam so a test can force a collision. */
+  int[] drawFreePorts(final int count) {
+    return allocateFreePorts(count);
+  }
+
+  private boolean isHandedOut(final int port) {
+    return contains(handedOutPorts, handedOutCount, port);
+  }
+
+  private static boolean contains(final int[] ports, final int length, final int port) {
+    for (int i = 0; i < length; i++)
+      if (ports[i] == port)
+        return true;
+    return false;
+  }
 
   /**
    * Returns the peer ID for a given server index in the test cluster.
    * Matches the host_raftPort format used by {@link RaftHAServer#parsePeerList}.
    */
   protected String peerIdForIndex(final int index) {
-    return "localhost_" + (BASE_RAFT_PORT + index);
+    return "localhost_" + raftPort(index);
   }
 
   /**
@@ -163,10 +241,10 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
     config.setValue(GlobalConfiguration.HA_HEALTH_CHECK_INTERVAL, 0L);
 
     // Each in-process server needs a unique Raft port. Extract the server index
-    // from the server name (e.g., "ArcadeDB_1" → index 1) to offset the base port.
+    // from the server name (e.g., "ArcadeDB_1" → index 1) to look up the port drawn for it.
     final String serverName = config.getValueAsString(GlobalConfiguration.SERVER_NAME);
     final int index = Integer.parseInt(serverName.substring(serverName.lastIndexOf('_') + 1));
-    config.setValue(GlobalConfiguration.HA_RAFT_PORT, BASE_RAFT_PORT + index);
+    config.setValue(GlobalConfiguration.HA_RAFT_PORT, raftPort(index));
   }
 
   /**
@@ -207,7 +285,7 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
     for (int i = 0; i < getServerCount(); i++) {
       if (i > 0)
         sb.append(",");
-      sb.append("localhost:").append(BASE_RAFT_PORT + i).append(":").append(2480 + i);
+      sb.append("localhost:").append(raftPort(i)).append(":").append(2480 + i);
     }
     return sb.toString();
   }
@@ -241,60 +319,111 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
     return HAServerPlugin.SERVER_ROLE.ANY;
   }
 
+  /**
+   * Waits for {@code serverNumber} to apply entries up to the leader's last-applied index, and never fails: see
+   * {@link #awaitReplicationIsCompleted(int)} for the answer this discards and for when the wait gives up.
+   */
   @Override
   protected void waitForReplicationIsCompleted(final int serverNumber) {
-    // Find the leader's last applied index, retrying briefly in case we hit a leaderless window
-    // during an election transition
-    long leaderLastIndex = -1;
-    for (int attempt = 0; attempt < 30 && leaderLastIndex <= 0; attempt++) {
-      for (int i = 0; i < getServerCount(); i++) {
-        final RaftHAPlugin plugin = getRaftPlugin(i);
-        if (plugin != null && plugin.isLeader()) {
-          final var termIndex = plugin.getRaftHAServer().getStateMachine().getLastAppliedTermIndex();
-          if (termIndex != null)
-            leaderLastIndex = termIndex.getIndex();
-          break;
-        }
-      }
-      if (leaderLastIndex <= 0) {
-        try {
-          Thread.sleep(100);
-        } catch (final InterruptedException e) {
-          Thread.currentThread().interrupt();
-          return;
-        }
-      }
-    }
+    awaitReplicationIsCompleted(serverNumber);
+  }
 
-    if (leaderLastIndex <= 0)
-      return;
-
-    // Wait for this server's state machine to catch up to the leader's last applied index
+  /**
+   * Waits for {@code serverNumber} to apply entries up to the current leader's last-applied index, and answers
+   * whether it saw that happen.
+   * <p>
+   * {@code false} means the wait did NOT see replication complete, for one of three reasons: no leader published an
+   * applied index inside {@link #REPLICATION_CATCH_UP_TIMEOUT_MS}, the server was still behind the leader when that
+   * budget ran out, or the wait was interrupted. Each of those also leaves a {@code GAVE UP} line carrying
+   * {@link #SLOW_WAIT_MARKER} in the log. The first two used to return exactly like a completed wait - the first
+   * without waiting at all and without a line, the second with a bare WARNING the marker grep could not find - so a
+   * caller could not tell a lagging follower from a caught-up one (issue #7518).
+   * <p>
+   * The answer is returned rather than asserted on purpose: ~100 ITs reach this wait through
+   * {@link #waitForAllServers()} and {@link #assertClusterConsistency()}, some with a server deliberately stopped,
+   * and turning a give-up into a failure there would be a separate decision for each of them. A test whose
+   * assertions are only meaningful on a caught-up server can assert on this answer itself.
+   * <p>
+   * Also answers {@code false}, at once and without a line, when the server is not running: there is nothing to
+   * wait for, and every caller in this class already skips a stopped server before asking.
+   */
+  protected boolean awaitReplicationIsCompleted(final int serverNumber) {
     final RaftHAPlugin plugin = getRaftPlugin(serverNumber);
     if (plugin == null)
-      return;
+      return false;
 
-    final long targetIndex = leaderLastIndex;
-    final long deadline = System.currentTimeMillis() + 30_000;
-    while (System.currentTimeMillis() < deadline) {
-      final var termIndex = plugin.getRaftHAServer().getStateMachine().getLastAppliedTermIndex();
-      if (termIndex != null && termIndex.getIndex() >= targetIndex)
-        return;
-      try {
-        Thread.sleep(100);
-      } catch (final InterruptedException e) {
-        Thread.currentThread().interrupt();
-        return;
+    return awaitAppliedIndex(this, "replication on server " + serverNumber, this::leaderAppliedIndex,
+        () -> appliedIndexOf(plugin), REPLICATION_CATCH_UP_TIMEOUT_MS);
+  }
+
+  /**
+   * The index {@link #awaitAppliedIndex} reads as "nothing published yet". Ratis numbers its log from 0, so 0 is a
+   * real applied index - the first entry - and must not be confused with this; the state machine's initial
+   * last-applied index is -1, which this also covers.
+   */
+  static final long NO_APPLIED_INDEX = -1;
+
+  /**
+   * The wait behind {@link #awaitReplicationIsCompleted(int)}, over suppliers rather than over a cluster so that
+   * {@code WaitForReplicationIsCompletedTest} can drive each of its exits deterministically.
+   * <p>
+   * One budget covers both halves: resolving the leader's applied index, then waiting for the target to reach it.
+   * The leader half used to have a separate 3 s of its own and then return as though replication had completed,
+   * which on a loaded runner is shorter than an election. A supplier answering anything below 0 means "nothing
+   * published yet" ({@link #NO_APPLIED_INDEX}).
+   *
+   * @return whether the target reached the leader's applied index inside {@code budgetMs}
+   */
+  static boolean awaitAppliedIndex(final Object requester, final String what, final LongSupplier leaderAppliedIndex,
+      final LongSupplier appliedIndex, final long budgetMs) {
+    final long startMs = System.currentTimeMillis();
+    final long deadline = startMs + budgetMs;
+
+    long target = leaderAppliedIndex.getAsLong();
+    while (target < 0) {
+      if (System.currentTimeMillis() >= deadline || !sleepQuietly(100)) {
+        logSlowWait(requester, what + " (no leader published an applied index)", System.currentTimeMillis() - startMs,
+            false, budgetMs);
+        return false;
       }
+      target = leaderAppliedIndex.getAsLong();
     }
-    LogManager.instance()
-        .log(this, Level.WARNING, "Timeout waiting for server %d to replicate to index %d", serverNumber, targetIndex);
+
+    long applied = appliedIndex.getAsLong();
+    while (applied < target) {
+      if (System.currentTimeMillis() >= deadline || !sleepQuietly(100)) {
+        logSlowWait(requester, what + " to leader index " + target + " (still at index " + applied + ")",
+            System.currentTimeMillis() - startMs, false, budgetMs);
+        return false;
+      }
+      applied = appliedIndex.getAsLong();
+    }
+    logSlowWait(requester, what + " to leader index " + target, System.currentTimeMillis() - startMs, true, budgetMs);
+    return true;
+  }
+
+  /**
+   * The current leader's last-applied index, or {@link #NO_APPLIED_INDEX} while no peer reports itself leader or the
+   * leader has not published one. Does not wait: {@link #awaitAppliedIndex} owns the budget.
+   */
+  private long leaderAppliedIndex() {
+    final RaftHAPlugin leader = currentLeaderPlugin();
+    return leader == null ? NO_APPLIED_INDEX : appliedIndexOf(leader);
+  }
+
+  private static long appliedIndexOf(final RaftHAPlugin plugin) {
+    final RaftHAServer raftHAServer = plugin.getRaftHAServer();
+    if (raftHAServer == null)
+      return NO_APPLIED_INDEX;
+    final TermIndex termIndex = raftHAServer.getStateMachine().getLastAppliedTermIndex();
+    return termIndex == null ? NO_APPLIED_INDEX : termIndex.getIndex();
   }
 
   @Override
   protected void waitAllReplicasAreConnected() {
     // Wait for a Raft leader to be elected
-    final long deadline = System.currentTimeMillis() + 30_000;
+    final long startMs = System.currentTimeMillis();
+    final long deadline = startMs + LEADER_ELECTION_TIMEOUT_MS;
     while (System.currentTimeMillis() < deadline) {
       for (int i = 0; i < getServerCount(); i++) {
         final RaftHAPlugin plugin = getRaftPlugin(i);
@@ -305,14 +434,15 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
           return;
         }
       }
-      try {
-        Thread.sleep(500);
-      } catch (final InterruptedException e) {
-        Thread.currentThread().interrupt();
+      if (!sleepQuietly(500)) {
+        logSlowWait(this, "Raft leader election (interrupted)", System.currentTimeMillis() - startMs, false,
+            LEADER_ELECTION_TIMEOUT_MS);
         return;
       }
     }
-    LogManager.instance().log(this, Level.WARNING, "Timeout waiting for Raft leader election");
+    // Through the instrument rather than a bare WARNING, so the give-up is found by the same marker grep as every
+    // other wait in this class (issue #7518).
+    logSlowWait(this, "Raft leader election", System.currentTimeMillis() - startMs, false, LEADER_ELECTION_TIMEOUT_MS);
     // Set true to unblock test setup; individual tests will fail if no leader is actually present.
     serversSynchronized = true;
   }
@@ -385,8 +515,10 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
         reportSlowWait("cluster bootstrap settle", startMs, true);
         return;
       }
-      if (!sleepQuietly(100))
+      if (!sleepQuietly(100)) {
+        reportSlowWait("cluster bootstrap settle (interrupted)", startMs, false);
         return;
+      }
     }
     reportSlowWait("cluster bootstrap settle", startMs, false);
   }
@@ -616,9 +748,12 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
     LogManager.instance().log(this, Level.INFO, "TEST: Starting server %d again", serverIndex);
     getServer(serverIndex).start();
 
-    // Wait for the restarted peer to catch up to the current leader's last applied index
-    waitForReplicationIsCompleted(serverIndex);
-    LogManager.instance().log(this, Level.INFO, "TEST: Server %d restarted and caught up", serverIndex);
+    // Wait for the restarted peer to catch up to the current leader's last applied index. The line says which
+    // happened: "caught up" after a wait that gave up was the same lie issue #7518 removed from the wait itself.
+    if (awaitReplicationIsCompleted(serverIndex))
+      LogManager.instance().log(this, Level.INFO, "TEST: Server %d restarted and caught up", serverIndex);
+    else
+      LogManager.instance().log(this, Level.WARNING, "TEST: Server %d restarted but did NOT catch up to the leader", serverIndex);
   }
 
   /**
@@ -743,14 +878,27 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
    * would be a worse trade than the timeout it was meant to justify.
    */
   static String slowWaitReport(final String what, final long elapsedMs, final boolean satisfied) {
-    if (elapsedMs < SLOW_WAIT_REPORT_MS)
+    return slowWaitReport(what, elapsedMs, satisfied, RESYNC_RETRY_TIMEOUT_MS);
+  }
+
+  /**
+   * {@link #slowWaitReport(String, long, boolean)} for a wait whose budget is not {@link #RESYNC_RETRY_TIMEOUT_MS}:
+   * the line names the budget, so a wait reporting through the instrument must pass its own or the comparison the
+   * line exists for is against a number it never had.
+   * <p>
+   * A give-up is reported whatever its elapsed time. The threshold keeps ordinary satisfied waits out of the log;
+   * a wait that did not see what it was waiting for - out of budget, no leader to wait on, interrupted - is a
+   * finding however fast it happened (issue #7518).
+   */
+  static String slowWaitReport(final String what, final long elapsedMs, final boolean satisfied, final long budgetMs) {
+    if (satisfied && elapsedMs < SLOW_WAIT_REPORT_MS)
       return null;
     // The issue number, and nothing else editorial: what a line means belongs in the javadoc on
     // RESYNC_RETRY_TIMEOUT_MS, which is where somebody reading one will end up anyway, and not repeated in every
     // occurrence of it in a CI log. Everything here is load-bearing for a grep or for the reader of a single
     // line - the marker, which wait, how long, and out of how much.
     return "%s %s %s after %d ms of the %d ms budget (issue #6343)".formatted(
-        SLOW_WAIT_MARKER, what, satisfied ? "satisfied" : "GAVE UP", elapsedMs, RESYNC_RETRY_TIMEOUT_MS);
+        SLOW_WAIT_MARKER, what, satisfied ? "satisfied" : "GAVE UP", elapsedMs, budgetMs);
   }
 
   private void reportSlowWait(final String what, final long startMs, final boolean satisfied) {
@@ -764,7 +912,16 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
    * slow wait.
    */
   static void logSlowWait(final Object requester, final String what, final long elapsedMs, final boolean satisfied) {
-    final String report = slowWaitReport(what, elapsedMs, satisfied);
+    logSlowWait(requester, what, elapsedMs, satisfied, RESYNC_RETRY_TIMEOUT_MS);
+  }
+
+  /**
+   * {@link #logSlowWait(Object, String, long, boolean)} for a wait with a budget of its own; see
+   * {@link #slowWaitReport(String, long, boolean, long)}.
+   */
+  static void logSlowWait(final Object requester, final String what, final long elapsedMs, final boolean satisfied,
+      final long budgetMs) {
+    final String report = slowWaitReport(what, elapsedMs, satisfied, budgetMs);
     if (report != null)
       // "%s" with the report as the argument, not the report as the format string: `what` is caller-supplied
       // and a stray % in it would turn the instrument into a formatting error instead of a report.

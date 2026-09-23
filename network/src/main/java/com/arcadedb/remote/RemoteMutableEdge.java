@@ -28,6 +28,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
@@ -57,7 +58,7 @@ public class RemoteMutableEdge extends MutableEdge {
     if (rid != null)
       remoteDatabase.command("sql", "update " + rid + " content " + json);
     else
-      remoteDatabase.command("sql", "insert into " + getTypeName() + " content " + json);
+      remoteDatabase.command("sql", "insert into " + Identifier.quote(getTypeName()) + " content " + json);
     dirty = false;
     return this;
   }
@@ -69,7 +70,8 @@ public class RemoteMutableEdge extends MutableEdge {
       throw new IllegalStateException("Cannot update a record in a custom bucket");
     final JSONObject json = toJSON();
     json.remove(RID_PROPERTY);  // Remove @rid to avoid SQL parsing issues
-    remoteDatabase.command("sql", "insert into " + getTypeName() + " bucket " + bucketName + " content " + json);
+    remoteDatabase.command("sql",
+        "insert into " + Identifier.quote(getTypeName()) + " bucket " + Identifier.quote(bucketName) + " content " + json);
     dirty = false;
     return this;
   }

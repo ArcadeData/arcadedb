@@ -19,6 +19,8 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.DeferredExistenceChecks;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
@@ -1276,10 +1278,21 @@ public class MergeStep extends AbstractExecutionStep {
    * @return created vertex
    */
   private Vertex createVertex(final NodePattern nodePattern, final Result result) {
+    // A pattern element: an existence constraint it does not satisfy yet belongs to the end of the statement, since
+    // the SET of a MERGE ... SET upsert is what supplies the property (issue #7945).
+    try (final DeferredExistenceChecks.PatternCreate ignored = DeferredExistenceChecks.patternCreate(
+        (DatabaseInternal) context.getDatabase())) {
+      return createPatternVertex(nodePattern, result);
+    }
+  }
+
+  private Vertex createPatternVertex(final NodePattern nodePattern, final Result result) {
     // No label written: land in the reserved sentinel directly, bypassing ensureCompositeType - see
     // CreateStep.createVertex for why (issue #6395 review).
     final String typeName;
     if (nodePattern.hasLabels()) {
+      // Introduced labels, validated here - see CreateStep.createVertex (issue #8100).
+      Labels.requireUsableLabelNames(nodePattern.getLabels(), "a label in MERGE");
       typeName = Labels.ensureCompositeType(context.getDatabase().getSchema(), nodePattern.getLabels());
     } else {
       typeName = Labels.NO_LABEL_TYPE;
@@ -1317,10 +1330,21 @@ public class MergeStep extends AbstractExecutionStep {
    */
   private Edge createEdge(final Vertex fromVertex, final Vertex toVertex, final RelationshipPattern relPattern,
                           final Result result) {
+    try (final DeferredExistenceChecks.PatternCreate ignored = DeferredExistenceChecks.patternCreate(
+        (DatabaseInternal) context.getDatabase())) {
+      return createPatternEdge(fromVertex, toVertex, relPattern, result);
+    }
+  }
+
+  private Edge createPatternEdge(final Vertex fromVertex, final Vertex toVertex, final RelationshipPattern relPattern,
+                          final Result result) {
     final String type = relPattern.hasTypes() ? relPattern.getFirstType() : "EDGE";
 
     // Ensure edge type exists (Cypher auto-creates types)
-    context.getDatabase().getSchema().getOrCreateEdgeType(type);
+    if (!context.getDatabase().getSchema().existsType(type)) {
+      Labels.requireUsableRelationshipTypeName(type);
+      context.getDatabase().getSchema().getOrCreateEdgeType(type);
+    }
 
     // Evaluate edge properties BEFORE creating the edge so they are passed to newEdge() and set
     // before the internal save()/validation. Otherwise edges with mandatory properties fail

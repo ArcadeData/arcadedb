@@ -47,7 +47,7 @@ public class BoltNetworkListener extends Thread {
   private final    ArcadeDBServer                      server;
   private final    ServerSocketFactory                 socketFactory;
   private final    BoltSslHelper                       sslHelper;
-  private          ServerSocket                        serverSocket;
+  private volatile ServerSocket                        serverSocket;
   private volatile boolean                             active = true;
   private final    Set<BoltNetworkExecutor>            activeConnections = ConcurrentHashMap.newKeySet();
   private final    int                                 maxConnections;
@@ -158,6 +158,16 @@ public class BoltNetworkListener extends Thread {
         // Ignore
       }
     }
+  }
+
+  /**
+   * The local port the server socket is bound to, or -1 when it is not bound (never bound, or closed). Not
+   * necessarily the configured one: {@code 0} asks the operating system for a free port, which is how a test server
+   * avoids colliding with anything already listening (issue #8209).
+   */
+  public int getPort() {
+    final ServerSocket socket = serverSocket;
+    return socket != null && socket.isBound() && !socket.isClosed() ? socket.getLocalPort() : -1;
   }
 
   @Override

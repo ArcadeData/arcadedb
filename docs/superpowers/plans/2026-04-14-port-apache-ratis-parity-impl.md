@@ -128,9 +128,7 @@ git commit -m "feat(engine): add WALVersionGapException for version gap detectio
 Introduces a dedicated exception subclass of ConcurrentModificationException
 thrown when a WAL page version is ahead of the database page version by more
 than 1. This allows the HA state machine to distinguish recoverable replays
-from dangerous state divergence.
-
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>"
+from dangerous state divergence."
 ```
 
 ---
@@ -240,9 +238,7 @@ MajorityCommittedAllFailedException distinguishes ALL-quorum watch failures
 rather than rolling back when MAJORITY succeeded.
 
 ReplicationException signals replication errors that require snapshot resync,
-such as WAL version gaps indicating state divergence.
-
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>"
+such as WAL version gaps indicating state divergence."
 ```
 
 ---
@@ -332,9 +328,7 @@ git commit -m "feat(ha-raft): throw MajorityCommittedAllFailedException on ALL-q
 When MAJORITY quorum succeeds but the ALL-quorum watch fails, throw
 MajorityCommittedAllFailedException instead of QuorumNotReachedException.
 This lets RaftReplicatedDatabase.commit() distinguish between 'committed
-but not fully replicated' and 'not committed at all'.
-
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>"
+but not fully replicated' and 'not committed at all'."
 ```
 
 ---
@@ -490,9 +484,7 @@ applyLocallyAfterMajorityCommit() to prevent permanent leader divergence.
 
 Enhance phase-2 error handling: distinguish ConcurrentModificationException
 (locking bug) from generic errors, include txId in logs, and force server
-stop if step-down fails to prevent leader-follower divergence.
-
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>"
+stop if step-down fails to prevent leader-follower divergence."
 ```
 
 ---
@@ -791,9 +783,7 @@ git commit -m "fix(ha-raft): add WAL version gap handling, persisted applied-ind
   on a separate thread to prevent silent state divergence.
 - Lifecycle executor: single-threaded daemon for async tasks that cannot run on Ratis
   callback threads.
-- Hot resync detection: log when followers are catching up and when they complete.
-
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>"
+- Hot resync detection: log when followers are catching up and when they complete."
 ```
 
 ---
@@ -849,9 +839,7 @@ git add ha-raft/src/main/java/com/arcadedb/server/ha/raft/RaftPeerAddressResolve
 git commit -m "refactor(ha-raft): extract RaftPeerAddressResolver from RaftHAServer
 
 Move ParsedPeerList record and peer address parsing logic into a dedicated
-class. RaftHAServer now delegates peer resolution instead of handling it inline.
-
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>"
+class. RaftHAServer now delegates peer resolution instead of handling it inline."
 ```
 
 ---
@@ -886,9 +874,7 @@ git add ha-raft/src/main/java/com/arcadedb/server/ha/raft/RaftPropertiesBuilder.
 git commit -m "refactor(ha-raft): extract RaftPropertiesBuilder from RaftHAServer
 
 Move Ratis RaftProperties construction into a dedicated builder class.
-RaftHAServer delegates property setup instead of handling it inline.
-
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>"
+RaftHAServer delegates property setup instead of handling it inline."
 ```
 
 ---
@@ -929,9 +915,7 @@ git commit -m "refactor(ha-raft): extract RaftClusterManager from RaftHAServer
 
 Move addPeer, removePeer, leaveCluster, and transferLeadership into a
 dedicated cluster management class. RaftHAServer delegates membership
-operations.
-
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>"
+operations."
 ```
 
 ---
@@ -1002,9 +986,7 @@ Copy ClusterTokenProvider, RaftClusterStatusExporter from apache-ratis.
 RaftHAServer shrinks to ~500 lines as a coordinator.
 
 Also: remove em dashes and inline fully-qualified names across all
-modified files per project conventions.
-
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>"
+modified files per project conventions."
 ```
 
 ---
@@ -1128,9 +1110,7 @@ git commit -m "fix(ha-raft): harden SnapshotInstaller with symlink, zip-bomb, an
 - copyWithLimit with 10 GB cap per entry to defend against zip-bombs
 - SSL context handling: use server SSLContext for HTTPS connections,
   fail-fast if HTTPS URL but NETWORK_USE_SSL is disabled
-- Cluster token header on database-list calls
-
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>"
+- Cluster token header on database-list calls"
 ```
 
 ---
@@ -1263,9 +1243,7 @@ git commit -m "fix(ha-raft): harden SnapshotHttpHandler with auth, validation, a
 - Content-Disposition header sanitization
 - Write-timeout watchdog that kills stalled connections and releases semaphore
 - Plain-HTTP warning log (once per server start)
-- Extended SnapshotSwapRecoveryTest for completion marker verification
-
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>"
+- Extended SnapshotSwapRecoveryTest for completion marker verification"
 ```
 
 ---
@@ -1384,9 +1362,7 @@ git commit -m "feat(ha-raft): wire ClusterTokenProvider into all cluster token c
 
 Replace direct configuration reads of HA_CLUSTER_TOKEN with injected
 ClusterTokenProvider across ArcadeStateMachine, PostVerifyDatabaseHandler,
-RaftHAPlugin, and SnapshotInstaller. Add validation and production warnings.
-
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>"
+RaftHAPlugin, and SnapshotInstaller. Add validation and production warnings."
 ```
 
 ---
@@ -1468,9 +1444,7 @@ git commit -m "fix(ha-raft): return null for unknown RaftLogEntryType IDs
 Change fromId() to return null instead of throwing IllegalArgumentException
 for unknown type codes. This prevents older nodes from crashing during
 rolling upgrades when they encounter entry types from newer node versions.
-Unknown entries are acknowledged as applied but no database mutation occurs.
-
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>"
+Unknown entries are acknowledged as applied but no database mutation occurs."
 ```
 
 ---
@@ -1534,9 +1508,7 @@ Port RaftClusterStarter utility and 8 test classes covering:
 - Core replication across data models
 - PostVerifyDatabaseHandler validation
 - Peer address parsing edge cases
-- Schema file creation during replication
-
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>"
+- Schema file creation during replication"
 ```
 
 ---
@@ -1572,9 +1544,7 @@ git add -A
 git commit -m "chore(ha-raft): P7 polish - resilience improvements and documentation
 
 Port RaftHTTP2ServersIT resilience tweaks from apache-ratis.
-Add ForkJoinPool isolation documentation in ArcadeStateMachine.
-
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>"
+Add ForkJoinPool isolation documentation in ArcadeStateMachine."
 ```
 
 ---

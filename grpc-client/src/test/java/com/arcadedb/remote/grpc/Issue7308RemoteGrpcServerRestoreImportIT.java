@@ -21,7 +21,6 @@ package com.arcadedb.remote.grpc;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.backup.AutoBackupSchedulerPlugin;
 import com.arcadedb.server.grpc.BackupInfo;
 import com.arcadedb.server.grpc.ImportProgress;
@@ -51,7 +50,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * These are the only methods on that client that block for the length of an operation instead of a
  * round trip, and the only ones that hand the caller anything while they run.
  */
-class Issue7308RemoteGrpcServerRestoreImportIT extends BaseGraphServerTest {
+class Issue7308RemoteGrpcServerRestoreImportIT extends BaseGrpcClientServerTest {
   private static final String BACKUP_DIR_NAME = "test-backups-7308-client";
   private static final String BACKUP_CONFIG   = """
       {
@@ -106,7 +105,7 @@ class Issue7308RemoteGrpcServerRestoreImportIT extends BaseGraphServerTest {
 
   @BeforeEach
   void connect() {
-    client = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    client = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
   }
 
   @AfterEach

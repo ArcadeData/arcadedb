@@ -453,8 +453,14 @@ class Issue5760VertexDeleteSelfSideSkipTest extends TestHelper {
     final RID hubRID = createHub();
     final List<RID> sources = createIncomingEdges(hubRID, 10);
 
-    database.transaction(
-        () -> ((DatabaseInternal) database).getGraphEngine().deleteVertex((VertexInternal) hubRID.asVertex(), true));
+    database.transaction(() -> {
+      // GraphEngine.deleteVertex removes the vertex's own record through Bucket.deleteRecord and leaves the bucket
+      // delta to its caller, which on the ordinary path is LocalDatabase.deleteRecord. Calling the engine directly -
+      // the only way to ask for force - skips that, so the fixture books it, or the counter it leaves behind is one
+      // too high and the #8040 check reports the fixture rather than the delete under test.
+      ((DatabaseInternal) database).getGraphEngine().deleteVertex((VertexInternal) hubRID.asVertex(), true);
+      ((DatabaseInternal) database).getTransaction().updateBucketRecordDelta(hubRID.getBucketId(), -1);
+    });
 
     database.transaction(() -> {
       assertThat(database.existsRecord(hubRID)).isFalse();

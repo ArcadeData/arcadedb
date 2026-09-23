@@ -23,14 +23,11 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.grpc.InsertOptions;
 import com.arcadedb.server.grpc.InsertOptions.ConflictMode;
 import com.arcadedb.server.grpc.InsertOptions.TransactionMode;
 import com.arcadedb.server.grpc.InsertSummary;
-import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -63,7 +60,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * own data.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
-class RemoteGrpcDatabaseRegressionTest extends BaseGraphServerTest {
+class RemoteGrpcDatabaseRegressionTest extends BaseGrpcClientServerTest {
 
   // -------- Config (env overrides supported) --------
 
@@ -88,22 +85,12 @@ class RemoteGrpcDatabaseRegressionTest extends BaseGraphServerTest {
     super.endTest();
   }
 
-  @BeforeAll
-  void ensureDatabaseExists() {
-    grpcServer = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
-  }
-
-  @AfterAll
-  void teardownServer() {
-    if (grpcServer != null) {
-      grpcServer.close();
-    }
-  }
-
   @BeforeEach
   void open() {
-    grpc = new RemoteGrpcDatabase(this.grpcServer, "localhost", 50051, 2480, getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
-    httpDb = new RemoteDatabase("localhost", 2480, getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
+    // Per test, after the server started: the gRPC port is assigned by the operating system on every start (#8209).
+    grpcServer = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    grpc = new RemoteGrpcDatabase(this.grpcServer, "localhost", getServerGrpcPort(), getServerHttpPort(), getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
+    httpDb = new RemoteDatabase("localhost", getServerHttpPort(), getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
 
     // Create isolated schema for these tests (id unique, name string, n integer)
     grpc.command("sql", "CREATE VERTEX TYPE `" + TYPE + "` IF NOT EXISTS", Map.of());
@@ -132,6 +119,8 @@ class RemoteGrpcDatabaseRegressionTest extends BaseGraphServerTest {
       httpDb.close();
       httpDb = null;
     }
+    if (grpcServer != null)
+      grpcServer.close();
   }
 
   // ---------- Helpers ----------

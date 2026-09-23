@@ -72,19 +72,33 @@ class Issue7800ReRenderAndCopyTest extends AbstractParserTest {
   }
 
   /**
-   * CodeRabbit follow-up (fourth round): {@code urlString} used to be the un-decoded literal body (quotes stripped,
-   * escapes untouched), and {@code BackupDatabaseStatement} uses {@code Url.getUrlString()} as the actual backup
-   * file path - so a URL containing an escape sequence would target a path with a literal backslash-n instead of
-   * the real character. {@code urlString} is now decoded the same way {@code DefineFunctionStatement.code} already
-   * is, while {@code quotedLiteral} stays the raw source text for rendering.
+   * CodeRabbit follow-up (fourth round) briefly decoded {@code urlString} the same way
+   * {@code DefineFunctionStatement.code} does, on the argument that {@code BackupDatabaseStatement} uses
+   * {@code Url.getUrlString()} as the actual backup file path. That broke every Windows-style path: decoding turns
+   * {@code C:\temp\new.zip} into a path containing a TAB and a LINE FEED, because the lexer's escape set
+   * (backslash-n, backslash-t, backslash-r, backslash-u escapes and friends) has nothing to do with filesystem path
+   * separators (issue #7894).
+   * {@code urlString} must stay the un-decoded, unquoted literal body - only the outer quotes are stripped - while
+   * {@code quotedLiteral} carries the raw source text for rendering, so a genuine {@code \n} in a quoted literal is
+   * preserved as the two characters backslash-n, not resolved into a line break.
    */
   @Test
-  void backupDatabaseUrlIsDecodedForExecutionButRendersVerbatim() {
+  void backupDatabaseUrlIsUnDecodedForExecutionAndRendersVerbatim() {
     final BackupDatabaseStatement stmt = (BackupDatabaseStatement) new com.arcadedb.query.sql.antlr.SQLAntlrParser(null)
         .parse("BACKUP DATABASE 'line1\\nline2'");
 
-    assertThat(stmt.url.getUrlString()).isEqualTo("line1\nline2");
+    assertThat(stmt.url.getUrlString()).isEqualTo("line1\\nline2");
     assertThat(stmt.toString()).isEqualTo("BACKUP DATABASE 'line1\\nline2'");
+  }
+
+  /** Issue #7894: a Windows-style path with a backslash must reach the executor byte-for-byte, not escape-decoded. */
+  @Test
+  void backupDatabaseWindowsPathUrlIsNotEscapeDecoded() {
+    final BackupDatabaseStatement stmt = (BackupDatabaseStatement) new com.arcadedb.query.sql.antlr.SQLAntlrParser(null)
+        .parse("BACKUP DATABASE 'C:\\temp\\new.zip'");
+
+    assertThat(stmt.url.getUrlString()).isEqualTo("C:\\temp\\new.zip");
+    assertThat(stmt.toString()).isEqualTo("BACKUP DATABASE 'C:\\temp\\new.zip'");
   }
 
   /**
@@ -102,7 +116,7 @@ class Issue7800ReRenderAndCopyTest extends AbstractParserTest {
   }
 
   /**
-   * claude-review follow-up (third round): {@code isRecognizedScheme} checked only the scheme prefix, not whether
+   * Code review follow-up (third round): {@code isRecognizedScheme} checked only the scheme prefix, not whether
    * the rest of the value could actually re-lex as the grammar's {@code FILE_URL} token ({@code URL_CHAR} excludes
    * space among other characters), so a directly-constructed {@code file://} URL containing a space would render
    * unquoted and fail to reparse.
@@ -116,7 +130,7 @@ class Issue7800ReRenderAndCopyTest extends AbstractParserTest {
   }
 
   /**
-   * claude-review follow-up (second round): the fallback quoting escaped only the quote character and the
+   * Code review follow-up (second round): the fallback quoting escaped only the quote character and the
    * backslash, but the grammar's STRING_LITERAL rule also forbids a raw CR/LF inside the literal body.
    */
   @Test
@@ -152,7 +166,7 @@ class Issue7800ReRenderAndCopyTest extends AbstractParserTest {
   /**
    * Item 3: TraverseStatement.copy() dropped skip. The grammar never exposes SKIP on TRAVERSE (only LIMIT does),
    * so this is set directly through the setter, exactly as the issue's own scope note says: latent, reachable only
-   * through the field/setter, not through SQL text. claude-review's third round also found that equals()/hashCode()
+   * through the field/setter, not through SQL text. The code review's third round also found that equals()/hashCode()
    * still omitted skip even after copy() was fixed to preserve it - the same "silently drop a field" class of bug
    * as DropIndexStatement.ifExists/UpdateStatement.returnCount above.
    */

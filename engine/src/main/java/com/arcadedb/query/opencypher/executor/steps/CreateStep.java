@@ -20,6 +20,8 @@ package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.DeferredExistenceChecks;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
@@ -293,8 +295,19 @@ public class CreateStep extends AbstractExecutionStep {
 
   /**
    * Creates a complete path (vertices and edges).
+   * <p>
+   * Everything written here is a pattern element, so an existence constraint one of them does not satisfy yet is
+   * the statement's business until the statement ends - a {@code SET} of the same statement may be what supplies
+   * the property (issue #7945). See {@link DeferredExistenceChecks#patternCreate}.
    */
   private void createPath(final PathPattern pathPattern, final ResultInternal result) {
+    try (final DeferredExistenceChecks.PatternCreate ignored = DeferredExistenceChecks.patternCreate(
+        (DatabaseInternal) context.getDatabase())) {
+      createPathElements(pathPattern, result);
+    }
+  }
+
+  private void createPathElements(final PathPattern pathPattern, final ResultInternal result) {
     if (pathPattern.isSingleNode()) {
       // Simple node creation: CREATE (n:Person {name: 'Alice'})
       final NodePattern nodePattern = pathPattern.getFirstNode();
@@ -378,6 +391,10 @@ public class CreateStep extends AbstractExecutionStep {
     // with that guard on every unlabelled CREATE.
     final String typeName;
     if (nodePattern.hasLabels()) {
+      // Every label here is one this statement introduces, so this is where a label that cannot become a type
+      // name is refused - ensureCompositeType sees resulting label sets, which may legitimately contain a
+      // separator-carrying label the vertex already had (issue #8100, and #6363 for why not there).
+      Labels.requireUsableLabelNames(nodePattern.getLabels(), "a label in CREATE");
       typeName = Labels.ensureCompositeType(context.getDatabase().getSchema(), nodePattern.getLabels());
     } else {
       typeName = Labels.NO_LABEL_TYPE;
@@ -428,8 +445,10 @@ public class CreateStep extends AbstractExecutionStep {
 
     // Ensure edge type exists (Cypher auto-creates types)
     // getOrCreateEdgeType returns quickly if the type already exists (schema cache lookup)
-    if (!context.getDatabase().getSchema().existsType(type))
+    if (!context.getDatabase().getSchema().existsType(type)) {
+      Labels.requireUsableRelationshipTypeName(type);
       context.getDatabase().getSchema().getOrCreateEdgeType(type);
+    }
 
     // Evaluate edge properties BEFORE creating the edge so they are passed to newEdge() and set
     // before the internal save()/validation. Otherwise edges with mandatory properties fail

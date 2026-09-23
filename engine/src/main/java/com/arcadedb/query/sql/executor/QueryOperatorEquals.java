@@ -76,7 +76,9 @@ public class QueryOperatorEquals {
 
     // ALL OTHER CASES
     try {
-      right = Type.convert(null, right, left.getClass());
+      // convertOrNull(): comparing a value against a literal of an incompatible shape is an ordinary "not equal",
+      // not a query to refuse, so this stays on the lenient side of the strict/lenient split issue #8090 drew.
+      right = Type.convertOrNull(null, right, left.getClass());
       if (right == null)
         return false;
       if (left instanceof byte[] bytes && right instanceof byte[] bytes1) {

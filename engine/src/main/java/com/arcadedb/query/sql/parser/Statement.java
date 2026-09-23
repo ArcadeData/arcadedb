@@ -73,7 +73,7 @@ public class Statement extends SimpleNode {
   /**
    * {@code <count> <unit>} for a duration in milliseconds, in the SAME units the parser reads - the unit table
    * lives once, on {@link com.arcadedb.schema.TimeSeriesTypeBuilder#renderSQLDuration}, so the two renderings
-   * cannot drift apart (claude review on PR #7721). Shared by every TimeSeries DDL statement that carries a
+   * cannot drift apart (code review on PR #7721). Shared by every TimeSeries DDL statement that carries a
    * duration in its AST - {@code CREATE}/{@code ALTER TIMESERIES TYPE} alike (issue #7791) - so a fix to one
    * renders the other correctly too.
    * <p>

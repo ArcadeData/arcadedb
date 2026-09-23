@@ -130,7 +130,7 @@ class CheckDatabaseTest extends TestHelper {
       assertThat(edge.asEdge().getOut()).isEqualTo(root.getIdentity());
 
       // DELETE THE EDGE AT LOW LEVEL
-      database.getSchema().getBucketById(edge.getIdentity().getBucketId()).deleteRecord(edge.getIdentity());
+      TestHelper.deleteRecordAtLowLevel(database, edge.getIdentity());
     });
 
     ResultSet result = database.command("sql", "check database");
@@ -203,7 +203,7 @@ class CheckDatabaseTest extends TestHelper {
   void checkBrokenDeletedVertex() {
     database.transaction(() ->
       // DELETE THE VERTEX AT LOW LEVEL
-      database.getSchema().getBucketById(root.getIdentity().getBucketId()).deleteRecord(root.getIdentity()));
+      TestHelper.deleteRecordAtLowLevel(database, root.getIdentity()));
 
     ResultSet result = database.command("sql", "check database");
     assertThat(result.hasNext()).isTrue();
@@ -353,7 +353,7 @@ class CheckDatabaseTest extends TestHelper {
           final Record rec = it.next();
           if (rec.getIdentity().equals(hub[0].getIdentity()))
             continue;
-          db.getSchema().getBucketById(rec.getIdentity().getBucketId()).deleteRecord(rec.getIdentity());
+          TestHelper.deleteRecordAtLowLevel(db, rec.getIdentity());
           deleted++;
         }
       });
@@ -414,7 +414,7 @@ class CheckDatabaseTest extends TestHelper {
           final Record rec = it.next();
           if (rec.getIdentity().equals(hub[0].getIdentity()))
             continue;
-          db.getSchema().getBucketById(rec.getIdentity().getBucketId()).deleteRecord(rec.getIdentity());
+          TestHelper.deleteRecordAtLowLevel(db, rec.getIdentity());
         }
       });
 
@@ -468,7 +468,7 @@ class CheckDatabaseTest extends TestHelper {
         final Iterator<Record> it = db.iterateType("Node", false);
         while (it.hasNext()) {
           final Record rec = it.next();
-          db.getSchema().getBucketById(rec.getIdentity().getBucketId()).deleteRecord(rec.getIdentity());
+          TestHelper.deleteRecordAtLowLevel(db, rec.getIdentity());
         }
       });
 

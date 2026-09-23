@@ -107,6 +107,20 @@ public class ServerControlPlane {
 
   private final ArcadeDBServer server;
 
+  /**
+   * When this node first found itself a member of a multi-node cluster holding none of the cluster's replicated
+   * security documents, or {@code 0} while there is no such window open (issue #7532). Read and written by
+   * concurrent readiness probes on HTTP worker and gRPC threads, hence volatile; two probes racing to open the
+   * window differ by the time between them, which is not a difference this gate can act on.
+   */
+  private volatile long    securityConvergenceWindowOpenedAt = 0L;
+  /**
+   * Whether the SEVERE give-up line has already been emitted for the window currently open, so the window
+   * expiring does not log once per probe. Cleared together with the window, because "once" means once per
+   * window: a node that converges and later opens a fresh window has a fresh decision to report.
+   */
+  private volatile boolean securityConvergenceGiveUpLogged   = false;
+
   public ServerControlPlane(final ArcadeDBServer server) {
     this.server = server;
   }
@@ -169,9 +183,22 @@ public class ServerControlPlane {
    * {@code server-users.jsonl}, {@code server-groups.json} and {@code server-api-tokens.json} all live
    * outside the database directory and a snapshot install carries none of them.
    * <p>
-   * The one thing it does not share with that route is how a failed seed is reported. That route answers
-   * 503 (issue #7521); this verb returns nothing and an existing contract pins that a failed seed must not
-   * fail the join, so the failure reaches the operator only as a SEVERE log line. Tracked separately.
+   * <b>It now shares with that route how a failed seed is reported</b> (issue #7532, absorbing #7550). It used
+   * to return {@code void} and report a residual seed failure only as a SEVERE log line, while
+   * {@code POST /api/v1/cluster/peer} answered 503 for the identical condition - so the same failure was a hard
+   * failure through one verb and invisible to automation through the other. The residual failure now comes back
+   * as the {@link ConnectClusterResult} below, and each transport gives it the status the add-peer route gives
+   * it: HTTP 503 from {@code PostServerCommandHandler}, gRPC {@code UNAVAILABLE} from
+   * {@code ArcadeDbGrpcAdminService}.
+   * <p>
+   * <b>Reported, not thrown</b>, because the older contract this had to be reconciled with is the stronger one:
+   * {@code Issue7401ServerControlPlaneConnectClusterTest.aFailingUsersSeedDoesNotFailTheJoin} pins that the join
+   * does not fail on a seed, and it must not - by the time the seed runs the peer is a committed member, and a
+   * caller that retried a failed join would be retrying something that already happened. A return value says
+   * "the join happened AND part of the follow-up did not" without ever saying the join failed, which an
+   * exception out of this method could not. The transports, which answer a single request rather than a
+   * two-part one, then choose the status - exactly as the add-peer route does, whose 503 also accompanies a
+   * {@code result} field saying the peer was added.
    * <p>
    * <b>Note the direction.</b> The address names the server being <em>added</em>; the cluster that
    * grows is the one this server belongs to. That is the opposite of the pre-Raft implementation this
@@ -213,7 +240,7 @@ public class ServerControlPlane {
    * {@code PostServerCommandHandler}, which forwards neither half of the cluster pair: the Raft client
    * underneath the membership change sends it to the leader itself.
    */
-  public void connectCluster(final String serverAddress) {
+  public ConnectClusterResult connectCluster(final String serverAddress) {
 
     if (serverAddress == null || serverAddress.isBlank())
       throw new IllegalArgumentException(
@@ -246,33 +273,84 @@ public class ServerControlPlane {
     // and the new peer would run with a stale user set, a stale group document and a stale token store until
     // the next cluster-wide change of each kind.
     //
-    // Through ServerSecurity rather than a bare replicateSecurityUsers (issue #7521). That call seeded the
-    // users document only - this verb never grew the groups and API-token half #7373 gave the add-peer route
-    // - and it read the payload OUTSIDE the security monitor, which is the window #7373 closed on the other
-    // route: a revocation committing between the read and the submit is undone on every node by a seed that
-    // carries a whole document. It also retries within a bounded budget, because the submit waits for a Raft
-    // commit and its usual failure is an absent quorum at this instant.
+    // ASKED OF THE LEADER rather than run here (issue #7834). This verb does not require the local node to be
+    // the leader - only the membership change underneath it is routed there - while the leader already seeds
+    // every membership change of its own accord (issue #7531). Two seeders meant two JVMs, each holding only
+    // its own ServerSecurity monitor, and that monitor is precisely what stops a revocation committing mid-seed
+    // from being undone by the whole document a seed carries (issue #7373). One seeder, on the leader, is the
+    // fix; the seed there still reads each document under that monitor and still retries within a bounded
+    // budget. It stays UNCONDITIONAL - see ServerSecurity.seedSecurityStateClusterWide for why a precondition
+    // would refuse the very peer a seed is sent to repair.
     //
     // Still best-effort in the sense that matters to the caller: the peer is already a committed member and a
     // seed failure does not - and must not - fail the join, or the caller would retry a join that already
     // happened. What it is not is silent.
     //
     // The catch is the contract, not defensiveness: NOTHING raised while seeding may escape and be read as a
-    // failed join, because by this point the peer is a committed member. seedSecurityStateClusterWide already
-    // collects a per-document failure rather than throwing, so what this covers is everything around them -
-    // a server whose security store is not installed, most of all.
+    // failed join, because by this point the peer is a committed member. That now includes the IOException the
+    // request itself can raise when the leader cannot be reached.
     try {
-      final List<String> failedSeeds = server.getSecurity().seedSecurityStateClusterWide(
-          server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_SECURITY_SEED_RETRY_TIMEOUT));
+      // An empty Optional means this HA implementation has no leader-side seeder; the local seed is then what it
+      // has always been. On Raft it is never empty.
+      final List<String> failedSeeds = ha.seedSecurityStateForAdmission(serverAddress)
+          .orElseGet(() -> server.getSecurity().seedSecurityStateClusterWide(
+              server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_SECURITY_SEED_RETRY_TIMEOUT)));
       if (!failedSeeds.isEmpty())
         LogManager.instance().log(this, Level.SEVERE,
             "Connect cluster joined '%s' but these security documents could not be seeded to it: %s. That peer is a "
                 + "cluster member serving requests against its own copy of them; reissue the change, or re-run "
                 + "connect cluster, before treating it as consistent", serverAddress, String.join(", ", failedSeeds));
+      return new ConnectClusterResult(serverAddress, failedSeeds);
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE,
           "Connect cluster joined '%s' but the security seed could not be run at all: %s. That peer is a cluster "
               + "member serving requests against its own security documents", e, serverAddress, e.getMessage());
+      // The seed did not run, so no document is known to have landed: report all three rather than none. An
+      // empty list here would be the silence this issue exists to remove, and it would be a lie of exactly the
+      // useful kind - the caller would read "joined, everything seeded" from a path where nothing was seeded.
+      return new ConnectClusterResult(serverAddress, HAServerPlugin.ALL_SEEDED_SECURITY_DOCUMENTS);
+    }
+  }
+
+  /**
+   * What {@code connect cluster} reports back: the address that was joined, and the security documents that
+   * could NOT be seeded to it afterwards (issue #7532, absorbing #7550).
+   * <p>
+   * The join itself always succeeded when this is returned - a join that failed leaves by an exception instead -
+   * so a caller must not read a non-empty {@link #failedSeeds()} as "the peer is not a member". It is a member,
+   * and it is enforcing its own copy of the named documents until the change is reissued or the verb re-run,
+   * which is idempotent on the membership change.
+   *
+   * @param serverAddress the address as it was given to the verb
+   * @param failedSeeds   the document names, in the order {@code seedSecurityStateClusterWide} reports them;
+   *                      empty for a clean join
+   */
+  public record ConnectClusterResult(String serverAddress, List<String> failedSeeds) {
+    public ConnectClusterResult {
+      failedSeeds = List.copyOf(failedSeeds);
+    }
+
+    /** Whether the join left at least one security document unseeded on the new peer. */
+    public boolean hasFailedSeeds() {
+      return !failedSeeds.isEmpty();
+    }
+
+    /**
+     * The one-line summary both transports report, worded as {@code PostAddPeerHandler.addPeerResponse} words
+     * the identical condition so an operator reading two verbs' output reads one sentence.
+     */
+    public String errorMessage() {
+      return "Server '" + serverAddress + "' joined the cluster, but these security documents could NOT be seeded "
+          + "to it: " + String.join(", ", failedSeeds);
+    }
+
+    /** The remediation half, kept apart from {@link #errorMessage()} because Studio renders the two differently. */
+    public String detailMessage() {
+      return "The new peer keeps its own copy of them - which for a node re-added after time out of the cluster "
+          + "can still hold a user dropped since, a group narrowed since or a token revoked since - until the next "
+          + "cluster-wide change of that kind. Re-run 'connect cluster' for the same address to reissue the seed "
+          + "(the membership change is idempotent), or reissue the change, before treating the peer as consistent. "
+          + "Raise arcadedb.ha.securitySeedRetryTimeout if the cluster routinely needs longer to reach a quorum.";
     }
   }
 
@@ -314,6 +392,28 @@ public class ServerControlPlane {
     if (logFailure != null)
       return "Replication log writer has failed on this node: " + logFailure;
 
+    // Its own branch, and outside the gate, for the same reason and one more (issue #7872). The halt used to be
+    // reported through the generic getReadinessSignal() branch below, so an operator was told the node "has not
+    // caught up" when it had stopped applying permanently and would never catch up - the one wording that points
+    // at waiting, which is the one thing that cannot work here. And because it was reported only through that
+    // branch, it was reported only when readinessRequiresHA was on; with the gate off the node answered 204 with
+    // a dead state machine, which is a worse variant of the same gap rather than a deployment choice.
+    final String criticalHalt = haCriticalHalt();
+    if (criticalHalt != null)
+      return "Replication state machine has halted after a critical error on this node " + criticalHalt
+          + ". It applies no further entries and does not recover in place: restart this node.";
+
+    // Checked here for the same reason and on the same terms as the log failure above (issue #7519): the
+    // readinessRequiresHA gate below is about a node that is BEHIND the cluster, and this node is not behind -
+    // its database directory is being replaced under it from the cluster's bootstrap baseline, or it is
+    // knowingly holding a copy that baseline did not adopt. Either way what it would serve is not the cluster's
+    // data, on any protocol, and only the tail of the first case (the file swap) is deflected today, and only
+    // on HTTP. Placed AFTER the log failure because a wedged log writer is the more fundamental report: a node
+    // in both states cannot finish the bootstrap install either.
+    final String bootstrapWindow = haBootstrapWindow();
+    if (bootstrapWindow != null)
+      return bootstrapWindow;
+
     if (server.getConfiguration().getValueAsBoolean(GlobalConfiguration.SERVER_READINESS_REQUIRES_HA)
         && server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_ENABLED)) {
       final HAServerPlugin ha = server.getHA();
@@ -323,8 +423,97 @@ public class ServerControlPlane {
       final long maxLag = Math.max(0L, server.getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_READINESS_HA_MAX_LAG));
       if (ha.getReadinessSignal(maxLag) == HAServerPlugin.READINESS_SIGNAL.NOT_READY)
         return "Node is not yet in the Raft configuration or has not caught up";
+
+      // Consensus readiness says nothing about the three security documents, which do not travel in the Raft
+      // snapshot and reach a new peer only through the admission seed (issue #7532).
+      final String unconverged = securityConvergenceNotReadyReason(ha);
+      if (unconverged != null)
+        return unconverged;
     }
 
+    return null;
+  }
+
+  /**
+   * The issue #7532 readiness gate: why this node is not ready to enforce the cluster's security documents, or
+   * {@code null} when it is - or when the bounded convergence window has expired and the node is reporting READY
+   * anyway.
+   * <p>
+   * <b>The gap it closes.</b> {@link HAServerPlugin#getReadinessSignal(long)} asks whether this node has a
+   * leader, is in the configuration and has replayed the committed log. None of that covers
+   * {@code server-users.jsonl}, {@code server-groups.json} or {@code server-api-tokens.json}: they live outside
+   * the database directory, no snapshot install carries them, and the only thing that puts the cluster's copy on
+   * a new peer is the seed the admission verbs run <em>after</em> the membership change commits. So there is a
+   * window in which a peer is a member, is caught up, answers READY, and is serving requests against the
+   * credentials, groups and API tokens in its own config directory. Issue #7521's bounded retry shortens the
+   * failure case; it cannot close the window, because the window opens before the seed's first attempt.
+   * <p>
+   * <b>Why it is bounded, and why the bound defaults to zero.</b> "This node has never installed a replicated
+   * copy" is the only form of the question a node can answer by itself, and it is also true of every node of a
+   * cluster that has simply never replicated a security document - nobody has run a {@code create user} since
+   * the cluster was built, or the node self-joined through {@code KubernetesAutoJoin}, which issues its own
+   * configuration change and no seed at all (issue #7531). Left unbounded, those nodes would report NOT_READY
+   * forever and a rolling restart would stall; defaulted non-zero, every such deployment would lose this window
+   * off the front of each start for a condition that is not a fault. So the wait is
+   * {@code arcadedb.ha.securityConvergenceReadinessTimeout}, it is {@code 0} unless an operator asks for it, and
+   * when it expires the node reports READY with a single SEVERE line naming the documents - the explicit,
+   * logged decision, rather than a silent deadlock or a silent pass.
+   * <p>
+   * Single-node clusters are never gated: there is no peer for the documents to have come from.
+   */
+  private String securityConvergenceNotReadyReason(final HAServerPlugin ha) {
+    final long window = server.getConfiguration()
+        .getValueAsLong(GlobalConfiguration.HA_SECURITY_CONVERGENCE_READINESS_TIMEOUT);
+    if (window <= 0)
+      return null;
+
+    final List<String> unconverged;
+    final int configuredServers;
+    try {
+      configuredServers = ha.getConfiguredServers();
+      final ServerSecurity security = server.getSecurity();
+      unconverged = security == null ? List.of() : security.unconvergedClusterSecurityDocuments();
+    } catch (final Exception e) {
+      // Same reasoning as haRaftLogFailure(): a probe that propagates is answered with a 500 the orchestrator
+      // reads as "unknown" rather than as an answer. A signal that cannot be read is treated as absent.
+      LogManager.instance().log(this, Level.WARNING,
+          "Cannot read the security-convergence signal for the readiness probe", e);
+      return null;
+    }
+
+    if (unconverged.isEmpty()) {
+      // Converged: forget the window, which is the only condition that may reset it. A single-node reading
+      // must NOT, and that is not a detail - getConfiguredServers() answers 1 whenever the Raft server is not
+      // readable this tick, so resetting on it would restart the bound on every such blip and a node whose HA
+      // layer is flapping would never reach the give-up branch at all. The bound has to be a bound.
+      securityConvergenceWindowOpenedAt = 0L;
+      securityConvergenceGiveUpLogged = false;
+      return null;
+    }
+
+    // Nothing to converge WITH. Not gated, and the window is left exactly as it was: a node that reads 1 here
+    // because its Raft state was unreadable keeps the deadline it already opened.
+    if (configuredServers <= 1)
+      return null;
+
+    final long now = System.currentTimeMillis();
+    if (securityConvergenceWindowOpenedAt == 0L)
+      securityConvergenceWindowOpenedAt = now;
+
+    if (now - securityConvergenceWindowOpenedAt < window)
+      return "Cluster security documents have not reached this node yet: " + String.join(", ", unconverged)
+          + ". It is a cluster member enforcing its own copy of them";
+
+    if (!securityConvergenceGiveUpLogged) {
+      securityConvergenceGiveUpLogged = true;
+      LogManager.instance().log(this, Level.SEVERE,
+          "Reporting READY after waiting %dms for the cluster's security documents, which never reached this node: "
+              + "%s. This node is a cluster member enforcing its own copy of them - a user dropped since, a group "
+              + "narrowed since or a token revoked since is still good here. Re-run 'connect cluster' or re-POST "
+              + "/api/v1/cluster/peer for this node to reissue the seed, or reissue the change. Readiness is not "
+              + "held any longer because a node that is never seeded must not stall a rolling restart; raise "
+              + "arcadedb.ha.securityConvergenceReadinessTimeout to wait longer", window, String.join(", ", unconverged));
+    }
     return null;
   }
 
@@ -350,6 +539,50 @@ public class ServerControlPlane {
       return ha.getRaftLogFailure();
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "Cannot read the HA log-failure signal for the readiness probe", e);
+      return null;
+    }
+  }
+
+  /**
+   * The HA layer's first-formation bootstrap reason for not serving clients, or {@code null} when there is none -
+   * including when there is no HA layer at all (issue #7519). Reads
+   * {@link HAServerPlugin#getBootstrapWindowReason()}; see it for what the window is and why it is not behind
+   * {@code arcadedb.server.readinessRequiresHA}.
+   * <p>
+   * Defensive against a plugin that throws, on the same terms as {@link #haRaftLogFailure()}: a probe that
+   * propagates is answered with a 500 the orchestrator reads as "unknown" rather than as an answer, so a signal
+   * that cannot be read is treated as absent and the remaining gates decide.
+   */
+  private String haBootstrapWindow() {
+    final HAServerPlugin ha = server.getHA();
+    if (ha == null)
+      return null;
+    try {
+      return ha.getBootstrapWindowReason();
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Cannot read the HA bootstrap-window signal for the readiness probe", e);
+      return null;
+    }
+  }
+
+  /**
+   * The HA layer's critical-halt description, or {@code null} when there is none to report - including when there
+   * is no HA layer at all (issue #7872). Reads {@link HAServerPlugin#getCriticalHaltReason()}.
+   * <p>
+   * Same shape and same defensiveness as {@link #haRaftLogFailure()} above, deliberately: both answer "has this
+   * node's replication stopped for good", both are consulted outside the {@code readinessRequiresHA} gate, and a
+   * probe that propagated an exception would be answered with a 500 the orchestrator reads as "unknown" rather
+   * than as the NOT READY the failing node deserves.
+   */
+  private String haCriticalHalt() {
+    final HAServerPlugin ha = server.getHA();
+    if (ha == null)
+      return null;
+    try {
+      return ha.getCriticalHaltReason();
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "Cannot read the HA critical-halt signal for the readiness probe", e);
       return null;
     }
   }
@@ -511,14 +744,34 @@ public class ServerControlPlane {
     server.getDatabase(databaseName);
   }
 
+  /**
+   * Closes the open instance of {@code databaseName} and deregisters it from this server. The files stay where they
+   * are; a later request reopens them.
+   * <p>
+   * Takes the per-database maintenance slot as {@link Operation#CLOSE} first (issue #7469). Closing the instance is
+   * not a delete, but a backup, an export and an import all read or write THROUGH that instance, and closing it out
+   * from under one is the same silent failure a {@code drop database} used to be before #7641: the archive is half
+   * written and the operation that was writing it loses its database. {@link Operation#CLOSE} therefore conflicts
+   * with everything, the same as {@link Operation#DROP}.
+   * <p>
+   * As in {@link #dropDatabase}, the resolution runs AFTER the slot is taken rather than before, so a second close
+   * cannot pass a stale check while the first one is still deregistering.
+   *
+   * @throws OperationInProgressException when a backup, restore, import, export, drop or close of the same database
+   *                                      is running
+   */
   public void closeDatabase(final String databaseName) {
     requireDatabaseName(databaseName);
 
-    final ServerDatabase database = server.getDatabase(databaseName);
-    database.getEmbedded().close();
+    beginExclusive(databaseName, Operation.CLOSE);
+    try {
+      final ServerDatabase database = server.getDatabase(databaseName);
+      database.getEmbedded().close();
 
-
-    server.removeDatabase(database.getName());
+      server.removeDatabase(database.getName());
+    } finally {
+      server.getBackupCoordinator().end(databaseName, Operation.CLOSE);
+    }
   }
 
   public void alignDatabase(final String databaseName) {
@@ -800,14 +1053,24 @@ public class ServerControlPlane {
    * secret removed. The stored document happens to hold no plaintext today, but a listing built by
    * subtraction is one added field away from disclosing one, and this list is the thing an operator
    * reads.
+   * <p>
+   * {@code expired} is derived here rather than stored, and it is not decoration (review of PR #7941).
+   * Since issue #7601 an expired token is refused at every read but left in the document until the next token
+   * change retires it - a cluster that mints and revokes nothing keeps it indefinitely - so a listing that
+   * showed only a past {@code expiresAt} would put a dead token in the same shape as a live one and leave the
+   * reader to do the date arithmetic. Saying it outright is what keeps "this token still works" answerable from
+   * the list an operator actually reads.
    */
   public JSONArray listApiTokens() {
     final JSONArray result = new JSONArray();
+    final long now = System.currentTimeMillis();
     for (final JSONObject token : server.getSecurity().getApiTokenConfiguration().listTokens()) {
       final JSONObject entry = new JSONObject();
+      final long expiresAt = token.getLong("expiresAt", 0);
       entry.put("name", token.getString("name"));
       entry.put("database", token.getString("database"));
-      entry.put("expiresAt", token.getLong("expiresAt", 0));
+      entry.put("expiresAt", expiresAt);
+      entry.put("expired", ApiTokenConfiguration.isExpired(token, now));
       entry.put("createdAt", token.getLong("createdAt", 0));
       entry.put("permissions", token.getJSONObject("permissions"));
       entry.put("tokenHash", token.getString("tokenHash"));

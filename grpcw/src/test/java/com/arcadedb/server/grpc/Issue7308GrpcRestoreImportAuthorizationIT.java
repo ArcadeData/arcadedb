@@ -21,7 +21,6 @@ package com.arcadedb.server.grpc;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.security.ServerSecurity;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
@@ -53,9 +52,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * the refusal arrives when the stream is drained, not when the stub method returns, so the table's
  * entries have to consume the stream to observe it.
  */
-public class Issue7308GrpcRestoreImportAuthorizationIT extends BaseGraphServerTest {
+public class Issue7308GrpcRestoreImportAuthorizationIT extends BaseGrpcServerTest {
 
-  private static final int    GRPC_PORT    = 50051;
   private static final String ALLOWED_DB   = "allowed7308db";
   private static final String LIMITED_USER = "limited7308";
   private static final String LIMITED_PASS = "limited7308pass";
@@ -83,7 +81,7 @@ public class Issue7308GrpcRestoreImportAuthorizationIT extends BaseGraphServerTe
       security.createUser(config);
     }
 
-    channel = ManagedChannelBuilder.forAddress("localhost", GRPC_PORT).usePlaintext().build();
+    channel = ManagedChannelBuilder.forAddress("localhost", getServerGrpcPort()).usePlaintext().build();
     adminStub = ArcadeDbAdminServiceGrpc.newBlockingStub(channel);
   }
 

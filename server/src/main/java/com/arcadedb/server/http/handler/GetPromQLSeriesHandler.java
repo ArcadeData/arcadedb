@@ -56,20 +56,10 @@ import java.util.Map;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class GetPromQLSeriesHandler extends DatabaseAbstractHandler {
+public class GetPromQLSeriesHandler extends AbstractObservabilityHandler {
 
   public GetPromQLSeriesHandler(final HttpServer httpServer) {
     super(httpServer);
-  }
-
-  /**
-   * A read: an auto-commit wrapper would only add a commit with nothing to commit, so an unresolvable session
-   * id degrades to a session-less read rather than being refused - see
-   * {@link DatabaseAbstractHandler#rejectsUnresolvableSession()}.
-   */
-  @Override
-  protected boolean requiresTransaction() {
-    return false;
   }
 
   /**
@@ -182,8 +172,11 @@ public class GetPromQLSeriesHandler extends DatabaseAbstractHandler {
         // but the buffer it is built in need not be. The labels map is built only for a combination not seen
         // before, i.e. once per SERIES rather than once per sample (issue #7354).
         //
-        // The visitor runs under the shard's read locks (see TimeSeriesRowVisitor): it folds, it does not compute
-        // and it never calls back into the engine.
+        // The visitor holds NO lock (see TimeSeriesRowVisitor, corrected by issue #8052 - this comment used to
+        // claim the shard's read locks). It folds, it does not compute and it never calls back into the engine,
+        // and since issue #7897 the reason is not that a writer is waiting behind it but that the walk is reading
+        // a directory snapshot that goes stale under it: every extra millisecond spent here is a millisecond in
+        // which a retention pass can remove a block this scan has not reached yet.
         final StringBuilder key = new StringBuilder(64);
 
         // What the scan actually did, published to whatever the server's metrics subsystem feeds (issue #7717).

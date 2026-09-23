@@ -22,7 +22,6 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.grpc.InsertOptions;
 import com.arcadedb.server.grpc.InsertOptions.ConflictMode;
 import com.arcadedb.server.grpc.InsertOptions.TransactionMode;
@@ -57,9 +56,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * database must still be refused, and the refusal must name the database rather than blame the
  * password.
  */
-class Issue7320ScopedUserGrpcIT extends BaseGraphServerTest {
+class Issue7320ScopedUserGrpcIT extends BaseGrpcClientServerTest {
 
-  private static final int    GRPC_PORT    = 50051;
   private static final String SCOPED_USER  = "scoped7320";
   private static final String SCOPED_PWD   = "scoped7320password";
   private static final String FOREIGN_USER = "foreign7320";
@@ -162,10 +160,10 @@ class Issue7320ScopedUserGrpcIT extends BaseGraphServerTest {
   }
 
   private RemoteGrpcDatabase connect(final String user, final String password) {
-    grpcServer = new RemoteGrpcServer("localhost", GRPC_PORT, user, password, true, List.of());
+    grpcServer = new RemoteGrpcServer("localhost", getServerGrpcPort(), user, password, true, List.of());
     // The port the test server actually bound: the configured range starts at 2480, but a server already
     // listening there pushes this one up.
-    database = new RemoteGrpcDatabase(grpcServer, "localhost", GRPC_PORT,
+    database = new RemoteGrpcDatabase(grpcServer, "localhost", getServerGrpcPort(),
         getServer(0).getHttpServer().getPort(), getDatabaseName(), user, password);
     return database;
   }

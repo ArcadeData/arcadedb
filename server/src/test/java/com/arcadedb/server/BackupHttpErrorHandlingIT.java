@@ -49,7 +49,7 @@ class BackupHttpErrorHandlingIT extends BaseGraphServerTest {
 
     // Attempt backup to the read-only directory
     final HttpURLConnection connection = (HttpURLConnection)
-        new URL("http://127.0.0.1:2480/api/v1/command/" + getDatabaseName()).openConnection();
+        new URL(getServerHttpUrl("/api/v1/command/") + getDatabaseName()).openConnection();
 
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization",
@@ -79,7 +79,7 @@ class BackupHttpErrorHandlingIT extends BaseGraphServerTest {
     final String invalidPath = "/this/path/does/not/exist/backup.zip";
 
     final HttpURLConnection connection = (HttpURLConnection)
-        new URL("http://127.0.0.1:2480/api/v1/command/" + getDatabaseName()).openConnection();
+        new URL(getServerHttpUrl("/api/v1/command/") + getDatabaseName()).openConnection();
 
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization",
@@ -106,7 +106,7 @@ class BackupHttpErrorHandlingIT extends BaseGraphServerTest {
     // Ensure directory is writable
 
     final HttpURLConnection connection = (HttpURLConnection)
-        new URL("http://127.0.0.1:2480/api/v1/command/" + getDatabaseName()).openConnection();
+        new URL(getServerHttpUrl("/api/v1/command/") + getDatabaseName()).openConnection();
 
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization",

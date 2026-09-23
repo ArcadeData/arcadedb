@@ -36,6 +36,7 @@ import com.arcadedb.schema.VertexType;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Collection;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -45,8 +46,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Issue #6127 items 1 and 2: {@code RESTORE DOCUMENT/VERTEX/EDGE} used to skip {@code setDefaultValues()} /
  * {@code validate()} and to fire no create event, so an ordinary successful statement could persist a record its
  * own type forbids - one that could then never be UPDATEd (the update path validates too) and that
- * {@code CHECK DATABASE}, being a structural check, never flags. The restore path now applies the same schema
- * contract and the same create events a plain INSERT does.
+ * {@code CHECK DATABASE}, being a structural check, never flagged. The restore path now applies the same schema
+ * contract and the same create events a plain INSERT does, and since #7952 the check reports such a record wherever
+ * it came from.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -96,7 +98,7 @@ class RestoreConstraintsAndEventsTest extends TestHelper {
     });
 
     final LocalBucket bucket = (LocalBucket) ((DatabaseInternal) database).getSchema().getBucketById(edge[0].getBucketId());
-    database.transaction(() -> bucket.deleteRecord(edge[0]));
+    database.transaction(() -> TestHelper.deleteRecordAtLowLevel(database, edge[0]));
 
     final String restore =
         "RESTORE EDGE " + EDGE + " RID " + edge[0] + " FROM " + endpoints[0] + " TO " + endpoints[1];
@@ -299,31 +301,46 @@ class RestoreConstraintsAndEventsTest extends TestHelper {
   }
 
   /**
-   * The issue asked to confirm this before choosing: CHECK DATABASE is a STRUCTURAL check (page layout, record
-   * markers, graph adjacency, index entries) and does not evaluate schema constraints, so it would never have caught
-   * the record a permissive RESTORE wrote. That is why the refusal has to happen in the statement itself.
+   * The issue asked to confirm what {@code CHECK DATABASE} could see before choosing where the refusal belongs, and
+   * the answer at the time was "nothing": it was a purely STRUCTURAL check (page layout, record markers, graph
+   * adjacency, index entries) and evaluated no schema constraint, so it would never have caught the record a
+   * permissive {@code RESTORE} wrote. That is why the refusal happens in the statement itself, and it still does.
+   * <p>
+   * It is no longer the whole story, which is what this test now pins: since #7952 the check also asks every record
+   * it scans whether it satisfies its own type's EXISTENCE constraints, so a record in this state is reported -
+   * under {@code constraintViolatingRecords}, never as corruption - and can be removed on request. The two are
+   * complementary rather than redundant: refusing the write keeps {@code RESTORE} from creating the state, and the
+   * scan finds one that got in some other way (an openCypher statement that died mid-write, #7952; a database
+   * restored by a version predating the refusal; a property made mandatory after the fact, as below).
    */
   @Test
-  void checkDatabaseDoesNotEvaluateSchemaConstraints() {
+  void checkDatabaseReportsARecordThatViolatesALaterConstraint() {
     // The record is written while the property is still optional and the constraint is added afterwards: that
     // reproduces the record a permissive RESTORE used to leave behind, without going through a validating write
     // path (there is no longer one that would let it in).
+    final RID[] rid = new RID[1];
     database.transaction(() -> {
       final DocumentType type = database.getSchema().createDocumentType("LateConstraint");
       type.createProperty("name", Type.STRING);
-      database.newDocument("LateConstraint").set("other", "x").save();
+      rid[0] = database.newDocument("LateConstraint").set("other", "x").save().getIdentity();
       type.getProperty("name").setMandatory(true);
     });
 
-    database.transaction(() -> {
-      try (final ResultSet rs = database.command("sql", "CHECK DATABASE")) {
-        while (rs.hasNext()) {
-          final Result row = rs.next();
-          final Object errors = row.getProperty("totalErrors");
-          assertThat(errors == null ? 0L : ((Number) errors).longValue()).as("check database: " + row.toJSON()).isZero();
-        }
-      }
-    });
+    try (final ResultSet rs = database.command("sql", "CHECK DATABASE")) {
+      final Result row = rs.next();
+      assertThat((Long) row.getProperty("totalConstraintViolations")).isEqualTo(1L);
+      assertThat((Collection<RID>) row.getProperty("constraintViolatingRecords")).containsExactly(rid[0]);
+      // Not corruption: the record reads, deserialises and indexes correctly. Only the schema disagrees with it.
+      assertThat((Collection<?>) row.getProperty("corruptedRecords")).isEmpty();
+      final Object errors = row.getProperty("totalErrors");
+      assertThat(errors == null ? 0L : ((Number) errors).longValue()).as("check database: " + row.toJSON()).isZero();
+    }
+
+    // Removed here so the shared end-of-test integrity assertion sees a clean database - and, in passing, so this
+    // test pins that the opt-in repair reaches this route to the state as well as the crashed-statement one.
+    try (final ResultSet rs = database.command("sql", "CHECK DATABASE FIX DELETE INVALID RECORDS")) {
+      assertThat((Collection<RID>) rs.next().getProperty("deletedConstraintViolatingRecords")).containsExactly(rid[0]);
+    }
   }
 
   /** Deletes a freshly created document and returns its now-free RID. */
@@ -334,7 +351,7 @@ class RestoreConstraintsAndEventsTest extends TestHelper {
         database.newDocument(typeName).set("v", "original").save().getIdentity());
 
     final LocalBucket bucket = (LocalBucket) ((DatabaseInternal) database).getSchema().getBucketById(rid[0].getBucketId());
-    database.transaction(() -> bucket.deleteRecord(rid[0]));
+    database.transaction(() -> TestHelper.deleteRecordAtLowLevel(database, rid[0]));
     return rid[0];
   }
 
@@ -344,7 +361,7 @@ class RestoreConstraintsAndEventsTest extends TestHelper {
     database.transaction(() -> rid[0] = database.newVertex(VERTEX).set("label", "original").save().getIdentity());
 
     final LocalBucket bucket = (LocalBucket) ((DatabaseInternal) database).getSchema().getBucketById(rid[0].getBucketId());
-    database.transaction(() -> bucket.deleteRecord(rid[0]));
+    database.transaction(() -> TestHelper.deleteRecordAtLowLevel(database, rid[0]));
     return rid[0];
   }
 }

@@ -66,7 +66,7 @@ import java.util.concurrent.locks.Lock;
  * {@code database.getSchema().getTypes()} returned, which is a {@code ConcurrentHashMap}'s bucket order and can
  * put two already-present types in the OPPOSITE relative order after a resize - so two snapshots taken either
  * side of a {@code CREATE ... TYPE} could disagree and open exactly the cycle this paragraph rules out
- * (claude-review on PR #7474). {@link TimeSeriesShardOrder} carries the full reasoning.
+ * (code review on PR #7474). {@link TimeSeriesShardOrder} carries the full reasoning.
  * <p>
  * Like the pause, the locks are released by the thread that took them, so acquire and {@link #close()} on the
  * same thread.

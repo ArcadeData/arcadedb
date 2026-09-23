@@ -70,6 +70,37 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     this.plugin = plugin;
   }
 
+  /**
+   * Every request, not just the expensive one (issues #7861, #7902).
+   * <p>
+   * The opt-in {@code ?presence=true} fan-out is the obvious blocker: one synchronous bootstrap-state RPC per
+   * peer, each bounded by {@link #PRESENCE_QUERY_TIMEOUT_MS}, so worst case it holds its thread for
+   * {@code peers x 5s}. On an Undertow IO thread - a shared selector - everything multiplexed onto it waits behind
+   * that, the kubelet readiness and liveness probes included.
+   * <p>
+   * This was written as a per-REQUEST override on the argument that the ordinary status poll touches no disk, so
+   * the cheap auto-poll Studio's HA panel runs could keep the IO-thread fast path. That argument does not hold,
+   * and the review of PR #7953 is what established it:
+   * <ul>
+   *   <li>{@code ClusterAlerts} classifies the bootstrap-unreconciled set by whether each marked database is
+   *       still here, which stats a directory per marked database (issue #7902);</li>
+   *   <li>and the per-database rows above call {@code getBootstrapBaseline}, which lazily reads
+   *       {@code .raft/bootstrap-baselines} off disk the first time anything asks - so even before #7902 the
+   *       "no disk" premise was only true after that first read.</li>
+   * </ul>
+   * Both are cheap and both are rare, but neither is bounded by anything this handler controls, and the node most
+   * likely to have marked databases is the node whose storage is misbehaving - the worst possible moment to park
+   * a selector. A conditional dispatch would have to encode which of the callees below can reach a file, which is
+   * exactly the kind of premise that goes stale silently; it already did, under this very method.
+   * <p>
+   * The cost of being unconditional is one worker handoff per poll, on a route polled every few seconds by a
+   * dashboard. That is what nearly every other route in the server already pays.
+   */
+  @Override
+  protected boolean mustExecuteOnWorkerThread() {
+    return true;
+  }
+
   @Override
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final JSONObject payload) {
     final RaftHAServer raftHAServer = plugin.getRaftHAServer();
@@ -186,18 +217,23 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
       // vote. Naming that state in the role keeps a consumer that only reads roles from mistaking it for one.
       peerJson.put("role", peerIsLeader ? "LEADER" : inConfiguration ? "FOLLOWER" : ROLE_NOT_IN_CONFIGURATION);
 
-      // Only the leader polls for capabilities, so only the leader has an answer to report about ANOTHER peer; a
-      // follower simply omits the field rather than reporting an empty set that would read as "this peer can decode
-      // nothing".
+      // Every node polls for capabilities since issue #7549, so every node can report what each peer advertises.
+      // It used to be the leader alone - #7219's only consumer was the leader-side schema-delta decision - and
+      // the cost of that was borne by the question an operator actually asks this endpoint: "is this cluster
+      // ready for a rolling-upgrade-gated operation". That question had to find the leader before it could be
+      // answered at all, on an endpoint neither the client nor a load balancer routes to the leader. A peer with
+      // no fresh answer still omits the field rather than reporting an empty set, which would read as "this peer
+      // can decode nothing".
       final PeerCapabilityRegistry.Advertisement advertisement =
           raftHAServer.getPeerCapabilityRegistry().freshAdvertisementOf(peerId);
       final boolean published = putPeerCapabilities(peerJson, peerId, localPeerId.toString(), advertisement,
           raftHAServer.getAdvertisedCapabilities());
-      if (!published && isLeader) {
+      if (!published) {
         // An absent capabilities field reads the same whether this peer runs a build that predates the route or
         // was never asked because its address identifies no single peer - and the remedies are nothing alike, the
-        // second being "declare each node's 'http' port" (#6202) rather than "finish the upgrade". Written only on
-        // the leader, the only node that asks, and only when it has a reason to give (issue #7256).
+        // second being "declare each node's 'http' port" (#6202) rather than "finish the upgrade". Written
+        // whenever this node has a reason to give (issues #7256, #7549); unknownReasonOf answers null when it has
+        // none, which is what a node that has not finished its first round has.
         final String unknownReason = raftHAServer.getPeerCapabilityRegistry().unknownReasonOf(peerId);
         if (unknownReason != null)
           peerJson.put("capabilitiesUnknownReason", unknownReason);
@@ -274,15 +310,42 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     // The membership divergence is a cluster-level condition: the only one on this endpoint that nothing else
     // flags, and the one an operator most needs told rather than left to diff the peer list by eye (issue #7040).
     // The local node's resync / WAL-gap quarantine state (issue #7136): the invariant is that anything making
-    // readiness answer 503 is visible here. ArcadeStateMachine.isResyncInProgress() - the readiness gate - is
-    // LocalResyncState.inProgress() on this very object, so the two cannot drift apart. Sampled once and shared
-    // with the alert scan below, so the document cannot report the two halves from different instants.
+    // readiness answer 503 is visible in this DOCUMENT. ArcadeStateMachine.isResyncInProgress() - the readiness
+    // gate - is LocalResyncState.inProgress() on this very object, so the two cannot drift apart. Sampled once
+    // and shared with the alert scan below, so the document cannot report the two halves from different instants.
+    // This member carries the resync inputs of that invariant and not the whole of it: the two terminal ones are
+    // criticalHalt and raftLogFailure just below (issue #7872).
     final LocalResyncState localResync = stateMachine.getLocalResyncState();
     response.put("localResync", buildLocalResync(localResync, authorizedDatabases));
 
+    // The two remaining readiness inputs the #7136 invariant did not publish (issue #7872). Both are terminal
+    // node-level conditions with no per-tenant component, so neither is scoped: a node whose state machine has
+    // halted, or whose Raft log writer has failed, serves nothing correctly for anybody. Until this, a monitoring
+    // rule built on the documented invariant - watch alerts and localResync.inProgress - read a perfectly healthy
+    // node while /api/v1/ready was pinned at 503, and waited forever.
+    // Written as null rather than omitted when absent, like leaderId above, so a client can tell "healthy" from
+    // "this build does not report it".
+    // The CONDITION is node-level and reaches every caller; the raw text behind it does not (review on PR #7953).
+    // Both strings are exception text this node did not compose: Ratis's own cause for the log failure, and for
+    // the halt an arbitrary Throwable's toString(). Either can carry a filesystem path, and the halt's can carry
+    // the name of whichever database was being applied - which is precisely the cross-tenant disclosure the
+    // visible() machinery on this endpoint exists to prevent. A tenant learns THAT this node has stopped, which
+    // is what the #7136 invariant owes them and all they can act on; an operator gets the detail that says
+    // whether the answer is "upgrade this node" or "file a bug".
+    // Sampled ONCE and shared with the alert scan below, for the reason localResync is: two reads of a live
+    // field can disagree, and the document would then carry a null criticalHalt next to a
+    // halted-after-critical-error alert, or the reverse.
+    final ClusterAlerts.NodeStatus nodeStatus = new ClusterAlerts.NodeStatus(stateMachine.getCriticalHalt(),
+        stateMachine.getRaftLogFailure(), raftHAServer.isCrashLoopEscalated(), isRootUser(user));
+    response.put("criticalHalt", buildCriticalHalt(nodeStatus.halt(), nodeStatus.detailedDiagnostics()));
+    response.put("raftLogFailure", buildRaftLogFailure(nodeStatus.logFailure(), nodeStatus.detailedDiagnostics()));
+    // The liveness counterpart (issue #7622): isCrashLoopEscalated() is what fails /api/v1/health, and it was
+    // equally invisible here. Same reasoning, same scoping - none.
+    response.put("crashLoopEscalated", nodeStatus.crashLoopEscalated());
+
     response.put("alerts",
         ClusterAlerts.scan(httpServer.getServer(), stateMachine, followerSamples, authorizedDatabases, membership,
-            localPeerId.toString(), localResync));
+            localPeerId.toString(), localResync, nodeStatus));
 
     return new ExecutionResponse(200, response.toString());
   }
@@ -311,6 +374,59 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
         .put("divergenceCauses", ClusterAlerts.causesObject(state, visibleDatabases))
         .put("snapshotAppliedFloor", state.snapshotAppliedFloor())
         .put("databaseAppliedFloors", ClusterAlerts.visibleFloors(state.databaseAppliedFloors(), visibleDatabases));
+  }
+
+  /**
+   * Renders the critical halt for the status document (issue #7872), or {@link JSONObject#NULL} when this node's
+   * state machine is still applying entries.
+   * <p>
+   * Explicitly null rather than absent, like {@code leaderId}: a member that disappears reads the same whether
+   * the node is healthy or the build does not report it, and those are not the same answer.
+   * <p>
+   * Package-private, and built as one chained expression, for the same reason {@link #buildLocalResync} is: the
+   * shape can then be pinned against {@code PluginApiSpec} without a live cluster, which is what keeps a member
+   * from reaching the response and not the contract - the exact defect #7741 had and #7872 repeated.
+   */
+  static Object buildCriticalHalt(final ArcadeStateMachine.CriticalHalt halt, final boolean detailed) {
+    if (halt == null)
+      return JSONObject.NULL;
+    return new JSONObject()
+        .put("index", halt.index())
+        .put("reason", detailed ? halt.reason() : REDACTED_REASON)
+        .put("timestamp", halt.timestamp());
+  }
+
+  /**
+   * Renders the persistent Raft log-write failure for the status document (issue #7872, publishing the #7037
+   * signal the #7118 readiness gate already reads), or {@link JSONObject#NULL} while the log writer is healthy.
+   * Same shape and same reasoning as {@link #buildCriticalHalt}.
+   */
+  static Object buildRaftLogFailure(final ArcadeStateMachine.RaftLogFailure failure, final boolean detailed) {
+    if (failure == null)
+      return JSONObject.NULL;
+    return new JSONObject()
+        .put("index", failure.index())
+        .put("cause", detailed ? failure.cause() : REDACTED_REASON)
+        .put("timestamp", failure.timestamp());
+  }
+
+  /**
+   * What a non-root caller reads in place of the raw exception text (review on PR #7953). Deliberately says the
+   * text was withheld rather than going absent or empty: a field that disappears reads as "this build does not
+   * report it", and an operator chasing an incident needs to know the detail exists and who can see it.
+   */
+  static final String REDACTED_REASON = "<available to the root user>";
+
+  /**
+   * Whether this caller may be shown the raw diagnostic text, without throwing the way
+   * {@code checkRootUser} does - this is a per-field reduction inside a response the caller is entitled to, not
+   * a refusal of the request.
+   * <p>
+   * A null user is the non-HTTP caller (and the unauthenticated path, which does not reach here), and it gets the
+   * reduced view: the safe default is the one that discloses less.
+   */
+  private static boolean isRootUser(final ServerSecurityUser user) {
+    return user != null && "root".equals(user.getName());
   }
 
   /**
@@ -375,7 +491,8 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
    * missing:[...]}]}}. A peer that cannot be reached is reported in {@code unreachable} and omitted from the
    * present/missing accounting so a transient blip is not mistaken for a dropped database.
    * <p>
-   * The fan-out is sequential on the Undertow worker thread, with a short per-peer timeout
+   * The fan-out is sequential on an Undertow worker thread - which {@link #mustExecuteOnWorkerThread()}
+   * is what makes true (issue #7861) - with a short per-peer timeout
    * ({@link #PRESENCE_QUERY_TIMEOUT_MS}), so worst-case latency is {@code peers x 5s}. This is acceptable because
    * it is opt-in ({@code ?presence=true}) and leader-only, not part of the cheap auto-poll; a parallel fan-out
    * would bound it for very large clusters. If parallelized later, honor the CLAUDE.md concurrency rule - do not
@@ -388,8 +505,10 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     final ArcadeDBServer server = httpServer.getServer();
     final String clusterToken = raftHAServer.getClusterToken();
     // Use a short per-peer timeout (not HA_BOOTSTRAP_TIMEOUT_MS, which defaults to 120s): this fan-out runs on an
-    // Undertow worker thread, and a peer that accepts the connection but then hangs would otherwise tie up the
-    // worker for the full bootstrap budget per peer. A few seconds is plenty for a peer to list its databases; a
+    // Undertow worker thread (the dispatch above), and a peer that accepts the connection but then hangs would
+    // otherwise tie up the worker for the full bootstrap budget per peer. A worker is a far cheaper thing to hold
+    // than the IO thread this used to run on, but it is still one of a bounded pool, so the bound stays short.
+    // A few seconds is plenty for a peer to list its databases; a
     // slower peer is simply reported unreachable in the matrix.
     final long timeoutMs = PRESENCE_QUERY_TIMEOUT_MS;
 

@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.PageSnapshot;
+import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.timeseries.TimeSeriesCompactionPause;
 import com.arcadedb.engine.timeseries.TimeSeriesSealedStore;
 import com.arcadedb.exception.PageSnapshotException;
@@ -35,6 +36,7 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 import org.apache.ratis.protocol.RaftPeer;
 
+import java.util.Locale;
 import javax.net.ssl.HttpsURLConnection;
 import java.io.File;
 import java.io.FileInputStream;
@@ -476,7 +478,7 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
     final File directory = new File(db.getDatabasePath());
     // listSealedFiles turns an unreadable directory into an EMPTY array, which reads exactly like "this database
     // has no sealed store" - and the difference decides whether this answer covers them. The ...OrNull variant
-    // keeps that distinction while still listing the directory ONCE (claude-review on PR #7474).
+    // keeps that distinction while still listing the directory ONCE (code review on PR #7474).
     final File[] sealedFiles = TimeSeriesSealedStore.listSealedFilesOrNull(directory);
     if (sealedFiles == null) {
       LogManager.instance().log(PostVerifyDatabaseHandler.class, Level.WARNING,
@@ -551,7 +553,7 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
 
   private static String categorizeFile(final String fileName) {
     if (fileName == null) return "unknown";
-    final String lower = fileName.toLowerCase();
+    final String lower = fileName.toLowerCase(Locale.ROOT);
     // Ahead of the "index" arm: a sealed store IS a block index over compacted samples, and a name like
     // "cpu_index_shard_0.ts.sealed" would otherwise be reported to an operator as an index file (issue #7338).
     if (lower.endsWith(TimeSeriesSealedStore.FILE_EXTENSION))
@@ -584,6 +586,13 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
    * <p>
    * A pause that cannot be taken degrades rather than failing the verify - the page half of the answer is still
    * worth having - but it is reported as incomplete sealed-store coverage rather than passed off as a full one.
+   * <p>
+   * Both page-file enumerations skip an index-compaction temporary (#7955). This handler reads the REGISTERED files
+   * rather than the directory, so none of the scratch families {@code SnapshotManager.isNodeLocalScratchFileName}
+   * excludes can reach it - a {@code .tmp} or a {@code .ts.sealed.incoming} is never a {@code ComponentFile}. A
+   * {@code temp_*} compaction output is the one exception: {@code PaginatedComponent}'s constructor registers it,
+   * so it is in {@code getFiles()} and in every window opened while the compaction runs, and only on the node doing
+   * the compacting. Left in, it is a key the peer cannot have, which this handler reports as INCONSISTENT.
    *
    * @return {@code false} when the sealed stores are not fully covered by this answer
    */
@@ -619,12 +628,21 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
         try (final PageSnapshot snapshot = db.getPageManager().openSnapshot(db)) {
           for (final PageSnapshot.SnapshotFile file : snapshot.getFiles())
             try {
+              // #7955: AN INDEX COMPACTION IN FLIGHT HAS A REGISTERED temp_* COMPONENT FILE, SO THE WINDOW CARRIES
+              // IT - AND ONLY THE NODE THAT HAPPENS TO BE COMPACTING HAS ONE. SEE isTemporaryFileName
+              if (PaginatedComponent.isTemporaryFileName(file.fileName()))
+                continue;
               collectFileInfo(snapshotChecksums, snapshotFiles, file.fileName(), snapshot.calculateChecksum(file.fileId()),
                   file.size());
             } catch (final PageSnapshotException e) {
               throw e;
             } catch (final Exception e) {
               // skip files that cannot be checksummed (e.g. in-flight creation)
+              // NOT NAMED IN THE ANSWER, UNLIKE /checksums' unreadableFiles (#7956). THAT ENDPOINT SCANS THE
+              // DIRECTORY, SO IT RACES A FILE DROPPED BETWEEN THE LISTING AND THE READ AND HAS TO SAY WHICH ONE
+              // IT MISSED; THIS ONE ENUMERATES THE REGISTRY, WHERE A FILE THAT IS ABSENT IS ABSENT ON EVERY
+              // NODE. THE FILES THAT ARE NOT IN THE REGISTRY - THE SEALED STORES - ARE REPORTED, BY
+              // collectSealedStores (#7338)
             }
 
           if (compactionPaused)
@@ -644,11 +662,16 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
 
       db.getPageManager().suspendFlushAndExecute(db, () -> {
         for (final var file : db.getFileManager().getFiles())
-          if (file != null) {
+          if (file != null && !PaginatedComponent.isTemporaryFileName(file.getFileName())) {
             try {
               collectFileInfo(localChecksums, localFiles, file.getFileName(), file.calculateChecksum(), file.getSize());
             } catch (final Exception e) {
               // skip files that cannot be checksummed (e.g. in-flight creation)
+              // NOT NAMED IN THE ANSWER, UNLIKE /checksums' unreadableFiles (#7956). THAT ENDPOINT SCANS THE
+              // DIRECTORY, SO IT RACES A FILE DROPPED BETWEEN THE LISTING AND THE READ AND HAS TO SAY WHICH ONE
+              // IT MISSED; THIS ONE ENUMERATES THE REGISTRY, WHERE A FILE THAT IS ABSENT IS ABSENT ON EVERY
+              // NODE. THE FILES THAT ARE NOT IN THE REGISTRY - THE SEALED STORES - ARE REPORTED, BY
+              // collectSealedStores (#7338)
             }
           }
         if (compactionPaused)

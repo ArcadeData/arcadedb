@@ -293,9 +293,12 @@ class PostServerCommandHandlerIT extends BaseGraphServerTest {
     HttpResponse<String> response = executeServerCommand("INVALID COMMAND");
     assertThat(response.statusCode()).isEqualTo(400);
 
-    // Test opening non-existent database
+    // Test opening non-existent database. 404, not the 500 this asserted before issue #7874: the caller named
+    // a database this server does not have, which is the caller's error and not a server fault - and it is the
+    // same status the handler already gave for a database that is closed or dropped. What makes it reachable is
+    // DatabaseNotFoundException being a DatabaseNotAvailableException, which the handler's 404 arm matches.
     response = executeServerCommand("OPEN DATABASE nonexistent");
-    assertThat(response.statusCode()).isEqualTo(500);
+    assertThat(response.statusCode()).isEqualTo(404);
   }
 
   /**
@@ -348,7 +351,7 @@ class PostServerCommandHandlerIT extends BaseGraphServerTest {
   void restoreDatabaseCommand() throws Exception {
     // Create a backup of the existing "graph" database
     HttpRequest backupReq = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/command/graph"))
+        .uri(new URI(getServerHttpUrl("/api/v1/command/graph")))
         .POST(HttpRequest.BodyPublishers.ofString(new JSONObject()
             .put("language", "sql")
             .put("command", "backup database")
@@ -443,7 +446,7 @@ class PostServerCommandHandlerIT extends BaseGraphServerTest {
       final String url = "http://127.0.0.1:" + localServer.getAddress().getPort() + "/data";
 
       final HttpRequest request = HttpRequest.newBuilder()
-          .uri(new URI("http://localhost:2480/api/v1/server"))
+          .uri(new URI(getServerHttpUrl("/api/v1/server")))
           .POST(HttpRequest.BodyPublishers.ofString(new JSONObject()
               .put("command", "import database issue6474_import_ssrf_test_sse " + url)
               .toString()))
@@ -477,7 +480,7 @@ class PostServerCommandHandlerIT extends BaseGraphServerTest {
    */
   private HttpResponse<String> executeServerCommand(String command) throws Exception {
     HttpRequest request = HttpRequest.newBuilder()
-        .uri(new URI("http://localhost:2480/api/v1/server"))
+        .uri(new URI(getServerHttpUrl("/api/v1/server")))
         .POST(HttpRequest.BodyPublishers.ofString(new JSONObject()
             .put("command", command)
             .toString()))

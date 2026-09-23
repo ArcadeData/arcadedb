@@ -18,8 +18,6 @@
  */
 package com.arcadedb.postgres;
 
-import com.arcadedb.GlobalConfiguration;
-
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -78,7 +76,7 @@ class Issue6543RollbackExtendedProtocolIT extends PostgresWireProtocolTestBase {
   @DisplayName("[#6543] a bare ROLLBACK over the extended query protocol ends the explicit transaction cleanly")
   void rollbackOverExtendedProtocolEndsTransaction() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -106,7 +104,7 @@ class Issue6543RollbackExtendedProtocolIT extends PostgresWireProtocolTestBase {
   @DisplayName("[#6543] ROLLBACK WORK / ROLLBACK TRANSACTION are recognized as aliases for ROLLBACK over the extended query protocol")
   void rollbackAliasesAreRecognizedOverExtendedProtocol() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -137,7 +135,7 @@ class Issue6543RollbackExtendedProtocolIT extends PostgresWireProtocolTestBase {
     // only the exact literal "COMMIT"), and that widening only works because BEGIN/COMMIT/ROLLBACK are now
     // checked before sqlEngine.parse() is ever called - so this exercises both halves of the fix together.
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);

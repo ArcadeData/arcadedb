@@ -47,14 +47,14 @@ class Issue7030RemoteTransactionRetryIT extends BaseGraphServerTest {
   @BeforeEach
   public void beginTest() {
     super.beginTest();
-    final RemoteServer server = new RemoteServer("127.0.0.1", 2480, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+    final RemoteServer server = new RemoteServer("127.0.0.1", getServerHttpPort(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
     if (!server.exists(DATABASE_NAME))
       server.create(DATABASE_NAME);
   }
 
   @AfterEach
   public void endTest() {
-    final RemoteServer server = new RemoteServer("127.0.0.1", 2480, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+    final RemoteServer server = new RemoteServer("127.0.0.1", getServerHttpPort(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
     if (server.exists(DATABASE_NAME))
       server.drop(DATABASE_NAME);
     super.endTest();
@@ -135,7 +135,7 @@ class Issue7030RemoteTransactionRetryIT extends BaseGraphServerTest {
   }
 
   private RollbackCountingDatabase newDatabase() {
-    return new RollbackCountingDatabase("127.0.0.1", 2480, DATABASE_NAME, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+    return new RollbackCountingDatabase("127.0.0.1", getServerHttpPort(), DATABASE_NAME, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
   }
 
   /**

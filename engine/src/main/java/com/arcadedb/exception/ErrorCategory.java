@@ -18,6 +18,9 @@
  */
 package com.arcadedb.exception;
 
+import com.arcadedb.engine.timeseries.TimeSeriesWalkCoarsenedException;
+import com.arcadedb.index.fulltext.FullTextQueryParseException;
+
 /**
  * The kind of failure a wire protocol has to report, decided once over ArcadeDB's exception hierarchy so every
  * protocol answers the question the same way. A module keeps only the table that turns a category into its own
@@ -74,7 +77,10 @@ public enum ErrorCategory {
   VALIDATION,
 
   /**
-   * The statement could not be parsed, or failed semantic validation.
+   * The statement could not be parsed, or failed semantic validation. Includes
+   * {@link FullTextQueryParseException}, the Lucene parser refusing the search expression a caller supplied: it
+   * extends {@code IndexException} and so would otherwise be a {@link #SERVER} fault on every wire, which is the
+   * defect issue #7393 reported on HTTP and #7862 found still open at four more call sites.
    */
   PARSING,
 
@@ -110,6 +116,23 @@ public enum ErrorCategory {
    * now decides the answer on every wire protocol, not just HTTP: an internal invariant violation reaches a
    * MongoDB client as {@code BadValue} and a Postgres one as {@code 22023}. A conscious trade, not a free one.
    * <p>
+   * {@link #PARSING} is decided before {@link #VALIDATION} - the opposite of the order {@link #ARITHMETIC} keeps
+   * over it above - because {@link #VALIDATION}'s own {@link IllegalArgumentException} arm is a broad,
+   * cause-chain-wide test: a malformed full-text query is re-typed into an {@link IllegalArgumentException} at
+   * two call sites so the message reads as the caller's mistake, but {@link FullTextQueryParseException} still
+   * rides along as its cause. Testing {@link #VALIDATION} first would match that {@link IllegalArgumentException}
+   * before {@link #PARSING} ever saw its own {@link FullTextQueryParseException} arm, so the same malformed
+   * expression would classify as PARSING through one entry point and VALIDATION through another (issue #8068).
+   * <p>
+   * {@link TimeSeriesWalkCoarsenedException} rides with {@link NeedRetryException} rather than falling through to
+   * {@link #SERVER}, because it means the same thing to a driver: a downsample replaced the rows a read had not
+   * reached yet, so no answer it can still produce is at one resolution - and downsampling is a maintenance
+   * event, not a per-request one, so the identical read re-issued succeeds. It is not a {@link NeedRetryException}
+   * subtype because it is not a transaction conflict and nothing may auto-retry it inside a commit loop; the
+   * decision to re-read belongs to the caller. Naming it here is what gives every wire protocol the answer the
+   * HTTP handler already gives (503), instead of a gRPC {@code INTERNAL} a retry-driven client reads as a server
+   * fault (issue #8166, review of PR #8197).
+   * <p>
    * Each arm walks the chain separately, which is deliberate and not the same as one walk testing every type per
    * frame. Priority here is by category, not by depth: a chain whose {@link NeedRetryException} sits *below* an
    * {@link ArithmeticErrorException} still classifies as {@link #RETRY}, because that is the verdict a driver has
@@ -117,7 +140,8 @@ public enum ErrorCategory {
    * nothing worth reclaiming - they run only on a failure path, and each is capped by {@link CauseChain}.
    */
   public static ErrorCategory of(final Throwable error) {
-    if (CauseChain.contains(error, NeedRetryException.class))
+    if (CauseChain.contains(error, NeedRetryException.class) //
+        || CauseChain.contains(error, TimeSeriesWalkCoarsenedException.class))
       return RETRY;
     if (CauseChain.contains(error, ArithmeticErrorException.class))
       return ARITHMETIC;
@@ -129,13 +153,14 @@ public enum ErrorCategory {
       return SCHEMA;
     if (CauseChain.contains(error, SecurityException.class))
       return SECURITY;
+    if (CauseChain.contains(error, CommandParsingException.class) //
+        || CauseChain.contains(error, FullTextQueryParseException.class))
+      return PARSING;
     if (CauseChain.contains(error, ValidationException.class) //
         || CauseChain.contains(error, QueryNotIdempotentException.class) //
         || CauseChain.contains(error, InvalidPropertyTypeException.class) //
         || CauseChain.contains(error, IllegalArgumentException.class))
       return VALIDATION;
-    if (CauseChain.contains(error, CommandParsingException.class))
-      return PARSING;
     if (CauseChain.contains(error, TimeoutException.class))
       return TIMEOUT;
     return SERVER;

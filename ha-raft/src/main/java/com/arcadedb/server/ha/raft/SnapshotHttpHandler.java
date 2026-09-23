@@ -32,6 +32,7 @@ import com.arcadedb.exception.PageSnapshotException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.schema.LocalSchema;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -108,6 +109,18 @@ public class SnapshotHttpHandler implements HttpHandler {
 
   /** Sub-path selecting the checksums view of a database instead of its snapshot ZIP. */
   static final String CHECKSUMS_SUFFIX = "/checksums";
+
+  /**
+   * The one key of a {@code /checksums} answer that is not a file name: the array of files the scan listed but could
+   * no longer read, added by {@link #putUnreadableFiles} and absent when there are none (#7956).
+   * <p>
+   * The body is a FLAT map with no envelope - that is its documented contract, and changing it would break every
+   * existing client - so the reserved key has to be one no file can be called. A path separator is that: this map is
+   * keyed by {@link File#getName()}, which is by definition the last path element and therefore never contains one,
+   * on any platform ({@code File} normalises {@code /} to {@code \} on Windows before splitting). A name-based
+   * convention such as a leading underscore would only be improbable.
+   */
+  static final String UNREADABLE_FILES_KEY = "/unreadableFiles";
 
   /**
    * What a request path resolves to: a validated database name plus which of the two views is being asked for, or -
@@ -330,7 +343,7 @@ public class SnapshotHttpHandler implements HttpHandler {
       // CLOSED TWICE ON THE WINDOW PATH, DELIBERATELY: serveSnapshotZip releases the pause the moment the last
       // sealed byte is read, and this is the safety net for every other way out - a throw, a client disconnect,
       // the frozen-files path that never releases early. TimeSeriesCompactionPause.close() is idempotent, so the
-      // second close is a no-op rather than an unlock of a lock this thread no longer holds (claude-review on
+      // second close is a no-op rather than an unlock of a lock this thread no longer holds (code review on
       // PR #7474).
       try (pause) {
         streamThroughPointInTimeImage(db, databaseName, pause,
@@ -412,7 +425,7 @@ public class SnapshotHttpHandler implements HttpHandler {
         // ordering neither the t0 barrier nor the compaction pause provides.
         //
         // A LISTING THAT FAILS HERE - AND ONLY HERE, ON THIS BRANCH - LEAVES THE HANDLER BY A DIFFERENT DOOR FROM
-        // EVERY OTHER FAILURE ON IT (claude-review on PR #7708). listSealedStoresOrFail throws a
+        // EVERY OTHER FAILURE ON IT (code review on PR #7708). listSealedStoresOrFail throws a
         // DatabaseOperationException, which is not a PageSnapshotException, so it is not caught below and does not
         // fall back - the fallback lists the same directory and would fail the same way - and it never reaches
         // serveSnapshotZip's swallow, because that code never runs. It propagates out of handleRequest, which
@@ -438,7 +451,7 @@ public class SnapshotHttpHandler implements HttpHandler {
             // A WINDOW THAT NEVER REACHES A STREAMER IS NEVER CLOSED BY ONE: the finally below only covers the
             // image this block returns. SUPPRESSED RATHER THAN REPLACED - a close that fails on the way out must
             // not become the exception the operator reads, because the one that got us here is the one that says
-            // what went wrong (claude-review on PR #7708)
+            // what went wrong (code review on PR #7708)
             try {
               window.close();
             } catch (final RuntimeException closeFailure) {
@@ -515,13 +528,26 @@ public class SnapshotHttpHandler implements HttpHandler {
    * HTTP exchange.
    */
   JSONObject computeChecksums(final DatabaseInternal db) {
+    return computeChecksums(db, new File(db.getDatabasePath()));
+  }
+
+  /**
+   * The same computation against an explicit directory, so a test can drive the listing-then-open race of #7956 -
+   * which is a gap between two syscalls and cannot be provoked from outside - through the real handler rather than
+   * through the scan alone. Production callers use the overload above; nothing else passes a directory that is not
+   * {@code db.getDatabasePath()}.
+   */
+  JSONObject computeChecksums(final DatabaseInternal db, final File dbDir) {
     final JSONObject response = new JSONObject();
-    final File dbDir = new File(db.getDatabasePath());
 
     db.executeInReadLock(() -> {
       if (db.getConfiguration().getValueAsBoolean(GlobalConfiguration.PAGE_SNAPSHOT_ENABLED)) {
+        // A LIST PER BRANCH, NOT ONE SHARED: A WINDOW THAT FAILS AFTER THE SCAN HAS NAMED A FILE MUST NOT LEAVE THE
+        // FALLBACK'S ANSWER CARRYING IT, FOR THE SAME REASON THE CHECKSUMS THEMSELVES CANNOT BE MIXED
+        final List<String> unreadable = new ArrayList<>();
         try (final PageSnapshot snapshot = db.getPageManager().openSnapshot(db)) {
-          putChecksums(response, SnapshotManager.computeFileChecksums(dbDir, snapshot));
+          putChecksums(response, SnapshotManager.computeFileChecksums(dbDir, snapshot, unreadable));
+          putUnreadableFiles(response, unreadable);
           return null;
         } catch (final PageSnapshotException e) {
           // THE WINDOW LOST ITS POINT IN TIME (SHADOW CAP BREACH, I/O ERROR): NOTHING HAS BEEN PUT IN THE RESPONSE
@@ -537,9 +563,11 @@ public class SnapshotHttpHandler implements HttpHandler {
       // LEAVE THIS METHOD RETURNING AN EMPTY MAP WITH A 200 - A CALLER COMPARING CHECKSUMS WOULD READ THAT AS
       // "EVERY FILE MATCHES". CARRIED OUT AND RETHROWN SO THE HANDLER STILL ANSWERS 500
       final AtomicReference<Exception> failure = new AtomicReference<>();
+      final List<String> unreadable = new ArrayList<>();
       db.getPageManager().suspendFlushAndExecute(db, () -> {
         try {
-          putChecksums(response, SnapshotManager.computeFileChecksums(dbDir));
+          putChecksums(response, SnapshotManager.computeFileChecksums(dbDir, null, unreadable));
+          putUnreadableFiles(response, unreadable);
         } catch (final Exception e) {
           failure.set(e);
         }
@@ -555,6 +583,21 @@ public class SnapshotHttpHandler implements HttpHandler {
   private static void putChecksums(final JSONObject response, final Map<String, Long> checksums) {
     for (final Map.Entry<String, Long> entry : checksums.entrySet())
       response.put(entry.getKey(), entry.getValue());
+  }
+
+  /**
+   * Names the files this answer does NOT cover, under {@link #UNREADABLE_FILES_KEY}, and writes nothing at all when
+   * there are none (#7956).
+   * <p>
+   * The alternative - dropping a vanished file and saying nothing - is the one that cannot be chosen: a comparison
+   * walks the keys it HAS, so a map that is silently short of a file is read as agreement about that file. Saying so
+   * lets the caller answer "these two nodes match, except that this one could not cover X", which is what
+   * {@code PostVerifyDatabaseHandler} reports for the same reason with {@code incompleteSealedStores} (#7338).
+   * Absent rather than empty so the common answer keeps exactly the shape it has always had.
+   */
+  private static void putUnreadableFiles(final JSONObject response, final List<String> unreadableFiles) {
+    if (!unreadableFiles.isEmpty())
+      response.put(UNREADABLE_FILES_KEY, new JSONArray(unreadableFiles));
   }
 
   /**
@@ -809,7 +852,7 @@ public class SnapshotHttpHandler implements HttpHandler {
 
   /**
    * The sealed-store listing this handler uses, which refuses to answer "this database has none" for a directory
-   * it could not read (claude-review on PR #7708).
+   * it could not read (code review on PR #7708).
    * <p>
    * {@link TimeSeriesSealedStore#listSealedFiles(File)} maps an unreadable directory to an EMPTY array, which is
    * the right answer for a caller that only wants to iterate whatever is there. For this one it is the very
@@ -871,7 +914,7 @@ public class SnapshotHttpHandler implements HttpHandler {
         // ONLY FileNotFoundException, WHICH IS THE ONLY "GONE" THIS CALL CAN RAISE: addFileToZip reaches the file
         // through Files.isSymbolicLink, which answers false rather than throwing on an I/O error, and then
         // FileInputStream. A NoSuchFileException arm here would read as a second way for a store to vanish and
-        // there is none (claude-review on PR #7708). Any other IOException - a real disk error - already fails
+        // there is none (code review on PR #7708). Any other IOException - a real disk error - already fails
         // the ship, just without this sentence
         throw new FileNotFoundException("TimeSeries sealed store '" + sealedFile.getName()
             + "' went away after the snapshot's point in time: the archive would declare its type without its data ("

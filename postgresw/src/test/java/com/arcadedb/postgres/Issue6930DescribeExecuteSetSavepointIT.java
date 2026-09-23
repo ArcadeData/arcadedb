@@ -18,8 +18,6 @@
  */
 package com.arcadedb.postgres;
 
-import com.arcadedb.GlobalConfiguration;
-
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -78,7 +76,7 @@ class Issue6930DescribeExecuteSetSavepointIT extends PostgresWireProtocolTestBas
   @DisplayName("[#7846] Parse on a ROLLBACK TO statement answers ErrorResponse, not ParseComplete, and aborts the transaction")
   void rollbackToStatementFailsAtParse() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -106,12 +104,12 @@ class Issue6930DescribeExecuteSetSavepointIT extends PostgresWireProtocolTestBas
           assertThat(message.type()).as("ROLLBACK TO must not be accepted as ParseComplete").isNotEqualTo('1');
         } while (message.type() != 'Z');
         assertThat(sawError).as("ROLLBACK TO must be refused with an ErrorResponse").isTrue();
-        // Sync's own error-recovery branch (syncCommand()) already rolled the underlying transaction back at
-        // this point - unlike the simple query protocol, where errorInTransaction is only cleared by an
-        // explicit COMMIT/ROLLBACK, Sync clears it unconditionally and reports 'T' (not 'E') since
-        // explicitTransactionStarted is untouched; the ROLLBACK below is what the client is expected to send
-        // next regardless; it is a no-op server-side, but is what finally reports the session idle again.
-        assertThat(message.body()[0]).as("Sync leaves the session reporting still 'in transaction'").isEqualTo((byte) 'T');
+        // Sync's own error-recovery branch (syncCommand()) has rolled the underlying transaction back at this
+        // point, but it does not END the transaction block: the session stays aborted and reports 'E' until the
+        // client sends COMMIT/ROLLBACK/END, exactly as the simple query protocol already behaved and as real
+        // PostgreSQL requires (issue #7851 - this used to report 'T', which told the client the transaction was
+        // healthy and free to take further statements). The ROLLBACK below is that end of block.
+        assertThat(message.body()[0]).as("Sync leaves the aborted transaction aborted").isEqualTo((byte) 'E');
 
         sendSimpleQuery(out, "ROLLBACK");
         readMessageOfType(in, 'Z');
@@ -121,7 +119,7 @@ class Issue6930DescribeExecuteSetSavepointIT extends PostgresWireProtocolTestBas
 
   private void assertReplySequenceForIgnoredExecutionStatement(final String query, final String expectedTag) throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);

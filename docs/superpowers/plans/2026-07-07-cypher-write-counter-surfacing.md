@@ -16,7 +16,7 @@
 - Do not add Claude as author. No issue numbers in Javadoc/comments (state behavioral invariants only).
 - Every backend change compiles before moving on; run the affected module tests, not the whole suite.
 - Test tags: none needed here (these are fast functional tests) except the Bolt/gRPC ITs which already follow the `IT` server-boot pattern.
-- Commit after each task's tests pass. Commit message format `feat(#5015): <subject>` (or `test(#5015):`/`fix(#5015):`). End body with the Co-Authored-By trailer only if the repo convention requires it - here, do NOT add Claude as author.
+- Commit after each task's tests pass. Commit message format `feat(#5015): <subject>` (or `test(#5015):`/`fix(#5015):`). Do NOT add Claude as author.
 
 ---
 

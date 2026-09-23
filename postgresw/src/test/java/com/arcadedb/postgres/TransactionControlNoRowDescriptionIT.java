@@ -18,10 +18,10 @@
  */
 package com.arcadedb.postgres;
 
-import com.arcadedb.GlobalConfiguration;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.net.InetSocketAddress;
@@ -53,7 +53,7 @@ class TransactionControlNoRowDescriptionIT extends PostgresWireProtocolTestBase 
   @DisplayName("BEGIN, COMMIT and ROLLBACK on the simple query protocol are answered with CommandComplete only")
   void transactionControlIsAnsweredWithTheBareCommandTag() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -86,7 +86,7 @@ class TransactionControlNoRowDescriptionIT extends PostgresWireProtocolTestBase 
   @DisplayName("SAVEPOINT and RELEASE are answered with CommandComplete only")
   void savepointStatementsAreAnsweredWithTheBareCommandTag() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -112,7 +112,7 @@ class TransactionControlNoRowDescriptionIT extends PostgresWireProtocolTestBase 
   @DisplayName("[#7846] ROLLBACK TO is refused, not answered with CommandComplete, and aborts the transaction")
   void rollbackToIsRefusedRatherThanAcceptedAsANoOp() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -146,7 +146,7 @@ class TransactionControlNoRowDescriptionIT extends PostgresWireProtocolTestBase 
   @DisplayName("[#7846] ROLLBACK TO outside an explicit transaction is refused without wedging the session")
   void rollbackToOutsideAnExplicitTransactionIsRefusedButLeavesTheSessionIdle() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -171,7 +171,7 @@ class TransactionControlNoRowDescriptionIT extends PostgresWireProtocolTestBase 
   @DisplayName("A language-prefixed {sql}BEGIN still gets the bare BEGIN command tag")
   void languagePrefixedTransactionControlGetsTheRightCommandTag() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -186,6 +186,162 @@ class TransactionControlNoRowDescriptionIT extends PostgresWireProtocolTestBase 
         assertThat(commandTagOf(commit)).isEqualTo("COMMIT");
       });
     }
+  }
+
+  /**
+   * Issue #7905: the fix above covered only the simple ('Q') protocol. The extended one - Parse/Bind/Describe/
+   * Execute, which is what libpq's {@code PQexecParams}/{@code PQexecPrepared} send, and with them psycopg3,
+   * asyncpg and the Arrow ADBC driver this whole class is named after - still answered BEGIN/COMMIT/ROLLBACK
+   * with a zero-field {@code RowDescription}, because Parse gave those three an empty materialized result set
+   * whose (empty, but non-null) column map {@code describeCommand()} then announced. That is the same byte, and
+   * so the same libpq status defect, reached from the protocol those clients actually use.
+   * <p>
+   * SAVEPOINT/RELEASE/SET were already answered {@code NoData} on this path, so the file used to answer the same
+   * class of statement two different ways depending on the keyword.
+   */
+  @Test
+  @DisplayName("[#7905] BEGIN, COMMIT and ROLLBACK on the EXTENDED protocol answer NoData, not a zero-field RowDescription")
+  void transactionControlOnTheExtendedProtocolAnswersNoData() throws Exception {
+    try (final Socket socket = new Socket()) {
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+      authenticate(out, in);
+
+      assertTimeoutPreemptively(Duration.ofSeconds(10), () -> {
+        for (final String[] step : new String[][] { { "BEGIN", "BEGIN", "T" }, { "SAVEPOINT sp1", "SAVEPOINT", "T" },
+            { "COMMIT", "COMMIT", "I" }, { "BEGIN", "BEGIN", "T" }, { "ROLLBACK", "ROLLBACK", "I" } }) {
+          sendParse(out, step[0]);
+          sendBind(out);
+          sendDescribePortal(out);
+          sendExecute(out);
+          sendSync(out);
+
+          final List<WireMessage> response = readUntilReadyForQuery(in);
+          assertThat(messageTypesOf(response)).as(step[0] + " is parsed and bound").contains('1', '2');
+          assertThat(messageTypesOf(response))
+              .as("%s returns no result set, so Describe('P') owes NoData - a 'T' of zero fields makes libpq "
+                  + "report PGRES_TUPLES_OK", step[0])
+              .doesNotContain('T');
+          assertThat(messageTypesOf(response)).as(step[0] + " answers exactly one NoData").containsOnlyOnce('n');
+          assertThat(messageTypesOf(response)).as(step[0] + " returns no rows, so no DataRow").doesNotContain('D');
+          assertThat(commandTagOf(response)).as("the command tag is unchanged by the Describe fix").isEqualTo(step[1]);
+          assertThat(readyForQueryStatusOf(response)).as(step[0] + " moves the transaction state as before")
+              .isEqualTo(step[2].charAt(0));
+        }
+
+        // A statement that DOES return rows still gets its RowDescription on the same connection and the same
+        // protocol, so the fix narrowed nothing but the three keywords.
+        sendParse(out, "SELECT 1 AS one");
+        sendBind(out);
+        sendDescribePortal(out);
+        sendExecute(out);
+        sendSync(out);
+        assertThat(messageTypesOf(readUntilReadyForQuery(in))).contains('T', 'D', 'C');
+      });
+    }
+  }
+
+  /**
+   * The recovery portal an aborted block builds for a COMMIT/END/ROLLBACK sent through Parse (issue #6548) is a
+   * transaction-control statement too, and took the same empty-result-set path, so it answered the same
+   * zero-field RowDescription (issue #7905).
+   */
+  @Test
+  @DisplayName("[#7905] the ROLLBACK that recovers an aborted block over the extended protocol answers NoData too")
+  void theAbortedBlockRecoveryPortalAnswersNoDataAsWell() throws Exception {
+    try (final Socket socket = new Socket()) {
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+      authenticate(out, in);
+
+      assertTimeoutPreemptively(Duration.ofSeconds(10), () -> {
+        sendSimpleQuery(out, "BEGIN");
+        readUntilReadyForQuery(in);
+        // Aborts the block: every statement but COMMIT/ROLLBACK/END is refused from here on.
+        sendSimpleQuery(out, "SELEKT bogus");
+        assertThat(readyForQueryStatusOf(readUntilReadyForQuery(in))).isEqualTo('E');
+
+        sendParse(out, "COMMIT");
+        sendBind(out);
+        sendDescribePortal(out);
+        sendExecute(out);
+        sendSync(out);
+
+        final List<WireMessage> response = readUntilReadyForQuery(in);
+        assertThat(messageTypesOf(response)).as("the recovery statement is accepted").contains('1');
+        assertThat(messageTypesOf(response)).as("Describe('P') answers NoData, and exactly once").containsOnlyOnce('n');
+        assertThat(messageTypesOf(response)).doesNotContain('T');
+        assertThat(commandTagOf(response)).as("a COMMIT of an aborted block is tagged ROLLBACK").isEqualTo("ROLLBACK");
+        assertThat(readyForQueryStatusOf(response)).as("the block is over").isEqualTo('I');
+      });
+    }
+  }
+
+  private static void sendParse(final DataOutputStream out, final String query) throws Exception {
+    final ByteArrayOutputStream body = new ByteArrayOutputStream();
+    writeCString(body, ""); // unnamed statement
+    writeCString(body, query);
+    body.write(0);
+    body.write(0); // int16 numParamDataTypes = 0
+
+    final byte[] bodyBytes = body.toByteArray();
+    out.writeByte('P');
+    out.writeInt(4 + bodyBytes.length);
+    out.write(bodyBytes);
+    out.flush();
+  }
+
+  private static void sendBind(final DataOutputStream out) throws Exception {
+    final ByteArrayOutputStream body = new ByteArrayOutputStream();
+    writeCString(body, ""); // portal name
+    writeCString(body, ""); // statement name
+    body.write(0);
+    body.write(0); // int16 numParamFormatCodes = 0
+    body.write(0);
+    body.write(0); // int16 numParamValues = 0
+    body.write(0);
+    body.write(0); // int16 numResultFormatCodes = 0
+
+    final byte[] bodyBytes = body.toByteArray();
+    out.writeByte('B');
+    out.writeInt(4 + bodyBytes.length);
+    out.write(bodyBytes);
+    out.flush();
+  }
+
+  private static void sendDescribePortal(final DataOutputStream out) throws Exception {
+    final ByteArrayOutputStream body = new ByteArrayOutputStream();
+    body.write('P'); // describe a portal, not a prepared statement
+    writeCString(body, ""); // unnamed portal
+
+    final byte[] bodyBytes = body.toByteArray();
+    out.writeByte('D');
+    out.writeInt(4 + bodyBytes.length);
+    out.write(bodyBytes);
+    out.flush();
+  }
+
+  private static void sendExecute(final DataOutputStream out) throws Exception {
+    final ByteArrayOutputStream body = new ByteArrayOutputStream();
+    writeCString(body, ""); // portal name
+    body.write(0);
+    body.write(0);
+    body.write(0);
+    body.write(0); // int32 limit = 0 (no limit)
+
+    final byte[] bodyBytes = body.toByteArray();
+    out.writeByte('E');
+    out.writeInt(4 + bodyBytes.length);
+    out.write(bodyBytes);
+    out.flush();
+  }
+
+  private static void sendSync(final DataOutputStream out) throws Exception {
+    out.writeByte('S');
+    out.writeInt(4);
+    out.flush();
   }
 
   private static String commandTagOf(final List<WireMessage> messages) {

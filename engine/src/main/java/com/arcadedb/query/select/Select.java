@@ -213,8 +213,22 @@ public class Select {
       fromBuckets(json.getJSONArray("fromBuckets").toList().stream().map(Object::toString).toArray(String[]::new));
 
     if (json.has("where")) {
-      where();
-      parseJsonCondition(json.getJSONArray("where"));
+      if (rootTreeElement != null)
+        throw new IllegalArgumentException("Where has already been set");
+      // #8167: BUILD THE TREE THE JSON DESCRIBES INSTEAD OF REPLAYING ITS LEAVES THROUGH THE FLUENT BUILDER. THE
+      // BUILDER'S setLogic() IS A PRECEDENCE MACHINE: IT DECIDES WHERE A CONDITION LANDS FROM OPERATOR PRECEDENCE
+      // ALONE, SO AN 'or' ARRIVING FROM INSIDE A NESTED ARRAY WAS INDISTINGUISHABLE FROM ONE TYPED AT THE TOP LEVEL
+      // AND PUSHED THE WHOLE TREE BUILT SO FAR DOWN AS ITS LEFT CHILD. THE GROUPING THE CALLER WROTE WAS GONE BEFORE
+      // THE FIRST ROW WAS READ, SILENTLY: a = 2 and (b = 1 or b = 3) RAN AS (a = 2 and b = 1) or b = 3. A NESTED
+      // ARRAY IS A PARENTHESIS, SO IT IS PARSED INTO ITS OWN SUBTREE AND GRAFTED IN AS ONE OPAQUE OPERAND
+      final SelectTreeNode parsedWhere = parseJsonCondition(json.getJSONArray("where"));
+      // A BARE LEAF GETS THE SAME SYNTHETIC `run` ROOT compile() ADDS FOR THE FLUENT BUILDER. THE EXECUTOR DEPENDS
+      // ON IT - filterWithIndexesFinalNode() READS leaf.getParent().operator AS SOON AS THE LEAF HAS A
+      // CURSOR-BUILDABLE INDEX, AND soleExactLeaf()/isPureAndConjunction() BOTH DOCUMENT `run` AS THE ROOT THEY SEE
+      // - SO A PARENTLESS ROOT LEAF FROM THE JSON READER THREW A NullPointerException ON ANY INDEXED PROPERTY
+      // (FOUND BY CodeRabbit). THE INVARIANT BELONGS IN BOTH PRODUCERS, NOT IN A GUARD IN ONE CONSUMER
+      rootTreeElement = parsedWhere.operator.logicOperator ? parsedWhere
+          : new SelectTreeNode(parsedWhere, SelectOperator.run, null);
     }
 
     if (json.has("limit"))
@@ -240,45 +254,113 @@ public class Select {
     return this;
   }
 
-  private void parseJsonCondition(final JSONArray condition) {
+  /**
+   * Parses one JSON condition - {@code [left, operator, right]}, the unary {@code [left, operator]}, or the
+   * one-element {@code [inner]} that {@link SelectCompiled#json()} writes for the synthetic {@code run} root - into
+   * the subtree it denotes, and answers that subtree's root. Nesting is structural: a nested array becomes a node,
+   * never a replay of its leaves through the precedence rules (#8167).
+   */
+  private SelectTreeNode parseJsonCondition(final JSONArray condition) {
     // #6817: A SELECT WITH A SINGLE WHERE LEAF SERIALIZES AS A ONE-ELEMENT ARRAY - compile() WRAPS THE LEAF IN A
     // SYNTHETIC `run` ROOT WHOSE OPERATOR SelectTreeNode.toJSON() DELIBERATELY OMITS AND WHOSE RIGHT SIDE IS null.
-    // REJECTING THAT SHAPE MADE THE COMMONEST SELECT OF ALL IMPOSSIBLE TO READ BACK, SO UNWRAP IT INSTEAD: compile()
-    // RE-ADDS THE SAME `run` ROOT ON THE WAY OUT, WHICH IS WHAT MAKES THE TWO json METHODS INVERSE FOR THIS SHAPE
-    if (condition.length() == 1 && condition.get(0) instanceof JSONArray nested) {
-      parseJsonCondition(nested);
-      return;
+    // REJECTING THAT SHAPE MADE THE COMMONEST SELECT OF ALL IMPOSSIBLE TO READ BACK, SO UNWRAP IT INSTEAD: THE SAME
+    // `run` ROOT IS REBUILT HERE, WHICH IS WHAT MAKES THE TWO json METHODS INVERSE FOR THIS SHAPE
+    if (condition.length() == 1 && condition.get(0) instanceof JSONArray nested)
+      return new SelectTreeNode(parseJsonCondition(nested), SelectOperator.run, null);
+
+    if (condition.length() != 2 && condition.length() != 3)
+      throw new IllegalArgumentException("Invalid condition " + condition
+          + ": expected [left, operator, right], the unary [left, operator], or a single nested condition");
+
+    final String parsedOperatorName = condition.getString(1);
+    final SelectOperator parsedOperator = SelectOperator.byName(parsedOperatorName);
+    if (parsedOperator == null)
+      throw new IllegalArgumentException("Unsupported operator '" + parsedOperatorName + "' in condition " + condition);
+
+    // #8173: THE ARITY GATE USED TO COME FIRST AND REFUSE EVERY NON-TRIPLE WITH A GENERIC MESSAGE, WHICH IS WHAT
+    // SelectCompiled.json() ITSELF EMITS FOR A `not` NODE (ITS RIGHT OPERAND IS null, SO toJSON() WRITES TWO
+    // ELEMENTS). THE HELPFUL MESSAGE #8059 ADDED FOR `not` SAT BELOW THE GATE AND WAS THEREFORE UNREACHABLE FOR THE
+    // ONE SHAPE THAT NEEDED IT. THE OPERATOR IS NOW READ BEFORE THE ARITY IS JUDGED, SO EACH ARITY ERROR NAMES ITS
+    // OWN CAUSE - AND THE UNARY SHAPE IS ACCEPTED, WHICH CLOSES THE json() -> json(JSONObject) ROUND TRIP #6817
+    // ESTABLISHED FOR EVERY OPERATOR INSTEAD OF ALL BUT ONE
+    final boolean unary = parsedOperator == SelectOperator.not;
+    if (unary && condition.length() == 3)
+      throw new IllegalArgumentException(
+          "Operator 'not' is unary and takes no right operand: write it as [left, \"not\"], not as "
+              + "[left, \"not\", right]. To negate a comparison, use the complementary operator instead "
+              + "(for example '<>' for '=', 'is null' for 'is not null')");
+    if (!unary && condition.length() == 2)
+      throw new IllegalArgumentException("Operator '" + parsedOperatorName
+          + "' is binary and requires a right operand: " + condition);
+
+    // #8167/#8173: THE KIND OF EACH OPERAND IS DETERMINED BY THE OPERATOR, NOT BY GUESSING FROM THE OPERAND'S OWN
+    // SHAPE. A LOGIC OPERATOR (and/or/not) JOINS CONDITIONS; EVERY OTHER OPERATOR TESTS A PROPERTY AGAINST A VALUE,
+    // AND A JSON ARRAY IN THAT RIGHT-HAND SLOT IS ALWAYS A LIST OF VALUES - THE RANGE OF A `between`, THE CANDIDATES
+    // OF AN `in`. TELLING THE TWO APART BY SHAPE INSTEAD (A 2/3-ELEMENT ARRAY WHOSE MIDDLE ELEMENT NAMES AN
+    // OPERATOR) WOULD MISREAD ANY VALUE LIST THAT HAPPENS TO CARRY AN OPERATOR KEYWORD IN THAT POSITION, SUCH AS
+    // `in ('red', 'in')` - A PLAUSIBLE TAG LIST. THE OPERATOR LEAVES NOTHING TO GUESS
+    final boolean logic = parsedOperator.logicOperator;
+    final Object left = parseJsonOperand(condition.get(0), logic, true);
+    final Object right = unary ? null : parseJsonOperand(condition.get(2), logic, false);
+
+    return new SelectTreeNode(left, parsedOperator, adaptRightOperand(parsedOperator, right));
+  }
+
+  /**
+   * One operand of a JSON condition. Under a logic operator an array operand is a nested condition - a parenthesis,
+   * parsed into its own subtree; under any other operator it is a list of values. {@code ":name"} is a property and
+   * {@code "#name"} a parameter on either side; anything else is a literal, which is only legal on the right,
+   * because the left of a condition is what is being tested.
+   */
+  private Object parseJsonOperand(final Object operand, final boolean underLogicOperator, final boolean leftSide) {
+    if (underLogicOperator && !(operand instanceof JSONArray))
+      // A logic operator joins CONDITIONS. Letting a bare property through here built a tree whose 'and' evaluated a
+      // property value as a Boolean, so the caller got an opaque ClassCastException at query time instead of being
+      // told what was wrong with their JSON - the one error path in this method that did not name its own cause.
+      throw new IllegalArgumentException("Operand " + operand + " of a logic operator must be a condition, "
+          + "written as a nested array such as [\":a\", \"=\", 1]");
+
+    if (operand instanceof JSONArray array) {
+      if (underLogicOperator)
+        return parseJsonCondition(array);
+      if (leftSide)
+        throw new IllegalArgumentException("Unsupported value " + array
+            + ": the left operand of a comparison must be a property or a parameter");
+      // SelectTreeNode.toJSON() writes a `between` range and an `in` candidate list as a plain JSON array of
+      // literals. Reading every right-hand array back as a nested condition is what stopped those two operators
+      // round-tripping at all (found alongside #8173). LITERALS ONLY, WHICH IS ALL THE WRITER EVER EMITS AND ALL THE
+      // FLUENT BUILDER CAN PRODUCE: a ":property" or "#parameter" INSIDE such a list stays the literal string,
+      // because `between` and `in` evaluate their range/candidates as values, not as runtime operands.
+      return array.toList();
     }
+    if (operand instanceof String string && string.startsWith(":"))
+      return new SelectPropertyValue(string.substring(1));
+    if (operand instanceof String string && string.startsWith("#"))
+      // #8167: THE LEFT SIDE USED TO ROUTE THIS THROUGH parameter(), WHICH ASSIGNS THE FLUENT BUILDER'S
+      // propertyValue - THE *RIGHT*-HAND SLOT - SO A PARAMETER WRITTEN ON THE LEFT LANDED ON THE WRONG SIDE
+      return new SelectParameterValue(this, string.substring(1));
+    if (leftSide)
+      throw new IllegalArgumentException("Unsupported value " + operand);
+    return operand;
+  }
 
-    if (condition.length() != 3)
-      throw new IllegalArgumentException("Invalid condition " + condition);
-
-    final Object parsedLeft = condition.get(0);
-    if (parsedLeft instanceof JSONArray array)
-      parseJsonCondition(array);
-    else if (parsedLeft instanceof String string && string.startsWith(":"))
-      property(string.substring(1));
-    else if (parsedLeft instanceof String string && string.startsWith("#"))
-      parameter(string.substring(1));
-    else
-      throw new IllegalArgumentException("Unsupported value " + parsedLeft);
-
-    final SelectOperator parsedOperator = SelectOperator.byName(condition.getString(1));
-
-    if (parsedOperator.logicOperator)
-      setLogic(parsedOperator);
-    else
-      setOperator(parsedOperator);
-
-    final Object parsedRight = condition.get(2);
-    if (parsedRight instanceof JSONArray array)
-      parseJsonCondition(array);
-    else if (parsedRight instanceof String string && string.startsWith(":"))
-      property(string.substring(1));
-    else if (parsedRight instanceof String string && string.startsWith("#"))
-      parameter(string.substring(1));
-    else
-      value(parsedRight);
+  /**
+   * {@code between} evaluates its right operand as an {@code Object[]} of exactly two bounds
+   * ({@link SelectWhereBetweenBlock#values}), which is the one operator whose in-memory value shape is not what a
+   * JSON array parses to. Every other operator taking a list - {@code in} - is happy with a {@link List}.
+   * <p>
+   * The arity is checked HERE rather than left to {@code SelectOperator.between}'s own
+   * "BETWEEN requires a range of two values", which only fires once a record is being evaluated - a long way from
+   * the JSON document that is actually wrong (found in review).
+   */
+  private static Object adaptRightOperand(final SelectOperator operator, final Object right) {
+    if (operator != SelectOperator.between)
+      return right;
+    if (!(right instanceof List<?> list) || list.size() != 2)
+      throw new IllegalArgumentException(
+          "Operator 'between' requires a range of exactly two values, written as [left, \"between\", [low, high]], "
+              + "but was given " + right);
+    return list.toArray();
   }
 
   public SelectCompiled compile() {
@@ -353,14 +435,27 @@ public class Select {
         lastTreeElement.getParent().setRight(newNode);
         lastTreeElement = newTreeElement;
       } else {
-        // OR+ OPERATOR
+        // OR+ OPERATOR: THE NEW OPERATOR DOES NOT BIND MORE TIGHTLY THAN THE ONE ALREADY THERE, SO THE CURRENT
+        // SUBTREE IS PUSHED DOWN AND BECOMES THE LEFT CHILD OF A NODE CARRYING THE NEW OPERATOR
         final SelectTreeNode currentParent = lastTreeElement.getParent();
+        // #8047: READ THE GRANDPARENT *BEFORE* THE SelectTreeNode CONSTRUCTOR RE-PARENTS currentParent UNDER newNode.
+        // THE CONSTRUCTOR ALREADY DOES TWO OF THE THREE THINGS THIS BRANCH NEEDS - IT SETS currentParent.parent TO
+        // newNode AND, THROUGH SelectTreeNode.setParent, MOVES THE GRANDPARENT'S OWN CHILD POINTER OVER TO newNode -
+        // SO THE ONLY THING LEFT IS newNode'S UPWARD LINK. READING currentParent.getParent() *AFTER* THE CONSTRUCTOR
+        // HANDED BACK newNode ITSELF, SO THE CALL REDUCED TO newNode.setParent(newNode) AND INSTALLED A SELF-PARENT
+        // CYCLE. THAT CYCLE THEN DEFEATED THE *NEXT* RE-PARENTING - setParent REWIRES THE GRANDPARENT BY TESTING
+        // this.parent.left/right == this, AND ON A SELF-PARENTED NODE BOTH TESTS COMPARE THE NODE AGAINST ITS OWN
+        // CHILDREN AND FAIL - SO THE NEXT NODE, AND EVERYTHING APPENDED TO IT, DANGLED OFF THE TREE rootTreeElement
+        // REFERS TO AND THE EXECUTOR NEVER SAW IT. FROM THE FIFTH CONDITION ON, AN 'OR' FOLLOWED BY THREE OR MORE
+        // 'AND's SILENTLY DISCARDED EVERY REMAINING CONDITION AND THE QUERY RETURNED MORE ROWS THAN THE PREDICATE
+        // ALLOWS
+        final SelectTreeNode grandParent = currentParent.getParent();
         currentParent.setRight(newTreeElement);
         final SelectTreeNode newNode = new SelectTreeNode(currentParent, newLogicOperator, null);
         if (rootTreeElement.equals(currentParent))
           rootTreeElement = newNode;
         else
-          newNode.setParent(currentParent.getParent());
+          newNode.setParent(grandParent);
         lastTreeElement = currentParent;
       }
     }

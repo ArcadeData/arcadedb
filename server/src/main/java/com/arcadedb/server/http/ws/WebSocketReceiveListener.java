@@ -27,6 +27,7 @@ import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.ws.insert.WebSocketInsertProtocol;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.websockets.core.AbstractReceiveListener;
+import io.undertow.websockets.core.BufferedBinaryMessage;
 import io.undertow.websockets.core.BufferedTextMessage;
 import io.undertow.websockets.core.StreamSourceFrameChannel;
 import io.undertow.websockets.core.WebSocketChannel;
@@ -35,6 +36,7 @@ import java.io.IOException;
 import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.stream.Collectors;
 
@@ -43,16 +45,18 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
   private final    WebSocketEventBus       webSocketEventBus;
   private final    WebSocketInsertProtocol insertProtocol;
   /**
-   * Whether this connection is currently entitled to the larger insert-frame budget (issue #7403). Raised when
-   * the connection's {@code start} frame is seen and dropped again when its {@code commit}/{@code rollback} is.
-   * <p>
-   * Read and written on the Undertow I/O thread only, which delivers the frames of one connection serially: the
-   * {@code start} frame is therefore fully handled before the next frame begins accumulating, so a client that
-   * pipelines {@code start} and its first {@code chunk} without waiting for {@code started} still gets the
-   * larger budget for that chunk. It is deliberately NOT keyed off a registered session, which is created
-   * asynchronously on a worker and would lose that race.
+   * The connection this listener serves, attached by {@code WebSocketConnectionHandler} before the channel is
+   * resumed, so {@link #getMaxTextBufferSize()} - a no-argument hook Undertow calls per message, before the
+   * message exists - has something to ask the insert protocol about (issue #7909). One listener is created per
+   * connection, so this never names two.
    */
-  private volatile boolean                insertFrameBudget;
+  private volatile WebSocketChannel       channel;
+  /**
+   * Whether this connection has already been told that {@code /ws} carries no binary frames. One listener per
+   * connection, so this is per connection - see {@link #onFullBinaryMessage} for why the answer is sent once and
+   * not once per frame.
+   */
+  private final    AtomicBoolean          binaryFrameRefused = new AtomicBoolean();
 
   public enum ACTION {UNKNOWN, SUBSCRIBE, UNSUBSCRIBE}
 
@@ -60,6 +64,14 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
     this.httpServer = httpServer;
     this.webSocketEventBus = webSocketEventBus;
     this.insertProtocol = httpServer.getInsertProtocol();
+  }
+
+  /**
+   * Binds this listener to the connection it serves. Called once, on the handshake callback, before receives are
+   * resumed - so the first frame's budget is already answerable. See {@link #channel}.
+   */
+  void attachTo(final WebSocketChannel channel) {
+    this.channel = channel;
   }
 
   /**
@@ -75,19 +87,85 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
    * <p>
    * Two budgets rather than one: the control frames of {@code /ws} are a few hundred bytes and have no reason
    * ever to be large, while a {@code chunk} frame carries a whole batch of records. A connection is charged the
-   * control budget until it dispatches a {@code start} frame, which is what makes the tight bound safe to keep
+   * control budget until it has an insert session open or a {@code start} frame in flight - the question
+   * {@code WebSocketInsertProtocol.hasInsertFrameBudget} answers, and the reason the tight bound is safe to keep
    * tight. Re-read per frame, so an operator raising the setting on a running server does not have to reconnect
-   * its loaders.
+   * its loaders, and so a connection whose session has ended is charged the control budget again from its very
+   * next frame (issue #7909).
    */
   @Override
   protected long getMaxTextBufferSize() {
-    final GlobalConfiguration setting = insertFrameBudget ?
+    return frameBudget(insertProtocol.hasInsertFrameBudget(channel) ?
         GlobalConfiguration.SERVER_WS_MAX_INSERT_FRAME_SIZE :
-        GlobalConfiguration.SERVER_WS_MAX_CONTROL_FRAME_SIZE;
+        GlobalConfiguration.SERVER_WS_MAX_CONTROL_FRAME_SIZE);
+  }
 
+  /**
+   * Bounds what one BINARY frame may accumulate on the heap before {@link #onFullBinaryMessage} sees it (issue
+   * #8065).
+   * <p>
+   * {@link #getMaxTextBufferSize()} bounded the text opcode and this class overrode nothing else, so BINARY kept
+   * {@code AbstractReceiveListener}'s own default of {@code -1}: an authenticated client could open a binary
+   * frame, never send its final fragment, and pin heap without ceiling for as long as the connection lived. Same
+   * denial of service the text caps exist to prevent, through the other opcode.
+   * <p>
+   * Always the CONTROL budget, never the larger insert one, and that asymmetry with the text hook is the point.
+   * The duplex insert protocol is dispatched from {@link #onFullTextMessage} alone, so no binary frame can ever
+   * be a {@code chunk} and the larger budget would be a hole with no legitimate user - not even on a connection
+   * that does have an insert session open. {@code /ws} in fact carries no binary frames at all, which is what
+   * {@link #onFullBinaryMessage} answers; this bound is what keeps the refusal cheap, since
+   * {@code BufferedBinaryMessage} checks the cap as it reads rather than after the frame is whole, and answers a
+   * breach with a {@code 1009 TOO_BIG} close followed by an {@code IOException} that {@link #onError} turns into
+   * a channel close.
+   * <p>
+   * PING, PONG and CLOSE need no override: {@code AbstractReceiveListener} caps those at RFC 6455's 125 bytes
+   * through {@code final} accessors this class cannot widen.
+   */
+  @Override
+  protected long getMaxBinaryBufferSize() {
+    return frameBudget(GlobalConfiguration.SERVER_WS_MAX_CONTROL_FRAME_SIZE);
+  }
+
+  /**
+   * The configured value of {@code setting}, mapped so anything {@code <= 0} becomes {@code -1} - what
+   * Undertow's buffered messages ({@link #getMaxTextBufferSize()}, {@link #getMaxBinaryBufferSize()}) want
+   * for "unbounded", which is what every setting this is called with documents 0 to mean.
+   * <p>
+   * Reused by {@link #sendAck} and {@link #sendError} for {@code SERVER_WS_MAX_PENDING_CONTROL_BYTES}
+   * (issue #8085) even though that setting is not a buffer size: {@link WebSocketFrameSender#sendBudgeted}'s
+   * own cap check is {@code maxPendingBytes > 0}, so the {@code -1} this produces for a disabled cap is just
+   * as "not positive" as the {@code 0} it was mapped from, and the translation costs nothing to share.
+   */
+  private long frameBudget(final GlobalConfiguration setting) {
     final long max = httpServer.getServer().getConfiguration().getValueAsLong(setting);
-    // BufferedTextMessage treats anything <= 0 as unbounded, which is what the settings document 0 to mean.
     return max > 0 ? max : -1;
+  }
+
+  /**
+   * Answers a binary frame that stayed inside its budget (issue #8065).
+   * <p>
+   * {@code /ws} carries JSON text frames only, so there is nothing to parse here. Undertow's own default frees
+   * the payload and returns, which left a client that picked the wrong opcode waiting on an answer that was
+   * never coming; an error frame names the contract instead, and is the same shape the listener already uses for
+   * a text frame whose {@code action} it does not know. The connection survives it deliberately: a stray binary
+   * frame is a client mistake, not the attack - the attack is the SIZE of one, and that is refused by
+   * {@link #getMaxBinaryBufferSize()} before this method is ever reached.
+   * <p>
+   * Once per connection, not once per frame, and that is a bound and not a convenience. A one-byte binary frame
+   * costs a client six bytes on the wire and would cost the server a ~150-byte frame queued towards a peer that
+   * may never read it - outbound frames are queued on the heap and nothing here charges them against a budget -
+   * so answering every one of them would trade a buffering amplification for a queueing one. The client is told
+   * the contract on its first binary frame; after that they are freed and dropped in silence.
+   * <p>
+   * The payload is pooled, so it is handed back before anything else happens, exactly as the overridden default
+   * does.
+   */
+  @Override
+  protected void onFullBinaryMessage(final WebSocketChannel channel, final BufferedBinaryMessage message) throws IOException {
+    message.getData().free();
+    if (binaryFrameRefused.compareAndSet(false, true))
+      sendError(channel, "Binary frames are not supported",
+          "The /ws protocol carries JSON text frames only. Send this payload as a text frame.", null);
   }
 
   @Override
@@ -100,13 +178,10 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
       // commit taken here would stall every other connection this thread serves.
       final var insertAction = rawAction.toLowerCase(Locale.ENGLISH);
       if (WebSocketInsertProtocol.handles(insertAction)) {
-        // The frame-size budget follows the session's lifetime on the wire rather than on the worker: see
-        // getMaxTextBufferSize(). Raised before dispatch and dropped after it, both on this I/O thread.
-        if ("start".equals(insertAction))
-          insertFrameBudget = true;
+        // The frame-size budget is decided by the protocol, from the session registry and the count of 'start'
+        // frames still in flight, rather than raised and lowered from the action string here: see
+        // getMaxTextBufferSize() and WebSocketInsertProtocol.hasInsertFrameBudget (issue #7909).
         insertProtocol.dispatch(channel, insertAction, message);
-        if ("commit".equals(insertAction) || "rollback".equals(insertAction))
-          insertFrameBudget = false;
         return;
       }
 
@@ -171,7 +246,7 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
   private void sendAck(final WebSocketChannel channel, final ACTION action) {
     final var json = new JSONObject("{\"result\": \"ok\"}");
     json.put("action", action.toString().toLowerCase(Locale.ENGLISH));
-    WebSocketFrameSender.send(channel, json.toString(), null);
+    WebSocketFrameSender.sendBudgeted(channel, json.toString(), frameBudget(GlobalConfiguration.SERVER_WS_MAX_PENDING_CONTROL_BYTES));
   }
 
   private void sendError(final WebSocketChannel channel, final String error, final String detail, final Throwable exception) {
@@ -181,7 +256,7 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
       json.put("detail", encodeError(detail));
     if (exception != null)
       json.put("exception", exception.getClass().getName());
-    WebSocketFrameSender.send(channel, json.toString(), null);
+    WebSocketFrameSender.sendBudgeted(channel, json.toString(), frameBudget(GlobalConfiguration.SERVER_WS_MAX_PENDING_CONTROL_BYTES));
   }
 
   private String encodeError(final String message) {

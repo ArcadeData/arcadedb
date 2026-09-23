@@ -139,7 +139,7 @@ class Issue7715FractionalIntegralMemberTest {
    * whether a value is too large with {@code (precision() - scale) > 19} in {@code int} arithmetic, which
    * OVERFLOWS for {@code 1E2147483647}: the guard passes and the method materialises a 2^31-digit integer.
    * {@code 1E-2147483647} is the mirror image, through {@code setScale(0)}. Both must be refused in constant
-   * time (claude-review on PR #7730).
+   * time (code review on PR #7730).
    * <p>
    * Bounded rather than merely asserted, because the failure mode is an allocation storm and not a wrong answer:
    * a test that only checked the refusal would "pass" by hanging the build first. The bound is measured with

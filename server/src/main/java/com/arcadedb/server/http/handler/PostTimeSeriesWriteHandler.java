@@ -33,15 +33,11 @@ import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.Headers;
-import io.undertow.util.StatusCodes;
 
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.util.Deque;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
-import java.util.zip.GZIPInputStream;
 
 /**
  * HTTP handler for InfluxDB Line Protocol ingestion.
@@ -118,7 +114,7 @@ public class PostTimeSeriesWriteHandler extends DatabaseAbstractHandler {
    * {@code IllegalArgumentException} {@code LineProtocolParser.readFieldValue} raises is caught by
    * {@code parseLine}, which returns null and has {@code parse} log-and-skip the line, so a malformed body
    * answers 204 rather than 400. Named here because the wrong rationale in a comment outlives the right one in
-   * an issue (claude-review on PR #7748).
+   * an issue (code review on PR #7748).
    */
   @Override
   protected boolean participatesInSessionTransaction() {
@@ -143,24 +139,27 @@ public class PostTimeSeriesWriteHandler extends DatabaseAbstractHandler {
     if (!e.isInIoThread() && !e.isBlocking())
       e.startBlocking();
 
-    final AtomicReference<byte[]> bytesRef = new AtomicReference<>();
-    e.getRequestReceiver().receiveFullBytes(
-        (exchange, data) -> bytesRef.set(data),
-        (exchange, err) -> {
-          LogManager.instance().log(this, Level.SEVERE, "receiveFullBytes completed with an error: %s", err, err.getMessage());
-          exchange.setStatusCode(StatusCodes.INTERNAL_SERVER_ERROR);
-          exchange.getResponseSender().send("Invalid Request");
-        });
-
-    final byte[] rawBytes = bytesRef.get();
+    // The shared bounded reader, so arcadedb.server.httpBodyContentMaxSize bounds this route's body too - it
+    // used to be read through Receiver.receiveFullBytes, which enforces no cap on a body that declares no
+    // length (issue #7772).
+    final byte[] rawBytes = readRequestBody(e);
     if (rawBytes == null)
       return null;
 
     final var contentEncoding = e.getRequestHeaders().get(Headers.CONTENT_ENCODING);
     if (contentEncoding != null && !contentEncoding.isEmpty() && "gzip".equalsIgnoreCase(contentEncoding.getFirst())) {
-      try (final GZIPInputStream gzip = new GZIPInputStream(new ByteArrayInputStream(rawBytes))) {
-        return new String(gzip.readAllBytes(), DatabaseFactory.getDefaultCharset());
+      try {
+        // Under the decoded-body budget, NOT under the wire cap alone (issue #8084). The wire cap bounds the bytes
+        // that arrived; line protocol is repetitive text, so without this the cap is a compression-ratio
+        // multiplier and an accepted body is worth orders of magnitude more heap than it looks like.
+        return CompressedBodyDecoder.gunzip(rawBytes,
+            CompressedBodyDecoder.maxDecompressedSize(httpServer.getServer().getConfiguration()),
+            DatabaseFactory.getDefaultCharset());
       } catch (final IOException ex) {
+        // A body that is not valid gzip. NOT a body that is too large: RequestBodyTooLargeException is unchecked
+        // and this arm names IOException, so the refusal passes through to the 413 mapping at the request
+        // boundary rather than being reported as a malformed body (review of PR #8095). The two Prometheus
+        // handlers need an explicit rethrow for the same effect only because their arm names Exception.
         throw new IllegalArgumentException("Failed to decompress gzip body: " + ex.getMessage(), ex);
       }
     }

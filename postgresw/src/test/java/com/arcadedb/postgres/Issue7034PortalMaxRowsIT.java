@@ -87,7 +87,7 @@ class Issue7034PortalMaxRowsIT extends PostgresWireProtocolTestBase {
     createRows(ROW_CAP + 10);
 
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -127,7 +127,7 @@ class Issue7034PortalMaxRowsIT extends PostgresWireProtocolTestBase {
     createRows(ROW_CAP + 10);
 
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -159,12 +159,16 @@ class Issue7034PortalMaxRowsIT extends PostgresWireProtocolTestBase {
     createRows(ROW_CAP);
 
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
 
       assertTimeoutPreemptively(Duration.ofSeconds(10), () -> {
+        // An explicit block keeps the suspended portal alive across the Sync, as in PostgreSQL (issue #8212)
+        sendSimpleQuery(out, "BEGIN");
+        assertThat(messageTypesOf(readUntilReadyForQuery(in))).doesNotContain('E');
+
         sendParse(out, "SELECT FROM " + TYPE);
         sendBind(out, "P1");
         sendDescribe(out, "P1");
@@ -188,7 +192,7 @@ class Issue7034PortalMaxRowsIT extends PostgresWireProtocolTestBase {
   @DisplayName("[#7034] a query that fails at Describe('P') is reported to the client as an ErrorResponse, not only logged")
   void queryFailingAtDescribeIsReportedToTheClient() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);

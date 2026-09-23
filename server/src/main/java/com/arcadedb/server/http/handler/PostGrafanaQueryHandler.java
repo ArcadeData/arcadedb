@@ -41,6 +41,7 @@ import io.undertow.server.HttpServerExchange;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Grafana DataFrame query endpoint.
@@ -65,7 +66,7 @@ import java.util.List;
  * is that an unresolvable session id degrades to a session-less read rather than being refused - see
  * {@link DatabaseAbstractHandler#rejectsUnresolvableSession()}.
  */
-public class PostGrafanaQueryHandler extends DatabaseAbstractHandler {
+public class PostGrafanaQueryHandler extends AbstractObservabilityHandler {
 
   public PostGrafanaQueryHandler(final HttpServer httpServer) {
     super(httpServer);
@@ -74,11 +75,6 @@ public class PostGrafanaQueryHandler extends DatabaseAbstractHandler {
   @Override
   protected boolean mustExecuteOnWorkerThread() {
     return true;
-  }
-
-  @Override
-  protected boolean requiresTransaction() {
-    return false;
   }
 
   @Override
@@ -103,7 +99,7 @@ public class PostGrafanaQueryHandler extends DatabaseAbstractHandler {
     try {
       // 'targets' first, so that a request which is malformed in more than one way is told about the member the
       // whole endpoint is built around before it is told about a range bound. That is also the order the handler
-      // used to check in (claude-review on PR #7680).
+      // used to check in (code review on PR #7680).
       targets = TimeSeriesHandlerUtils.requireArray(payload, "targets", "targets");
       fromTs = TimeSeriesHandlerUtils.optLong(payload, "from", Long.MIN_VALUE, "from");
       toTs = TimeSeriesHandlerUtils.optLong(payload, "to", Long.MAX_VALUE, "to");
@@ -185,7 +181,7 @@ public class PostGrafanaQueryHandler extends DatabaseAbstractHandler {
     // folds a 403 into a frame: the denial reaches the handler mapper and answers 403 for the request.
     final TimeSeriesEngine engine = tsType.getEngine(SecurityDatabaseUser.ACCESS.READ_RECORD);
     if (engine == null)
-      // Distinct from "not a TimeSeries type" (issue #6356 follow-up, claude-review on PR #6779): this type IS
+      // Distinct from "not a TimeSeries type" (issue #6356 follow-up, code review on PR #6779): this type IS
       // one, its storage just failed to load - the old shared message sent an operator chasing the wrong cause.
       return buildErrorFrame(
           "TimeSeries type '" + typeName + "' has no storage engine available: " + tsType.getEngineUnavailableReason());
@@ -337,7 +333,7 @@ public class PostGrafanaQueryHandler extends DatabaseAbstractHandler {
         final String fieldName = TimeSeriesHandlerUtils.requireString(req, "field", reqPath + ".field");
         final AggregationType aggType = TimeSeriesHandlerUtils.resolveAggregationType(req, reqPath + ".type");
         final String alias = TimeSeriesHandlerUtils.optString(req, "alias",
-            fieldName + "_" + aggType.name().toLowerCase(), reqPath + ".alias");
+            fieldName + "_" + aggType.name().toLowerCase(Locale.ROOT), reqPath + ".alias");
 
         final int colIndex = TimeSeriesHandlerUtils.findColumnIndex(fieldName, columns);
         if (colIndex < 0)
@@ -347,7 +343,8 @@ public class PostGrafanaQueryHandler extends DatabaseAbstractHandler {
         // belongs in the error frame with the other caller mistakes above.
         TimeSeriesGateway.requireAggregatableColumn(columns.get(colIndex), aggType);
 
-        requests.add(new MultiColumnAggregationRequest(colIndex, aggType, alias));
+        // As on /ts/query: the factory owns both rules a producer has to get right (issue #8140).
+        requests.add(MultiColumnAggregationRequest.of(columns, colIndex, aggType, alias));
         aliases.add(alias);
       }
     } catch (final IllegalArgumentException e) {

@@ -38,10 +38,12 @@ import com.arcadedb.utility.CollectionUtils;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Set;
 import java.util.stream.Stream;
 
 /**
@@ -73,6 +75,13 @@ public class CallStep extends AbstractExecutionStep {
     this.countOnlyOptimization = enabled;
   }
   private final CallClause callClause;
+  /**
+   * Computed on first use and reused: one CALL names one procedure and one YIELD (issue #7976). Volatile, and always
+   * an immutable set, because an execution plan can be cached and replayed: a racing reader of a plain field could
+   * otherwise see a {@link HashSet} whose construction it does not yet see finished. The race itself is harmless -
+   * the value is deterministic, so the worst outcome is computing it twice.
+   */
+  private volatile Set<String> requestedYieldFields;
   private final CypherFunctionFactory functionFactory;
   private final ExpressionEvaluator evaluator;
 
@@ -301,6 +310,41 @@ public class CallStep extends AbstractExecutionStep {
   }
 
   /**
+   * The declared yield fields this CALL is going to read, for {@link CypherProcedure#execute(Object[], Result,
+   * CommandContext, Set)} to skip producing the rest (issue #7976).
+   * <p>
+   * A CALL with no YIELD, or with YIELD *, reads everything. A YIELD naming fields narrows to those. A YIELD WHERE
+   * needs nothing extra: it is evaluated on the already-projected row, so every field it can name is one the YIELD
+   * items already asked for.
+   * <p>
+   * A name that is not one of the procedure's declared fields is dropped rather than passed through: the set is
+   * defined as a subset of {@link CypherProcedure#getYieldFields()}, and a procedure comparing against its own field
+   * names must not have to guess at what else might be in there. The result is never empty - a YIELD that names
+   * nothing the procedure declares is a semantic error caught upstream, and if one ever reached here, asking for
+   * everything is the answer that cannot produce a wrong result.
+   */
+  private Set<String> requestedYieldFields(final CypherProcedure procedure) {
+    // The CALL names one procedure and one YIELD, so the answer is the same for every input row that reaches here
+    if (requestedYieldFields != null)
+      return requestedYieldFields;
+
+    final List<String> declared = procedure.getYieldFields();
+    if (declared == null || declared.isEmpty())
+      return requestedYieldFields = Set.of();
+
+    // isYieldAll() IS "hasYield() with no items", so an empty item list is already covered by it
+    if (!callClause.hasYield() || callClause.isYieldAll())
+      return requestedYieldFields = Set.copyOf(declared);
+
+    final Set<String> requested = new HashSet<>(declared.size());
+    for (final CallClause.YieldItem yieldItem : callClause.getYieldItems())
+      if (declared.contains(yieldItem.getFieldName()))
+        requested.add(yieldItem.getFieldName());
+
+    return requestedYieldFields = Set.copyOf(requested.isEmpty() ? declared : requested);
+  }
+
+  /**
    * Executes a registered procedure.
    * Returns an Iterator for lazy evaluation to avoid materializing large result sets into memory - except on
    * the auto-commit path (see below), which fully materializes before returning.
@@ -321,7 +365,7 @@ public class CallStep extends AbstractExecutionStep {
       if (autoCommit)
         context.getDatabase().begin();
 
-      final Stream<ResultInternal> resultStream = procedure.execute(args, inputRow, context)
+      final Stream<ResultInternal> resultStream = procedure.execute(args, inputRow, context, requestedYieldFields(procedure))
           .map(this::convertProcedureResultToInternal);
 
       // .map()/.iterator() are lazy, so without forcing it here commit() would run before the stream is ever

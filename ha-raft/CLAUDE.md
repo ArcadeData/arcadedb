@@ -6,13 +6,16 @@ Guidance for working under `ha-raft/`. This file records things the code does no
 
 What a restarted node replays is decided **solely** by the Ratis snapshot marker file `snapshot.<term>_<index>` under `.raft-storage/.../sm/`. `ArcadeStateMachine.reinitialize()` seeds `lastAppliedIndex` from `storage.getLatestSnapshot()`; with no marker it seeds -1 and Ratis replays the whole retained log.
 
-The persisted `.raft/applied-index` JSON is read in `reinitialize()` but **never** feeds the replay position. It has exactly three consumers:
+The persisted `.raft/applied-index` JSON is read in `reinitialize()` but **never** feeds the replay position. It has exactly four consumers:
 
 1. the snapshot-gap check that decides whether to download from the leader,
 2. the per-database bootstrap replay-skip in `applyBootstrapFingerprintEntry`,
-3. `hasNeverAppliedApplicationEntry()`, the offline-bootstrap gate.
+3. `hasNeverAppliedApplicationEntry()`, the offline-bootstrap gate,
+4. its `quarantine` object, which carries `divergedDatabases` across a restart (#7735) - the file is only the courier here, chosen so the quarantine and the applied position it qualifies land in one atomic rename.
 
 **Consequence:** to make a committed-but-unapplied entry replayable you must control what `takeSnapshot()` reports. Clamping the applied-index file changes bootstrap behavior and does nothing for durability. This is the single most common wrong turn when chasing a lost-write bug in this module.
+
+**`takeSnapshot()` therefore refuses while any database is quarantined** (#7735). A quarantine skips a committed entry on purpose and lets every later entry advance `lastAppliedIndex` past it, so checkpointing that index authorises Ratis to purge the one entry a restart still has to replay - which is how a per-database quarantine used to turn into permanent silent divergence. The trade is a log that keeps growing while a database is quarantined; that is deliberate, because no `DivergenceCause` heals without a resync and the node is out of the ready set the whole time.
 
 Note that `globalAppliedIndex` and `lastAppliedIndex` track the same value on the apply path but are seeded independently, so they can briefly differ right after `reinitialize()`. Do not assert equality across that window.
 
@@ -92,11 +95,36 @@ The same issue moved decode failures off the node-halt path: a `RaftLogEntryDeco
 
 The first answer was a setting - `arcadedb.ha.schemaDelta`, off by default, with "upgrade every node first, then turn it on" in its javadoc. That is an operator instruction enforced by nothing, which is #7219.
 
-**Do not add another one.** Since #7219 a node publishes what it can decode at `POST /api/v1/cluster/capabilities`, the leader polls every peer in its Raft configuration every `PeerCapabilityRegistry.REFRESH_PERIOD_MS`, and an optional section is written only when every peer has answered that it understands it. To add a section:
+**Do not add another one.** Since #7219 a node publishes what it can decode at `POST /api/v1/cluster/capabilities`, every node polls every peer in its Raft configuration every `PeerCapabilityRegistry.REFRESH_PERIOD_MS` (the leader alone until #7549 moved it onto every role), and an optional section is written only when every peer has answered that it understands it. To add a section:
 
 1. add a token to `PeerCapabilities` (permanent spelling - renaming one makes every older peer read as incapable, which is safe but silently turns the feature off cluster-wide) and put it in `PeerCapabilities.LOCAL`;
-2. gate the *emission* on `RaftHAServer.peersMissingCapability(token).isEmpty()`, the way `RaftReplicatedDatabase.schemaDeltaEnabled()` does;
+2. gate the *emission* on the capability - but **pick the accessor by asking who can WRITE the section, not by
+   what happens on a "no"**. `RaftHAServer.peersMissingCapability` reads the registry the background monitor
+   fills, and is the right accessor for a section none but the leader ever emits - which is what
+   `RaftReplicatedDatabase.schemaDeltaEnabled()` is. A section any node may emit reads
+   `RaftHAServer.peersMissingCapabilityNow`, which consults that cache first and runs one bounded synchronous
+   round when it is not already a full "yes".
+   **The rule survived #7549 but its reason changed, so do not re-derive it from the old one.** Until then the
+   monitor ran on the leader alone, so a follower's registry was empty by construction and the cached accessor
+   was simply wrong there. Now every node fills its own, and a follower's answer is as good as a leader's once
+   its first round has landed - but "once its first round has landed" is the whole of what is left: a node that
+   has just started has an empty registry and would read every peer as incapable. So the accessor is still
+   picked by who can WRITE the section, and the ask-now variant still exists, for a window rather than for a
+   role;
 3. leave decoding unconditional, so the upgrade stays a one-way ratchet - every node reads the section before any node writes one.
+
+Step 2 is where #7559 came from, and it is worth being precise about why, because the obvious reading of the
+paragraph below - "a degrading section may read the cache, only a refusing one must ask" - is the reading that
+produced the bug. #7509 appends a compare-and-set precondition to a security entry, which degrades safely: no
+precondition is the pre-#7509 behaviour. It still gated on the cached answer and was therefore correct on the
+leader alone, and **any** node submits a security entry - the REST group and API-token routes do not forward,
+nor do the openCypher `CREATE USER` / `ALTER USER` / `DROP USER` commands, which arrive through `SecurityManager`
+on the engine side and have no exchange to forward. On a follower the registry named every peer as missing,
+the precondition was dropped, and the feature was off wherever it was needed most. The inverse case is just as
+real: a node demoted from leadership keeps its advertisements until they age out
+(`PeerCapabilityRegistry.ADVERTISEMENT_TTL_MS`, 20 s), so a cache can also answer "all clear" about a cluster that
+has since taken on an older node - and two nodes disagreeing about whether to write a section is a DIVERGENCE, not
+a degradation. Uniformity of the verdict across nodes is the property, and only the ask-now accessor has it.
 
 Three things about that mechanism that are easy to get wrong:
 
@@ -126,12 +154,14 @@ needs a token. That is the mechanism, not a reminder.
 
 Two things that are specific to a refusal and do not apply to a withheld section:
 
-- **It must not read a stale cache.** The background capability monitor runs on the LEADER only, because #7219's
-  only consumer was leader-side. A refusal is not: the group and API-token REST routes do not forward, so
-  `ServerSecurity.saveGroupClusterWide` runs on whichever node the client hit and submits through a Raft client
-  that routes to the leader. `peersMissingCapability` alone would therefore refuse every group change ever made on
-  a FOLLOWER, on a healthy single-version cluster. Gate on **`peersMissingCapabilityNow`**, which reads the cache
-  first and runs one synchronous round only when that is not already a full "yes".
+- **It must not read a cache that has not been filled yet.** The background capability monitor ran on the LEADER
+  only until #7549, because #7219's only consumer was leader-side. A refusal is not: the group and API-token REST
+  routes do not forward, so `ServerSecurity.saveGroupClusterWide` runs on whichever node the client hit and
+  submits through a Raft client that routes to the leader. `peersMissingCapability` alone therefore refused every
+  group change ever made on a FOLLOWER, on a healthy single-version cluster - which is #7559. #7549 has since put
+  the monitor on every node, so that is now a cold-start window rather than a permanent property of the role, and
+  the remedy is unchanged: gate on **`peersMissingCapabilityNow`**, which reads the cache first and runs one
+  synchronous round only when that is not already a full "yes".
 - **Strictness costs availability, so it needs an escape hatch.** "Every unknown is a no" turns an unreachable node
   into a refusal, and for `SECURITY_API_TOKENS_ENTRY` that includes a REVOCATION during an incident.
   `arcadedb.ha.securityEntryCapabilityGate` (default true) is how an operator who knows the unreachable node

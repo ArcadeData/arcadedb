@@ -67,7 +67,10 @@ public class TimeSeriesApiSpec implements OpenApiContributor {
             Ingests one or more samples expressed in InfluxDB Line Protocol. The measurement name \
             selects the time-series type, tags select the series, and fields carry the values.
 
-            The body may be gzip-compressed by sending Content-Encoding: gzip. A fully accepted \
+            The body may be gzip-compressed by sending Content-Encoding: gzip, in which case it is \
+            bounded twice: by arcadedb.server.httpBodyContentMaxSize on the wire, and by \
+            arcadedb.server.httpBodyContentDecompressedMaxSize once decoded. A body that decodes past \
+            the second answers 413 naming that setting and the ceiling. A fully accepted \
             request answers 204 with no body; a request whose samples could not all be applied \
             answers 400 with the counts of what was written and dropped, so a client can tell a total \
             rejection from a partial one.
@@ -99,6 +102,8 @@ public class TimeSeriesApiSpec implements OpenApiContributor {
     responses.addApiResponse("401", SpecBuilders.errorResponse("Unauthorized"));
     responses.addApiResponse("403", SpecBuilders.errorResponse("Forbidden"));
     responses.addApiResponse("404", SpecBuilders.errorResponse(WRITE_STALE_SESSION_DESCRIPTION));
+    responses.addApiResponse("413", SpecBuilders.errorResponse(
+        "The gzip body decodes past arcadedb.server.httpBodyContentDecompressedMaxSize"));
     responses.addApiResponse("500", SpecBuilders.errorResponse("Internal server error"));
     responses.get("204").addHeaderObject(SESSION_HEADER, SpecBuilders.stringHeader(SESSION_RESPONSE_DESCRIPTION));
     post.setResponses(responses);

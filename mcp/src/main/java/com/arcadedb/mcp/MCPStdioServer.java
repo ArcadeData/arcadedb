@@ -62,27 +62,54 @@ public class MCPStdioServer {
     if (rootPassword == null || rootPassword.isEmpty()) {
       System.err.println("ERROR: arcadedb.server.rootPassword must be set for MCP stdio mode");
       System.exit(1);
+      return;
     }
 
-    final ArcadeDBServer server = new ArcadeDBServer(new ContextConfiguration());
+    final int status = startup(new ArcadeDBServer(new ContextConfiguration()), rootPassword, System.in, mcpOut);
+    if (status != 0)
+      System.exit(status);
+  }
+
+  /**
+   * Starts {@code server}, runs the stdio loop on it and returns the status the JVM must exit with: {@code 0}
+   * only when the loop ended the way it is meant to (stdin closed), {@code 1} for every fatal startup condition.
+   * <p>
+   * This process is always launched by a supervisor - mcp-proxy, Claude Desktop, Cursor, a systemd unit, a
+   * container runtime - and all of them read the exit status. The catch-all arm used to print the stack trace and
+   * let {@code main} return, so a wrong root password, a port already bound or an unreadable database directory
+   * exited <b>0</b>: the supervisor read "this finished its work", and there was no restart, no crash-loop
+   * backoff and no alert for a server that is simply not there (issue #7798).
+   * <p>
+   * The two early failures that already exited non-zero did it with {@code System.exit(1)} from INSIDE the
+   * {@code try}, which skips the {@code finally} - so the "MCP plugin is not installed" path left the server it
+   * had just started running while the JVM tore down. Returning a status instead means every path, failure
+   * included, goes through {@link ArcadeDBServer#stop()} exactly once before the status is acted on.
+   * <p>
+   * Package-private, and taking the server rather than building it, so the status contract can be tested without
+   * booting a real one.
+   */
+  static int startup(final ArcadeDBServer server, final String rootPassword, final InputStream in,
+      final PrintStream out) {
     try {
       server.start();
 
       final MCPPlugin plugin = MCPPlugin.of(server);
       if (plugin == null) {
         System.err.println("ERROR: the MCP plugin is not installed on this server");
-        System.exit(1);
+        return 1;
       }
       final MCPConfiguration config = plugin.getConfiguration();
       config.setEnabled(true);
 
       final ServerSecurityUser user = server.getSecurity().authenticate("root", rootPassword, null);
 
-      final MCPStdioServer stdioServer = new MCPStdioServer(server, config, user, System.in, mcpOut);
-      stdioServer.run();
+      new MCPStdioServer(server, config, user, in, out).run();
+      return 0;
+
     } catch (final Exception e) {
       System.err.println("ERROR: " + e.getMessage());
       e.printStackTrace(System.err);
+      return 1;
     } finally {
       server.stop();
     }

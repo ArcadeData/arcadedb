@@ -61,28 +61,6 @@ class TimeSeriesSingleBucketAnchorTest extends TestHelper {
   }
 
   @Test
-  void aggregateSingleBucketWithMinValueFromTsIsNotSentinel() throws Exception {
-    database.begin();
-    engine = new TimeSeriesEngine((DatabaseInternal) database, "ts_single_bucket", COLS, 1);
-    engine.appendSamples(new long[] { 1000L, 2000L, 3000L }, new Object[] { 10.0, 20.0, 30.0 });
-    database.commit();
-
-    database.begin();
-    // bucketIntervalMs = 0 -> single bucket; fromTs = Long.MIN_VALUE -> "no lower bound" sentinel
-    final AggregationResult result = engine.aggregate(Long.MIN_VALUE, Long.MAX_VALUE, 0,
-        AggregationType.SUM, 0, null);
-
-    // All three rows collapse into one bucket
-    assertThat(result.size()).isEqualTo(1);
-    // The bug: the bucket key was Long.MIN_VALUE (the sentinel). It must be the epoch anchor instead.
-    assertThat(result.getBucketTimestamp(0)).isEqualTo(0L);
-    // SUM is unaffected by the anchor
-    assertThat(result.getValue(0)).isEqualTo(60.0);
-    assertThat(result.getCount(0)).isEqualTo(3);
-    database.commit();
-  }
-
-  @Test
   void aggregateSingleBucketWithRealFromTsKeepsAnchor() throws Exception {
     database.begin();
     engine = new TimeSeriesEngine((DatabaseInternal) database, "ts_single_bucket_real", COLS, 1);
@@ -91,13 +69,14 @@ class TimeSeriesSingleBucketAnchorTest extends TestHelper {
 
     database.begin();
     // A real lower bound must still anchor the single bucket at fromTs (unchanged behavior).
-    final AggregationResult result = engine.aggregate(1000L, Long.MAX_VALUE, 0,
-        AggregationType.SUM, 0, null);
+    final MultiColumnAggregationResult result = engine.aggregateMulti(1000L, Long.MAX_VALUE,
+        List.of(new MultiColumnAggregationRequest(1, AggregationType.SUM, "sum"),
+            new MultiColumnAggregationRequest(1, AggregationType.COUNT, "count")), 0, null);
 
     assertThat(result.size()).isEqualTo(1);
-    assertThat(result.getBucketTimestamp(0)).isEqualTo(1000L);
-    assertThat(result.getValue(0)).isEqualTo(60.0);
-    assertThat(result.getCount(0)).isEqualTo(3);
+    assertThat(result.getBucketTimestamps().getFirst()).isEqualTo(1000L);
+    assertThat(result.getValue(1000L, 0)).isEqualTo(60.0);
+    assertThat(result.getValue(1000L, 1)).isEqualTo(3.0);
     database.commit();
   }
 
@@ -114,13 +93,14 @@ class TimeSeriesSingleBucketAnchorTest extends TestHelper {
     database.commit();
 
     database.begin();
-    final AggregationResult result = engine.aggregate(1000L, Long.MAX_VALUE, 0,
-        AggregationType.SUM, 0, null);
+    final MultiColumnAggregationResult result = engine.aggregateMulti(1000L, Long.MAX_VALUE,
+        List.of(new MultiColumnAggregationRequest(1, AggregationType.SUM, "sum"),
+            new MultiColumnAggregationRequest(1, AggregationType.COUNT, "count")), 0, null);
 
     assertThat(result.size()).isEqualTo(1);
-    assertThat(result.getBucketTimestamp(0)).isEqualTo(1000L);
-    assertThat(result.getValue(0)).isEqualTo(100.0);
-    assertThat(result.getCount(0)).isEqualTo(4);
+    assertThat(result.getBucketTimestamps().getFirst()).isEqualTo(1000L);
+    assertThat(result.getValue(1000L, 0)).isEqualTo(100.0);
+    assertThat(result.getValue(1000L, 1)).isEqualTo(4.0);
     database.commit();
   }
 
@@ -143,29 +123,6 @@ class TimeSeriesSingleBucketAnchorTest extends TestHelper {
     assertThat(buckets).hasSize(1);
     assertThat(buckets.get(0)).isEqualTo(0L);
     assertThat(result.getValue(buckets.get(0), 0)).isEqualTo(60.0);
-    database.commit();
-  }
-
-  @Test
-  void aggregateSingleColumnSingleBucketReadsSealedData() throws Exception {
-    database.begin();
-    engine = new TimeSeriesEngine((DatabaseInternal) database, "ts_single_bucket_sealed_col", COLS, 1);
-    engine.appendSamples(new long[] { 1000L, 2000L, 3000L, 4000L }, new Object[] { 10.0, 20.0, 30.0, 40.0 });
-    database.commit();
-
-    // Force the sealed-store path so TimeSeriesSealedStore.aggregate() (single-column) is exercised.
-    database.begin();
-    engine.compactAll();
-    database.commit();
-
-    database.begin();
-    final AggregationResult result = engine.aggregate(Long.MIN_VALUE, Long.MAX_VALUE, 0,
-        AggregationType.SUM, 0, null);
-
-    assertThat(result.size()).isEqualTo(1);
-    assertThat(result.getBucketTimestamp(0)).isEqualTo(0L);
-    assertThat(result.getValue(0)).isEqualTo(100.0);
-    assertThat(result.getCount(0)).isEqualTo(4);
     database.commit();
   }
 

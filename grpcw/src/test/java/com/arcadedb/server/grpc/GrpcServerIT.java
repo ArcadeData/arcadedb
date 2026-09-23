@@ -20,7 +20,6 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.BaseGraphServerTest;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
 import io.grpc.ClientCall;
@@ -52,9 +51,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-public class GrpcServerIT extends BaseGraphServerTest {
-
-  private static final int GRPC_PORT = 50051;
+public class GrpcServerIT extends BaseGrpcServerTest {
 
   private static final Metadata.Key<String> USER_HEADER =
       Metadata.Key.of("x-arcade-user", Metadata.ASCII_STRING_MARSHALLER);
@@ -79,7 +76,7 @@ public class GrpcServerIT extends BaseGraphServerTest {
 
   @BeforeEach
   void setupGrpcClient() {
-    channel = ManagedChannelBuilder.forAddress("localhost", GRPC_PORT)
+    channel = ManagedChannelBuilder.forAddress("localhost", getServerGrpcPort())
         .usePlaintext()
         .build();
     blockingStub = ArcadeDbServiceGrpc.newBlockingStub(channel);
@@ -139,7 +136,7 @@ public class GrpcServerIT extends BaseGraphServerTest {
    * Helper to login via HTTP and get a token
    */
   private String loginAndGetToken(final String username, final String password) throws Exception {
-    final HttpURLConnection conn = (HttpURLConnection) new URI("http://localhost:2480/api/v1/login").toURL().openConnection();
+    final HttpURLConnection conn = (HttpURLConnection) new URI(getServerHttpUrl("/api/v1/login")).toURL().openConnection();
     conn.setRequestMethod("POST");
     conn.setRequestProperty("Authorization",
         "Basic " + Base64.getEncoder().encodeToString((username + ":" + password).getBytes(StandardCharsets.UTF_8)));
@@ -158,7 +155,7 @@ public class GrpcServerIT extends BaseGraphServerTest {
    * Helper to logout via HTTP to invalidate a token
    */
   private void logout(final String token) throws Exception {
-    final HttpURLConnection conn = (HttpURLConnection) new URI("http://localhost:2480/api/v1/logout").toURL().openConnection();
+    final HttpURLConnection conn = (HttpURLConnection) new URI(getServerHttpUrl("/api/v1/logout")).toURL().openConnection();
     conn.setRequestMethod("POST");
     conn.setRequestProperty("Authorization", "Bearer " + token);
     conn.getResponseCode(); // Execute request

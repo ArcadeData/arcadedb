@@ -163,9 +163,13 @@ class Issue7578SecurityAdminBodiesAreSchematizedTest {
     final Schema<?> listed = schema("ApiTokenList").getProperties().get("result").getItems();
     assertThat(listed.getProperties()).doesNotContainKey("token");
     assertThat(listed.getRequired())
-        .as("ServerControlPlane.listApiTokens builds each entry as one block of seven puts")
+        .as("ServerControlPlane.listApiTokens builds each entry as one block of puts")
         .containsExactlyInAnyOrder("name", "database", "expiresAt", "createdAt", "permissions", "tokenHash",
             "tokenSuffix");
+    assertThat(listed.getProperties())
+        .as("'expired' is declared but not required: the schema is shared with the mint response, and only the "
+            + "listing derives it (issue #7601)")
+        .containsKey("expired");
 
     final Schema<?> minted = (Schema<?>) schema("CreateApiTokenResponse").getProperties().get("result");
     assertThat(minted.getProperties().keySet())

@@ -197,12 +197,13 @@ public class ArraySingleValuesSelector extends SimpleNode {
     }
     case Set set -> {
       final Iterator iterator = set.iterator();
-      final int count = 0;
+      int count = 0;
       while (iterator.hasNext()) {
         final Object item = iterator.next();
         if (values.contains(count) || values.contains(item)) {
           iterator.remove();
         }
+        count++;
       }
     }
     case Map map -> {

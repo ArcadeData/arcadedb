@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.procedures.merge;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
@@ -27,6 +28,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.parser.Identifier;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -34,18 +36,32 @@ import java.util.Map;
 import java.util.stream.Stream;
 
 /**
- * Procedure: merge.node(labels, matchProps, createProps)
+ * Procedure: merge.node(labels, matchProps, createProps = {}, onMatchProps = {})
  * <p>
  * Merges a node with the specified labels. If a node with the given labels
- * and matching properties exists, it returns the existing node. Otherwise,
- * it creates a new node with both matchProps and createProps.
+ * and matching properties exists, it returns the existing node - applying
+ * {@code onMatchProps} to it. Otherwise, it creates a new node with both
+ * matchProps and createProps.
+ * </p>
+ * <p>
+ * Both {@code createProps} and {@code onMatchProps} are optional and default to an empty map, matching APOC's
+ * {@code apoc.merge.node(labels :: LIST<STRING>, identProps :: MAP, onCreateProps = {} :: MAP, onMatchProps = {} ::
+ * MAP)} - a call that omits either is the shape APOC's own documentation example uses (issue #8102).
  * </p>
  * <p>
  * Example:
  * <pre>
  * CALL merge.node(['Person'], {name: 'John'}, {age: 30}) YIELD node
  * RETURN node
+ *
+ * CALL merge.node(['Person'], {name: 'John'}) YIELD node
+ * RETURN node
  * </pre>
+ * </p>
+ * <p>
+ * {@code onMatchProps} mirrors APOC's {@code apoc.merge.node(labels, identProps, onCreateProps, onMatchProps)}:
+ * a fourth, optional map applied to the node only when it already existed, exactly as {@code createProps} is
+ * applied only when the node is newly created (issue #8117).
  * </p>
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
@@ -58,14 +74,19 @@ public class MergeNode implements CypherProcedure {
     return NAME;
   }
 
+  /**
+   * Two, not three: APOC declares {@code onCreateProps} with a default, so a call that omits it is a call this
+   * procedure has to accept (issue #8102), exactly as {@code refactor.mergeNodes} had to for its own trailing
+   * {@code config} (issue #7427). {@link #extractOptionalMap} supplies the absent map in its place.
+   */
   @Override
   public int getMinArgs() {
-    return 3;
+    return 2;
   }
 
   @Override
   public int getMaxArgs() {
-    return 3;
+    return 4;
   }
 
   @Override
@@ -91,7 +112,8 @@ public class MergeNode implements CypherProcedure {
     // Extract arguments
     final List<String> labels = extractLabels(args[0]);
     final Map<String, Object> matchProps = extractMap(args[1], "matchProps");
-    final Map<String, Object> createProps = extractMap(args[2], "createProps");
+    final Map<String, Object> createProps = extractOptionalMap(args, 2, "createProps");
+    final Map<String, Object> onMatchProps = extractOptionalMap(args, 3, "onMatchProps");
 
     if (labels.isEmpty()) {
       throw new IllegalArgumentException(getName() + "(): at least one label is required");
@@ -108,9 +130,19 @@ public class MergeNode implements CypherProcedure {
     // Try to find existing node matching the criteria
     final Vertex existingNode = findMatchingNode(database, typeName, labels, matchProps);
 
-    if (existingNode != null)
+    if (existingNode != null) {
+      // Apply onMatchProps to the existing node, mirroring how createProps is applied on the create branch
+      if (onMatchProps != null && !onMatchProps.isEmpty()) {
+        final MutableVertex mutableNode = existingNode.modify();
+        for (final Map.Entry<String, Object> entry : onMatchProps.entrySet()) {
+          mutableNode.set(entry.getKey(), entry.getValue());
+        }
+        mutableNode.save();
+        return createResultStream(mutableNode);
+      }
       // Return existing node
       return createResultStream(existingNode);
+    }
 
     // Create new node with both matchProps and createProps
     final MutableVertex newNode = database.newVertex(typeName);
@@ -136,13 +168,20 @@ public class MergeNode implements CypherProcedure {
 
   /**
    * Finds an existing vertex with the given type/labels that matches all the specified properties.
+   * <p>
+   * The type name and every match-property key are caller-supplied - {@code merge.node(labels, matchProps, ...)}
+   * takes them straight from the procedure arguments - so both are emitted through {@link Identifier#quote}
+   * rather than spliced between raw back-ticks. Inside a back-tick quoted identifier a backslash escapes the
+   * character after it, so a raw splice of {@code a\b} named the property {@code ab} (a lookup that matches
+   * nothing, hence a duplicate node) and a raw splice of {@code a\} swallowed the closing back-tick and ran the
+   * rest of the statement into the identifier. Same defect and same helper as the Postgres COPY path in #7858
+   * (issue #8072).
    */
   private Vertex findMatchingNode(final Database database, final String typeName,
                                   final List<String> labels, final Map<String, Object> matchProps) {
     // Build query to find matching node
-    final StringBuilder query = new StringBuilder("SELECT FROM `");
-    query.append(typeName);
-    query.append("`");
+    final StringBuilder query = new StringBuilder("SELECT FROM ");
+    query.append(Identifier.quote(typeName));
 
     final List<Object> queryParams = new ArrayList<>();
 
@@ -153,7 +192,7 @@ public class MergeNode implements CypherProcedure {
         if (!first) {
           query.append(" AND ");
         }
-        query.append("`").append(entry.getKey()).append("` = ?");
+        query.append(Identifier.quote(entry.getKey())).append(" = ?");
         queryParams.add(entry.getValue());
         first = false;
       }
@@ -179,7 +218,21 @@ public class MergeNode implements CypherProcedure {
     return Stream.of(result);
   }
 
-  @SuppressWarnings("unchecked")
+  /**
+   * Reads the {@code labels} argument, validating every entry as a name a vertex type can actually be created
+   * under.
+   * <p>
+   * The entries are caller-supplied, and the procedure turns them into a type name, so they get the same check the
+   * other openCypher write paths apply - {@code toString()}-ing whatever arrived used to make a number a label and,
+   * worse, let a label carrying {@link Labels#LABEL_SEPARATOR} through: the separator is how a composite type name
+   * encodes the boundary between its labels, so {@code ['A~B', 'C']} and {@code ['A', 'B~C']} both named the type
+   * {@code A~B~C} and the second call merged onto the node the first one had created (issue #8100).
+   * <p>
+   * The refusal is a {@link CommandSemanticException} rather than this class's usual
+   * {@link IllegalArgumentException} so it keeps its identity through {@code CallStep}, which turns any other
+   * exception into a {@code null} row under {@code OPTIONAL CALL} - a malformed argument is a malformed argument
+   * inside {@code OPTIONAL CALL} too.
+   */
   private List<String> extractLabels(final Object arg) {
     switch (arg) {
       case null -> {
@@ -189,13 +242,13 @@ public class MergeNode implements CypherProcedure {
         final List<String> result = new ArrayList<>();
         for (final Object item : list) {
           if (item != null) {
-            result.add(item.toString());
+            result.add(requireUsableLabel(item));
           }
         }
         return result;
       }
       case String s -> {
-        return List.of(s);
+        return List.of(requireUsableLabel(s));
       }
       default -> {
       }
@@ -203,6 +256,26 @@ public class MergeNode implements CypherProcedure {
 
     throw new IllegalArgumentException(
         getName() + "(): labels must be a list or string, got " + arg.getClass().getSimpleName());
+  }
+
+  private String requireUsableLabel(final Object item) {
+    if (!(item instanceof String label))
+      throw new CommandSemanticException(getName() + "(): every label must be a string, but got "
+          + item.getClass().getSimpleName() + " (" + item + ")");
+    return Labels.requireUsableLabelName(label, "a label passed to " + getName() + "()");
+  }
+
+  /**
+   * The map at {@code index}, or the empty map when the caller stopped short of that argument - the value APOC
+   * declares as its default, so the absent slot carries the default itself rather than a {@code null} that only
+   * happens to behave like one downstream. {@code validateArgs} has already run, so a shorter array means the
+   * argument is one APOC declares with a default and not a malformed call (issue #8102).
+   * <p>
+   * An explicitly passed {@code null} still resolves to {@code null}, via {@link #extractMap}; {@link #execute}
+   * sets no property from either.
+   */
+  private Map<String, Object> extractOptionalMap(final Object[] args, final int index, final String paramName) {
+    return index < args.length ? extractMap(args[index], paramName) : Map.of();
   }
 
   @SuppressWarnings("unchecked")

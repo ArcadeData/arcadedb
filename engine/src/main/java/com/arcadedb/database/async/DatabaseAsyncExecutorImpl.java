@@ -74,7 +74,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   /**
    * Test-only fault-injection hook. Invoked with a call number - 1 on this worker's first-ever call,
    * counting up from there across every {@code commitBatch()} call the worker makes for the rest of its
-   * lifetime, not reset per call (claude-review) - right before each attempt of
+   * lifetime, not reset per call (code review) - right before each attempt of
    * {@code AsyncThread#commitBatch}'s commit of the shared per-worker batch transaction - both the periodic
    * {@code commitEvery} boundary reached from {@code executeTask()} and the dangling-tail-batch flush
    * {@code DatabaseAsyncCompletion} runs at {@code waitCompletion()}/shutdown time - and, with a constant
@@ -291,7 +291,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     // fired on the first, now-discarded attempt) and to let a failure during replay propagate to
     // commitBatch() instead of being handled - and the whole batch silently rolled back - locally.
     private volatile boolean                    replayingBatch           = false;
-    // Monotonic call counter feeding TEST_BEFORE_BATCH_COMMIT_HOOK's argument (claude-review: "1-based"
+    // Monotonic call counter feeding TEST_BEFORE_BATCH_COMMIT_HOOK's argument (code review: "1-based"
     // describes the first value the hook ever sees on this worker, not a per-commitBatch() reset - it
     // keeps counting up across every commitBatch() call this worker ever makes in its lifetime, the same
     // way completedTaskCount above does for tasks). Thread-confined, same as pendingBatchCommands - only
@@ -340,7 +340,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
      * shared batch, and so must not read as a replacement.
      * <p>
      * And deliberately keyed on {@code TransactionContext.getCommitCount()} rather than on a begin counter
-     * (claude-review on PR #7850). A statement that ROLLED the shared batch back and began another would move a
+     * (code review on PR #7850). A statement that ROLLED the shared batch back and began another would move a
      * begin counter identically, and the two outcomes are opposites here: after a commit the buffered writes are
      * durable and must be dropped in silence, after a rollback they are gone and their submitters must be told.
      * Counting commits means the rollback case simply does not match and keeps the pre-existing reporting path,
@@ -575,7 +575,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
             // retry-by-replay off for this batch instead of fabricating a duplicate, and still reports through
             // notifyBatchAbandoned if that batch is ultimately given up on.
             clearBatchState();
-            // Unconditional, and deliberately so (claude-review on PR #7850). A statement whose writes ALL went out
+            // Unconditional, and deliberately so (code review on PR #7850). A statement whose writes ALL went out
             // in mid-statement commits - `DELETE ... BATCH n` where n divides the row count exactly, so the
             // transaction it leaves open is empty - is fully durable, yet it is still buffered here and so still
             // receives onError if a LATER task's boundary commit abandons the batch. That is the conservative half
@@ -623,7 +623,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         onError(e);
         // SAME GUARD AS ABOVE: A NESTED ROLLBACK WOULD DESTROY THE SUSPENDED TASK'S WRITES
         if (!nested) {
-          // #7615 (claude-review): `message` itself threw uncaught here - e.g. CreateEdgeAsyncTask and its
+          // #7615 (code review): `message` itself threw uncaught here - e.g. CreateEdgeAsyncTask and its
           // siblings have no try/catch of their own at all - so this rollback destroys not just its own
           // (never-buffered) write but every DatabaseAsyncCommand/unreplayable task already buffered
           // earlier in this same batch, each of which already fired its own onComplete. Told individually
@@ -666,7 +666,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
      * executor-wide {@code onError} exactly as before, so nothing about that contract changes - only the
      * commands that used to vanish silently now hear about it too.
      * <p>
-     * <b>Cost, on conflict (claude-review):</b> a replay is not a cheap re-commit - it re-executes every
+     * <b>Cost, on conflict (code review):</b> a replay is not a cheap re-commit - it re-executes every
      * buffered command, so worst-case retry cost scales as {@code commitEvery * TX_RETRIES}. That is
      * inherent to "retry instead of losing the batch" (the alternative is the data loss issue #7615 is
      * about), but this worker's {@code completedTaskCount} - the progress probe the cross-slot stall
@@ -675,7 +675,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
      * to a producer parked on its full queue. Not a concern at {@link GlobalConfiguration#TX_RETRIES}'s
      * default of 3; worth remembering before raising it far past that for a specific workload.
      * <p>
-     * <b>Cost, on every batch, not just on conflict (claude-review):</b> {@link #pendingBatchCommands}
+     * <b>Cost, on every batch, not just on conflict (code review):</b> {@link #pendingBatchCommands}
      * itself is a new retention cost, independent of whether a conflict ever happens - each buffered
      * {@code DatabaseAsyncCommand} (its command text, parameters, and callback) now stays reachable for the
      * whole {@code commitEvery} window instead of becoming garbage right after its own {@code execute()}
@@ -800,7 +800,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         try {
           task.notifyBatchAbandoned(cause);
         } catch (final Throwable notifyError) {
-          // #7615 (claude-review): every current override of notifyBatchAbandoned() already swallows its
+          // #7615 (code review): every current override of notifyBatchAbandoned() already swallows its
           // own callback's failure, same as DatabaseAsyncCommand#notifyError - wrapped here too, at this
           // single choke point, so that guarantee does not depend on every future override remembering it.
           // Left uncaught, this would both abort the loop (skipping notification for the rest of the
@@ -812,7 +812,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
     /**
      * Drops every command buffered in {@link #pendingBatchCommands}, and every task in
-     * {@link #pendingUnreplayableTasks} (claude-review: both, via {@link #clearBatchState}, not just the
+     * {@link #pendingUnreplayableTasks} (code review: both, via {@link #clearBatchState}, not just the
      * former), without notifying anybody - for a caller that just durably committed them through a path
      * other than {@link #commitBatch} (issue #7615: {@link DatabaseAsyncTransaction#executeTransaction}'s
      * own flush of a dangling prior batch). Replaying them on a LATER, unrelated retry would silently
@@ -945,7 +945,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         // than unconditional so a pool that is genuinely, permanently wedged does not turn this drain into an
         // unbounded wait of its own.
         //
-        // Cannot bounce between two CONCURRENTLY draining pools (claude-review question): resizeThreads() runs
+        // Cannot bounce between two CONCURRENTLY draining pools (code review question): resizeThreads() runs
         // its three publish steps under lifecycleLock, so a second setParallelLevel() call blocks until the first
         // has already unpublished its own retiring workers from executorThreads - there is only ever one
         // "current" live array to reschedule against, never two racing shrinks each offering a different one.
@@ -954,7 +954,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         // is bounded the same way this one is, and the stress test's 20 back-to-back resizes per repeat exercise
         // exactly that chaining without a single drop across 120+ runs.
         //
-        // Cross-covers scheduleTask()'s OWN post-offer check (claude-review, tying the two together): that check's
+        // Cross-covers scheduleTask()'s OWN post-offer check (code review, tying the two together): that check's
         // removeQuietly() can fail to find the task - not because it is safe, but because THIS drain loop's own
         // poll() already won the race and took it first. When that happens the caller-side check does nothing
         // (removeQuietly() false, no throw, no retry there) and it is this reschedule loop, further down the same
@@ -1545,8 +1545,10 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
             ownTx = database.getTransaction();
             // Read AFTER begin() on purpose: TransactionContext.begin()/reset() never touch these two, so this is
-            // still the value that was in force before this method ran - which is what has to go back.
-            previousUseWAL = ownTx.isUseWAL();
+            // still the value that was in force before this method ran - which is what has to go back. The session's
+            // setting rather than the effective one, so a per-transaction override can never be restored into it
+            // (issue #8129).
+            previousUseWAL = ownTx.isSessionUseWAL();
             previousWALFlush = ownTx.getWALFlush();
 
             ownTx.setUseWAL(useWAL);
@@ -2482,7 +2484,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
   /**
    * @param attempt how many times the dead-worker retry a few lines down has already recursed. Capped at 3 for the
-   * same reason {@link AsyncThread#drainQueueNotifyingWaiters()}'s sibling retry is (claude-review, symmetry pass):
+   * same reason {@link AsyncThread#drainQueueNotifyingWaiters()}'s sibling retry is (code review, symmetry pass):
    * the doc comment there argues only one "current" live {@link #executorThreads} array can ever be racing at a
    * time, which bounds this in practice, but nothing STRUCTURALLY stopped it before this cap - a future change to
    * the resize/lifecycle locking that weakened that invariant would have turned this into silent unbounded stack
@@ -2555,7 +2557,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
           // reported exactly as before. #5062 review r4 (point 4): completed() is deliberately NOT invoked on
           // the removed task here - the scheduling caller is still on the stack, so no waiter can be parked on
           // it yet, and the retry either runs it or reports the same terminal failure directly.
-          // attempt >= 2, not 3 (claude-review): this check runs AFTER an attempt already failed, so it gates
+          // attempt >= 2, not 3 (code review): this check runs AFTER an attempt already failed, so it gates
           // the NEXT one - attempt 0 failing recurses to 1, 1 failing recurses to 2, 2 failing throws here,
           // for 3 total tries (the initial call plus two retries). >= 3 would have allowed a fourth, one more
           // than drainQueueNotifyingWaiters()'s sibling loop actually runs, despite both being written to the

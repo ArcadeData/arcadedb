@@ -1966,8 +1966,6 @@ replaced with positive `ALL`/`RAG` assertions and a false `ADMIN` assertion; the
 `"unknown"` case still covers unregistered names.
 
 Docs are a companion PR against ArcadeData/arcadedb-docs.
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
 EOF
 )"
 ```

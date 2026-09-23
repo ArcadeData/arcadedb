@@ -204,9 +204,21 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   public void configure(final ArcadeDBServer arcadeDBServer, final ContextConfiguration configuration) {
   }
 
+  /**
+   * Issue #7545: schedules the {@code server-groups.json} reload watcher, once, for the lifetime of this
+   * service - the mirror of the {@code groupRepository.stop()} that {@link #stopService()} has always done.
+   * <p>
+   * It used to be scheduled only as a side effect of {@link SecurityGroupFileRepository#load()}, i.e. only on a
+   * node that reached {@link SecurityGroupFileRepository#getGroups()} while the in-memory document was still
+   * absent. A node seeded by a replicated {@code SECURITY_GROUPS_ENTRY} before it opened any database gets its
+   * document published straight into memory by {@link #applyReplicatedGroups}, so that branch never ran and the
+   * file was never watched - an operator's hand edit on that node stayed invisible until restart. The
+   * repository keeps its own guard on every publisher; this call additionally makes the watcher independent of
+   * any document ever arriving.
+   */
   @Override
   public void startService() {
-    // NO ACTION
+    groupRepository.startWatching();
   }
 
   public void loadUsers() {
@@ -1248,7 +1260,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * they all hold the same value - and it survives a restart, because it is on disk.</li>
    * </ul>
    * Neither is the document currently in force, and that is the point. Comparing against the LIVE document was the
-   * defect #7693 reports and, in its second form, what claude-review and CodeRabbit both caught on PR #7748:
+   * defect #7693 reports and, in its second form, what the code review and CodeRabbit both caught on PR #7748:
    * <ul>
    * <li>before the first replicated entry the live documents differ by construction - each node bootstraps its own
    * {@code root} with an independently salted password hash, so three nodes of a statically configured cluster (one
@@ -1631,6 +1643,21 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * change is not blocked for three consecutive Raft round trips. Each is best-effort and independent: the
    * failures are collected and returned rather than thrown, so one failing seed does not skip the other two.
    * <p>
+   * <b>A seed is submitted UNCONDITIONALLY, and that is not an oversight</b> (issue #7834). The obvious
+   * hardening - give the seed the compare-and-set precondition of issue #7509, so a change committed on another
+   * node between this read and the apply cannot be undone by the whole document a seed carries - does not work,
+   * and fails in the one case a seed exists for. {@link #isSuperseded} compares the precondition against the
+   * fingerprint of the last replicated document THE APPLYING NODE installed, which is the only value that is
+   * the same everywhere (issue #7693). On a peer whose baseline has drifted - which is precisely a peer that
+   * missed entries, joined late, or caught up by a snapshot install - that value does NOT match, so the peer
+   * would refuse the very seed sent to repair it. Weakening the comparison so the stale peer accepts while a
+   * caught-up peer refuses would not fix that either: it manufactures a divergence, with the revoked credential
+   * living on exactly the node that was already behind.
+   * <p>
+   * What closes the window instead is having a single seeder: one node, one monitor, one read-and-submit
+   * sequence per admission (issue #7834). The residual window - a security change committed on ANOTHER node
+   * between this read and this entry's apply - is pre-existing and is not made worse by any of that.
+   * <p>
    * This form makes one attempt per document. An admission path wants
    * {@link #seedSecurityStateClusterWide(long)} instead, which retries the ones that failed (issue #7521).
    *
@@ -1638,6 +1665,44 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    */
   public List<String> seedSecurityStateClusterWide() {
     return seedSecurityStateClusterWide(0L);
+  }
+
+  /**
+   * The cluster-replicated security documents this node has never installed a replicated copy of, in the order
+   * {@link #seedSecurityStateClusterWide} reports its failures (issue #7532).
+   * <p>
+   * <b>What it answers.</b> Not "is this node's document stale" - nothing local can answer that - but the one
+   * question that is locally decidable and is the one the readiness gate needs: <b>is what this node enforces
+   * something the cluster installed, or is it this node's own config directory?</b> The distinction is the same
+   * one {@link ReplicatedSecurityFingerprintRepository} was built for, read here for a second purpose: a recorded
+   * fingerprint exists if and only if an {@code applyReplicated*} has installed that document from the replicated
+   * log, so its absence means every credential, group and API token this node enforces for that document came off
+   * its own disk.
+   * <p>
+   * That is exactly the state a freshly admitted peer is in between the commit of its membership change and the
+   * landing of the admission seed - the window issue #7521's bounded retry shortens but, because the seed is
+   * submitted only after {@code addPeer} returns, cannot close - and the state it stays in when the seed never
+   * lands at all, which is the residual failure both admission verbs now report.
+   * <p>
+   * <b>It also reports a cluster that has simply never replicated a security document</b>, because such a cluster
+   * has no node with a recorded fingerprint and there is no local way to tell the two apart. That is why the
+   * readiness gate consuming this is bounded by a window that is zero by default: see
+   * {@code arcadedb.ha.securityConvergenceReadinessTimeout}.
+   * <p>
+   * Free of this object's monitor and of any filesystem access - the repository answers from the map it read at
+   * construction - so a readiness probe may call it on any thread as often as it likes.
+   *
+   * @return the document names, empty when all three have been installed from the replicated log
+   */
+  public List<String> unconvergedClusterSecurityDocuments() {
+    final List<String> unconverged = new ArrayList<>(3);
+    if (replicatedFingerprints.get(ReplicatedSecurityFingerprintRepository.USERS) == null)
+      unconverged.add("users");
+    if (replicatedFingerprints.get(ReplicatedSecurityFingerprintRepository.GROUPS) == null)
+      unconverged.add("groups");
+    if (replicatedFingerprints.get(ReplicatedSecurityFingerprintRepository.API_TOKENS) == null)
+      unconverged.add("API tokens");
+    return unconverged;
   }
 
   /**

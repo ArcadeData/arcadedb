@@ -18,6 +18,8 @@
  */
 package com.arcadedb.index.vector;
 
+import java.util.Locale;
+
 /**
  * The wire / storage encoding for vectors flowing into and out of an {@code LSM_VECTOR} index.
  * Distinct from {@link VectorQuantizationType} (the index-internal compression scheme):
@@ -71,7 +73,7 @@ public enum VectorEncoding {
    */
   public static VectorEncoding fromString(final String name) {
     try {
-      return VectorEncoding.valueOf(name.toUpperCase());
+      return VectorEncoding.valueOf(name.toUpperCase(Locale.ROOT));
     } catch (final IllegalArgumentException e) {
       throw new IllegalArgumentException(
           "Invalid vector encoding: " + name + ". Supported values: FLOAT32, INT8", e);

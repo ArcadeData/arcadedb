@@ -23,7 +23,6 @@ import com.arcadedb.database.Database;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.grpc.FullTextSearchRequest;
 import com.arcadedb.server.grpc.FullTextSearchResponse;
 import com.arcadedb.server.grpc.HybridSearchRequest;
@@ -58,11 +57,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * candidate window. Those are the reads that must be transactional, and they are what an uncommitted UPDATE
  * observably changes.
  */
-public class Issue7326GrpcSearchInTransactionIT extends BaseGraphServerTest {
+public class Issue7326GrpcSearchInTransactionIT extends BaseGrpcClientServerTest {
   private static final String TYPE        = "GrpcTx7326";
   private static final String DENSE_INDEX = "GrpcTx7326[embedding]";
   private static final String TEXT_INDEX  = "GrpcTx7326[text]";
-  private static final int    GRPC_PORT   = 50051;
 
   private RemoteGrpcServer   server;
   private RemoteGrpcDatabase database;
@@ -100,8 +98,8 @@ public class Issue7326GrpcSearchInTransactionIT extends BaseGraphServerTest {
   @Override
   public void beginTest() {
     super.beginTest();
-    server = new RemoteGrpcServer("localhost", GRPC_PORT, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
-    database = new RemoteGrpcDatabase(server, "localhost", GRPC_PORT, getServer(0).getHttpServer().getPort(),
+    server = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    database = new RemoteGrpcDatabase(server, "localhost", getServerGrpcPort(), getServer(0).getHttpServer().getPort(),
         getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
   }
 
@@ -332,14 +330,20 @@ public class Issue7326GrpcSearchInTransactionIT extends BaseGraphServerTest {
 
   /**
    * The other half of the parity claim, for the record the transaction created rather than the one it updated.
-   * Neither protocol finds it through the dense vector index and both find it through the full-text index, so
-   * what the two surfaces expose is the same index behaviour rather than a difference introduced by the wire.
-   * If the vector index ever starts resolving uncommitted rows, this test fails on both halves at once and says
-   * which claim to revisit.
+   * <p>
+   * This test used to pin the opposite answer on the vector half - neither protocol found the new row - and said
+   * so explicitly: "if the vector index ever starts resolving uncommitted rows, this test fails on both halves at
+   * once and says which claim to revisit". Issue #7378 is that change. {@code LSMVectorIndex} now merges the
+   * calling transaction's queued entries into its search the way {@code LSMTreeIndex.get()} always has, so both
+   * protocols find the new row through both indexes.
+   * <p>
+   * What the test is for has not moved: it is the parity claim, that the two surfaces expose the same index
+   * behaviour rather than a difference introduced by the wire. Both halves are still asserted against the same
+   * gRPC answer, and the vector half now carries the read-your-own-writes contract as well.
    */
   @Test
   void httpAndGrpcAgreeOnARecordCreatedInsideTheTransaction() {
-    final int grpcVectorHits;
+    final List<String> grpcVectorHits;
     final List<String> grpcFullTextHits;
     database.begin();
     try {
@@ -349,7 +353,7 @@ public class Issue7326GrpcSearchInTransactionIT extends BaseGraphServerTest {
           .setIndexName(DENSE_INDEX)
           .addAllQueryVector(List.of(1.0f, 0.0f, 0.0f))
           .setK(10)
-          .build()).getResultsList()).size();
+          .build()).getResultsList());
       grpcFullTextHits = names(database.fullTextSearch(FullTextSearchRequest.newBuilder()
           .setIndexName(TEXT_INDEX)
           .setQueryText("zulu")
@@ -360,6 +364,12 @@ public class Issue7326GrpcSearchInTransactionIT extends BaseGraphServerTest {
     }
 
     assertThat(grpcFullTextHits).containsExactly("created-in-tx");
+    // Membership, not rank. The seeded 'near' row carries the SAME embedding as the row the transaction inserts,
+    // so the two tie at distance 0 and which of them the search returns first is not a property of this fix -
+    // asserting a position here would be asserting a tie-break.
+    assertThat(grpcVectorHits)
+        .as("issue #7378: the row this transaction just wrote must be a candidate of its own search")
+        .contains("created-in-tx");
 
     try (final RemoteDatabase http = new RemoteDatabase("localhost", getServer(0).getHttpServer().getPort(),
         getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS)) {
@@ -371,9 +381,10 @@ public class Issue7326GrpcSearchInTransactionIT extends BaseGraphServerTest {
             .put("indexName", DENSE_INDEX)
             .put("queryVector", new JSONArray(List.of(1.0, 0.0, 0.0)))
             .put("k", 10))))
-            .as("the dense index scan must miss the new row on HTTP exactly as it does on gRPC")
-            .hasSize(grpcVectorHits)
-            .doesNotContain("created-in-tx");
+            .as("the dense index scan must find the new row on HTTP exactly as it does on gRPC")
+            // Order-insensitive for the same tie reason as above; what the parity claim is about is which rows the
+            // two wires return, not how a tie between two identical vectors is broken on each.
+            .containsExactlyInAnyOrderElementsOf(grpcVectorHits);
         assertThat(httpNames(http.fullTextSearch(new JSONObject()
             .put("indexName", TEXT_INDEX)
             .put("queryText", "zulu")

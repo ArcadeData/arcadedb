@@ -22,7 +22,6 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -40,15 +39,14 @@ import static com.arcadedb.schema.Property.TYPE_PROPERTY;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
-public class RedisWTest extends BaseGraphServerTest {
+public class RedisWTest extends BaseRedisServerTest {
 
-  private static final int DEF_PORT         = GlobalConfiguration.REDIS_PORT.getValueAsInteger();
   private static final int TOTAL_RAM        = 10_000;
   private static final int TOTAL_PERSISTENT = 1_000;
 
   @Test
   void ramCommands() {
-    final Jedis jedis = new Jedis("localhost", DEF_PORT);
+    final Jedis jedis = new Jedis("localhost", getServerRedisPort());
     jedis.auth("root", DEFAULT_PASSWORD_FOR_TESTS);
 
     // PING
@@ -130,7 +128,7 @@ public class RedisWTest extends BaseGraphServerTest {
 
   @Test
   void persistentCommands() {
-    final Jedis jedis = new Jedis("localhost", DEF_PORT);
+    final Jedis jedis = new Jedis("localhost", getServerRedisPort());
     jedis.auth("root", DEFAULT_PASSWORD_FOR_TESTS);
 
     final Database database = getServerDatabase(0, getDatabaseName());
@@ -248,7 +246,7 @@ public class RedisWTest extends BaseGraphServerTest {
 
   @Test
   void transientCommands() {
-    final Jedis jedis = new Jedis("localhost", DEF_PORT);
+    final Jedis jedis = new Jedis("localhost", getServerRedisPort());
     jedis.auth("root", DEFAULT_PASSWORD_FOR_TESTS);
 
     // HSET transient (JSON objects to globalVariables)
@@ -313,7 +311,7 @@ public class RedisWTest extends BaseGraphServerTest {
 
   @Test
   void commandNotSupported() {
-    final Jedis jedis = new Jedis("localhost", DEF_PORT);
+    final Jedis jedis = new Jedis("localhost", getServerRedisPort());
     jedis.auth("root", DEFAULT_PASSWORD_FOR_TESTS);
     try {
       jedis.aclList();
@@ -328,7 +326,7 @@ public class RedisWTest extends BaseGraphServerTest {
   void selectCommandSwitchesDatabase() {
     // Test SELECT command to switch database context
     // Issue #3246: Redis commands should use database's globalVariables
-    final Jedis jedis = new Jedis("localhost", DEF_PORT);
+    final Jedis jedis = new Jedis("localhost", getServerRedisPort());
     jedis.auth("root", DEFAULT_PASSWORD_FOR_TESTS);
 
     // Select the test database (using sendCommand because Jedis select() expects int)
@@ -351,7 +349,7 @@ public class RedisWTest extends BaseGraphServerTest {
   @Test
   void keyPrefixOverridesSelectedDatabase() {
     // Test that key prefix (dbname.key) takes priority over SELECT
-    final Jedis jedis = new Jedis("localhost", DEF_PORT);
+    final Jedis jedis = new Jedis("localhost", getServerRedisPort());
     jedis.auth("root", DEFAULT_PASSWORD_FOR_TESTS);
 
     // Set value using key prefix (no SELECT needed)
@@ -368,7 +366,7 @@ public class RedisWTest extends BaseGraphServerTest {
   @Test
   void selectThenIncrDecr() {
     // Test INCR/DECR with database context
-    final Jedis jedis = new Jedis("localhost", DEF_PORT);
+    final Jedis jedis = new Jedis("localhost", getServerRedisPort());
     jedis.auth("root", DEFAULT_PASSWORD_FOR_TESTS);
 
     // Select database
@@ -390,7 +388,7 @@ public class RedisWTest extends BaseGraphServerTest {
   @Test
   void globalVariablesSharedWithSQL() {
     // Test that Redis values are accessible via SQL $variable syntax
-    final Jedis jedis = new Jedis("localhost", DEF_PORT);
+    final Jedis jedis = new Jedis("localhost", getServerRedisPort());
     jedis.auth("root", DEFAULT_PASSWORD_FOR_TESTS);
 
     // Select database and set a value
@@ -408,7 +406,7 @@ public class RedisWTest extends BaseGraphServerTest {
 
   @Test
   void existsAndGetDelWithDatabaseContext() {
-    final Jedis jedis = new Jedis("localhost", DEF_PORT);
+    final Jedis jedis = new Jedis("localhost", getServerRedisPort());
     jedis.auth("root", DEFAULT_PASSWORD_FOR_TESTS);
 
     // Select database
@@ -436,7 +434,7 @@ public class RedisWTest extends BaseGraphServerTest {
   @Test
   void transientHSetAndHGet() {
     // Test HSET in transient mode (type omitted, JSON as second argument)
-    final Jedis jedis = new Jedis("localhost", DEF_PORT);
+    final Jedis jedis = new Jedis("localhost", getServerRedisPort());
     jedis.auth("root", DEFAULT_PASSWORD_FOR_TESTS);
 
     // Store JSON objects in globalVariables (transient mode)
@@ -468,7 +466,7 @@ public class RedisWTest extends BaseGraphServerTest {
 
   @Test
   void transientHExists() {
-    final Jedis jedis = new Jedis("localhost", DEF_PORT);
+    final Jedis jedis = new Jedis("localhost", getServerRedisPort());
     jedis.auth("root", DEFAULT_PASSWORD_FOR_TESTS);
 
     // Store JSON object using sendCommand for transient mode
@@ -481,7 +479,7 @@ public class RedisWTest extends BaseGraphServerTest {
 
   @Test
   void transientHDel() {
-    final Jedis jedis = new Jedis("localhost", DEF_PORT);
+    final Jedis jedis = new Jedis("localhost", getServerRedisPort());
     jedis.auth("root", DEFAULT_PASSWORD_FOR_TESTS);
 
     // Store JSON objects using sendCommand
@@ -504,7 +502,7 @@ public class RedisWTest extends BaseGraphServerTest {
 
   @Test
   void transientHMGet() {
-    final Jedis jedis = new Jedis("localhost", DEF_PORT);
+    final Jedis jedis = new Jedis("localhost", getServerRedisPort());
     jedis.auth("root", DEFAULT_PASSWORD_FOR_TESTS);
 
     // Store multiple JSON objects using sendCommand

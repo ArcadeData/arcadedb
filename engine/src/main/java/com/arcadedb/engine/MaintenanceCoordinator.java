@@ -84,7 +84,15 @@ public interface MaintenanceCoordinator {
      * the same class of defect {@link #RESTORE} was given the slot for (#7384), on the one whole-database delete
      * that was still left unslotted (issue #7641).
      */
-    DROP("drop", "a drop");
+    DROP("drop", "a drop"),
+    /**
+     * {@code close database}: closes the open instance and deregisters it from the server. It leaves the directory
+     * alone, so it is not a destroyer the way {@link #RESTORE} and {@link #DROP} are - but every operation in this
+     * enum works THROUGH that instance, and closing it underneath one fails just as silently by another route: a
+     * backup or an export loses the database it was streaming, half way into its archive. Enrolled with the same
+     * conflict rule as {@link #DROP} (issue #7469, the residue left over when create and drop were enrolled).
+     */
+    CLOSE("close", "a close");
 
     private final String verb;
     private final String phrase;
@@ -118,11 +126,20 @@ public interface MaintenanceCoordinator {
      * operations, and it is NOT reflexive: {@code EXPORT.conflictsWith(EXPORT)} is false.
      */
     public boolean conflictsWith(final Operation other) {
-      if (this == RESTORE || other == RESTORE || this == DROP || other == DROP)
+      if (excludesEverything(this) || excludesEverything(other))
         return true;
       // EVERY OTHER KIND EXCLUDES A SECOND OF ITS OWN - EXCEPT AN EXPORT, WHOSE TARGET THE STATEMENT NAMES, SO TWO
       // OF THEM ARE TWO DIFFERENT ARCHIVES RATHER THAN TWO WRITERS OF ONE (issue #7450)
       return this == other && this != EXPORT;
+    }
+
+    /**
+     * The kinds that take the database away from every other operation: {@link #RESTORE} and {@link #DROP} replace
+     * or delete its directory, {@link #CLOSE} closes the instance they all work through. Named rather than spelled
+     * out inline so the next such kind is added in one place instead of two halves of one condition.
+     */
+    private static boolean excludesEverything(final Operation operation) {
+      return operation == RESTORE || operation == DROP || operation == CLOSE;
     }
   }
 

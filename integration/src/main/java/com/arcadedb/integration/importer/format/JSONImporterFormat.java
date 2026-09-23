@@ -149,29 +149,33 @@ public class JSONImporterFormat implements FormatImporter {
 
     reader.beginArray();
 
+    // Whether the nested transaction level this loop pushes is still the current one. Every begin() below nests
+    // (LocalDatabase#begin() pushes when one is already active), so the level is always this import's own to roll
+    // back - the only question a rollback has to answer is whether it is still THERE. It is not, after a commit()
+    // that threw: LocalDatabase#commit() pops in a finally whether or not the commit succeeded, so the transaction
+    // database.isTransactionActive() then reports is the CALLER's, and rolling it back silently discarded their
+    // unrelated pending work (issue #7860, the mechanism #7732 fixed for the TimeSeries append and #7272 for the RDF
+    // loop). Cleared right before every commit, set right after every begin.
+    final AtomicBoolean txOpen = new AtomicBoolean();
+
     database.begin();
+    txOpen.set(true);
     try {
-      parseRecordsArray(reader, parser, database, settings, context, mapping, ignore);
-    } catch (final IOException e) {
-      // A genuinely source-level failure never passes through parseRecordsArray()'s per-record catch below (which
-      // only catches RuntimeException), so the active transaction here is always this method's own, untouched
-      // level - safe to roll back unconditionally.
-      if (database.isTransactionActive())
+      parseRecordsArray(reader, parser, database, settings, context, mapping, ignore, txOpen);
+    } catch (final IOException | RuntimeException e) {
+      // Gated on txOpen rather than on database.isTransactionActive() alone: a failure that left our own level on
+      // the stack still has to discard it, and one that did not - a throw out of commit() - must not reach past it
+      // for whatever is underneath.
+      if (txOpen.get() && database.isTransactionActive()) {
+        txOpen.set(false);
         database.rollback();
-      throw e;
-    } catch (final RuntimeException e) {
-      // Any RuntimeException reaching here has already passed through parseRecordsArray()'s per-record catch, which
-      // (in "abort" mode, the only mode where it rethrows) already rolled back its own nested level. Don't roll back
-      // again here: by this point the transaction stack may have already correctly unwound past our own level to a
-      // caller's own still-active transaction (see parseRecordsArray()'s per-record catch for why that's safe to
-      // leave alone) - rolling back again here can't tell that apart from a genuinely dangling level of our own, and
-      // would discard the caller's unrelated pending work instead.
+      }
       throw e;
     }
   }
 
   private void parseRecordsArray(final JsonReader reader, final Parser parser, final Database database, final ImporterSettings settings,
-      final ImporterContext context, final JSONArray mapping, boolean ignore) throws IOException {
+      final ImporterContext context, final JSONArray mapping, boolean ignore, final AtomicBoolean txOpen) throws IOException {
     final Object mappingValue = mapping != null && !mapping.isEmpty() ? mapping.get(0) : null;
     JSONObject mappingObject;
 
@@ -181,13 +185,14 @@ public class JSONImporterFormat implements FormatImporter {
       try {
         next = reader.peek();
       } catch (final RuntimeException e) {
-        // Right here, the active transaction is always this loop's own level, just begun and not yet touched by
-        // anything else this iteration (either parseRecords()'s initial database.begin() or this loop's own, at the
-        // end of the previous iteration) - unlike a RuntimeException reaching parseRecords()'s outer catch after the
-        // per-record try/catch below has already run (see there), there's no ambiguity here about whose level this
-        // is, so it's unconditionally safe to roll back.
-        if (database.isTransactionActive())
+        // Right here, the active transaction is this loop's own level, just begun and not yet touched by anything
+        // else this iteration (either parseRecords()'s initial database.begin() or this loop's own, at the end of
+        // the previous iteration), so rolling it back is right - txOpen says so and is true on every path that
+        // reaches this line.
+        if (txOpen.get() && database.isTransactionActive()) {
+          txOpen.set(false);
           database.rollback();
+        }
         throw e;
       }
       if (next != BEGIN_OBJECT)
@@ -224,10 +229,16 @@ public class JSONImporterFormat implements FormatImporter {
         if (record instanceof Map && mappingObject == null)
           saveAnonymousRecord(database, settings, (Map<String, Object>) record);
 
+        // Cleared BEFORE the call, not after it: commit() pops the transaction in a finally, so a commit that throws
+        // has already taken our level off the stack and whatever isTransactionActive() reports below belongs to
+        // somebody else (issue #7860).
+        txOpen.set(false);
         database.commit();
       } catch (final RuntimeException e) {
-        if (database.isTransactionActive())
+        if (txOpen.get() && database.isTransactionActive()) {
+          txOpen.set(false);
           database.rollback();
+        }
 
         context.createdDocuments.set(createdDocumentsBefore);
         context.createdVertices.set(createdVerticesBefore);
@@ -243,6 +254,7 @@ public class JSONImporterFormat implements FormatImporter {
       }
 
       database.begin();
+      txOpen.set(true);
 
       // recordIndex, NOT context.parsed: parseRecord() increments context.parsed for every nested object it
       // recurses into too (a BEGIN_OBJECT property, or a BEGIN_OBJECT array entry via parseArray()), so a record
@@ -262,6 +274,7 @@ public class JSONImporterFormat implements FormatImporter {
       }
     }
 
+    txOpen.set(false);
     database.commit();
 
     reader.endArray();

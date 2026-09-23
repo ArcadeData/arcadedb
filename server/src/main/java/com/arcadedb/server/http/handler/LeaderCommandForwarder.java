@@ -421,11 +421,16 @@ public final class LeaderCommandForwarder {
     /**
      * Releases the client's selector thread and executor. One client per {@link HttpServer}, so without this an
      * in-process cluster - or a test suite that starts and stops servers - would accumulate them.
+     * <p>
      * {@code shutdownNow} rather than {@code close}: the latter waits for in-flight exchanges, and the whole
-     * point of the deadlines above is that this node stops waiting on the leader.
+     * point of the deadlines above is that this node stops waiting on the leader. But {@code shutdownNow} only
+     * <em>requests</em> the shutdown - the selector thread unwinds after it returns - so on its own it leaves the
+     * caller no way to say the client is released, which is what {@code Issue7507ForwarderClientLifecycleTest}
+     * asserts and why that test was intermittently red (issue #7677). {@link LeaderDial#releaseBounded} is both
+     * halves: cancel now, then wait a few seconds for the termination that follows.
      */
     void close() {
-      client.shutdownNow();
+      LeaderDial.releaseBounded(client);
     }
 
     private static GlobalConfiguration deadlineSetting(final boolean longRunningCommand) {

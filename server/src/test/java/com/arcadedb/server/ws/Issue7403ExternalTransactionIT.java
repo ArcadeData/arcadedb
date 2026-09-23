@@ -160,7 +160,7 @@ class Issue7403ExternalTransactionIT extends BaseGraphServerTest {
    * is a {@code NeedRetryException} and therefore not one of the types
    * {@code WebSocketInsertProtocol.execute} names - it would have fallen through to the generic catch and told
    * the client the server had broken, when in truth its own two clients contended on one transaction
-   * (claude-review on PR #7811).
+   * (code review on PR #7811).
    */
   @Test
   void aBusyExternalTransactionIsReportedAsAnInsertSessionErrorRatherThanAnInternalOne() throws Throwable {

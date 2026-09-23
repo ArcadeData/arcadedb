@@ -19,11 +19,12 @@
 package com.arcadedb.query.opencypher.parser;
 
 import com.arcadedb.utility.StringUtils;
-import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.grammar.Cypher25Lexer;
 import com.arcadedb.query.opencypher.grammar.Cypher25Parser;
+import com.arcadedb.query.opencypher.rewriter.ExpressionRewriter;
 import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
@@ -41,6 +42,23 @@ import java.util.regex.Pattern;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class Cypher25AntlrParser {
+
+  // The database whose configuration the per-database parse limits are read from (issue #7922). Null for a
+  // syntax-only parse with no database in hand, which keeps the JVM-wide defaults.
+  private final Database database;
+
+  /**
+   * Creates a parser with no database, so every {@code SCOPE.DATABASE} parse limit falls back to its JVM-wide
+   * default. For a syntax-only parse (see {@code DoWhen.branchMayWrite}); a parse that runs on behalf of a
+   * database should use {@link #Cypher25AntlrParser(Database)} so {@code ALTER DATABASE} reaches it.
+   */
+  public Cypher25AntlrParser() {
+    this(null);
+  }
+
+  public Cypher25AntlrParser(final Database database) {
+    this.database = database;
+  }
 
   /**
    * A parsed query: its AST plus the names of every parameter the query text references.
@@ -80,6 +98,18 @@ public class Cypher25AntlrParser {
     if (query == null || query.trim().isEmpty())
       throw new CommandParsingException("Query cannot be empty");
 
+    // CYPHER_MAX_EXPRESSION_DEPTH is SCOPE.DATABASE, so it is read off this parser's database rather than off the
+    // enum (issue #7922), and bound for the whole parse: the guard installed on the ANTLR parser below is only
+    // half of it, the other half being the AST rewriter, which runs on a JVM-wide shared instance and so reads
+    // the limit back from the thread rather than from a field. The binding is restored, not cleared, so a parse
+    // nested inside another does not drop the outer one's limit on the way out.
+    //
+    // Resolved per parse rather than cached on this instance: the parser is long-lived (one per database, held by
+    // CypherStatementCache), so caching would pin whatever the setting was when the database opened and leave
+    // ALTER DATABASE just as inert as reading the enum did.
+    final int maxExpressionDepth = ExpressionRewriter.maxExpressionDepth(database);
+    final Integer previousMaxDepth = ExpressionRewriter.bindMaxExpressionDepth(maxExpressionDepth);
+
     try {
       final Cypher25Lexer lexer = new Cypher25Lexer(CharStreams.fromString(query));
 
@@ -109,7 +139,7 @@ public class Cypher25AntlrParser {
 
       // Bound expression nesting depth so a pathologically nested/long query fails with a normal parse
       // error instead of a StackOverflowError (issue #5851)
-      parser.addParseListener(new CypherExpressionDepthGuard(GlobalConfiguration.CYPHER_MAX_EXPRESSION_DEPTH.getValueAsInteger()));
+      parser.addParseListener(new CypherExpressionDepthGuard(maxExpressionDepth));
 
       // Parse the statement
       final Cypher25Parser.StatementContext statementContext = parser.statement();
@@ -141,7 +171,7 @@ public class Cypher25AntlrParser {
 
       CypherSemanticValidator.validate(statement);
 
-      return new ParsedQuery(statement, collectParameterNames(statementContext));
+      return new ParsedQuery(statement, collectParameterNames(statementContext, query));
 
     } catch (final CommandParsingException e) {
       // semantic-validation and explicit parse errors already carry a clear, actionable message
@@ -149,6 +179,8 @@ public class Cypher25AntlrParser {
       throw e;
     } catch (final Exception e) {
       throw new CommandParsingException("Failed to parse Cypher query: " + query, e);
+    } finally {
+      ExpressionRewriter.restoreMaxExpressionDepth(previousMaxDepth);
     }
   }
 
@@ -164,8 +196,17 @@ public class Cypher25AntlrParser {
    * The one parameter position that is a definition rather than a use is the target of
    * {@code SESSION SET $name = <expression>}, which binds the name for the rest of the session; it is
    * skipped, while the value expression on the right is still scanned.
+   * <p>
+   * The walk is skipped entirely for a query with no {@code $} anywhere in its text (issue #8132). The grammar
+   * spells a parameter {@code DOLLAR parameterName}, so no {@code $} means no {@code parameterName} node can
+   * exist, and this turns a full parse-tree traversal - paid on every parse of a query text the statement cache
+   * has not seen - into one {@code indexOf}. The check only ever errs towards doing the walk: a {@code $} inside
+   * a string literal or a comment makes it run and find nothing, which is the same answer it always gave.
    */
-  private static Set<String> collectParameterNames(final ParseTree tree) {
+  private static Set<String> collectParameterNames(final ParseTree tree, final String query) {
+    if (query.indexOf('$') < 0)
+      return Set.of();
+
     final Set<String> names = new LinkedHashSet<>();
     collectParameterNames(tree, names);
     return names.isEmpty() ? Set.of() : Collections.unmodifiableSet(names);

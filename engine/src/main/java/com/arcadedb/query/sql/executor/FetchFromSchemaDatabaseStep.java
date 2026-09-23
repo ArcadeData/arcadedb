@@ -72,10 +72,16 @@ public class FetchFromSchemaDatabaseStep extends AbstractExecutionStep {
               if (cfg.getScope() == GlobalConfiguration.SCOPE.DATABASE) {
                 final Map<String, Object> map = new LinkedHashMap<>();
                 map.put("key", cfg.getKey());
-                map.put("value", convertValue(cfg.getKey(), dbCfg.getValue(cfg)));
+                // Reuse, not a fix: this loop only ever walks SCOPE.DATABASE settings, so the credential
+                // embedding that publishableValue redacts (arcadedb.server.defaultDatabases, SCOPE.SERVER)
+                // cannot reach here, and no DATABASE-scope setting is hidden today either. What it replaces is
+                // the third copy of the rule - an ad-hoc "key contains password" check - so that the next
+                // setting that does need redacting is covered here by construction rather than by someone
+                // remembering this third site exists.
+                map.put("value", cfg.publishableValue(dbCfg.getValue(cfg)));
                 map.put("description", cfg.getDescription());
                 map.put("overridden", contextKeys.contains(cfg.getKey()));
-                map.put("default", convertValue(cfg.getKey(), cfg.getDefValue()));
+                map.put("default", cfg.publishableValue(cfg.getDefValue()));
 
                 settings.add(map);
               }
@@ -108,16 +114,5 @@ public class FetchFromSchemaDatabaseStep extends AbstractExecutionStep {
       result += " (" + getCostFormatted() + ")";
     }
     return result;
-  }
-
-  private Object convertValue(final String key, Object value) {
-    if (key.toLowerCase(Locale.ENGLISH).contains("password"))
-      // MASK SENSITIVE DATA
-      value = "*****";
-
-    if (value instanceof Class<?> class1)
-      value = class1.getName();
-
-    return value;
   }
 }

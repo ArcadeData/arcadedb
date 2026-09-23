@@ -66,7 +66,7 @@ public class TypeBuilder<T> {
     // types) and must be atomic, otherwise two callers racing on the same name both observe the type as
     // incomplete and both try to associate the same bucket, the loser failing with "the bucket is already
     // associated to the type". The lookup runs under the shared lock so a type being built by another
-    // thread - which publishes itself into schema.types BEFORE its buckets are added - is never observed
+    // thread - which publishes itself into the schema's type map BEFORE its buckets are added - is never observed
     // half-populated; anything that mutates re-checks under the exclusive lock. The fast path can also throw,
     // for the type-already-exists and wrong-type cases, exactly as the locked path does.
     //
@@ -75,7 +75,7 @@ public class TypeBuilder<T> {
     // record grants can run a Cypher CREATE (whose label resolution is a getOrCreateVertexType) on a declared type
     // exactly as they can run the equivalent SQL INSERT (issue #7368).
     final T alreadyComplete = database.executeInReadLock(() -> {
-      final LocalDocumentType existing = schema.types.get(typeName);
+      final LocalDocumentType existing = schema.typeMap().get(typeName);
       return existing != null && isComplete(existing) ? (T) checkExistingIsCompatible(existing) : null;
     });
     if (alreadyComplete != null)
@@ -120,7 +120,7 @@ public class TypeBuilder<T> {
   }
 
   private T createInternal(final LocalSchema schema) {
-    final LocalDocumentType t = schema.types.get(typeName);
+    final LocalDocumentType t = schema.typeMap().get(typeName);
     if (t != null) {
       checkExistingIsCompatible(t);
 
@@ -182,7 +182,7 @@ public class TypeBuilder<T> {
         schema.getDictionary().getIdByName(typeName, true);
       }
 
-      schema.types.put(typeName, c);
+      schema.typeMap().put(typeName, c);
 
       if (bucketInstances.isEmpty()) {
         for (int i = 0; i < buckets; ++i) {

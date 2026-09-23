@@ -42,7 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * the only way to know it is true is to make the handler send one.
  * <p>
  * {@code BatchError} is the schema where getting it wrong was easiest, and where this PR did get it wrong first
- * time round (claude-review on PR #7749). It is bound to two statuses, not one: {@code POST /batch} answers 400
+ * time round (code review on PR #7749). It is bound to two statuses, not one: {@code POST /batch} answers 400
  * for a line it refuses and 408 for a body that did not arrive whole, and the two are built by different methods.
  * {@code exception} is unconditional on the 400 and absent on two of the three 408 paths - a body that simply
  * ended before its announced length, and a malformed record that turned out to be a cut upload - because

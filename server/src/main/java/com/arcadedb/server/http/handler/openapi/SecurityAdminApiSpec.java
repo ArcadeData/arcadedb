@@ -197,7 +197,14 @@ public class SecurityAdminApiSpec implements OpenApiContributor {
         "SHA-256 hex of the token. The handle DELETE names; the only one the server keeps"));
     schema.addProperty("tokenSuffix", SpecBuilders.string(
         "Last characters of the plaintext token, so an operator can tell two entries apart"));
-    // listApiTokens builds each entry as one block of seven puts, so an entry is present whole.
+    // Declared but NOT required, because this schema is shared with the mint response and only the LISTING
+    // carries it: it is derived at read time from expiresAt, and a freshly minted token has nothing to derive.
+    // Since issue #7601 an expired token stays in the document until the next token change retires it, so the
+    // listing says so outright rather than leaving the reader to compare expiresAt with the current time.
+    schema.addProperty("expired", SpecBuilders.bool(
+        "Whether this token's expiry has passed. Carried by the listing only. An expired token authenticates "
+            + "nobody, but it stays listed until the next token change retires it"));
+    // listApiTokens builds each entry as one block of puts, so an entry is present whole.
     schema.setRequired(List.of("name", "database", "expiresAt", "createdAt", "permissions", "tokenHash",
         "tokenSuffix"));
     return schema;
@@ -354,7 +361,15 @@ public class SecurityAdminApiSpec implements OpenApiContributor {
     postOp.addTagsItem("Security");
     postOp.setRequestBody(SpecBuilders.jsonBody(
         "Token creation with name, database, expiresAt, and permissions", "CreateApiTokenRequest", true));
-    postOp.setResponses(createAdminResponses("API token created", "201", "CreateApiTokenResponse"));
+    final ApiResponses postResponses = createAdminResponses("API token created", "201", "CreateApiTokenResponse");
+    // Only the mint declares it: the list and the delete return no token material, so neither applies the
+    // transport check that produces this status (issues #7372, #7804).
+    postResponses.addApiResponse("412", SpecBuilders.errorResponse(
+        "Precondition failed - the transport is not confidential. The token is returned in plaintext exactly "
+            + "once, so it is not written back over a cleartext connection to a non-loopback client when "
+            + "arcadedb.server.apiTokenRequireSecureTransport is enabled. Reconnect over HTTPS, or have a reverse "
+            + "proxy listed in arcadedb.server.apiTokenTrustedProxies terminate TLS in front of the server"));
+    postOp.setResponses(postResponses);
     pathItem.setPost(postOp);
 
     final Operation deleteOp = new Operation();

@@ -237,7 +237,7 @@ class CheckDatabaseSinglePassTest extends TestHelper {
 
     // Delete both endpoint VERTEX records underneath the edge, leaving the edge record itself intact.
     for (final RID endpoint : endpoints)
-      database.transaction(() -> database.getSchema().getBucketById(endpoint.getBucketId()).deleteRecord(endpoint));
+      database.transaction(() -> TestHelper.deleteRecordAtLowLevel(database, endpoint));
 
     final Map<String, Object> stats = new GraphDatabaseChecker((DatabaseInternal) database)
         .checkEdges("WorksAt", false, 0, 100, 1);

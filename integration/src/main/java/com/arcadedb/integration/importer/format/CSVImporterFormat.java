@@ -41,6 +41,7 @@ import com.arcadedb.schema.VertexType;
 
 import com.univocity.parsers.common.AbstractParser;
 import com.univocity.parsers.common.CommonParserSettings;
+import com.univocity.parsers.csv.CsvFormat;
 import com.univocity.parsers.csv.CsvParser;
 import com.univocity.parsers.csv.CsvParserSettings;
 import com.univocity.parsers.tsv.TsvParser;
@@ -59,6 +60,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
+import java.util.regex.Pattern;
 
 /**
  * On {@code -onRowError skip}, {@code loadDocuments}/{@code loadVertices} reuse whatever transaction is already
@@ -75,6 +77,27 @@ public class CSVImporterFormat extends AbstractImporterFormat {
    */
   private final String delimiter;
 
+  /**
+   * How many short rows this format instance has already reported, so only the first logs at WARNING (see
+   * {@link #reportShortRow}). Per instance, which is per source: {@code SourceDiscovery} builds a fresh format for
+   * each of an import's documents/vertices/edges files.
+   */
+  private long shortRowsReported = 0;
+
+  /**
+   * The {@code CsvFormat} - quote, quote escape, line separator - univocity's own {@code detectFormatAutomatically}
+   * discovered while {@link #analyze} read this source, or {@code null} when {@link #analyze} never ran detection
+   * (a TSV source, a multi-character delimiter, or no delimiter at all). {@link #createCSVParser} applies it
+   * verbatim instead of either re-detecting or defaulting, so the two passes agree on which quote character this
+   * source is read with.
+   * <p>
+   * Before this field existed, {@code createCSVParser} always used univocity's hard default ({@code "}) whatever
+   * {@link #analyze} had actually detected: a file quoted with {@code '} was analysed with the quote correctly
+   * recognised and loaded as if it were not there at all, splitting the same row into a different number of columns
+   * on each pass (issue #8046).
+   */
+  private CsvFormat detectedFormat;
+
   public CSVImporterFormat() {
     this(null);
   }
@@ -83,8 +106,67 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     this.delimiter = delimiter;
   }
 
+  /**
+   * The delimiter in force for this call, refusing the one value neither pass below can express.
+   * <p>
+   * The single resolution point both {@link #analyze} and {@link #createCSVParser} read, and the only place the
+   * value is checked: {@code -delimiter ""} used to reach {@code analyze()}'s {@code delimiter.charAt(0)} and come
+   * back as a {@code StringIndexOutOfBoundsException} out of the middle of the analysis, naming neither the option
+   * nor the value (issue #7867).
+   */
   private String delimiterFor(final ImporterSettings settings) {
-    return delimiter != null ? delimiter : settings.getValue("delimiter", ",");
+    final String resolved = delimiter != null ? delimiter : settings.getValue("delimiter", ",");
+    if (resolved != null && resolved.isEmpty())
+      throw new IllegalArgumentException("The CSV delimiter is set to an empty value: a field separator is at least "
+          + "one character, such as \",\" or \";\". Set it with -delimiter (or WITH delimiter = '...')");
+    return resolved;
+  }
+
+  /**
+   * Configures {@code parserSettings} with the delimiter in force, the ONE way, so the schema analysis and the row
+   * load cannot split the same file into different columns.
+   * <p>
+   * {@link #analyze} used to truncate the value to {@code delimiter.charAt(0)} while {@link #createCSVParser} handed
+   * univocity the whole {@code String}, so a separator longer than one character - {@code ";;"} - was analysed with
+   * one column split and loaded with another: the inferred property types belonged to different columns than the
+   * values that landed in them, silently (issue #7867).
+   * <p>
+   * {@code detectFormatAutomatically} is used for a single-character separator, where it is what discovers the
+   * quote and quote-escape characters, and is skipped for a longer one: it takes {@code char...} and has no
+   * multi-character form, so offering it a truncated candidate is the very truncation this method exists to remove.
+   * <p>
+   * Only {@link #analyze} calls this with detection able to run (it is the only caller that reaches this on a
+   * settings object with detection not already turned off): {@link #createCSVParser} instead applies
+   * {@link #detectedFormat}, the result of that same detection, so the two passes read the source with the same
+   * quote character rather than each running (or not running) detection on its own - which is how they used to
+   * disagree (issue #8046). Detection itself does not run here, at the call, but later, inside
+   * {@code beginParsing()}, once univocity has a stream to sample.
+   */
+  private static void applyDelimiter(final CsvParserSettings parserSettings, final String delimiter) {
+    if (delimiter == null)
+      return;
+    if (delimiter.length() == 1)
+      parserSettings.detectFormatAutomatically(delimiter.charAt(0));
+    parserSettings.getFormat().setDelimiter(delimiter);
+  }
+
+  /**
+   * The separator a supplied {@code -documentsHeader} / {@code -verticesHeader} / {@code -edgesHeader} is split on:
+   * the delimiter in force, with the two tab spellings resolved to a real tab.
+   * <p>
+   * The two spellings are the convention {@link #analyze} and {@link #createCSVParser} already branch on to pick
+   * the TSV parser: a tab reaches the importer either as a real tab ({@code "\t"}, from a caller that built the
+   * settings in Java) or as the two characters a shell hands over unescaped ({@code "\\t"}, from {@code -delimiter
+   * \t}). The TSV branches never reach this method - their parser has no delimiter to split a header on - so the
+   * translation has to happen here.
+   * <p>
+   * It was a hardcoded comma, which is the same disagreement as the one above on the header row: a header supplied
+   * for a {@code ';'}-delimited source came back as ONE field named {@code "id;name"}, and the analysis then threw
+   * {@code IndexOutOfBoundsException} out of {@code fieldNames.get(i)} on the second column (issue #7867). Nothing
+   * that worked changes: for the comma this is the comma.
+   */
+  private static String headerSeparator(final String delimiter) {
+    return "\\t".equals(delimiter) ? "\t" : delimiter;
   }
 
   private static final Object[] NO_PARAMS = new Object[] {};
@@ -140,24 +222,39 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       beginRowTransaction(database, transactionActiveOnEntry, ownsTransaction);
 
       final AnalyzedEntity entity = sourceSchema.getSchema().getEntity(settings.documentTypeName);
+      checkAnalysisFoundUsableRows(entity, entityType, settings);
 
+      // The null check covers BOTH branches below, where it used to guard only the second: a source the analysis
+      // derived no entity from - a header-only file, or one whose every row was refused - reached
+      // entity.getProperties() in the include-list branch and threw NullPointerException, while the same source with
+      // the default -documentPropertiesInclude '*' imported fine. loadVertices()/loadEdges() answer this with an
+      // early return naming the type; documents cannot, because an empty property list is a legitimate outcome here
+      // (issue #7782).
       final List<AnalyzedProperty> properties = new ArrayList<>();
-      if (!"*".equalsIgnoreCase(settings.documentPropertiesInclude)) {
-        final String[] includes = settings.documentPropertiesInclude.split(",");
+      if (entity != null) {
+        if (!"*".equalsIgnoreCase(settings.documentPropertiesInclude)) {
+          final String[] includes = settings.documentPropertiesInclude.split(",");
 
-        final Set<String> propertiesSet = new HashSet<>(Arrays.asList(includes));
+          final Set<String> propertiesSet = new HashSet<>(Arrays.asList(includes));
 
-        for (final AnalyzedProperty p : entity.getProperties()) {
-          if (propertiesSet.contains(p.getName())) {
-            properties.add(p);
+          for (final AnalyzedProperty p : entity.getProperties()) {
+            if (propertiesSet.contains(p.getName())) {
+              properties.add(p);
+            }
           }
+        } else {
+          // INCLUDE ALL THE PROPERTIES
+          properties.addAll(entity.getProperties());
         }
-      } else if (entity != null) {
-        // INCLUDE ALL THE PROPERTIES
-        properties.addAll(entity.getProperties());
       }
 
       LogManager.instance().log(this, Level.INFO, "Importing the following document properties: %s", null, properties);
+
+      // -1 WHEN THE ANALYSIS DERIVED NO ENTITY, WHICH DISABLES THE ARITY GATE BELOW FOR THIS SOURCE. SAFE ONLY
+      // BECAUSE THE SAME CONDITION LEAVES 'properties' EMPTY (SEE ABOVE), SO NOTHING INDEXES INTO row[] AND THERE IS
+      // NO RAGGEDNESS TO CATCH - THE TWO READ AS INDEPENDENT CONDITIONS BUT ARE NOT. A FUTURE CHANGE THAT POPULATES
+      // 'properties' FROM ANYTHING OTHER THAN 'entity' HAS TO GIVE THIS ONE A HEADER WIDTH TOO (issue #7782).
+      final int headerColumns = headerColumnsOf(entity);
 
       // In "abort" mode, rows accumulate here instead of directly in context.createdDocuments, merged in below only
       // once the whole file has parsed without a mid-loop failure. On failure this is deliberate even when
@@ -185,9 +282,18 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         }
 
         try {
+          // THE SAME ARITY GATE THE ANALYSIS PASS APPLIES, INSIDE THE PER-ROW try SO -onRowError GOVERNS IT HERE TOO
+          checkRowIsNotLongerThanHeader(line, row.length, headerColumns);
+          reportShortRow(line, row.length, headerColumns, context);
+
           final MutableDocument document = database.newDocument(settings.documentTypeName);
 
           for (final AnalyzedProperty prop : properties) {
+            // A ROW SHORTER THAN THE HEADER DOES NOT SET THE TRAILING PROPERTIES - IT USED TO THROW
+            // ArrayIndexOutOfBoundsException HERE INSTEAD (ISSUE #7782)
+            if (prop.getIndex() >= row.length)
+              continue;
+
             final String value = row[prop.getIndex()];
             if (value != null && !value.isEmpty())
               document.set(prop.getName(), value);
@@ -264,10 +370,133 @@ public class CSVImporterFormat extends AbstractImporterFormat {
   }
 
   /**
-   * Logs a skipped row at WARNING (message only) and FINE (full stack trace), used by both {@code loadDocuments} and
-   * {@code loadVertices} when {@code -onRowError skip} discards a row.
+   * Refuses a row that carries MORE columns than the header declares, which is a row error like any other and
+   * therefore obeys {@code -onRowError}.
+   * <p>
+   * It did not. The analysis pass indexed {@code fieldNames} by the row's own length and threw
+   * {@code IndexOutOfBoundsException} out of {@code fieldNames.get(i)}, from a loop with no per-row handling at all -
+   * {@code -onRowError skip} is implemented in the LOAD pass and never reached this one, so the documented way to
+   * tolerate a bad row could not help and the whole import aborted on the first oversized row whatever the policy
+   * said (issue #7782). Raised from one place used by both passes, so the two cannot disagree about the same row.
+   * <p>
+   * The extra values are genuinely unimportable - there is no field name to store them under - so the choice is
+   * between refusing the row and dropping data silently, and the message has to carry what the raw
+   * {@code IndexOutOfBoundsException} did not: the line, and both column counts.
    */
-  private void logSkippedRow(final String what, final long line, final RuntimeException e) {
+  /**
+   * Whether {@code columns} exceeds a known header width. The single expression behind both
+   * {@link #checkRowIsNotLongerThanHeader} (which throws) and {@code loadEdges()} (which skips and counts, because
+   * edge rows do not honour {@code -onRowError}), so the two outcomes cannot end up disagreeing about which rows
+   * they apply to - which is the same guarantee, one level down, that sharing the check between the analysis and
+   * the load passes buys (issue #7782).
+   */
+  private static boolean isLongerThanHeader(final int columns, final int headerColumns) {
+    return headerColumns > 0 && columns > headerColumns;
+  }
+
+  private static void checkRowIsNotLongerThanHeader(final long line, final int columns, final int headerColumns) {
+    if (isLongerThanHeader(columns, headerColumns))
+      throw new ImportException(
+          "Row at line " + line + " has " + columns + " column(s) while the header has " + headerColumns
+              + ": the extra value(s) have no field name to be stored under (use -onRowError skip to skip such rows"
+              + " and continue)");
+  }
+
+  /**
+   * Records a row that carries FEWER columns than the header declares. Not an error: the missing trailing columns are
+   * absent values, and a property past the row's end is simply not set - which is what the callers of this method do,
+   * instead of letting {@code row[prop.getIndex()]} throw {@code ArrayIndexOutOfBoundsException} the way they used to
+   * (issue #7782).
+   * <p>
+   * One caller does more than that, which is why the message this logs names only the arity: when the column a vertex
+   * row is missing is the {@code typeIdProperty} itself, {@code loadVertices()}' own guard drops the whole row a few
+   * lines further down and says so separately. This still counts it - the row IS ragged, and leaving it out of the
+   * total was the gap that guard's {@code continue} used to open - but it must not claim the row was imported.
+   * <p>
+   * Deliberately NOT symmetric with {@link #checkRowIsNotLongerThanHeader}: a short row was already importable
+   * whenever the analysis had not created a property for the trailing column (a header column no row fills creates
+   * none), so refusing it would break imports that work today, while tolerating one can only turn an abort into a
+   * completed import. It is still counted and named, so "my file has a ragged row" reaches the operator in the
+   * import result ({@code warnings}) rather than only in a log nobody reads.
+   */
+  private void reportShortRow(final long line, final int columns, final int headerColumns, final ImporterContext context) {
+    if (headerColumns <= 0 || columns >= headerColumns)
+      return;
+
+    context.warnings.incrementAndGet();
+
+    // WARNING for the first one only: a systematically ragged file would otherwise log a line per row. Throttled on
+    // a counter of this FORMAT INSTANCE, which SourceDiscovery creates one of per source, rather than on
+    // context.warnings - that one is import-wide, so an import loading a vertices file and then an edges file would
+    // have logged one visible WARNING for the whole run and left the second source's first short row at FINE. Same
+    // scope as the analysis-side throttle, which is a local in analyze() (issue #7782).
+    // The message states the ARITY and stops there, because what happens to the row differs by call site and this
+    // method is called from all three: documents and edges import it from the columns it does supply, and so does a
+    // vertex row - unless the column it is missing is the typeIdProperty, in which case loadVertices()' own guard
+    // drops the row entirely a few lines further down and logs that separately. Saying "the missing trailing
+    // column(s) are left unset" here asserted the first outcome for every row, including the ones nothing was left
+    // unset ON because no record was created at all (issue #7782).
+    LogManager.instance().log(this, shortRowsReported++ == 0 ? Level.WARNING : Level.FINE,
+        "Row at line %d has %d column(s) while the header has %d", null, line, columns, headerColumns);
+  }
+
+  /**
+   * Refuses a source the analysis could derive nothing from, before anything downstream blames the wrong thing.
+   * <p>
+   * An entity exists only once the analysis has read a DATA row ({@code getOrCreateEntity} is called from that branch
+   * alone), and every accepted row contributes at least one property - so an entity with no property at all means
+   * every row it saw was refused for its shape. That became possible only with the ragged-row gate (issue #7782);
+   * before it, such a row aborted the analysis outright.
+   * <p>
+   * Worth its own message because each of the three load paths misreports it otherwise, and all three point away from
+   * the source: {@code loadEdges()} throws "Specify -edgeFromField &lt;from-field-name&gt;" at an operator who
+   * specified it correctly, {@code loadVertices()} throws "Property Id 'T.p' is null" about a property the header
+   * does declare, and {@code loadDocuments()} says nothing at all and writes one empty document per row. Misdirection
+   * of exactly the kind #7782, #7781 and #7771 are all about.
+   */
+  private static void checkAnalysisFoundUsableRows(final AnalyzedEntity entity, final AnalyzedEntity.EntityType entityType,
+      final ImporterSettings settings) {
+    if (entity == null || !entity.getProperties().isEmpty())
+      return;
+
+    throw new ImportException("No usable row found in the " + entityType.name().toLowerCase(Locale.ENGLISH)
+        + " source: every row the analysis read was refused because its column count did not match the header's (see the"
+        + " WARNING lines above), so no property could be derived from it" + analysisWindowHint(settings));
+  }
+
+  /**
+   * The part of the refusal above that names {@code -analysisLimitEntries}/{@code -analysisLimitBytes}, when one of
+   * them is set.
+   * <p>
+   * Those two bound the ANALYSIS and not the load, so "every row the analysis read" can mean "every row in the
+   * sampled head of the file" while the rest of it is perfectly well formed - and then the refusal is right about
+   * what it saw and useless about what to do next, because the operator's fix is to widen the window rather than to
+   * go looking for ragged rows that may not be there. Only appended when a limit is actually configured: with no
+   * limit the analysis read the whole source and the window is not the story.
+   */
+  private static String analysisWindowHint(final ImporterSettings settings) {
+    if (settings == null || (settings.analysisLimitEntries <= 0 && settings.analysisLimitBytes <= 0))
+      return "";
+
+    return ". Note the analysis only sampled the head of the source ("
+        + (settings.analysisLimitEntries > 0 ? "-analysisLimitEntries " + settings.analysisLimitEntries : "")
+        + (settings.analysisLimitEntries > 0 && settings.analysisLimitBytes > 0 ? ", " : "")
+        + (settings.analysisLimitBytes > 0 ? "-analysisLimitBytes " + settings.analysisLimitBytes : "")
+        + "), so raising that limit may be the fix if the rest of the source is well formed";
+  }
+
+  /** How many columns the analysis measured this source's rows against, or -1 when it recorded no header. */
+  private static int headerColumnsOf(final AnalyzedEntity entity) {
+    return entity != null ? entity.getHeaderColumns() : -1;
+  }
+
+  /**
+   * Logs a skipped row at WARNING (message only) and FINE (full stack trace), used by both {@code loadDocuments} and
+   * {@code loadVertices} when {@code -onRowError skip} discards a row. Package-visible rather than {@code private}
+   * so {@link RDFImporterFormat#load} can reuse it for its own row loop instead of duplicating the two-level
+   * logging (issue #8069).
+   */
+  void logSkippedRow(final String what, final long line, final RuntimeException e) {
     LogManager.instance()
         .log(this, Level.WARNING, "Error on importing %s at line %d, skipping it (reason: %s)", null, what, line, e.getMessage());
     LogManager.instance().log(this, Level.FINE, "Full error on importing %s at line %d", e, what, line);
@@ -346,6 +575,8 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       LogManager.instance().log(this, Level.INFO, "Vertex type '%s' not defined", null, settings.vertexTypeName);
       return;
     }
+
+    checkAnalysisFoundUsableRows(entity, AnalyzedEntity.EntityType.VERTEX, settings);
 
     int idIndex = -1;
     if (settings.typeIdProperty != null) {
@@ -432,6 +663,8 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
       LogManager.instance().log(this, Level.INFO, "Importing the following vertex properties: %s", null, properties);
 
+      final int headerColumns = headerColumnsOf(entity);
+
       String[] row;
       for (long line = 0; (row = csvParser.parseNext()) != null; ++line) {
         context.parsed.incrementAndGet();
@@ -446,6 +679,11 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           continue;
         }
 
+        // BEFORE THE MISSING-ID GUARD BELOW, NOT INSIDE THE try: WHEN typeIdProperty IS A TRAILING HEADER COLUMN A
+        // SHORT ROW TAKES THAT GUARD'S 'continue' AND WOULD NEVER REACH THE REPORT, SO THE ONE RAGGED-ROW NUMBER THE
+        // OPERATOR IS SHOWN WOULD MISS EXACTLY THE ROWS THE GUARD SKIPPED (issue #7782)
+        reportShortRow(line, row.length, headerColumns, context);
+
         if (idIndex >= 0 && idIndex >= row.length) {
           LogManager.instance()
               .log(this, Level.INFO, "Property Id is configured on property %d but cannot be found on current record. Skip it",
@@ -454,11 +692,18 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         }
 
         try {
+          // SEE loadDocuments(): ONE ARITY GATE, APPLIED INSIDE THE PER-ROW try SO -onRowError GOVERNS IT. THE SHORT
+          // DIRECTION IS REPORTED ABOVE INSTEAD - IT IS NOT A ROW ERROR AND HAS A GUARD OF ITS OWN TO GET PAST.
+          checkRowIsNotLongerThanHeader(line, row.length, headerColumns);
+
           final MutableVertex v = database.newVertex(settings.vertexTypeName);
           if (idIndex >= 0)
             v.set(settings.typeIdProperty, row[idIndex]);
           for (int p = 0; p < properties.size(); ++p) {
             final AnalyzedProperty prop = properties.get(p);
+            if (prop.getIndex() >= row.length)
+              continue;
+
             final String value = row[prop.getIndex()];
             if (value != null && !value.isEmpty())
               v.set(prop.getName(), value);
@@ -553,6 +798,8 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       return;
     }
 
+    checkAnalysisFoundUsableRows(entity, AnalyzedEntity.EntityType.EDGE, settings);
+
     final AnalyzedProperty from = entity.getProperty(settings.edgeFromField);
     if (from == null)
       throw new IllegalArgumentException("Specify -edgeFromField <from-field-name>");
@@ -562,8 +809,14 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       throw new IllegalArgumentException("Specify -edgeToField <from-field-name>");
 
     long expectedEdges = settings.expectedEdges;
-    if (expectedEdges <= 0)
-      expectedEdges = (int) (sourceSchema.getSource().totalSize / entity.getAverageRowLength());
+    // GATED ON A MEASURED AVERAGE, NOT JUST ON A MISSING -expectedEdges: getAverageRowLength() ANSWERS 0 WHEN THE
+    // ANALYSIS MEASURED NO ROW, WHICH A FILE WHOSE ROWS WERE ALL REFUSED FOR THEIR SHAPE PRODUCES (ISSUE #7782), AND
+    // THIS IS INTEGER DIVISION - totalSize IS A long, SO A ZERO DIVISOR THROWS ArithmeticException RATHER THAN
+    // YIELDING AN INFINITY THE GUARD BELOW COULD CATCH. LEAVING expectedEdges AT 0 HANDS THE ANSWER TO THAT SAME
+    // GUARD, WHICH IS ALREADY THE "NO IDEA HOW BIG THIS SOURCE IS" BRANCH (ISSUE #7782).
+    final int averageRowLength = entity.getAverageRowLength();
+    if (expectedEdges <= 0 && averageRowLength > 0)
+      expectedEdges = (int) (sourceSchema.getSource().totalSize / averageRowLength);
 
     if (expectedEdges <= 0 || expectedEdges > _32MB)
       // USE CHUNKS OF 16MB EACH
@@ -609,10 +862,19 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
       LogManager.instance().log(this, Level.INFO, "Importing the following edge properties: %s", null, properties);
 
+      final int headerColumns = headerColumnsOf(entity);
+
       String[] row;
-      // No ownsTransaction/callerTransactionActiveOnEntry guard needed here, unlike loadDocuments()/loadVertices():
-      // database.begin() nests rather than reusing an already-active transaction (see LocalDatabase#begin()), so a
-      // caller's own pre-existing transaction is never touched by this method's own commits below.
+      // No ownsTransaction guard needed here, unlike loadDocuments()/loadVertices(): database.begin() nests
+      // rather than reusing an already-active transaction (see LocalDatabase#begin()), so a caller's own
+      // pre-existing transaction is never touched by this method's own commits below. Captured before begin()
+      // purely for the commit-failure restoration below (issue #8122 review): DatabaseContext
+      // #popIfNotLastTransaction() pops UNCONDITIONALLY - success or failure - whenever more than one
+      // transaction is on the stack, so a failed commit here already pops this method's own level when a
+      // caller transaction predates it, the same as a successful one would. Restoring txOpen from
+      // isTransactionActive() in that case would read the CALLER's surviving transaction as if it were this
+      // method's own still-open one, and roll it back out from under them.
+      final boolean callerTransactionActiveOnEntry = database.isTransactionActive();
       database.begin();
       // Whether the transaction just opened (or the one begun after a periodic commit below) is still the current
       // one. Cleared right before every commit - which pops it in a finally even if it throws - so a rollback below
@@ -640,28 +902,74 @@ public class CSVImporterFormat extends AbstractImporterFormat {
             continue;
           }
 
-          try {
-            createEdgeFromRow(database, row, properties, from, to, context, settings);
-            txCount++;
-          } catch (final Exception e) {
-            // Unlike loadDocuments/loadVertices, edge rows are always skipped-and-logged regardless of -onRowError:
-            // a "bad" edge row here is typically just an unresolved from/to vertex reference, expected during graph
-            // imports rather than a data-corruption case.
-            LogManager.instance().log(this, Level.SEVERE, "Error on parsing line %d", e, line);
-          }
+          // THE SAME ARITY GATE loadDocuments()/loadVertices() APPLY, AND FOR THE SAME REASON: THE ANALYSIS REFUSES
+          // AN OVERSIZED ROW, SO MAKING AN EDGE OUT OF ITS FIRST COLUMNS HERE WOULD BE THE TWO PASSES DISAGREEING
+          // ABOUT ONE ROW - THE DIVERGENCE #7487 EXISTS TO PREVENT. REACHABLE WHENEVER THE ROW IS PAST THE
+          // ANALYSIS WINDOW (-analysisLimitEntries / -analysisLimitBytes BOUND THE ANALYSIS, NOT THE LOAD) AND
+          // UNDER -onRowError skip, WHERE THE ANALYSIS SKIPPED IT RATHER THAN THROWING.
+          //
+          // SKIPPED AND COUNTED RATHER THAN THROWN, WHICHEVER THE POLICY: EDGE ROWS DO NOT HONOUR -onRowError AT
+          // ALL (SEE THE catch BELOW AND THE ONE-TIME NOTICE ABOVE), AND MAKING RAGGEDNESS THE ONE EXCEPTION WOULD
+          // CONTRADICT THE NOTICE THIS METHOD PRINTS. COUNTED IN errors AND NOT IN skippedEdges, WHICH MEANS
+          // "from/to DID NOT RESOLVE" AND IS REPORTED UNDER THAT NAME (#7488).
+          //
+          // AN else RATHER THAN A continue, SO THIS ROW STILL REACHES THE -parsingLimitEntries CHECK AT THE BOTTOM OF
+          // THE LOOP. A continue HERE WOULD LET A RUN OF OVERSIZED ROWS PARSE PAST THAT CAP INDEFINITELY, AND IT
+          // WOULD ALSO PUT EDGES OUT OF STEP WITH loadDocuments()/loadVertices(), WHERE A ROW THAT FAILED FALLS
+          // THROUGH TO THE SAME CHECK RATHER THAN JUMPING OVER IT (issue #7782).
+          if (isLongerThanHeader(row.length, headerColumns)) {
+            LogManager.instance().log(this, Level.WARNING,
+                "Error on importing edge at line %d, skipping it (reason: it has %d column(s) while the header has %d)", null,
+                line, row.length, headerColumns);
+            context.errors.incrementAndGet();
+          } else {
+            // AND THE SHORT DIRECTION, COUNTED THE SAME WAY loadDocuments()/loadVertices() COUNT IT:
+            // createEdgeFromRow() BELOW IMPORTS SUCH A ROW FROM THE COLUMNS IT DOES SUPPLY, SO WITHOUT THIS THE ONE
+            // RAGGED-ROW NUMBER THE OPERATOR IS SHOWN WOULD COUNT DOCUMENTS AND VERTICES BUT NOT EDGES (ISSUE #7782).
+            reportShortRow(line, row.length, headerColumns, context);
 
-          // Deliberately outside the per-row catch above: a commit failure is not a row error. Caught there it
-          // would be logged under a "parsing line N" message, and the loop would carry on with no transaction
-          // active - LocalDatabase#commit() pops in its own finally and the begin() below never runs - turning
-          // one failure into one more for every remaining row. Left to escape, it reaches the finally below,
-          // which corrects the counter and lets the real cause propagate.
-          if (txCount >= settings.commitEvery) {
-            txOpen = false;
-            database.commit();
-            committedEdges = context.createdEdges.get();
-            database.begin();
-            txOpen = true;
-            txCount = 0;
+            try {
+              createEdgeFromRow(database, row, properties, from, to, context, settings);
+              txCount++;
+            } catch (final Exception e) {
+              // Unlike loadDocuments/loadVertices, edge rows are always skipped-and-logged regardless of -onRowError:
+              // a "bad" edge row here is typically just an unresolved from/to vertex reference, expected during graph
+              // imports rather than a data-corruption case.
+              LogManager.instance().log(this, Level.SEVERE, "Error on parsing line %d", e, line);
+            }
+
+            // INSIDE THE else, SO A REFUSED ROW DOES NOT REACH IT. NO BEHAVIOUR CHANGE - txCount IS ONLY INCREMENTED
+            // BY AN ATTEMPTED ROW, SO A REFUSED ONE COULD NEVER HAVE TRIPPED THE CADENCE ANYWAY - BUT IT SAVES THE
+            // NEXT READER DERIVING THAT: THE COMMIT CADENCE COUNTS ATTEMPTED ROWS, NOT PARSED ONES.
+            //
+            // Deliberately outside the per-row catch above: a commit failure is not a row error. Caught there it
+            // would be logged under a "parsing line N" message, and the loop would carry on with no transaction
+            // active - LocalDatabase#commit() pops in its own finally and the begin() below never runs - turning
+            // one failure into one more for every remaining row. Left to escape, it reaches the finally below,
+            // which corrects the counter and lets the real cause propagate.
+            if (txCount >= settings.commitEvery) {
+              // txOpen cleared before the call, but DatabaseContext#popIfNotLastTransaction() does NOT pop the
+              // outermost transaction off the stack, only a nested one, so a commit() that fails on THIS
+              // transaction - the common case: no caller transaction predates it - can leave it still active
+              // rather than popped. Restored from the live state on failure so the finally below still rolls
+              // it back instead of leaking it (issue #8122). Gated on !callerTransactionActiveOnEntry: when a
+              // caller transaction DOES predate this one, popIfNotLastTransaction() pops this level
+              // unconditionally on failure just like it would on success, so isTransactionActive() here would
+              // read the caller's own surviving transaction, not a leaked one of this method's - restoring
+              // from it would roll back work that belongs to the caller to resolve.
+              txOpen = false;
+              try {
+                database.commit();
+              } catch (final RuntimeException | Error commitFailure) {
+                if (!callerTransactionActiveOnEntry)
+                  txOpen = database.isTransactionActive();
+                throw commitFailure;
+              }
+              committedEdges = context.createdEdges.get();
+              database.begin();
+              txOpen = true;
+              txCount = 0;
+            }
           }
 
           // SAME CAP AND SAME '>=' AS XMLImporterFormat.load() (ISSUE #7341): context.parsed IS INCREMENTED ONCE PER
@@ -671,8 +979,16 @@ public class CSVImporterFormat extends AbstractImporterFormat {
           if (settings.parsingLimitEntries > 0 && context.parsed.get() >= settings.parsingLimitEntries)
             break;
         }
+        // Same restore-on-failure as the periodic commit above, gated the same way and for the same reason
+        // (issue #8122).
         txOpen = false;
-        database.commit();
+        try {
+          database.commit();
+        } catch (final RuntimeException | Error commitFailure) {
+          if (!callerTransactionActiveOnEntry)
+            txOpen = database.isTransactionActive();
+          throw commitFailure;
+        }
         completed = true;
       } finally {
         // A row-content failure is already caught and logged above without escaping; what reaches here is a
@@ -750,11 +1066,23 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
     final Object[] params;
     if (row.length > 2) {
-      params = new Object[properties.size() * 2];
-      for (int i = 0; i < properties.size(); ++i) {
+      // ONLY THE PROPERTIES THIS ROW ACTUALLY SUPPLIES A COLUMN FOR: A ROW SHORTER THAN THE HEADER THREW
+      // ArrayIndexOutOfBoundsException OUT OF row[property.getIndex()] BELOW, WHICH THE EDGE LOOP'S skip-and-log
+      // CANNOT TURN INTO A COUNTED SKIP BECAUSE IT NEVER SAW IT AS AN UNRESOLVED REFERENCE (ISSUE #7782)
+      int supplied = 0;
+      for (int i = 0; i < properties.size(); ++i)
+        if (properties.get(i).getIndex() < row.length)
+          ++supplied;
+
+      params = supplied > 0 ? new Object[supplied * 2] : NO_PARAMS;
+      for (int i = 0, p = 0; i < properties.size(); ++i) {
         final AnalyzedProperty property = properties.get(i);
-        params[i * 2] = property.getName();
-        params[i * 2 + 1] = row[property.getIndex()];
+        if (property.getIndex() >= row.length)
+          continue;
+
+        params[p * 2] = property.getName();
+        params[p * 2 + 1] = row[property.getIndex()];
+        ++p;
       }
     } else {
       params = NO_PARAMS;
@@ -942,13 +1270,13 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
     if ("\t".equals(delimiter) || "\\t".equals(delimiter)) {
       parserSettings = tsvParserSettings = new TsvParserSettings();
+      csvParserSettings = null;
     } else {
+      tsvParserSettings = null;
       parserSettings = csvParserSettings = new CsvParserSettings();
+      // Detection off for a source with no delimiter at all too, which applyDelimiter() below leaves untouched.
       csvParserSettings.setDelimiterDetectionEnabled(false);
-      if (delimiter != null) {
-        csvParserSettings.detectFormatAutomatically(delimiter.charAt(0));
-        csvParserSettings.getFormat().setDelimiter(delimiter.charAt(0));
-      }
+      applyDelimiter(csvParserSettings, delimiter);
     }
 
     parserSettings.setReadInputOnSeparateThread(false);
@@ -971,6 +1299,9 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
     final List<String> fieldNames = new ArrayList<>();
 
+    // How many oversized rows this analysis has already skipped, so only the first one logs at WARNING (see below).
+    long raggedRowsSkippedInAnalysis = 0;
+
     final String entityName = entityType == AnalyzedEntity.EntityType.VERTEX ?
         settings.vertexTypeName :
         entityType == AnalyzedEntity.EntityType.EDGE ? settings.edgeTypeName : settings.documentTypeName;
@@ -988,7 +1319,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       if (delimiter == null)
         fieldNames.add(header);
       else {
-        final String[] headerColumns = header.split(",");
+        final String[] headerColumns = header.split(Pattern.quote(headerSeparator(delimiter)));
         fieldNames.addAll(Arrays.asList(headerColumns));
       }
       LogManager.instance().log(this, Level.INFO, "Parsing with custom header: %s", null, fieldNames);
@@ -996,6 +1327,19 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
     try (final Reader inputFileReader = sourceReader(parser)) {
       csvParser.beginParsing(inputFileReader);
+
+      // THE FORMAT detectFormatAutomatically() (INSIDE applyDelimiter() ABOVE) DISCOVERED FROM THIS SOURCE - QUOTE,
+      // QUOTE ESCAPE, DELIMITER, LINE SEPARATOR - CAPTURED ONTO THE INSTANCE RIGHT AFTER beginParsing() MAKES IT
+      // AVAILABLE, SO createCSVParser() CAN APPLY THE SAME ONE LATER INSTEAD OF EITHER RE-DETECTING (WHICH COULD IN
+      // THEORY LAND ON A DIFFERENT GUESS) OR DEFAULTING, WHICH USED TO READ THIS SOURCE WITH A DIFFERENT QUOTE
+      // CHARACTER THAN THE ANALYSIS JUST DERIVED ITS SCHEMA FROM (ISSUE #8046).
+      // csvParserSettings.getFormat() is NOT what detection actually mutates - univocity's CsvFormatDetector.apply()
+      // writes the discovered delimiter/quote/quoteEscape onto CsvParser's OWN instance fields, not back onto the
+      // settings object, so getFormat() would still read the plain, undetected default here. getDetectedFormat() is
+      // the parser's own accessor for what its detector actually found; null when detection never ran (TSV, a
+      // multi-character delimiter, or no delimiter at all - see applyDelimiter()).
+      if (csvParserSettings != null)
+        detectedFormat = ((CsvParser) csvParser).getDetectedFormat();
 
       String[] row;
       for (long line = 0; (row = csvParser.parseNext()) != null; ++line) {
@@ -1015,6 +1359,25 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         } else {
           // DATA LINE
           final AnalyzedEntity entity = analyzedSchema.getOrCreateEntity(entityName, entityType);
+
+          // RECORDED BEFORE THE ARITY CHECK BELOW, SO THE LOAD PASS MEASURES ROWS AGAINST THE SAME NUMBER EVEN WHEN
+          // EVERY ROW IN THE FILE IS RAGGED AND NONE OF THEM CONTRIBUTES A PROPERTY (ISSUE #7782)
+          entity.setHeaderColumns(fieldNames.size());
+
+          if (isLongerThanHeader(row.length, fieldNames.size())) {
+            // THROWS UNLESS THE POLICY SAYS TO SKIP - THE SAME REFUSAL, WORDED THE SAME WAY, THAT THE LOAD PASS
+            // RAISES FOR THIS ROW
+            if (!settings.isSkipOnRowError())
+              checkRowIsNotLongerThanHeader(line, row.length, fieldNames.size());
+
+            // WARNING FOR THE FIRST ONE ONLY, THEN FINE - THE SAME THROTTLE reportShortRow() USES, SO A
+            // SYSTEMATICALLY RAGGED FILE DOES NOT LOG A LINE PER ROW IN ONE DIRECTION WHILE THE MIRROR CASE IS
+            // THROTTLED IN THE OTHER (ISSUE #7782)
+            LogManager.instance().log(this, raggedRowsSkippedInAnalysis++ == 0 ? Level.WARNING : Level.FINE,
+                "Error on analyzing row at line %d, skipping it (reason: it has %d column(s) while the header has %d)", null,
+                line, row.length, fieldNames.size());
+            continue;
+          }
 
           entity.setRowSize(row);
           for (int i = 0; i < row.length; ++i) {
@@ -1050,7 +1413,17 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       return new TsvParser(tsvParserSettings);
     } else {
       final CsvParserSettings csvParserSettings = new CsvParserSettings();
-      csvParserSettings.getFormat().setDelimiter(delimiter);
+      if (detectedFormat != null)
+        // Reuses the exact format analyze() detected reading this same source - quote, quote escape, delimiter -
+        // rather than either re-running detection (which could in theory land on a different guess) or defaulting,
+        // which is what used to read this pass with a different quote character than the analysis just derived its
+        // schema from (issue #8046).
+        csvParserSettings.setFormat(detectedFormat);
+      else
+        // No detection to reuse: analyze() never ran one on this source (TSV never reaches this branch, and a
+        // multi-character or absent delimiter skips detection - see applyDelimiter()). The same helper analyze()
+        // uses, so the two passes still cannot disagree about the delimiter itself (#7867).
+        applyDelimiter(csvParserSettings, delimiter);
       csvParserSettings.setMaxColumns(settings.getIntValue("maxProperties", csvParserSettings.getMaxColumns()));
       csvParserSettings.setMaxCharsPerColumn(settings.getIntValue("maxPropertySize", csvParserSettings.getMaxCharsPerColumn()));
       return new CsvParser(csvParserSettings);

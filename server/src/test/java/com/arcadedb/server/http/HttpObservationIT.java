@@ -79,7 +79,7 @@ class HttpObservationIT extends BaseGraphServerTest {
     // the otherwise no-op Observation observable.
     registry.observationConfig().observationHandler(probe);
 
-    final HttpURLConnection c = (HttpURLConnection) new URL("http://localhost:2480/api/v1/ready").openConnection();
+    final HttpURLConnection c = (HttpURLConnection) new URL(getServerHttpUrl("/api/v1/ready")).openConnection();
     c.setRequestMethod("GET");
     c.connect();
     assertThat(c.getResponseCode()).isEqualTo(204);

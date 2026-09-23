@@ -417,6 +417,15 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
      * multi-database server is a silently missed event rather than a saved stack frame.
      */
     private      boolean                  firingReadEvents = false;
+    /**
+     * The existence constraints the statement running on this thread has deferred to its own end, or null when no
+     * statement has opened such a scope. See {@link DeferredExistenceChecks}.
+     * <p>
+     * Lives here for the same reason {@link #firingReadEvents} does: the relaxation belongs to one thread's work on
+     * one database, and a bare thread-local would let a statement on database A relax the constraints of a write to
+     * database B that happened to run on the same thread.
+     */
+    private      DeferredExistenceChecks  deferredExistenceChecks = null;
 
     /** See {@link #firingReadEvents}. */
     public boolean isFiringReadEvents() {
@@ -426,6 +435,16 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
     /** See {@link #firingReadEvents}. Callers MUST restore the previous value in a finally. */
     public void setFiringReadEvents(final boolean firingReadEvents) {
       this.firingReadEvents = firingReadEvents;
+    }
+
+    /** See {@link #deferredExistenceChecks}. */
+    public DeferredExistenceChecks getDeferredExistenceChecks() {
+      return deferredExistenceChecks;
+    }
+
+    /** See {@link #deferredExistenceChecks}. */
+    public void setDeferredExistenceChecks(final DeferredExistenceChecks deferredExistenceChecks) {
+      this.deferredExistenceChecks = deferredExistenceChecks;
     }
 
     public SecurityDatabaseUser getCurrentUser() {

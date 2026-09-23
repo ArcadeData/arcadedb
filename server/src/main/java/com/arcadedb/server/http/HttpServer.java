@@ -86,6 +86,7 @@ import com.arcadedb.server.ai.AiChatsHandler;
 import com.arcadedb.server.ai.AiConfigHandler;
 import com.arcadedb.server.ai.ChatStorage;
 import com.arcadedb.server.security.ServerSecurityException;
+import com.arcadedb.utility.CodeUtils;
 import io.undertow.Handlers;
 import io.undertow.Undertow;
 import io.undertow.UndertowOptions;
@@ -168,27 +169,45 @@ public class HttpServer implements ServerPlugin {
     this.idempotencyCleanupExecutor.scheduleAtFixedRate(idempotencyCache::cleanupExpired, 30, 30, TimeUnit.SECONDS);
   }
 
+  /**
+   * Releases everything this service owns, and releases ALL of it even when one step fails (issue #7985).
+   * <p>
+   * Every step is guarded individually, the way {@code ArcadeDBServer.stopInternal()} guards each service it
+   * stops and the way {@code undertow.stop()} alone was guarded here. Without that, a throw from any step
+   * skipped the ones after it - including {@code leaderCommandForwarder.close()}, which is last - and
+   * {@code stopInternal()} calls this method inside {@code CodeUtils.executeIgnoringExceptions}, so the throw
+   * did not even reach the caller: the server reported a clean stop while holding the forwarder's HTTP client,
+   * its connection pool and its selector thread for the life of the JVM.
+   * <p>
+   * Order is unchanged and still matters: the forwarder's client is released last, once nothing is left that
+   * could ask it for a forward.
+   * <p>
+   * The guards log the throwable ({@code logException = true}) rather than the message alone, because this
+   * catch is now the last one a failure here meets: before, a throw propagated to {@code stopInternal()}, and
+   * a reader at least saw "Error on stopping HTTP service" with something to chase. {@code undertow.stop()}
+   * keeps its original silence - it was the one step already guarded, with a bare {@code // IGNORE IT}, and
+   * making an already-tolerated shutdown failure start logging at SEVERE is a separate decision from stopping
+   * it skipping the steps below.
+   */
   @Override
   public void stopService() {
-    webSocketEventBus.stop();
-    insertSessionManager.close();
+    CodeUtils.executeIgnoringExceptions(webSocketEventBus::stop, "Error on stopping the WebSocket event bus", true);
+    CodeUtils.executeIgnoringExceptions(insertSessionManager::close, "Error on closing the WebSocket insert sessions",
+        true);
 
     if (idempotencyCleanupExecutor != null) {
-      idempotencyCleanupExecutor.shutdown();
+      CodeUtils.executeIgnoringExceptions(idempotencyCleanupExecutor::shutdown,
+          "Error on stopping the idempotency cache cleanup", true);
       idempotencyCleanupExecutor = null;
     }
 
-    if (undertow != null) {
-      try {
-        undertow.stop();
-      } catch (final Exception e) {
-        // IGNORE IT
-      }
-    }
+    if (undertow != null)
+      CodeUtils.executeIgnoringExceptions(undertow::stop);
 
-    sessionManager.close();
-    authSessionManager.close();
-    leaderCommandForwarder.close();
+    CodeUtils.executeIgnoringExceptions(sessionManager::close, "Error on closing the HTTP sessions", true);
+    CodeUtils.executeIgnoringExceptions(authSessionManager::close, "Error on closing the HTTP auth sessions", true);
+    CodeUtils.executeIgnoringExceptions(leaderCommandForwarder::close,
+        "Error on releasing the leader command forwarder's HTTP client", true);
   }
 
   @Override
@@ -241,6 +260,15 @@ public class HttpServer implements ServerPlugin {
     final PathHandler routes = new PathHandler();
     final RouteRecordingRoutingHandler basicRoutes = new RouteRecordingRoutingHandler();
 
+    // Shared with the GET registrations below (issue #8133): container healthchecks such as
+    // `wget --spider` issue HEAD instead of GET, and Undertow's RoutingHandler does not fall back
+    // from HEAD to a registered GET route on its own, so it answered 405. Registering the same
+    // handler instance under HEAD costs nothing extra - Undertow's HeadStreamSinkConduit discards
+    // whatever body the handler writes at the connector level, so headers and status code still
+    // match what GET would have returned.
+    final GetReadyHandler readyHandler = new GetReadyHandler(this);
+    final GetHealthHandler healthHandler = new GetHealthHandler(this);
+
     routes.addPrefixPath("/ws", new WebSocketConnectionHandler(this, webSocketEventBus));
     routes.addPrefixPath("/api/v1", basicRoutes
         .post("/batch/{database}", new PostBatchHandler(this))
@@ -262,8 +290,10 @@ public class HttpServer implements ServerPlugin {
         .post("/vector/{database}/fulltext", new PostVectorFullTextSearchHandler(this))
         .get("/server", new GetServerHandler(this))
         .post("/server", new PostServerCommandHandler(this))
-        .get("/ready", new GetReadyHandler(this))
-        .get("/health", new GetHealthHandler(this))
+        .get("/ready", readyHandler)
+        .add("HEAD", "/ready", readyHandler)
+        .get("/health", healthHandler)
+        .add("HEAD", "/health", healthHandler)
         .get("/openapi.json", new GetOpenApiHandler(this))
         .get("/docs", new GetApiDocsHandler(this))
         .get("/server/api-tokens", new GetApiTokensHandler(this))
@@ -293,7 +323,7 @@ public class HttpServer implements ServerPlugin {
 
     // AI routes are always registered; the chat handler checks isConfigured() at request time
     final var aiConfig = server.getAiConfiguration();
-    final var chatStorage = new ChatStorage(server.getRootPath());
+    final var chatStorage = new ChatStorage(server.getRootPath(), () -> server.getSecurity().getUsers());
     final var aiChatsHandler = new AiChatsHandler(this, chatStorage);
     final RouteRecordingRoutingHandler aiRoutes = new RouteRecordingRoutingHandler();
     routes.addPrefixPath("/api/v1/ai", aiRoutes//
@@ -353,10 +383,26 @@ public class HttpServer implements ServerPlugin {
 
   private Undertow buildUndertowServer(final ContextConfiguration configuration, final String host, final PathHandler routes,
       int httpsPortListening) throws Exception {
+    // Undertow's own entity-size ceiling stays OFF, and arcadedb.server.httpBodyContentMaxSize is enforced by
+    // AbstractServerHttpHandler.readRequestBody and PostBatchHandler's CountingInputStream instead - the two
+    // readers every body on this server now goes through (issue #7772).
+    //
+    // Setting this option to the cap looks like the obvious backstop and cannot be one, for two independent
+    // reasons. First, Undertow enforces MAX_ENTITY_SIZE inside the request conduit: ChunkedStreamSourceConduit's
+    // MaxEntitySizeChecker terminates the request AND CLOSES THE CONNECTION at the point the limit is crossed,
+    // before the worker thread is back in any handler, so by the time anything can react the exchange reports
+    // complete=true and the connection open=false and the documented JSON 413 cannot be sent at all. Second, the
+    // ceiling would be frozen at the value read here while the cap it mirrors is re-read on every request: after
+    // 'SET SERVER SETTING arcadedb.server.httpBodyContentMaxSize' raises the limit, a body inside the NEW cap
+    // still crosses the OLD ceiling, and the caller gets a connection reset with no status rather than the answer
+    // it asked for. Measured: with the cap raised from 1 KB to 8 MB at runtime, a 3 MB chunked body is cut with no
+    // response while the same body sent with a Content-Length is answered normally.
+    //
+    // Per-exchange repair does not work either: HttpServerExchange.setMaxEntitySize is available, but
+    // AbstractServerConnection.maxEntitySizeUpdated - the hook it calls - is an empty method for HTTP/1.1, and by
+    // the time any handler runs the conduit has already captured the old value.
     final Undertow.Builder builder = Undertow.builder()//
         .setServerOption(UndertowOptions.ENABLE_HTTP2, true)
-        // Set to Long.MAX_VALUE so Undertow does not reject oversized requests before routing;
-        // the actual limit is enforced in the handler chain to return a proper 413 with JSON body
         .setServerOption(UndertowOptions.MAX_ENTITY_SIZE, Long.MAX_VALUE)
         .addHttpListener(httpPortListening, host)//
         .setHandler(createBodySizeLimitHandler(routes, configuration))//
@@ -374,6 +420,19 @@ public class HttpServer implements ServerPlugin {
     return builder.build();
   }
 
+  /**
+   * The fast path of {@code arcadedb.server.httpBodyContentMaxSize}: a request that DECLARES more than the cap
+   * is refused with a descriptive JSON 413 before a single body byte is read, and the setting is re-read per
+   * request so a change through {@code SET SERVER SETTING} takes effect immediately.
+   * <p>
+   * It is not the whole enforcement and never could be. {@code HttpServerExchange.getRequestContentLength()}
+   * answers {@code -1} for a body that declares no length, so the bytes actually read are bounded further down,
+   * by {@code AbstractServerHttpHandler.readRequestBody} and by {@code PostBatchHandler}'s
+   * {@code CountingInputStream} for the route that streams instead of buffering. The
+   * {@code RequestTooBigException} they raise is mapped to the same 413 by {@code AbstractServerHttpHandler}
+   * (issue #7772). This check remains because it is the cheap one: it costs a header read and refuses before a
+   * single body byte is taken off the socket.
+   */
   private HttpHandler createBodySizeLimitHandler(final HttpHandler next, final ContextConfiguration configuration) {
     return exchange -> {
       final long maxEntitySize = configuration.getValueAsLong(GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE);

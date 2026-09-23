@@ -120,6 +120,8 @@ public enum GlobalConfiguration {
         // made this profile drop live vectors from searches (issue #5568).
         VECTOR_INDEX_SEARCH_CACHE_SIZE.setValue(10_000);
         VECTOR_INDEX_DELTA_CACHE_SIZE.setValue(10_000);
+        // Held per shard, so the floor rather than the heap-scaled default: still enough for one block's columns.
+        TIMESERIES_DECODED_BLOCK_CACHE_RAM.setValue(4L);
 
         POLYGLOT_ENGINE_ENABLED.setValue(false);
 
@@ -197,7 +199,7 @@ public enum GlobalConfiguration {
       "yyyy-MM-dd"),
 
   DATE_TIME_IMPLEMENTATION("arcadedb.dateTimeImplementation", SCOPE.DATABASE,
-      "Default datetime implementation to use on deserialization. By default java.time.LocalDateTime is used, but the following are supported: java.util.Date, java.util.Calendar, java.time.LocalDateTime, java.time.ZonedDateTime, java.time.Instant",
+      "Default datetime implementation to use on deserialization. By default java.time.LocalDateTime is used, but the following are supported: java.util.Date, java.util.Calendar, java.time.LocalDateTime, java.time.ZonedDateTime, java.time.Instant. java.util.Date and java.util.Calendar cannot carry sub-millisecond precision, so with them DATETIME_MICROS and DATETIME_NANOS values are returned as java.time.LocalDateTime",
       Class.class, LocalDateTime.class),
 
   DATE_TIME_FORMAT("arcadedb.dateTimeFormat", SCOPE.DATABASE, "Default date time format using Java SimpleDateFormat syntax",
@@ -237,6 +239,28 @@ public enum GlobalConfiguration {
   TIMESERIES_TAG_DICTIONARY_MAX_SIZE("arcadedb.timeSeriesTagDictionaryMaxSize", SCOPE.DATABASE,
       "Maximum number of distinct values one TimeSeries type's tag dictionary may hold. TAG columns are dictionary-encoded in the mutable row so each occupies a 4-byte id instead of a reserved 258-byte slot; the dictionary is kept in RAM, so this caps its footprint and turns a mis-declared high-cardinality TAG into a clear error instead of unbounded growth. Default is 1M distinct values, roughly 100MB",
       Integer.class, 1_000_000),
+
+  TIMESERIES_DECODED_BLOCK_CACHE_RAM("arcadedb.timeSeriesDecodedBlockCacheRAM", SCOPE.DATABASE, """
+      Memory budget, in MEGABYTES and PER SHARD, for caching decoded TimeSeries sealed-block columns. A sealed block \
+      holds up to 65536 samples and is stored one compressed column at a time, so answering the same question twice \
+      used to re-read and re-decode the whole block twice - a tag-filtered "latest point" query decodes 65536 \
+      timestamps to return one row, and pays it again on every poll (issue #8179). Blocks are immutable and carry a \
+      durable id, so a decoded column can be held and reused safely. Caching is per sealed store, i.e. per shard of \
+      a TimeSeries type, so the worst-case footprint of one type is this value times its SHARDS - the budget is only \
+      reached by queries that actually touch that many distinct blocks. One column of a full block costs 512KB, so a \
+      budget below 2MB cannot hold the working set of even a single 3-column query. 0 disables the cache, which \
+      restores the decode-per-read behaviour exactly. When left at the default it auto-scales with the JVM max heap \
+      (heap/512, never below 4MB). A shard sizes its cache when it is OPENED, so changing this on a running database \
+      reaches the shards opened after the change and not those already open; reopen the database to apply it \
+      everywhere.""",
+      Long.class, 4L, null, value -> {
+        final long maxHeap = Runtime.getRuntime().maxMemory();
+        if (maxHeap == Long.MAX_VALUE)
+          // Heap is unbounded (no -Xmx): keep the floor rather than a budget derived from a number that means
+          // "no limit".
+          return 4L;
+        return Math.max(4L, maxHeap / 512 / 1024 / 1024);
+      }),
 
   BUCKET_REUSE_SPACE_MODE("arcadedb.bucketReuseSpaceMode", SCOPE.DATABASE,
       "How to reuse space in pages. 'high' = more space saved, but slower opening and update/delete time. 'medium' to still reuse space without the initial scan at opening time. 'low' for faster performance, but less space reused. Default is 'high'",
@@ -1545,8 +1569,27 @@ public enum GlobalConfiguration {
       Integer.class, 100),
 
   SERVER_HTTP_BODY_CONTENT_MAX_SIZE("arcadedb.server.httpBodyContentMaxSize", SCOPE.SERVER,
-      "Maximum size in bytes for HTTP request body content. Set to -1 for unlimited size (WARNING: removes DoS protection). Default is 100MB",
+      """
+      Maximum size in bytes for HTTP request body content, measured ON THE WIRE. Set to -1 for unlimited size \
+      (WARNING: removes DoS protection). A request that declares a `Content-Encoding` is additionally bounded by \
+      'arcadedb.server.httpBodyContentDecompressedMaxSize' once decoded, because this value alone would otherwise \
+      be a compression-ratio multiplier rather than a bound (issue #8084). Default is 100MB""",
       Long.class, 100L * 1024 * 1024), // 100MB DEFAULT
+
+  SERVER_HTTP_BODY_CONTENT_DECOMPRESSED_MAX_SIZE("arcadedb.server.httpBodyContentDecompressedMaxSize", SCOPE.SERVER,
+      """
+      Maximum size in bytes an HTTP request body may expand to once its `Content-Encoding` has been decoded \
+      (issue #8084). 'arcadedb.server.httpBodyContentMaxSize' bounds only the bytes that arrive, so on a route \
+      that decodes gzip (the InfluxDB line-protocol ingest) or Snappy (the Prometheus remote_write and \
+      remote_read endpoints) a client that compresses turns that cap into a ratio multiplier: line protocol is \
+      highly repetitive text and ratios in the hundreds are ordinary, so an accepted 100MB body is worth tens of \
+      GB of heap. A body that decodes past this value is refused with HTTP 413 before the decoded bytes are \
+      materialized. Set to a NEGATIVE value (-1 is the default) to follow 'arcadedb.server.httpBodyContentMaxSize', \
+      which is what an administrator raising a single knob expects - including its own -1, meaning unlimited. Set \
+      to 0 for unlimited without following that setting, the same way 0 means unlimited there. Any other value \
+      overrides it, so a legitimately large compressed payload can be allowed without also widening what may \
+      arrive uncompressed""",
+      Long.class, -1L),
 
   SERVER_HTTP_QUERY_DEFAULT_LIMIT("arcadedb.server.httpQueryDefaultLimit", SCOPE.SERVER,
       """
@@ -1654,19 +1697,26 @@ public enum GlobalConfiguration {
 
   SERVER_WS_MAX_CONTROL_FRAME_SIZE("arcadedb.server.wsMaxControlFrameSize", SCOPE.SERVER, """
       Maximum size in bytes of a single text frame accepted on /ws before an insert session has been started on \
-      that connection (issue #7403). Undertow's AbstractReceiveListener defaults to -1, unbounded, so every text \
-      frame used to be accumulated whole on the heap with no way for the server to say 'not that big'. A \
+      that connection (issue #7403), and of every binary frame whatever the connection's session state (issue \
+      #8065). Undertow's AbstractReceiveListener defaults to -1, unbounded, so a frame used to be accumulated \
+      whole on the heap with no way for the server to say 'not that big'. A \
       subscribe/unsubscribe/start/commit/rollback frame is a few hundred bytes, so this bound is deliberately \
       tight; the accumulation is aborted with a 1009 TOO_BIG close as soon as it crosses the cap, not after the \
-      frame has been buffered. 0 or a negative value restores the unbounded behaviour.""", Long.class, 64 * 1024L),
+      frame has been buffered. Binary frames carry no /ws protocol meaning at all - one inside the budget is \
+      answered with an error frame and discarded - so they are never granted the larger 'wsMaxInsertFrameSize' \
+      budget, not even on a connection that has an insert session open. 0 or a negative value restores the \
+      unbounded behaviour, for text and binary alike.""", Long.class, 64 * 1024L),
 
   SERVER_WS_MAX_INSERT_FRAME_SIZE("arcadedb.server.wsMaxInsertFrameSize", SCOPE.SERVER, """
       Maximum size in bytes of a single text frame accepted on a /ws connection that has started a duplex insert \
       session (issue #7403). A 'chunk' frame legitimately carries a whole batch of records, so it needs a larger \
       budget than 'wsMaxControlFrameSize'; an operator running a bulk loader raises this one deliberately. The \
-      larger budget is granted when the connection's 'start' frame is dispatched and dropped again when its \
-      'commit'/'rollback' is, so a connection that never opens an insert session is never charged more than \
-      'wsMaxControlFrameSize'. Raising it scales the worst case by more than itself: a connection may have up \
+      larger budget is granted while the connection HAS an insert session open, and while a 'start' frame of its \
+      own is still being applied; from the next frame after neither holds it is charged the control budget \
+      again, however the session ended - a 'commit' or 'rollback' frame, the idle sweep, the connection closing, \
+      or a 'start' the server refused (issue #7909). So a connection that never opens an insert session is never \
+      charged more than 'wsMaxControlFrameSize'. Raising it scales the worst case by more than itself: a \
+      connection may have up \
       to 64 frames waiting to be applied (WebSocketInsertProtocol.MAX_PENDING_FRAMES, which is not itself \
       configurable), so the per-connection buffering to budget for is this value times that queue depth. 0 or a \
       negative value restores the unbounded behaviour.""",
@@ -1685,6 +1735,16 @@ public enum GlobalConfiguration {
       server's send buffer: the producer-side queue is bounded but a slow consumer is charged to the server's heap,
       not to its own. Past this cap the subscription is dropped and the channel closed, which is what the client
       would experience anyway. 0 disables the cap (the pre-26.9.1 behaviour).""", Long.class, 16 * 1024 * 1024L),
+
+  SERVER_WS_MAX_PENDING_CONTROL_BYTES("arcadedb.server.wsMaxPendingControlBytes", SCOPE.SERVER, """
+      Maximum number of bytes of REQUEST-ANSWER frames - a /ws subscription acknowledgement or error, or an
+      insert-session 'started'/'batchAck'/'committed'/error - that may be outstanding towards a single connection
+      before it is closed (issue #8085). 'eventBusMaxPendingBytes' bounds only the change-stream PUSH frames a
+      client opted into by subscribing; every other /ws sender answers something the peer itself sent, and none of
+      them was bounded, so a connection that sends requests as fast as its socket allows and never reads the
+      answers pinned one small queued frame per request on the server's heap forever. Past this cap the frame is
+      dropped and the connection closed, which is what the peer would eventually experience anyway. 0 disables the
+      cap.""", Long.class, 16 * 1024 * 1024L),
 
   // SERVER SECURITY
   SERVER_SECURITY_ALGORITHM("arcadedb.server.securityAlgorithm", SCOPE.SERVER,
@@ -1709,10 +1769,27 @@ public enum GlobalConfiguration {
       Default is false, which keeps the behaviour this route has always had: Studio's own token UI mints over the very \
       same route, so enforcing by default would break every Studio deployment served over plain HTTP from a host that \
       is not the operator's own. When it is false and the transport is unprotected the mint is still logged at WARNING. \
-      A TLS-terminating reverse proxy in front of a cleartext listener presents as a remote cleartext peer unless it \
-      forwards from loopback: this setting reads the live connection, deliberately not the X-Forwarded-Proto header, \
-      which any client can send. Such a deployment has moved the trust boundary to the proxy (issue #7372)""",
+      A TLS-terminating reverse proxy in front of a cleartext listener presents as a remote cleartext peer unless the \
+      operator lists it in `arcadedb.server.apiTokenTrustedProxies`: this setting reads the live connection, and the \
+      X-Forwarded-Proto header only from a peer on that list, never from an arbitrary client (issues #7372, #7804). \
+      The default flips to true in 27.1.1. Until then an unprotected mint is allowed and logged; from 27.1.1 it is \
+      refused unless this is explicitly set back to false""",
       Boolean.class, false),
+
+  SERVER_API_TOKEN_TRUSTED_PROXIES("arcadedb.server.apiTokenTrustedProxies", SCOPE.SERVER,
+      """
+      Comma-separated list of literal IP addresses or CIDR ranges (IPv4 and IPv6) of the reverse proxies allowed to \
+      vouch for the transport of `POST /api/v1/server/api-tokens` through the X-Forwarded-Proto header. Empty by \
+      default, which trusts no proxy and leaves the header unread. \
+      When the request's direct peer matches an entry AND the header reports https for every hop, the mint is treated \
+      as protected even though the proxy-to-server leg is cleartext - that leg is on the network the operator owns, \
+      and by listing the proxy they state where their trust boundary is. A peer that is not on the list can send the \
+      same header and gain nothing: the header is otherwise ignored, because the caller asking for a token is exactly \
+      the caller who would forge it. \
+      Entries must be literal addresses - a hostname is rejected rather than resolved, since a DNS answer is not a \
+      trust decision. An unparseable list is treated as empty, so a typo denies rather than opening the gate \
+      (issue #7804)""",
+      String.class, ""),
 
   SERVER_SECURITY_IMPORT_BLOCK_LOCAL_NETWORKS("arcadedb.server.security.importBlockLocalNetworks", SCOPE.SERVER,
       "When enabled (default), the SQL `IMPORT DATABASE` command refuses HTTP(S) URLs that resolve to loopback, link-local, "
@@ -1994,6 +2071,22 @@ public enum GlobalConfiguration {
       the single best-effort attempt.""",
       Long.class, 3000L),
 
+  HA_SECURITY_CONVERGENCE_READINESS_TIMEOUT("arcadedb.ha.securityConvergenceReadinessTimeout", SCOPE.SERVER,
+      """
+      How long in milliseconds /api/v1/ready keeps answering NOT READY on a node that is a member of a \
+      multi-node cluster and has never installed any of the cluster's replicated security documents - \
+      server-users.jsonl, server-groups.json, server-api-tokens.json (issue #7532). Such a node enforces \
+      credentials from its own config directory rather than the cluster's, which is what a peer looks like \
+      between the moment its membership change commits and the moment the admission seed of issue #7521 lands, \
+      and what it stays like when that seed never lands at all. Requires \
+      arcadedb.server.readinessRequiresHA, and is bounded on purpose: when the window expires the node reports \
+      READY and logs, once, at SEVERE, exactly which documents never converged, so a rolling restart cannot \
+      stall behind a seed nobody is going to send. 0, the default, disables the wait entirely and leaves \
+      readiness exactly as it was - a cluster that has never replicated a security document has no node with \
+      one, so a non-zero default would hold every statically configured deployment's readiness for this window \
+      on every start.""",
+      Long.class, 0L),
+
   HA_RESYNC_PROGRESS_LOGGING("arcadedb.ha.resyncProgressLogging", SCOPE.SERVER,
       """
       When true (default), the leader emits a concise per-follower unreachable/reconnected narrative and a \
@@ -2010,6 +2103,10 @@ public enum GlobalConfiguration {
   HA_ADD_PEER_PROBE_TIMEOUT("arcadedb.ha.addPeerProbeTimeout", SCOPE.SERVER,
       "Milliseconds to wait for a TCP connection to a peer's Raft address before an add-peer request (POST /api/v1/cluster/peer, the 'connect cluster' command and the gRPC ConnectCluster RPC) is refused as unreachable, with HTTP 400 / gRPC INVALID_ARGUMENT naming the address. Ratis does not commit a Mode.ADD configuration change until the new peer has caught up, so naming a server that is not running cannot succeed - without this pre-flight probe the request instead held an HTTP worker thread for the whole membership-change retry budget and reported a serialized Ratis request object (issue #7514). The probe refuses only when the connection fails: a successful one is not proof of a healthy peer and changes nothing. Raise it on a network where a TCP handshake legitimately takes longer; set it to 0 to skip the probe entirely and restore the pre-7514 behaviour.",
       Long.class, 2000L),
+
+  HA_MEMBERSHIP_CHANGE_TIMEOUT("arcadedb.ha.membershipChangeTimeout", SCOPE.SERVER,
+      "Milliseconds a membership change (add or remove peer) keeps re-issuing the Raft configuration change before it is reported as not committed. It bounds the whole request, not one attempt: since issue #7561 an attempt that cannot finish inside what is left of the budget is not started, so the caller is released at this value instead of overshooting it by a whole attempt. A Mode.ADD stays uncommitted until the new peer has caught up with the leader's log, so the cases that reach the full budget are a peer legitimately installing a large snapshot (raise it) and a listener that is not a peer of this cluster (the TCP probe of issue #7514 cannot tell the two apart). Read once when the server starts, like every SCOPE.SERVER setting: changing it takes a restart, not a SET SERVER SETTING. Lower it to below a load balancer's idle timeout so the operator gets the refusal rather than a dropped connection; a peer that is still catching up when it expires still joins, and the next add-peer call reports it as already a member. Budget it in units of one attempt: the usual attempt is a synchronous rejection that returns in milliseconds, but an attempt whose RPC hangs at the transport is bounded by the membership client's three tries of the 10s client request timeout, so about 31s. A budget below that buys one attempt and the report.",
+      Long.class, 90000L),
 
   HA_PEER_UNREACHABLE_THRESHOLD("arcadedb.ha.peerUnreachableThreshold", SCOPE.SERVER,
       "Time in milliseconds since the last successful RPC to a follower before the leader reports it as unreachable in the resync narrative. Does not change Raft membership or quorum.",
@@ -2512,7 +2609,8 @@ public enum GlobalConfiguration {
 
   // POSTGRES
   POSTGRES_PORT("arcadedb.postgres.port", SCOPE.SERVER,
-      "TCP/IP port number used for incoming connections for Postgres plugin. Default is 5432", Integer.class, 5432),
+      "TCP/IP port number used for incoming connections for Postgres plugin. Specify a single port, a range `<from>-<to>` or a comma-separated list: the first free one is used. Read it as a string, since a range is not a number. Default is 5432",
+      String.class, "5432"),
 
   POSTGRES_HOST("arcadedb.postgres.host", SCOPE.SERVER,
       "TCP/IP host name used for incoming connections for Postgres plugin. Default is '0.0.0.0'", String.class, "0.0.0.0"),
@@ -2931,7 +3029,14 @@ public enum GlobalConfiguration {
       out.print("  + ");
       out.print(v.key);
       out.print(" = ");
-      out.println(v.isHidden() ? "<hidden>" : String.valueOf((Object) v.getValue()));
+      // Redaction is publishableValue's, the single rule the settings reports already publish under
+      // (GET /api/v1/server, the MCP get_server_settings tool, SELECT FROM schema:database). isHidden() alone
+      // masks a setting that IS a secret and says nothing about one that CONTAINS a secret, so the credentials
+      // embedded in arcadedb.server.defaultDatabases were printed here in clear by an operator who turned
+      // arcadedb.dumpConfigAtStartup on to record what the server booted with (issue #8038).
+      // The "<hidden>" spelling a wholly hidden setting has always printed is kept, rather than publishableValue's
+      // "*****": this dump is read by people, not parsed, and nothing gains from renaming it here.
+      out.println(v.isHidden() ? "<hidden>" : String.valueOf(v.publishableValue(v.getValue())));
     }
     out.flush();
   }
@@ -3114,6 +3219,24 @@ public enum GlobalConfiguration {
         ? Long.MAX_VALUE
         : budget * MAX_REPLICATED_SEALED_CHUNKS;
     return Math.min(Integer.MAX_VALUE, Math.max(perEntry, sliced));
+  }
+
+  /**
+   * The decoded-column budget of ONE TimeSeries sealed store, in bytes (issue #8179).
+   * <p>
+   * {@link #TIMESERIES_DECODED_BLOCK_CACHE_RAM} is declared in megabytes and scoped to the database, so the
+   * conversion lives here rather than at the one production call site: a setting read straight off the enum would
+   * ignore a per-database override, which is what {@code SCOPE.DATABASE} promises to honour.
+   *
+   * @param configuration the database's configuration, or {@code null} for the JVM-wide value - which is what a
+   *                      caller holding no database has to settle for
+   */
+  public static long decodedBlockCacheBytes(final ContextConfiguration configuration) {
+    final long megabytes = configuration != null
+        ? configuration.getValueAsLong(TIMESERIES_DECODED_BLOCK_CACHE_RAM)
+        : TIMESERIES_DECODED_BLOCK_CACHE_RAM.getValueAsLong();
+    // Saturating, so a budget declared in megabytes that would overflow bytes disables nothing and caps instead.
+    return megabytes >= Long.MAX_VALUE / (1024L * 1024L) ? Long.MAX_VALUE : Math.max(0L, megabytes) * 1024L * 1024L;
   }
 
   /**
@@ -3744,6 +3867,142 @@ public enum GlobalConfiguration {
 
   public boolean isHidden() {
     return hidden || key.contains("clusterToken") || key.contains("Password") || key.contains("password");
+  }
+
+  /**
+   * How this setting's value may be published to a reader entitled to see the configuration at all: the value
+   * itself when it carries no secret, {@code "*****"} for a {@link #isHidden() hidden} setting, and - for the one
+   * setting whose value EMBEDS credentials rather than being one - the value with those credentials replaced.
+   * <p>
+   * {@code arcadedb.server.defaultDatabases} is that setting: {@code mydb[user:password]} is a legitimate value an
+   * operator writes, so the setting is not hidden as a whole, and publishing it verbatim hands out the passwords
+   * inside it. {@code GetServerHandler} redacted it; the MCP {@code get_server_settings} tool and the SQL
+   * {@code schema:database} step each carried a smaller copy of this routine that did not - three divergent copies
+   * of one rule, which is how issue #7784 turned a latent exposure into a live one the moment those endpoints
+   * started reporting the OVERLAY's value, where a real deployment's default databases actually are. One copy,
+   * next to {@link #isHidden()}, because that is already the single source of truth for what must not be shown.
+   * <p>
+   * A {@link Class}-typed value is rendered by name, the way {@link #externalizeValue} persists one: the object
+   * itself has no useful JSON form.
+   */
+  public Object publishableValue(final Object value) {
+    if (isHidden())
+      return "*****";
+
+    if (this == SERVER_DEFAULT_DATABASES && value instanceof String databases && !databases.isEmpty())
+      return redactDefaultDatabaseCredentials(databases);
+
+    if (value instanceof Class<?> clazz)
+      return clazz.getName();
+
+    return value;
+  }
+
+  /**
+   * Replaces the password of every {@code db[user:password[:group],...]} credential in a
+   * {@code arcadedb.server.defaultDatabases} value, and NOTHING else: the database names, every separator, the
+   * user names, the group each user is granted and any trailing {@code {commands}} segment are copied through
+   * exactly as written. What an operator needs from this report is which databases exist and who may reach them
+   * with which role; the password is the only field that cannot be shown.
+   * <p>
+   * That is why this copies by default and replaces one span, rather than splitting the value up and
+   * reassembling it: reassembly silently normalises what it did not think to preserve - a trailing {@code ';'},
+   * {@code ','} or {@code ':'} vanished, so the value reported back was not the value configured.
+   * <p>
+   * The field boundaries mirror {@code ArcadeDBServer.parseCredentials} exactly - {@code ','} between
+   * credentials, then {@code ':'} between fields - so what is treated as a password here is what the server
+   * authenticates with. That parity is the point, and it is positional on both sides: the server uses field 1
+   * and nothing else, so field 1 is the only one replaced. A password written with a {@code ':'} in it is
+   * therefore published from the colon onwards - not a leak of the password the server uses, which is only the
+   * part before it, but a reason not to write one that way. The format cannot express it, the same way it
+   * cannot express a password containing a {@code ','}.
+   */
+  private static String redactDefaultDatabaseCredentials(final String databases) {
+    final StringBuilder redacted = new StringBuilder(databases.length());
+    for (int entryBegin = 0; ; ) {
+      int entryEnd = databases.indexOf(';', entryBegin);
+      final boolean lastEntry = entryEnd < 0;
+      if (lastEntry)
+        entryEnd = databases.length();
+
+      redactEntry(redacted, databases, entryBegin, entryEnd);
+
+      if (lastEntry)
+        return redacted.toString();
+
+      redacted.append(';');
+      entryBegin = entryEnd + 1;
+    }
+  }
+
+  /** One {@code db[credentials]{commands}} entry, of which only the credential block is looked at. */
+  private static void redactEntry(final StringBuilder redacted, final String databases, final int begin,
+      final int end) {
+    final int credentialsBegin = databases.indexOf('[', begin);
+    if (credentialsBegin < 0 || credentialsBegin >= end) {
+      // A bare database name. There is no credential block, so there is nothing in it to hide.
+      redacted.append(databases, begin, end);
+      return;
+    }
+
+    redacted.append(databases, begin, credentialsBegin + 1);
+
+    // The FIRST ']' after the '[', which is the one ArcadeDBServer.loadDefaultDatabases closes the block on.
+    // lastIndexOf() would pick a ']' inside the optional trailing {commands} segment instead - a restore: path
+    // may contain one - and mangle an entry the server reads perfectly well.
+    final int credentialsEnd = databases.indexOf(']', credentialsBegin);
+    if (credentialsEnd < 0 || credentialsEnd >= end) {
+      // A '[' that is never closed. The block is malformed, so where the credentials end is not known and
+      // splitting it into fields would be guessing at which of them is the password. Fail closed on the whole
+      // remainder, the way isHidden() fails closed on a whole setting.
+      //
+      // Not a theoretical shape: SET SERVER SETTING writes this value straight into the overlay and only the
+      // NEXT startup parses it, so a malformed value sits there live - and since issue #7784 these reports read
+      // the overlay, which is precisely how it would reach an operator's screen, the schema:database step and
+      // the MCP tool. A report is not where anyone should learn what was in it.
+      redacted.append("*****");
+      return;
+    }
+
+    for (int credentialBegin = credentialsBegin + 1; ; ) {
+      int credentialEnd = databases.indexOf(',', credentialBegin);
+      final boolean lastCredential = credentialEnd < 0 || credentialEnd > credentialsEnd;
+      if (lastCredential)
+        credentialEnd = credentialsEnd;
+
+      redactPassword(redacted, databases, credentialBegin, credentialEnd);
+
+      if (lastCredential)
+        break;
+
+      redacted.append(',');
+      credentialBegin = credentialEnd + 1;
+    }
+
+    redacted.append(databases, credentialsEnd, end);
+  }
+
+  /** One {@code user:password[:group]} credential, of which only the password is replaced. */
+  private static void redactPassword(final StringBuilder redacted, final String databases, final int begin,
+      final int end) {
+    final int userEnd = databases.indexOf(':', begin);
+    if (userEnd < 0 || userEnd >= end) {
+      // The server reads this as a reference to an already existing user: there is no password in it.
+      redacted.append(databases, begin, end);
+      return;
+    }
+
+    int passwordEnd = databases.indexOf(':', userEnd + 1);
+    if (passwordEnd < 0 || passwordEnd > end)
+      passwordEnd = end;
+
+    redacted.append(databases, begin, userEnd + 1);
+
+    if (passwordEnd == userEnd + 1)
+      // An EMPTY password is not a secret, and "*****" would report one as configured where none is.
+      redacted.append(databases, userEnd + 1, end);
+    else
+      redacted.append("*****").append(databases, passwordEnd, end);
   }
 
   public Object getDefValue() {

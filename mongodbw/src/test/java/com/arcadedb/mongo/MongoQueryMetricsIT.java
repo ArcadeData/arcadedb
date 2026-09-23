@@ -19,7 +19,6 @@
 package com.arcadedb.mongo;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.mongodb.MongoClient;
 import com.mongodb.MongoClientOptions;
 import com.mongodb.MongoCredential;
@@ -39,9 +38,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Verifies that queries executed over a MongoDB connection are tagged with protocol="mongo"
  * in the arcadedb.query.duration Micrometer timer.
  */
-public class MongoQueryMetricsIT extends BaseGraphServerTest {
+public class MongoQueryMetricsIT extends BaseMongoServerTest {
 
-  private static final int DEF_PORT = 27017;
 
   private MongoClient client;
 
@@ -56,7 +54,7 @@ public class MongoQueryMetricsIT extends BaseGraphServerTest {
   public void beginTest() {
     super.beginTest();
     getDatabase(0);
-    client = new MongoClient(new ServerAddress("localhost", DEF_PORT), MongoCredential.createPlainCredential("root", getDatabaseName(), DEFAULT_PASSWORD_FOR_TESTS.toCharArray()), MongoClientOptions.builder().serverSelectionTimeout(5000).build());
+    client = new MongoClient(new ServerAddress("localhost", getServerMongoPort()), MongoCredential.createPlainCredential("root", getDatabaseName(), DEFAULT_PASSWORD_FOR_TESTS.toCharArray()), MongoClientOptions.builder().serverSelectionTimeout(5000).build());
     client.getDatabase(getDatabaseName()).createCollection("MongoMetricsCollection");
     final MongoCollection<Document> collection = client.getDatabase(getDatabaseName()).getCollection("MongoMetricsCollection");
     collection.insertOne(new Document("name", "test"));

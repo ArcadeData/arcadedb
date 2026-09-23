@@ -67,7 +67,7 @@ public class Url extends SimpleNode {
    * CLASSPATH_URL tokens ({@code 'scheme://' URL_CHAR+}), not merely when it starts with one of those schemes.
    * {@code URL_CHAR} excludes {@code " \t\r\n;} (SQLLexer.g4), so a scheme-prefixed value containing any of those -
    * a space in a {@code file://} path, say - would otherwise render unquoted here and fail to reparse. Checking
-   * only the prefix was claude-review's second-round finding on this method.
+   * only the prefix was the code review's second-round finding on this method.
    */
   private static boolean isRecognizedScheme(final String url) {
     final String remainder;

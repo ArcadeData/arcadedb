@@ -44,6 +44,9 @@ import com.arcadedb.exception.CauseChain;
 import com.arcadedb.exception.CommandParameterMissingException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.CommandSemanticException;
+import com.arcadedb.exception.DatabaseIsClosedException;
+import com.arcadedb.exception.DatabaseNotAvailableException;
+import com.arcadedb.exception.DatabaseNotFoundException;
 import com.arcadedb.exception.ErrorCategory;
 import com.arcadedb.exception.InvalidPropertyTypeException;
 import com.arcadedb.exception.NeedRetryException;
@@ -51,6 +54,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.opencypher.query.ShowCommandTail;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.ExecutionStep;
 import com.arcadedb.query.sql.executor.QueryStatistics;
@@ -67,6 +71,7 @@ import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.CollectionUtils;
 
+import java.util.Locale;
 import javax.net.ssl.SSLSocket;
 import java.io.ByteArrayInputStream;
 import java.io.EOFException;
@@ -821,6 +826,25 @@ public class BoltNetworkExecutor extends Thread {
 
     // Intercept known system queries (CALL dbms.components(), SHOW DATABASES, etc.)
     if (handleSystemQuery(query, stream)) {
+      // The command's own YIELD/WHERE tail, applied to the table it produced. Parsed and then dropped before
+      // issue #7946, so SHOW DATABASES WHERE name = $dbName - Neo4j's bootstrap existence check - answered with
+      // every database on the server no matter what was bound.
+      try {
+        applySystemQueryTail(query, params, stream);
+      } catch (final CommandParsingException e) {
+        stream.close(this, "RUN failure");
+        sendFailure(classifyParsingError(e), e.getMessage() != null ? e.getMessage() : "Query parsing error");
+        state = State.FAILED;
+        return;
+      } catch (final Exception e) {
+        stream.close(this, "RUN failure");
+        LogManager.instance().log(this, Level.WARNING, "BOLT system query error", e);
+        sendFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR),
+            e.getMessage() != null ? e.getMessage() : "Database error");
+        state = State.FAILED;
+        return;
+      }
+
       openStream(stream);
 
       final Map<String, Object> metadata = new LinkedHashMap<>();
@@ -842,7 +866,7 @@ public class BoltNetworkExecutor extends Thread {
       // was present here to choose between record-streaming (PROFILE) and plan-only (EXPLAIN)
       // and to pick the correct metadata key.
       final String trimmedQuery = query == null ? "" : query.trim();
-      final String upperQuery = trimmedQuery.toUpperCase();
+      final String upperQuery = trimmedQuery.toUpperCase(Locale.ROOT);
       final boolean explainMode = upperQuery.startsWith("EXPLAIN ");
       final boolean profileMode = !explainMode && upperQuery.startsWith("PROFILE ");
 
@@ -1095,7 +1119,11 @@ public class BoltNetworkExecutor extends Thread {
         LogManager.instance().log(this, Level.WARNING, "Failed to rollback after BEGIN error", rollbackError);
       }
       final String errorMsg = e.getMessage() != null ? e.getMessage() : "Transaction error";
-      sendFailure(BoltException.TRANSACTION_ERROR, errorMsg);
+      // Through the classifier, exactly as handleCommit does, with TRANSACTION_ERROR kept as the unclassified
+      // fallback: opening a transaction can fail on an MVCC conflict, a lock timeout, a deadline or a security
+      // refusal, and hand-coding TransactionNotFound for all of them told a driver's retry predicate that a
+      // retryable conflict was a permanent client error (issue #7915).
+      sendFailure(classifyExecutionError(e, BoltErrorCodes.TRANSACTION_ERROR), errorMsg);
       state = State.FAILED;
     }
   }
@@ -1162,7 +1190,10 @@ public class BoltNetworkExecutor extends Thread {
 
     } catch (final Exception e) {
       final String message = e.getMessage() != null ? e.getMessage() : "Rollback error";
-      sendFailure(BoltException.TRANSACTION_ERROR, message);
+      // The third of the three transaction handlers, routed through the one classifier for the same reason the
+      // other two are (issue #7915): closeAllStreams() and rollback() both raise engine exceptions, and a
+      // timeout or a security refusal reported as TransactionNotFound is a diagnosis the caller cannot act on.
+      sendFailure(classifyExecutionError(e, BoltErrorCodes.TRANSACTION_ERROR), message);
       state = State.FAILED;
     }
   }
@@ -1292,7 +1323,10 @@ public class BoltNetworkExecutor extends Thread {
         // If no default configured, use the first available database
         final Collection<String> databases = server.getDatabaseNames();
         if (databases.isEmpty()) {
-          sendFailure(BoltException.DATABASE_ERROR, "No database available");
+          // Not a bad name - the caller named nothing - but a server with no database to fall back on, which is
+          // also the state of a server still opening them. Transient, so the same connection succeeds once one
+          // is there, rather than the generic DatabaseError that reads as "this server is broken" (issue #7874).
+          sendFailure(BoltErrorCodes.DATABASE_UNAVAILABLE_ERROR, "No database available on this server");
           state = State.FAILED;
           return false;
         }
@@ -1302,8 +1336,22 @@ public class BoltNetworkExecutor extends Thread {
 
     try {
       database = server.getDatabase(targetName);
-      if (database == null || !database.isOpen()) {
-        sendFailure(BoltException.DATABASE_ERROR, "Database not found: " + targetName);
+      if (database == null) {
+        // Defensive, and knowingly so: the server resolves a missing name by THROWING - the catch below
+        // classifies it - rather than by answering null, so this is the message a client is least likely to
+        // see. It stays because the alternative to a null check here is an NPE on the isOpen() below, caught
+        // by that same catch and reported as a generic database error: a worse answer for a condition that
+        // would only arise if getDatabase()'s contract changed (PR #7939 review).
+        sendFailure(BoltErrorCodes.DATABASE_NOT_FOUND_ERROR, "Database not found: " + targetName);
+        state = State.FAILED;
+        return false;
+      }
+      if (!database.isOpen()) {
+        // Told apart from the arm above on purpose: a handle that exists but is closed is a database this server
+        // HAS, so the name is right and the condition clears itself - the opposite advice to the one a client
+        // acts on for DatabaseNotFound (issue #7874).
+        database = null;
+        sendFailure(BoltErrorCodes.DATABASE_UNAVAILABLE_ERROR, "Database not available: " + targetName);
         state = State.FAILED;
         return false;
       }
@@ -1315,11 +1363,77 @@ public class BoltNetworkExecutor extends Thread {
       }
       return true;
     } catch (final Exception e) {
+      // The database handle is dropped before the failure is reported: getDatabase() assigns the field before the
+      // security/context work below it can throw, and leaving a half-initialised handle behind would let the next
+      // request on this connection take ensureDatabase()'s already-open fast path.
+      database = null;
       final String message = e.getMessage() != null ? e.getMessage() : "Unknown error";
-      sendFailure(BoltException.DATABASE_ERROR, "Cannot open database: " + targetName + " - " + message);
+      sendFailure(classifyDatabaseSelectionError(e), "Cannot open database: " + targetName + " - " + message);
       state = State.FAILED;
       return false;
     }
+  }
+
+  /**
+   * Classify a failure to SELECT a database - the first thing RUN and BEGIN do, and so the first failure a Neo4j
+   * driver meets - into a Bolt status code.
+   * <p>
+   * Kept apart from {@link #classifyExecutionError} because the question is a different one. That method asks
+   * what went wrong while running a statement against a database that is already open; this one asks whether the
+   * caller named a database this server does not have, named one it cannot serve right now, or is not allowed to
+   * reach the one they named. All three used to answer {@code Neo.DatabaseError.General.UnknownError}, so a typo
+   * in the {@code database} connection parameter - the most common Bolt misconfiguration there is - arrived at
+   * the driver as an unexplained server fault it could not tell from a broken database (issue #7874).
+   * <p>
+   * The order of the arms is the answer's specificity, not the exception hierarchy's shape:
+   * {@link DatabaseNotFoundException} extends {@link DatabaseNotAvailableException}, so the permanent verdict has
+   * to be asked for first or it would be reported as the transient one and retried forever. Anything else is
+   * handed to {@link #classifyExecutionError} with {@code DATABASE_ERROR} as the fallback, which is what turns a
+   * permission denial into {@code Forbidden} instead of hiding it behind a generic open failure - and leaves a
+   * genuine open failure (corruption, an I/O error) as the {@code DatabaseError} it really is.
+   */
+  static String classifyDatabaseSelectionError(final Throwable error) {
+    if (CauseChain.contains(error, DatabaseNotFoundException.class))
+      return BoltErrorCodes.DATABASE_NOT_FOUND_ERROR;
+    // Present but not serveable: closed, dropped under a resolved handle, or a directory an interrupted HA
+    // snapshot install left mid-swap. Each clears itself without the caller changing anything.
+    if (CauseChain.contains(error, DatabaseNotAvailableException.class)
+        || CauseChain.contains(error, DatabaseIsClosedException.class))
+      return BoltErrorCodes.DATABASE_UNAVAILABLE_ERROR;
+    // ServerSecurityException does not extend java.lang.SecurityException, so ErrorCategory - which lives in the
+    // engine and cannot see the server's type - never classifies it. Asked here rather than added there: this is
+    // the one path on which that server-side refusal reaches a Bolt client, and reporting it as a database fault
+    // is the same wrong diagnosis with a worse consequence, since it reads as "retry against another node".
+    if (CauseChain.contains(error, ServerSecurityException.class))
+      return BoltErrorCodes.FORBIDDEN_ERROR;
+    return classifyExecutionError(error, BoltErrorCodes.DATABASE_ERROR);
+  }
+
+  /**
+   * Applies a system query's {@code YIELD}/{@code WHERE} tail to the rows {@link #handleSystemQuery} produced.
+   * <p>
+   * Every intercepted command goes through here, not just {@code SHOW DATABASES}: the tail belongs to the
+   * openCypher {@code SHOW}/{@code CALL} grammar, so a command answered from the server rather than from a query
+   * plan has to honour it or silently answer a different question - which is what issue #7946 reports. The rows
+   * are filtered by the openCypher engine itself, so the predicate means here exactly what it means in a query
+   * (see {@link ShowCommandTail}), including the client's own parameters.
+   * <p>
+   * A command with no tail - by far the common case - costs one lexer pass and nothing else.
+   */
+  private void applySystemQueryTail(final String query, final Map<String, Object> params, final BoltQueryStream stream) {
+    if (stream.syntheticResults == null || stream.fields == null)
+      return;
+
+    // apply() answers with the table unchanged when the command has no tail, so it is called unconditionally
+    // rather than after a hasTail() that would tokenize the query a second time.
+    final ShowCommandTail.Table table = ShowCommandTail.apply(database, query, stream.fields, stream.syntheticResults,
+        params);
+    if (table.rows() == stream.syntheticResults && table.fields() == stream.fields)
+      return;
+
+    stream.fields = table.fields();
+    // Copied into a list PULL may consume destructively: it removes each row as it sends it.
+    stream.syntheticResults = new ArrayList<>(table.rows());
   }
 
   /**
@@ -1344,15 +1458,17 @@ public class BoltNetworkExecutor extends Thread {
           "writer", "requestedStatus", "currentStatus", "statusMessage", "default", "home",
           "constituents");
       stream.syntheticResults = new ArrayList<>();
+      // The port this connection reached, as the routing table advertises: the configured one may be 0, which asks
+      // the operating system for a free port and is not an address anyone can dial (issue #8209)
       for (final String dbName : server.getDatabaseNames()) {
         stream.syntheticResults.add(List.of(dbName, "standard", List.of(), "read-write",
-            getBoltAddress(server.getConfiguration().getValueAsInteger(GlobalConfiguration.BOLT_PORT)), "primary",
+            getBoltAddress(socket.getLocalPort()), "primary",
             true, "online", "online", "", dbName.equals(database != null ? database.getName() : ""), false,
             List.of()));
       }
       // Also add the virtual "system" database entry
       stream.syntheticResults.add(List.of("system", "system", List.of(), "read-write",
-          getBoltAddress(server.getConfiguration().getValueAsInteger(GlobalConfiguration.BOLT_PORT)), "primary",
+          getBoltAddress(socket.getLocalPort()), "primary",
           false, "online", "online", "", false, false, List.of()));
       return true;
 
@@ -1992,6 +2108,12 @@ public class BoltNetworkExecutor extends Thread {
    * value". {@link CommandSemanticException} marks a statement that parsed correctly but violates a semantic
    * rule (e.g. an undefined variable), so it maps to Neo4j's SemanticError; every other
    * {@link CommandParsingException} is a genuine syntax error.
+   * <p>
+   * {@code null} is a legitimate argument and means syntax error. {@link ErrorCategory#PARSING} also covers the
+   * Lucene {@code FullTextQueryParseException} (issue #7862), which is NOT a {@link CommandParsingException}, so
+   * the {@code CauseChain.find} in {@link #classifyExecutionError} has nothing to refine the title with - and a
+   * search expression the parser refused is a syntax error from a driver's point of view, which is the answer
+   * that leaves.
    */
   static String classifyParsingError(final CommandParsingException error) {
     if (error instanceof CommandParameterMissingException)
@@ -2076,7 +2198,7 @@ public class BoltNetworkExecutor extends Thread {
         } else {
           final int colon = l.indexOf(':');
           if (colon > 0)
-            headers.put(l.substring(0, colon).trim().toLowerCase(), l.substring(colon + 1).trim());
+            headers.put(l.substring(0, colon).trim().toLowerCase(Locale.ROOT), l.substring(colon + 1).trim());
         }
       } else if (b != '\r') {
         line.append((char) b);

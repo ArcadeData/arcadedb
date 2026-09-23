@@ -72,6 +72,14 @@ public class LiveVectorBitsFilter implements Bits {
   // NOT a snapshot, unlike the ordinal map: this is the live location map, read at traversal time so the filter
   // answers exactly what the post-filter on the search output will.
   private final VectorLocationIndex vectorIndex;
+  /**
+   * RIDs whose committed vectors the calling transaction has superseded - removed, or rewritten with a vector the
+   * overlay contributes instead (issue #7378). {@code null} whenever there is no such transaction, which is every
+   * read-only query and therefore the case this filter's measured cost was established on: the field is a null
+   * check away from the fast path, and only a transaction that has actually written to this index makes the walk
+   * pay for a {@link RID} it would not otherwise have materialized.
+   */
+  private final Set<RID>            supersededRIDs;
 
   /**
    * @param allowedRIDs               optional RID allow-list; {@code null} or empty means "every live vector"
@@ -80,9 +88,22 @@ public class LiveVectorBitsFilter implements Bits {
    */
   LiveVectorBitsFilter(final Set<RID> allowedRIDs, final int[] ordinalToVectorIdSnapshot,
       final VectorLocationIndex vectorIndex) {
+    this(allowedRIDs, ordinalToVectorIdSnapshot, vectorIndex, null);
+  }
+
+  /**
+   * @param allowedRIDs               optional RID allow-list; {@code null} or empty means "every live vector"
+   * @param ordinalToVectorIdSnapshot the ordinal map captured together with the vectors snapshot by the caller
+   * @param vectorIndex               the live location map that answers whether a vector id is still live
+   * @param supersededRIDs            optional set of RIDs the calling transaction has superseded; {@code null} or
+   *                                  empty means "no uncommitted work to account for"
+   */
+  LiveVectorBitsFilter(final Set<RID> allowedRIDs, final int[] ordinalToVectorIdSnapshot,
+      final VectorLocationIndex vectorIndex, final Set<RID> supersededRIDs) {
     this.allowedRIDs = allowedRIDs != null && !allowedRIDs.isEmpty() ? allowedRIDs : null;
     this.ordinalToVectorIdSnapshot = ordinalToVectorIdSnapshot;
     this.vectorIndex = vectorIndex;
+    this.supersededRIDs = supersededRIDs != null && !supersededRIDs.isEmpty() ? supersededRIDs : null;
   }
 
   /**
@@ -95,12 +116,20 @@ public class LiveVectorBitsFilter implements Bits {
       return false;
 
     final int vectorId = ordinalToVectorIdSnapshot[ordinal];
-    if (allowedRIDs == null)
+    if (allowedRIDs == null && supersededRIDs == null)
       // The common case, and the one every unrestricted search takes: liveness alone, answered by one presence bit
       // with nothing materialized (issue #5588). The constructor already collapsed an empty allow-list to null.
       return vectorIndex.isLive(vectorId);
 
     final RID rid = vectorIndex.getRid(vectorId);
-    return rid != null && allowedRIDs.contains(rid);
+    if (rid == null)
+      return false;
+    if (allowedRIDs != null && !allowedRIDs.contains(rid))
+      return false;
+    // Rejected during the walk rather than only at the output, for the same reason a tombstone is (issue #5558):
+    // a beam that collects rows the caller's own transaction has superseded stops as soon as it holds rerankK of
+    // them, and the post-filter then removes them one by one - down to an answer shorter than the one the same
+    // query returns after the commit.
+    return supersededRIDs == null || !supersededRIDs.contains(rid);
   }
 }

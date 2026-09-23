@@ -21,6 +21,8 @@ package com.arcadedb.query.sql;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.QueryMetricsRecorder;
+import com.arcadedb.database.QueryTracer;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.CommandSQLParsingException;
@@ -207,7 +209,22 @@ public class SQLQueryEngine implements QueryEngine {
         // The MCP command tool runs SQL exclusively through here (analyze() once, then execute(); the
         // database.command() fallback is only reached by engines whose execute() returns null), so leaving
         // the raw instance here would keep #5492 open for that caller alone.
-        return statement.execute(executionDatabase(), parameters);
+        //
+        // It is also the only entry point database.query()/command() do not wrap in QueryMetricsRecorder /
+        // QueryTracer, and it is not a rare corner - VectorSearch, HybridSearch and the full-text SEARCH_INDEX
+        // function all reach SQL exclusively through here (analyzed.execute() never returns null for the "sql"
+        // language, so their database.query(...) fallback arm is dead code), so vector, hybrid and full-text
+        // search traffic was invisible in arcadedb.query.duration and in traces on every wire protocol
+        // (issue #7418). The type mirrors what database.query()/command() would have used for the same
+        // statement: idempotent statements as "query", everything else as "command".
+        final String type = statement.isIdempotent() ? "query" : "command";
+        final String databaseName = database.getName();
+        final long start = QueryMetricsRecorder.Holder.startNanos();
+        try (final QueryTracer.Span span = QueryTracer.Holder.begin(databaseName, ENGINE_NAME, type, query)) {
+          return statement.execute(executionDatabase(), parameters);
+        } finally {
+          QueryMetricsRecorder.Holder.record(start, databaseName, ENGINE_NAME, type);
+        }
       }
     };
   }

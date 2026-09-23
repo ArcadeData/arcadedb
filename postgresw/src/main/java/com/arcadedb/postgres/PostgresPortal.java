@@ -72,6 +72,30 @@ public class PostgresPortal {
    */
   public boolean                   catalogQuery         = false;
   /**
+   * Which transaction-control statement this portal carries, or null for everything else. Parse only RECORDS it here
+   * (the keyword is recognized there because it must never reach the SQL grammar, issue #6543); the session flag and
+   * the engine transaction are moved by {@code executeCommand()}, which is where PostgreSQL applies a transaction
+   * command too. Applying it at Parse let a client that prepares a statement without running it - Parse and Sync,
+   * no Bind or Execute - open, commit or roll back a transaction it never executed.
+   */
+  public TransactionControl        transactionControl;
+  /**
+   * The {@code {name, value}} pair of a {@code SET} statement, or null for everything else (issue #8135). Parse only
+   * parses and RECORDS it here, exactly as it does {@link #transactionControl}; {@code executeCommand()} applies it
+   * and then clears it on the portal it acted on. Applying it at Parse let a statement that was only prepared change
+   * the session, and left every later Bind+Execute of the cached statement answering {@code CommandComplete SET}
+   * without re-applying anything.
+   */
+  public String[]                  setting;
+
+  /**
+   * The three transaction-control statements this server recognizes ahead of the SQL grammar, in any of their
+   * accepted spellings ({@code BEGIN WORK}, {@code COMMIT TRANSACTION}, {@code END}, ...).
+   */
+  public enum TransactionControl {
+    BEGIN, COMMIT, ROLLBACK
+  }
+  /**
    * Non-null when the statement is a {@code COPY ... TO STDOUT} (issue #7188): Describe answers {@code NoData},
    * since a COPY returns no result set, and Execute streams the rows as {@code CopyData} instead of
    * {@code DataRow}. {@link #sqlStatement} then holds the parsed query INSIDE the COPY.
@@ -123,8 +147,9 @@ public class PostgresPortal {
    * statement, since both names pointed at the same object.
    * <p>
    * This copies only what PARSE already fixed for the statement for good (query text/language/parameter
-   * types, the parsed {@code sqlStatement}, and - for BEGIN/COMMIT/ROLLBACK and a resolved catalog answer -
-   * the response PARSE precomputed into {@code executed}/{@code cachedResultSet}/{@code columns}) and leaves
+   * types, the parsed {@code sqlStatement}, the {@code ignoreExecution}/{@code transactionControl}/{@code setting} markers,
+   * and - for a resolved catalog answer, SHOW and the system queries - the response PARSE precomputed into
+   * {@code executed}/{@code cachedResultSet}/{@code columns}) and leaves
    * every per-Bind field (parameter values, {@code fullResultSet}, {@code resultCursor}, {@code suspended},
    * {@code rowDescriptionSent}, ...) at its fresh default, so each returned portal starts its own independent
    * lifecycle.
@@ -136,6 +161,8 @@ public class PostgresPortal {
     portal.ignoreExecution = template.ignoreExecution;
     portal.isExpectingResult = template.isExpectingResult;
     portal.catalogQuery = template.catalogQuery;
+    portal.transactionControl = template.transactionControl;
+    portal.setting = template.setting;
     portal.copyStatement = template.copyStatement;
     portal.executed = template.executed;
     portal.cachedResultSet = template.cachedResultSet;

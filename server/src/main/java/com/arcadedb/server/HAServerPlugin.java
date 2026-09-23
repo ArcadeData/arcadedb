@@ -24,6 +24,7 @@ import java.io.IOException;
 import java.net.http.HttpClient;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * Public interface for the High Availability server plugin. Consumed by HTTP handlers,
@@ -64,6 +65,19 @@ public interface HAServerPlugin extends ServerPlugin {
   enum READINESS_SIGNAL {
     READY, NOT_READY
   }
+
+  /**
+   * The three cluster-replicated security documents, named as {@code ServerSecurity.seedSecurityStateClusterWide}
+   * names them so a seed failure reads the same whichever admission path reports it.
+   * <p>
+   * Reported whole by an admission whose seed could not be run at all, where which of them landed is exactly what
+   * is not known. Lives on this interface because all three admission paths need it and this is the one thing
+   * they all already have: {@code ServerControlPlane.connectCluster}, {@code PostAddPeerHandler} and
+   * {@link #addPeerAndReportSeed} (issues #7532, #7521, #7820). It sits up here rather than beside that last one,
+   * which is its newest consumer, because a field declared after a method is a static-analysis finding on this
+   * repository's Codacy configuration.
+   */
+  List<String> ALL_SEEDED_SECURITY_DOCUMENTS = List.of("users", "groups", "API tokens");
 
   boolean isLeader();
 
@@ -138,6 +152,73 @@ public interface HAServerPlugin extends ServerPlugin {
    * @return a human-readable description of the failure, suitable for a readiness response body, or {@code null}
    */
   default String getRaftLogFailure() {
+    return null;
+  }
+
+  /**
+   * Describes why the cluster's first-formation bootstrap makes this node unfit to serve clients, or
+   * {@code null} when it does not (issue #7519).
+   * <p>
+   * The bootstrap protocol picks one peer's copy of each database as the cluster's baseline and has every other
+   * peer replace its whole directory with a snapshot of it. That replacement is not instantaneous and it is not
+   * invisible: the install downloads before it touches the live files - on purpose, so a failed download costs no
+   * availability - which means the local copy stays OPEN and SERVING for the length of the download, and what it
+   * serves is the copy the cluster has just decided against. The node-wide {@code snapshotInstallInProgress}
+   * window that answers 503 covers only the file swap at the end of that, and only on HTTP; Bolt, Postgres,
+   * gRPC, MongoDB and Redis clients are not deflected even there. Issue #7259 closed the test-harness half of
+   * this - a test body no longer starts while the cluster is mid-bootstrap - and left the production half open,
+   * which is this.
+   * <p>
+   * It also covers the state the window can leave behind: a peer whose copy was FRESHER than the chosen baseline
+   * keeps it rather than lose data (issue #6124), and from then on its file ids are assigned by a history no
+   * other peer shares. That is durable, survives restarts, and until an operator or an automatic remedy replaces
+   * the copy, every read this node serves for that database is data the cluster never adopted.
+   * <p>
+   * Consulted by {@code ServerControlPlane.notReadyReason()} and deliberately NOT behind
+   * {@code arcadedb.server.readinessRequiresHA}, for the same reason as {@link #getRaftLogFailure()}: that switch
+   * is opt-in because it gates a node that is merely BEHIND, and a deployment can reasonably serve reads from
+   * one. A node whose database directory is being replaced under it, or which is knowingly holding a copy the
+   * cluster rejected, is not behind - it is serving something else.
+   * <p>
+   * Both conditions are recoverable and both are cleared exactly where this node's copy is replaced by the
+   * cluster's, so a node that recovers rejoins the Service by itself.
+   * <p>
+   * Returns {@code null} when this HA implementation has no such signal - HA disabled, or a non-Raft
+   * implementation.
+   *
+   * @return a human-readable reason, suitable for a readiness response body, or {@code null}
+   */
+  default String getBootstrapWindowReason() {
+    return null;
+  }
+
+  /**
+   * Describes the critical error that halted this node's replication state machine, or {@code null} while it is
+   * still applying entries (issue #7872).
+   * <p>
+   * The terminal counterpart of {@link #getRaftLogFailure()}, and consulted for the same reason and in the same
+   * place. The Raft implementation trips this when a committed entry cannot be applied at all - an entry type
+   * written by a newer node, an un-decodable entry with no database to quarantine instead, an unexpected error
+   * around the apply - after which every later apply is refused outright. The node's data is frozen at that
+   * index and no amount of waiting moves it, so a readiness probe that answered 200 would keep a Kubernetes
+   * Service routing reads to a replica whose state machine is dead.
+   * <p>
+   * NOT behind {@code arcadedb.server.readinessRequiresHA}, for the reason {@link #getRaftLogFailure()} gives:
+   * that switch gates a node that is BEHIND, and this one is not behind, it has stopped. With the switch off the
+   * node used to answer 204 on {@code /api/v1/ready} with a dead state machine, which is a strictly worse variant
+   * of the same reporting gap rather than a deployment choice.
+   * <p>
+   * Unlike the log failure this does NOT clear: the halt trips an asynchronous {@code server.stop()}, and the
+   * recovery is that restart, not an in-place repair. It is published because that stop can fail - its only
+   * failure handling is a log line - leaving a process up, answering HTTP, with nothing machine-readable to say
+   * that it has stopped replicating.
+   * <p>
+   * Returns {@code null} when this HA implementation has no such concept - HA disabled, or a non-Raft
+   * implementation.
+   *
+   * @return a human-readable description of the halt, suitable for a readiness response body, or {@code null}
+   */
+  default String getCriticalHaltReason() {
     return null;
   }
 
@@ -322,6 +403,42 @@ public interface HAServerPlugin extends ServerPlugin {
    */
   default void addPeer(final String peerId, final String address, final String name) {
     addPeer(peerId, address);
+  }
+
+  /**
+   * {@link #addPeer(String, String, String)} for a caller that needs the outcome of the cluster security seed,
+   * and not only the membership change (issue #7820).
+   * <p>
+   * The two operator-facing admission paths have carried that outcome since issues #7521 and #7532:
+   * {@code POST /api/v1/cluster/peer} answers 503 with a {@code failedSeeds} array, and {@code connect cluster}
+   * returns it in {@code ServerControlPlane.ConnectClusterResult}. This embedded API is the third admission path
+   * and returned {@code void}, so an embedding application had no signal at all - and an embedding application
+   * is where nobody is watching a SEVERE line go by. {@code server-users.jsonl}, {@code server-groups.json} and
+   * {@code server-api-tokens.json} live under {@code <server-root>/config/}, outside the database directory, so
+   * a peer holding stale ones is a committed cluster member enforcing them until the next cluster-wide change of
+   * each kind.
+   * <p>
+   * <b>The peer is a member whenever this returns</b>, failing documents or not. A non-empty result is not a
+   * failed join and must not be retried as one; re-issuing the same admission is idempotent on the membership
+   * change and reissues the seed, which is the remediation. A membership change that did <i>not</i> happen
+   * leaves by an exception instead, exactly as {@link #addPeer(String, String, String)} always has.
+   * <p>
+   * The default admits the peer through {@link #addPeer(String, String, String)} and reports nothing failing,
+   * which is honest for an implementation that has no cluster-replicated security documents: there is nothing
+   * that could have failed to seed. An implementation that does have them overrides this - and if it also makes
+   * {@code addPeer} delegate here, so that an embedder gets the seed either way, it must override <b>both</b>:
+   * overriding only {@code addPeer} that way leaves this default calling back into it.
+   *
+   * @param peerId  the identifier of the peer to admit
+   * @param address the address to admit it at
+   * @param name    an optional human-readable name for logs and Studio, or {@code null}
+   *
+   * @return the names of the security documents that could not be seeded to the new peer, in the order
+   * {@code ServerSecurity.seedSecurityStateClusterWide} reports them; empty for a clean admission
+   */
+  default List<String> addPeerAndReportSeed(final String peerId, final String address, final String name) {
+    addPeer(peerId, address, name);
+    return List.of();
   }
 
   /**
@@ -519,5 +636,38 @@ public interface HAServerPlugin extends ServerPlugin {
     // See replicateSecurityUsers(String, String) for why this delegates rather than no-oping.
     replicateSecurityApiTokens(apiTokensJson);
     return true;
+  }
+
+  /**
+   * Has the cluster's <b>leader</b> seed the security documents after this node admitted a peer, and reports
+   * what it could not commit (issue #7834).
+   * <p>
+   * {@code POST /api/v1/cluster/peer} and {@code connect cluster} used to call
+   * {@code ServerSecurity.seedSecurityStateClusterWide} directly, on whichever node ran the admission. Since the
+   * leader seeds every membership change of its own accord (issue #7531) that made two seeders per admission,
+   * on two nodes, each holding only its own {@code ServerSecurity} monitor - and that monitor is what keeps a
+   * revocation committing mid-seed from being undone by the whole document a seed carries (issue #7373). A
+   * revocation landing between the two could be resurrected by whichever submit was second.
+   * <p>
+   * So the admitting node asks rather than seeds. What it still gets back is the report issue #7521 made a
+   * contract: the route answers 503 with a {@code failedSeeds} array, and the verb logs SEVERE naming the
+   * documents.
+   * <p>
+   * <b>An empty {@link Optional} is not an empty failure list.</b> It means this HA implementation has no
+   * leader-side seeder to ask, and the caller then seeds locally through
+   * {@code ServerSecurity.seedSecurityStateClusterWide} exactly as it always did - which is the default, so an
+   * implementation that predates this method keeps the behaviour it was written against instead of silently
+   * seeding nothing.
+   *
+   * @param admittedPeer the peer that was just admitted, for the log line the leader writes
+   *
+   * @return the names of the documents that could not be seeded - empty when all of them committed - or an
+   * empty {@code Optional} when there is no leader-side seeder and the caller must seed locally
+   *
+   * @throws IOException when the leader could not be reached or did not report the seed's outcome; a join whose
+   *                     seed outcome is UNKNOWN must not be reported as a join whose seed succeeded
+   */
+  default Optional<List<String>> seedSecurityStateForAdmission(final String admittedPeer) throws IOException {
+    return Optional.empty();
   }
 }

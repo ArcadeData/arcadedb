@@ -29,7 +29,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 
 /**
  * A tag is stored by its text form on every protocol, so a value whose text form means nothing must be refused
- * rather than stored (claude-review on PR #7323, issue #7305).
+ * rather than stored (code review on PR #7323, issue #7305).
  * <p>
  * The sharp case is {@code byte[]}: it has no {@code toString()} override, so {@code String.valueOf} yields an
  * object identity like {@code [B@6bc7c054} - a DIFFERENT tag on every run, which silently splits one series

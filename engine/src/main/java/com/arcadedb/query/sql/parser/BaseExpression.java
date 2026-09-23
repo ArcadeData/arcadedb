@@ -140,14 +140,69 @@ public class BaseExpression extends MathExpression {
    * array literal, a CASE block - carry no meaning, and printing them would change the name every unaliased projection
    * written that way has always had ({@code SELECT (name) FROM V} is a column called {@code name}).
    * <p>
-   * Also load-bearing when this expression itself carries a {@link #modifier} chain: most literal grammar
-   * alternatives have no bare {@code modifier*} form of their own (only {@code NULL modifier*} does), so
+   * Also load-bearing when this expression carries a {@link #modifier} chain AND the parenthesised atom has no bare
+   * {@code modifier*} form of its own in the grammar, which is what {@link #innerAtomCannotCarryAModifier()} answers:
    * {@code (42).asString()} needs the parentheses back or it re-renders as the unparseable {@code 42.asString()}
-   * (issue #7774).
+   * (issue #7774). Asking that question rather than merely "is there a modifier" is what keeps
+   * {@code SELECT (name).asString() FROM V} the column {@code name.asString()} it has always been (issue #7896).
    */
   private boolean rendersParentheses() {
-    return parenthesized && expression != null
-        && (modifier != null || expression.mathExpression != null && !expression.mathExpression.operators.isEmpty());
+    if (!parenthesized || expression == null)
+      return false;
+    if (expression.mathExpression != null && !expression.mathExpression.operators.isEmpty())
+      return true;
+    return modifier != null && innerAtomCannotCarryAModifier();
+  }
+
+  /**
+   * Whether the parenthesised content renders as a grammar alternative with no {@code modifier*} tail of its own, so
+   * that dropping the parentheses would leave text that no longer parses - or no longer parses the same way.
+   * <p>
+   * The {@code baseExpression} rule gives an explicit {@code modifier*} to the string literal, the identifier chain,
+   * the function call, the input parameter, the array and map literals, the CASE blocks, the parenthesised
+   * expression and the parenthesised statement: for all of those {@code X.method()} is exactly what
+   * {@code (X).method()} means, and the parentheses go back to being the noise they were before issue #7774. The
+   * remainder - a NUMBER, {@code NULL}, a boolean literal, a RID literal, a parenthesised WHERE clause and the
+   * {@code ||} array concatenation - has no such tail (or would re-associate), so for those the parentheses are the
+   * statement.
+   * <p>
+   * Anything not recognised keeps its parentheses: a wrong "yes" here is a statement that no longer parses, a wrong
+   * "no" is only a column that keeps the name issue #7774 gave it.
+   */
+  private boolean innerAtomCannotCarryAModifier() {
+    if (expression.isNull || expression.booleanValue != null || expression.rid != null
+        || expression.whereCondition != null || expression.arrayConcatExpression != null)
+      return true;
+    if (expression.json != null)
+      // A map literal, which the grammar gives a modifier* tail: `{'a': 1}.a` parses as `({'a': 1}).a` means.
+      return false;
+    if (!(expression.mathExpression instanceof BaseExpression inner))
+      // Not an atom this method can vouch for (a bare CASE or array-literal node placed here programmatically).
+      return true;
+    return !inner.carriesItsOwnModifierTail();
+  }
+
+  /**
+   * Whether THIS node renders as a {@code baseExpression} alternative that the grammar gives a {@code modifier*} tail
+   * of its own, so a modifier written after it parses as belonging to it. Consulted by
+   * {@link #innerAtomCannotCarryAModifier()} on the node a written pair of parentheses wraps; overridden by the two
+   * subclasses that render a parenthesised statement, which the grammar also gives a {@code modifier*} tail.
+   */
+  protected boolean carriesItsOwnModifierTail() {
+    if (number != null || isNull)
+      // A NUMBER has no bare modifier* alternative at all, and NULL renders the same either way - keeping the
+      // parentheses on it is what issue #7774's tests pin, and it has no historical unaliased name to protect.
+      return false;
+    // An identifier chain, a string literal, an input parameter, or a nested block: every one of them carries its own
+    // modifier* in the grammar.
+    //
+    // `expression != null` is what recognises EVERY nested block, whatever kind it is, and it can do that because of
+    // an invariant of the AST builder rather than anything visible here: a map literal, an array literal, a CASE and
+    // an extended CASE are each wrapped as BaseExpression{expression = Expression{...}} before being attached to a
+    // parent (SQLASTBuilder#visitMapLit, #visitArrayLit, #visitCaseExpr, #visitExtendedCaseExpr), even though
+    // ArrayLiteralExpression and CaseExpression extend MathExpression directly and never appear here unwrapped.
+    // A new grammar alternative that attaches one of those nodes RAW would slip past this and lose its parentheses.
+    return identifier != null || string != null || inputParam != null || expression != null;
   }
 
   public Object execute(final Identifiable currentRecord, final CommandContext context) {

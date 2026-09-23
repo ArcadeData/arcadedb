@@ -199,6 +199,38 @@ public abstract class PaginatedComponent extends Component {
     return pageCount.get();
   }
 
+  /**
+   * True when {@code fileName} is the file of a component built under {@link #TEMP_EXT}, i.e. the output of an index
+   * compaction that has not yet been published by {@link #removeTempSuffix()}.
+   * <p>
+   * Such a file is NODE-LOCAL: only the node that happens to be compacting right now has one, and the moment the
+   * compaction finishes the name stops existing. It is nonetheless a fully registered component file - the
+   * constructor above calls {@code FileManager.getOrCreateFile} - so it is in {@code getFiles()}, in every page
+   * snapshot window opened while it exists, and in a directory listing of the database. Everything that enumerates
+   * files in order to COMPARE one node with another therefore has to exclude it by name, which is what this
+   * predicate is for (issue #7955). The producers are the two classes that build a component on
+   * {@code TEMP_EXT + ext}: {@link com.arcadedb.index.lsm.LSMTreeIndexAbstract} and
+   * {@link com.arcadedb.index.vector.LSMVectorIndex}. Named rather than quoted as grep output with line numbers,
+   * which goes stale the first time anything above them moves (code review on PR #8020).
+   * <p>
+   * The prefix is looked for in the EXTENSION - what follows the last dot, the same place
+   * {@code LocalDatabase.isComponentFileName} takes it from - and not anywhere in the name, so a bucket of a type
+   * called {@code temp_readings} is not mistaken for one. That direction of the discrimination is the one that
+   * matters: a checksum map that is silently short of a real file reads as agreement.
+   * <p>
+   * Note this is deliberately NOT folded into {@code LocalDatabase.isComponentFileName}, which mirrors what
+   * {@code FileManager.scanDirectoryForComponentFiles} registers at open time - and that scan tests the extension
+   * against {@code SUPPORTED_FILE_EXT}, which holds {@code umtidx} and not {@code temp_umtidx}. The two answer
+   * different questions and must keep answering them differently.
+   *
+   * @param fileName a file NAME, never a path: a directory component containing a dot would otherwise decide the
+   *                 answer
+   */
+  public static boolean isTemporaryFileName(final String fileName) {
+    final int lastDot = fileName.lastIndexOf('.');
+    return lastDot >= 0 && fileName.startsWith(TEMP_EXT, lastDot + 1);
+  }
+
   public void removeTempSuffix() {
     final String fileName = file.getFilePath();
 

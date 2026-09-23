@@ -20,9 +20,13 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.*;
 import com.arcadedb.database.Record;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
@@ -56,6 +60,21 @@ public class ResultInternal implements Result {
    */
   protected DocumentType        projectionSourceType;
   protected Map<String, String> projectionSourceColumns;
+  /**
+   * The aliases a {@code SELECT *, !alias} projection excluded, or null when it excluded nothing.
+   * <p>
+   * Read by {@link #toJSON()} alone, and only for the record attributes it seeds. The exclusion is NOT a
+   * {@link #tombstones} entry: {@code Projection#calculateSingle} implements {@code !alias} by never writing the
+   * value, which is a different thing from {@code removeProperty()}'s "written, then taken back" - turning one
+   * into the other would change what {@link #getProperty} answers for an excluded column, which the projection
+   * deliberately leaves reading through to the record. So the exclusion has to travel as itself (found in review
+   * of issue #7895: {@code SELECT *, !@rid} had its {@code @rid} put back by the seed).
+   * <p>
+   * One reference write per row, of a set built once per statement and shared by every row it produces, exactly
+   * as {@link #projectionSourceColumns} is - and written only by the {@code *} branch, the only one that leaves
+   * an element on the row for the seed to read.
+   */
+  protected Set<String>         projectionExcludes;
 
   public ResultInternal() {
     // Memory optimization: Use smaller initial capacity to reduce memory footprint
@@ -218,6 +237,18 @@ public class ResultInternal implements Result {
   }
 
   /**
+   * Records which aliases the projection that built this row excluded, so {@link #toJSON()} does not seed back a
+   * record attribute the statement asked it to drop. See the {@link #projectionExcludes} field javadoc.
+   *
+   * @param excludes the projection's exclusion set, built once per statement and shared by every row, so it must
+   *                 never be mutated here
+   */
+  public ResultInternal setProjectionExcludes(final Set<String> excludes) {
+    this.projectionExcludes = excludes;
+    return this;
+  }
+
+  /**
    * THE PROJECTION IS ASKED FIRST, the backing element second - the same precedence {@link #getProperty(String)}
    * itself applies, and for the same reason. {@code SELECT *, n + 1 AS d} keeps the backing element AND publishes
    * a computed value under {@code d} in {@code content}, so the value this row answers for {@code d} is the
@@ -348,6 +379,33 @@ public class ResultInternal implements Result {
   }
 
   /**
+   * Flags the record this row wraps as modified, for a mutation that reached INSIDE one of its values instead of
+   * going through {@link MutableDocument#set}.
+   * <p>
+   * A nested {@code UPDATE ... SET m.k = v} / {@code SET l[0] = v} and a nested {@code UPDATE ... REMOVE m.k} all
+   * mutate the {@code Map} or {@code List} the record already holds, in place. {@code MutableDocument.dirty} is
+   * set by {@code set()} and by nothing else, so the owning record never learns that one of its values changed,
+   * and {@code SaveElementStep} - which deliberately skips the save of a record that is not dirty, to avoid a
+   * needless MVCC version bump - drops the write on the floor. The statement still reports {@code count: 1} and
+   * {@code RETURN AFTER} still shows the new value, because both read the in-memory row that WAS mutated, so
+   * nothing tells the caller the write is gone (issues #4730, #8027).
+   * <p>
+   * This lives here, rather than as a private helper on one statement node, because it is the rule for every
+   * statement that mutates a nested container and not for one of them: {@code REMOVE} carried a private copy of
+   * it and {@code SET} did not, which is the whole of #8027.
+   *
+   * @return {@code true} when a mutable record was flagged, {@code false} when this row wraps no record or wraps
+   * an immutable one - in which case there was nothing to persist in the first place.
+   */
+  public boolean markElementDirty() {
+    if (element instanceof MutableDocument mutable) {
+      mutable.markDirty();
+      return true;
+    }
+    return false;
+  }
+
+  /**
    * Returns {@code true} when this result carries explicitly projected properties (set via
    * {@link #setProperty}), as opposed to being a bare wrapper around the backing {@link #element}.
    * Used by DISTINCT to decide whether the cheap RID-based deduplication is still semantically
@@ -367,8 +425,20 @@ public class ResultInternal implements Result {
    * answered the stored value instead of the computed one, and an excluded column ({@code !col}) leaked back in
    * (issue #7773). {@link #hasProjectedProperties()} is exactly the "has this projection reshaped the row?"
    * question - it is what DISTINCT already asks to decide whether RID-based deduplication is still valid - so the
-   * short-circuit is skipped whenever it answers true, falling through to the {@link Result#toJSON()} property loop
-   * instead, which already agrees with {@link JsonSerializer#serializeResult}.
+   * short-circuit is skipped whenever it answers true, falling through to the property loop instead.
+   * <p>
+   * THE PROPERTY LOOP ALONE IS NOT THE WHOLE ANSWER FOR A ROW THAT STILL CARRIES A RECORD. {@code @cat},
+   * {@code @in} and {@code @out} are structural attributes of the record, not properties of it: they are not in
+   * {@link #getPropertyNames()} and {@link #getProperty} cannot reach them, so a loop over the row's properties
+   * drops them. A plain {@code SELECT *} populates {@code content} as well, so it takes this path too and an edge
+   * row came back without the vertices it connects - it could no longer be reconstructed from its own JSON - while
+   * {@code SELECT FROM E1}, still on the short-circuit, answered the full form (issue #7895).
+   * <p>
+   * So the object is SEEDED from the record's structural attributes and the row's properties are written over the
+   * seed, which is the shape {@link com.arcadedb.serializer.JsonSerializer#serializeResult} has always produced for
+   * an element row - the agreement between the two serializers that #7773 asked for. The seed is attributes only,
+   * never the record's properties: a column the projection excluded must stay excluded, which is the other half of
+   * #7773.
    */
   @Override
   public JSONObject toJSON() {
@@ -376,10 +446,55 @@ public class ResultInternal implements Result {
       return getElement().get().toJSON();
 
     final JSONObject result = new JSONObject();
+
+    if (element != null)
+      putStructuralAttributes(result);
+
     for (final String prop : getPropertyNames())
       result.put(prop, valueToJSON(getProperty(prop)));
 
     return result;
+  }
+
+  /**
+   * Writes the backing record's structural attributes - {@code @cat}, {@code @type}, {@code @rid} and, for an edge,
+   * {@code @in} / {@code @out} - into {@code json}, in the same shape the record's own {@code toJSON(true)} emits
+   * them, so a row that reshapes nothing serializes exactly as the record does (issue #7895).
+   * <p>
+   * The category is read from the instance first and from the schema type second: a {@link DetachedDocument} of a
+   * vertex or an edge is neither a {@link Vertex} nor an {@link Edge}, and answering {@code "d"} for it would say
+   * the row is a document.
+   * <p>
+   * An attribute the statement dropped stays dropped, by EITHER of the two ways a row can drop one:
+   * {@code removeProperty()}'s {@link #tombstones}, and the {@code SELECT *, !@rid} exclusion the projection
+   * records in {@link #projectionExcludes} - which is not a tombstone and has to be asked separately.
+   */
+  private void putStructuralAttributes(final JSONObject json) {
+    final DocumentType type = element.getType();
+    final boolean isEdge = element instanceof Edge || type instanceof EdgeType;
+    final boolean isVertex = !isEdge && (element instanceof Vertex || type instanceof VertexType);
+
+    putStructuralAttribute(json, Property.CAT_PROPERTY, isEdge ? "e" : isVertex ? "v" : "d");
+    putStructuralAttribute(json, Property.TYPE_PROPERTY, element.getTypeName());
+
+    final RID rid = element.getIdentity();
+    if (rid != null)
+      putStructuralAttribute(json, RID_PROPERTY, rid.toString());
+
+    // Only a real Edge can name its endpoints: a DetachedDocument of an edge type carries none, which is also
+    // why JsonSerializer.setMetadata() gives it the category alone.
+    if (element instanceof Edge edge) {
+      putStructuralAttribute(json, Property.IN_PROPERTY, edge.getIn());
+      putStructuralAttribute(json, Property.OUT_PROPERTY, edge.getOut());
+    }
+  }
+
+  private void putStructuralAttribute(final JSONObject json, final String name, final Object value) {
+    if (tombstones != null && tombstones.contains(name))
+      return;
+    if (projectionExcludes != null && projectionExcludes.contains(name))
+      return;
+    json.put(name, value);
   }
 
   public Optional<Document> getElement() {

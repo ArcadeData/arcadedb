@@ -22,7 +22,6 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -37,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class RemoteGrpcDatabaseWithCompressionIT extends BaseGraphServerTest {
+class RemoteGrpcDatabaseWithCompressionIT extends BaseGrpcClientServerTest {
 
   private RemoteGrpcServer server;
   private RemoteGrpcDatabaseWithCompression database;
@@ -52,10 +51,10 @@ class RemoteGrpcDatabaseWithCompressionIT extends BaseGraphServerTest {
   @Override
   public void beginTest() {
     super.beginTest();
-    server = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    server = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
 
     final ContextConfiguration config = new ContextConfiguration();
-    database = new RemoteGrpcDatabaseWithCompression(server, "localhost", 50051, 2480, getDatabaseName(), "root",
+    database = new RemoteGrpcDatabaseWithCompression(server, "localhost", getServerGrpcPort(), getServerHttpPort(), getDatabaseName(), "root",
         DEFAULT_PASSWORD_FOR_TESTS, config);
 
     // Create test schema

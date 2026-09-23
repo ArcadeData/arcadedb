@@ -24,9 +24,11 @@ import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
+import com.arcadedb.server.ServerControlPlane;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.http.handler.LeaderDial;
 
 import io.undertow.server.handlers.PathHandler;
 import org.apache.ratis.protocol.RaftPeerId;
@@ -34,13 +36,17 @@ import org.apache.ratis.protocol.RaftPeerId;
 import com.arcadedb.database.DatabaseInternal;
 
 import java.io.IOException;
-import java.net.HttpURLConnection;
-import java.net.URL;
+import java.net.URI;
 import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
@@ -61,6 +67,12 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   // Databases already warned about single-bucket types, so the diagnostic is logged once per
   // database per plugin lifetime instead of on every (re)wrap.
   private final Set<String> warnedSingleBucketDatabases = ConcurrentHashMap.newKeySet();
+
+  /** The route {@link #shutdownRemoteServer} posts its {@code shutdown} command to. */
+  static final String SERVER_COMMAND_ROUTE = "/api/v1/server";
+
+  /** The one command {@link #shutdownRemoteServer} sends. */
+  private static final String SHUTDOWN_COMMAND_BODY = "{\"command\":\"shutdown\"}";
 
   /** How often a cluster that cannot use the #7509 compare-and-set may say so. */
   private static final long SECURITY_PRECONDITION_WITHHELD_LOG_THROTTLE_MS = 5 * 60_000L;
@@ -329,12 +341,42 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
    * Read per submission rather than cached, exactly as {@code RaftReplicatedDatabase.schemaDeltaEnabled} reads it:
    * a peer that stops answering stops receiving preconditions from the next mutation on, and one that finishes
    * upgrading starts receiving them without a leader restart.
+   * <p>
+   * <b>Asked through {@link RaftHAServer#peersMissingCapabilityNow} and not the cached
+   * {@link RaftHAServer#peersMissingCapability}</b> (issue #7559). The background capability monitor used to run
+   * on the LEADER only - {@code startCapabilityMonitor} was called from {@code startLagMonitor} on gaining
+   * leadership and stopped on losing it - because #7219's only consumer was the leader-side schema-delta
+   * decision, where the leader is the only writer. Issue #7549 has since moved it onto every node, started with
+   * the server and stopped only at shutdown, so a follower's cache is normally as warm as a leader's and the
+   * ask-now round below is the cold-start case rather than the ordinary one. It still has to be the ask-now
+   * variant: a node whose first round has not landed yet would otherwise read an empty cache and reach the wrong
+   * verdict. A security entry is not a schema delta: any node can submit one, and the entry
+   * points that reach here on a FOLLOWER are precisely the ones that do NOT forward to the leader - the REST
+   * group and API-token routes, and openCypher {@code CREATE USER} / {@code ALTER USER} / {@code DROP USER} over
+   * Bolt or {@code /api/v1/command}, which arrive through {@code SecurityManager} and have no exchange to
+   * forward. They are the ones not already serialised onto a single node, and therefore the ones a
+   * compare-and-set was worth most to. Reading the cache there named every peer as missing and dropped the
+   * precondition silently, leaving the pre-#7509 behaviour behind nothing louder than the throttled line below.
+   * Making those paths reach the leader as {@code /server/users} does is issue #7826, and would make the
+   * question moot for them rather than replace this.
+   * <p>
+   * The ask-now variant also answers the harder half (issue #7540, absorbed into #7559): the verdict has to be the
+   * SAME on every node that might submit the same mutation. Two nodes disagreeing is not a lost update, it is a
+   * losing entry refused where a precondition is read and applied where it is not - divergent security state.
+   * <p>
+   * It costs a bounded, sequential probe round, paid only when the local cache is not already a full "yes" - so
+   * never on a warm leader - and only for a submission that actually carries a fingerprint, so no seed path
+   * ({@code PostAddPeerHandler}, {@code ServerControlPlane.connectCluster}, {@code ServerSecurity}'s bootstrap
+   * republish) pays for it at cluster formation, when peers are least likely to answer. For the two gated
+   * documents the round has just been run by {@link SecurityEntryCapabilityGate}, so this call finds a warm cache
+   * and dials nothing.
    */
-  private String preconditionEveryPeerCanRead(final String expectedFingerprint) {
+  // @VisibleForTesting - Issue7559SecurityPreconditionOnFollowerIT drives this decision on a real follower
+  String preconditionEveryPeerCanRead(final String expectedFingerprint) {
     return expectedFingerprint == null ?
         null :
         preconditionForPeers(expectedFingerprint,
-            raftHAServer.peersMissingCapability(PeerCapabilities.SECURITY_PRECONDITION));
+            raftHAServer.peersMissingCapabilityNow(PeerCapabilities.SECURITY_PRECONDITION));
   }
 
   /**
@@ -440,7 +482,22 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     // an optional wire-format section is safe to write. A node predating this route answers 404, and that 404 is
     // the answer - see PostCapabilitiesHandler.
     routes.addExactPath("/api/v1/cluster/capabilities", new PostCapabilitiesHandler(httpServer, this));
+    // Issues #7833/#7834: the one place a cluster security seed is asked for - by the node that admitted a peer
+    // and wants the outcome to report, and by a node that came back still a member and has to be put back in
+    // step. Both reach the leader's single seeder through it.
+    routes.addExactPath(PostSecuritySeedHandler.ROUTE, new PostSecuritySeedHandler(httpServer, this));
     LogManager.instance().log(this, Level.INFO, "Raft cluster management endpoints registered");
+  }
+
+  /**
+   * {@inheritDoc}
+   * <p>
+   * Delegated to {@link ClusterSecuritySeedQuery}, which runs the seed here when this node is the leader and
+   * dials the leader otherwise. See {@link PostSecuritySeedHandler} for why there is exactly one seeder.
+   */
+  @Override
+  public Optional<List<String>> seedSecurityStateForAdmission(final String admittedPeer) throws IOException {
+    return Optional.of(ClusterSecuritySeedQuery.seedForAdmission(server, this, admittedPeer));
   }
 
   @Override
@@ -508,6 +565,18 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   public String getRaftLogFailure() {
     final RaftHAServer s = raftHAServer;
     return s != null ? s.getRaftLogFailure() : null;
+  }
+
+  @Override
+  public String getBootstrapWindowReason() {
+    final RaftHAServer s = raftHAServer;
+    return s != null ? s.getBootstrapWindowReason() : null;
+  }
+
+  @Override
+  public String getCriticalHaltReason() {
+    final RaftHAServer s = raftHAServer;
+    return s != null ? s.getCriticalHaltReason() : null;
   }
 
   @Override
@@ -600,39 +669,214 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     return raftHAServer != null ? raftHAServer.getRoutingTable(protocol) : null;
   }
 
+  /**
+   * Where a remote shutdown is dialled: the peer's HTTPS endpoint when SSL is enabled and
+   * {@link PeerDialAddress} resolved one, its plain-HTTP endpoint otherwise.
+   * <p>
+   * This dial relays the cluster token in the {@code X-ArcadeDB-Cluster-Token} header (issue #7837; it used to
+   * be an unauthenticatable {@code Authorization: Bearer}), and until issue #7563 it
+   * was hardcoded to {@code http://} - so on a cluster with {@code arcadedb.ssl.enabled} set it was one of
+   * the two peer-to-peer dials still putting that token on the wire in clear text. The rule here is the one
+   * every sibling applies ({@code LeaderDial}, {@code SnapshotInstaller}, {@link PeerCapabilityQuery},
+   * {@link LeaderDatabaseQuery}, {@link PeerAuthSessionQuery}, {@link BootstrapElection}): prefer the HTTPS
+   * endpoint when one resolves, fall back to the plain listener - which is always bound - when none does,
+   * because refusing there would break every SSL cluster that omitted the optional 5th field of
+   * {@code arcadedb.ha.serverList}.
+   * <p>
+   * Package-private and pure for unit testing.
+   */
+  static String shutdownUrl(final PeerDialAddress dial, final boolean useSSL) {
+    return useSSL && dial.httpsAddress() != null
+        ? "https://" + dial.httpsAddress() + SERVER_COMMAND_ROUTE
+        : "http://" + dial.httpAddress() + SERVER_COMMAND_ROUTE;
+  }
+
+  /**
+   * Shuts a peer down over the cluster's own transport.
+   * <p>
+   * The address now comes from {@link PeerDialAddress#resolve}, not from {@code getHttpAddresses()} directly:
+   * this was the last peer-to-peer dial resolving an address by hand, so it was also the last one missing the
+   * two guards every other one inherits - an address that identifies two peers at once, and an address that is
+   * this node's own (issues #6191, #6202, #7563). Shutting down the wrong node, or oneself, on an operator
+   * command naming another, is the failure those guards exist to prevent.
+   * <p>
+   * The name is matched against every peer rather than against the first that answers to it. {@code contains}
+   * is what an operator's shorthand needs - a peer is named {@code host_raftPort}, and nobody types that - but
+   * it makes {@code arcadedb-1} a match for {@code arcadedb-10} as well, and stopping at the first of the two
+   * would shut down whichever the group happened to list first. Two matches is a refusal, not a coin toss
+   * (CodeRabbit on PR #7838).
+   * <p>
+   * A name that resolves to THIS node stops this node. {@link PeerDialAddress} refuses a self-dial, and rightly
+   * - posting the command to our own listener would come straight back here - but the refusal is the wrong
+   * answer to give an operator who asked for a shutdown and would get an error with the node still up. The
+   * request is simply the local one spelled with a name, so it is answered by the local path
+   * {@code ServerControlPlane.shutdownServer("")} takes.
+   */
   @Override
   public void shutdownRemoteServer(final String serverName) {
-    if (raftHAServer == null)
+    final RaftHAServer raft = raftHAServer;
+    if (raft == null)
       throw new RuntimeException("Raft HA server not started");
 
-    String targetAddr = null;
-    for (final var peer : raftHAServer.getRaftGroup().getPeers()) {
-      final String httpAddr = raftHAServer.getHttpAddresses().get(peer.getId());
-      if (httpAddr != null && (peer.getId().toString().contains(serverName) || httpAddr.contains(serverName))) {
-        targetAddr = httpAddr;
-        break;
-      }
+    final RaftPeerId targetPeer = resolveShutdownTarget(raft, serverName);
+    if (targetPeer.equals(raft.getLocalPeerId())) {
+      shutdownThisNode(serverName);
+      return;
     }
-    if (targetAddr == null)
-      throw new ServerException("Cannot find server '" + serverName + "' in the cluster");
 
-    try {
-      final HttpURLConnection conn = (HttpURLConnection)
-          new URL("http://" + targetAddr + "/api/v1/server").openConnection();
-      conn.setRequestMethod("POST");
-      conn.setDoOutput(true);
-      conn.setRequestProperty("Content-Type", "application/json");
+    final PeerDialAddress dial = PeerDialAddress.resolve(raft, targetPeer, "peer");
+    if (dial.refused())
+      throw new ServerException("Refusing to shut down server '" + serverName + "': " + dial.refusal());
 
-      final String token = raftHAServer.getClusterToken();
-      if (token != null && !token.isEmpty())
-        conn.setRequestProperty("Authorization", "Bearer " + token);
+    final boolean useSSL = configuration.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
+    final String url = shutdownUrl(dial, useSSL);
+    if (useSSL && url.startsWith("http://"))
+      // Same fallback as every sibling dial, and said out loud for the same reason: the command below carries
+      // the cluster token, so an operator who set arcadedb.ssl.enabled should not have to guess (issue #7546).
+      PlainHttpFallbackNotice.sayOnce(RaftHAPlugin.class, "sending it the shutdown command");
+    final HttpRequest request = shutdownRequest(url, raft.getClusterToken());
 
-      conn.getOutputStream().write("{\"command\":\"shutdown\"}".getBytes(StandardCharsets.UTF_8));
-      conn.getResponseCode();
-      conn.disconnect();
+    // One client per call, closed with the request: a remote shutdown is an operator action, not a hot path,
+    // and a cached client would outlive the peer it was built to reach. The connect timeout is the same one
+    // every other forward is bounded by; the response deadline is deliberately left off, matching the
+    // HttpURLConnection this replaced, because a node answering slowly while it shuts down is not a failure.
+    try (final HttpClient client = newShutdownClient(url.startsWith("https://"))) {
+      final int status = client.send(request, HttpResponse.BodyHandlers.discarding()).statusCode();
+      if (status < 200 || status >= 300)
+        // Raised, not logged (issue #7837). The operator asked for a node to stop; an answer that is not a
+        // success means it did not, and the previous WARNING left `shutdown <server>` reporting success on a
+        // node that is still serving traffic - the exact shape of the credential bug this method had.
+        throw new ServerException("Shutdown of remote server '" + serverName + "' at " + url + " answered HTTP "
+            + status + "; the server was NOT stopped");
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new ServerException("Interrupted while shutting down remote server '" + serverName + "'", e);
     } catch (final IOException e) {
       throw new RuntimeException("Failed to shutdown remote server '" + serverName + "'", e);
     }
+  }
+
+  /**
+   * The shutdown POST, with the credential a peer actually authenticates (issue #7837).
+   * <p>
+   * This used to present the cluster token as {@code Authorization: Bearer}, which
+   * {@code AbstractServerHttpHandler} authenticates in exactly two forms - an API token ({@code at-} prefix) and
+   * a session token ({@code AU-} prefix, resolved through the session manager). A cluster token is neither, so on
+   * a cluster that requires authentication the POST was answered 401, the peer stayed up, and the only trace was
+   * a WARNING: an operator's {@code shutdown &lt;server&gt;} reported success and did nothing.
+   * <p>
+   * The credential the peer does authenticate is the {@code X-ArcadeDB-Cluster-Token} +
+   * {@code X-ArcadeDB-Forwarded-User} pair every other peer-to-peer dial in this module sends, attached by
+   * {@link PeerCredentials} so this site cannot spell it differently from the others. The forwarded user is
+   * {@code root} because {@code PostServerCommandHandler.execute} answers {@code shutdown} only to a root
+   * principal.
+   * <p>
+   * Package-private and pure so the headers can be asserted without a live peer to stop: the method that sends
+   * this request ends in the target node's exit.
+   */
+  // @VisibleForTesting
+  static HttpRequest shutdownRequest(final String url, final String clusterToken) {
+    return PeerCredentials.attach(HttpRequest.newBuilder()
+        .uri(URI.create(url))
+        .header("Content-Type", "application/json")
+        .POST(HttpRequest.BodyPublishers.ofString(SHUTDOWN_COMMAND_BODY, StandardCharsets.UTF_8)), clusterToken)
+        .build();
+  }
+
+  /**
+   * The one peer {@code serverName} names, or a {@link ServerException} saying why it names none or several.
+   * <p>
+   * Separated from the dial so the naming rules are testable without a live cluster to shut down, which the
+   * self-naming case in particular cannot be: the branch it selects ends in {@code System.exit}.
+   *
+   * <p>
+   * <b>Reads {@code getRaftGroup().getPeers()} directly</b>, rather than through one of the reconciled-membership
+   * accessors this module steers "which peers exist" questions toward, and that is the right source here
+   * (code review on PR #7854). Those accessors answer "who counts as a replica" - who to replicate to, who to
+   * wait for a quorum from - and filter accordingly. This question is different: an operator typed a name, and
+   * the only useful answer is the peer that name DECLARES, including one that a configuration change has not
+   * finished committing.
+   *
+   * @throws ServerException when no peer matches, or when more than one does
+   */
+  // @VisibleForTesting
+  static RaftPeerId resolveShutdownTarget(final RaftHAServer raft, final String serverName) {
+    if (serverName == null || serverName.isEmpty())
+      throw new ServerException("Cannot shut down a server without naming it");
+
+    final List<RaftPeerId> matches = new ArrayList<>();
+    for (final var peer : raft.getRaftGroup().getPeers()) {
+      final String httpAddr = raft.getHttpAddresses().get(peer.getId());
+      if (httpAddr != null && (namesPeer(peer.getId().toString(), serverName) || namesPeer(httpAddr, serverName)))
+        matches.add(peer.getId());
+    }
+    if (matches.isEmpty())
+      throw new ServerException("Cannot find server '" + serverName + "' in the cluster");
+    if (matches.size() > 1)
+      throw new ServerException("Server name '" + serverName + "' matches " + matches.size() + " peers " + matches
+          + "; name one of them exactly");
+    return matches.getFirst();
+  }
+
+  /**
+   * Whether {@code candidate} - a peer id ({@code host_raftPort}) or a declared address ({@code host:port}) -
+   * is the thing an operator named when they typed {@code serverName}.
+   * <p>
+   * The name has to be a <b>whole name</b>, not any substring. A plain {@code contains} was the previous rule
+   * and it shuts down the wrong node: in a cluster of {@code arcadedb-10} and {@code arcadedb-2},
+   * {@code shutdown arcadedb-1} is a substring of exactly ONE peer, so the ambiguity guard sees nothing to
+   * refuse and stops {@code arcadedb-10} (code review on PR #7854). The ambiguity guard only ever covered
+   * the case where the mistake happens to hit two peers at once; this covers the case where it hits one.
+   * <p>
+   * "Whole name" means the candidate either IS the name, or continues past it with a character that ends a
+   * name rather than extends one: {@code .} between DNS labels, {@code _} before a peer id's Raft port,
+   * {@code :} before an address's port. So {@code arcadedb-1} still names {@code arcadedb-1_2435},
+   * {@code arcadedb-1:2481} and the Kubernetes {@code arcadedb-1.arcadedb.ns.svc.cluster.local} - the
+   * shorthand an operator actually types - and no longer names {@code arcadedb-10} anything.
+   * <p>
+   * {@code -} is deliberately NOT a boundary: it is an ordinary character inside a DNS label, and treating it
+   * as one would make {@code arcadedb} name every pod of a StatefulSet. That would be refused as ambiguous
+   * rather than acted on, so it is safe either way - but "no such server" is the clearer answer to a name that
+   * is not a server's name.
+   */
+  // @VisibleForTesting
+  static boolean namesPeer(final String candidate, final String serverName) {
+    if (candidate == null || !candidate.startsWith(serverName))
+      return false;
+    if (candidate.length() == serverName.length())
+      return true;
+
+    final char next = candidate.charAt(serverName.length());
+    return next == '.' || next == '_' || next == ':';
+  }
+
+  /**
+   * Stops this node, for the case where the peer an operator named IS this node. Delegated to
+   * {@code ServerControlPlane.shutdownServer("")} rather than restated here, so a local stop keeps scheduling
+   * itself a second out the one way it always has - the caller's own response still has to be written before
+   * the JVM exits.
+   */
+  private void shutdownThisNode(final String serverName) {
+    LogManager.instance().log(this, Level.INFO,
+        "Shutdown of server '%s' names this node; stopping locally instead of dialling our own listener", serverName);
+    try {
+      // The empty name selects the local branch, which schedules the stop and returns; the catch is here
+      // because shutdownServer declares IOException for the REMOTE branch, not because this call can take it.
+      new ServerControlPlane(server).shutdownServer("");
+    } catch (final IOException e) {
+      throw new ServerException("Failed to shut down this server, named '" + serverName + "'", e);
+    }
+  }
+
+  /** The client the shutdown POST is sent on; the HTTPS one validates the peer against this node's truststore. */
+  private HttpClient newShutdownClient(final boolean https) throws IOException {
+    final HttpClient.Builder builder = HttpClient.newBuilder()
+        .connectTimeout(Duration.ofMillis(Math.max(
+            configuration.getValueAsLong(GlobalConfiguration.HA_PROXY_CONNECT_TIMEOUT),
+            LeaderDial.MIN_FORWARD_TIMEOUT_MS)));
+    if (https)
+      builder.sslContext(SnapshotInstaller.buildSSLContext(server));
+    return builder.build();
   }
 
   @Override
@@ -688,11 +932,103 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
     addPeer(peerId, address, null);
   }
 
+  /**
+   * {@inheritDoc}
+   * <p>
+   * Kept {@code void}, and therefore reporting a residual seed failure only to the log. A caller that has to act
+   * on one - which an embedding application does, since nothing else is watching this server's log - calls
+   * {@link #addPeerAndReportSeed} instead (issue #7820).
+   * <p>
+   * <b>Timing change in 26.10.1, for an embedder upgrading.</b> This used to return as soon as the membership
+   * change committed. It now also waits for the leader to report the security seed, which is what gives the
+   * admission the same outcome the two operator-facing paths have reported since issues #7521 and #7532. The
+   * wait is bounded - {@code ClusterSecuritySeedQuery} gives the request
+   * {@code arcadedb.ha.securitySeedRetryTimeout} plus a fixed margin as its deadline and re-resolves the leader
+   * at most a fixed number of times - but its worst case is seconds rather than the previous near-immediate
+   * return, so an embedder calling this from a latency-sensitive thread should know that before upgrading.
+   */
   @Override
   public void addPeer(final String peerId, final String address, final String name) {
+    final List<String> failedSeeds = addPeerAndReportSeed(peerId, address, name);
+    if (!failedSeeds.isEmpty())
+      LogManager.instance().log(this, Level.SEVERE,
+          "Peer '%s' was added but these security documents could not be seeded to it: %s. It is a cluster member "
+              + "serving requests against its own copy of them; re-issue the admission to retry the seed", peerId,
+          String.join(", ", failedSeeds));
+  }
+
+  /**
+   * {@inheritDoc}
+   * <p>
+   * The membership change first, the seed report second, and nothing in between that can turn a committed
+   * membership change back into a failed one.
+   * <p>
+   * The seed itself is the leader's, not this node's (issues #7531 and #7834): the leader seeds every
+   * configuration change that brings in a peer, so the embedded API's DELIVERY has been covered since #7531 and
+   * what this adds is the REPORT the two operator-facing paths already had. Asking rather than seeding is what
+   * keeps the cluster on one seeder - two, under two different {@code ServerSecurity} monitors in two JVMs, is
+   * how a revocation committing mid-seed got resurrected by whichever submit landed second.
+   */
+  @Override
+  public List<String> addPeerAndReportSeed(final String peerId, final String address, final String name) {
+    admitPeer(peerId, address, name);
+    return seedReportForAdmission(peerId);
+  }
+
+  /**
+   * The membership change alone, without the seed report {@link #addPeerAndReportSeed} adds to it.
+   * <p>
+   * Its own method so a test can drive the admission sequence without a live Ratis cluster, the same seam
+   * {@link #setRaftHAServer} is. Package-private for that reason; production reaches it only through the two
+   * {@code addPeer} entry points above.
+   */
+  // @VisibleForTesting
+  void admitPeer(final String peerId, final String address, final String name) {
     if (raftHAServer == null)
       throw new RuntimeException("Raft HA server not started");
     raftHAServer.addPeer(peerId, address, name);
+  }
+
+  /**
+   * What the cluster security seed left uncommitted after {@code admittedPeer} became a member, as
+   * {@code PostAddPeerHandler} and {@code ServerControlPlane.connectCluster} report it.
+   * <p>
+   * <b>Never throws.</b> By the time this runs the peer is a committed member, so nothing here may reach the
+   * caller as a failed admission - it would retry a join that already happened. A seed whose outcome is UNKNOWN
+   * is reported as all three documents failing rather than as none: "re-issue the admission" is the action that
+   * repairs it either way, and an empty list would read as "joined, everything seeded" from a path where
+   * possibly nothing was.
+   * <p>
+   * The catch is wider than the {@code IOException | IllegalStateException} pair {@code PostAddPeerHandler}
+   * names, for the reason {@code ServerControlPlane.connectCluster} gives for its own width: those two are what
+   * the seed request is <i>known</i> to raise, while the rule here is that nothing raised while seeding may
+   * escape. The handler has an HTTP layer behind it that turns an escape into a 500, which at least is not a
+   * clean 200; an embedded caller has nothing, and would read the exception as a join that did not happen.
+   * <p>
+   * {@code IOException | RuntimeException} rather than {@code Exception}, because that pair is already
+   * exhaustive: {@link #seedSecurityStateForAdmission} declares {@code IOException} as its only checked
+   * exception, so nothing else checked can arrive here. An {@link Error} is deliberately left to propagate -
+   * the membership change is committed either way, and a JVM in that state must not be told it merely failed
+   * to seed three documents.
+   */
+  private List<String> seedReportForAdmission(final String admittedPeer) {
+    try {
+      // The orElseGet is the interface's contract for an HA implementation with no leader-side seeder. It is
+      // unreachable from here - this IS the Raft implementation, whose override never answers empty - but
+      // stating it keeps all three admission call sites written the same way.
+      return seedSecurityStateForAdmission(admittedPeer)
+          .orElseGet(() -> server.getSecurity().seedSecurityStateClusterWide(
+              configuration.getValueAsLong(GlobalConfiguration.HA_SECURITY_SEED_RETRY_TIMEOUT)));
+    } catch (final IOException | RuntimeException e) {
+      // The two named cases: an IOException is the leader being unreachable, an IllegalStateException is the seed
+      // not having run or its outcome not having been readable, which is what the local path raises on the leader.
+      // Any other unchecked failure lands here too, which is the point - see this method's javadoc.
+      LogManager.instance().log(this, Level.SEVERE,
+          "Peer '%s' was added but the leader could not be asked to seed the security documents: %s. It is a "
+              + "cluster member serving requests against its own copy of them; re-issue the admission to retry "
+              + "the seed", e, admittedPeer, e.getMessage());
+      return ALL_SEEDED_SECURITY_DOCUMENTS;
+    }
   }
 
   @Override

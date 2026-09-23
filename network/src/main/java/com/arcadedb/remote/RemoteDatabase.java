@@ -41,6 +41,7 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinarySerializer;
@@ -99,6 +100,15 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
   public static final String ARCADEDB_SESSION_ID = "arcadedb-session-id";
 
+  /**
+   * Response header the server sets when the session transaction a request ran in published a COMMIT while that
+   * request was executing (issue #8062). Deliberately duplicated as
+   * {@code DatabaseAbstractHandler.SESSION_PARTIAL_COMMIT} in the {@code server} module: this module cannot
+   * depend on it. Change one and you must change the other, or this driver stops seeing the signal and silently
+   * goes back to replaying a block whose earlier half is already durable.
+   */
+  public static final String ARCADEDB_SESSION_PARTIAL_COMMIT = "arcadedb-session-partial-commit";
+
   private final    String                               databaseName;
   private          BinarySerializer                     serializer;
   private          String                               sessionId;
@@ -114,6 +124,11 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   private          int                                  cachedHashCode            = 0;
   private volatile ReadConsistency                      readConsistency           = ReadConsistency.EVENTUAL;
   private final    AtomicLong                           lastCommitIndex           = new AtomicLong(-1L);
+  // #8062: set - and only ever set, never cleared by a response - when the server answers a request made inside
+  // the CURRENT transaction with the ARCADEDB_SESSION_PARTIAL_COMMIT header. Reset by begin(), which is where
+  // every client-managed transaction starts. Read by transaction()'s retry loop, which must not replay a block
+  // whose earlier half the server already made durable.
+  private volatile boolean                              sessionPartiallyCommitted;
   private volatile int                                  electionRetryCount;
   private volatile long                                 electionRetryDelayMs;
 
@@ -281,6 +296,10 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
         // RETRY
         lastException = e;
+        // Sampled BEFORE the rollback below: that rollback is itself an HTTP send, and although
+        // captureResponseHeaders only ever latches the flag ON, reading it first keeps the verdict this loop
+        // acts on the one that describes the attempt that just failed.
+        final boolean partiallyCommitted = sessionPartiallyCommitted;
         // Close the server-side transaction before the next attempt: leaving it open keeps its locks until the
         // server times it out, so attempt N+1 would contend with the locks of attempt N and be MORE likely to
         // need a retry, not less (issue #7030). A failure raised by commit() has already ended the session
@@ -292,6 +311,24 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
         if (error != null)
           error.call(e);
+
+        // #8062: the third loop of this shape, after LocalDatabase.transaction() and
+        // DatabaseAsyncTransaction.executeTransaction() (issue #7916). A block that already published part of
+        // its work cannot be re-run - the rollback above could not take that part back, and a second pass would
+        // apply it twice and then report clean success. The commit came from a statement with an explicit batch
+        // boundary (UPDATE/DELETE/MOVE VERTEX ... BATCH n), which re-begins straight after, so nothing this
+        // client holds - not the session id, not isTransactionActive() - can see that it happened. The server
+        // says so instead, in the ARCADEDB_SESSION_PARTIAL_COMMIT response header, which is
+        // TransactionContext.isPartiallyCommitted() evaluated where the transaction actually lives. The conflict
+        // goes to the caller, who is the only one who knows how to compensate for the half that stands.
+        if (partiallyCommitted) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Transaction block on remote database '%s' committed part of its work before failing (a statement with "
+                  + "a BATCH boundary): NOT retrying, because replaying it would apply the already durable half a "
+                  + "second time. Propagating %s to the caller",
+              null, databaseName, e.getClass().getSimpleName());
+          throw e;
+        }
 
       } catch (final Exception e) {
         // Same as above: the transaction this attempt left open on the server is never going to be committed,
@@ -355,6 +392,9 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       throw new TransactionException("Transaction already begun");
 
     txCreatedRecords.clear();
+    // #8062: a fresh transaction has published nothing yet. Cleared BEFORE the call, so the /begin response
+    // cannot be answered against a stale verdict left by the transaction that came before it.
+    resetSessionPartiallyCommitted();
 
     // For STICKY strategy: pin to a concrete cluster member before the HTTP call so
     // that begin, command, and commit all reach the same physical node. Prefer the
@@ -376,7 +416,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
         throw new TransactionException("Error on transaction begin", detail);
       }
 
-      captureCommitIndexHeader(response);
+      captureResponseHeaders(response);
       setSessionId(response.headers().firstValue(ARCADEDB_SESSION_ID).orElse(null));
     } catch (final Exception e) {
       throw new TransactionException("Error on transaction begin", e);
@@ -416,7 +456,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
         throw new TransactionException("Error on transaction commit", detail);
       }
-      captureCommitIndexHeader(response);
+      captureResponseHeaders(response);
       committed = true;
     } catch (final DuplicatedKeyException | ConcurrentModificationException e) {
       throw e;
@@ -451,7 +491,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
         final Exception detail = manageException(response, "rollback transaction");
         throw new TransactionException("Error on transaction rollback", detail);
       }
-      captureCommitIndexHeader(response);
+      captureResponseHeaders(response);
     } catch (final Exception e) {
       throw new TransactionException("Error on transaction rollback", e);
     } finally {
@@ -480,17 +520,24 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   }
 
   /**
-   * Captures the {@code X-ArcadeDB-Commit-Index} response header on raw {@link #begin()}/{@link #commit()}/
-   * {@link #rollback()} sends, which bypass {@link RemoteHttpComponent#httpCommand} and its bookmark capture
-   * (issue #5845). The server emits this header on every begin/commit/rollback response once the database
-   * has an applied index, so all three call sites can carry the just-committed bookmark forward for the next
-   * {@link ReadConsistency#READ_YOUR_WRITES} read.
+   * Captures the per-response state this driver carries forward, on every send: the raw
+   * {@link #begin()}/{@link #commit()}/{@link #rollback()} calls and {@link #streamingCommand}, which bypass
+   * {@link RemoteHttpComponent#httpCommand}, and {@code httpCommand} itself for everything else.
    * <p>
-   * Also used by {@link #streamingCommand}, whose response body is an {@link java.io.InputStream} rather than a
-   * {@code String} - hence the wildcard: the bookmark lives entirely in the headers, and a streamed read has to
-   * advance it exactly as the buffered one does (issue #7351).
+   * <b>{@code X-ArcadeDB-Commit-Index}</b> (issue #5845) - the server emits it on every begin/commit/rollback
+   * response once the database has an applied index, so all three call sites can carry the just-committed
+   * bookmark forward for the next {@link ReadConsistency#READ_YOUR_WRITES} read. The wildcard on the response
+   * type is for {@link #streamingCommand}, whose body is an {@link java.io.InputStream} rather than a
+   * {@code String}: the bookmark lives entirely in the headers, and a streamed read has to advance it exactly
+   * as the buffered one does (issue #7351).
+   * <p>
+   * <b>{@link #ARCADEDB_SESSION_PARTIAL_COMMIT}</b> (issue #8062) - the server saying that the session
+   * transaction this request ran in published a commit under it, which is what a statement with an explicit
+   * {@code BATCH n} boundary does. Latched, never cleared here: once any response in the current transaction
+   * has said it, it stays said until {@link #begin()} starts the next one. In particular the {@code /rollback}
+   * this driver sends on its way out of a failed attempt must not be able to un-say it.
    */
-  void captureCommitIndexHeader(final HttpResponse<?> response) {
+  void captureResponseHeaders(final HttpResponse<?> response) {
     response.headers().firstValue("X-ArcadeDB-Commit-Index").ifPresent(val -> {
       try {
         updateLastCommitIndex(Long.parseLong(val));
@@ -498,6 +545,34 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
         // server sent an invalid header; ignore
       }
     });
+
+    if (response.headers().firstValue(ARCADEDB_SESSION_PARTIAL_COMMIT).isPresent())
+      markSessionPartiallyCommitted();
+  }
+
+  /**
+   * Latches the verdict that the CURRENT transaction has already published part of the caller's block, so
+   * {@link #transaction(TransactionScope, boolean, int, OkCallback, ErrorCallback)} must not replay it.
+   * <p>
+   * Protected because the verdict reaches a subclass over its own wire: {@code RemoteGrpcDatabase} reads it
+   * from the {@code arcadedb-session-partial-commit} call TRAILER, which is the same contract this class reads
+   * from the response header of the same name (issue #8134). Latched, never cleared here - see
+   * {@link #captureResponseHeaders(HttpResponse)} - so that the teardown a failed attempt performs on its way
+   * out cannot un-say it.
+   */
+  protected void markSessionPartiallyCommitted() {
+    sessionPartiallyCommitted = true;
+  }
+
+  /**
+   * Clears the latch, which is what STARTING a transaction means: a fresh transaction has published nothing
+   * yet. Called by {@link #begin(Database.TRANSACTION_ISOLATION_LEVEL)} and, separately, by any subclass whose
+   * own {@code begin} does not delegate here - {@code RemoteGrpcDatabase} begins over gRPC and never calls
+   * {@code super.begin(...)}, so without its own call the verdict reached in one transaction would disable
+   * retries for the rest of the connection's life (issue #8134).
+   */
+  protected void resetSessionPartiallyCommitted() {
+    sessionPartiallyCommitted = false;
   }
 
   /**
@@ -525,7 +600,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     checkDatabaseIsOpen();
     stats.countBucket.incrementAndGet();
     return ((Number) ((ResultSet) databaseCommand("query", "sql",
-        "select count(*) as count from bucket:" + bucketName, null, false,
+        "select count(*) as count from " + bucketTarget(bucketName), null, false,
         (connection, response) -> createResultSet(response))).nextIfAvailable().getProperty("count")).longValue();
   }
 
@@ -533,9 +608,13 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
   public long countType(final String typeName, final boolean polymorphic) {
     checkDatabaseIsOpen();
     stats.countType.incrementAndGet();
-    final String appendix = polymorphic ? "" : " where @type = '" + typeName + "'";
+    // The target is escaped as an IDENTIFIER and the @type filter bound as a string PARAMETER, the same split
+    // iterateType() uses: unescaped, a type name carrying a back-tick or a quote counted a different type or
+    // failed to parse (PR #7942 review).
+    final String appendix = polymorphic ? "" : " where @type = :typeName";
+    final Map<String, Object> params = polymorphic ? null : Map.of("typeName", typeName);
     return ((Number) ((ResultSet) databaseCommand("query", "sql",
-        "select count(*) as count from " + typeName + appendix, null,
+        "select count(*) as count from " + Identifier.quote(typeName) + appendix, params,
         false, (connection, response) -> createResultSet(response))).nextIfAvailable().getProperty("count")).longValue();
   }
 
@@ -592,11 +671,15 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
   @Override
   public Iterator<Record> iterateType(final String typeName, final boolean polymorphic) {
-    String query = "select from `" + typeName + "`";
-    if (!polymorphic)
-      query += " where @type = '" + typeName + "'";
+    // Both halves escaped: the name reaches the server as an IDENTIFIER in the target and as a string PARAMETER in
+    // the filter, so a name carrying a back-tick or a quote is the name the caller asked for rather than a
+    // different one or a parse error (issue #7914).
+    final String query = "select from " + Identifier.quote(typeName)
+        + (polymorphic ? "" : " where @type = :typeName");
 
-    final ResultSet resultSet = query("sql", query);
+    final ResultSet resultSet = polymorphic ?
+        query("sql", query) :
+        query("sql", query, Map.of("typeName", typeName));
     return new Iterator<>() {
       @Override
       public boolean hasNext() {
@@ -610,9 +693,22 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     };
   }
 
+  /**
+   * The SQL spelling of a bucket as a query TARGET, with the name escaped.
+   * <p>
+   * Not {@code bucket:} + a quoted name: the grammar's bucket target in a FROM position is the single lexer token
+   * {@code BUCKET_IDENTIFIER: BUCKET COLON IDENTIFIER}, and that {@code IDENTIFIER} is the BARE form - back-ticks
+   * there are a parse error, which is how #7914's first pass turned a working {@code countBucket} into one that
+   * counted nothing (PR #7942 review). The single-element bucket LIST is the form that does take an
+   * {@code identifier}, quoted ones included, and it addresses the same one bucket.
+   */
+  private static String bucketTarget(final String bucketName) {
+    return "bucket:[" + Identifier.quote(bucketName) + "]";
+  }
+
   @Override
   public Iterator<Record> iterateBucket(final String bucketName) {
-    final ResultSet resultSet = query("sql", "select from bucket:`" + bucketName + "`");
+    final ResultSet resultSet = query("sql", "select from " + bucketTarget(bucketName));
     return new Iterator<>() {
       @Override
       public boolean hasNext() {
@@ -806,7 +902,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       // Unchanged, for the reason RemoteHttpComponent.httpCommand gives at its own generic clause: manageException
       // reconstructs the server's exception type, and SecurityException and NoSuchElementException are neither
       // RemoteException nor ArcadeDBException. Catching only those two supertypes buried a denied vector search as
-      // a generic RemoteException, so a caller could not tell authorization from transport (claude-review).
+      // a generic RemoteException, so a caller could not tell authorization from transport (code review).
       throw e;
     } catch (final Exception e) {
       throw new RemoteException("Error on executing vector " + operation, e);
@@ -867,7 +963,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       // Before the status check, and deliberately: on an HA cluster the bookmark is meaningful on a refused
       // request too - whatever the server had applied when it answered is still a valid barrier for the next
       // read (issue #7351). Same capture the buffered path makes in RemoteHttpComponent.httpCommand.
-      captureCommitIndexHeader(response);
+      captureResponseHeaders(response);
 
       if (response.statusCode() != 200) {
         // The failure body is small and already complete: read it so the standard error mapping can name the
@@ -1038,7 +1134,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       // Captured unconditionally, not only on success: a partial write's already-appended samples are durable,
       // so a READ_YOUR_WRITES client that skipped the bookmark on the 400 would silently miss them - the same
       // reasoning sendBatch applies to a partially committed batch.
-      captureCommitIndexHeader(response);
+      captureResponseHeaders(response);
 
       if (response.statusCode() == 204)
         return new TimeSeriesWriteSummary(points.size(), points.size(), 0, List.of(), List.of(), List.of());
@@ -1374,7 +1470,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       // begin/commit/rollback a non-200 response here can still carry chunks the server already made
       // durable (see PostBatchHandler's partialCommit responses): the bookmark is captured unconditionally,
       // not only on success, or a READ_YOUR_WRITES client would silently miss the records that did commit.
-      captureCommitIndexHeader(response);
+      captureResponseHeaders(response);
 
       if (response.statusCode() != 200) {
         final Exception detail = manageException(response, "batch import");
@@ -1538,18 +1634,18 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       if (value instanceof List<?> list) {
         final List<Object> converted = new ArrayList<>(list.size());
         for (final Object item : list)
-          converted.add(item == null ? null : Type.convert(null, item, elementImplementation));
+          converted.add(item == null ? null : Type.convertOrKeep(null, item, elementImplementation));
         return converted;
       }
       if (value instanceof Map<?, ?> map) {
         final Map<Object, Object> converted = new LinkedHashMap<>(map.size());
         for (final Map.Entry<?, ?> mapEntry : map.entrySet())
           converted.put(mapEntry.getKey(),
-              mapEntry.getValue() == null ? null : Type.convert(null, mapEntry.getValue(), elementImplementation));
+              mapEntry.getValue() == null ? null : Type.convertOrKeep(null, mapEntry.getValue(), elementImplementation));
         return converted;
       }
     }
-    return Type.convert(null, value, javaImplementationForType(hint.type()));
+    return Type.convertOrKeep(null, value, javaImplementationForType(hint.type()));
   }
 
   private Class<?> javaImplementationForType(final Type type) {
@@ -1631,7 +1727,8 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       if (updated == 0)
         throw new RecordNotFoundException("Record " + rid + " not found", rid);
     } else {
-      final ResultSet result = command("sql", "insert into " + record.getTypeName() + " content " + json);
+      final ResultSet result = command("sql",
+          "insert into " + Identifier.quote(record.getTypeName()) + " content " + json);
       rid = result.next().getIdentity().get();
       trackCreatedRecord(record);
     }
@@ -1647,8 +1744,11 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
     final JSONObject json = record.toJSON();
     json.remove(RID_PROPERTY);  // Remove @rid to avoid SQL parsing issues
+    // Both names escaped: the bucket name is caller-supplied on this overload, and the type name is only as
+    // trustworthy as whoever built the record (PR #7942 review).
     final ResultSet result = command("sql",
-        "insert into " + record.getTypeName() + " bucket " + bucketName + " content " + json);
+        "insert into " + Identifier.quote(record.getTypeName()) + " bucket " + Identifier.quote(bucketName)
+            + " content " + json);
     final RID newRID = result.next().getIdentity().get();
     trackCreatedRecord(record);
     return newRID;

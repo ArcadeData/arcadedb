@@ -266,6 +266,26 @@ public class SourceDiscovery {
     return userDelimiter;
   }
 
+  /**
+   * The vertex property an RDF source keys its subject and object IRIs by: the user's own
+   * {@code -typeIdProperty} / {@code WITH typeIdProperty = ...} when there is one, {@code "id"} otherwise.
+   * <p>
+   * The sibling of {@link #resolveDelimiter} one line up, and it used to be the unguarded half of the pair: the
+   * detection arm assigned {@code settings.typeIdProperty = "id"} unconditionally, so recognising N-Triples silently
+   * discarded an explicit choice that names a real schema artefact - the property, its index and the
+   * {@code newEdgeByKeys} lookup all follow it - and did so without the INFO line the discarded delimiter gets
+   * (issue #7891).
+   */
+  static String resolveTypeIdProperty(final String userTypeIdProperty) {
+    if (userTypeIdProperty == null)
+      return RDFImporterFormat.DEFAULT_TYPE_ID_PROPERTY;
+    if (!RDFImporterFormat.DEFAULT_TYPE_ID_PROPERTY.equals(userTypeIdProperty))
+      LogManager.instance().log(SourceDiscovery.class, Level.INFO,
+          "RDF default key property '%s' discarded: using the typeIdProperty '%s' explicitly set by the user",
+          RDFImporterFormat.DEFAULT_TYPE_ID_PROPERTY, userTypeIdProperty);
+    return userTypeIdProperty;
+  }
+
   private FormatImporter analyzeSourceContent(final Parser parser, final AnalyzedEntity.EntityType entityType,
       final ImporterSettings settings,
       final ConsoleLogger logger) throws IOException {
@@ -323,27 +343,9 @@ public class SourceDiscovery {
       } else if ("xml".equalsIgnoreCase(knownFileType)) {
         return new XMLImporterFormat();
       } else if ("graphml".equalsIgnoreCase(knownFileType)) {
-
-        try {
-          final Class<FormatImporter> clazz = (Class<FormatImporter>) Class.forName(
-              "com.arcadedb.gremlin.integration.importer.format.GraphMLImporterFormat");
-          return clazz.getConstructor().newInstance();
-        } catch (final ClassNotFoundException | InvocationTargetException | InstantiationException | IllegalAccessException |
-                       NoSuchMethodException e) {
-          LogManager.instance().log(this, Level.SEVERE, "Impossible to find importer for 'graphml' ", e);
-        }
-
+        return gremlinFormatImporter(knownFileType, "com.arcadedb.gremlin.integration.importer.format.GraphMLImporterFormat");
       } else if ("graphson".equalsIgnoreCase(knownFileType)) {
-
-        try {
-          final Class<FormatImporter> clazz = (Class<FormatImporter>) Class.forName(
-              "com.arcadedb.gremlin.integration.importer.format.GraphSONImporterFormat");
-          return clazz.getConstructor().newInstance();
-        } catch (final ClassNotFoundException | InvocationTargetException | InstantiationException | IllegalAccessException |
-                       NoSuchMethodException e) {
-          LogManager.instance().log(this, Level.SEVERE, "Impossible to find importer for 'graphson' ", e);
-        }
-
+        return gremlinFormatImporter(knownFileType, "com.arcadedb.gremlin.integration.importer.format.GraphSONImporterFormat");
       } else {
         LogManager.instance()
             .log(this, Level.WARNING, "File type '%s' is not supported. Trying to understand file type...", knownFileType);
@@ -360,6 +362,35 @@ public class SourceDiscovery {
       return format;
 
     return analyzeText(parser, settings, logger, userDelimiter);
+  }
+
+  /**
+   * The importer for a file type the optional {@code arcadedb-gremlin} module supplies, resolved by name because
+   * {@code arcadedb-integration} deliberately does not depend on it.
+   * <p>
+   * A failed lookup THROWS. It used to log {@code SEVERE} and fall out of the known-file-type chain into the generic
+   * content sniffer below, which is written for an UNKNOWN type - its own message says so - and for a {@code .graphml}
+   * source answered "XML". {@code XMLImporterFormat} then imported the GraphML container as ONE ordinary record and
+   * {@code Importer.load()} RETURNED NORMALLY with {@code createdVertices=1}: the CLI exited 0 and
+   * {@code IMPORT DATABASE} answered 200 while the two nodes and the edge the file described were gone, the only
+   * trace being a log line nobody reads after a command that just said it worked (issue #7781). A known file type
+   * whose handler is absent is not a candidate for sniffing - it is a refusal, and one that has to name the module
+   * that supplies the handler, because "Error on parsing source" sent the operator to look at their file.
+   */
+  @SuppressWarnings("unchecked")
+  private static FormatImporter gremlinFormatImporter(final String fileType, final String className) {
+    try {
+      final Class<FormatImporter> clazz = (Class<FormatImporter>) Class.forName(className);
+      return clazz.getConstructor().newInstance();
+    } catch (final ClassNotFoundException | InvocationTargetException | InstantiationException | IllegalAccessException |
+                   NoSuchMethodException | ClassCastException e) {
+      // ClassCastException too: the cast above is unchecked, so a class that RESOLVES but is not a FormatImporter -
+      // a gremlin module whose version does not match this one - would otherwise escape as a raw cast failure naming
+      // neither the format nor the module, which is the exact shape of failure this method exists to replace.
+      throw new ImportException(
+          "Cannot import a '" + fileType + "' source: its importer is provided by the optional arcadedb-gremlin module, "
+              + "which is not available on this classpath", e);
+    }
   }
 
   /**
@@ -796,12 +827,15 @@ public class SourceDiscovery {
       // THE SEPARATOR IS TAKEN FROM BETWEEN THE SUBJECT AND THE PREDICATE AND HANDED TO THE FORMAT, WHICH INHERITS
       // CSVImporterFormat'S PARSER CONSTRUCTION AND WOULD OTHERWISE FALL BACK TO A COMMA (ISSUE #7315). PER-FORMAT
       // AND NOT THROUGH settings.options, WHICH ONE IMPORT SHARES ACROSS ITS DOCUMENTS, VERTICES AND EDGES FILES -
-      // WRITING IT THERE IS WHAT LEAKED IT INTO THE NEXT CSV ENTITY (ISSUE #6946)
+      // WRITING IT THERE IS WHAT LEAKED IT INTO THE NEXT CSV ENTITY (ISSUE #6946).
+      // THE KEY PROPERTY TRAVELS THE SAME WAY AND FOR BOTH OF THE SAME REASONS: settings.typeIdProperty = "id" USED
+      // TO BE ASSIGNED HERE UNCONDITIONALLY, WHICH DISCARDED AN EXPLICIT -typeIdProperty AND THEN OUTLIVED THE RDF
+      // SOURCE IT HAD BEEN DECIDED FOR, DRIVING THE PROPERTY AND UNIQUE-INDEX AUTO-CREATION OF THE NEXT ENTITY
+      // (ISSUE #7891)
       final char separator = nTriplesSeparator(line);
-      if (separator != 0) {
-        settings.typeIdProperty = "id";
-        return new RDFImporterFormat(resolveDelimiter(userDelimiter, separator));
-      }
+      if (separator != 0)
+        return new RDFImporterFormat(resolveDelimiter(userDelimiter, separator),
+            resolveTypeIdProperty(settings.typeIdProperty));
 
       // A LINE THAT OPENS WITH TWO IRI TERMS AND IS STILL NOT A TRIPLE IS AN RDF FILE THIS METHOD CANNOT PLACE.
       // SAYING SO HERE IS THE ONLY PLACE IT CAN BE SAID: THE CSV FALLBACK BELOW REPORTS A NumberFormatException

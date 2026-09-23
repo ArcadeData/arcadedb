@@ -358,7 +358,7 @@ public class FullBackupFormat extends AbstractBackupFormat {
         // ParallelZipArchiveWriter.addFile) - a missing file, a directory wearing the name, and a file another
         // process holds open on Windows all arrive here. Any OTHER IOException is a real I/O failure, and it
         // already fails the backup by propagating out of this method - just without the sentence below saying
-        // which store it was (claude-review on PR #7746).
+        // which store it was (code review on PR #7746).
         throw new BackupException("TimeSeries sealed store '" + sealedFile.getName()
             + "' could not be read after being listed for this backup: the archive would declare its type without "
             + "its data (" + e.getMessage() + ")", e);

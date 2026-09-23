@@ -52,14 +52,14 @@ class Issue7031RemoteClientIT extends BaseGraphServerTest {
   @BeforeEach
   public void beginTest() {
     super.beginTest();
-    final RemoteServer server = new RemoteServer("127.0.0.1", 2480, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+    final RemoteServer server = new RemoteServer("127.0.0.1", getServerHttpPort(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
     if (!server.exists(DATABASE_NAME))
       server.create(DATABASE_NAME);
   }
 
   @AfterEach
   public void endTest() {
-    final RemoteServer server = new RemoteServer("127.0.0.1", 2480, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+    final RemoteServer server = new RemoteServer("127.0.0.1", getServerHttpPort(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
     if (server.exists(DATABASE_NAME))
       server.drop(DATABASE_NAME);
     super.endTest();
@@ -142,7 +142,7 @@ class Issue7031RemoteClientIT extends BaseGraphServerTest {
    */
   @Test
   void existsBucketSeesABucketAttachedToNoType() {
-    try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+    try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), DATABASE_NAME, "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
 
       assertThat(database.getSchema().existsBucket("standalone")).isFalse();
@@ -161,7 +161,7 @@ class Issue7031RemoteClientIT extends BaseGraphServerTest {
   }
 
   private RecordingBatchDatabase newRecordingDatabase() {
-    return new RecordingBatchDatabase("127.0.0.1", 2480, DATABASE_NAME, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+    return new RecordingBatchDatabase("127.0.0.1", getServerHttpPort(), DATABASE_NAME, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
   }
 
   private static long countOf(final RemoteDatabase database, final String typeName) {

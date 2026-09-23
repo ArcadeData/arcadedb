@@ -140,9 +140,38 @@ public class Identifier extends SimpleNode {
   }
 
   /**
-   * reverses {@link #escape(String)}: a backslash consumes the character that follows it.
+   * The index of the back-tick that CLOSES the one at {@code open}, or -1 when the identifier is never closed.
+   * <p>
+   * Reading a back-tick quoted identifier is the other half of {@link #quote(String)}, and it has to obey the same
+   * grammar rule - {@code QUOTED_IDENTIFIER : BACKTICK ( ~[`\\] | '\\' . )+ BACKTICK}, in which a backslash
+   * consumes the character after it. A scan that stops at the first back-tick instead ends the identifier early on
+   * an escaped one, and whatever follows is then read as SQL: that is issue #7858, and it was reachable from two
+   * separate hand-rolled scans in the Postgres wire module. They both call this now, because a contract with two
+   * copies is a contract that drifts - which is the whole argument the #7858 fix is built on (found in review).
+   * <p>
+   * A trailing backslash escapes the closing back-tick, so {@code `x\`} is unterminated and answers -1.
+   *
+   * @param text the text to scan
+   * @param open the index of the opening back-tick
    */
-  static String unescape(final String s) {
+  public static int endOfQuoted(final String text, final int open) {
+    for (int i = open + 1; i < text.length(); i++) {
+      final char c = text.charAt(i);
+      if (c == '\\')
+        ++i;
+      else if (c == '`')
+        return i;
+    }
+    return -1;
+  }
+
+  /**
+   * reverses {@link #escape(String)}: a backslash consumes the character that follows it. Public because
+   * {@link #quote(String)} is: a caller that builds SQL text by hand and READS back-tick quoted text by hand -
+   * the Postgres wire's own tokenizer does both - needs the same escaping contract in both directions, and a
+   * private copy of it is how the two halves drift apart (issue #7858).
+   */
+  public static String unescape(final String s) {
     if (s == null)
       return null;
 

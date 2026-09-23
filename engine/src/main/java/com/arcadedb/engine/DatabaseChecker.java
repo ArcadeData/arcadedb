@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.DocumentValidator;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
@@ -41,6 +42,7 @@ import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.LocalEdgeType;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.LocalVertexType;
+import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.json.JSONObject;
@@ -77,6 +79,15 @@ public class DatabaseChecker {
   private       boolean             deleteOrphanEdgeRecords = false;
   /** #6189: see {@link #setReclaimUnreferencedFiles(boolean)} for why this is not part of {@link #fix} either. */
   private       boolean             reclaimUnreferencedFiles = false;
+  /** #7952: see {@link #setDeleteInvalidRecords(boolean)} for why this is not part of {@link #fix} either. */
+  private       boolean             deleteInvalidRecords = false;
+  /**
+   * The bound in force for this checker. A package-private seam, on the same pattern as
+   * {@code CheckDatabaseStatement.createChecker}: the multi-pass loop it drives cannot otherwise be proved without
+   * a test that writes a million invalid records, and a loop nothing exercises is a loop nobody knows terminates.
+   * Never set outside a test.
+   */
+  private int invalidRecordsPerRepairPass = INVALID_RECORDS_PER_REPAIR_PASS;
   private       Set<Object>         buckets      = Collections.emptySet();
   private       Set<String>         types        = Collections.emptySet();
   /**
@@ -87,6 +98,32 @@ public class DatabaseChecker {
    * call. Naming ten vertices of one type costs one sweep; naming one vertex of each of three types costs three.
    */
   private       Set<RID>            records      = Collections.emptySet();
+  /**
+   * How many records one repair PASS over a bucket takes out before the next pass goes back for more (issue #7952,
+   * PR review).
+   * <p>
+   * This is a memory bound, not a transaction bound - {@link RepairTransaction} owns the second and measures it in
+   * dirtied pages, which is what a WAL (and under HA a Raft) entry is actually made of. What this bounds is the list
+   * of pending removals a pass may hold: at 8 bytes per entry, 1M is 8MB, and a bucket with more violations than
+   * that simply gets another pass rather than a bigger array.
+   * <p>
+   * Deliberately NOT small. Every pass past the first costs one extra walk of the bucket, so the value trades heap
+   * against re-scans: at a million, a bucket has to hold more than a million violating records before ANY database
+   * pays a second walk, and one whose every record a DDL invalidated pays one extra walk per million. A batch of a
+   * few thousand would bound the memory no better in practice and charge hundreds of walks for it.
+   */
+  private static final int INVALID_RECORDS_PER_REPAIR_PASS = 1_000_000;
+  /**
+   * #7952: the one summary line the existence-constraint pass adds when records are left in that state, naming both
+   * repairs. Shared by the type-wide and {@code RECORD}-scoped arms so the advice cannot drift between them, and
+   * said once per run rather than once per record: it applies to all of them, and which of the two repairs is right
+   * depends on whether the records hold data - a question the operator can answer and this pass cannot.
+   */
+  private static final String CONSTRAINT_VIOLATIONS_REMAIN_WARNING =
+      "one or more records do not satisfy the existence constraints of their own type, so every further write to "
+          + "them fails: complete each one with a SINGLE UPDATE supplying every missing property (the write path "
+          + "validates the whole document, so two statements fail on the first), or remove them with CHECK DATABASE "
+          + "FIX DELETE INVALID RECORDS";
   /** Shared with {@code CheckDatabaseStatement}, which diagnoses the same conflict before resolving the RIDs. */
   public static final String RECORD_SCOPE_CONFLICT_ERROR =
       "CHECK DATABASE RECORD cannot be combined with TYPE or BUCKET: RECORD already names the exact records to "
@@ -211,6 +248,25 @@ public class DatabaseChecker {
     result.put("totalTimeSeriesShards", 0L);
     result.put("totalTimeSeriesSamples", 0L);
     result.put("totalTimeSeriesSealedBlocks", 0L);
+    // Issue #7952: records that load perfectly but do not satisfy their own type's existence constraints
+    // (MANDATORY/NOTNULL) - what an openCypher statement that died between a provisional CREATE/MERGE and its
+    // end-of-statement check leaves behind, what a pre-validation RESTORE left (#6127), and what a schema change
+    // makes of every record a populated type already held (ALTER PROPERTY ... MANDATORY TRUE, or renaming a
+    // MANDATORY property). Seeded like every
+    // other family so "does this database hold any?" is answerable from the result of EVERY run, including from one
+    // against a database that declares no such constraint and therefore never runs the pass at all.
+    //
+    // DELIBERATELY NOT FOLDED INTO corruptedRecords, which is the near neighbour and the wrong home: that set is
+    // what check() turns into affectedBuckets, so a finding placed there would drop and rebuild every index on the
+    // record's bucket - and this record is not corrupt. It reads, it deserialises, and its index entries describe
+    // it correctly. The only thing wrong with it is that the schema asks for a property it does not carry.
+    result.put("constraintViolatingRecords", new LinkedHashSet<RID>());
+    result.put("totalConstraintViolations", 0L);
+    // Which of the above this run actually removed. Stays empty unless BOTH fix and deleteInvalidRecords are set;
+    // see setDeleteInvalidRecords for why the removal is a clause of its own. Bounded like the list above, so it
+    // gets the exact total the cap would otherwise hide - a caller must never infer "all of them" from its size.
+    result.put("deletedConstraintViolatingRecords", new LinkedHashSet<RID>());
+    result.put("totalDeletedConstraintViolatingRecords", 0L);
     result.put("totalWarnings", 0L);
     result.put("totalCorruptedRecords", 0L);
     result.put("distinctMissingReferences", 0L);
@@ -249,6 +305,22 @@ public class DatabaseChecker {
         documentTypes.add(type);
     }
 
+    // #7952: the types this run has an existence-constraint question to ask about. Resolved from the SCHEMA alone,
+    // before a single record is read, which is what keeps the pass free for the databases that declare no such
+    // constraint - the large majority - rather than costing them a scan that can only report nothing. A TimeSeries
+    // type is excluded because it has no record buckets to scan; its samples are not documents and carry no
+    // properties a constraint could apply to.
+    final List<ConstrainedType> constrainedTypes = new ArrayList<>();
+    for (final DocumentType type : database.getSchema().getTypes()) {
+      if (type == null || type instanceof LocalTimeSeriesType)
+        continue;
+      if (types != null && !types.isEmpty() && !types.contains(type.getName()))
+        continue;
+      final Property[] constrained = DocumentValidator.existenceConstrainedProperties(type);
+      if (constrained.length > 0)
+        constrainedTypes.add(new ConstrainedType(type, constrained));
+    }
+
     // The orphaned-segment reclaim (issue #5375) requires walking EVERY vertex to build the reachable set, so
     // it only runs on a full-scope fix: under a type/bucket/record filter the unwalked vertices' segments would
     // be misclassified as orphans.
@@ -277,7 +349,10 @@ public class DatabaseChecker {
       final Map<DocumentType, List<RID>> scoped = groupRecordsByType();
 
       currentStep = 0;
-      totalSteps = scoped.size() + (fix ? 1 : 0) + (compress ? 1 : 0);
+      // #7952: ONE extra step for the existence-constraint pass over the records named, and only when some type in
+      // scope declares such a constraint - same rule as the type-wide plan below, so a database that declares none
+      // keeps the step plan it had.
+      totalSteps = scoped.size() + (constrainedTypes.isEmpty() ? 0 : 1) + (fix ? 1 : 0) + (compress ? 1 : 0);
 
       if (droppedRecords > 0)
         // No count, for the same reason the refusal above quotes none.
@@ -292,6 +367,8 @@ public class DatabaseChecker {
 
       checkScopedRecords(scoped);
 
+      checkScopedConstraints(scoped, constrainedTypes);
+
       corruptMetadataIndexes = Collections.emptySet();
 
     } else {
@@ -302,6 +379,9 @@ public class DatabaseChecker {
           // change the plan of every database that has none, which is what every existing progress expectation
           // was written against; a step that is not there costs nobody anything.
           + (timeSeriesTypes.isEmpty() ? 0 : 1)
+          // #7952: ONE step for the existence-constraint pass over every type that declares one, and only when the
+          // database declares any - same reasoning as the TimeSeries step just above.
+          + (constrainedTypes.isEmpty() ? 0 : 1)
           + (reclaimOrphanedSegments ? 1 : 0)
           + (fix ? 1 : 0) // rebuild affected indexes
           + (compress ? 1 : 0);
@@ -324,6 +404,11 @@ public class DatabaseChecker {
       checkDocuments(documentTypes);
 
       checkTimeSeries(timeSeriesTypes);
+
+      // AFTER the three record passes above: a record they removed as corrupt is gone, so it is not reported a
+      // second time here under a second vocabulary. BEFORE checkBuckets, which recomputes the record counters this
+      // pass's own removals change.
+      checkConstraints(constrainedTypes);
 
       checkBuckets(result);
 
@@ -821,8 +906,9 @@ public class DatabaseChecker {
         // The per-kind arm of the same repair (issue #6136, item 3): this arm only ever deletes, so its whole
         // contribution to autoFix is a deleted record.
         result.put("removedRecords", (Long) result.get("removedRecords") + 1);
-        // Same reason as mergeDeletedRecords: a removal nobody lists cannot be audited.
-        ((LinkedHashSet<RID>) result.get("deletedRecordsAfterFix")).add(rid);
+        // Same reason as mergeDeletedRecords: a removal nobody lists cannot be audited. Bounded - see
+        // addDeletedAfterFix, which owns the cap for both writers in this class.
+        addDeletedAfterFix(rid);
       } catch (final RecordNotFoundException e) {
         // ALREADY GONE
       } catch (final Exception e) {
@@ -1226,6 +1312,42 @@ public class DatabaseChecker {
     return this;
   }
 
+  /**
+   * Opt-in for removing the records that do not satisfy their own type's existence constraints (issue #7952) -
+   * the ones {@link #checkConstraints} reports under {@code constraintViolatingRecords}. Only meaningful together
+   * with {@link #setFix(boolean)}, which performs the removal.
+   * <p>
+   * SEPARATE FROM {@code FIX} ON PURPOSE, and here the argument is sharper than for the two clauses above, because
+   * one of the ways to reach this state is entirely legitimate. A record can violate an existence constraint for
+   * three quite different reasons:
+   * <ul>
+   *   <li>an openCypher statement that created it provisionally and died before its end-of-statement check
+   *   ({@code DeferredExistenceChecks}, issue #7952) - genuinely half-written, nobody wants it;</li>
+   *   <li>a {@code RESTORE} that predates validation (issue #6127);</li>
+   *   <li>a SCHEMA CHANGE that no existing record was measured against: {@code ALTER PROPERTY ... MANDATORY TRUE}
+   *   on a type that already holds records, which does not validate them, or renaming a {@code MANDATORY} property,
+   *   which relabels the schema and leaves every record that predates it carrying the old name (#7589). Every
+   *   existing record instantly becomes a finding, while holding data that is exactly as real as it was the day
+   *   before the DDL ran.</li>
+   * </ul>
+   * The scan cannot tell them apart, because the state they leave is identical: that is the whole reason the scan
+   * can find the first one at all. A {@code FIX} that deleted by default would answer the third case by destroying
+   * the type's entire contents. Reporting is therefore always on; removing is always asked for.
+   * <p>
+   * The other repair needs no clause and is usually the right one: a single {@code UPDATE} supplying every missing
+   * property completes the record in place. It has to be a single one - the write path validates the whole
+   * document, so supplying two missing mandatory properties in two statements fails on the first.
+   */
+  public DatabaseChecker setDeleteInvalidRecords(final boolean deleteInvalidRecords) {
+    this.deleteInvalidRecords = deleteInvalidRecords;
+    return this;
+  }
+
+  DatabaseChecker setInvalidRecordsPerRepairPass(final int invalidRecordsPerRepairPass) {
+    this.invalidRecordsPerRepairPass = invalidRecordsPerRepairPass;
+    return this;
+  }
+
   public DatabaseChecker setMaxWarnings(final int maxWarnings) {
     this.maxWarnings = maxWarnings;
     return this;
@@ -1421,6 +1543,520 @@ public class DatabaseChecker {
     }
   }
 
+  /**
+   * A type in scope that declares at least one existence constraint, paired with the properties carrying it, so the
+   * per-record loop walks two or three properties rather than the whole property list of the type (issue #7952).
+   * <p>
+   * The array component leaves this record with identity-based {@code equals}/{@code hashCode}, which is fine and
+   * deliberate: these are only ever iterated, never compared or put in a set.
+   */
+  private record ConstrainedType(DocumentType type, Property[] properties) {
+  }
+
+  /**
+   * Reports every record that loads perfectly well but does not satisfy its own type's existence constraints
+   * ({@code MANDATORY}, {@code NOTNULL}), and - only under {@code FIX DELETE INVALID RECORDS} - removes it
+   * (issue #7952).
+   * <p>
+   * <b>Why this pass exists.</b> Until #7945 the state it looks for was structurally impossible: every write path
+   * validated before committing, so a record violating its own type's constraints could not reach a bucket. Three
+   * things have made it reachable, and the third was never prevented at all:
+   * <ul>
+   *   <li>an openCypher {@code CREATE}/{@code MERGE} pattern now commits a record that the {@code SET} completing it
+   *   has not reached yet, with {@code DeferredExistenceChecks} holding the constraint until the statement ends -
+   *   which is what makes the standard {@code MERGE (n:L {id: $id}) SET n.prop = $v} upsert work as it does in
+   *   Neo4j. That bookkeeping is an in-memory, thread-bound scope, so a process that dies or a connection that is
+   *   killed in that window leaves the incomplete record behind (issue #7952);</li>
+   *   <li>{@code RESTORE} could produce one before it started validating (issue #6127);</li>
+   *   <li>a schema change no existing record was measured against - {@code ALTER PROPERTY ... MANDATORY TRUE} on a
+   *   type that already holds records, or the rename of a {@code MANDATORY} property (#7589) - neither of which
+   *   validates what is already there, and neither of which ever did.</li>
+   * </ul>
+   * A record in that state is not merely untidy: {@code updateRecord} validates the WHOLE document, so every later
+   * write to it fails until the missing property is supplied, which makes it read as broken to the application long
+   * before anyone thinks to look at the schema. And until this pass nothing in the database could find one -
+   * {@code CHECK DATABASE} was purely structural, and not one of its other passes asks a schema question.
+   * <p>
+   * <b>It needs no bookkeeping of its own, which is the point.</b> The record is, by definition, one that does not
+   * satisfy its type's existence constraints, so the database is its own durable trace; an operator can ask the
+   * question at any time and the answer does not depend on anything having been recorded while the damage was being
+   * done. That is also why one pass covers all three causes above instead of one mechanism covering the first.
+   * <p>
+   * <b>Free for a database that declares no such constraint.</b> The type list is resolved from the SCHEMA in
+   * {@link #check()}, before a record is read: a type with no {@code MANDATORY}/{@code NOTNULL} property is not in
+   * it, contributes no step to the plan, and costs nothing. A database with none runs no pass at all.
+   * <p>
+   * What it is NOT free for, stated plainly: a type that DOES declare one is read and deserialised twice in the same
+   * run, because {@link #checkDocuments} and {@code GraphDatabaseChecker}'s vertex and edge arms have already walked
+   * every one of those records. Issue #7981 covers folding the question into those scans so the report-only run -
+   * the routine one - stops paying for the extra walk. It is not folded in here because the question would then be
+   * asked from two classes, and because the REPAIR cannot ride those scans anyway: the bounded delete passes below
+   * need a scan they own.
+   * <p>
+   * <b>A finding is NOT corruption</b> and is deliberately kept out of {@code corruptedRecords}: that set feeds
+   * {@code affectedBuckets}, so filing it there would drop and rebuild every index on the record's bucket for a
+   * record that reads, deserialises and indexes correctly.
+   * <p>
+   * <b>Scoped by TYPE and by nothing else</b>, exactly like the per-type record passes: {@code BUCKET} narrows the
+   * bucket-level pass, not this one, and a {@code RECORD} scope goes to {@link #checkScopedConstraints} instead.
+   */
+  private void checkConstraints(final List<ConstrainedType> constrainedTypes) {
+    if (constrainedTypes.isEmpty())
+      return;
+
+    if (verboseLevel > 0)
+      LogManager.instance().log(this, Level.INFO, "Checking existence constraints...");
+
+    // An ESTIMATE, and only ever the progress bar's: countType reads the maintained bucket counters rather than
+    // scanning, so it is cheap and can lag reality after some repair sequences. Nothing here is decided by it.
+    long total = 0;
+    for (final ConstrainedType constrained : constrainedTypes)
+      total += database.countType(constrained.type().getName(), false);
+
+    stepBegin("Checking existence constraints", total);
+
+    long resolved = 0;
+
+    for (final ConstrainedType constrained : constrainedTypes) {
+      final DocumentType type = constrained.type();
+
+      for (final Bucket bucket : type.getBuckets(false))
+        resolved += checkConstraintsOfBucket(type, constrained.properties(), bucket);
+    }
+
+    if ((Long) result.get("totalConstraintViolations") > resolved)
+      // ONE summary line rather than a repair instruction repeated on every per-record warning: both repairs apply
+      // to all of them, and which one is right depends on whether the records hold data - a question the operator
+      // can answer and this pass cannot. Keyed on what is STILL in that state rather than on whether the removal
+      // was asked for, so a run whose deletes partly failed says so instead of implying it cleared everything.
+      addWarning(CONSTRAINT_VIOLATIONS_REMAIN_WARNING);
+
+    stepComplete();
+  }
+
+  /**
+   * The existence-constraint pass over ONE bucket, in as many passes over it as the repair needs (issue #7952).
+   * <p>
+   * <b>Why a loop.</b> A pass cannot delete from inside the scan - {@code LocalBucket.scan} walks the very pages a
+   * delete rewrites - so it collects first and removes after, and what it collects is bounded by
+   * {@link #INVALID_RECORDS_PER_REPAIR_PASS} so the collecting cannot exhaust the heap. A bucket with more
+   * violations than one pass may hold therefore gets another pass, which is what keeps the bound from costing
+   * completeness: an operator who asked for these records to go does not get some of them removed and no word about
+   * the rest.
+   * <p>
+   * ONLY THE FIRST PASS REPORTS, and that is not cosmetic: {@link #addConstraintViolation} counts a first sighting,
+   * and past the reporting cap the set it de-duplicates against can no longer recognise a RID it was not allowed to
+   * retain - so a re-scan would count those records a second time and publish a total larger than the number of
+   * records that exist. The first pass sees every record and owns the findings and the progress ticks; the ones
+   * after it only collect.
+   * <p>
+   * <b>Each pass RESUMES where the last one stopped collecting</b>, which is what makes the loop both terminate and
+   * finish the job. {@code LocalBucket.scan} visits positions in strictly ascending order (page by page, slot by
+   * slot), so the highest position a pass queued is a watermark: the next pass skips everything at or below it -
+   * before deserialising, so a skip is a comparison and not a read - and collects what follows.
+   * <p>
+   * The obvious alternative, going round again whenever the last pass DELETED something, is what this replaced and
+   * it was wrong in both directions (PR review). A batch that deleted nothing stopped the loop even though records
+   * it never reached were still removable - a {@code beforeDelete} listener vetoing the first batch abandoned every
+   * record behind it - and a batch whose records were all left in place would otherwise have been re-collected for
+   * ever. A watermark has neither problem: it advances on every full pass whatever the deletes did, so the loop is
+   * bounded by the number of violating records and a record nothing can remove is passed over rather than retried.
+   *
+   * @return how many records are no longer violating - see {@link #deleteConstraintViolatingRecords}
+   */
+  private long checkConstraintsOfBucket(final DocumentType type, final Property[] constrained, final Bucket bucket) {
+    long resolved = 0;
+    boolean reportFindings = true;
+    // Positions at or below this have had their turn: queued by an earlier pass, and then deleted, left in place
+    // because they no longer violated, or refused. None of them is this loop's business again.
+    long collectedUpTo = -1;
+
+    while (true) {
+      final BucketPositions toDelete = new BucketPositions(invalidRecordsPerRepairPass);
+      final boolean report = reportFindings;
+      final long resumeAfter = collectedUpTo;
+      // The highest position this pass queued, so the next one knows where to carry on from.
+      final long[] highestQueued = { resumeAfter };
+
+      // No catch/rollback, matching checkDocuments: the scan writes nothing, so committing and rolling back are the
+      // same thing here, and the finally is there to end the transaction on both paths rather than to undo work.
+      database.begin();
+      try {
+        bucket.scan((rid, view) -> {
+          // Already had its turn in an earlier pass. Skipped before the record is deserialised, so a later pass
+          // costs a walk of the bucket's slots rather than a second read of its records. The reporting pass never
+          // skips: it owns the findings and the progress ticks, and it is always the first, so it has nothing to
+          // resume after anyway.
+          if (!report && rid.getPosition() <= resumeAfter)
+            return true;
+
+          try {
+            final Document record = database.getRecordFactory().newImmutableRecord(database, type, rid, view, null)
+                .asDocument(true);
+
+            for (final Property property : constrained) {
+              final String violation = DocumentValidator.describeUnmetExistenceConstraint(record, property);
+              if (violation != null) {
+                if (report)
+                  addConstraintViolation(rid, violation);
+                // A position this pass has no room for is one it therefore never deletes, so the record is still
+                // in the bucket for the next pass to find - which is what the loop below goes round for. The
+                // watermark only moves for a position actually QUEUED, so nothing is skipped over unqueued.
+                if (fix && deleteInvalidRecords && rid.getPosition() > resumeAfter && toDelete.add(rid.getPosition()))
+                  highestQueued[0] = rid.getPosition();
+                // ONE finding per record, like the write path: a record missing two mandatory properties is one
+                // incomplete record, not two, and the repair for it is the same either way.
+                break;
+              }
+            }
+          } catch (final Exception e) {
+            // Unreadable. That is corruption, and checkDocuments/checkVertices/checkEdges have already reported it
+            // in their own vocabulary and, under FIX, already removed it. Reporting it again here - in a second
+            // vocabulary, about a record that may no longer exist - would only make the report harder to read. FINE
+            // rather than silence so someone debugging a record this pass appears to have skipped can see why.
+            LogManager.instance().log(this, Level.FINE,
+                "Skipped %s in the existence-constraint pass: it cannot be read (reported by the record passes)", e, rid);
+          }
+          if (report)
+            stepTick();
+          return true;
+        }, null);
+      } finally {
+        database.commit();
+      }
+
+      reportFindings = false;
+
+      resolved += deleteConstraintViolatingRecords(bucket.getFileId(), toDelete);
+
+      // Not full means this pass reached the end of the bucket, so there is nothing left to come back for. The
+      // second half is belt and braces against a non-positive budget, which only a test can set: without it a
+      // batch that can never hold anything would be "full" at zero and the watermark would never move.
+      if (!toDelete.isFull() || highestQueued[0] <= resumeAfter)
+        return resolved;
+
+      collectedUpTo = highestQueued[0];
+    }
+  }
+
+  /**
+   * The {@code RECORD}-scoped arm of {@link #checkConstraints}: asks the same question of the records named instead
+   * of scanning whole types, so {@code CHECK DATABASE RECORD #12:3} answers "is this record complete?" as well as
+   * "is its edge list intact?" (issue #7952).
+   * <p>
+   * Re-reads each record rather than riding {@link #checkScopedRecords}'s own loads: that arm dispatches vertices
+   * and edges into {@code GraphDatabaseChecker}, which materialises them behind its own reporting, and threading a
+   * second, unrelated finding through it would spread one question across two classes to save a handful of lookups
+   * on a scope whose whole purpose is to be hand-typed.
+   */
+  private void checkScopedConstraints(final Map<DocumentType, List<RID>> scoped,
+      final List<ConstrainedType> constrainedTypes) {
+    if (constrainedTypes.isEmpty())
+      return;
+
+    // Keyed by NAME, not by the type instance: the group keys come from getTypeByBucketId and the constrained
+    // list from getTypes(), and a schema type's identity is its name - relying on two lookups returning the same
+    // object would make this arm quietly report nothing if either ever handed back a different one.
+    final Map<String, Property[]> byType = new HashMap<>();
+    for (final ConstrainedType constrained : constrainedTypes)
+      byType.put(constrained.type().getName(), constrained.properties());
+
+    stepBegin("Checking existence constraints", records.size());
+
+    // Keyed by bucket, like the type-wide arm's per-bucket list, because that is what the delete works on - a
+    // RECORD scope can name records of several types living in several buckets.
+    final Map<Integer, BucketPositions> toDelete = new LinkedHashMap<>();
+
+    database.begin();
+    try {
+      for (final Map.Entry<DocumentType, List<RID>> entry : scoped.entrySet()) {
+        final Property[] constrained = entry.getKey() == null ? null : byType.get(entry.getKey().getName());
+        if (constrained == null) {
+          // The type declares no existence constraint (or the RID belongs to no type at all, which
+          // checkScopedRecords has already reported): nothing to ask, but the step total counted these records.
+          for (int i = 0; i < entry.getValue().size(); i++)
+            stepTick();
+          continue;
+        }
+
+        for (final RID rid : entry.getValue()) {
+          try {
+            final Document record = database.lookupByRID(rid, true).asDocument(true);
+            for (final Property property : constrained) {
+              final String violation = DocumentValidator.describeUnmetExistenceConstraint(record, property);
+              if (violation != null) {
+                addConstraintViolation(rid, violation);
+                if (fix && deleteInvalidRecords)
+                  // Bounded by the SCOPE rather than by INVALID_RECORDS_PER_REPAIR_PASS, and deliberately: this arm
+                  // removes only records the statement named, so the operator has already written the bound down -
+                  // a RECORD scope exists to be hand-typed after a failed repair. There is no second pass here for
+                  // the same reason; the limit is what was asked for, per bucket at worst, so it cannot be hit.
+                  toDelete.computeIfAbsent(rid.getBucketId(), k -> new BucketPositions(records.size()))
+                      .add(rid.getPosition());
+                break;
+              }
+            }
+          } catch (final Exception e) {
+            // Missing or unreadable: checkScopedRecords has already said so in the vocabulary that fits. Logged at
+            // FINE for the same reason as the type-wide arm - a skip nobody can explain is worse than a quiet one.
+            LogManager.instance().log(this, Level.FINE,
+                "Skipped %s in the existence-constraint pass: it cannot be read (reported by the record passes)", e, rid);
+          }
+          stepTick();
+        }
+      }
+    } finally {
+      database.commit();
+    }
+
+    long resolved = 0;
+    for (final Map.Entry<Integer, BucketPositions> entry : toDelete.entrySet())
+      resolved += deleteConstraintViolatingRecords(entry.getKey(), entry.getValue());
+
+    if ((Long) result.get("totalConstraintViolations") > resolved)
+      // Same summary as the type-wide arm, for the same reason, and keyed the same way.
+      addWarning(CONSTRAINT_VIOLATIONS_REMAIN_WARNING);
+
+    stepComplete();
+  }
+
+  /**
+   * Flags one record as violating an existence constraint of its own type, under the same
+   * {@link CollectionUtils#addBounded} rule as {@link #addCorrupted} - so the retained set is bounded while the
+   * total stays exact.
+   * <p>
+   * The explanatory warning is emitted only for a record the cap actually RETAINED, which is the one place this
+   * differs from {@link #addCorrupted}, and deliberately: {@link #addWarning} LOGS at WARNING what its own cap
+   * refused, so that a capped finding is not lost silently - which is right for a finding that arrives in the
+   * hundreds and wrong for one that can arrive in the millions. {@code ALTER PROPERTY ... MANDATORY TRUE} on a
+   * populated type makes EVERY record of it a finding at once, and a log line per record would bury the operator's
+   * own diagnosis under its own output. Nothing is lost by it: past the cap the warning could not be retained
+   * either, {@code totalConstraintViolations} still counts the record, and the summary line
+   * {@link #checkConstraints} adds says what to do about all of them at once.
+   */
+  private void addConstraintViolation(final RID rid, final String violation) {
+    final CollectionUtils.BoundedAdd outcome = CollectionUtils
+        .addBounded((LinkedHashSet<RID>) result.get("constraintViolatingRecords"), maxWarnings, rid);
+    if (outcome.isFirstSighting())
+      result.put("totalConstraintViolations", (Long) result.get("totalConstraintViolations") + 1);
+    if (outcome == CollectionUtils.BoundedAdd.RETAINED)
+      addWarning("record " + rid + " does not satisfy an existence constraint of its own type: " + violation);
+  }
+
+  /**
+   * The positions, within ONE bucket, of the records a {@code FIX DELETE INVALID RECORDS} is going to take out in
+   * the pass in flight (issue #7952).
+   * <p>
+   * A growable {@code long[]} rather than a {@code List<RID>}: within a bucket a RID is its position and nothing
+   * else, so this is 8 bytes per pending removal instead of a whole object with its header, on the one input that
+   * really can be every record of a type at once (see {@link #setDeleteInvalidRecords} - one {@code ALTER PROPERTY}
+   * does it).
+   * <p>
+   * Bounded at {@link #INVALID_RECORDS_PER_REPAIR_PASS}, and the bound costs no completeness because the caller
+   * simply scans again: unlike every REPORTING collection in this class, whose cap trades detail for memory, a cap
+   * here would trade RECORDS LEFT BEHIND for memory, which is not a trade a repair the operator explicitly asked
+   * for may make.
+   */
+  private static final class BucketPositions {
+    private final int    limit;
+    private       long[] positions;
+    private       int    size;
+
+    BucketPositions(final int limit) {
+      this.limit = limit;
+      this.positions = new long[Math.min(64, limit)];
+    }
+
+    /** @return false when the pass is full and this position must be left to the next one */
+    boolean add(final long position) {
+      if (size == limit)
+        return false;
+      if (size == positions.length)
+        positions = Arrays.copyOf(positions, Math.min(Math.max(size * 2, 1), limit));
+      positions[size++] = position;
+      return true;
+    }
+
+    boolean isEmpty() {
+      return size == 0;
+    }
+
+    boolean isFull() {
+      return size == limit;
+    }
+  }
+
+  /**
+   * Removes the records {@code FIX DELETE INVALID RECORDS} was asked to take out of one bucket (issue #7952).
+   * <p>
+   * <b>Every record is re-validated inside this transaction, immediately before it is deleted</b>, and that is not
+   * belt and braces - it is what keeps this clause from destroying data. The scan that found these records has
+   * already committed, and the repair this very check RECOMMENDS for them in
+   * {@link #CONSTRAINT_VIOLATIONS_REMAIN_WARNING} is an ordinary {@code UPDATE} supplying the missing property. So
+   * the concurrent write that invalidates the finding is not an exotic race: it is the other half of the feature,
+   * and an operator running the repair from two terminals would otherwise have the completed record - with real
+   * data in it - deleted by the run that found it incomplete a moment earlier. A record that has been completed in
+   * the meantime is reported and LEFT ALONE. This is where the constraint-violation arm differs from
+   * {@link #deleteCorruptedRecords}, which needs no such check: nothing can concurrently repair a record that
+   * cannot even be read.
+   * <p>
+   * The constraints are re-read from each record's own LIVE type rather than from the array the scan was planned
+   * with, so a constraint dropped by a concurrent DDL also spares the record. Cached per type, so it costs one
+   * lookup per type rather than one per record.
+   * <p>
+   * <b>Batched through {@link RepairTransaction}</b>, the component every other repair pass of the engine already
+   * uses, rather than one transaction for the whole bucket. Under HA one transaction is one Raft log entry, and an
+   * entry over {@code min(ha.appendBufferSize, ha.grpcMessageSizeMax)} is refused with a
+   * {@code ReplicatedEntryTooLargeException} that nothing retries - so a single transaction over a bucket whose every
+   * record a DDL just invalidated is not merely large, it is a repair that cannot commit at all (the failure
+   * {@code arcadedb.checkDatabaseRepairBatchPages} exists for, issue #6128).
+   * <p>
+   * Deletes through {@code database.deleteRecord} rather than through the bucket, unlike
+   * {@link #deleteCorruptedRecords}: the record here is perfectly readable, so the record-level API can do its whole
+   * job - clean the index entries that really do describe it, cascade its EXTERNAL property values, and, for a
+   * vertex, delete the edges that would otherwise be left dangling. Deleting through the bucket would leave all
+   * three behind, and the index rebuild that repairs that for a corrupt record does not run for this finding,
+   * because a constraint violation is not corruption and puts nothing into {@code affectedBuckets}.
+   *
+   * @return how many of them are no longer in that state - deleted, already gone, or completed by someone else -
+   * which is what the caller compares against the number it found, rather than how many THIS run deleted
+   */
+  private long deleteConstraintViolatingRecords(final int bucketId, final BucketPositions toDelete) {
+    if (toDelete.isEmpty())
+      return 0;
+
+    // Per type rather than per record: existenceConstrainedProperties walks the type's polymorphic properties and
+    // allocates, and a bucket holds records of one type anyway - a RECORD scope is what can make this hold more.
+    final Map<String, Property[]> liveConstraints = new HashMap<>();
+    long resolved = 0;
+
+    final RepairTransaction repair = new RepairTransaction(database, RepairTransaction.configuredBatchPages(database));
+    repair.begin();
+    boolean completed = false;
+    try {
+      for (int i = 0; i < toDelete.size; i++) {
+        if (deleteConstraintViolatingRecord(new RID(bucketId, toDelete.positions[i]), liveConstraints))
+          ++resolved;
+        // Only ever BETWEEN records, never inside one: see RepairTransaction.commitBatchIfFull.
+        repair.commitBatchIfFull();
+      }
+      completed = true;
+    } finally {
+      repair.finish(completed);
+    }
+
+    return resolved;
+  }
+
+  /**
+   * Re-validates one record and removes it if it is still in the state the scan found it in. See
+   * {@link #deleteConstraintViolatingRecords} for why the re-validation is load-bearing.
+   *
+   * @return whether the record is no longer violating an existence constraint of its type, which a record someone
+   * else completed, and a record that was already gone, both satisfy
+   */
+  private boolean deleteConstraintViolatingRecord(final RID rid, final Map<String, Property[]> liveConstraints) {
+    // The RECORD is kept, not just the Document view: database.deleteRecord dispatches on the record's runtime type
+    // to reach GraphEngine for a vertex or an edge, and handing it a plain Document view would silently take the
+    // third branch and leave a deleted vertex's edges dangling.
+    final Record record;
+    final Document document;
+    try {
+      record = database.lookupByRID(rid, true);
+      document = record.asDocument(true);
+    } catch (final RecordNotFoundException e) {
+      // Already gone - removed by an earlier pass of this same run, or by a concurrent writer. No longer in that
+      // state, which is the question this answers.
+      return true;
+    } catch (final Exception e) {
+      addWarning("record " + rid + " does not satisfy an existence constraint of its own type and could not be "
+          + "re-read to remove it (error: " + e.getMessage() + ")");
+      return false;
+    }
+
+    final Property[] constrained = liveConstraints.computeIfAbsent(document.getType().getName(),
+        k -> DocumentValidator.existenceConstrainedProperties(document.getType()));
+
+    boolean stillViolating = false;
+    for (final Property property : constrained)
+      if (DocumentValidator.unmetExistenceConstraint(document, property) != null) {
+        stillViolating = true;
+        break;
+      }
+
+    if (!stillViolating) {
+      // Completed - or its constraint dropped - between the scan and now, which is exactly what the repair this
+      // check recommends does. Reported rather than silently skipped: an operator who asked for N records to go and
+      // sees N-1 removed has to be able to find out why without guessing.
+      addWarning("record " + rid + " satisfied its type's existence constraints again by the time the repair "
+          + "reached it - completed by another write during this check - and has been left in place");
+      return true;
+    }
+
+    try {
+      database.deleteRecord(record);
+
+      // A beforeDelete listener can VETO a delete, and LocalDatabase.deleteRecord reports that by returning without
+      // deleting rather than by throwing - so the only honest way to know is to look. Counting a vetoed delete as a
+      // removal would have the report claim records are gone that a trigger deliberately kept.
+      if (recordExists(rid)) {
+        addWarning("record " + rid + " does not satisfy an existence constraint of its own type and its removal was "
+            + "refused by a beforeDelete listener on its type");
+        return false;
+      }
+
+      CollectionUtils.addBounded((LinkedHashSet<RID>) result.get("deletedConstraintViolatingRecords"), maxWarnings, rid);
+      result.put("totalDeletedConstraintViolatingRecords",
+          (Long) result.get("totalDeletedConstraintViolatingRecords") + 1);
+      result.put("autoFix", (Long) result.get("autoFix") + 1);
+      result.put("removedRecords", (Long) result.get("removedRecords") + 1);
+      addDeletedAfterFix(rid);
+      return true;
+    } catch (final RecordNotFoundException e) {
+      // Taken out from under us between the re-read above and the delete.
+      return true;
+    } catch (final Exception e) {
+      addWarning("record " + rid + " does not satisfy an existence constraint of its own type and could not be "
+          + "removed (error: " + e.getMessage() + ")");
+      return false;
+    }
+  }
+
+  /**
+   * Whether the record is still there, asked inside the current transaction so a delete made in it is visible.
+   * <p>
+   * {@code loadContent} is TRUE and has to be: with it false, {@code LocalDatabase.lookupByRID} hands back a lazy
+   * record without reading the bucket at all whenever the RID's bucket belongs to a type - so the probe would answer
+   * "still there" for every record, including the ones it had just deleted. Reading the content is what actually
+   * asks the bucket, which is the only thing that knows.
+   */
+  private boolean recordExists(final RID rid) {
+    try {
+      return database.lookupByRID(rid, true) != null;
+    } catch (final RecordNotFoundException e) {
+      return false;
+    }
+  }
+
+  /**
+   * Records one removal in {@code deletedRecordsAfterFix}, the audit of everything a run took out whatever found it,
+   * under the same {@link CollectionUtils#addBounded} cap as every other RID set this class publishes.
+   * <p>
+   * The cap is new (PR review on #7952) and applies to BOTH writers in this class, deliberately: the set was
+   * unbounded while {@code corruptedRecords}, which decides what goes into it from the other arm, was capped at
+   * 100k - so the two already disagreed about how much a run may retain, and the constraint-violation arm is the
+   * first that can realistically reach millions of removals in one run (one {@code ALTER PROPERTY} does it). The
+   * exact counts are unaffected and are where a caller should read the totals from: {@code removedRecords},
+   * {@code autoFix} and {@code totalDeletedConstraintViolatingRecords}.
+   * <p>
+   * What this does NOT reach is the graph arms' own removals, which arrive already collected through
+   * {@code mergeDeletedRecords}; capping those means capping them inside {@code GraphDatabaseChecker}, which has its
+   * own budget parameters and is not this change's business.
+   */
+  private void addDeletedAfterFix(final RID rid) {
+    CollectionUtils.addBounded((LinkedHashSet<RID>) result.get("deletedRecordsAfterFix"), maxWarnings, rid);
+  }
+
   /** Detects (and on FIX deletes) external-property records that are no longer referenced by any primary record. */
   private void checkExternalProperties() {
     if (verboseLevel > 0)
@@ -1605,6 +2241,10 @@ public class DatabaseChecker {
     result.put("totalActiveVertices", 0L);
     result.put("totalAllocatedEdges", 0L);
     result.put("totalActiveEdges", 0L);
+    // #8040: buckets whose cached record counter disagrees with what the walk actually found, and how many of them
+    // this run invalidated so the next count() recomputes.
+    result.put("staleRecordCounters", 0L);
+    result.put("staleRecordCountersFixed", 0L);
 
     for (final Bucket b : database.getSchema().getBuckets()) {
       stepTick();
@@ -1628,7 +2268,13 @@ public class DatabaseChecker {
 
       updateStats(stats);
 
-      ((LinkedHashSet<String>) result.get("warnings")).addAll((Collection<String>) stats.get("warnings"));
+      // Through addWarning, not addAll: the bucket walk is the one pass whose warnings used to bypass BOTH the
+      // maxWarnings cap that exists to keep a badly damaged database from OOMing the run AND the totalWarnings
+      // tally, so a run whose only findings were bucket-level reported zero warnings while listing several. It was
+      // unreachable in practice only because nothing the walk reports fires on a healthy bucket - until #8040 added
+      // one that can fire on a bucket with no other defect at all.
+      for (final String warning : (Collection<String>) stats.get("warnings"))
+        addWarning(warning);
       ((LinkedHashSet<RID>) result.get("deletedRecordsAfterFix")).addAll((Collection<RID>) stats.get("deletedRecordsAfterFix"));
     }
 

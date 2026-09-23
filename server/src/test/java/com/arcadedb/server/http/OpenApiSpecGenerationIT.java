@@ -426,7 +426,7 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
   private static final List<String> EXPECTED_CORE_OPERATIONS = List.of(
       // Core
       "GET /api/v1/server", "POST /api/v1/server",
-      "GET /api/v1/ready", "GET /api/v1/health",
+      "GET /api/v1/ready", "HEAD /api/v1/ready", "GET /api/v1/health", "HEAD /api/v1/health",
       "GET /api/v1/databases", "GET /api/v1/exists/{database}",
       "GET /api/v1/query/{database}/{language}/{command}", "POST /api/v1/query/{database}",
       "POST /api/v1/command/{database}", "POST /api/v1/batch/{database}",
@@ -482,6 +482,7 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
       "POST /api/v1/cluster/leader", "POST /api/v1/cluster/stepdown", "POST /api/v1/cluster/leave",
       "POST /api/v1/cluster/verify/{database}", "POST /api/v1/cluster/resync/{database}",
       "POST /api/v1/cluster/bootstrap-state", "POST /api/v1/cluster/capabilities",
+      "POST /api/v1/cluster/security-seed",
       "GET /api/v1/ha/snapshot/{database}", "GET /api/v1/ha/snapshot/{database}/checksums");
 
   private static final List<String> EXPECTED_OPERATIONS =
@@ -509,14 +510,14 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
   }
 
   @Test
-  void specDocumentsExactlyTheExpectedSixtyNineOperations() throws Exception {
+  void specDocumentsExactlyTheExpectedSeventyTwoOperations() throws Exception {
     final OpenAPI openAPI = new OpenAPIV3Parser().readContents(getOpenApiSpec()).getOpenAPI();
     final List<String> declared = declaredOperations(openAPI);
 
     assertThat(EXPECTED_OPERATIONS)
         .as("the inventory itself must hold no duplicate")
         .doesNotHaveDuplicates()
-        .hasSize(69);
+        .hasSize(72);
 
     assertThat(declared)
         .as("operations missing from the specification")
@@ -583,7 +584,7 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
         .as("client generators derive a method name per operationId, so a collision breaks codegen")
         .doesNotHaveDuplicates()
         .doesNotContainNull()
-        .hasSize(69);
+        .hasSize(72);
   }
 
   @Test

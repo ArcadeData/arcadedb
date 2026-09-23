@@ -25,6 +25,7 @@ import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -175,37 +176,14 @@ public class UnwindStep extends AbstractExecutionStep {
               currentListIterator = ((Collection<?>) listValue).iterator();
             } else if (listValue instanceof Iterable) {
               currentListIterator = ((Iterable<?>) listValue).iterator();
-            } else if (listValue.getClass().isArray()) {
-              // Convert array to list
-              final List<Object> list = new ArrayList<>();
-              if (listValue instanceof Object[]) {
-                for (final Object obj : (Object[]) listValue) {
-                  list.add(obj);
-                }
-              } else if (listValue instanceof int[]) {
-                for (final int i : (int[]) listValue) {
-                  list.add(i);
-                }
-              } else if (listValue instanceof long[]) {
-                for (final long i : (long[]) listValue) {
-                  list.add(i);
-                }
-              } else if (listValue instanceof double[]) {
-                for (final double i : (double[]) listValue) {
-                  list.add(i);
-                }
-              } else if (listValue instanceof float[]) {
-                // Issue #3864 follow-up: HTTP numeric params arrive as float[] from the optimized
-                // JSON parser; UNWIND on such a param must iterate the primitive array.
-                for (final float i : (float[]) listValue) {
-                  list.add(i);
-                }
-              } else if (listValue instanceof boolean[]) {
-                for (final boolean i : (boolean[]) listValue) {
-                  list.add(i);
-                }
-              }
-              currentListIterator = list.iterator();
+            } else if (MultiValue.isSequenceArray(listValue)) {
+              // Any array but a byte[] is a sequence, and it is iterated by its actual component type
+              // rather than by an instanceof ladder: a ladder that enumerated six component types answered
+              // zero rows - dropping the input row with no error - for the short[] of an ARRAY_OF_SHORTS
+              // property, for a char[] and for the byte[] of a BINARY one (issue #8036). isSequenceArray()
+              // is the same decision SQL UNWIND and SQL expand() take (issue #7923), so a BINARY value
+              // falls through to the single-element branch below and the three clauses answer alike.
+              currentListIterator = MultiValue.getMultiValueIterator(listValue);
             } else {
               // Not a list - treat as single element
               final List<Object> singleElementList = new ArrayList<>();

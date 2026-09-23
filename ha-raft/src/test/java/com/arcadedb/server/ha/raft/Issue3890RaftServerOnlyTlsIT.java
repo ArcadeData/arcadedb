@@ -66,7 +66,7 @@ class Issue3890RaftServerOnlyTlsIT extends BaseRaftHATest {
   @Test
   void serverOnlyTlsAcceptsAPeerWithoutAClientCertificate() throws Exception {
     try (final SSLSocket socket = RaftTestPki.connect(RaftTestPki.anonymousClientContext(clusterPki),
-        "localhost", raftPortOf(0))) {
+        "localhost", raftPort(0))) {
       socket.startHandshake();
       assertThat(socket.getSession().isValid())
           .as("with mutualAuth=false the Raft port must not demand a client certificate")
@@ -100,10 +100,5 @@ class Issue3890RaftServerOnlyTlsIT extends BaseRaftHATest {
       assertThat(getServerDatabase(i, getDatabaseName()).countType(VERTEX_TYPE, true))
           .as("server %d must have caught up over server-only TLS", i)
           .isEqualTo(RECORD_COUNT);
-  }
-
-  private int raftPortOf(final int serverIndex) {
-    final String peerId = peerIdForIndex(serverIndex);
-    return Integer.parseInt(peerId.substring(peerId.lastIndexOf('_') + 1));
   }
 }

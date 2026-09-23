@@ -33,11 +33,12 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Stream;
 
 /**
- * Procedure: refactor.mergeNodes(nodes, config)
+ * Procedure: refactor.mergeNodes(nodes, config = {})
  * <p>
  * Merges a list of nodes into the first one (the survivor). Every incoming and outgoing edge of the
  * other nodes (the absorbed nodes) is rewired onto the survivor - an edge that connected two nodes
@@ -47,8 +48,16 @@ import java.util.stream.Stream;
  * <p>
  * {@code config.properties} controls how a property present on both the survivor and an absorbed node
  * is resolved: {@code "overwrite"} (the absorbed node's value wins, the default), {@code "discard"}
- * (the survivor's original value is kept) or {@code "combine"} (both values are kept as a list). A
- * property present only on an absorbed node is always copied onto the survivor.
+ * (the survivor's original value is kept) or {@code "combine"} (the distinct values contributed by
+ * either node are kept, in first-seen order, as a list - flattening a {@code List}-valued contribution
+ * into that list rather than nesting it - or, when neither node contributed a {@code List} and only one
+ * distinct value survives, as that sole value itself. A property either node carried as a list stays a
+ * list even where de-duplication leaves it holding one element, so {@code combine} never rewrites a
+ * list-valued property as a bare element (issue #8155). A property present only on an absorbed node is
+ * always copied onto the survivor.
+ * The whole {@code config} argument is optional and defaults to an empty map - hence to the
+ * {@code "overwrite"} policy - matching APOC's
+ * {@code apoc.refactor.mergeNodes(nodes :: LIST<NODE>, config = {} :: MAP)} (issue #7427).
  * </p>
  * <p>
  * Example:
@@ -72,9 +81,14 @@ public class RefactorMergeNodes implements CypherProcedure {
     return NAME;
   }
 
+  /**
+   * One, not two: APOC declares the trailing {@code config} with a default, so a call that omits it is a call this
+   * procedure has to accept (issue #7427). {@link RefactorProcedureArgs#extractOptionalConfig} supplies the empty
+   * map in its place.
+   */
   @Override
   public int getMinArgs() {
-    return 2;
+    return 1;
   }
 
   @Override
@@ -105,7 +119,7 @@ public class RefactorMergeNodes implements CypherProcedure {
     if (nodes.size() < 2)
       throw new CommandSemanticException(getName() + "(): at least two distinct nodes are required to merge");
 
-    final Map<String, Object> config = RefactorProcedureArgs.extractConfig(getName(), args[1]);
+    final Map<String, Object> config = RefactorProcedureArgs.extractOptionalConfig(getName(), args);
     final String globalPolicy = extractPropertiesPolicy(config);
 
     final Database database = context.getDatabase();
@@ -151,16 +165,23 @@ public class RefactorMergeNodes implements CypherProcedure {
         }
         case "combine" -> {
           final Object survivorValue = survivor.get(propertyName);
+          // APOC's contract for 'combine' is "if the values are the same, keep one; otherwise merge into a
+          // list", so a list appears only once a second distinct value has actually turned up. Merging nodes
+          // that agree - the common case - therefore leaves every scalar the scalar it was, instead of the
+          // two-element list of duplicates this branch used to produce (issue #7428).
+          //
+          // That collapse is about MULTIPLICITY, so it applies only where the multiplicity is all there was:
+          // when either node contributed a List, the merged property is written back as a List however few
+          // distinct values came out of it. Without the guard, two nodes agreeing on tags:['x'] - or lists
+          // whose union de-duplicates to one element - left the survivor holding the bare element, and save()
+          // wrote that shape to disk, so a reader doing 'x' IN p.tags, UNWIND p.tags or size(p.tags) found a
+          // string where its list used to be (issue #8155). A Java array is deliberately NOT a List here, so
+          // two equal embeddings still collapse to the single array (issue #8099); see addDistinct.
+          final boolean anyContributionWasList = survivorValue instanceof List<?> || absorbedValue instanceof List<?>;
           final List<Object> combined = new ArrayList<>();
-          if (survivorValue instanceof List<?> list)
-            combined.addAll(list);
-          else
-            combined.add(survivorValue);
-          if (absorbedValue instanceof List<?> list)
-            combined.addAll(list);
-          else
-            combined.add(absorbedValue);
-          survivor.set(propertyName, combined);
+          addDistinct(combined, survivorValue);
+          addDistinct(combined, absorbedValue);
+          survivor.set(propertyName, !anyContributionWasList && combined.size() == 1 ? combined.getFirst() : combined);
         }
         // unreachable in practice - extractPropertiesPolicy validates policy against VALID_POLICIES
         // before mergeProperties is ever called; kept as a defensive fallback against the two drifting
@@ -168,6 +189,46 @@ public class RefactorMergeNodes implements CypherProcedure {
         default -> throw new CommandSemanticException(getName() + "(): unknown properties policy '" + policy + "'");
       }
     }
+  }
+
+  /**
+   * Appends {@code value} to {@code combined}, skipping anything already there so that equal contributions
+   * collapse to one entry and the first-seen order is the order that survives.
+   * <p>
+   * A list is flattened rather than nested, because by the second iteration of the merge loop the survivor's
+   * value is whatever this method last accumulated, and because an absorbed node may legitimately carry a list
+   * of its own. A Java array is deliberately <b>not</b> flattened the same way: it is kept as the single opaque
+   * value it is - matching how ArcadeDB already treats one everywhere else (e.g. {@code UNWIND} on a sequence
+   * type) - because concatenating two array-valued properties element-by-element, or deciding what type the
+   * result should be when two differently-typed arrays meet, is not a merge a caller could make sense of. A
+   * vector embedding carried by both merged nodes is the practical case: it must survive as the single array it
+   * was, not dissolve into a list no vector index can read (issue #8099).
+   * <p>
+   * The membership test is a linear scan on purpose: the list holds one entry per <i>distinct</i> value across
+   * the merged nodes, which is small, and a scan costs no hash set allocation per property.
+   */
+  private static void addDistinct(final List<Object> combined, final Object value) {
+    if (value instanceof List<?> list) {
+      for (final Object element : list)
+        addDistinctScalar(combined, element);
+    } else
+      addDistinctScalar(combined, value);
+  }
+
+  /**
+   * The membership test {@link #addDistinct} applies to one non-list value: {@link Object#equals} for
+   * everything except a Java array, whose {@code equals} is identity rather than content, so two equal-looking
+   * {@code float[]}/{@code short[]}/... instances contributed by different nodes would otherwise never collapse
+   * to one entry (issue #8099).
+   */
+  private static void addDistinctScalar(final List<Object> combined, final Object value) {
+    if (value != null && value.getClass().isArray()) {
+      for (final Object existing : combined)
+        if (existing != null && existing.getClass().isArray() && Objects.deepEquals(existing, value))
+          return;
+      combined.add(value);
+    } else if (!combined.contains(value))
+      combined.add(value);
   }
 
   private void rewireEdges(final Vertex absorbed, final MutableVertex survivor) {

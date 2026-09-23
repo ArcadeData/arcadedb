@@ -26,6 +26,7 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.utility.IntHashSet;
 
 import java.util.ArrayList;
@@ -141,6 +142,26 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
     if (params == null || params.length != expectedCount) {
       throw new CommandSQLParsingException(getSyntax());
     }
+  }
+
+  /**
+   * The SQL that resolves a vertex-identifier key to the vector stored on that vertex, shared by the two entry
+   * points onto that lookup: {@code vector.neighbors} and the Neo4j-compatible
+   * {@code db.index.vector.queryNodes} procedure. The key is bound as a parameter; all three schema names are
+   * emitted through {@link Identifier#quote}.
+   * <p>
+   * Coming from the index metadata rather than from a caller's arguments does not make the names SQL-safe: a type
+   * name is a Cypher label and openCypher creates a type for whatever label the query spells, so a vector index on
+   * {@code `Person Node`} used to yield {@code ... FROM Person Node WHERE ...} (issue #8097).
+   *
+   * @param typeName       the indexed type's name, unquoted
+   * @param vectorProperty the indexed vector property's name, unquoted
+   * @param idProperty     the index's id property name, unquoted
+   */
+  public static String buildVectorByIdLookup(final String typeName, final String vectorProperty,
+      final String idProperty) {
+    return "SELECT " + Identifier.quote(vectorProperty) + " FROM " + Identifier.quote(typeName) + " WHERE "
+        + Identifier.quote(idProperty) + " = ? LIMIT 1";
   }
 
   /**
