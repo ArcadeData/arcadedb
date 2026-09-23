@@ -345,9 +345,10 @@ public class PostgresNetworkExecutor extends Thread {
             // sends the Sync that would clear it, so every statement it sent afterwards would go unanswered.
             // currentMessageType is stale when readMessage() fails before its callback runs, but every such failure
             // is a PostgresProtocolException, which closes the connection just below: the stale value picks a flag
-            // nothing reads again.
+            // nothing reads again. A 'Q' also aborts the transaction it ran in outside an explicit block (issue #8214),
+            // exactly as queryCommand()'s own failure arms do.
             if (currentMessageType == 'Q')
-              setErrorInTx();
+              abortSimpleQueryTransaction();
             else
               setExtendedProtocolError();
 
@@ -909,6 +910,8 @@ public class PostgresNetworkExecutor extends Thread {
 
       if (queryText.isEmpty()) {
         profile.addDeserializationNanos(System.nanoTime() - deserStart);
+        // PostgreSQL closes the transaction even for an empty query string (issue #8214)
+        commitSimpleQueryTransaction();
         emptyQueryResponse();
         return;
       }
@@ -925,6 +928,9 @@ public class PostgresNetworkExecutor extends Thread {
         final PostgresCopyStatement copy = PostgresCopyStatement.parse(query.query);
         final Statement inner = "sql".equalsIgnoreCase(query.language) ? parseStatement(copy.getQuery()) : null;
         final int rows = copyOut(copy, query.language, NO_PARAMETERS, inner, profile);
+        // Unlike the ordinary path below, the CopyData/CopyDone are already sent when this commits, so a failed
+        // commit is reported after them - the same order as PostgreSQL, whose finish_xact_command() follows DoCopy()
+        commitSimpleQueryTransaction();
         writeCommandComplete("COPY", rows);
         return;
       }
@@ -936,7 +942,7 @@ public class PostgresNetworkExecutor extends Thread {
       // will be persisted by the next COMMIT. Refusing it - and aborting the transaction the same way any other
       // statement is refused once the session is aborted - is the only reply that cannot silently lose data.
       if (query.query.toUpperCase(Locale.ENGLISH).startsWith("ROLLBACK TO ")) {
-        setErrorInTx();
+        abortSimpleQueryTransaction();
         writeError(ERROR_SEVERITY.ERROR, ROLLBACK_TO_NOT_SUPPORTED_MESSAGE, PostgresCopyStatement.SQLSTATE_FEATURE_NOT_SUPPORTED);
         return;
       }
@@ -1014,6 +1020,9 @@ public class PostgresNetworkExecutor extends Thread {
         }
       }
       final List<Result> cachedResultSet = browseAndCacheBoundedResultSet(resultSet);
+      // Committed before anything is written back, so a commit that fails is answered with an ErrorResponse rather
+      // than after a RowDescription and a CommandComplete that already told the client the statement succeeded
+      commitSimpleQueryTransaction();
       profile.addEngineNanos(System.nanoTime() - engineStart);
 
       final long serStart = System.nanoTime();
@@ -1037,14 +1046,14 @@ public class PostgresNetworkExecutor extends Thread {
 
     } catch (final PostgresCopyStatement.CopyException e) {
       // A COPY this server declines is not a syntax error, and the message says what to do instead.
-      setErrorInTx();
+      abortSimpleQueryTransaction();
       writeError(ERROR_SEVERITY.ERROR, e.getMessage(), e.sqlState);
     } catch (final CommandParsingException e) {
       // See the note on the same arm in executeCommand about the "Syntax error" wording.
-      setErrorInTx();
+      abortSimpleQueryTransaction();
       writeError(ERROR_SEVERITY.ERROR, "Syntax error on executing query: " + (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()), sqlStateFor(e));
     } catch (final Exception e) {
-      setErrorInTx();
+      abortSimpleQueryTransaction();
       writeError(ERROR_SEVERITY.ERROR, "Error on executing query: " + e.getMessage(), sqlStateFor(e));
     } finally {
       if (!explicitTransactionStarted)
@@ -3505,6 +3514,37 @@ public class PostgresNetworkExecutor extends Thread {
   private void setErrorInTx() {
     if (explicitTransactionStarted)
       errorInTransaction = true;
+  }
+
+  /**
+   * Ends the transaction a successful simple query ran in, the way PostgreSQL's {@code exec_simple_query()} does with
+   * {@code finish_xact_command()} (issue #8214). Outside an explicit BEGIN block a 'Q' is a transaction of its own,
+   * but it can arrive while an extended-protocol pipeline's implicit block is still open - opened at Execute by
+   * {@link #beginImplicitTransactionBlock}, normally ended by a Sync - and then it runs inside that block. Leaving the
+   * block open after acknowledging the 'Q' let a later failure in the same pipeline make the Sync roll back a write
+   * the client had already been told was complete. PostgreSQL commits the pipeline's pending writes together with
+   * the 'Q''s own; the rest of the pipeline runs in a fresh block its next write opens. Inside an explicit block
+   * the 'Q' just joins it, and nothing is committed before the client's COMMIT.
+   * <p>
+   * A no-op for the ordinary autocommit 'Q', which leaves no transaction behind: its statement-level implicit
+   * transaction has already committed itself.
+   */
+  private void commitSimpleQueryTransaction() {
+    if (!explicitTransactionStarted && database.isTransactionActive())
+      database.commit();
+  }
+
+  /**
+   * The failure half of {@link #commitSimpleQueryTransaction()} (issue #8214): PostgreSQL aborts the transaction a
+   * failed simple query ran in, so outside an explicit block the pending writes of an open pipeline the 'Q' was
+   * interleaved into are discarded with it, instead of being left for the pipeline's Sync to commit. The simple
+   * query protocol does not enter skip-until-Sync, so the rest of the pipeline still runs. Inside an explicit block
+   * the block is aborted instead, and only the client's COMMIT/ROLLBACK/END ends it.
+   */
+  private void abortSimpleQueryTransaction() {
+    setErrorInTx();
+    if (!explicitTransactionStarted && database.isTransactionActive())
+      database.rollback();
   }
 
   /**
