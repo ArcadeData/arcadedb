@@ -150,6 +150,17 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public static final int EDGE_LIST_INITIAL_CHUNK_SIZE         = 64;
   // #6965: page versions the replication log assigned but this node has not applied yet (HA leader only)
   private volatile PageVersionReservations pageVersionReservations;
+  /**
+   * Why this database refuses writes right now, or {@code null} when it accepts them (issue #8270).
+   * <p>
+   * Set by a server that has opened the database before it can replicate it: on a node configured for high
+   * availability the databases are opened, and the network listeners started, before the HA plugin wraps each
+   * database for replication. A commit or a schema change reaching this instance in that window would be applied
+   * here and nowhere else, and the Raft replay that follows would then splice the cluster's committed pages over it
+   * at the same page versions. Unlike the recovery fence it does not block reads, and it is lifted as soon as the
+   * database is wrapped.
+   */
+  private volatile String                  writeRefusal = null;
   public static final int MAX_RECOMMENDED_EDGE_LIST_CHUNK_SIZE = 8192;
   /** Header ({@code MutableEdgeSegment.CONTENT_START_POSITION}) plus room for a couple of maximum-width entries. */
   public static final int MIN_EDGE_LIST_CHUNK_SIZE             = 32;
@@ -251,17 +262,6 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   private            int                                       cachedHashCode            = 0;
   /** Guards against concurrent GraphBatch instances on this database. Never routed through a wrapper. */
   private final      AtomicBoolean                             batchInProgress           = new AtomicBoolean(false);
-  /**
-   * Why this database refuses writes right now, or {@code null} when it accepts them (issue #8270).
-   * <p>
-   * Set by a server that has opened the database before it can replicate it: on a node configured for high
-   * availability the databases are opened, and the network listeners started, before the HA plugin wraps each
-   * database for replication. A commit or a schema change reaching this instance in that window would be applied
-   * here and nowhere else, and the Raft replay that follows would then splice the cluster's committed pages over it
-   * at the same page versions. Unlike the recovery fence it does not block reads, and it is lifted as soon as the
-   * database is wrapped.
-   */
-  private volatile   String                                    writeRefusal              = null;
 
   protected LocalDatabase(final String path, final ComponentFile.MODE mode, final ContextConfiguration configuration,
       final SecurityManager security, final Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks) {

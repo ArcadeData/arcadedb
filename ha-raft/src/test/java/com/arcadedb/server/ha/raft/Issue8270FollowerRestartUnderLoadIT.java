@@ -73,6 +73,8 @@ class Issue8270FollowerRestartUnderLoadIT extends BaseRaftHATest {
   private final AtomicBoolean running             = new AtomicBoolean(true);
   private final Set<Long>     acknowledged        = ConcurrentHashMap.newKeySet();
   private final AtomicInteger answeredDuringStart = new AtomicInteger();
+  // True only while the restarting node's Raft plugin is held before wrapping its databases: the window under test.
+  private volatile boolean    pluginHeld;
 
   @Override
   protected int getServerCount() {
@@ -121,8 +123,14 @@ class Issue8270FollowerRestartUnderLoadIT extends BaseRaftHATest {
     // In process the window lasts a few milliseconds (half a second in a container, where the chaos harness found
     // it), so the Raft plugin of the restarting node is held at its very first line, with the HTTP server already up.
     RaftHAPlugin.TEST_BEFORE_START_HOOK = starting -> {
-      if (starting == server)
-        CodeUtils.sleep(WINDOW_MS);
+      if (starting == server) {
+        pluginHeld = true;
+        try {
+          CodeUtils.sleep(WINDOW_MS);
+        } finally {
+          pluginHeld = false;
+        }
+      }
     };
     try {
       LogManager.instance().log(this, Level.INFO, "TEST: restarting node %d under write load", restarted);
@@ -136,7 +144,8 @@ class Issue8270FollowerRestartUnderLoadIT extends BaseRaftHATest {
     }
 
     assertThat(answeredDuringStart.get())
-        .as("the writers must have reached node %d while it was still starting, or the test proves nothing", restarted)
+        .as("the writers must have had requests answered by node %d while its Raft plugin was held before wrapping the "
+            + "databases, or the test proves nothing", restarted)
         .isGreaterThan(0);
 
     waitForAllServers();
@@ -147,7 +156,7 @@ class Issue8270FollowerRestartUnderLoadIT extends BaseRaftHATest {
       if (!leader.query("sql", "SELECT FROM " + TYPE_NAME + " WHERE id = ?", id).hasNext())
         missing.add(id);
 
-    LogManager.instance().log(this, Level.INFO, "TEST: %d writes acknowledged by node %d, %d answered while it was starting",
+    LogManager.instance().log(this, Level.INFO, "TEST: %d writes acknowledged by node %d, %d answered while its Raft plugin was held",
         acknowledged.size(), restarted, answeredDuringStart.get());
 
     assertThat(missing).as("writes node %d acknowledged that never reached the leader", restarted).isEmpty();
@@ -176,10 +185,12 @@ class Issue8270FollowerRestartUnderLoadIT extends BaseRaftHATest {
         continue;
       }
       final long id = nextId.incrementAndGet();
-      final boolean starting = server.getStatus() == ArcadeDBServer.STATUS.STARTING;
+      // Sent AND answered inside the held window: a request that merely started there could be answered after the
+      // wrap, and would not exercise the unwrapped database at all.
+      final boolean sentWhileHeld = pluginHeld;
       try {
         final HttpResponse<String> response = post(server, id);
-        if (starting)
+        if (sentWhileHeld && pluginHeld)
           answeredDuringStart.incrementAndGet();
         if (response.statusCode() == 200)
           acknowledged.add(id);
