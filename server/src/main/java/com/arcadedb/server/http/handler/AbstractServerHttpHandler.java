@@ -798,10 +798,17 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * <p>
    * The classification below is therefore written once and applied to both shapes. Order is significant only
    * where one type extends another, which is called out at each such arm.
+   * <p>
+   * It decides and does not send (issue #7396): {@link #sendMappedErrorResponse} is the thin sender over it for
+   * every handler, and {@code PostBatchHandler} reads the same decision for the in-band {@code error} line of a
+   * streamed load that failed after its 200 was already on the wire - so a streamed failure carries the status the
+   * buffered encoding would have sent, without a second copy of this chain to fall out of step with it.
    *
    * @param e the exception that reached the request boundary
+   *
+   * @return the status, label, reported throwable, {@code exceptionArgs} and log treatment for {@code e}; never null
    */
-  private void sendMappedErrorResponse(final HttpServerExchange exchange, final Throwable e) {
+  protected ErrorClassification classifyError(final Throwable e) {
     // Exactly one level of unwrapping, and only for the generic wrappers - which is what the three former
     // chains did, since only their wrapper arms ever consulted getCause(). Unwrapping unconditionally would
     // change what a mapping keyed on the OUTER type answers: an IllegalArgumentException that happens to carry
@@ -817,10 +824,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     final Throwable security = isSecurityFailure(e) ? e : isSecurityFailure(cause) ? cause : null;
     if (security != null) {
       // PASS SecurityException TO THE CLIENT
-      LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on command execution (%s): %s",
-              SecurityException.class.getSimpleName(), security.getMessage());
-      sendErrorResponse(exchange, 403, "Security error", security, null);
-      return;
+      return new ErrorClassification(403, "Security error", security, null, ErrorLogKind.SECURITY);
     }
 
     // 413 Content Too Large: the REQUEST body exceeded arcadedb.server.httpBodyContentMaxSize, so this server
@@ -834,16 +838,14 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // different settings refusing at different points, and both are reachable on the same request.
     final RequestTooBigException wireBodyTooLarge = firstOf(e, cause, RequestTooBigException.class);
     if (wireBodyTooLarge != null) {
-      logUserError(wireBodyTooLarge);
       // The setting name goes in the label, not only in 'detail': detail is concealed in production mode, and a
       // caller that cannot see WHICH knob refused it has been told nothing it can act on. Same treatment as the
       // ResultSetTooLargeException arm below, for the same reason.
       final long maxBodySize = httpServer.getServer().getConfiguration()
           .getValueAsLong(GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE);
-      sendErrorResponse(exchange, 413,
+      return new ErrorClassification(413,
           "Request body too large (" + GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_MAX_SIZE.getKey() + ")",
-          wireBodyTooLarge, String.valueOf(maxBodySize));
-      return;
+          wireBodyTooLarge, String.valueOf(maxBodySize), ErrorLogKind.USER);
     }
 
     // 413 Content Too Large: the response the caller asked for exceeds the hard row ceiling
@@ -853,14 +855,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // (issue #5719).
     final ResultSetTooLargeException tooLarge = firstOf(e, cause, ResultSetTooLargeException.class);
     if (tooLarge != null) {
-      logUserError(tooLarge);
       // The setting goes in the label and the ceiling in exceptionArgs, both of which survive production mode:
       // 'detail' - where the full sentence lives - is concealed there, and a caller that cannot see WHICH knob
       // refused it, or WHAT number to stay under, has been told nothing it can act on.
-      sendErrorResponse(exchange, 413,
+      return new ErrorClassification(413,
           "Result set too large for a single response (" + GlobalConfiguration.SERVER_HTTP_QUERY_MAX_RESULT_ROWS.getKey()
-              + ")", tooLarge, String.valueOf(tooLarge.getMaxResultRows()));
-      return;
+              + ")", tooLarge, String.valueOf(tooLarge.getMaxResultRows()), ErrorLogKind.USER);
     }
 
     // 413 Content Too Large, the REQUEST side of the pair above: a body that declared a Content-Encoding decoded
@@ -869,11 +869,9 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // written, and the caller fixes it by sending less or by compressing less.
     final RequestBodyTooLargeException bodyTooLarge = firstOf(e, cause, RequestBodyTooLargeException.class);
     if (bodyTooLarge != null) {
-      logUserError(bodyTooLarge);
-      sendErrorResponse(exchange, 413,
+      return new ErrorClassification(413,
           "Request body too large once decoded (" + GlobalConfiguration.SERVER_HTTP_BODY_CONTENT_DECOMPRESSED_MAX_SIZE.getKey()
-              + ")", bodyTooLarge, String.valueOf(bodyTooLarge.getMaxSize()));
-      return;
+              + ")", bodyTooLarge, String.valueOf(bodyTooLarge.getMaxSize()), ErrorLogKind.USER);
     }
 
     // Before the NeedRetryException arm below, which it extends: the refusal names the leader the caller has to
@@ -888,9 +886,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // NeedRetryException arm below and answers 503, which is what it always meant.
     final ServerIsNotTheLeaderException notTheLeader = firstOf(e, cause, ServerIsNotTheLeaderException.class);
     if (notTheLeader != null && notTheLeader.getLeaderAddress() != null && !notTheLeader.getLeaderAddress().isBlank()) {
-      logUserError(notTheLeader);
-      sendErrorResponse(exchange, 400, "Cannot execute command", notTheLeader, notTheLeader.getLeaderAddress());
-      return;
+      return new ErrorClassification(400, "Cannot execute command", notTheLeader, notTheLeader.getLeaderAddress(), ErrorLogKind.USER);
     }
 
     // Before the TransactionException arm below, which it extends. A referenced HTTP transaction session id is
@@ -898,11 +894,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // an explicit 404 client error - never a 500, and never a silent implicit-transaction commit.
     final HttpSessionException sessionGone = firstOf(e, cause, HttpSessionException.class);
     if (sessionGone != null) {
-      LogManager.instance()
-              .log(this, Level.FINE, "Transaction session error on command execution (%s): %s",
-                      getClass().getSimpleName(), sessionGone.getMessage());
-      sendErrorResponse(exchange, 404, "Remote transaction session not found or expired", sessionGone, null);
-      return;
+      return new ErrorClassification(404, "Remote transaction session not found or expired", sessionGone, null, ErrorLogKind.SESSION);
     }
 
     // Before the TransactionException arm below, which it extends. 409 Conflict, NOT 5xx (#5064/#5075): the
@@ -912,10 +904,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     final TransactionCommittedRemotelyException committedRemotely = firstOf(e, cause,
             TransactionCommittedRemotelyException.class);
     if (committedRemotely != null) {
-      logUserError(committedRemotely);
-      sendErrorResponse(exchange, 409, "Transaction committed cluster-wide but the local apply failed - do not retry",
-              committedRemotely, null);
-      return;
+      return new ErrorClassification(409, "Transaction committed cluster-wide but the local apply failed - do not retry",
+              committedRemotely, null, ErrorLogKind.USER);
     }
 
     // 409 Conflict: a member of the cluster has not proved it can decode the replicated entry this operation
@@ -931,15 +921,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     final ClusterCapabilityNotReadyException capabilityNotReady = firstOf(e, cause,
             ClusterCapabilityNotReadyException.class);
     if (capabilityNotReady != null) {
-      logUserError(capabilityNotReady);
       // The peers go in exceptionArgs, not only in the message: 'detail' - where the message lands - is concealed
       // in production, and a 409 that names no node tells an operator nothing they can act on. Same split
       // ResultSetTooLargeException makes, and the same reason. The per-peer REASONS stay in the message: they are
       // free-form probe-failure text that can carry a host, a port or a JDK exception message, which is exactly
       // what production mode conceals 'detail' for (PR #7555 review).
-      sendErrorResponse(exchange, 409, "Cluster is not ready for this operation", capabilityNotReady,
-              capabilityNotReady.toExceptionArgs());
-      return;
+      return new ErrorClassification(409, "Cluster is not ready for this operation", capabilityNotReady,
+              capabilityNotReady.toExceptionArgs(), ErrorLogKind.USER);
     }
 
     // 409 Conflict: a backup, restore or import of this database is already running, and the per-database slot
@@ -954,9 +942,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     final DatabaseOperationInProgressException inProgress = firstOf(e, cause,
             DatabaseOperationInProgressException.class);
     if (inProgress != null) {
-      logUserError(inProgress);
-      sendErrorResponse(exchange, 409, "Cannot execute command", inProgress, null);
-      return;
+      return new ErrorClassification(409, "Cannot execute command", inProgress, null, ErrorLogKind.USER);
     }
 
     // 409 Conflict (RFC 9110 15.5.10): a unique-constraint violation is a client data conflict, not a transient
@@ -964,18 +950,15 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // bad write. See issue #4350.
     final DuplicatedKeyException dup = firstOf(e, cause, DuplicatedKeyException.class);
     if (dup != null) {
-      logUserError(dup);
-      sendErrorResponse(exchange, 409, "Found duplicate key in index", dup,
-              dup.getIndexName() + "|" + dup.getKeys() + "|" + dup.getCurrentIndexedRID());
-      return;
+      return new ErrorClassification(409, "Found duplicate key in index", dup,
+              dup.getIndexName() + "|" + dup.getKeys() + "|" + dup.getCurrentIndexedRID(), ErrorLogKind.USER);
     }
 
     // 503: the conflict is transient and the same request can succeed as issued. Reached from inside the
     // auto-commit wrapper as well since #6201, which is where the engine raises most of them.
     final NeedRetryException retryable = firstOf(e, cause, NeedRetryException.class);
     if (retryable != null) {
-      sendRetryableResponse(exchange, retryable);
-      return;
+      return retryable(retryable);
     }
 
     // 503: a TimeSeries read was overtaken by a DOWNSAMPLE, which replaced the rows it had not reached yet with
@@ -987,8 +970,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // answering short was that the caller be able to act on it.
     final TimeSeriesWalkCoarsenedException coarsened = firstOf(e, cause, TimeSeriesWalkCoarsenedException.class);
     if (coarsened != null) {
-      sendRetryableResponse(exchange, coarsened);
-      return;
+      return retryable(coarsened);
     }
 
     // 503: an HA snapshot-reinstall resync (issue #5977 pattern) closed and reinstalled the database out from
@@ -1004,8 +986,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // resync-vs-permanent-close signal that does not exist yet, so that half of #6778 is not attempted here.
     final DatabaseIsClosedException databaseClosed = firstOf(e, cause, DatabaseIsClosedException.class);
     if (databaseClosed != null) {
-      sendRetryableResponse(exchange, databaseClosed);
-      return;
+      return retryable(databaseClosed);
     }
 
     // 404: the wasted retry the comment above describes re-resolves the database with allowLoad=false
@@ -1014,23 +995,17 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // instead of falling through to the generic 500 below (issue #6778).
     final DatabaseNotAvailableException notAvailable = firstOf(e, cause, DatabaseNotAvailableException.class);
     if (notAvailable != null) {
-      logUserError(notAvailable);
-      sendErrorResponse(exchange, 404, "Database not found", notAvailable, null);
-      return;
+      return new ErrorClassification(404, "Database not found", notAvailable, null, ErrorLogKind.USER);
     }
 
     final RecordNotFoundException notFound = firstOf(e, cause, RecordNotFoundException.class);
     if (notFound != null) {
-      logUserError(notFound);
-      sendErrorResponse(exchange, 404, "Record not found", notFound, null);
-      return;
+      return new ErrorClassification(404, "Record not found", notFound, null, ErrorLogKind.USER);
     }
 
     final QueryNotIdempotentException notIdempotent = firstOf(e, cause, QueryNotIdempotentException.class);
     if (notIdempotent != null) {
-      logUserError(notIdempotent);
-      sendErrorResponse(exchange, 400, "Query is not idempotent", notIdempotent, null);
-      return;
+      return new ErrorClassification(400, "Query is not idempotent", notIdempotent, null, ErrorLogKind.USER);
     }
 
     // The whole chain is searched here rather than only the two throwables above, because the arithmetic error
@@ -1040,9 +1015,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // the whole category as a client error (Neo.ClientError.Statement.ArithmeticError). See issue #5602.
     final ArithmeticErrorException arithmetic = arithmeticError(e);
     if (arithmetic != null) {
-      logUserError(arithmetic);
-      sendErrorResponse(exchange, 400, "Cannot execute command", arithmetic, null);
-      return;
+      return new ErrorClassification(400, "Cannot execute command", arithmetic, null, ErrorLogKind.USER);
     }
 
     // A value a property cannot hold - openCypher refusing a map, or a list containing one. Like the arithmetic
@@ -1053,9 +1026,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // for the same reason the arithmetic arm searches it: the wrapping depends on how the request arrived.
     final InvalidPropertyTypeException invalidPropertyType = invalidPropertyType(e);
     if (invalidPropertyType != null) {
-      logUserError(invalidPropertyType);
-      sendErrorResponse(exchange, 400, "Cannot execute command", invalidPropertyType, null);
-      return;
+      return new ErrorClassification(400, "Cannot execute command", invalidPropertyType, null, ErrorLogKind.USER);
     }
 
     // Ahead of the JSON arm below, which is the precedence the old CommandExecutionException|CommandParsingException
@@ -1077,33 +1048,25 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // Placed above the parsing arm because the two say the same thing and this one says which parser.
     final FullTextQueryParseException fullTextParsing = firstOf(e, cause, FullTextQueryParseException.class);
     if (fullTextParsing != null) {
-      logUserError(fullTextParsing);
-      sendErrorResponse(exchange, 400, "Cannot execute command", fullTextParsing, null);
-      return;
+      return new ErrorClassification(400, "Cannot execute command", fullTextParsing, null, ErrorLogKind.USER);
     }
 
     final CommandParsingException parsing = firstOf(e, cause, CommandParsingException.class);
     if (parsing != null) {
-      logUserError(parsing);
-      sendErrorResponse(exchange, 400, "Cannot execute command", parsing, null);
-      return;
+      return new ErrorClassification(400, "Cannot execute command", parsing, null, ErrorLogKind.USER);
     }
 
     // The request payload is missing a property, carries a null where a value is required, or holds the wrong
     // type for it: a malformed request, not a server fault. Without this it degraded to 500 (issue #5935).
     final JSONException invalidJson = firstOf(e, cause, JSONException.class);
     if (invalidJson != null) {
-      logUserError(invalidJson);
-      sendErrorResponse(exchange, 400, "Invalid JSON payload", invalidJson, null);
-      return;
+      return new ErrorClassification(400, "Invalid JSON payload", invalidJson, null, ErrorLogKind.USER);
     }
 
     // Bad client input (malformed parameter, unparseable marker, ...).
     final IllegalArgumentException badArgument = firstOf(e, cause, IllegalArgumentException.class);
     if (badArgument != null) {
-      logUserError(badArgument);
-      sendErrorResponse(exchange, 400, "Cannot execute command", badArgument, null);
-      return;
+      return new ErrorClassification(400, "Cannot execute command", badArgument, null, ErrorLogKind.USER);
     }
 
     // From here on nothing identified the failure as a client error, so the two generic wrappers answer for
@@ -1121,22 +1084,14 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       // directory 'y'" over a bare reflection failure - and dropping it would leave the client with the plumbing
       // and none of the context. Nothing is lost either way, since the error body's detail field renders the
       // whole cause chain and the logger prints it as "Caused by".
-      LogManager.instance()
-              .log(this, getInternalErrorLogLevel(), "Error on command execution (%s)", commandFailure,
-                      getClass().getSimpleName());
-      sendErrorResponse(exchange, 500, "Cannot execute command", commandFailure, null);
-      return;
+      return new ErrorClassification(500, "Cannot execute command", commandFailure, null, ErrorLogKind.INTERNAL_COMMAND);
     }
 
     if (firstOf(e, cause, TransactionException.class) != null) {
       // Reported as its CAUSE, unlike the arm above: this wrapper is put on by the plumbing rather than raised by
       // it, so its message ("Error on executing command") says nothing the label does not, while the cause is the
       // real fault - and the wire contract's exception field is what a customer report is diagnosed from.
-      LogManager.instance()
-              .log(this, getInternalErrorLogLevel(), "Error on transaction execution (%s)", cause,
-                      getClass().getSimpleName());
-      sendErrorResponse(exchange, 500, "Error on transaction commit", cause, null);
-      return;
+      return new ErrorClassification(500, "Error on transaction commit", cause, null, ErrorLogKind.INTERNAL_TRANSACTION);
     }
 
     // Last resort, and the only place the cause chain is walked to any depth for a security failure: one buried
@@ -1147,17 +1102,75 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // level up came out as 403.
     for (Throwable deep = e; deep != null; deep = deep.getCause())
       if (isSecurityFailure(deep)) {
-        LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on command execution (%s): %s",
-                SecurityException.class.getSimpleName(), deep.getMessage());
-        sendErrorResponse(exchange, 403, "Security error", deep, null);
-        return;
+        return new ErrorClassification(403, "Security error", deep, null, ErrorLogKind.SECURITY);
       }
 
     // UNEXPECTED RAW THROWABLE (typical for non-database handlers): same treatment as the other
     // unexpected-internal-error arms - full stack trace, visible in production mode (issue #5374).
-    LogManager.instance()
-            .log(this, getInternalErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
-    sendErrorResponse(exchange, 500, "Internal error", e, null);
+    return new ErrorClassification(500, "Internal error", e, null, ErrorLogKind.INTERNAL_COMMAND);
+  }
+
+  /**
+   * Answers a failure that reached the request boundary: {@link #classifyError} decides, this only logs what it
+   * decided and sends it. Deliberately nothing else - a mapping added here instead of there would be the second
+   * chain issue #7396 removed.
+   */
+  private void sendMappedErrorResponse(final HttpServerExchange exchange, final Throwable e) {
+    final ErrorClassification classification = classifyError(e);
+    logClassifiedError(classification);
+    sendErrorResponse(exchange, classification.status(), classification.message(), classification.reported(),
+        classification.exceptionArgs());
+  }
+
+  /**
+   * What {@link #classifyError} decided for a failure: the HTTP status, the client-facing label (the body's
+   * {@code error} field), the throwable reported on the wire contract's {@code exception} field (not always the
+   * one raised: a {@code TransactionException} is reported as its cause), the structured {@code exceptionArgs},
+   * and how the failure is logged.
+   */
+  protected record ErrorClassification(int status, String message, Throwable reported, String exceptionArgs,
+                                       ErrorLogKind logKind) {
+  }
+
+  /**
+   * How a classified failure is logged. Kept with the classification rather than decided again by the sender, so
+   * the level and the stack-trace choice stay exactly what each arm of {@link #classifyError} has always used.
+   */
+  protected enum ErrorLogKind {
+    /** A security refusal: flood-protected level, message only. */
+    SECURITY,
+    /** A failure the caller caused: flood-protected level, message only - the client is told anyway. */
+    USER,
+    /** A transaction session that no longer resolves: FINE, message only. */
+    SESSION,
+    /** A transient failure the caller can retry as-is: FINE, message only. */
+    RETRYABLE,
+    /** An unexpected failure while executing: internal-error level WITH the stack trace. */
+    INTERNAL_COMMAND,
+    /** An unexpected failure under the transaction wrapper: internal-error level WITH the stack trace. */
+    INTERNAL_TRANSACTION
+  }
+
+  private void logClassifiedError(final ErrorClassification classification) {
+    final Throwable reported = classification.reported();
+    switch (classification.logKind()) {
+    case SECURITY -> LogManager.instance()
+        .log(this, getUserSevereErrorLogLevel(), "Security error on command execution (%s): %s",
+            SecurityException.class.getSimpleName(), reported.getMessage());
+    case USER -> LogManager.instance()
+        .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+            reported.getMessage());
+    case SESSION -> LogManager.instance()
+        .log(this, Level.FINE, "Transaction session error on command execution (%s): %s", getClass().getSimpleName(),
+            reported.getMessage());
+    case RETRYABLE -> LogManager.instance()
+        .log(this, Level.FINE, "Error on command execution (%s): %s", getClass().getSimpleName(), reported.getMessage());
+    case INTERNAL_COMMAND -> LogManager.instance()
+        .log(this, getInternalErrorLogLevel(), "Error on command execution (%s)", reported, getClass().getSimpleName());
+    case INTERNAL_TRANSACTION -> LogManager.instance()
+        .log(this, getInternalErrorLogLevel(), "Error on transaction execution (%s)", reported,
+            getClass().getSimpleName());
+    }
   }
 
   /**
@@ -1208,27 +1221,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
   }
 
   /**
-   * Sends a 503 for a failure the caller can retry as-is - a Raft conflict, a resync race, or a TimeSeries read
-   * a downsample overtook, all transient by construction. Shared by the {@link NeedRetryException},
-   * {@link DatabaseIsClosedException} and {@link TimeSeriesWalkCoarsenedException} arms of
-   * {@link #sendMappedErrorResponse}.
+   * A 503 for a failure the caller can retry as-is - a Raft conflict, a resync race, or a TimeSeries read a
+   * downsample overtook, all transient by construction. Shared by the {@link NeedRetryException},
+   * {@link DatabaseIsClosedException} and {@link TimeSeriesWalkCoarsenedException} arms of {@link #classifyError}.
    */
-  private void sendRetryableResponse(final HttpServerExchange exchange, final Throwable retryable) {
-    LogManager.instance()
-            .log(this, Level.FINE, "Error on command execution (%s): %s", getClass().getSimpleName(),
-                    retryable.getMessage());
-    sendErrorResponse(exchange, 503, "Cannot execute command", retryable, null);
-  }
-
-  /**
-   * Logs a failure the caller caused. Demoted under flood protection in production mode
-   * ({@link #getUserSevereErrorLogLevel()}) and without a stack trace: the message is the diagnosis, and the
-   * client is being told what went wrong anyway.
-   */
-  private void logUserError(final Throwable e) {
-    LogManager.instance()
-            .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
-                    e.getMessage());
+  private static ErrorClassification retryable(final Throwable retryable) {
+    return new ErrorClassification(503, "Cannot execute command", retryable, null, ErrorLogKind.RETRYABLE);
   }
 
   /**
