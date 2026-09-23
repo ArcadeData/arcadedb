@@ -40,6 +40,20 @@ public class ProjectionItem extends SimpleNode {
   public Boolean          aggregate;
   public NestedProjection nestedProjection;
 
+  // Cache for the default alias (no explicit `AS`), computed from `expression` on first use. `expression.getDefaultAlias()`
+  // allocates and escapes a fresh Identifier on every call, so on a full-scan GROUP BY without an alias this is called once
+  // per record for nothing (#8260). `Identifier` is documented immutable and reusable, and `expression` here is itself
+  // immutable once set by the parser, so caching the result is safe; `setExpression` invalidates it since a caller can
+  // rebind the expression on an already-used node (e.g. `splitForAggregation`).
+  // `volatile`, matching Projection.excludes/sourceColumns (see their javadoc): most executions reach a ProjectionItem
+  // only through a per-execution copy() (SelectExecutionPlanner.init(), ExecutionPlanCache.get()), but
+  // SelectExecutionPlanner.tryTimeSeriesAggregationPushDown() reads statement.getProjection() directly - the UNCOPIED
+  // projection StatementCache.get() hands out, the same Statement instance for every concurrent caller of identical SQL
+  // text - so this field genuinely can be written by two threads at once. That race is harmless (getDefaultAlias() is a
+  // deterministic, side-effect-free function of `expression`, and a plain reference write cannot publish a half-built
+  // Identifier), but without `volatile` a reader is not guaranteed to ever see another thread's write.
+  private volatile Identifier cachedDefaultAlias;
+
   public ProjectionItem(final Expression expression, final Identifier alias, final NestedProjection nestedProjection) {
     this.expression = expression;
     this.alias = alias;
@@ -74,6 +88,7 @@ public class ProjectionItem extends SimpleNode {
 
   public void setExpression(final Expression expression) {
     this.expression = expression;
+    cachedDefaultAlias = null;
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
@@ -156,7 +171,9 @@ public class ProjectionItem extends SimpleNode {
       return alias;
     if (all)
       return new Identifier("*");
-    return expression.getDefaultAlias();
+    if (cachedDefaultAlias == null)
+      cachedDefaultAlias = expression.getDefaultAlias();
+    return cachedDefaultAlias;
   }
 
   public boolean isExpand() {
