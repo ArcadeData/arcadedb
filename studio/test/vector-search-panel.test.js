@@ -304,6 +304,18 @@ test("an unfused hybrid response says so, and per-leg counts and caps are report
   ]);
 });
 
+test("an unfused hybrid response mixing distance and score names both in the column header", () => {
+  const mixed = ctx.vecDescribeResponse("hybrid", {
+    fused: false,
+    results: [
+      { rid: "#2:0", score: 1.2, sources: ["fulltext"] },
+      { rid: "#1:0", distance: 0.1, sources: ["vector"] },
+      { rid: "#2:1", score: 0.7, sources: ["fulltext"] }
+    ]
+  });
+  assert.equal(mixed.scoreLabel, "score / distance");
+});
+
 test("each hit shows exactly the ranking value it carries", () => {
   assert.deepEqual(plain(ctx.vecHitScore({ distance: 0.2 })), { label: "distance", value: 0.2 });
   assert.deepEqual(plain(ctx.vecHitScore({ score: 3 })), { label: "score", value: 3 });

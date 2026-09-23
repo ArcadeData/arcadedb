@@ -352,8 +352,14 @@ function vecHitScore(hit) {
 function vecDescribeResponse(mode, response) {
   var r = response || {};
   var results = r.results || [];
-  var scoreLabel = "";
-  for (var i = 0; i < results.length && !scoreLabel; i++) scoreLabel = vecHitScore(results[i]).label;
+  // An unfused hybrid response can mix labels (a vector-leg hit carries 'distance', a full-text-leg hit 'score'), so
+  // the column is named after every label present, in order of first appearance, rather than after the first row.
+  var labels = [];
+  for (var i = 0; i < results.length; i++) {
+    var label = vecHitScore(results[i]).label;
+    if (label && labels.indexOf(label) < 0) labels.push(label);
+  }
+  var scoreLabel = labels.join(" / ");
 
   var summary = {
     indexName: mode === "hybrid" ? r.vectorIndexName : r.indexName,
@@ -519,9 +525,7 @@ function vecSetMode(mode) {
 
 /** Shows the selected index's dimension count next to the vector input, and the inputs that apply to it. */
 function vecIndexChanged() {
-  var name = $("#vecIndexName").val();
-  var index = null;
-  for (var i = 0; i < vecIndexes.vector.length; i++) if (vecIndexes.vector[i].name === name) index = vecIndexes.vector[i];
+  var index = vecSelectedVectorIndex();
   var hint = "";
   if (index) {
     hint = index.sparse ? "sparse" : "dense";
@@ -533,13 +537,24 @@ function vecIndexChanged() {
   $(".vec-only-dense").toggle(index != null && index.sparse !== true && vecMode !== "fulltext");
 }
 
+/** The selected vector index's entry from vecIndexes, or null. */
+function vecSelectedVectorIndex() {
+  var name = $("#vecIndexName").val();
+  for (var i = 0; i < vecIndexes.vector.length; i++) if (vecIndexes.vector[i].name === name) return vecIndexes.vector[i];
+  return null;
+}
+
 function vecCollectForm() {
+  // queryIndices and efSearch are collected by the selected index's kind, not by which input happens to be visible,
+  // so a hidden input left filled from a previously selected index can never reach the request.
+  var index = vecSelectedVectorIndex();
+  var sparse = index != null && index.sparse === true;
   return {
     indexName: vecMode === "fulltext" ? $("#vecFtIndexName").val() : $("#vecIndexName").val(),
     queryVector: $("#vecQueryVector").val(),
-    queryIndices: $(".vec-only-sparse").is(":visible") ? $("#vecQueryIndices").val() : "",
+    queryIndices: sparse ? $("#vecQueryIndices").val() : "",
     k: $("#vecK").val(),
-    efSearch: $(".vec-only-dense").is(":visible") ? $("#vecEfSearch").val() : "",
+    efSearch: index != null && !sparse ? $("#vecEfSearch").val() : "",
     filter: $("#vecFilter").val(),
     fulltextIndexName: $("#vecFulltextIndexName").val(),
     fulltextQuery: $("#vecFulltextQuery").val(),
