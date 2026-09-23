@@ -77,6 +77,8 @@ public class RedisQueryEngine implements QueryEngine {
   private final DatabaseInternal database;
 
   // Pattern to parse Redis commands - handles quoted strings and JSON
+  // Batch separator: any line break, as the executor has always split on (String.split("\\R")).
+  private static final Pattern LINE_SEPARATOR = Pattern.compile("\\R");
   private static final Pattern COMMAND_PATTERN = Pattern.compile("(\\{[^{}]*(?:\\{[^{}]*\\}[^{}]*)*\\})|\"([^\"]*)\"|'([^']*)'|(\\S+)");
 
   protected RedisQueryEngine(final DatabaseInternal database) {
@@ -88,35 +90,50 @@ public class RedisQueryEngine implements QueryEngine {
     return ENGINE_NAME;
   }
 
+  /**
+   * Classifies what {@link #executeRedisCommand(String)} will actually run. A newline-separated batch runs EVERY
+   * line, so it is analyzed line by line with the same split and the same skipped lines as the executor, and the
+   * answers are folded: idempotent only if every command is, operation types the union of all of them - the way
+   * {@code SQLScriptQueryEngine.analyze} folds a script. Classifying the whole text by its first verb declared a
+   * batch opening with a read idempotent and read-only however many writes followed it, which defeated both the
+   * query endpoint's refusal of writes and the streaming gate that reads this answer (issue #8247).
+   * <p>
+   * MULTI, EXEC and DISCARD are classified like any other verb outside the read list, so a transaction block is
+   * never idempotent: a block only exists to contain writes, and one that holds only reads loses nothing by being
+   * sent to the command endpoint.
+   */
   @Override
   public AnalyzedQuery analyze(final String query) {
-    final List<String> parts = parseCommand(query);
-    if (parts.isEmpty()) {
-      return new AnalyzedQuery() {
-        @Override
-        public boolean isIdempotent() {
-          return true;
-        }
-
-        @Override
-        public boolean isDDL() {
-          return false;
-        }
-
-        @Override
-        public Set<OperationType> getOperationTypes() {
-          return CollectionUtils.singletonSet(OperationType.READ);
-        }
-      };
+    final String[] lines = splitBatch(query);
+    if (lines.length <= 1) {
+      // Single command: the executor runs the text as-is, without the batch's comment skipping.
+      final List<String> parts = parseCommand(query);
+      if (parts.isEmpty())
+        return analyzed(true, CollectionUtils.singletonSet(OperationType.READ));
+      final String cmd = parts.getFirst().toUpperCase(Locale.ENGLISH);
+      return analyzed(isIdempotentCommand(cmd), detectRedisOperationTypes(cmd));
     }
 
-    final String cmd = parts.getFirst().toUpperCase(Locale.ENGLISH);
-    final boolean isIdempotent = switch (cmd) {
-      case "GET", "EXISTS", "HGET", "HEXISTS", "HMGET", "PING" -> true;
-      default -> false;
-    };
-    final Set<OperationType> ops = detectRedisOperationTypes(cmd);
+    boolean idempotent = true;
+    final Set<OperationType> ops = EnumSet.noneOf(OperationType.class);
+    for (final String line : lines) {
+      final String trimmed = line.trim();
+      if (isSkippedBatchLine(trimmed))
+        continue;
+      final List<String> parts = parseCommand(trimmed);
+      if (parts.isEmpty())
+        continue;
+      final String cmd = parts.getFirst().toUpperCase(Locale.ENGLISH);
+      idempotent &= isIdempotentCommand(cmd);
+      ops.addAll(detectRedisOperationTypes(cmd));
+    }
+    if (ops.isEmpty())
+      ops.add(OperationType.READ);
 
+    return analyzed(idempotent, Collections.unmodifiableSet(ops));
+  }
+
+  private static AnalyzedQuery analyzed(final boolean isIdempotent, final Set<OperationType> ops) {
     return new AnalyzedQuery() {
       @Override
       public boolean isIdempotent() {
@@ -132,6 +149,30 @@ public class RedisQueryEngine implements QueryEngine {
       public Set<OperationType> getOperationTypes() {
         return ops;
       }
+    };
+  }
+
+  /**
+   * Splits the text into the lines the executor runs. Shared by {@link #analyze(String)} and
+   * {@link #executeRedisCommand(String)} so the analysis cannot drift from what is executed: more than one element
+   * means batch execution.
+   */
+  private static String[] splitBatch(final String query) {
+    return LINE_SEPARATOR.split(query);
+  }
+
+  /**
+   * A batch line the executor does not run: blank, or a {@code #} / {@code //} comment. Only applies in batch
+   * mode; a single-line command is run as written.
+   */
+  private static boolean isSkippedBatchLine(final String trimmed) {
+    return trimmed.isEmpty() || trimmed.startsWith("#") || trimmed.startsWith("//");
+  }
+
+  private static boolean isIdempotentCommand(final String cmd) {
+    return switch (cmd) {
+      case "GET", "EXISTS", "HGET", "HEXISTS", "HMGET", "PING" -> true;
+      default -> false;
     };
   }
 
@@ -175,8 +216,9 @@ public class RedisQueryEngine implements QueryEngine {
 
   private ResultSet executeRedisCommand(final String query) {
     try {
-      // Check if this is a multi-command query (contains newlines)
-      final String[] lines = query.split("\\R");
+      // Check if this is a multi-command query (contains newlines). Same split as analyze(), which must see
+      // exactly the commands that run here (issue #8247).
+      final String[] lines = splitBatch(query);
       if (lines.length > 1) {
         return executeMultipleCommands(lines);
       }
@@ -211,9 +253,8 @@ public class RedisQueryEngine implements QueryEngine {
 
     for (final String line : lines) {
       final String trimmed = line.trim();
-      if (trimmed.isEmpty() || trimmed.startsWith("#") || trimmed.startsWith("//")) {
-        continue; // Skip empty lines and comments
-      }
+      if (isSkippedBatchLine(trimmed))
+        continue; // Skip empty lines and comments (analyze() skips the same ones)
 
       final String upperCmd = trimmed.toUpperCase(Locale.ENGLISH);
       if ("MULTI".equals(upperCmd)) {
