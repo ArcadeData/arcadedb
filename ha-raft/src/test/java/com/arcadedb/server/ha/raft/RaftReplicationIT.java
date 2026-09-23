@@ -27,6 +27,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.StaticBaseServerTest;
 import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.FileUtils;
 import org.awaitility.Awaitility;
@@ -50,12 +51,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Tag("IntegrationTest")
 class RaftReplicationIT {
 
-  private static final int    SERVER_COUNT   = 3;
-  private static final String DATABASE_NAME  = "raft-test-db";
-  private static final int    BASE_HA_PORT   = 22424;
-  private static final int    BASE_HTTP_PORT = 22480;
+  private static final int    SERVER_COUNT  = 3;
+  private static final String DATABASE_NAME = "raft-test-db";
 
   private ArcadeDBServer[] servers;
+  /**
+   * Raft ports in {@code [0, SERVER_COUNT)}, HTTP ports in {@code [SERVER_COUNT, 2 * SERVER_COUNT)}, drawn per test in
+   * ONE call so the two families cannot coincide. A hand-picked Raft port that something else holds is answered by
+   * Ratis with {@code System.exit(1)}, which takes the whole failsafe fork down (issue #8222).
+   */
+  private int[]            ports;
 
   @BeforeEach
   void setUp() throws Exception {
@@ -91,12 +96,14 @@ class RaftReplicationIT {
       }
     }
 
+    ports = StaticBaseServerTest.allocateFreePorts(2 * SERVER_COUNT);
+
     // Build the server address list
     final StringBuilder serverList = new StringBuilder();
     for (int i = 0; i < SERVER_COUNT; i++) {
       if (i > 0)
         serverList.append(",");
-      serverList.append("localhost:").append(BASE_HA_PORT + i).append(":").append(BASE_HTTP_PORT + i);
+      serverList.append("localhost:").append(raftPort(i)).append(":").append(httpPort(i));
     }
 
     // Start all servers
@@ -107,10 +114,10 @@ class RaftReplicationIT {
       config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, "./target/raft-databases" + i);
       config.setValue(GlobalConfiguration.HA_ENABLED, true);
       config.setValue(GlobalConfiguration.HA_SERVER_LIST, serverList.toString());
-      config.setValue(GlobalConfiguration.HA_RAFT_PORT, BASE_HA_PORT + i);
+      config.setValue(GlobalConfiguration.HA_RAFT_PORT, raftPort(i));
       config.setValue(GlobalConfiguration.HA_CLUSTER_NAME, "raft-test-cluster");
       config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST, "localhost");
-      config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, String.valueOf(BASE_HTTP_PORT + i));
+      config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, String.valueOf(httpPort(i)));
       config.setValue(GlobalConfiguration.SERVER_ROOT_PATH, "./target");
 
       servers[i] = new ArcadeDBServer(config);
@@ -132,19 +139,10 @@ class RaftReplicationIT {
             // ignore
           }
 
-    // Allow ports to be released
-    try {
-      Thread.sleep(2000);
-    } catch (final InterruptedException e) {
-      Thread.currentThread().interrupt();
-    }
-
     for (int i = 0; i < SERVER_COUNT; i++)
       FileUtils.deleteRecursively(new File("./target/raft-databases" + i));
 
     FileUtils.deleteRecursively(new File("./target/ratis-storage"));
-    for (int i = 0; i < SERVER_COUNT; i++)
-      FileUtils.deleteRecursively(new File("./target/ratis-storage/localhost:" + (BASE_HA_PORT + i)));
 
     GlobalConfiguration.resetAll();
 
@@ -333,6 +331,14 @@ class RaftReplicationIT {
       // For the local peer the derivation is exact: its own Raft host plus its own HTTP port.
       assertThat(raftHA.getPeerHttpAddress(raftHA.getLocalPeerId())).isEqualTo("localhost:" + localHttpPort);
     }
+  }
+
+  private int raftPort(final int index) {
+    return ports[index];
+  }
+
+  private int httpPort(final int index) {
+    return ports[SERVER_COUNT + index];
   }
 
   private void waitForRatisLeader() {
