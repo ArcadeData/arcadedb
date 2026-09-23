@@ -397,6 +397,13 @@ public class RedisQueryEngine implements QueryEngine {
     return count;
   }
 
+  /**
+   * INCR/INCRBY/INCRBYFLOAT. The read, the addition and the write are ONE atomic operation on the key through
+   * {@link DatabaseInternal#computeGlobalVariable}, the primitive the RESP wire path uses too (issue #7776): this
+   * engine is cached per database and shared by every request thread, so a get followed by a set let two concurrent
+   * callers read the same value, both write their own successor and each be answered a count that never happened
+   * (issue #8248).
+   */
   private Number incrBy(final List<String> parts, final boolean decimal) {
     if (parts.size() < 2) {
       throw new CommandParsingException("INCR/INCRBY requires a key: INCR <key> [increment]");
@@ -409,22 +416,12 @@ public class RedisQueryEngine implements QueryEngine {
       increment = 1;
     }
 
-    Object current = database.getGlobalVariable(key);
-    if (current == null) {
-      current = 0L;
-    } else if (!(current instanceof Number)) {
-      if (NumberUtils.isIntegerNumber(current.toString())) {
-        current = Long.parseLong(current.toString());
-      } else {
-        throw new RedisException("Key '" + key + "' is not a number");
-      }
-    }
-
-    final Number newValue = Type.increment((Number) current, increment);
-    database.setGlobalVariable(key, newValue);
-    return newValue;
+    return (Number) database.computeGlobalVariable(key, current -> Type.increment(toNumber(key, current), increment));
   }
 
+  /**
+   * DECR/DECRBY, atomic for the same reason as {@link #incrBy}.
+   */
   private Number decrBy(final List<String> parts) {
     if (parts.size() < 2) {
       throw new CommandParsingException("DECR/DECRBY requires a key: DECR <key> [decrement]");
@@ -432,20 +429,22 @@ public class RedisQueryEngine implements QueryEngine {
     final String key = parts.get(1);
     final int decrement = parts.size() > 2 ? Integer.parseInt(parts.get(2)) : 1;
 
-    Object current = database.getGlobalVariable(key);
-    if (current == null) {
-      current = 0L;
-    } else if (!(current instanceof Number)) {
-      if (NumberUtils.isIntegerNumber(current.toString())) {
-        current = Long.parseLong(current.toString());
-      } else {
-        throw new RedisException("Key '" + key + "' is not a number");
-      }
-    }
+    return (Number) database.computeGlobalVariable(key, current -> Type.decrement(toNumber(key, current), decrement));
+  }
 
-    final Number newValue = Type.decrement((Number) current, decrement);
-    database.setGlobalVariable(key, newValue);
-    return newValue;
+  /**
+   * Normalizes the stored value INCR/DECR operate on: an absent key reads as {@code 0} and an integral string is
+   * parsed. Anything else is refused with a {@link RedisException}; since this runs inside
+   * {@link DatabaseInternal#computeGlobalVariable}'s remapping, the refusal leaves the key unchanged.
+   */
+  private static Number toNumber(final String key, final Object current) {
+    if (current == null)
+      return 0L;
+    if (current instanceof Number number)
+      return number;
+    if (NumberUtils.isIntegerNumber(current.toString()))
+      return Long.parseLong(current.toString());
+    throw new RedisException("Key '" + key + "' is not a number");
   }
 
   // --- Persistent Commands (database operations) ---
