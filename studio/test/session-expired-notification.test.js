@@ -105,9 +105,10 @@ function makeContainer() {
       el._setParent(this);
     },
     querySelectorAll(sel) {
-      const m = /\[data-notify-tag="([^"]+)"\]/.exec(sel);
-      const tag = m ? m[1] : null;
-      return this.children.filter((el) => el.getAttribute("data-notify-tag") === tag);
+      // Production code only ever queries the fixed class selector '.studio-toast'; mirror that,
+      // rather than resurrecting the string-interpolated-selector approach the fix removed.
+      if (sel !== ".studio-toast") throw new Error("unexpected selector in test double: " + sel);
+      return this.children.filter((el) => (el.className || "").indexOf("studio-toast") !== -1);
     },
   };
 }
@@ -166,6 +167,20 @@ test("dismissNotification does not touch toasts with a different or no tag", () 
 
   assert.equal(env.container.children.length, 1, "the unrelated toast must survive");
   assert.equal(env.container.children[0]._header().textContent, "Success");
+});
+
+test("dismissNotification matches a tag containing a double quote", () => {
+  // Regression case for the CodeRabbit finding on PR #8263: the original implementation built a CSS
+  // attribute selector by interpolating `tag` directly (`'[data-notify-tag="' + tag + '"]'`), which broke
+  // for a tag containing a `"`. The fix compares the attribute value instead of building a selector.
+  const env = setupToastEnv();
+  const oddTag = 'job:"42"';
+  env.globalNotify("Job Finished", "...", "success", null, oddTag);
+  assert.equal(env.container.children.length, 1);
+
+  env.dismissNotification(oddTag);
+
+  assert.equal(env.container.children.length, 0, "a toast tagged with a quote-bearing tag must still be dismissed");
 });
 
 test("dismissNotification also drops a still-queued Session Expired toast", () => {
