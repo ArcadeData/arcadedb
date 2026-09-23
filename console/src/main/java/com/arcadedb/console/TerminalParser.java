@@ -126,7 +126,8 @@ public class TerminalParser extends DefaultParser {
     int start = 0;
     while (start < word.length() && Character.isWhitespace(word.charAt(start)))
       ++start;
-    if (!startsWithKeyword(word, start, "if") && !startsWithKeyword(word, start, "foreach") && !startsWithKeyword(word, start, "while"))
+    final boolean ifBlock = startsWithKeyword(word, start, "if");
+    if (!ifBlock && !startsWithKeyword(word, start, "foreach") && !startsWithKeyword(word, start, "while"))
       return false;
 
     int k = openBraceWordOffset - 1;
@@ -136,7 +137,8 @@ public class TerminalParser extends DefaultParser {
       return false;
     if (word.charAt(k) == ')')
       return true;
-    return k - 3 > start && startsWithKeyword(word, k - 3, "else") && !Character.isJavaIdentifierPart(word.charAt(k - 4));
+    // ONLY AN IF HAS AN ELSE BRANCH IN THE GRAMMAR
+    return ifBlock && k - 3 > start && startsWithKeyword(word, k - 3, "else") && !Character.isJavaIdentifierPart(word.charAt(k - 4));
   }
 
   /**
@@ -243,7 +245,7 @@ public class TerminalParser extends DefaultParser {
 
           // A CLOSED SQL SCRIPT BLOCK (`IF (...) { ... }`) ENDS ITS COMMAND EVEN WITH NO SEMICOLON AFTER IT, WHEN MORE CONTENT
           // FOLLOWS ON A NEW LINE. ANY OTHER BALANCED BRACE PAIR - A MAP LITERAL, A `CONTENT { ... }`, A MATCH PATTERN - IS IN THE
-          // MIDDLE OF A STATEMENT THAT CAN GO ON ON THE NEXT LINE: SPLITTING THERE RAN `UPDATE ... SET x = {json}` WITHOUT ITS
+          // MIDDLE OF A STATEMENT THAT CAN CONTINUE ON THE NEXT LINE: SPLITTING THERE RAN `UPDATE ... SET x = {json}` WITHOUT ITS
           // WHERE ON A NEW LINE, OVERWRITING EVERY RECORD OF THE TYPE (ISSUE #8246)
           if (prevDepth == 1 && braceDepth == 0 && isScriptBlockBody(current, openBraceWordOffset)) {
             int j = i + 1;
