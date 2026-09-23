@@ -123,9 +123,7 @@ public class TerminalParser extends DefaultParser {
     if (!scriptBlocks || openBraceWordOffset < 0)
       return false;
 
-    int start = 0;
-    while (start < word.length() && Character.isWhitespace(word.charAt(start)))
-      ++start;
+    final int start = firstNonBlank(word);
     final boolean ifBlock = startsWithKeyword(word, start, "if");
     if (!ifBlock && !startsWithKeyword(word, start, "foreach") && !startsWithKeyword(word, start, "while"))
       return false;
@@ -139,6 +137,13 @@ public class TerminalParser extends DefaultParser {
       return true;
     // ONLY AN IF HAS AN ELSE BRANCH IN THE GRAMMAR
     return ifBlock && k - 3 > start && startsWithKeyword(word, k - 3, "else") && !Character.isJavaIdentifierPart(word.charAt(k - 4));
+  }
+
+  private static int firstNonBlank(final CharSequence text) {
+    int pos = 0;
+    while (pos < text.length() && Character.isWhitespace(text.charAt(pos)))
+      ++pos;
+    return pos;
   }
 
   /**
@@ -269,8 +274,9 @@ public class TerminalParser extends DefaultParser {
                 break;
             }
 
-            // THE ELSE BRANCH OF AN IF CONTINUES THE SAME STATEMENT
-            if (foundNewline && j < line.length() && !this.isDelimiter(line, j) && !startsWithKeyword(line, j, "else")) {
+            // THE ELSE BRANCH OF AN IF CONTINUES THE SAME STATEMENT. FOREACH AND WHILE HAVE NO ELSE IN THE GRAMMAR
+            final boolean elseOfIf = startsWithKeyword(line, j, "else") && startsWithKeyword(current, firstNonBlank(current), "if");
+            if (foundNewline && j < line.length() && !this.isDelimiter(line, j) && !elseOfIf) {
               words.add(current.toString());
               current.setLength(0);
               if (rawWordCursor >= 0 && rawWordLength < 0) {

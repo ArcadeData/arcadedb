@@ -346,4 +346,13 @@ class TerminalParserTest {
     assertThat(split("IF ($a) {\n  IF ($b) {\n    return 1;\n  }\n  else {\n    return 2;\n  }\n}\nELSE {\n  return 3;\n}\nreturn 4;"))
         .containsExactly("IF ($a) {\n  IF ($b) {\n    return 1;\n  }\n  else {\n    return 2;\n  }\n}\nELSE {\n  return 3;\n}", "return 4");
   }
+
+  /**
+   * Only an IF has an ELSE branch: a FOREACH or WHILE block still ends at its closing brace whatever follows it.
+   */
+  @Test
+  void aForeachBlockIsNotJoinedToAFollowingElse() {
+    assertThat(split("FOREACH ($i IN [1, 2]) {\n  INSERT INTO Doc SET id = $i;\n}\nELSE something;"))
+        .containsExactly("FOREACH ($i IN [1, 2]) {\n  INSERT INTO Doc SET id = $i;\n}", "ELSE something");
+  }
 }
