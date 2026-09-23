@@ -57,6 +57,12 @@ class Issue8222StandaloneRaftFixturePortsTest {
   /** A port constant initialised from a literal, e.g. {@code BASE_HA_PORT = 22424} or {@code BASE_HTTP_PORT = 42480}. */
   private static final Pattern LITERAL_PORT = Pattern.compile("\\bint\\s+\\w*PORT\\w*\\s*=\\s*\\d");
 
+  /**
+   * A fixture on a base class that draws its Raft ports itself, and is guarded by {@link Issue8203RaftFixturePortsTest}.
+   * Matched as a whole word so a class merely NAMED like one ({@code BaseRaftHATestV2}) is not taken for it.
+   */
+  private static final Pattern EXTENDS_RAFT_BASE = Pattern.compile("\\bextends\\s+BaseRaftHA(Ssl)?Test\\b");
+
   /** An OS-assigned port: it comes from the ephemeral range, where the next outgoing connection can take it first. */
   private static final Pattern EPHEMERAL_PORT = Pattern.compile("new\\s+ServerSocket\\(\\s*0\\s*\\)");
 
@@ -78,8 +84,7 @@ class Issue8222StandaloneRaftFixturePortsTest {
         final String source = Files.readString(file, StandardCharsets.UTF_8);
         // Only JUnit classes run in a shared fork: RaftClusterStarter is a main() for manual Studio sessions and keeps
         // the well-known 2424/2480 on purpose. Fixtures on BaseRaftHATest are guarded by Issue8203RaftFixturePortsTest.
-        if (!CONFIGURES_RAFT_PORT.matcher(source).find() || !isJUnitClass(source) || source.contains("extends BaseRaftHATest")
-            || source.contains("extends BaseRaftHASslTest"))
+        if (!CONFIGURES_RAFT_PORT.matcher(source).find() || !isJUnitClass(source) || EXTENDS_RAFT_BASE.matcher(source).find())
           continue;
 
         final String name = file.getFileName().toString();
