@@ -19,6 +19,7 @@
 package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.LocalTimeSeriesType;
@@ -47,8 +48,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>
  * A benign data race - the recomputed value is always the same immutable {@link com.arcadedb.query.sql.parser.Identifier}
  * either way - cannot be forced to fail deterministically by a unit test; what this pins down instead is that many
- * threads racing the FIRST-EVER parse and push-down of the same, never-before-seen statement text all get the
- * correct default-aliased column names and the correct aggregate values, with nothing thrown.
+ * threads racing the push-down of the same, already-cached statement all get the correct default-aliased column
+ * names and the correct aggregate values, with nothing thrown. The statement cache is warmed on the test's own
+ * thread before the workers start (see below): {@code StatementCache.get()} only holds its lock long enough to
+ * check and update the LRU map, and parses a cold entry OUTSIDE it, so racing threads on a genuinely cold cache
+ * would each parse and execute their OWN private {@code Statement}/{@code ProjectionItem} tree instead of sharing
+ * one - which would defeat the point of this test (found in review of #8267). The PLAN cache is deliberately left
+ * cold, so every worker still plans - and reaches {@code tryTimeSeriesAggregationPushDown()} - concurrently,
+ * against that one shared, cached {@code Statement}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -74,6 +81,11 @@ class Issue8260TimeSeriesPushDownConcurrentAliasTest extends TestHelper {
     // projection in tryTimeSeriesAggregationPushDown(). The bucket alias stays explicit only because GROUP BY has
     // to name it; that item is unaliased too until then, exercising the same call.
     final String query = "SELECT ts.timeBucket('1h', ts) AS b, sum(v), count(*) FROM " + type + " GROUP BY b";
+
+    // WARM THE STATEMENT CACHE FIRST, ON THIS THREAD: otherwise every worker below races StatementCache.get() on a
+    // cold entry, and each parses (outside the cache's lock) its own private Statement/ProjectionItem tree instead
+    // of sharing the one this test means to race on (see the class Javadoc).
+    ((DatabaseInternal) database).getStatementCache().get(query);
 
     final ExecutorService pool = Executors.newFixedThreadPool(THREADS);
     try {
