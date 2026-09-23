@@ -76,7 +76,7 @@ public class ArcadeGremlinAuthorizer implements Authorizer {
       for (final String alias : aliases.values())
         checkDatabaseAccess(securityUser, alias);
 
-    if (!securityUser.isServerAdministrator() && containsLambda(bytecode, 0))
+    if (!ServerSecurityUser.isServerAdministrator(securityUser.getName()) && containsLambda(bytecode, 0))
       throw new AuthorizationException(
           "User '" + securityUser.getName() + "' is not authorized to use lambdas: they are evaluated as Groovy code, which is reserved to the server administrator");
     return bytecode;
@@ -100,7 +100,7 @@ public class ArcadeGremlinAuthorizer implements Authorizer {
     final ServerSecurityUser securityUser = publishPrincipal(user);
 
     final Object language = msg.getArgs().get(Tokens.ARGS_LANGUAGE);
-    if (!securityUser.isServerAdministrator() && !GREMLIN_LANG.equals(language))
+    if (!ServerSecurityUser.isServerAdministrator(securityUser.getName()) && !GREMLIN_LANG.equals(language))
       throw new AuthorizationException("User '" + securityUser.getName() + "' is not authorized to evaluate "
           + (language != null ? "'" + language + "'" : "Groovy") + " scripts, which are reserved to the server administrator. Submit the script with language '"
           + GREMLIN_LANG + "' or send a bytecode traversal");

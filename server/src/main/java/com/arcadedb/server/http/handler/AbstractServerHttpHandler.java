@@ -1742,7 +1742,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
    * always fail this check — this is intentional, as token management requires root credentials.
    */
   protected void checkRootUser(ServerSecurityUser user) {
-    if (!user.isServerAdministrator())
+    if (!ServerSecurityUser.isServerAdministrator(user.getName()))
       throw new ServerSecurityException("Only root user is authorized to execute server commands");
   }
 
