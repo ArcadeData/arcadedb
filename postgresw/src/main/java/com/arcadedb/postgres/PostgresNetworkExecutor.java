@@ -342,6 +342,9 @@ public class PostgresNetworkExecutor extends Thread {
             // a block one of whose messages blew up unanswered. Not for a 'Q' (issue #8175): queryCommand() discards
             // every simple query while skipUntilSync is set, and a client that only speaks the simple protocol never
             // sends the Sync that would clear it, so every statement it sent afterwards would go unanswered.
+            // currentMessageType is stale when readMessage() fails before its callback runs, but every such failure
+            // is a PostgresProtocolException, which closes the connection just below: the stale value picks a flag
+            // nothing reads again.
             if (currentMessageType == 'Q')
               setErrorInTx();
             else
