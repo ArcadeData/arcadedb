@@ -44,7 +44,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
 public class GremlinServerPlugin implements ServerPlugin {
-  private static final String               CONFIG_GREMLIN_SERVER_YAML = "/config/gremlin-server.yaml";
+  private static final String               CONFIG_GREMLIN_SERVER_YAML = "gremlin-server.yaml";
   private static final String               IO_REGISTRIES_KEY          = "ioRegistries";
   private static final String               ARCADE_IO_REGISTRY         = ArcadeIoRegistry.class.getName();
 
@@ -71,17 +71,18 @@ public class GremlinServerPlugin implements ServerPlugin {
     ArcadeGraphManager.setServer(server);
 
     Settings settings = null;
-    final File confFile = new File(server.getRootPath() + CONFIG_GREMLIN_SERVER_YAML);
+    // Issue #7415: read from the server configuration directory, which is not necessarily <root>/config.
+    final File confFile = new File(server.getConfigPath(), CONFIG_GREMLIN_SERVER_YAML);
     if (confFile.exists()) {
       try (final FileInputStream is = new FileInputStream(confFile.getAbsolutePath())) {
         settings = ArcadeDBGremlinSettings.read(is);
       } catch (final Exception e) {
         LogManager.instance()
-            .log(this, Level.INFO, "Error on loading Gremlin Server configuration file '%s'. Using default configuration", CONFIG_GREMLIN_SERVER_YAML);
+            .log(this, Level.INFO, "Error on loading Gremlin Server configuration file '%s'. Using default configuration", confFile);
       }
     } else
       LogManager.instance()
-          .log(this, Level.INFO, "Cannot find Gremlin Server configuration file '%s'. Using default configuration", CONFIG_GREMLIN_SERVER_YAML);
+          .log(this, Level.INFO, "Cannot find Gremlin Server configuration file '%s'. Using default configuration", confFile);
 
     if (settings == null)
       // DEFAULT CONFIGURATION

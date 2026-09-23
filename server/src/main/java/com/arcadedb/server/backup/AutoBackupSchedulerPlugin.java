@@ -25,7 +25,6 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.event.ServerEventLog;
 
-import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -63,14 +62,15 @@ public class AutoBackupSchedulerPlugin implements ServerPlugin {
     this.configuration = configuration;
 
     // Initialize config loader
-    final String configPath = arcadeDBServer.getRootPath() + File.separator + "config";
+    final String configPath = arcadeDBServer.getConfigPath();
     final String databasesPath = configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY);
 
     this.configLoader = new BackupConfigLoader(configPath, databasesPath);
 
     // Check if backup.json exists
     if (!configLoader.configExists()) {
-      LogManager.instance().log(this, Level.INFO, "Auto-backup scheduler disabled: config/backup.json not found");
+      LogManager.instance().log(this, Level.INFO, "Auto-backup scheduler disabled: %s not found",
+          Paths.get(configPath, AutoBackupConfig.CONFIG_FILE_NAME));
       this.enabled = false;
       return;
     }
@@ -359,7 +359,8 @@ public class AutoBackupSchedulerPlugin implements ServerPlugin {
   public void reloadConfiguration() {
     synchronized (lifecycleLock) {
       if (!configLoader.configExists()) {
-        LogManager.instance().log(this, Level.WARNING, "Cannot reload configuration: config/backup.json not found");
+        LogManager.instance().log(this, Level.WARNING, "Cannot reload configuration: %s not found",
+            Paths.get(server.getConfigPath(), AutoBackupConfig.CONFIG_FILE_NAME));
         return;
       }
 

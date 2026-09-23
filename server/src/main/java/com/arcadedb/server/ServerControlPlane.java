@@ -1232,7 +1232,7 @@ public class ServerControlPlane {
       response.put("config", config != null ? config.toJSON() : JSONObject.NULL);
     } else {
       // Plugin not enabled at startup - try to read config from file directly
-      final Path configPath = Paths.get(server.getRootPath(), "config", AutoBackupConfig.CONFIG_FILE_NAME);
+      final Path configPath = Paths.get(server.getConfigPath(), AutoBackupConfig.CONFIG_FILE_NAME);
       if (Files.exists(configPath)) {
         try {
           final String content = Files.readString(configPath);
@@ -1263,7 +1263,7 @@ public class ServerControlPlane {
       validateBackupDirectory(configJson.getString("backupDirectory"));
 
     // Save configuration to file
-    final Path configPath = Paths.get(server.getRootPath(), "config", AutoBackupConfig.CONFIG_FILE_NAME);
+    final Path configPath = Paths.get(server.getConfigPath(), AutoBackupConfig.CONFIG_FILE_NAME);
 
     // Write configuration atomically so a crash mid-write leaves the previous valid file intact.
     // atomicWriteFile also creates the parent config directory if needed.
@@ -1548,7 +1548,7 @@ public class ServerControlPlane {
         return AutoBackupSchedulerPlugin.validateAndResolveBackupPath(configured, serverRoot);
     }
 
-    final Path configPath = Paths.get(server.getRootPath(), "config", AutoBackupConfig.CONFIG_FILE_NAME);
+    final Path configPath = Paths.get(server.getConfigPath(), AutoBackupConfig.CONFIG_FILE_NAME);
     if (Files.exists(configPath)) {
       try {
         final String configured = new JSONObject(Files.readString(configPath)).getString("backupDirectory", null);
