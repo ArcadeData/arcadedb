@@ -18,13 +18,6 @@
  */
 package com.arcadedb.postgres;
 
-import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.serializer.json.JSONArray;
-import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.security.ServerSecurity;
-import com.arcadedb.utility.DateUtils;
-
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -36,6 +29,7 @@ import java.time.Duration;
 import java.util.List;
 
 import static com.arcadedb.postgres.PostgresWireMessages.WireMessage;
+import static com.arcadedb.postgres.PostgresWireMessages.errorFields;
 import static com.arcadedb.postgres.PostgresWireMessages.messageTypesOf;
 import static com.arcadedb.postgres.PostgresWireMessages.readUntilReadyForQuery;
 import static com.arcadedb.postgres.PostgresWireMessages.sendBind;
@@ -44,6 +38,7 @@ import static com.arcadedb.postgres.PostgresWireMessages.sendExecute;
 import static com.arcadedb.postgres.PostgresWireMessages.sendParse;
 import static com.arcadedb.postgres.PostgresWireMessages.sendSimpleQuery;
 import static com.arcadedb.postgres.PostgresWireMessages.sendSync;
+import static com.arcadedb.postgres.PostgresWireMessages.show;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
@@ -57,30 +52,22 @@ import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
  *   <li>a cached {@code SET} bound and executed again with no Parse in between - what a pgjdbc/psycopg3 statement
  *   cache sends once the statement is promoted - answered {@code CommandComplete SET} and re-applied nothing.</li>
  * </ul>
- * The only {@code SET} whose effect is visible from outside the connection is {@code datestyle = ISO}, which writes
- * the schema's date-time format, so every test observes that on the server-side database.
+ * A {@code SET} is session-scoped (issue #8217), so every test observes it through {@code SHOW} on the connection
+ * that ran it.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 class Issue8135SetAppliedAtExecuteIT extends PostgresWireProtocolTestBase {
 
-  private static final String SET_ISO             = "SET datestyle = 'ISO'";
-  private static final String RESTRICTED_USER     = "issue8135noSettings";
-  private static final String RESTRICTED_PASSWORD = "issue8135noSettingsPwd";
-  private static final String RESTRICTED_GROUP    = "issue8135NoSettings";
-
-  @AfterEach
-  @Override
-  public void endTest() {
-    resetDateTimeFormat();
-    super.endTest();
-  }
+  private static final String PARAMETER   = "application_name";
+  private static final String VALUE       = "issue8135";
+  private static final String SET_VALUE   = "SET " + PARAMETER + " = '" + VALUE + "'";
+  private static final String OTHER       = "other";
+  private static final String REFUSED_SET = "SET server_version = '1'";
 
   @Test
   @DisplayName("[#8135] a SET that is only prepared - Parse, then Parse+Bind, each followed by Sync - does not change the session")
   void preparedButNotExecutedSetHasNoEffect() throws Exception {
-    resetDateTimeFormat();
-
     try (final Socket socket = connect()) {
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
@@ -88,10 +75,10 @@ class Issue8135SetAppliedAtExecuteIT extends PostgresWireProtocolTestBase {
 
       assertTimeoutPreemptively(Duration.ofSeconds(30), () -> {
         // Parse and Sync: what a driver sends to prepare a statement ahead of using it.
-        sendParse(out, "s", SET_ISO);
+        sendParse(out, "s", SET_VALUE);
         sendSync(out);
         assertThat(messageTypesOf(readUntilReadyForQuery(in))).as("the Parse is accepted").containsExactly('1', 'Z');
-        assertThat(currentDateTimeFormat()).as("preparing a SET must not apply it").isNotEqualTo(DateUtils.DATE_TIME_ISO_8601_FORMAT);
+        assertThat(show(out, in, PARAMETER)).as("preparing a SET must not apply it").isNotEqualTo(VALUE);
 
         // An explicit block keeps portal "p" alive across the Syncs below: in autocommit a Sync ends the implicit
         // transaction and the portal with it, as in PostgreSQL (issue #8212).
@@ -103,15 +90,14 @@ class Issue8135SetAppliedAtExecuteIT extends PostgresWireProtocolTestBase {
         sendDescribe(out, 'P', "p");
         sendSync(out);
         assertThat(messageTypesOf(readUntilReadyForQuery(in))).doesNotContain('E');
-        assertThat(currentDateTimeFormat()).as("binding and describing a SET must not apply it either")
-            .isNotEqualTo(DateUtils.DATE_TIME_ISO_8601_FORMAT);
+        assertThat(show(out, in, PARAMETER)).as("binding and describing a SET must not apply it either").isNotEqualTo(VALUE);
 
         // The Execute is what applies it: this is what proves the two assertions above could have failed.
         sendExecute(out, "p");
         sendSync(out);
         final List<WireMessage> executed = readUntilReadyForQuery(in);
         assertThat(messageTypesOf(executed)).containsExactly('C', 'Z');
-        assertThat(currentDateTimeFormat()).as("executing the SET applies it").isEqualTo(DateUtils.DATE_TIME_ISO_8601_FORMAT);
+        assertThat(show(out, in, PARAMETER)).as("executing the SET applies it").isEqualTo(VALUE);
 
         sendSimpleQuery(out, "COMMIT");
         assertThat(messageTypesOf(readUntilReadyForQuery(in))).containsExactly('C', 'Z');
@@ -122,23 +108,21 @@ class Issue8135SetAppliedAtExecuteIT extends PostgresWireProtocolTestBase {
   @Test
   @DisplayName("[#8135] a cached SET bound and executed again without a new Parse re-applies the setting")
   void reExecutedCachedSetIsReapplied() throws Exception {
-    resetDateTimeFormat();
-
     try (final Socket socket = connect()) {
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
 
       assertTimeoutPreemptively(Duration.ofSeconds(30), () -> {
-        sendParse(out, "s", SET_ISO);
+        sendParse(out, "s", SET_VALUE);
         sendBind(out, "p", "s");
         sendExecute(out, "p");
         sendSync(out);
         assertThat(messageTypesOf(readUntilReadyForQuery(in))).doesNotContain('E');
-        assertThat(currentDateTimeFormat()).isEqualTo(DateUtils.DATE_TIME_ISO_8601_FORMAT);
+        assertThat(show(out, in, PARAMETER)).isEqualTo(VALUE);
 
         // Something else changes the value the SET established.
-        resetDateTimeFormat();
+        setOther(out, in);
 
         // The statement cache re-runs the prepared SET to restore it: Bind+Execute of the same name, no Parse.
         sendBind(out, "p", "s");
@@ -146,8 +130,8 @@ class Issue8135SetAppliedAtExecuteIT extends PostgresWireProtocolTestBase {
         sendSync(out);
         final List<WireMessage> reuse = readUntilReadyForQuery(in);
         assertThat(messageTypesOf(reuse)).as("the re-executed SET answers CommandComplete").containsExactly('2', 'C', 'Z');
-        assertThat(currentDateTimeFormat()).as("a re-executed cached SET must apply the setting again, not only claim to")
-            .isEqualTo(DateUtils.DATE_TIME_ISO_8601_FORMAT);
+        assertThat(show(out, in, PARAMETER)).as("a re-executed cached SET must apply the setting again, not only claim to")
+            .isEqualTo(VALUE);
       });
     }
   }
@@ -155,35 +139,32 @@ class Issue8135SetAppliedAtExecuteIT extends PostgresWireProtocolTestBase {
   @Test
   @DisplayName("[#8135] re-running the same already-executed SET portal without a new Bind applies it only once")
   void replayingTheBoundSetPortalAppliesOnlyOnce() throws Exception {
-    resetDateTimeFormat();
-
     try (final Socket socket = connect()) {
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
 
       assertTimeoutPreemptively(Duration.ofSeconds(30), () -> {
-        // An explicit block keeps portal "p" alive across the Sync: in autocommit a Sync ends the implicit
-        // transaction and the portal with it, as in PostgreSQL (issue #8212).
+        // An explicit block keeps portal "p" alive across the Sync and the simple queries: in autocommit a Sync or a
+        // simple Query ends the implicit transaction and the portal with it, as in PostgreSQL (issue #8212).
         sendSimpleQuery(out, "BEGIN");
         assertThat(messageTypesOf(readUntilReadyForQuery(in))).containsExactly('C', 'Z');
 
-        sendParse(out, "s", SET_ISO);
+        sendParse(out, "s", SET_VALUE);
         sendBind(out, "p", "s");
         sendExecute(out, "p");
         sendSync(out);
         assertThat(messageTypesOf(readUntilReadyForQuery(in))).doesNotContain('E');
-        assertThat(currentDateTimeFormat()).isEqualTo(DateUtils.DATE_TIME_ISO_8601_FORMAT);
+        assertThat(show(out, in, PARAMETER)).isEqualTo(VALUE);
 
-        resetDateTimeFormat();
+        setOther(out, in);
 
         // No Bind: the same boundary applyTransactionControl() draws (#7851) - the marker belongs to the bound
         // portal and is consumed by its first Execute; only a new Bind of the statement carries it again.
         sendExecute(out, "p");
         sendSync(out);
         assertThat(messageTypesOf(readUntilReadyForQuery(in))).containsExactly('C', 'Z');
-        assertThat(currentDateTimeFormat()).as("a replayed portal applies its SET once")
-            .isNotEqualTo(DateUtils.DATE_TIME_ISO_8601_FORMAT);
+        assertThat(show(out, in, PARAMETER)).as("a replayed portal applies its SET once").isEqualTo(OTHER);
 
         sendSimpleQuery(out, "COMMIT");
         assertThat(messageTypesOf(readUntilReadyForQuery(in))).containsExactly('C', 'Z');
@@ -194,8 +175,6 @@ class Issue8135SetAppliedAtExecuteIT extends PostgresWireProtocolTestBase {
   @Test
   @DisplayName("[#8135] a SET whose Execute is discarded by an earlier error in the same pipeline does not take effect")
   void setDiscardedBySkipUntilSyncHasNoEffect() throws Exception {
-    resetDateTimeFormat();
-
     try (final Socket socket = connect()) {
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
@@ -204,7 +183,7 @@ class Issue8135SetAppliedAtExecuteIT extends PostgresWireProtocolTestBase {
       assertTimeoutPreemptively(Duration.ofSeconds(30), () -> {
         // The SET is parsed BEFORE the failing statement, so its Parse succeeds; its Bind and Execute come after
         // the error and are discarded up to the Sync, as PostgreSQL discards them.
-        sendParse(out, "s", SET_ISO);
+        sendParse(out, "s", SET_VALUE);
         sendParse(out, "bad", "SELEC 1");
         sendBind(out, "p", "s");
         sendExecute(out, "p");
@@ -212,8 +191,8 @@ class Issue8135SetAppliedAtExecuteIT extends PostgresWireProtocolTestBase {
         final List<WireMessage> pipeline = readUntilReadyForQuery(in);
         assertThat(messageTypesOf(pipeline)).as("the malformed statement fails the pipeline").contains('E');
         assertThat(messageTypesOf(pipeline)).as("the discarded Execute answers nothing").doesNotContain('C');
-        assertThat(currentDateTimeFormat()).as("a SET the client never got to execute must not have been applied")
-            .isNotEqualTo(DateUtils.DATE_TIME_ISO_8601_FORMAT);
+        assertThat(show(out, in, PARAMETER)).as("a SET the client never got to execute must not have been applied")
+            .isNotEqualTo(VALUE);
       });
     }
   }
@@ -221,41 +200,44 @@ class Issue8135SetAppliedAtExecuteIT extends PostgresWireProtocolTestBase {
   @Test
   @DisplayName("[#8135] a SET refused at Execute is refused again when the same portal is re-executed, not silently skipped")
   void refusedSetIsRefusedAgainOnReplay() throws Exception {
-    resetDateTimeFormat();
-
-    // A user whose group grants no database-level access, so SET datestyle's LocalSchema.setDateTimeFormat() -
-    // which checks UPDATE_DATABASE_SETTINGS - throws at Execute.
-    final ServerSecurity security = getServer(0).getSecurity();
-    security.saveGroup(getDatabaseName(), RESTRICTED_GROUP, new JSONObject().put("access", new JSONArray())
-        .put("types", new JSONObject().put("*", new JSONObject().put("access", new JSONArray(new String[] { "readRecord" })))));
-    security.createUser(new JSONObject().put("name", RESTRICTED_USER).put("password", security.encodePassword(RESTRICTED_PASSWORD))
-        .put("databases", new JSONObject().put(getDatabaseName(), new JSONArray(new String[] { RESTRICTED_GROUP }))));
-
     try (final Socket socket = connect()) {
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
-      authenticate(out, in, RESTRICTED_USER, RESTRICTED_PASSWORD);
+      authenticate(out, in);
 
       assertTimeoutPreemptively(Duration.ofSeconds(30), () -> {
-        sendParse(out, "s", SET_ISO);
+        // server_version is read-only, in PostgreSQL as here (issue #8217): the SET parses, and is refused at Execute.
+        sendParse(out, "s", REFUSED_SET);
         sendBind(out, "p", "s");
         sendExecute(out, "p");
         sendSync(out);
-        assertThat(messageTypesOf(readUntilReadyForQuery(in))).as("the SET is refused at Execute").contains('E').doesNotContain('C');
+        final List<WireMessage> refused = readUntilReadyForQuery(in);
+        assertThat(messageTypesOf(refused)).as("the SET is refused at Execute").contains('E').doesNotContain('C');
+        assertThat(sqlStateOf(refused)).as("cant_change_runtime_param, as PostgreSQL answers it").isEqualTo("55P02");
 
-        // Recovered by the Sync, the client retries the SAME bound portal - no new Bind. The refusal must be
-        // repeated: a marker consumed by the failed attempt would answer "CommandComplete SET" having applied nothing.
+        // Recovered by the Sync, the client retries the SAME bound portal - no new Bind. It must not answer
+        // "CommandComplete SET" having applied nothing. Since #8212 the Sync that ended the implicit transaction also
+        // dropped the portal, so the retry is answered 34000 (portal missing) before it reaches the SET marker at all.
         sendExecute(out, "p");
         sendSync(out);
-        assertThat(messageTypesOf(readUntilReadyForQuery(in))).as("the retried SET is refused again, not reported as applied")
+        final List<WireMessage> retried = readUntilReadyForQuery(in);
+        assertThat(messageTypesOf(retried)).as("the retried SET is refused again, not reported as applied")
             .contains('E').doesNotContain('C');
-      });
-    } finally {
-      security.dropUser(RESTRICTED_USER);
-      security.deleteGroup(getDatabaseName(), RESTRICTED_GROUP);
-    }
 
-    assertThat(currentDateTimeFormat()).as("a refused SET changes nothing").isNotEqualTo(DateUtils.DATE_TIME_ISO_8601_FORMAT);
+        assertThat(show(out, in, "server_version")).as("a refused SET changes nothing")
+            .isEqualTo(PostgresNetworkExecutor.PG_SERVER_VERSION);
+      });
+    }
+  }
+
+  private static String sqlStateOf(final List<WireMessage> messages) {
+    return errorFields(messages.stream().filter(m -> m.type() == 'E').findFirst().orElseThrow()).get('C');
+  }
+
+  private static void setOther(final DataOutputStream out, final DataInputStream in) throws Exception {
+    sendSimpleQuery(out, "SET " + PARAMETER + " = '" + OTHER + "'");
+    assertThat(messageTypesOf(readUntilReadyForQuery(in))).doesNotContain('E');
+    assertThat(show(out, in, PARAMETER)).isEqualTo(OTHER);
   }
 
   private Socket connect() throws Exception {
@@ -264,23 +246,10 @@ class Issue8135SetAppliedAtExecuteIT extends PostgresWireProtocolTestBase {
     return socket;
   }
 
-  private String currentDateTimeFormat() {
-    return getServerDatabase(0, getDatabaseName()).getSchema().getDateTimeFormat();
-  }
-
-  private void resetDateTimeFormat() {
-    getServerDatabase(0, getDatabaseName()).getSchema().setDateTimeFormat(GlobalConfiguration.DATE_TIME_FORMAT.getValueAsString());
-  }
-
   private void authenticate(final DataOutputStream out, final DataInputStream in) throws Exception {
-    authenticate(out, in, "root", DEFAULT_PASSWORD_FOR_TESTS);
-  }
-
-  private void authenticate(final DataOutputStream out, final DataInputStream in, final String user, final String password)
-      throws Exception {
-    sendStartupMessage(out, user, getDatabaseName());
+    sendStartupMessage(out, "root", getDatabaseName());
     readMessage(in); // AuthenticationCleartextPassword
-    sendPasswordMessage(out, password);
+    sendPasswordMessage(out, DEFAULT_PASSWORD_FOR_TESTS);
     readMessageOfType(in, 'Z'); // drain AuthenticationOk/BackendKeyData/ParameterStatus.../ReadyForQuery
   }
 }
