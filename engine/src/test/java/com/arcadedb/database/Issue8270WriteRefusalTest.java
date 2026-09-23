@@ -20,6 +20,7 @@ package com.arcadedb.database;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.security.SecurityDatabaseUser;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -121,6 +122,17 @@ class Issue8270WriteRefusalTest extends TestHelper {
     local().refuseWrites(REASON);
 
     assertThatThrownBy(() -> database.command("sql", "ALTER DATABASE `arcadedb.dateFormat` 'yyyy'"))
+        .isInstanceOf(NeedRetryException.class).hasMessageContaining(REASON);
+  }
+
+  @Test
+  void aPrivilegeCheckThatIsNotAWriteIsNotRefused() {
+    local().refuseWrites(REASON);
+
+    // UPDATE_SECURITY guards read-only operations too (BACKUP DATABASE, LOAD CSV): the refusal must not block them.
+    local().checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SECURITY);
+
+    assertThatThrownBy(() -> local().checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA))
         .isInstanceOf(NeedRetryException.class).hasMessageContaining(REASON);
   }
 

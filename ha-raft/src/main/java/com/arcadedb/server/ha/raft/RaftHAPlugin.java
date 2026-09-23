@@ -98,6 +98,10 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
    * touched anything. Lets a test hold a starting node in the window between its network listeners accepting
    * requests and its databases being wrapped for replication (issue #8270), which in-process lasts a few
    * milliseconds and in a container half a second.
+   * <p>
+   * JVM-wide, like the other test hooks of this module: every in-process server of a test sees it, so a test must
+   * filter on the server it is handed and clear the hook in a {@code finally}. It assumes no other test starts a
+   * server in the same JVM concurrently, which holds as long as this module's tests run serially.
    */
   static volatile Consumer<ArcadeDBServer> TEST_BEFORE_START_HOOK = null;
 

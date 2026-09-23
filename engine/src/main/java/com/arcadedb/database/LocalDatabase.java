@@ -251,6 +251,17 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   private            int                                       cachedHashCode            = 0;
   /** Guards against concurrent GraphBatch instances on this database. Never routed through a wrapper. */
   private final      AtomicBoolean                             batchInProgress           = new AtomicBoolean(false);
+  /**
+   * Why this database refuses writes right now, or {@code null} when it accepts them (issue #8270).
+   * <p>
+   * Set by a server that has opened the database before it can replicate it: on a node configured for high
+   * availability the databases are opened, and the network listeners started, before the HA plugin wraps each
+   * database for replication. A commit or a schema change reaching this instance in that window would be applied
+   * here and nowhere else, and the Raft replay that follows would then splice the cluster's committed pages over it
+   * at the same page versions. Unlike the recovery fence it does not block reads, and it is lifted as soon as the
+   * database is wrapped.
+   */
+  private volatile   String                                    writeRefusal              = null;
 
   protected LocalDatabase(final String path, final ComponentFile.MODE mode, final ContextConfiguration configuration,
       final SecurityManager security, final Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks) {
@@ -884,6 +895,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     // Issue #8270: a schema or settings change that only rewrites the configuration - ALTER PROPERTY, ALTER TYPE,
     // ALTER DATABASE - reaches neither a commit nor recordFileChanges(), and this is the one check every one of them
     // makes first. Checked before the security early-returns below, which skip it for an unsecured database.
+    // UPDATE_SECURITY is exempt on purpose: it is a PRIVILEGE check, not a write marker. It guards operations that
+    // need not write at all - BACKUP DATABASE, LOAD CSV, running a polyglot script - and whatever one of them does
+    // write (IMPORT DATABASE, JS function and trigger definitions, a script's own transaction) reaches a commit,
+    // recordFileChanges() or an UPDATE_SCHEMA check as well, each of which is refused.
     if (access != SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SECURITY)
       checkWritesAccepted();
 
@@ -3220,18 +3235,6 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public boolean isFencedForRecovery() {
     return fenceReason != null;
   }
-
-  /**
-   * Why this database refuses writes right now, or {@code null} when it accepts them (issue #8270).
-   * <p>
-   * Set by a server that has opened the database before it can replicate it: on a node configured for high
-   * availability the databases are opened, and the network listeners started, before the HA plugin wraps each
-   * database for replication. A commit or a schema change reaching this instance in that window would be applied
-   * here and nowhere else, and the Raft replay that follows would then splice the cluster's committed pages over it
-   * at the same page versions. Unlike {@link #fenceReason} it does not block reads, and it is lifted as soon as the
-   * database is wrapped.
-   */
-  private volatile String writeRefusal = null;
 
   /**
    * Refuses every commit carrying changes, and every schema change, with a retryable {@link NeedRetryException}
