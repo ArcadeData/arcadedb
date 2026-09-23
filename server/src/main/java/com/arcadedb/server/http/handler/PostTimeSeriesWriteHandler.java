@@ -59,16 +59,20 @@ import java.util.logging.Level;
  * <ul>
  * <li>{@link #requiresTransaction()} is <b>false</b>. An append is not made atomic by wrapping it:
  * {@code TimeSeriesShard.appendSamples} opens its own {@code begin}/{@code commit} around each shard's write,
- * so an outer auto-commit transaction would have nothing of its own to commit - and it would cost the parallel
- * shard dispatch, which {@code TimeSeriesEngine.appendBatch} takes only when no transaction is active on the
- * calling thread (#4957). The partial-write report below is what this endpoint offers in place of atomicity.</li>
+ * so an outer auto-commit transaction would have nothing of its own to commit. The partial-write report below is
+ * what this endpoint offers in place of atomicity. The full reasoning, including what this {@code false} does
+ * NOT buy, lives in one place only - {@link DatabaseAbstractHandler#rejectsUnresolvableSession()} - so that it
+ * cannot drift from a second copy here again (issues #7741, #7857).</li>
  * <li>{@link #rejectsUnresolvableSession()} is <b>true</b>. A read that names a session this server cannot
  * resolve can degrade to reading outside it; a write cannot, because the client believes it is writing
  * something it can still roll back.</li>
  * </ul>
- * A session that DOES resolve is bound onto the request thread, which makes {@code appendBatch} take its
- * in-thread branch for the same #4957 reason - the same thing an embedded caller appending inside its own
- * transaction already gets. It does not make the samples part of that transaction: the nested begin/commit is
+ * Neither answer changes how {@code TimeSeriesEngine.appendBatch} dispatches the shard writes: they stay on the
+ * request thread on every request to this route, with or without a session, because a transaction is always
+ * active there when the append runs - either the session's, bound onto the request thread, or the one
+ * {@code TimeSeriesGateway.write} begins itself (#4957, {@code Issue7741LineProtocolWriteStaysInThreadTest}).
+ * <p>
+ * A session that DOES resolve does not make the samples part of its transaction either: the nested begin/commit is
  * an independent transaction rather than a savepoint, so they are durable before the caller commits anything.
  * Issue #7410 closed that divergence in favour of this behaviour, and #7657 settled that it stays: an append
  * that joined the caller's transaction would be committed outside the shard's {@code appendLock}, and two
