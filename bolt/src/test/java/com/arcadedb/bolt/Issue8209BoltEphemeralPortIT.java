@@ -48,7 +48,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class Issue8209BoltEphemeralPortIT extends BaseBoltServerTest {
-  private static final int PRODUCTION_BOLT_PORT = 7687;
+  private static final int PRODUCTION_DEFAULT_PORT = 7687;
 
   private ServerSocket squatter;
 
@@ -57,7 +57,7 @@ public class Issue8209BoltEphemeralPortIT extends BaseBoltServerTest {
     super.setTestConfiguration();
     GlobalConfiguration.SERVER_PLUGINS.setValue("Bolt:com.arcadedb.bolt.BoltProtocolPlugin");
     try {
-      squatter = new ServerSocket(PRODUCTION_BOLT_PORT, 1, InetAddress.getLoopbackAddress());
+      squatter = new ServerSocket(PRODUCTION_DEFAULT_PORT, 1, InetAddress.getLoopbackAddress());
     } catch (final IOException e) {
       // Something already holds 7687, which is the condition this test reproduces anyway
       squatter = null;
@@ -90,7 +90,7 @@ public class Issue8209BoltEphemeralPortIT extends BaseBoltServerTest {
   void serverStartsOnAnEphemeralPortWhileTheProductionPortIsTaken() {
     assertThat(getServer(0).isStarted()).isTrue();
     assertThat(getServerBoltPort()).isGreaterThan(0);
-    assertThat(getServerBoltPort()).isNotEqualTo(PRODUCTION_BOLT_PORT);
+    assertThat(getServerBoltPort()).isNotEqualTo(PRODUCTION_DEFAULT_PORT);
 
     try (final Driver driver = getDriver(); final Session session = driver.session(
         SessionConfig.forDatabase(getDatabaseName()))) {
@@ -105,7 +105,7 @@ public class Issue8209BoltEphemeralPortIT extends BaseBoltServerTest {
    */
   @Test
   void productionDefaultIsUnchanged() {
-    assertThat(GlobalConfiguration.BOLT_PORT.getDefValue()).isEqualTo(PRODUCTION_BOLT_PORT);
+    assertThat(GlobalConfiguration.BOLT_PORT.getDefValue()).isEqualTo(PRODUCTION_DEFAULT_PORT);
   }
 
   /**
