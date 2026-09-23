@@ -39,10 +39,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * the classes even shared a base (51161) while their comments claimed to keep clear of each other: a hand-picked
  * number cannot be kept apart from every other one by review.
  * <p>
- * They now take their ports from {@code StaticBaseServerTest.allocateFreePorts}. This is a source-level guard in the
- * spirit of {@link Issue7472EveryGrpcFailureIsConcealableTest}: the defect is not observable from inside one test
- * class, only as a collision between two of them on a busy runner, so no behavioural test can hold the line. It
- * fails the moment a Raft cluster fixture in this module configures a gRPC port without allocating it.
+ * They now take their ports from {@code BaseRaftHATest.allocateFixturePorts}, which draws them through
+ * {@code StaticBaseServerTest.allocateFreePorts} and keeps them apart from the fixture's Raft ports (issue #8203). This
+ * is a source-level guard in the spirit of {@link Issue7472EveryGrpcFailureIsConcealableTest}: the defect is not
+ * observable from inside one test class, only as a collision between two of them on a busy runner, so no behavioural
+ * test can hold the line. It fails the moment a Raft cluster fixture in this module configures a gRPC port without
+ * allocating it.
  */
 class Issue7496GrpcHaItsAllocateTheirPortsTest {
 
@@ -73,7 +75,7 @@ class Issue7496GrpcHaItsAllocateTheirPortsTest {
 
         final String name = file.getFileName().toString();
         fixtures.add(name);
-        if (!source.contains("allocateFreePorts(") || LITERAL_GRPC_PORT.matcher(source).find())
+        if (!source.contains("allocateFixturePorts(") || LITERAL_GRPC_PORT.matcher(source).find())
           offenders.add(name);
       }
     }
@@ -82,7 +84,7 @@ class Issue7496GrpcHaItsAllocateTheirPortsTest {
         .as("the scan must find the gRPC HA fixtures it guards, or it proves nothing")
         .hasSizeGreaterThanOrEqualTo(EXPECTED_MINIMUM_FIXTURES);
     assertThat(offenders)
-        .as("gRPC HA fixtures binding a hand-picked gRPC port instead of StaticBaseServerTest.allocateFreePorts (issue #7496)")
+        .as("gRPC HA fixtures binding a hand-picked gRPC port instead of BaseRaftHATest.allocateFixturePorts (issues #7496, #8203)")
         .isEmpty();
   }
 }
