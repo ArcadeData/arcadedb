@@ -994,8 +994,9 @@ public class Console {
         }
 
         if (!pending.isEmpty())
-            // THE FILE ENDS WITH AN UNTERMINATED BLOCK COMMENT OR JSON OBJECT: EXECUTE WHAT COMES BEFORE IT. IF IT IS A GENUINELY
-            // UNCLOSED '{' RATHER THAN A COMMENT, THE CALL BELOW REPORTS IT THROUGH reportUnbalancedBrace() AS USUAL
+            // THE FILE ENDS WITH AN UNTERMINATED BLOCK COMMENT, JSON OBJECT, OR (#8275) A STATEMENT WITH NO TRAILING ';':
+            // EXECUTE WHAT COMES BEFORE IT. IF IT IS A GENUINELY UNCLOSED '{' RATHER THAN A COMMENT, THE CALL BELOW
+            // REPORTS IT THROUGH reportUnbalancedBrace() AS USUAL
             execute(parser.parse(pending.toString(), 0), true, pendingStartLine - 1);
 
         elapsed = System.currentTimeMillis() - startedOn;
