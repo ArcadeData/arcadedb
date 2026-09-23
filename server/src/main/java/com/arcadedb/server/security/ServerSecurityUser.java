@@ -117,15 +117,10 @@ public class ServerSecurityUser implements SecurityUser {
   }
 
   /**
-   * Whether this user is the server administrator ({@value #ROOT_USER}), the only principal authorized for capabilities
-   * whose reach is the host rather than one database.
-   */
-  public boolean isServerAdministrator() {
-    return isServerAdministrator(name);
-  }
-
-  /**
-   * The single definition of the server administrator, shared by every principal type that answers the question.
+   * The single definition of the server administrator ({@value #ROOT_USER}), the only principal authorized for
+   * capabilities whose reach is the host rather than one database. Shared by every principal type that answers the
+   * question. Static and name-based on purpose: callers pass {@code user.getName()}, which is all the HTTP and wire
+   * layers (and their test doubles) are guaranteed to carry.
    */
   public static boolean isServerAdministrator(final String userName) {
     return ROOT_USER.equals(userName);
