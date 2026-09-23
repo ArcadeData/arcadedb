@@ -25,6 +25,7 @@ import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.Component;
 import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.index.Index;
@@ -155,6 +156,7 @@ class Issue7963FullSchemaLoadKeepsPreviousGenerationTest extends TestHelper {
     final String blockingBucketName = firstBucketNameOf(schema);
     final Bucket bucketBefore = schema.getBucketByName(blockingBucketName);
     final Index indexBefore = schema.getIndexByName(INDEX_NAME);
+    final Dictionary dictionaryBefore = schema.getDictionary();
 
     final BlockingHook hook = installBlockingBucket(schema, blockingBucketName);
     hook.failInsteadOfBlocking = true;
@@ -169,6 +171,10 @@ class Issue7963FullSchemaLoadKeepsPreviousGenerationTest extends TestHelper {
     assertThat(schema.getBucketByName(blockingBucketName)).isSameAs(bucketBefore);
     assertThat(schema.getBucketById(bucketBefore.getFileId())).isSameAs(bucketBefore);
     assertThat(schema.getIndexByName(INDEX_NAME)).isSameAs(indexBefore);
+    // The dictionary is swapped in before the barrier, so the abort path has to put the previous one back: by name
+    // and by file id, the same instance (PR #8228 review).
+    assertThat(schema.getDictionary()).isSameAs(dictionaryBefore);
+    assertThat(schema.getFileById(dictionaryBefore.getFileId())).isSameAs(dictionaryBefore);
     assertThat(countType()).isEqualTo(2L);
     assertThat(neighbors()).containsExactly("a");
 
@@ -192,6 +198,28 @@ class Issue7963FullSchemaLoadKeepsPreviousGenerationTest extends TestHelper {
     assertThat(schema.existsIndex("issue7963GhostIndex")).isFalse();
     assertThat(countType()).isEqualTo(2L);
     assertThat(neighbors()).containsExactly("a");
+  }
+
+  /**
+   * A commit raises the page count before the flush thread writes the page, so the file can be shorter than what is
+   * committed. The component published by a full load must not count fewer pages than the one it replaces, or the
+   * next allocation reuses a committed page number (PR #8228 review).
+   */
+  @Test
+  void aFullLoadCarriesOverThePageCountThePreviousGenerationCommitted() throws Exception {
+    final LocalSchema schema = schema();
+    final String bucketName = firstBucketNameOf(schema);
+    final LocalBucket bucketBefore = (LocalBucket) schema.getBucketByName(bucketName);
+    final int pagesOnDisk = (int) (bucketBefore.getComponentFile().getSize() / bucketBefore.getPageSize());
+    final int committedPages = Math.max(pagesOnDisk, bucketBefore.getCommittedPageCount()) + 1;
+    // Stands in for a page committed and not flushed yet: counted by the published instance, absent from the file.
+    bucketBefore.updatePageCount(committedPages);
+
+    schema.load(ComponentFile.MODE.READ_WRITE, true);
+
+    final LocalBucket bucketAfter = (LocalBucket) schema.getBucketByName(bucketName);
+    assertThat(bucketAfter).isNotSameAs(bucketBefore);
+    assertThat(bucketAfter.getCommittedPageCount()).isEqualTo(committedPages);
   }
 
   private Thread startFullLoad(final LocalSchema schema, final BlockingHook hook) {
