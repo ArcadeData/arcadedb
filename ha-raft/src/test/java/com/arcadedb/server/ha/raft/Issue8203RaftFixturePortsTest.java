@@ -154,14 +154,32 @@ class Issue8203RaftFixturePortsTest {
    * Source-level guard: no fixture may bring the fixed port back through its own {@code getServerAddresses()} or
    * {@code onServerConfiguration()} override, as {@code RaftPriorityRejoinIT} and {@code Issue6091GrpcRoutingTableIT}
    * did. The defect is a collision between two JVMs, which no single test run can observe.
+   * <p>
+   * The Bolt and gRPC modules build Raft clusters on {@link BaseRaftHATest} too, and this PR moved their fixtures off
+   * the literal as well, so their sources are scanned from here: they have no guard of their own for the Raft port.
    */
   @Test
-  void noRaftFixtureInThisModuleHardCodesARaftPort() throws IOException {
+  void noRaftFixtureHardCodesARaftPort() throws IOException {
     final Pattern fixedRaftPort = Pattern.compile("\\b2434\\b|BASE_RAFT(_PORT)?\\s*=");
-    final List<String> fixtures = new ArrayList<>();
     final List<String> offenders = new ArrayList<>();
 
-    try (final Stream<Path> files = Files.walk(Path.of("src", "test", "java"))) {
+    // Surefire runs with the module directory as the working directory, so the sibling modules sit one level up.
+    final int haRaftFixtures = scanRaftFixtures(Path.of("src", "test", "java"), fixedRaftPort, offenders);
+    final int boltFixtures = scanRaftFixtures(Path.of("..", "bolt", "src", "test", "java"), fixedRaftPort, offenders);
+    final int grpcFixtures = scanRaftFixtures(Path.of("..", "grpcw", "src", "test", "java"), fixedRaftPort, offenders);
+
+    assertThat(haRaftFixtures).as("the scan must find the ha-raft fixtures it guards, or it proves nothing").isGreaterThan(100);
+    assertThat(boltFixtures).as("the scan must find the Bolt HA fixtures it guards, or it proves nothing").isGreaterThanOrEqualTo(2);
+    assertThat(grpcFixtures).as("the scan must find the gRPC HA fixtures it guards, or it proves nothing").isGreaterThanOrEqualTo(10);
+    assertThat(offenders).as("Raft HA fixtures pinning a hand-picked Raft port instead of BaseRaftHATest.raftPort (issue #8203)")
+        .isEmpty();
+  }
+
+  /** Adds every Raft fixture under {@code root} that matches {@code fixedRaftPort} to {@code offenders}; returns how many fixtures it saw. */
+  private static int scanRaftFixtures(final Path root, final Pattern fixedRaftPort, final List<String> offenders) throws IOException {
+    assertThat(root).as("source root %s must exist, or the guard silently scans less than it claims", root).isDirectory();
+    int fixtures = 0;
+    try (final Stream<Path> files = Files.walk(root)) {
       for (final Path file : files.filter(p -> p.toString().endsWith(".java")).toList()) {
         if (file.getFileName().toString().equals(Issue8203RaftFixturePortsTest.class.getSimpleName() + ".java"))
           continue;
@@ -169,14 +187,11 @@ class Issue8203RaftFixturePortsTest {
         if (!source.contains("extends BaseRaftHATest") && !source.contains("extends BaseRaftHASslTest")
             && !source.contains("extends BaseCompactionIndexCompletenessTest"))
           continue;
-        fixtures.add(file.getFileName().toString());
+        fixtures++;
         if (fixedRaftPort.matcher(source).find())
-          offenders.add(file.getFileName().toString());
+          offenders.add(root.relativize(file).toString());
       }
     }
-
-    assertThat(fixtures).as("the scan must find the Raft fixtures it guards, or it proves nothing").hasSizeGreaterThan(100);
-    assertThat(offenders).as("Raft HA fixtures pinning a hand-picked Raft port instead of BaseRaftHATest.raftPort (issue #8203)")
-        .isEmpty();
+    return fixtures;
   }
 }
