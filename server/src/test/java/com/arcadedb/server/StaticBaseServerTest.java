@@ -139,8 +139,11 @@ public abstract class StaticBaseServerTest {
    * open until all {@code count} are taken, so the ports are distinct from each other; they are closed before
    * returning, so the caller can bind them. Allocate everything one fixture needs in ONE call: a second call cannot
    * see the ports the first one has already released.
+   * <p>
+   * Public so a fixture that builds its own {@code ArcadeDBServer}s without extending this class can draw its ports
+   * here too, rather than hand-picking them (issue #8222).
    */
-  protected static int[] allocateFreePorts(final int count) {
+  public static int[] allocateFreePorts(final int count) {
     return allocateFreePorts(count, FREE_PORT_RANGE_FIRST, FREE_PORT_RANGE_LAST);
   }
 

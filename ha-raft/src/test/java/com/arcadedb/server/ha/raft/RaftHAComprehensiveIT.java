@@ -28,6 +28,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.StaticBaseServerTest;
 import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.FileUtils;
@@ -59,12 +60,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Timeout(120)
 class RaftHAComprehensiveIT {
 
-  private static final int    SERVER_COUNT   = 3;
-  private static final int    BASE_HA_PORT   = 42424;
-  private static final int    BASE_HTTP_PORT = 42480;
-  private static final String DB_NAME        = "hatest";
+  private static final int    SERVER_COUNT = 3;
+  private static final String DB_NAME      = "hatest";
 
   private ArcadeDBServer[] servers;
+  /**
+   * Raft ports in {@code [0, SERVER_COUNT)}, HTTP ports in {@code [SERVER_COUNT, 2 * SERVER_COUNT)}, drawn once per test
+   * in ONE call so the two families cannot coincide, and kept for the whole test so a restarted node comes back on the
+   * port its peers know. The former {@code 42424 + i} sat inside the Linux ephemeral range, where any outgoing
+   * connection on the runner can hold it, and Ratis answers a Raft bind failure with {@code System.exit(1)} (issue
+   * #8222).
+   */
+  private int[]            ports;
 
   @BeforeEach
   void setUp() throws Exception {
@@ -691,11 +698,13 @@ class RaftHAComprehensiveIT {
   // =====================================================================
 
   private void startCluster() {
+    ports = StaticBaseServerTest.allocateFreePorts(2 * SERVER_COUNT);
+
     final StringBuilder serverList = new StringBuilder();
     for (int i = 0; i < SERVER_COUNT; i++) {
       if (i > 0)
         serverList.append(",");
-      serverList.append("localhost:").append(BASE_HA_PORT + i);
+      serverList.append("localhost:").append(raftPort(i));
     }
 
     servers = new ArcadeDBServer[SERVER_COUNT];
@@ -705,10 +714,10 @@ class RaftHAComprehensiveIT {
       config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, "./target/ha-comp-db" + i);
       config.setValue(GlobalConfiguration.HA_ENABLED, true);
       config.setValue(GlobalConfiguration.HA_SERVER_LIST, serverList.toString());
-      config.setValue(GlobalConfiguration.HA_RAFT_PORT, BASE_HA_PORT + i);
+      config.setValue(GlobalConfiguration.HA_RAFT_PORT, raftPort(i));
       config.setValue(GlobalConfiguration.HA_CLUSTER_NAME, "comp-test-cluster");
       config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST, "localhost");
-      config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, String.valueOf(BASE_HTTP_PORT + i));
+      config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, String.valueOf(httpPort(i)));
       config.setValue(GlobalConfiguration.SERVER_ROOT_PATH, "./target");
       servers[i] = new ArcadeDBServer(config);
       servers[i].start();
@@ -724,7 +733,14 @@ class RaftHAComprehensiveIT {
           try {
             servers[i].stop();
           } catch (final Exception e) { /* ignore */ }
-    CodeUtils.sleep(2000);
+  }
+
+  private int raftPort(final int index) {
+    return ports[index];
+  }
+
+  private int httpPort(final int index) {
+    return ports[SERVER_COUNT + index];
   }
 
   private void waitForLeader() {
