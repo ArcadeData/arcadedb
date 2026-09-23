@@ -1429,7 +1429,9 @@ public class ArcadeDBServer {
   private DatabaseInternal wrapForHA(final DatabaseInternal database) {
     // Read in the reverse of the order setDatabaseWrapper() writes them (wrapper first, then the flag cleared): a
     // cleared flag read here therefore guarantees the wrapper read next is visible, so a database can never slip
-    // through as neither wrapped nor refusing writes.
+    // through as neither wrapped nor refusing writes. This relies on both fields being volatile: volatile accesses are
+    // totally ordered consistently with each thread's program order (JLS 17.4.4), so seeing the second write implies
+    // seeing the first. Making either one a plain field breaks it.
     final boolean awaiting = awaitingHAWrapper;
     final Function<LocalDatabase, DatabaseInternal> wrapper = databaseWrapper;
     if (wrapper != null && database instanceof LocalDatabase local)

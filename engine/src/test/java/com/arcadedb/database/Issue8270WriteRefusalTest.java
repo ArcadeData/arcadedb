@@ -28,10 +28,16 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #8270: a database an HA server opened before it could replicate it refuses writes, and only writes, until
- * the refusal is lifted. Each entry point a write can take into the engine is driven on its own: a SQL statement in a
- * managed transaction, an explicit transaction creating a record, one updating a record, a schema change creating files, one that only
- * rewrites the schema configuration, and a database setting - the last three being the kinds that do not end in a
- * commit.
+ * the refusal is lifted.
+ * <p>
+ * Each entry point a write can take into the engine is driven on its own:
+ * <ul>
+ * <li>a SQL statement in a managed transaction;</li>
+ * <li>an explicit transaction creating a record, and one updating a record;</li>
+ * <li>a transaction begun under the refusal and committed after it was lifted;</li>
+ * <li>a schema change creating files, one that only rewrites the schema configuration, and a database setting - the
+ * kinds that do not end in a commit.</li>
+ * </ul>
  */
 class Issue8270WriteRefusalTest extends TestHelper {
 
