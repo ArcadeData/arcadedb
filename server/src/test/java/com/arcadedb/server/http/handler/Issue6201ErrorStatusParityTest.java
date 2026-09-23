@@ -39,6 +39,7 @@ import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ClusterCapabilityNotReadyException;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.HttpSessionException;
 import com.arcadedb.server.http.RequestBodyTooLargeException;
@@ -364,7 +365,15 @@ class Issue6201ErrorStatusParityTest {
             () -> new DatabaseOperationInProgressException("backup running")),
         new MappedFailure("ArithmeticErrorException", 400, () -> new ArithmeticErrorException("/ by zero")),
         new MappedFailure("FullTextQueryParseException", 400,
-            () -> new FullTextQueryParseException("bad query", new IllegalStateException("x")))
+            () -> new FullTextQueryParseException("bad query", new IllegalStateException("x"))),
+        // exceptionArgs DERIVED from the exception (capability|peer,peer) rather than a literal: the arm most
+        // likely to drift if the sender ever built it differently from the classifier (PR #8237 review).
+        new MappedFailure("ClusterCapabilityNotReadyException", 409,
+            () -> new ClusterCapabilityNotReadyException("peers have not proved they can decode it", "security-v2",
+                List.of("node-b:2424", "node-c:2424"))),
+        // The leaderless refusal falls through the 400 arm to the NeedRetryException one: the two arms of one type.
+        new MappedFailure("ServerIsNotTheLeaderException without a leader", 503,
+            () -> new ServerIsNotTheLeaderException("Leader address is unknown", null))
     ).map(failure -> DynamicTest.dynamicTest(failure.name(), () -> {
       final AbstractServerHttpHandler.ErrorClassification classification = handler(failure.factory().get())
           .classifyError(failure.factory().get());
@@ -378,6 +387,8 @@ class Issue6201ErrorStatusParityTest {
           .isEqualTo(body.getString("exception"));
       assertThat(classification.exceptionArgs()).as("exceptionArgs")
           .isEqualTo(body.has("exceptionArgs") ? body.getString("exceptionArgs") : null);
+      if (failure.name().equals("ClusterCapabilityNotReadyException"))
+        assertThat(classification.exceptionArgs()).isEqualTo("security-v2|node-b:2424,node-c:2424");
     }));
   }
 
