@@ -100,6 +100,26 @@ class PluginPortFixtureScanTest {
   }
 
   @Test
+  void aBoxedConstantIsFlaggedToo() throws IOException {
+    write("BoxedIT", "class BoxedIT extends BaseFooServerTest {\n  private static final Integer FOO_PORT = 51000;\n"
+        + "  void c() { PLUGINS.setValue(" + ENTRY + "); }\n}");
+
+    assertThat(scan().offenders()).containsExactly("BoxedIT.java: keeps a hand-picked FOO_PORT in a constant");
+  }
+
+  @Test
+  void sameNamedClassesInDifferentPackagesAreBothScanned() throws IOException {
+    // Keyed by file name, the second FooIT read would overwrite the first and hide its violation.
+    write("a/FooIT", "class FooIT extends BaseFooServerTest {\n  void c() { PLUGINS.setValue(" + ENTRY + "); }\n}");
+    write("b/FooIT", "class FooIT extends BaseGraphServerTest {\n  void c() { PLUGINS.setValue(" + ENTRY + "); }\n}");
+
+    final PluginPortFixtureScan.Result result = scan();
+
+    assertThat(result.fixtures()).containsExactly("a/FooIT.java", "b/FooIT.java");
+    assertThat(result.offenders()).singleElement().asString().startsWith("b/FooIT.java: starts the plugin outside");
+  }
+
+  @Test
   void dialingTheProductionDefaultIsFlagged() throws IOException {
     write("DialIT", "class DialIT extends BaseFooServerTest {\n  void c() { PLUGINS.setValue(" + ENTRY + "); connect(\"localhost\", 9999); }\n}");
 
@@ -122,6 +142,8 @@ class PluginPortFixtureScanTest {
   }
 
   private void write(final String className, final String body) throws IOException {
-    Files.writeString(root.resolve(className + ".java"), "package x;\n\n" + body + "\n", StandardCharsets.UTF_8);
+    final Path file = root.resolve(className + ".java");
+    Files.createDirectories(file.getParent());
+    Files.writeString(file, "package x;\n\n" + body + "\n", StandardCharsets.UTF_8);
   }
 }

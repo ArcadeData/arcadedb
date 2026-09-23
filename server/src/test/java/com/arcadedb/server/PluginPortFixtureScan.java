@@ -58,8 +58,10 @@ public final class PluginPortFixtureScan {
       "(?m)^(?:public\\s+|protected\\s+|abstract\\s+|final\\s+)*class\\s+(\\w+)(?:<[^>{]*>)?\\s+extends\\s+(\\w+)");
 
   /**
-   * @param fixtures  every class that starts the plugin, i.e. what the scan actually checked
-   * @param offenders one line per violation: the file name and the rule it breaks
+   * @param fixtures  every file that starts the plugin, i.e. what the scan actually checked
+   * @param offenders one line per violation: the file and the rule it breaks
+   *                  <p>
+   *                  Files are named by their path under the scanned root, with {@code /} separators.
    */
   public record Result(List<String> fixtures, List<String> offenders) {
   }
@@ -79,7 +81,9 @@ public final class PluginPortFixtureScan {
     final Map<String, String> sources = new TreeMap<>();
     try (final Stream<Path> files = Files.walk(testSources)) {
       for (final Path file : files.filter(p -> p.toString().endsWith(".java")).toList())
-        sources.put(file.getFileName().toString(), Files.readString(file, StandardCharsets.UTF_8));
+        // Keyed by the path under the root, not the file name: two classes with the same simple name in different
+        // packages would otherwise overwrite each other, and one fixture would drop out of the scan silently.
+        sources.put(testSources.relativize(file).toString().replace('\\', '/'), Files.readString(file, StandardCharsets.UTF_8));
     }
 
     // Top-level class -> superclass, so a fixture that inherits from an intermediate abstract class still resolves.
@@ -91,8 +95,8 @@ public final class PluginPortFixtureScan {
     }
 
     final Pattern startsPlugin = Pattern.compile("\"[\\w-]+:" + Pattern.quote(pluginClassName) + "\"");
-    // `int BASE_GRPC_PORT = 51141`, `int GRPC_PORT = 50051`: a port picked by hand and kept in a constant.
-    final Pattern literalConstant = Pattern.compile("\\bint\\s+\\w*" + Pattern.quote(portSetting) + "\\w*\\s*=\\s*\\d");
+    // `int BASE_GRPC_PORT = 51141`, `Integer GRPC_PORT = 50051`: a port picked by hand and kept in a constant.
+    final Pattern literalConstant = Pattern.compile("\\b(?:int|Integer)\\s+\\w*" + Pattern.quote(portSetting) + "\\w*\\s*=\\s*\\d");
     // `GRPC_PORT.setValue(50051)`, `setValue(GlobalConfiguration.GRPC_PORT, 50081)`, `GRPC_PORT.getKey(), "50051"`.
     // Zero is allowed: it is how the ephemeral bases ask the operating system for a free port.
     final Pattern literalSetting = Pattern.compile(
@@ -109,12 +113,13 @@ public final class PluginPortFixtureScan {
       fixtures.add(name);
 
       final Matcher declaration = CLASS_DECLARATION.matcher(source);
-      final String className = declaration.find() ? declaration.group(1) : null;
+      // Start from this file's own declared parent: the name-keyed map may hold a same-named class of another package.
+      final String parent = declaration.find() ? declaration.group(2) : null;
 
-      if (inherits(className, RAFT_HA_BASE, superclasses)) {
+      if (inherits(parent, RAFT_HA_BASE, superclasses)) {
         if (!source.contains("allocateFixturePorts("))
           offenders.add(name + ": a Raft cluster fixture that does not take its ports from allocateFixturePorts");
-      } else if (ephemeralBases.stream().noneMatch(base -> inherits(className, base, superclasses)))
+      } else if (ephemeralBases.stream().noneMatch(base -> inherits(parent, base, superclasses)))
         offenders.add(name + ": starts the plugin outside " + ephemeralBases + " and " + RAFT_HA_BASE
             + ", so nothing assigns it a free port");
 
@@ -128,14 +133,14 @@ public final class PluginPortFixtureScan {
     return new Result(fixtures, offenders);
   }
 
-  private static boolean inherits(final String className, final String base, final Map<String, String> superclasses) {
-    String current = className;
+  /** Whether {@code parent}, or any ancestor of it declared in the scanned tree, is {@code base}. */
+  private static boolean inherits(final String parent, final String base, final Map<String, String> superclasses) {
+    String current = parent;
     // Bounded by the number of known classes, so a malformed cycle cannot spin.
     for (int depth = 0; current != null && depth <= superclasses.size(); depth++) {
-      final String parent = superclasses.get(current);
-      if (base.equals(parent))
+      if (base.equals(current))
         return true;
-      current = parent;
+      current = superclasses.get(current);
     }
     return false;
   }

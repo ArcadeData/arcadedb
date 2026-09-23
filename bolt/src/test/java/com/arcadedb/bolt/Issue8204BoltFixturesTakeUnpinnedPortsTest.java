@@ -59,7 +59,7 @@ class Issue8204BoltFixturesTakeUnpinnedPortsTest {
         .as("the scan must find the Bolt plugin fixtures it guards, or it proves nothing")
         .hasSizeGreaterThanOrEqualTo(EXPECTED_MINIMUM_FIXTURES)
         .as("the Raft cluster fixtures issue #8204 named must be among them")
-        .contains("Bolt5002RoutingTableIT.java", "BoltFollowerForwardingIT.java");
+        .contains("com/arcadedb/bolt/Bolt5002RoutingTableIT.java", "com/arcadedb/bolt/BoltFollowerForwardingIT.java");
     assertThat(result.offenders())
         .as("Bolt plugin fixtures on a hand-picked port instead of BaseBoltServerTest or allocateFixturePorts (issues #8203, #8204)")
         .isEmpty();
