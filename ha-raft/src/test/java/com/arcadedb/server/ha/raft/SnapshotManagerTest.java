@@ -165,6 +165,22 @@ class SnapshotManagerTest {
   }
 
   /**
+   * #7769: the snapshot swap phase record. Like the pending marker it is node-local recovery state a leader never
+   * has, and it can outlive the marker by one crash (the marker is cleared durably before the phase record), so it
+   * may sit beside a serving database.
+   */
+  @Test
+  void theSnapshotSwapStateIsNotChecksummed(@TempDir final Path tempDir) throws Exception {
+    Files.writeString(tempDir.resolve("database.json"), "{}");
+    Files.writeString(tempDir.resolve(SnapshotInstaller.SNAPSHOT_SWAP_STATE_FILE), "INSTALLED");
+    Files.writeString(tempDir.resolve(SnapshotInstaller.SNAPSHOT_SWAP_STATE_TMP_FILE), "RESTORING");
+
+    final Map<String, Long> checksums = SnapshotManager.computeFileChecksums(tempDir.toFile());
+
+    assertThat(checksums).containsOnlyKeys("database.json");
+  }
+
+  /**
    * #7459, the property behind the three tests above stated once: two nodes holding the SAME database must agree,
    * however much node-local scratch either of them happens to be carrying at the moment it is asked. This is what
    * {@code /api/v1/cluster/checksums} compares, and it is the assertion that fails if a new scratch family is added

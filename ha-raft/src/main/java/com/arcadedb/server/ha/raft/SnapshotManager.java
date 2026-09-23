@@ -297,8 +297,11 @@ public final class SnapshotManager {
    * <li>{@code .snapshot-pending} - the marker saying this node has a half-installed snapshot. Its companions
    * {@code .snapshot-new} and {@code .snapshot-backup} are directories, which the {@code File::isFile} listing
    * above already excludes.</li>
+   * <li>{@code .snapshot-swap-state} - the durable phase of that install's file swap (#7769). It is cleared after
+   * the marker, so one crash can leave it beside a serving database until the next install; its temporary
+   * sibling is covered by the {@code .tmp} rule.</li>
    * </ul>
-   * The last three exist only on a FOLLOWER, and only while it is catching up, which is the worst possible
+   * The last four exist only on a FOLLOWER, and only while it is catching up, which is the worst possible
    * combination for a divergence detector: the node being interrogated is the one carrying a key the leader cannot
    * have, and the endpoint reports that as a difference in the data.
    * <p>
@@ -322,6 +325,7 @@ public final class SnapshotManager {
         || name.endsWith(TimeSeriesSealedStore.FILE_EXTENSION + ".incoming")
         || name.endsWith(TimeSeriesSealedStore.FILE_EXTENSION + ArcadeStateMachine.SEALED_STAGING_SUFFIX)
         || name.equals(ArcadeDBServer.SNAPSHOT_PENDING_FILE)
+        || name.equals(SnapshotInstaller.SNAPSHOT_SWAP_STATE_FILE)
         || PaginatedComponent.isTemporaryFileName(name);
   }
 }

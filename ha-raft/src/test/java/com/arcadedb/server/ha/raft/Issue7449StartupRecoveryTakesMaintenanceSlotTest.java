@@ -255,6 +255,7 @@ class Issue7449StartupRecoveryTakesMaintenanceSlotTest {
     Files.createDirectories(snapshotBackup);
     Files.writeString(dbDir.resolve(SnapshotInstaller.SNAPSHOT_PENDING_FILE), "");
     Files.writeString(snapshotNew.resolve(SnapshotInstaller.SNAPSHOT_COMPLETE_FILE), "");
+    Files.writeString(snapshotNew.resolve("schema.json"), "{}");
     Files.writeString(snapshotNew.resolve("data.dat"), NEW_CONTENT);
     Files.writeString(snapshotBackup.resolve("data.dat"), OLD_CONTENT);
     return dbDir;

@@ -92,6 +92,7 @@ class SnapshotAcquireStagingRecoveryTest {
     Files.createDirectories(snapshotBackup);
     Files.writeString(refreshDb.resolve(".snapshot-pending"), "");
     Files.writeString(snapshotNew.resolve(".snapshot-complete"), "");
+    Files.writeString(snapshotNew.resolve("schema.json"), "{}");
     Files.writeString(snapshotNew.resolve("data.dat"), "new-data");
     Files.writeString(snapshotBackup.resolve("data.dat"), "old-data");
 
