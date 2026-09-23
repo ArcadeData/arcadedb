@@ -1,0 +1,104 @@
+name: HA Chaos Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      nodes:
+        description: "Cluster size"
+        required: false
+        default: "3"
+        type: choice
+        options: ["3", "5"]
+      duration:
+        description: "ISO-8601 run duration (e.g. PT30M, PT4H); duration + 45 minutes must fit GitHub's 360-minute hosted-runner cap"
+        required: false
+        default: "PT60M"
+      seed:
+        description: "Seed to replay; empty picks a random one"
+        required: false
+        default: ""
+      faults:
+        description: "Comma list with optional weights (e.g. kill:3,pause); empty enables all"
+        required: false
+        default: ""
+      writers:
+        description: "Concurrent writer threads"
+        required: false
+        default: "4"
+      timeout_minutes:
+        description: "Job timeout in minutes (hang detector), including the ~15 minute image build; keep it at duration + 45"
+        required: false
+        default: "105"
+  schedule:
+    - cron: "0 2 * * 0" # Sundays 02:00 UTC: 3 nodes, 60 minutes, random seed
+
+jobs:
+  chaos:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ fromJSON(inputs.timeout_minutes || '105') }}
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: "temurin"
+          java-version: 21
+
+      - name: Cache local Maven repository
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build and package with Maven Docker profile
+        run: ./mvnw clean install -Pdocker -DskipTests --batch-mode --errors --show-version
+
+      - name: Run chaos test
+        env:
+          NODES: ${{ inputs.nodes || '3' }}
+          DURATION: ${{ inputs.duration || 'PT60M' }}
+          SEED: ${{ inputs.seed }}
+          FAULTS: ${{ inputs.faults }}
+          WRITERS: ${{ inputs.writers || '4' }}
+        run: |
+          args=(-Dchaos.nodes="${NODES}" -Dchaos.duration="${DURATION}" -Dchaos.writers="${WRITERS}")
+          if [ -n "${SEED}" ]; then args+=(-Dchaos.seed="${SEED}"); fi
+          if [ -n "${FAULTS}" ]; then args+=(-Dchaos.faults="${FAULTS}"); fi
+          ./mvnw verify -Pintegration --batch-mode --errors --show-version -pl e2e-ha \
+            -Dgroups=chaos -Dfailsafe.excludedGroups= "${args[@]}"
+
+      - name: Write run summary
+        if: always()
+        run: |
+          found=0
+          for f in e2e-ha/target/chaos/*/summary.json; do
+            [ -f "$f" ] || continue
+            found=1
+            jq -r '"### HA chaos: \(.result)\n\n- seed: `\(.seed)`\n- nodes: \(.nodes), duration: \(.duration), steps: \(.steps)\n- message: \(.message)\n- replay: `\(.replay)`\n"' "$f" >> "$GITHUB_STEP_SUMMARY"
+          done
+          if [ "$found" = 0 ]; then echo "### HA chaos: no summary written (build or setup failed)" >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Upload chaos report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: ha-chaos-report
+          path: |
+            e2e-ha/target/chaos/
+            e2e-ha/target/container-logs/
+            e2e-ha/target/logs/
+            e2e-ha/target/failsafe-reports/
+          retention-days: 14
+          if-no-files-found: warn
