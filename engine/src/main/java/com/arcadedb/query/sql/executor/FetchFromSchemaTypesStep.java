@@ -30,6 +30,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
+import com.arcadedb.query.search.VectorLeg;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.LocalDocumentType;
@@ -191,6 +192,18 @@ public class FetchFromSchemaTypesStep extends AbstractFetchFromSchemaListStep {
             final String upgradeWarning = ((IndexInternal) typeIndex).getUpgradeWarning();
             if (upgradeWarning != null)
               propRes.setProperty("upgradeWarning", upgradeWarning);
+            // A vector index also carries what a search over it will report about itself, so Studio's vector
+            // panel can check a query vector's length and show the ranking direction before the round trip
+            // (issue #7312). A sparse index declared without a dimension bound lists 0: its dimensions are inferred
+            // from the data, and the search then checks no upper bound either.
+            final Schema.INDEX_TYPE indexType = typeIndex.getType();
+            if (indexType == Schema.INDEX_TYPE.LSM_VECTOR || indexType == Schema.INDEX_TYPE.LSM_SPARSE_VECTOR) {
+              final VectorLeg.ResolvedVectorIndex vector = VectorLeg.describe(typeIndex);
+              if (vector != null) {
+                propRes.setProperty("dimensions", vector.dimensions());
+                propRes.setProperty("scoring", vector.scoring());
+              }
+            }
             return propRes;
           }).collect(Collectors.toList());
       r.setProperty("indexes", indexes);
