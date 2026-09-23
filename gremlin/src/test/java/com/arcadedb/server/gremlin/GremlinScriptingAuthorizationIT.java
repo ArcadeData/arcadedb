@@ -292,6 +292,8 @@ class GremlinScriptingAuthorizationIT extends AbstractGremlinServerIT {
           security.dropUser(READER_USER);
         if (security.getUser(DBADMIN_USER) != null)
           security.dropUser(DBADMIN_USER);
+        security.deleteGroup(getDatabaseName(), "gremlinScriptReaders");
+        security.deleteGroup(getDatabaseName(), "gremlinScriptDbAdmins");
       }
     } catch (final Exception e) {
       // IGNORE: server may already be stopped
