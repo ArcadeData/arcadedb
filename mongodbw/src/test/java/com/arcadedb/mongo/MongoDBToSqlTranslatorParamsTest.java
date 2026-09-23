@@ -87,7 +87,7 @@ class MongoDBToSqlTranslatorParamsTest {
     MongoDBToSqlTranslator.buildExpression(sql, params, query);
 
     assertThat(sql.toString()).isEqualTo("`first` = :p0 AND `second` = :p1");
-    assertThat(params).hasSize(2).containsValues("a", "b");
+    assertThat(params).hasSize(2).containsEntry("p0", "a").containsEntry("p1", "b");
   }
 
   @Test
