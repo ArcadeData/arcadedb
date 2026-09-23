@@ -413,6 +413,10 @@ public class ArcadeGremlin extends ArcadeQuery {
       }
 
     } else if ("groovy".equals(gremlinEngine)) {
+      // GROOVY IS ARBITRARY JVM CODE: ONLY THE SERVER ADMINISTRATOR MAY EVALUATE IT, WHETHER THE ENGINE IS CONFIGURED
+      // AS 'groovy' OR REACHED THROUGH THE 'auto' FALLBACK, AND FOR ANALYSIS TOO (parse() EVALUATES THE SCRIPT)
+      GremlinHostAccessGuard.checkServerAdministrator(graph.getDatabase(), "evaluate Groovy");
+
       // GROOVY ENGINE - INSECURE, LOG WARNING
       LogManager.instance().log(this, Level.WARNING,
           """

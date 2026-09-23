@@ -79,6 +79,18 @@ public interface SecurityDatabaseUser {
     return true;
   }
 
+  /**
+   * Whether this user administers the whole server rather than a single database. A capability whose reach is the
+   * host itself - evaluating arbitrary JVM code, reading or writing files at a caller-chosen path - crosses every
+   * database boundary, so no per-database grant (not even {@link DATABASE_ACCESS#UPDATE_SECURITY}) is enough to
+   * authorize it: it is reserved to the server administrator.
+   * <p>
+   * Defaults to {@code false}: an implementation with no notion of a server administrator grants none.
+   */
+  default boolean isServerAdministrator() {
+    return false;
+  }
+
   String getName();
 
   long getResultSetLimit();

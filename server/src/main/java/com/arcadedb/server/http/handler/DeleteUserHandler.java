@@ -56,7 +56,7 @@ public class DeleteUserHandler extends AbstractServerHttpHandler {
     if (name == null || name.isBlank())
       return new ExecutionResponse(400, new JSONObject().put("error", "User name parameter is required").toString());
 
-    if ("root".equals(name))
+    if (ServerSecurityUser.ROOT_USER.equals(name))
       return new ExecutionResponse(400, new JSONObject().put("error", "Cannot delete the root user").toString());
 
     // Cluster-aware: on an HA cluster this replicates as a Raft entry so every peer drops the user. Calling

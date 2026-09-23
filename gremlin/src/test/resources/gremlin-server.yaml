@@ -3,6 +3,10 @@ graphs:
   graph: config/gremlin-server.properties
 # Note: additional graphs are registered dynamically by ArcadeGraphManager based on database name
 scriptEngines:
+  # gremlin-lang parses scripts with the Gremlin grammar and never executes code: every authorized user may submit it
+  # (RequestOptions.language("gremlin-lang")). gremlin-groovy, the default language of a script with none, evaluates
+  # arbitrary JVM code and is reserved to the server administrator (root).
+  gremlin-lang: {}
   gremlin-groovy:
     plugins:
       org.apache.tinkerpop.gremlin.server.jsr223.GremlinServerGremlinPlugin: {}

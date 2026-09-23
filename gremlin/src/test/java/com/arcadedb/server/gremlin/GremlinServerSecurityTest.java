@@ -31,7 +31,7 @@ class GremlinServerSecurityTest extends AbstractGremlinServerIT {
 
   @Test
   void getAllVertices() {
-    try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, getDatabaseName(), "root", "test")) {
+    try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), getDatabaseName(), "root", "test")) {
       fail("Expected security exception");
     } catch (final SecurityException e) {
       assertThat(e.getMessage().contains("User/Password")).isTrue();
@@ -42,7 +42,7 @@ class GremlinServerSecurityTest extends AbstractGremlinServerIT {
   @Test
   void rceBlockedRuntimeExec() {
     // Test that Runtime.getRuntime().exec() is blocked when using Groovy engine
-    try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, getDatabaseName(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
+    try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), getDatabaseName(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
 
       // Enable Groovy engine to test security restrictions
       database.command("sql", "ALTER DATABASE `arcadedb.gremlin.engine` 'groovy'");
@@ -72,7 +72,7 @@ class GremlinServerSecurityTest extends AbstractGremlinServerIT {
   @Test
   void rceBlockedProcessBuilder() {
     // Test that ProcessBuilder is blocked when using Groovy engine
-    try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, getDatabaseName(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
+    try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), getDatabaseName(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
 
       // Enable Groovy engine to test security restrictions
       database.command("sql", "ALTER DATABASE `arcadedb.gremlin.engine` 'groovy'");
@@ -99,7 +99,7 @@ class GremlinServerSecurityTest extends AbstractGremlinServerIT {
   @Test
   void rceBlockedFileAccess() {
     // Test that file system access is blocked when using Groovy engine
-    try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, getDatabaseName(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
+    try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), getDatabaseName(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
 
       // Enable Groovy engine to test security restrictions
       database.command("sql", "ALTER DATABASE `arcadedb.gremlin.engine` 'groovy'");
@@ -126,7 +126,7 @@ class GremlinServerSecurityTest extends AbstractGremlinServerIT {
   @Test
   void rceBlockedReflection() {
     // Test that reflection-based security bypass is blocked when using Groovy engine
-    try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, getDatabaseName(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
+    try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), getDatabaseName(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
 
       // Enable Groovy engine to test security restrictions
       database.command("sql", "ALTER DATABASE `arcadedb.gremlin.engine` 'groovy'");
@@ -153,7 +153,7 @@ class GremlinServerSecurityTest extends AbstractGremlinServerIT {
   @Test
   void legitimateGremlinStillWorks() {
     // Verify that legitimate Gremlin queries still work
-    try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, getDatabaseName(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
+    try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", getServerHttpPort(), getDatabaseName(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
 
       // Create a vertex
       database.command("sql", "CREATE VERTEX TYPE Person123 IF NOT EXISTS");

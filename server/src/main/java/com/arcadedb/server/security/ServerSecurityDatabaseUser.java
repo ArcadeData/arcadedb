@@ -107,6 +107,11 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
   }
 
   @Override
+  public boolean isServerAdministrator() {
+    return !denyAll && ServerSecurityUser.isServerAdministrator(userName);
+  }
+
+  @Override
   public long getResultSetLimit() {
     return access.resultSetLimit();
   }
