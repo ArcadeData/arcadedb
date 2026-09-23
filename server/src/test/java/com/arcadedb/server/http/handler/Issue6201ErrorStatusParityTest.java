@@ -21,28 +21,35 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.timeseries.TimeSeriesWalkCoarsenedException;
+import com.arcadedb.exception.ArithmeticErrorException;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseNotAvailableException;
+import com.arcadedb.exception.DatabaseOperationInProgressException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.InvalidPropertyTypeException;
 import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TransactionCommittedRemotelyException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.index.fulltext.FullTextQueryParseException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.http.HttpSessionException;
+import com.arcadedb.server.http.RequestBodyTooLargeException;
+import com.arcadedb.server.http.ResultSetTooLargeException;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 
 import io.micrometer.observation.ObservationRegistry;
 import io.undertow.io.Sender;
 import io.undertow.server.HttpServerExchange;
+import io.undertow.server.RequestTooBigException;
 import io.undertow.util.HeaderMap;
 import io.undertow.util.Methods;
 import org.junit.jupiter.api.DynamicTest;
@@ -50,6 +57,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
 import org.mockito.ArgumentCaptor;
 
+import java.io.UncheckedIOException;
 import java.util.List;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
@@ -311,14 +319,87 @@ class Issue6201ErrorStatusParityTest {
         .isEqualTo("Internal error");
   }
 
-  private record HandledResponse(int statusCode, String body) {
+  /**
+   * Issue #7396: the classification is readable on its own - {@code PostBatchHandler} puts its status in the
+   * in-band error line of a streamed load that failed after its 200 was sent - so it must be exactly what the
+   * sender answers with, for every mapped failure in every shape. A decision the sender made on its own, or one
+   * the classifier reports differently from what goes on the wire, would be the second chain the split removed.
+   */
+  @TestFactory
+  Stream<DynamicTest> theClassificationIsExactlyWhatIsSent() {
+    return MAPPED_FAILURES.stream().flatMap(failure -> Stream.<Supplier<RuntimeException>>of(
+            failure.factory(),
+            () -> new TransactionException("Error on executing command", failure.factory().get()),
+            () -> new CommandExecutionException("Error on command execution", failure.factory().get()))
+        .map(shape -> DynamicTest.dynamicTest(failure.name() + " as " + shape.get().getClass().getSimpleName(), () -> {
+          final AbstractServerHttpHandler.ErrorClassification classification = handler(shape.get())
+              .classifyError(shape.get());
+          final HandledResponse sent = handle(shape.get());
+          final JSONObject body = new JSONObject(sent.body);
+
+          assertThat(classification.status()).as("status (body=%s)", sent.body).isEqualTo(sent.statusCode)
+              .isEqualTo(failure.expectedStatus());
+          assertThat(classification.message()).as("label").isEqualTo(body.getString("error"));
+          assertThat(classification.reported().getClass().getName()).as("exception")
+              .isEqualTo(body.getString("exception"));
+          assertThat(classification.exceptionArgs()).as("exceptionArgs")
+              .isEqualTo(body.has("exceptionArgs") ? body.getString("exceptionArgs") : null);
+        })));
   }
 
   /**
-   * Runs the real {@link AbstractServerHttpHandler#handleRequest} against a handler whose {@code execute()}
-   * throws the given exception, and captures the status code and JSON body the classification produces.
+   * The arms the #6201 table above does not list, among them the one arm that reads server configuration - the
+   * wire-body cap puts the configured limit in exceptionArgs, so the classifier cannot be a static function of
+   * the exception alone, and a streamed batch load refused mid-upload for exceeding it is exactly the failure
+   * {@code PostBatchHandler} now reports in band with this status.
    */
-  private HandledResponse handle(final RuntimeException toThrow) {
+  @TestFactory
+  Stream<DynamicTest> theClassificationOfTheRemainingArmsIsExactlyWhatIsSent() {
+    return Stream.of(
+        new MappedFailure("RequestTooBigException", 413, () -> new UncheckedIOException(new RequestTooBigException("too big"))),
+        new MappedFailure("ResultSetTooLargeException", 413, () -> new ResultSetTooLargeException("too many rows", 10)),
+        new MappedFailure("RequestBodyTooLargeException", 413, () -> new RequestBodyTooLargeException("too big decoded", 20)),
+        new MappedFailure("HttpSessionException", 404, () -> new HttpSessionException("session gone")),
+        new MappedFailure("DatabaseOperationInProgressException", 409,
+            () -> new DatabaseOperationInProgressException("backup running")),
+        new MappedFailure("ArithmeticErrorException", 400, () -> new ArithmeticErrorException("/ by zero")),
+        new MappedFailure("FullTextQueryParseException", 400,
+            () -> new FullTextQueryParseException("bad query", new IllegalStateException("x")))
+    ).map(failure -> DynamicTest.dynamicTest(failure.name(), () -> {
+      final AbstractServerHttpHandler.ErrorClassification classification = handler(failure.factory().get())
+          .classifyError(failure.factory().get());
+      final HandledResponse sent = handle(failure.factory().get());
+      final JSONObject body = new JSONObject(sent.body);
+
+      assertThat(classification.status()).as("status (body=%s)", sent.body).isEqualTo(sent.statusCode)
+          .isEqualTo(failure.expectedStatus());
+      assertThat(classification.message()).as("label").isEqualTo(body.getString("error"));
+      assertThat(classification.reported().getClass().getName()).as("exception")
+          .isEqualTo(body.getString("exception"));
+      assertThat(classification.exceptionArgs()).as("exceptionArgs")
+          .isEqualTo(body.has("exceptionArgs") ? body.getString("exceptionArgs") : null);
+    }));
+  }
+
+  /** The unmapped fallbacks too: each generic 500 keeps its own label and reported throwable. */
+  @Test
+  void theClassificationOfAnUnrecognisedFailureIsTheGeneric500ItIsSentAs() {
+    for (final RuntimeException unrecognised : List.of(new IllegalStateException("unexpected internal state"),
+        new TransactionException("Error on commit"),
+        new CommandExecutionException("boom", new IllegalStateException("x")))) {
+      final AbstractServerHttpHandler.ErrorClassification classification = handler(unrecognised)
+          .classifyError(unrecognised);
+      final JSONObject body = new JSONObject(handle(unrecognised).body);
+      assertThat(classification.status()).isEqualTo(500);
+      assertThat(classification.message()).isEqualTo(body.getString("error"));
+      assertThat(classification.reported().getClass().getName()).isEqualTo(body.getString("exception"));
+    }
+  }
+
+  private record HandledResponse(int statusCode, String body) {
+  }
+
+  private ThrowingHandler handler(final RuntimeException toThrow) {
     final ArcadeDBServer server = mock(ArcadeDBServer.class);
     when(server.getObservationRegistry()).thenReturn(ObservationRegistry.create());
     when(server.getConfiguration()).thenReturn(new ContextConfiguration());
@@ -326,7 +407,14 @@ class Issue6201ErrorStatusParityTest {
 
     final HttpServer httpServer = mock(HttpServer.class);
     when(httpServer.getServer()).thenReturn(server);
+    return new ThrowingHandler(httpServer, toThrow);
+  }
 
+  /**
+   * Runs the real {@link AbstractServerHttpHandler#handleRequest} against a handler whose {@code execute()}
+   * throws the given exception, and captures the status code and JSON body the classification produces.
+   */
+  private HandledResponse handle(final RuntimeException toThrow) {
     final Sender sender = mock(Sender.class);
     final HttpServerExchange exchange = mock(HttpServerExchange.class);
     final int[] statusCode = { 200 };
@@ -341,7 +429,7 @@ class Issue6201ErrorStatusParityTest {
     when(exchange.getRelativePath()).thenReturn("/command/graph");
     when(exchange.getResponseSender()).thenReturn(sender);
 
-    new ThrowingHandler(httpServer, toThrow).handleRequest(exchange);
+    handler(toThrow).handleRequest(exchange);
 
     final ArgumentCaptor<String> body = ArgumentCaptor.forClass(String.class);
     verify(sender).send(body.capture());

@@ -1316,12 +1316,13 @@ public class CoreApiSpec implements OpenApiContributor {
         Terminal line of a failed load: the same object the buffered encoding carries, plus the 'status' it \
         would have been sent under. The status line cannot be taken back once the stream has started, so the \
         status travels in band.""");
-    error.addProperty("status", SpecBuilders.integer(
-        "HTTP status the buffered encoding would have used: 400, 408 or 500"));
-    error.addProperty("statusMapped", SpecBuilders.bool("""
-        Present and false when 'status' is the unclassified 500 fallback rather than the status the buffered \
-        encoding would have chosen - the case of an engine failure raised after the stream had already \
-        started. Key on 'exception' there, not on 'status'. Absent whenever 'status' is exact."""));
+    error.addProperty("status", SpecBuilders.integer("""
+        HTTP status the buffered encoding would have used for the same failure - 400 or 408 for a malformed or \
+        truncated body, and for an engine failure raised after the stream started the status the standard error \
+        mapping gives it: 409 for a duplicated key, 503 for a retryable conflict, 403, 404, 500 (issue #7396)."""));
+    error.addProperty("exceptionArgs", SpecBuilders.string("""
+        Structured arguments of the failure, as the buffered error body carries them: present only for a failure \
+        that has any, e.g. 'index|keys|rid' for a duplicated key."""));
     // Carried on a FAILED load too, and not by accident: a batch is not atomic, so a load that failed
     // mid-stream still committed the chunks before the failure, and a READ_YOUR_WRITES client has to be able
     // to read them back. That is the same rule the buffered encoding follows by emitting the header on its
