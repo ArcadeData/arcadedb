@@ -202,6 +202,22 @@ public final class VectorLeg {
               + describeAvailableIndexes(database, sparse));
     }
 
+    final ResolvedVectorIndex resolved = describe(typeIndex);
+    if (resolved == null)
+      throw new IllegalArgumentException("Vector index '" + indexName + "' has no searchable bucket indexes");
+    return resolved;
+  }
+
+  /**
+   * Describes a dense or sparse vector index the way a search over it reports itself: its dimension count and the
+   * {@code scoring} string the search response carries. {@code schema:types} lists the same description, so a
+   * client such as Studio can check a query vector's length and show the ranking direction before the first
+   * search - with values that cannot drift from the ones the search then reports, because both come from here.
+   *
+   * @return the description, or null when the index has no dense or sparse bucket index to describe (a
+   * non-vector index, or a vector index on a type with no bucket)
+   */
+  public static ResolvedVectorIndex describe(final TypeIndex typeIndex) {
     for (final IndexInternal bucketIndex : typeIndex.getIndexesOnBuckets()) {
       if (bucketIndex instanceof final LSMVectorIndex denseIndex)
         return new ResolvedVectorIndex(typeIndex, denseIndex.getDimensions(),
@@ -217,8 +233,7 @@ public final class VectorLeg {
         return new ResolvedVectorIndex(typeIndex, dimensions, scoring);
       }
     }
-
-    throw new IllegalArgumentException("Vector index '" + indexName + "' has no searchable bucket indexes");
+    return null;
   }
 
   private static String describeAvailableIndexes(final Database database, final boolean sparse) {

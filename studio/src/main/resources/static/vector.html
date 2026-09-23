@@ -1,0 +1,152 @@
+<div class="tab-pane fade" id="tab-vector" role="tabpanel">
+  <div class="d-flex align-items-center justify-content-between flex-shrink-0" style="padding: 10px 12px 6px;">
+    <div class="d-flex align-items-center gap-2">
+      <i class="fa fa-braille" style="font-size: 1.2rem; color: #00aeee;"></i>
+      <label>Database&nbsp;</label>
+      <div id="vecDbSelectContainer" class="searchable-db-select"></div>
+      <div class="btn-group btn-group-sm ms-2" role="group" aria-label="Search mode">
+        <button type="button" class="btn btn-outline-secondary vec-mode-btn active" data-mode="search" id="vecModeSearch" onclick="vecSetMode('search')">Vector</button>
+        <button type="button" class="btn btn-outline-secondary vec-mode-btn" data-mode="hybrid" id="vecModeHybrid" onclick="vecSetMode('hybrid')">Hybrid</button>
+        <button type="button" class="btn btn-outline-secondary vec-mode-btn" data-mode="fulltext" id="vecModeFulltext" onclick="vecSetMode('fulltext')">Full-text</button>
+      </div>
+    </div>
+    <div class="d-flex gap-2 align-items-center">
+      <span id="vecBoundsNote" style="font-size: 0.78rem; color: var(--text-muted);"></span>
+      <button class="btn btn-sm db-action-btn" onclick="vecLoadIndexes()" title="Reload the index list"><i class="fa fa-sync"></i> Refresh</button>
+    </div>
+  </div>
+
+  <div class="px-3 py-2">
+    <!-- Searchable indexes, with the dimension count and ranking direction the server reports for each -->
+    <div class="card mb-2">
+      <div class="card-body py-2">
+        <div style="font-size: 0.85rem; font-weight: 500;" class="mb-1">Searchable indexes</div>
+        <div id="vecIndexesEmpty" class="text-muted" style="font-size: 0.8rem; display: none;">
+          This database has no LSM_VECTOR, LSM_SPARSE_VECTOR or FULL_TEXT index.
+        </div>
+        <table id="vecIndexesTable" class="table table-sm table-hover mb-0" style="font-size: 0.8rem;">
+          <thead>
+            <tr><th>Index</th><th>Type</th><th>Properties</th><th>Kind</th><th>Dimensions</th><th>Ranking</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Search form -->
+    <div class="card mb-2">
+      <div class="card-body py-2">
+        <div class="row g-2 vec-only-vector">
+          <div class="col-md-4">
+            <label class="form-label form-label-sm mb-1" for="vecIndexName">Vector index</label>
+            <select id="vecIndexName" class="form-select form-select-sm" onchange="vecIndexChanged()"></select>
+            <div id="vecIndexHint" class="form-text" style="font-size: 0.75rem;"></div>
+          </div>
+          <div class="col-md-2">
+            <label class="form-label form-label-sm mb-1" for="vecK">k</label>
+            <input id="vecK" type="number" class="form-control form-control-sm" />
+          </div>
+          <div class="col-md-2 vec-only-dense" style="display: none;">
+            <label class="form-label form-label-sm mb-1" for="vecEfSearch">efSearch</label>
+            <input id="vecEfSearch" type="number" class="form-control form-control-sm" placeholder="index default" />
+          </div>
+          <div class="col-md-4">
+            <label class="form-label form-label-sm mb-1" for="vecFilter">Filter (SQL WHERE predicate)</label>
+            <input id="vecFilter" type="text" class="form-control form-control-sm" placeholder="e.g. category = 'news'" />
+          </div>
+          <div class="col-12">
+            <label class="form-label form-label-sm mb-1" for="vecQueryVector">Query vector</label>
+            <textarea id="vecQueryVector" class="form-control form-control-sm" rows="2" style="font-family: monospace; font-size: 0.82rem;"
+              placeholder="[0.12, -0.5, 0.33, ...] or 0.12, -0.5, 0.33"></textarea>
+          </div>
+          <div class="col-12 vec-only-sparse" style="display: none;">
+            <label class="form-label form-label-sm mb-1" for="vecQueryIndices">Query indices (optional: sparse dimension ids matching the weights above)</label>
+            <input id="vecQueryIndices" type="text" class="form-control form-control-sm" style="font-family: monospace; font-size: 0.82rem;" placeholder="e.g. 3, 17, 42" />
+          </div>
+          <div class="col-md-2">
+            <label class="form-label form-label-sm mb-1 vec-only-hybrid" for="vecVectorWeight" style="display: none;">Vector weight</label>
+            <input id="vecVectorWeight" type="number" step="any" min="0" class="form-control form-control-sm vec-only-hybrid" style="display: none;" placeholder="server default" />
+          </div>
+        </div>
+
+        <!-- Hybrid-only legs -->
+        <div class="row g-2 mt-1 vec-only-hybrid" style="display: none;">
+          <div class="col-md-4">
+            <label class="form-label form-label-sm mb-1" for="vecFulltextIndexName">Full-text leg index</label>
+            <select id="vecFulltextIndexName" class="form-select form-select-sm"></select>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label form-label-sm mb-1" for="vecFulltextQuery">Full-text leg query</label>
+            <input id="vecFulltextQuery" type="text" class="form-control form-control-sm" placeholder="Lucene syntax, e.g. +java -python" />
+          </div>
+          <div class="col-md-2">
+            <label class="form-label form-label-sm mb-1" for="vecFulltextWeight">Full-text weight</label>
+            <input id="vecFulltextWeight" type="number" step="any" min="0" class="form-control form-control-sm" placeholder="server default" />
+          </div>
+          <div class="col-md-2">
+            <label class="form-label form-label-sm mb-1" for="vecFusionStrategy">Fusion</label>
+            <select id="vecFusionStrategy" class="form-select form-select-sm"><option value="">(server default)</option></select>
+          </div>
+          <div class="col-md-2 d-flex align-items-end">
+            <div class="form-check mb-1">
+              <input class="form-check-input" type="checkbox" id="vecExpand" />
+              <label class="form-check-label" for="vecExpand" style="font-size: 0.85rem;">Graph expansion</label>
+            </div>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label form-label-sm mb-1" for="vecEdgeTypes">Edge types (comma separated, empty = all)</label>
+            <input id="vecEdgeTypes" type="text" class="form-control form-control-sm" />
+          </div>
+          <div class="col-md-2">
+            <label class="form-label form-label-sm mb-1" for="vecDirection">Direction</label>
+            <select id="vecDirection" class="form-select form-select-sm"><option value="">(server default)</option></select>
+          </div>
+          <div class="col-md-2">
+            <label class="form-label form-label-sm mb-1" for="vecMaxDepth">Max depth</label>
+            <input id="vecMaxDepth" type="number" class="form-control form-control-sm" />
+          </div>
+          <div class="col-md-2">
+            <label class="form-label form-label-sm mb-1" for="vecExpandWeight">Expansion weight</label>
+            <input id="vecExpandWeight" type="number" step="any" min="0" class="form-control form-control-sm" placeholder="server default" />
+          </div>
+        </div>
+
+        <!-- Full-text endpoint -->
+        <div class="row g-2 vec-only-fulltext" style="display: none;">
+          <div class="col-md-4">
+            <label class="form-label form-label-sm mb-1" for="vecFtIndexName">Full-text index</label>
+            <select id="vecFtIndexName" class="form-select form-select-sm"></select>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label form-label-sm mb-1" for="vecQueryText">Query</label>
+            <input id="vecQueryText" type="text" class="form-control form-control-sm" placeholder="Lucene syntax, e.g. +java -python" />
+          </div>
+          <div class="col-md-2">
+            <label class="form-label form-label-sm mb-1" for="vecLimit">Limit</label>
+            <input id="vecLimit" type="number" class="form-control form-control-sm" />
+          </div>
+        </div>
+
+        <div class="d-flex align-items-center gap-2 mt-2">
+          <button id="vecExecuteBtn" class="btn btn-sm btn-primary" onclick="vecExecute()"><i class="fa fa-search"></i> Search</button>
+          <div id="vecError" class="text-danger" style="font-size: 0.82rem; display: none;"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Results -->
+    <div id="vecResultsPanel" class="card" style="display: none;">
+      <div class="card-body py-2">
+        <div id="vecSummary" style="font-size: 0.82rem;" class="mb-1"></div>
+        <div id="vecTruncated" class="badge text-wrap mb-1" style="display: none; font-size: 0.78rem; font-weight: 500;"></div>
+        <div id="vecNotes" class="text-muted mb-1" style="font-size: 0.78rem;"></div>
+        <div style="overflow-x: auto;">
+          <table id="vecResultsTable" class="table table-sm table-striped mb-0" style="font-size: 0.8rem;">
+            <thead></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
