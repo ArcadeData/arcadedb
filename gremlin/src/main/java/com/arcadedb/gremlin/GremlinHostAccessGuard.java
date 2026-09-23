@@ -35,6 +35,10 @@ import com.arcadedb.security.SecurityDatabaseUser;
  * The flip side: a thread with no bound principal passes. Any new path that runs Gremlin on another thread (a new
  * executor, a new protocol module) must bind the authenticated user into {@link DatabaseContext} first, as
  * {@code GremlinPrincipalPropagatingExecutorService} does for the Gremlin Server, or this gate silently allows it.
+ * <p>
+ * On a server the bound user is the per-database view of the principal, so the root user counts as server administrator
+ * only on a database its configuration grants it; on any other database it is handed the deny-all view and is refused
+ * here like everyone else. That matches its record access, which is refused there too.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
