@@ -21,6 +21,7 @@ package com.arcadedb.server.gremlin;
 import org.apache.tinkerpop.gremlin.process.traversal.Bytecode;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.__;
+import org.apache.tinkerpop.gremlin.process.traversal.step.GValue;
 import org.apache.tinkerpop.gremlin.process.traversal.strategy.decoration.SubgraphStrategy;
 import org.apache.tinkerpop.gremlin.structure.util.empty.EmptyGraph;
 import org.apache.tinkerpop.gremlin.util.function.Lambda;
@@ -60,6 +61,10 @@ class ArcadeGremlinAuthorizerLambdaScanTest {
     final Bytecode binding = new Bytecode();
     binding.addStep("map", new Bytecode.Binding<>("x", Lambda.function("it.get()")));
     assertThat(scan(binding)).isTrue();
+
+    final Bytecode parameter = new Bytecode();
+    parameter.addStep("map", GValue.of("x", Lambda.function("it.get()")));
+    assertThat(scan(parameter)).isTrue();
 
     final Bytecode list = new Bytecode();
     list.addStep("inject", List.of(1, Map.of("k", Lambda.function("it.get()"))));
