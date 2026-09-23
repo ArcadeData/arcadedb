@@ -160,7 +160,7 @@ class Issue8203RaftFixturePortsTest {
    */
   @Test
   void noRaftFixtureHardCodesARaftPort() throws IOException {
-    final Pattern fixedRaftPort = Pattern.compile("\\b2434\\b|BASE_RAFT(_PORT)?\\s*=");
+    final Pattern fixedRaftPort = Pattern.compile("\\b" + FORMER_BASE_RAFT_PORT + "\\b|BASE_RAFT(_PORT)?\\s*=");
     final List<String> offenders = new ArrayList<>();
 
     // Surefire runs with the module directory as the working directory, so the sibling modules sit one level up.
