@@ -35,6 +35,7 @@ import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.timeseries.TimeSeriesBucket;
 import com.arcadedb.engine.timeseries.TimeSeriesMaintenanceScheduler;
 import com.arcadedb.engine.timeseries.TimeSeriesTagDictionary;
@@ -290,10 +291,9 @@ public class LocalSchema implements Schema {
    * {@link #stagingThread} ever reads them, so no other thread can reach a component through them, and
    * {@link #commitStagedPublication()} moves them into the live maps once every hook has run. Publication is atomic
    * PER NAME rather than for the map as a whole: a concurrent lookup resolves a name to the fully initialized new
-   * component or to whatever the live map held before, never to one in between. What the live map held before
-   * differs by path - {@link #loadIncremental} leaves the previous component in place, while
-   * {@link #load(ComponentFile.MODE, boolean)} empties the maps up front and so answers "not found" for the
-   * duration, which is what it answered before this barrier existed too (issue #7963).
+   * component or to the previous generation's, never to one in between. Both load paths leave the previous
+   * generation published for the duration; the full load used to empty the maps up front, answering "not found" to
+   * every concurrent lookup until it finished (issue #7963).
    * <p>
    * The loading thread itself sees straight through the barrier: {@link #lookupIndex} and {@link #lookupBucket}
    * resolve its staged components first, so the schema rebuild resolves the components it has just built exactly as
@@ -322,17 +322,13 @@ public class LocalSchema implements Schema {
    * straight into {@code files}, and every other thread keeps seeing the slot's previous occupant until
    * {@link #commitStagedPublication()} moves the overlay into the array.
    * <p>
-   * Filled on the {@link #loadIncremental} path ONLY, which is the path the issue is about and the only one where
-   * a slot HAS a previous occupant to keep serving. The full {@link #load(ComponentFile.MODE, boolean)} empties
-   * the array first and rebuilds every component, so staging there would answer "not found" for the length of the
-   * load rather than "the previous instance" - and that breaks a guarantee #7961 established: the previous type
-   * graph stays published across a reload precisely so a query resolving its index through a type keeps working,
-   * and reading a record through it resolves its bucket BY FILE ID. Withholding the array would make that read
-   * fail, trading a window nobody can reach for an outage everybody can. What the full load may hand out in that
-   * window is a component built but not hooked, and by then it is reachable by no other route: the by-name maps
-   * are empty, the published type graph carries the PREVIOUS index instances, and the only callers that resolve a
-   * raw file id from another thread - the page manager and the transaction commit - want the paginated file, whose
-   * name, page size and file handle the constructor has already set.
+   * Filled by both load paths. The full {@link #load(ComponentFile.MODE, boolean)} used to empty the array on the
+   * way in and refill it as it built, so a record read through the still-published previous type graph (#7961)
+   * resolved its bucket BY FILE ID to nothing until the load reached that file: the "Bucket with id 'N' was not
+   * found" of issue #7963. It now leaves the previous generation in every slot until the barrier, where
+   * {@link #commitStagedPublication()} replaces the whole array under its lock. The one caller that resolves a file
+   * id from another thread and CHANGES the component - the page manager raising a page count after a flush - is
+   * reconciled there too: every staged component re-reads its page count from its file at publication.
    * <p>
    * Plain {@link HashMap}, for the same reason and with the same proof as the two maps above: only the thread that
    * won {@link #stagingThread} ever touches it, and that reference's release/acquire orders one load's last write
@@ -342,10 +338,18 @@ public class LocalSchema implements Schema {
 
   /**
    * Whether the load holding {@link #stagingThread} routes its file-id registrations through {@link #stagedFiles}.
-   * True for {@link #loadIncremental} and false for the full load; see {@link #stagedFiles} for why the two paths
-   * differ.
+   * True for both {@link #loadIncremental} and, since issue #7963, the full load.
    */
   private             boolean                                stagingFileIds;
+
+  /**
+   * Whether the load holding {@link #stagingThread} is the full {@link #load(ComponentFile.MODE, boolean)}, which
+   * rebuilds every component rather than a few (issue #7963). Such a load must resolve ONLY what it has staged: the
+   * published generation it is replacing is still fully reachable to everybody else, and letting the rebuild fall
+   * through to it would bind the new type graph to the previous generation's components. {@link #loadIncremental}
+   * does the opposite on purpose - the components it leaves untouched ARE the published ones.
+   */
+  private             boolean                                rebuildingEverything;
 
   /**
    * The thread whose load owns {@link #stagedIndexMap}/{@link #stagedBucketMap}, or {@code null} when nothing is
@@ -471,46 +475,47 @@ public class LocalSchema implements Schema {
   }
 
   public void load(final ComponentFile.MODE mode, final boolean initialize) throws IOException {
-    // Claim the staging window FIRST, before a single field is cleared. beginStagedPublication() refuses a load
-    // that overlaps another, and a refusal has to leave the schema exactly as it found it: clearing first would
-    // mean a refused load empties the live schema for everyone, including the load legitimately in flight on the
-    // other thread - a worse outcome than the one the refusal exists to prevent.
-    // stageFileIds=false: this path empties the file-id array anyway and rebuilds every component into it, so
-    // withholding the slots would only take the array away from the previous type graph that stays published
-    // (issue #7962, and see the field's javadoc).
-    beginStagedPublication(false);
+    // Claim the staging window FIRST. beginStagedPublication() refuses a load that overlaps another, and a refusal
+    // has to leave the schema exactly as it found it.
+    // stageFileIds=true: the previous generation keeps its file-id slots until the barrier, which is what keeps the
+    // previous type graph (issue #7961) able to read its records meanwhile.
+    // rebuildEverything=true: the loading thread resolves only what it has staged, see isRebuildingEverything().
+    beginStagedPublication(true, true);
+    // The dictionary is the one component swapped in before the barrier (see below), so it is also the one a load
+    // that aborts has to put back itself: the file-id array still resolves the previous instance, and serving the
+    // new one by getDictionary() would split name lookups and page reloads across two in-RAM caches.
+    final Dictionary previousDictionary = dictionary;
+    boolean published = false;
     try {
-      files.clear();
-      // types is NOT cleared: the graph a load replaces stays served, whole, until the new one is published at the
-      // barrier below (issue #7961). The rebuild assembles its own in stagedTypes, which beginStagedPublication()
-      // has just emptied.
-      bucketMap.clear();
-      indexMap.clear();
-      dictionary = null;
-
-      // Nothing this rebuild instantiates reaches the by-name lookup maps until every schema hook below has run
-      // (issue #7213). The clears stay: a full rebuild drops every component instance, so the previous generation
-      // cannot be kept alive as a stand-in the way loadIncremental keeps its untouched ones.
+      // NOTHING is cleared (issue #7963). The previous generation - type graph (issue #7961), by-name maps and
+      // file-id array alike - stays published, whole, until the new one replaces it at the barrier below, so a query
+      // running on a live HA follower while this rebuild runs keeps resolving its buckets and indexes instead of
+      // being told they do not exist. The rebuild stages everything it builds and sees ONLY that (see
+      // isRebuildingEverything()), never the generation it is replacing.
       SortedIndexBuildRecoveryMarker.recoverInterruptedBuilds(database, mode);
 
       final Collection<ComponentFile> filesToOpen = database.getFileManager().getFiles();
 
       // REGISTER THE DICTIONARY FIRST
+      Dictionary loadedDictionary = null;
       for (final ComponentFile file : filesToOpen) {
         if (file != null)
           if (Dictionary.DICT_EXT.equals(file.getFileExtension())) {
-            dictionary = (Dictionary) componentFactory.createComponent(file, mode);
-            registerFile(dictionary);
+            loadedDictionary = (Dictionary) componentFactory.createComponent(file, mode);
+            registerFile(loadedDictionary);
+            // Swapped in at once rather than nulled first: both instances front the same file, and a reader
+            // serializing a record in the meantime needs one.
+            dictionary = loadedDictionary;
             // Only now can the dictionary write a missing header page: doing so commits a transaction
             // that has to resolve the dictionary's file id, which registerFile above has just made
             // resolvable. Relevant when the database was killed before the page reached disk.
             if (mode == ComponentFile.MODE.READ_WRITE)
-              dictionary.createHeaderPageIfMissing();
+              loadedDictionary.createHeaderPageIfMissing();
             break;
           }
       }
 
-      if (dictionary == null)
+      if (loadedDictionary == null)
         throw new ConfigurationException("Dictionary file not found in database directory");
 
       for (final ComponentFile file : filesToOpen) {
@@ -528,7 +533,7 @@ public class LocalSchema implements Schema {
       readConfiguration();
 
       // filesDuringLoad(), not `files`: the components this load built live in the staged file-id overlay until
-      // the barrier below, so the live array is still the empty one the clear above left (issue #7962).
+      // the barrier below, while the live array still carries the previous generation (issues #7962, #7963).
       final List<Component> snapshot = filesDuringLoad();
       for (final Component f : snapshot)
         if (f != null)
@@ -540,13 +545,16 @@ public class LocalSchema implements Schema {
       if (mode == ComponentFile.MODE.READ_WRITE)
         sweepOrphanCompactedIndexFiles(snapshot);
 
-      // Only here, with every hook run and every bloom filter attached, do the new components become reachable by
-      // name. A lookup that arrives before this point gets "not found" - which is what it already got, since the
-      // clears above emptied the maps - rather than an index that has not finished loading itself.
+      // Only here, with every hook run and every bloom filter attached, do the new components become reachable, by
+      // name and by file id. A lookup that arrives before this point gets the previous generation's component
+      // rather than one that has not finished loading itself - or, before issue #7963, than nothing at all.
       commitStagedPublication();
+      published = true;
 
       updateSecurity();
     } finally {
+      if (!published && previousDictionary != null)
+        dictionary = previousDictionary;
       endStagedPublication();
     }
   }
@@ -604,9 +612,17 @@ public class LocalSchema implements Schema {
     return stagingThread.get() == Thread.currentThread();
   }
 
-  /** Whether THIS thread's load stages its file-id registrations - the incremental path only (issue #7962). */
+  /** Whether THIS thread's load stages its file-id registrations (issues #7962, #7963). */
   private boolean isStagingFileIds() {
     return stagingFileIds && isStagingPublication();
+  }
+
+  /**
+   * Whether THIS thread is running the full rebuild, and must therefore resolve nothing but what it has staged: the
+   * published generation is the one it is replacing (issue #7963).
+   */
+  private boolean isRebuildingEverything() {
+    return rebuildingEverything && isStagingPublication();
   }
 
   /**
@@ -623,7 +639,7 @@ public class LocalSchema implements Schema {
    * Paired with {@link #commitStagedPublication()} on the way out, and with {@link #endStagedPublication()} in a
    * {@code finally} so a load that throws leaves nothing staged behind.
    */
-  private void beginStagedPublication(final boolean stageFileIds) {
+  private void beginStagedPublication(final boolean stageFileIds, final boolean rebuildEverything) {
     // ONE load at a time per schema, and the refusal is loud on purpose. Two loads sharing these maps would have the
     // second clear the first one's staged components and take `stagingThread` from under it, so the first would
     // commit nothing and the schema would come up missing whatever it had staged - silently, on a database that
@@ -641,6 +657,7 @@ public class LocalSchema implements Schema {
     }
 
     stagingFileIds = stageFileIds;
+    rebuildingEverything = rebuildEverything;
     stagedIndexMap.clear();
     stagedBucketMap.clear();
     stagedFiles.clear();
@@ -664,13 +681,40 @@ public class LocalSchema implements Schema {
     // The file-id slots first of all (issue #7962): a component resolvable by NAME whose file id still answers with
     // the previous generation - or with nothing - is the mismatch this ordering exists to rule out. Nothing
     // resolves the other way round, so no reader can be caught between the two.
-    if (!stagedFiles.isEmpty())
+    if (rebuildingEverything || !stagedFiles.isEmpty())
       synchronized (files) {
+        // The full rebuild REPLACES the array (issue #7963): a slot it did not stage belongs to a file the new
+        // generation does not have. Under the list's own lock, which every reader takes, so no reader sees it half
+        // rewritten.
+        if (rebuildingEverything)
+          for (int i = 0; i < files.size(); ++i)
+            if (!stagedFiles.containsKey(i))
+              files.set(i, null);
+
         for (final Map.Entry<Integer, Component> entry : stagedFiles.entrySet()) {
           final int fileId = entry.getKey();
           while (files.size() < fileId + 1)
             files.add(null);
-          files.set(fileId, entry.getValue());
+          final Component component = entry.getValue();
+          // A page committed or flushed while this load ran raised the page count of the component that was
+          // published THEN, the previous generation's, and not the one staged here. Neither source alone is the
+          // truth: the file lags a commit until the flush thread writes the page (see Dictionary.reload()), and
+          // the previous instance misses nothing only up to this point. So the larger of the two, and
+          // updatePageCount() never lowers what the staged instance already counts. A page flushed after this
+          // point resolves its component under this same lock, so it reaches the new instance; a write that
+          // resolved the previous one before it had written its page before, and the file size covers it.
+          if (component instanceof PaginatedComponent paginated && paginated.getComponentFile() != null) {
+            final Component previous = fileId < files.size() ? files.get(fileId) : null;
+            if (previous instanceof PaginatedComponent previousPaginated && previous.getName().equals(component.getName()))
+              paginated.updatePageCount(previousPaginated.getCommittedPageCount());
+            try {
+              paginated.updatePageCount((int) (paginated.getComponentFile().getSize() / paginated.getPageSize()));
+            } catch (final IOException e) {
+              LogManager.instance().log(this, Level.WARNING, "Cannot refresh the page count of '%s' on schema reload", e,
+                  component.getName());
+            }
+          }
+          files.set(fileId, component);
         }
       }
 
@@ -679,6 +723,14 @@ public class LocalSchema implements Schema {
     // points at is resolvable. Nothing points the other way.
     bucketMap.putAll(stagedBucketMap);
     indexMap.putAll(stagedIndexMap);
+
+    // The full rebuild REPLACES the maps too, and drops what it did not stage only AFTER the put: a name both
+    // generations carry never goes unresolvable, not even for an instant (issue #7963). Indexes before buckets,
+    // the reverse of the put and for the same reason.
+    if (rebuildingEverything) {
+      indexMap.keySet().retainAll(stagedIndexMap.keySet());
+      bucketMap.keySet().retainAll(stagedBucketMap.keySet());
+    }
 
     // The type graph goes last and goes whole (issue #7961). A reader that resolves an index through its type
     // reaches it only from here on, by which point every component's onAfterSchemaLoad() has run - and it sees
@@ -762,6 +814,7 @@ public class LocalSchema implements Schema {
     // bookkeeping. The full load has no slots to put back - it emptied the array on the way in.
     stagedFiles.clear();
     stagingFileIds = false;
+    rebuildingEverything = false;
     // Only when the graph was NOT published: after a successful commit these very instances are the live ones
     // (PR #8001 review). A load that dies after readConfiguration() has initialised a TimeSeries engine per type
     // would otherwise leak one engine, and its file handles, per failed reload.
@@ -788,7 +841,7 @@ public class LocalSchema implements Schema {
 
     if (isStagingPublication()) {
       final IndexInternal staged = stagedIndexMap.get(name);
-      if (staged != null)
+      if (staged != null || rebuildingEverything)
         return staged;
     }
     return indexMap.get(name);
@@ -835,7 +888,7 @@ public class LocalSchema implements Schema {
 
     if (isStagingPublication()) {
       final LocalBucket staged = stagedBucketMap.get(name);
-      if (staged != null)
+      if (staged != null || rebuildingEverything)
         return staged;
     }
     return bucketMap.get(name);
@@ -858,6 +911,8 @@ public class LocalSchema implements Schema {
    * {@link #indexesDuringLoad()}.
    */
   private Collection<LocalBucket> bucketsDuringLoad() {
+    if (isRebuildingEverything())
+      return stagedBucketMap.values();
     if (!isStagingPublication() || stagedBucketMap.isEmpty())
       return bucketMap.values();
 
@@ -898,7 +953,9 @@ public class LocalSchema implements Schema {
     if (isStagingPublication())
       stagedIndexMap.remove(name);
 
-    indexMap.remove(name);
+    // The full rebuild leaves the published generation alone: the barrier drops every name it did not stage.
+    if (!isRebuildingEverything())
+      indexMap.remove(name);
   }
 
   /**
@@ -909,7 +966,8 @@ public class LocalSchema implements Schema {
     if (isStagingPublication())
       stagedBucketMap.remove(name);
 
-    bucketMap.remove(name);
+    if (!isRebuildingEverything())
+      bucketMap.remove(name);
   }
 
   /**
@@ -918,6 +976,8 @@ public class LocalSchema implements Schema {
    * load every index in the database is staged, so walking {@link #indexMap} alone would walk nothing.
    */
   Collection<IndexInternal> indexesDuringLoad() {
+    if (isRebuildingEverything())
+      return stagedIndexMap.values();
     if (!isStagingPublication() || stagedIndexMap.isEmpty())
       return indexMap.values();
 
@@ -1042,7 +1102,7 @@ public class LocalSchema implements Schema {
     // On this path that is a stronger guarantee than on the full load: every index this entry did not touch keeps
     // its published instance throughout, and a REPLACED index keeps answering with the instance the previous load
     // published until its replacement has finished loading itself.
-    beginStagedPublication(true);
+    beginStagedPublication(true, false);
     try {
       for (final ComponentFile file : toInstantiate) {
         final Component component = componentFactory.createComponent(file, mode);
@@ -1250,10 +1310,13 @@ public class LocalSchema implements Schema {
     // The staged overlay wins, so it is scanned first - a replacement carries the name of the component whose slot
     // it takes, and the loading thread must resolve its own (issue #7962). Scanned rather than merged into a
     // snapshot: this runs on ordinary lookups, and off a load it must not allocate a copy of the whole array.
-    if (isStagingPublication())
+    if (isStagingPublication()) {
       for (final Component f : stagedFiles.values())
         if (f != null && name.equals(f.getName()))
           return f;
+      if (rebuildingEverything)
+        return null;
+    }
 
     synchronized (files) {
       for (final Component f : files)
@@ -1277,7 +1340,7 @@ public class LocalSchema implements Schema {
 
     if (isStagingPublication()) {
       final Component staged = stagedFiles.get(id);
-      if (staged != null)
+      if (staged != null || rebuildingEverything)
         return staged;
     }
 
@@ -1289,13 +1352,17 @@ public class LocalSchema implements Schema {
   /**
    * Every component this thread can see, published plus this thread's staged ones, as a snapshot indexed by file
    * id. The file-id counterpart of {@link #bucketsDuringLoad()}; the load's own passes - the hooks, the bloom
-   * filter attach, the orphan sweep - iterate this rather than {@code files}, which during a full load is empty.
+   * filter attach, the orphan sweep - iterate this rather than {@code files}, which during a full load still
+   * carries the generation being replaced (issue #7963).
    */
   private List<Component> filesDuringLoad() {
     final List<Component> snapshot;
-    synchronized (files) {
-      snapshot = new ArrayList<>(files);
-    }
+    if (isRebuildingEverything())
+      snapshot = new ArrayList<>();
+    else
+      synchronized (files) {
+        snapshot = new ArrayList<>(files);
+      }
 
     if (isStagingPublication() && !stagedFiles.isEmpty())
       for (final Map.Entry<Integer, Component> entry : stagedFiles.entrySet()) {
@@ -1309,12 +1376,18 @@ public class LocalSchema implements Schema {
   }
 
   public void removeFile(final int fileId) {
-    synchronized (files) {
-      if (fileId >= files.size())
-        return;
+    // A component a load staged and then removes (the orphan sweep) must not be published by the barrier.
+    if (isStagingFileIds())
+      stagedFiles.remove(fileId);
 
-      files.set(fileId, null);
-    }
+    // The full rebuild leaves the published slot to the barrier, which empties every slot it did not stage.
+    if (!isRebuildingEverything())
+      synchronized (files) {
+        if (fileId >= files.size())
+          return;
+
+        files.set(fileId, null);
+      }
 
     final Integer replacementFileId = migratedFileIds.get(fileId);
     for (final Map.Entry<Integer, Integer> migration : migratedFileIds.entrySet())
@@ -2767,6 +2840,39 @@ public class LocalSchema implements Schema {
     return new TimeSeriesTypeBuilder(database);
   }
 
+  private static String fullTextMetadataKey(final String typeName, final JSONArray properties) {
+    final StringBuilder key = new StringBuilder(typeName);
+    for (int i = 0; i < properties.length(); ++i)
+      key.append('\0').append(properties.getString(i));
+    return key.toString();
+  }
+
+  /**
+   * Returns the one {@link FullTextIndexMetadata} every bucket sub-index of a logical full-text index must share: a
+   * surviving wrapper's if there is one, else the first one this load read. A later bucket sub-index whose persisted
+   * counters disagree with the first one's comes from a schema written while the copies were split, so none of them can
+   * be trusted: the counters are invalidated and the first search rebuilds them from the live data, once.
+   */
+  private FullTextIndexMetadata shareFullTextMetadata(final String key, final FullTextIndexMetadata loaded,
+      final Map<String, FullTextIndexMetadata> live, final Map<String, FullTextIndexMetadata> loadedSoFar) {
+    final FullTextIndexMetadata survivor = live.get(key);
+    if (survivor != null)
+      return survivor;
+
+    final FullTextIndexMetadata first = loadedSoFar.putIfAbsent(key, loaded);
+    if (first == null)
+      return loaded;
+
+    if (first.isCountersValid() && (!loaded.isCountersValid() || loaded.getTotalDocs() != first.getTotalDocs()
+        || loaded.getSumDocLength() != first.getSumDocLength())) {
+      LogManager.instance().log(this, Level.INFO,
+          "BM25 corpus counters of the full-text index on type '%s' %s disagree across its bucket indexes; they will be "
+              + "recomputed on the first search", null, loaded.typeName, loaded.propertyNames);
+      first.setCountersValid(false);
+    }
+    return first;
+  }
+
   protected synchronized void readConfiguration() {
     // The graph this rebuild produces goes into the map typeMap() resolves to, which for a load in flight is the
     // staged one - so the published graph is neither emptied nor mutated here, and the TimeSeries types it holds
@@ -2979,6 +3085,14 @@ public class LocalSchema implements Schema {
       // "Cannot find index" warnings for cases that are then silently relinked, which masks
       // the genuine cases where the file is truly missing (issue #4063).
       final Map<String, List<String>> deferredMissingIndexWarnings = new LinkedHashMap<>();
+      // The BM25 corpus counters of a full-text index are TYPE-wide, so every bucket sub-index of one logical index has to
+      // share ONE FullTextIndexMetadata, as the creation path does. Building one per bucket sub-index here made each copy
+      // count only its own bucket's inserts, ran the once-per-session stale check (a full type scan) once per bucket, and
+      // left REBUILD INDEX ... statsOnly repairing only the first copy. Keyed by type and indexed properties: a type cannot
+      // carry two full-text indexes on the same properties. The live map holds the metadata of the wrappers that survive
+      // this load (loadIncremental keeps its untouched components), which a new sub-index must join rather than fork.
+      final Map<String, FullTextIndexMetadata> liveFullTextMetadata = new HashMap<>();
+      final Map<String, FullTextIndexMetadata> loadedFullTextMetadata = new HashMap<>();
       for (final String typeName : types.keySet()) {
         final JSONObject schemaType = types.getJSONObject(typeName);
         final JSONObject typeIndexesJSON = schemaType.getJSONObject("indexes");
@@ -2987,6 +3101,12 @@ public class LocalSchema implements Schema {
 
           final List<String> orderedIndexes = new ArrayList<>(typeIndexesJSON.keySet());
           orderedIndexes.sort(Comparator.naturalOrder());
+
+          for (final String indexName : orderedIndexes)
+            if (lookupIndex(indexName) instanceof LSMTreeFullTextIndex ftIndex && ftIndex.getFullTextMetadata() != null)
+              liveFullTextMetadata.putIfAbsent(
+                  fullTextMetadataKey(typeName, typeIndexesJSON.getJSONObject(indexName).getJSONArray("properties")),
+                  ftIndex.getFullTextMetadata());
 
           for (final String indexName : orderedIndexes) {
             final JSONObject indexJSON = typeIndexesJSON.getJSONObject(indexName);
@@ -3013,18 +3133,20 @@ public class LocalSchema implements Schema {
                   if (configuredIndexType.equalsIgnoreCase(Schema.INDEX_TYPE.FULL_TEXT.toString())) {
                     // bucketId = -1 ("not set"): the bucket association is already established on the underlying index and read via
                     // its getAssociatedBucketId(); this metadata only carries the full-text/BM25 configuration, not the binding.
-                    final FullTextIndexMetadata ftMeta = new FullTextIndexMetadata(typeName, properties, -1);
-                    ftMeta.fromJSON(indexJSON);
+                    final FullTextIndexMetadata loadedMeta = new FullTextIndexMetadata(typeName, properties, -1);
+                    loadedMeta.fromJSON(indexJSON);
                     // The bucket-level index JSON carries no "typeName" key, so fromJSON() above skipped the base-field
                     // read: take the collations and the manual TypeIndex name from the underlying definition, which
                     // setMetadata(indexJSON) has just populated. Without this the full-text metadata comes back from a
                     // restart missing both, and every site that carries the definition into a new index file through
                     // getMetadataForNewFile() loses them (issue #5742).
-                    ftMeta.inheritCommonSettingsFrom(index.getMetadata());
+                    loadedMeta.inheritCommonSettingsFrom(index.getMetadata());
                     // Same reserved-name guard as the creation path, in case a hand-edited/restored schema reintroduced a property
                     // colliding with the query parser's default-field sentinel.
-                    LSMTreeFullTextIndex.checkReservedPropertyNames(ftMeta.propertyNames);
-                    index = new LSMTreeFullTextIndex((LSMTreeIndex) index, ftMeta);
+                    LSMTreeFullTextIndex.checkReservedPropertyNames(loadedMeta.propertyNames);
+                    index = new LSMTreeFullTextIndex((LSMTreeIndex) index,
+                        shareFullTextMetadata(fullTextMetadataKey(typeName, schemaIndexProperties), loadedMeta,
+                            liveFullTextMetadata, loadedFullTextMetadata));
                     publishIndexDuringLoad(indexName, index);
                   } else if (configuredIndexType.equalsIgnoreCase(Schema.INDEX_TYPE.GEOSPATIAL.toString())) {
                     final int precision = indexJSON.getInt("precision", GeoIndexMetadata.DEFAULT_PRECISION);

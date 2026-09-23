@@ -163,13 +163,11 @@ class Issue7962SchemaLoadFileIdBarrierTest extends TestHelper {
   }
 
   /**
-   * The deliberate asymmetry between the two load paths, pinned so it cannot be "tidied" into symmetry.
-   * <p>
-   * The full rebuild empties the file-id array on the way in and refills it as it builds, so it has no previous
-   * occupant to keep serving and withholding the slots would answer "not found" for the whole load. That is not a
-   * safer answer, it is a worse one: #7961 keeps the PREVIOUS type graph published across a reload precisely so a
-   * query that resolves its index through a type keeps working, and reading a record through it resolves the
-   * record's bucket BY FILE ID. This test is that guarantee, measured from inside the window.
+   * #7961 keeps the PREVIOUS type graph published across a full reload precisely so a query that resolves its index
+   * through a type keeps working, and reading a record through it resolves the record's bucket BY FILE ID. So the
+   * full load must keep its file-id slots resolvable for the whole window - since issue #7963 to the previous
+   * generation's components, which it no longer empties on the way in. This test is that guarantee, measured from
+   * inside the window.
    */
   @Test
   @Timeout(value = 2, unit = TimeUnit.MINUTES)

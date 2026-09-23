@@ -189,6 +189,14 @@ public abstract class PaginatedComponent extends Component {
       file.close();
   }
 
+  /**
+   * The committed page count, ignoring the calling thread's transaction-local counter that {@link #getTotalPages()}
+   * answers with first. What a component replacing this one on a schema reload has to carry over.
+   */
+  public int getCommittedPageCount() {
+    return pageCount.get();
+  }
+
   public int getTotalPages() {
     final TransactionContext tx = database.getTransactionIfExists();
     if (tx != null) {

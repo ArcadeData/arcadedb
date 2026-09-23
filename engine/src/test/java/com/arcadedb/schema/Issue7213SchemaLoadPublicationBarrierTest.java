@@ -20,6 +20,7 @@ package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.LocalBucket;
@@ -87,8 +88,9 @@ class Issue7213SchemaLoadPublicationBarrierTest extends TestHelper {
   }
 
   /**
-   * The full rebuild. It drops every component instance up front, so the honest answer inside the window is "not
-   * found" - what it must never be is the freshly built vector index, which at that moment has loaded no vectors.
+   * The full rebuild. Inside the window the answer is the PREVIOUS generation's instance (issue #7963; before it,
+   * "not found") - what it must never be is the freshly built vector index, which at that moment has loaded no
+   * vectors.
    */
   @Test
   @Timeout(value = 2, unit = TimeUnit.MINUTES)
@@ -96,7 +98,11 @@ class Issue7213SchemaLoadPublicationBarrierTest extends TestHelper {
     final LocalSchema schema = schema();
     final String blockingBucketName = firstBucketNameOf(schema);
     final Index indexBefore = schema.getIndexByName(INDEX_NAME);
-    final String bucketLevelIndexName = bucketLevelVectorIndex(schema).getName();
+    final IndexInternal bucketLevelIndexBefore = bucketLevelVectorIndex(schema);
+    final String bucketLevelIndexName = bucketLevelIndexBefore.getName();
+    final Bucket bucketBefore = schema.getBucketByName(blockingBucketName);
+    final int indexesBefore = schema.getIndexes().length;
+    final int bucketsBefore = schema.getBuckets().size();
 
     final BlockingHook hook = installBlockingBucket(schema, blockingBucketName);
     final AtomicReference<Throwable> loadFailure = new AtomicReference<>();
@@ -116,23 +122,25 @@ class Issue7213SchemaLoadPublicationBarrierTest extends TestHelper {
 
       // THE ASSERTION THE ISSUE IS ABOUT. Before the fix the rebuilt LSMVectorIndex was already in indexMap here,
       // with onAfterSchemaLoad() - and therefore its vector load - still pending.
-      assertThat(schema.existsIndex(INDEX_NAME))
+      assertThat(schema.getIndexByName(INDEX_NAME))
           .as("an index whose onAfterSchemaLoad() has not run must not be reachable by name")
-          .isFalse();
-      assertThat(schema.existsIndex(bucketLevelIndexName))
+          .isSameAs(indexBefore);
+      assertThat(schema.getIndexByName(bucketLevelIndexName))
           .as("neither is the bucket-level component the wrapper is built over")
-          .isFalse();
-      assertThat(schema.existsBucket(blockingBucketName))
+          .isSameAs(bucketLevelIndexBefore);
+      assertThat(schema.getBucketByName(blockingBucketName))
           .as("the bucket lookup map publishes on the same barrier as the index one")
-          .isFalse();
+          .isSameAs(bucketBefore);
       // getIndexes()/getBuckets() carry their own merge logic, so they get their own assertion rather than being
       // assumed to follow existsIndex()/existsBucket().
       assertThat(schema.getIndexes())
           .as("the bulk index accessor must not expose the staged components either")
-          .isEmpty();
-      assertThat(schema.getBuckets())
+          .hasSize(indexesBefore)
+          .contains(indexBefore, bucketLevelIndexBefore);
+      assertThat(new ArrayList<Bucket>(schema.getBuckets()))
           .as("nor must the bulk bucket accessor")
-          .isEmpty();
+          .hasSize(bucketsBefore)
+          .contains(bucketBefore);
     } finally {
       hook.release.countDown();
       loader.join(TimeUnit.MINUTES.toMillis(1));
@@ -143,7 +151,7 @@ class Issue7213SchemaLoadPublicationBarrierTest extends TestHelper {
     assertThat(loader.isAlive()).isFalse();
 
     // The other side of the same barrier, and the reason the load does not trip over its own staging: while the
-    // second thread above could not see the index, the LOADING thread could - it has to, or readConfiguration()
+    // second thread above could see only the previous index, the LOADING thread saw the new one - it has to, or readConfiguration()
     // would not find the components it has just built.
     assertThat(hook.indexVisibleToTheLoadingThread.get())
         .as("the loading thread must see through the barrier at the very moment another thread cannot")
