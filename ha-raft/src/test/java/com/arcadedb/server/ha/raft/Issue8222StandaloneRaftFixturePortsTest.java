@@ -108,6 +108,8 @@ class Issue8222StandaloneRaftFixturePortsTest {
     final int[] ports = StaticBaseServerTest.allocateFreePorts(6);
 
     assertThat(ports).hasSize(6).doesNotHaveDuplicates();
+    // StaticBaseServerTest.FREE_PORT_RANGE_FIRST/LAST, restated because they are package-private to com.arcadedb.server:
+    // if that range moves, move these bounds with it.
     for (final int port : ports)
       assertThat(port).as("a Raft port must stay below every ephemeral range").isBetween(15000, 32767);
   }
