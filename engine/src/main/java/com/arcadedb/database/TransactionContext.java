@@ -197,6 +197,19 @@ public class TransactionContext implements Transaction {
   private       long                                 slotRebaseTrackedBytes;
   private       boolean                              useWAL;
   /**
+   * Overrides {@link #useWAL} for THIS transaction only when set; {@code null} to follow the session's setting.
+   * <p>
+   * {@link #setUseWAL(boolean)} is the session's durability choice and deliberately outlives the transaction it was
+   * made in - a caller that switches the WAL off for a bulk load expects every transaction of that load to run
+   * without it. Engine-internal bulk work (a vector index build, a graph persist) wants the opposite: no WAL for the
+   * pages IT writes, and the session left exactly as it was found. Setting the session flag for that leaked into every
+   * later transaction on the thread, because this context is reused across begin()/commit() cycles (issue #8129: after
+   * an {@code LSM_VECTOR} build, commits on that thread were no longer written to the WAL at all).
+   * <p>
+   * Cleared by {@link #reset()} with the rest of the per-transaction state, so it cannot outlive its transaction.
+   */
+  private       Boolean                              useWALOverride;
+  /**
    * Milliseconds this transaction's commit waits for its file locks, overriding
    * {@link GlobalConfiguration#COMMIT_LOCK_TIMEOUT} when set; {@code null} to use the configured value.
    * <p>
@@ -357,24 +370,46 @@ public class TransactionContext implements Transaction {
 
   /**
    * How many transactions have been successfully COMMITTED on THIS context object, monotonically increasing for its
-   * whole life (issue #7667). Snapshot it, run code that may commit, and compare: a different value means the
-   * transaction the snapshot referred to was published, so anything buffered against it is already durable and must
-   * neither be replayed onto whatever transaction is open now nor reported as lost. A rollback deliberately does
-   * NOT move it - see the field's own comment. Never reset by {@link #reset()}, which would make a later commit
-   * hand back a value a stale snapshot could match.
+   * whole life (issue #7667), plus any batch boundary crossed on a nested context directly under it (issue #8188,
+   * see {@link #reportBatchBoundaryOfNestedTransaction()}). Snapshot it, run code that may commit, and compare: a
+   * different value means work was published under the transaction the snapshot referred to, so it is already
+   * durable and must neither be replayed onto whatever transaction is open now nor reported as lost. A rollback
+   * deliberately does NOT move it - see the field's own comment. Never reset by {@link #reset()}, which would make
+   * a later commit hand back a value a stale snapshot could match.
    *
-   * @return the number of transactions committed on this context so far
+   * @return the number of transactions committed under this context so far
    */
   public long getCommitCount() {
     return commitCount;
   }
 
   /**
+   * Records on THIS context a {@code BATCH n} boundary that a nested transaction directly under it just published
+   * and was popped for (issue #8188). Called by {@code BatchStep}, and only by it.
+   * <p>
+   * The witness a retry loop needs is "part of the block I am about to replay is already durable", and for a
+   * nested transaction the counter carrying it dies with the context: {@code commit()} pops it and the
+   * {@code begin()} straight after pushes a fresh one, so the loop's sampled context - the enclosing transaction,
+   * because the block opened its own - never sees the move. That is the shape of every server path, where the
+   * request already holds a transaction and a {@code BEGIN ... COMMIT RETRY} script nests inside it.
+   * <p>
+   * Deliberately reported HERE, from the one statement that commits inside a caller's unit, rather than carried up
+   * by every pop: the engine opens and commits nested transactions of its own for housekeeping that has nothing to
+   * do with the caller's block - {@code Dictionary.getIdByName} registering a new property name is the one that
+   * proved it - and replaying a block over those is not only safe, it is what the retry is for. A blanket carry
+   * turned each of them into a refusal to retry.
+   */
+  public void reportBatchBoundaryOfNestedTransaction() {
+    ++commitCount;
+  }
+
+  /**
    * Whether a block that ran with {@code txAtStart} open, at commit count {@code commitCountAtStart}, has already
    * published part of its work - which makes it UNSAFE TO RE-RUN (issue #7916).
    * <p>
-   * The two retry loops that re-execute a whole block after a conflict ({@code LocalDatabase.transaction} and
-   * {@code DatabaseAsyncTransaction.executeTransaction}) roll back and start again. A rollback can only take back
+   * The retry loops that re-execute a whole block after a conflict ({@code LocalDatabase.transaction},
+   * {@code DatabaseAsyncTransaction.executeTransaction}, {@code RemoteDatabase.transaction} over HTTP and gRPC,
+   * and the SQL {@code COMMIT RETRY} clause's {@code RetryStep}) roll back and start again. A rollback can only take back
    * what is still buffered, and a statement with an EXPLICIT batch boundary - {@code UPDATE}, {@code DELETE} or
    * {@code MOVE VERTEX} with {@code BATCH n} - calls {@code db.commit(); db.begin();} in the MIDDLE of the
    * caller's transaction, so everything up to the last boundary is already durable. It also leaves a transaction
@@ -397,7 +432,10 @@ public class TransactionContext implements Transaction {
    * inside a NESTED transaction pops that context and the following {@code begin()} pushes a fresh one, so "is
    * the current context still the one I started with" answers yes for a plain rollback and no for a nesting
    * change that published nothing. The counter on the sampled object answers the question actually being asked,
-   * at every nesting depth, and a context is never reused once popped.
+   * at every nesting depth, and a context is never reused once popped - nesting is covered because a batch
+   * boundary crossed one level down is reported UP to the context that survives it (issue #8188, see
+   * {@link #reportBatchBoundaryOfNestedTransaction()}), so a block that opens its own transaction - as a
+   * {@code BEGIN ... COMMIT RETRY} script nested inside a server request's does - is still seen to have published.
    *
    * @param txAtStart          the transaction context that was open when the block started, or {@code null} if none
    * @param commitCountAtStart {@code txAtStart.getCommitCount()} sampled at that moment
@@ -558,6 +596,24 @@ public class TransactionContext implements Transaction {
   }
 
   /**
+   * Overrides, for THIS transaction only, whether its commit is written to the WAL. See the {@code useWALOverride}
+   * field: unlike {@link #setUseWAL(boolean)} it never outlives the transaction it was set in.
+   *
+   * @param useWAL {@code false} to skip the WAL, {@code true} to force it, {@code null} to go back to the session's
+   *               setting
+   */
+  public void setUseWALForThisTransaction(final Boolean useWAL) {
+    this.useWALOverride = useWAL;
+  }
+
+  /**
+   * @return the per-transaction WAL override, or {@code null} when the session's setting applies
+   */
+  public Boolean getUseWALForThisTransaction() {
+    return useWALOverride;
+  }
+
+  /**
    * Overrides, for THIS transaction only, how long its commit waits for the file locks it needs. See the
    * {@code commitLockTimeout} field.
    *
@@ -580,8 +636,23 @@ public class TransactionContext implements Transaction {
     this.walFlush = flush;
   }
 
+  /**
+   * @return whether THIS transaction's commit is written to the WAL: the per-transaction override when one is set,
+   * otherwise the session's setting. To save the session's setting and put it back later through
+   * {@link #setUseWAL(boolean)}, read {@link #isSessionUseWAL()} instead: this value may carry a one-transaction
+   * override, and restoring it would make that override permanent (issue #8129).
+   */
   @Override
   public boolean isUseWAL() {
+    final Boolean override = useWALOverride;
+    return override != null ? override : useWAL;
+  }
+
+  /**
+   * @return the session's WAL setting, the one {@link #setUseWAL(boolean)} writes, ignoring any per-transaction
+   * override. The value to capture when saving the setting to restore it later.
+   */
+  public boolean isSessionUseWAL() {
     return useWAL;
   }
 
@@ -1735,6 +1806,7 @@ public class TransactionContext implements Transaction {
     newPageCounters.clear();
     immutablePages.clear();
     commitLockTimeout = null;
+    useWALOverride = null;
   }
 
   /**
@@ -2144,7 +2216,7 @@ public class TransactionContext implements Transaction {
 
       Binary result = null;
 
-      if (useWAL) {
+      if (isUseWAL()) {
         txId = database.getTransactionManager().getNextTransactionId();
         //LogManager.instance().log(this, Level.FINE, "Creating buffer for TX %d (threadId=%d)", txId, Thread.currentThread().threadId());
         result = database.getTransactionManager().createTransactionBuffer(txId, pages);
@@ -2582,6 +2654,7 @@ public class TransactionContext implements Transaction {
     afterCommitCallbacks = null;
     registeredCallbackKeys = null;
     commitLockTimeout = null;
+    useWALOverride = null;
     txId = -1;
   }
 

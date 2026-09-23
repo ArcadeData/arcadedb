@@ -18,7 +18,6 @@
  */
 package com.arcadedb.postgres;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 
 import org.junit.jupiter.api.DisplayName;
@@ -33,6 +32,7 @@ import java.time.Duration;
 import java.util.List;
 
 import static com.arcadedb.postgres.PostgresWireMessages.WireMessage;
+import static com.arcadedb.postgres.PostgresWireMessages.errorFields;
 import static com.arcadedb.postgres.PostgresWireMessages.messageTypesOf;
 import static com.arcadedb.postgres.PostgresWireMessages.readUntilReadyForQuery;
 import static com.arcadedb.postgres.PostgresWireMessages.readWireMessage;
@@ -83,7 +83,7 @@ class Issue8030RecoveryRollbackReuseIT extends PostgresWireProtocolTestBase {
   @DisplayName("[#8030] a ROLLBACK registered by the aborted-block recovery really rolls back when it is bound and executed again")
   void reusedRecoveryRollbackRollsBackTheNextBlock() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -134,7 +134,7 @@ class Issue8030RecoveryRollbackReuseIT extends PostgresWireProtocolTestBase {
   @DisplayName("[#8030] the recovery-registered statement rolls back when bound under a different portal name too")
   void recoveryRollbackReboundUnderAnotherPortalNameStillRollsBack() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -176,7 +176,7 @@ class Issue8030RecoveryRollbackReuseIT extends PostgresWireProtocolTestBase {
   @DisplayName("[#8030] a COMMIT or END that recovered an aborted block rolls back on reuse, matching the ROLLBACK tag it answers")
   void recoveryViaCommitOrEndAlsoRollsBackOnReuse() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -225,10 +225,10 @@ class Issue8030RecoveryRollbackReuseIT extends PostgresWireProtocolTestBase {
   }
 
   @Test
-  @DisplayName("[#8030] re-executing the already-bound recovery portal without a new Bind still applies only once")
-  void replayingTheBoundRecoveryPortalAppliesOnlyOnce() throws Exception {
+  @DisplayName("[#8030] re-executing the already-bound recovery portal after its block ended is refused, never replayed")
+  void replayingTheBoundRecoveryPortalAfterItsBlockEndedIsRefused() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -248,23 +248,25 @@ class Issue8030RecoveryRollbackReuseIT extends PostgresWireProtocolTestBase {
         runAndRead(out, in, "b2", "BEGIN");
         runAndRead(out, in, "w2", "INSERT INTO " + REPLAY_TYPE + " SET id = 400");
 
-        // No Bind this time: the portal "rbp" is the one the recovery Execute already consumed the marker
-        // from, and re-running it must discard nothing - the same boundary issue #7851 drew for a healthy
-        // ROLLBACK portal.
+        // No Bind this time: the portal "rbp" belonged to the block its own ROLLBACK ended, and a portal ends with
+        // its transaction (issue #8212), so it cannot be replayed into the second block at all - the strongest form
+        // of the boundary issue #7851 drew for a healthy ROLLBACK portal. As in PostgreSQL, the refusal aborts
+        // the block it arrived in.
         sendExecute(out, "rbp");
         sendSync(out);
         final List<WireMessage> replay = readUntilReadyForQuery(in);
-        assertThat(messageTypesOf(replay)).doesNotContain('E');
-        assertThat(readyForQueryStatusOf(replay))
-            .as("a replayed portal applies its transaction control once, so the second block is untouched")
-            .isEqualTo('T');
+        assertThat(messageTypesOf(replay)).containsExactly('E', 'Z');
+        assertThat(errorFields(replay.getFirst()).get('C')).as("portal does not exist").isEqualTo("34000");
+        assertThat(readyForQueryStatusOf(replay)).isEqualTo('E');
 
-        assertThat(readyForQueryStatusOf(runAndRead(out, in, "c2", "COMMIT"))).isEqualTo('I');
+        final List<WireMessage> commit = runAndRead(out, in, "c2", "COMMIT");
+        assertThat(commandCompleteTagOf(commit)).as("COMMIT of an aborted block rolls it back").isEqualTo("ROLLBACK");
+        assertThat(readyForQueryStatusOf(commit)).isEqualTo('I');
       });
     }
 
     assertThat(getServerDatabase(0, getDatabaseName()).countType(REPLAY_TYPE, true))
-        .as("the replayed portal discarded nothing, so the block the client committed is committed").isEqualTo(1);
+        .as("the block the refused replay aborted is rolled back, not committed").isZero();
   }
 
   /**

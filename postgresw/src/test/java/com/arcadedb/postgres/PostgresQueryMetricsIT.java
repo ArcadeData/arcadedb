@@ -19,7 +19,6 @@
 package com.arcadedb.postgres;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.Timer;
 import org.junit.jupiter.api.AfterEach;
@@ -37,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Verifies that queries executed over a Postgres connection are tagged with protocol="postgres"
  * in the arcadedb.query.duration Micrometer timer.
  */
-public class PostgresQueryMetricsIT extends BaseGraphServerTest {
+public class PostgresQueryMetricsIT extends PostgresWireProtocolTestBase {
 
   @Override
   public void setTestConfiguration() {
@@ -54,7 +53,7 @@ public class PostgresQueryMetricsIT extends BaseGraphServerTest {
 
   private Connection getConnection() throws Exception {
     Class.forName("org.postgresql.Driver");
-    final var url = "jdbc:postgresql://localhost/" + getDatabaseName();
+    final var url = getServerPostgresJdbcUrl();
     final var props = new Properties();
     props.setProperty("user", "root");
     props.setProperty("password", DEFAULT_PASSWORD_FOR_TESTS);

@@ -26,7 +26,6 @@ import com.arcadedb.query.QueryEngineManager;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.server.BaseGraphServerTest;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
 import io.grpc.ClientCall;
@@ -58,9 +57,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@link QueryEngine} that counts open/close pairs and asserts that every gRPC {@code executeQuery}
  * closes its result set.
  */
-public class Issue4197GrpcExecuteQueryResultSetLeakIT extends BaseGraphServerTest {
-
-  private static final int GRPC_PORT = 50051;
+public class Issue4197GrpcExecuteQueryResultSetLeakIT extends BaseGrpcServerTest {
 
   private static final Metadata.Key<String> USER_HEADER     = Metadata.Key.of("x-arcade-user", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> PASSWORD_HEADER = Metadata.Key.of("x-arcade-password", Metadata.ASCII_STRING_MARSHALLER);
@@ -89,7 +86,7 @@ public class Issue4197GrpcExecuteQueryResultSetLeakIT extends BaseGraphServerTes
     opened.set(0);
     closed.set(0);
 
-    channel = ManagedChannelBuilder.forAddress("localhost", GRPC_PORT).usePlaintext().build();
+    channel = ManagedChannelBuilder.forAddress("localhost", getServerGrpcPort()).usePlaintext().build();
     final Channel authenticatedChannel = ClientInterceptors.intercept(channel, new AuthClientInterceptor());
     authenticatedStub = ArcadeDbServiceGrpc.newBlockingStub(authenticatedChannel);
   }

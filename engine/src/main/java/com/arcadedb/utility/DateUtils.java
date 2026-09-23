@@ -24,6 +24,9 @@ import com.arcadedb.exception.SerializationException;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryTypes;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.math.RoundingMode;
 import java.text.ParsePosition;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -44,6 +47,8 @@ import java.util.Date;
 import java.util.Locale;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class DateUtils {
   public static final  String                                       DATE_TIME_ISO_8601_FORMAT = "yyyy-MM-dd'T'HH:mm:ssZ";
@@ -204,10 +209,68 @@ public class DateUtils {
       case Calendar calendar -> Math.floorDiv(calendar.getTimeInMillis(), MS_IN_A_DAY);
       case Instant instant -> instant.atZone(UTC_ZONE_ID).toLocalDate().toEpochDay();
       case ZonedDateTime zonedDateTime -> zonedDateTime.toLocalDate().toEpochDay();
-      case Number number -> number.longValue();
+      case Number number -> numberToEpochUnits(number);
       default ->
           throw new IllegalArgumentException("Cannot convert value of type '" + value.getClass() + "' to epoch days for a DATE value");
     };
+  }
+
+  /**
+   * Reads a {@link Number} holding a count of epoch units (days, seconds, millis, micros or nanos - whatever the caller
+   * reads it as) as a {@code long}, the one place every date/time conversion in this class turns a number into an
+   * instant (issue #8216).
+   * <p>
+   * {@link Number#longValue()} is wrong for this in three ways, each of them silent:
+   * <ul>
+   * <li>a fractional value is truncated TOWARD ZERO, which for a pre-epoch instant is the LATER unit: {@code -1.5}
+   * millis is an instant inside millisecond {@code -2}, not {@code -1}. The value is FLOORED instead - the unit that
+   * contains the instant - which is also what {@link Instant#toEpochMilli()} and {@code Math.floorDiv} (#6824) do. A
+   * fractional value is kept rather than refused because it is a real instant, and a common one: a client computing
+   * millis as {@code time.time() * 1000} (Python) or {@code performance.timeOrigin + performance.now()} (JavaScript)
+   * sends one;</li>
+   * <li>{@code NaN} becomes {@code 0} - the epoch, a real instant that means something else (the #8152 trap), and
+   * an infinity saturates to {@link Long#MAX_VALUE}/{@link Long#MIN_VALUE}: all three are refused;</li>
+   * <li>a {@link BigInteger}/{@link BigDecimal} outside the {@code long} range WRAPS to an unrelated instant, and a
+   * {@code double} outside it saturates: both are refused.</li>
+   * </ul>
+   *
+   * @throws IllegalArgumentException when the number is not finite or outside the {@code long} range
+   */
+  public static long numberToEpochUnits(final Number number) {
+    return switch (number) {
+      // INTEGRAL: longValue() IS EXACT
+      case Long l -> l;
+      case Integer i -> i;
+      case Short s -> s;
+      case Byte b -> b;
+      case AtomicLong a -> a.get();
+      case AtomicInteger a -> a.get();
+      case BigInteger bigInteger -> {
+        if (bigInteger.bitLength() > 63)
+          throw new IllegalArgumentException("Timestamp value " + bigInteger + " is outside the supported range");
+        yield bigInteger.longValue();
+      }
+      case BigDecimal bigDecimal -> {
+        try {
+          yield bigDecimal.setScale(0, RoundingMode.FLOOR).longValueExact();
+        } catch (final ArithmeticException e) {
+          throw new IllegalArgumentException("Timestamp value " + bigDecimal + " is outside the supported range");
+        }
+      }
+      // Double, Float and any other Number: read through the double value, floored, a non-finite one refused
+      default -> floorToLong(number.doubleValue());
+    };
+  }
+
+  private static long floorToLong(final double value) {
+    // -2^63 is exactly representable as a double and 2^63 is the first double past Long.MAX_VALUE, so this range check
+    // is exact: anything that passes floors to a value (long) holds without saturating
+    if (Double.isNaN(value) || Double.isInfinite(value))
+      throw new IllegalArgumentException("Timestamp value " + value + " is not a finite number");
+    final double floored = Math.floor(value);
+    if (floored < -0x1p63 || floored >= 0x1p63)
+      throw new IllegalArgumentException("Timestamp value " + value + " is outside the supported range");
+    return (long) floored;
   }
 
   public static Long dateTimeToTimestamp(final Object value, final ChronoUnit precisionToUse) {
@@ -303,7 +366,7 @@ public class DateUtils {
         // NOT SUPPORTED
         timestamp = 0;
     } else if (value instanceof Number number)
-      timestamp = number.longValue();
+      timestamp = numberToEpochUnits(number);
     else if (value instanceof String string) {
       if (FileUtils.isLong(string))
         timestamp = Long.parseLong(string);
@@ -314,6 +377,41 @@ public class DateUtils {
       return null;
 
     return timestamp;
+  }
+
+  /**
+   * THE one converter from any of the engine's date/time representations to epoch milliseconds. Accepts everything
+   * {@link #dateTimeToTimestamp(Object, ChronoUnit)} accepts - {@link Date}, {@link Calendar}, {@link LocalDateTime},
+   * {@link LocalDate}, {@link ZonedDateTime}, {@link OffsetDateTime}, {@link Instant}, {@link Number} and a
+   * {@link String} in any format the engine parses - reading a zone-less value at UTC, which is how the engine's own
+   * DATETIME representation is anchored.
+   * <p>
+   * #8152: three near-copies of this conversion lived in three packages, each covering a different subset of the
+   * types, and a {@code return 0} / {@code return Long.MIN_VALUE} fall-through for the rest. When
+   * {@code ts.timeBucket()} changed its return type from {@link Date} to {@link LocalDateTime} (#7610, #4385) the
+   * change reached only some of them, and the continuous-aggregate refresher silently read every bucket as the epoch
+   * - a value indistinguishable from "no watermark yet" - so its watermark never advanced and every refresh appended
+   * a second copy of the whole aggregate. A SILENT SENTINEL IS WHAT TURNED A TYPE CHANGE INTO A DATA DEFECT, so this
+   * one throws on a type it does not know rather than answering with a number that means something else.
+   * <p>
+   * A bare numeric {@link String} has its own epoch precision inferred from its digit count
+   * ({@link #dateTimeToTimestampInferringStringPrecision}), because every caller here is asking for an ABSOLUTE
+   * MOMENT - a bucket boundary, a time-range bound - which is the reading {@code BinaryComparator} already uses for
+   * the same string (#5956). Taking the raw digits as milliseconds instead would make a pushed-down range bound
+   * disagree with the generic filter evaluating the very same predicate.
+   *
+   * @throws IllegalArgumentException when {@code value} is {@code null}, or of a type that carries no date/time
+   */
+  public static long toEpochMillis(final Object value) {
+    if (value == null)
+      throw new IllegalArgumentException("Cannot convert a null value to a timestamp");
+    final Long millis = value instanceof String
+        ? dateTimeToTimestampInferringStringPrecision(value, ChronoUnit.MILLIS)
+        : dateTimeToTimestamp(null, value, ChronoUnit.MILLIS);
+    if (millis == null)
+      throw new IllegalArgumentException(
+          "Cannot convert value of type '" + value.getClass().getName() + "' to a timestamp in milliseconds");
+    return millis;
   }
 
   /**
@@ -813,7 +911,7 @@ public class DateUtils {
 
   public static String format(final Object obj, final String format, final String timeZone) {
     if (obj instanceof Number number)
-      return getFormatter(format).format(millisToLocalDateTime(number.longValue(), timeZone));
+      return getFormatter(format).format(millisToLocalDateTime(numberToEpochUnits(number), timeZone));
     else if (obj instanceof Date date)
       return getFormatter(format).format(millisToLocalDateTime(date.getTime(), timeZone));
     else if (obj instanceof Calendar calendar)

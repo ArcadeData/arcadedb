@@ -374,8 +374,12 @@ public class SelectExecutor {
         filterWithIndexes(select.rootTreeElement, cursors);
       }
 
+      // #8153: A PLAIN UNION, NOT A KEY-ORDERED MERGE. THE LEAVES OF AN or CAN BE ANSWERED BY DIFFERENT INDEXES, WHOSE KEYS
+      // ARE NOT COMPARABLE (AN INTEGER id AGAINST A STRING name), AND THE MERGED ORDER IS NEVER RELIED UPON WHEN MORE THAN
+      // ONE LEAF CONTRIBUTED: SelectIterator ONLY SKIPS ITS IN-MEMORY SORT WHEN usedIndexes.size() == 1. A NESTED in_op
+      // CURSOR SCANS ONE INDEX AND STAYS KEY-ORDERED
       if (!cursors.isEmpty())
-        return new MultiIndexCursor(cursors, indexCandidateLimit, true);
+        return new MultiIndexCursor(cursors, indexCandidateLimit, true, false);
 
       // NO CURSOR WAS ACTUALLY BUILT (E.G. A BARE is_null/is_not_null/neq/like/ilike LEAF, WHICH isTheNodeFullyIndexed()
       // CORRECTLY REFUSES TO TREAT AS INDEXED - SEE #6577 - SO node.index STAYS null AND filterWithIndexesFinalNode()
@@ -737,8 +741,11 @@ public class SelectExecutor {
     if (cursor == null)
       return;
 
+    // BELT AND BRACES: every tree Select builds gives a bare leaf the synthetic `run` root, so a root leaf has a
+    // parent - but a caller assembling SelectTreeNodes directly need not, and a NullPointerException is no way to
+    // find that out (found by CodeRabbit).
     final SelectTreeNode parentNode = node.getParent();
-    if (parentNode.operator == SelectOperator.and && parentNode.left == node) {
+    if (parentNode != null && parentNode.operator == SelectOperator.and && parentNode.left == node) {
       if (!node.index.isUnique()) {
         // CHECK IF THERE IS ANOTHER INDEXED NODE ON THE SIBLING THAT IS UNIQUE (TO PREFER TO THIS)
         final TypeIndex rightIndex = ((SelectTreeNode) parentNode.right).index;

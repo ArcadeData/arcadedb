@@ -19,7 +19,6 @@
 package com.arcadedb.bolt;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -51,7 +50,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * ISO-8601 string. Calling {@code Value.asZonedDateTime()} / {@code asLocalDate()} would throw if the
  * value were still a string, so these assertions inherently verify native-struct output.
  */
-public class Bolt4907TemporalOutputIT extends BaseGraphServerTest {
+public class Bolt4907TemporalOutputIT extends BaseBoltServerTest {
 
   @Override
   public void setTestConfiguration() {
@@ -67,7 +66,7 @@ public class Bolt4907TemporalOutputIT extends BaseGraphServerTest {
   }
 
   private Driver getDriver() {
-    return GraphDatabase.driver("bolt://localhost:7687", AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
+    return GraphDatabase.driver(getServerBoltUrl(), AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
         Config.builder().withoutEncryption().build());
   }
 

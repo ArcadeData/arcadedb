@@ -19,7 +19,6 @@
 package com.arcadedb.redis;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import redis.clients.jedis.Jedis;
@@ -48,9 +47,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue7776IncrAtomicityTest extends BaseGraphServerTest {
+public class Issue7776IncrAtomicityTest extends BaseRedisServerTest {
 
-  private static final int DEF_PORT    = GlobalConfiguration.REDIS_PORT.getValueAsInteger();
   private static final int THREADS     = 4;
   private static final int PER_THREAD  = 500;
 
@@ -149,7 +147,7 @@ public class Issue7776IncrAtomicityTest extends BaseGraphServerTest {
   }
 
   private Jedis connect() {
-    final Jedis jedis = new Jedis("localhost", DEF_PORT);
+    final Jedis jedis = new Jedis("localhost", getServerRedisPort());
     jedis.auth("root", DEFAULT_PASSWORD_FOR_TESTS);
     return jedis;
   }

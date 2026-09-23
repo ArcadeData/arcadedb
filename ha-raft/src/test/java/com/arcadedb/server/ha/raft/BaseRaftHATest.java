@@ -46,7 +46,6 @@ import java.util.logging.Level;
  */
 public abstract class BaseRaftHATest extends BaseGraphServerTest {
 
-  private static final int  BASE_RAFT_PORT          = 2434;
   // 15s, down from 30s and originally from 120s, and set from a measurement rather than from a suspicion
   // (issues #6267 and #6343).
   //
@@ -142,11 +141,82 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
   static final long REPLICATION_CATCH_UP_TIMEOUT_MS = 30_000;
 
   /**
+   * Every port this fixture has handed out, Raft and otherwise, in {@code [0, handedOutCount)}: the ledger that keeps a
+   * gRPC or Bolt port of this fixture from ever being handed out again as one of its Raft ports.
+   */
+  private int[] handedOutPorts = new int[8];
+  private int   handedOutCount;
+  /** This fixture's Raft ports by server index, drawn on first use and kept for the life of the test instance. */
+  private int[] raftPorts      = new int[0];
+
+  /**
+   * The Raft port of server {@code index}, drawn free for this test instance rather than pinned to {@code 2434 + index}
+   * (issue #8203). When a fixed Raft port is already held - a server lingering from an earlier class, another HA suite
+   * on the same machine - Ratis does not throw: it answers the bind failure with {@code System.exit(1)}, which kills
+   * the whole failsafe fork and every test left in it.
+   * <p>
+   * The ports are drawn lazily, on the first call, because {@link #getServerCount()} is not reliable while the fixture
+   * is being constructed. They stay the same for the life of the instance, so a restarted node comes back on the port
+   * its peers know, and an index beyond {@link #getServerCount()} (a node joining later) extends the allocation without
+   * moving anyone.
+   */
+  protected final synchronized int raftPort(final int index) {
+    if (index >= raftPorts.length) {
+      final int[] more = allocateFixturePorts(Math.max(getServerCount(), index + 1) - raftPorts.length);
+      final int[] grown = Arrays.copyOf(raftPorts, raftPorts.length + more.length);
+      System.arraycopy(more, 0, grown, raftPorts.length, more.length);
+      raftPorts = grown;
+    }
+    return raftPorts[index];
+  }
+
+  /**
+   * {@code count} ports free right now and distinct from every port this fixture has handed out before - its Raft ports
+   * included. Fixtures that bind another listener (gRPC, Bolt, ...) take its ports from here rather than from
+   * {@code allocateFreePorts} directly: two separate {@code allocateFreePorts} calls cannot see each other's ports
+   * once their probe sockets are closed, so a gRPC port and a Raft port of the same cluster could otherwise coincide,
+   * and a Raft bind failure exits the JVM.
+   */
+  protected final synchronized int[] allocateFixturePorts(final int count) {
+    final int[] result = new int[count];
+    int taken = 0;
+    for (int round = 0; taken < count && round < 16; round++)
+      for (final int candidate : drawFreePorts(count - taken))
+        if (!isHandedOut(candidate) && !contains(result, taken, candidate))
+          result[taken++] = candidate;
+    if (taken < count)
+      throw new IllegalStateException("Cannot find " + count + " free ports distinct from the " + handedOutCount
+          + " this fixture already uses");
+
+    if (handedOutCount + count > handedOutPorts.length)
+      handedOutPorts = Arrays.copyOf(handedOutPorts, Math.max(handedOutPorts.length * 2, handedOutCount + count));
+    System.arraycopy(result, 0, handedOutPorts, handedOutCount, count);
+    handedOutCount += count;
+    return result;
+  }
+
+  /** Where {@link #allocateFixturePorts(int)} draws candidates from: a seam so a test can force a collision. */
+  int[] drawFreePorts(final int count) {
+    return allocateFreePorts(count);
+  }
+
+  private boolean isHandedOut(final int port) {
+    return contains(handedOutPorts, handedOutCount, port);
+  }
+
+  private static boolean contains(final int[] ports, final int length, final int port) {
+    for (int i = 0; i < length; i++)
+      if (ports[i] == port)
+        return true;
+    return false;
+  }
+
+  /**
    * Returns the peer ID for a given server index in the test cluster.
    * Matches the host_raftPort format used by {@link RaftHAServer#parsePeerList}.
    */
   protected String peerIdForIndex(final int index) {
-    return "localhost_" + (BASE_RAFT_PORT + index);
+    return "localhost_" + raftPort(index);
   }
 
   /**
@@ -171,10 +241,10 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
     config.setValue(GlobalConfiguration.HA_HEALTH_CHECK_INTERVAL, 0L);
 
     // Each in-process server needs a unique Raft port. Extract the server index
-    // from the server name (e.g., "ArcadeDB_1" → index 1) to offset the base port.
+    // from the server name (e.g., "ArcadeDB_1" → index 1) to look up the port drawn for it.
     final String serverName = config.getValueAsString(GlobalConfiguration.SERVER_NAME);
     final int index = Integer.parseInt(serverName.substring(serverName.lastIndexOf('_') + 1));
-    config.setValue(GlobalConfiguration.HA_RAFT_PORT, BASE_RAFT_PORT + index);
+    config.setValue(GlobalConfiguration.HA_RAFT_PORT, raftPort(index));
   }
 
   /**
@@ -215,7 +285,7 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
     for (int i = 0; i < getServerCount(); i++) {
       if (i > 0)
         sb.append(",");
-      sb.append("localhost:").append(BASE_RAFT_PORT + i).append(":").append(2480 + i);
+      sb.append("localhost:").append(raftPort(i)).append(":").append(2480 + i);
     }
     return sb.toString();
   }

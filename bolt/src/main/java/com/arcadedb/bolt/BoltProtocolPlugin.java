@@ -30,7 +30,7 @@ import com.arcadedb.server.network.DefaultServerSocketFactory;
  */
 public class BoltProtocolPlugin implements ServerPlugin {
   private ArcadeDBServer      server;
-  private BoltNetworkListener listener;
+  private volatile BoltNetworkListener listener;
   private String              host;
   private int                 port;
 
@@ -57,5 +57,14 @@ public class BoltProtocolPlugin implements ServerPlugin {
     if (listener != null) {
       listener.close();
     }
+  }
+
+  /**
+   * The port the listener ACTUALLY bound, which is not necessarily the configured one: {@code 0} asks the operating
+   * system for a free port (issue #8209). Returns -1 when the service is not listening.
+   */
+  public int getPort() {
+    final BoltNetworkListener l = listener;
+    return l != null ? l.getPort() : -1;
   }
 }

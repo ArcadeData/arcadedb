@@ -26,11 +26,12 @@ import de.bwaldvogel.mongo.MongoDatabase;
 import de.bwaldvogel.mongo.MongoServer;
 import de.bwaldvogel.mongo.backend.DatabaseResolver;
 
+import java.net.InetSocketAddress;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class MongoDBProtocolPlugin implements ServerPlugin, DatabaseResolver {
-  private MongoServer                         mongoDBServer;
+  private volatile MongoServer                mongoDBServer;
   private MongoDBBackend                      mongoDBBackend;
   private ArcadeDBServer                      server;
   private String                              host;
@@ -54,6 +55,23 @@ public class MongoDBProtocolPlugin implements ServerPlugin, DatabaseResolver {
   @Override
   public void stopService() {
     mongoDBServer.shutdown();
+  }
+
+  /**
+   * The port the MongoDB listener ACTUALLY bound, which is not necessarily the configured one: {@code 0} asks the
+   * operating system for a free port (issue #8209). Returns -1 when the service is not listening.
+   */
+  public int getPort() {
+    final MongoServer s = mongoDBServer;
+    if (s == null)
+      return -1;
+    try {
+      final InetSocketAddress address = s.getLocalAddress();
+      return address != null ? address.getPort() : -1;
+    } catch (final RuntimeException e) {
+      // NOT BOUND (YET, OR ANY MORE)
+      return -1;
+    }
   }
 
   @Override

@@ -23,7 +23,6 @@ import com.arcadedb.database.Database;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.grpc.FullTextSearchRequest;
 import com.arcadedb.server.grpc.FullTextSearchResponse;
 import com.arcadedb.server.grpc.HybridSearchRequest;
@@ -58,11 +57,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * candidate window. Those are the reads that must be transactional, and they are what an uncommitted UPDATE
  * observably changes.
  */
-public class Issue7326GrpcSearchInTransactionIT extends BaseGraphServerTest {
+public class Issue7326GrpcSearchInTransactionIT extends BaseGrpcClientServerTest {
   private static final String TYPE        = "GrpcTx7326";
   private static final String DENSE_INDEX = "GrpcTx7326[embedding]";
   private static final String TEXT_INDEX  = "GrpcTx7326[text]";
-  private static final int    GRPC_PORT   = 50051;
 
   private RemoteGrpcServer   server;
   private RemoteGrpcDatabase database;
@@ -100,8 +98,8 @@ public class Issue7326GrpcSearchInTransactionIT extends BaseGraphServerTest {
   @Override
   public void beginTest() {
     super.beginTest();
-    server = new RemoteGrpcServer("localhost", GRPC_PORT, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
-    database = new RemoteGrpcDatabase(server, "localhost", GRPC_PORT, getServer(0).getHttpServer().getPort(),
+    server = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    database = new RemoteGrpcDatabase(server, "localhost", getServerGrpcPort(), getServer(0).getHttpServer().getPort(),
         getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
   }
 

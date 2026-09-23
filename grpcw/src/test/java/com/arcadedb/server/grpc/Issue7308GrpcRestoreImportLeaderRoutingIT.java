@@ -54,11 +54,11 @@ class Issue7308GrpcRestoreImportLeaderRoutingIT extends BaseRaftHATest {
 
   // The Raft and HTTP ports are BaseRaftHATest's own: the base class binds those regardless of what
   // this server list says, so naming any others here would advertise addresses nobody listens on and
-  // no leader would ever be elected. Only the gRPC port is this class's to choose, and it differs
-  // from Issue7304GrpcAdminLeaderRoutingIT's so the two never contend for it.
-  private static final int BASE_RAFT_PORT = 2434;
+  // no leader would ever be elected. Only the gRPC port is this class's to choose.
   private static final int BASE_HTTP_PORT = 2480;
-  private static final int BASE_GRPC_PORT = 51161;
+  // One gRPC port per server, drawn free for every test instance rather than fixed (issue #7496), from the same
+  // ledger as the Raft ports so the two can never coincide (issue #8203).
+  private final int[] grpcPorts = allocateFixturePorts(3);
 
   private ManagedChannel channel;
 
@@ -73,9 +73,9 @@ class Issue7308GrpcRestoreImportLeaderRoutingIT extends BaseRaftHATest {
     for (int i = 0; i < getServerCount(); i++) {
       if (i > 0)
         sb.append(",");
-      sb.append("localhost:{raft:").append(BASE_RAFT_PORT + i)
+      sb.append("localhost:{raft:").append(raftPort(i))
           .append(",http:").append(BASE_HTTP_PORT + i)
-          .append(",grpc:").append(BASE_GRPC_PORT + i).append("}");
+          .append(",grpc:").append(grpcPorts[i]).append("}");
     }
     return sb.toString();
   }
@@ -88,7 +88,7 @@ class Issue7308GrpcRestoreImportLeaderRoutingIT extends BaseRaftHATest {
     final int index = Integer.parseInt(serverName.substring(serverName.lastIndexOf('_') + 1));
 
     config.setValue("arcadedb.grpc.enabled", "true");
-    config.setValue(GlobalConfiguration.GRPC_PORT.getKey(), String.valueOf(BASE_GRPC_PORT + index));
+    config.setValue(GlobalConfiguration.GRPC_PORT.getKey(), String.valueOf(grpcPorts[index]));
     config.setValue("arcadedb.grpc.host", "localhost");
     config.setValue("arcadedb.grpc.reflection.enabled", "false");
     config.setValue("arcadedb.grpc.health.enabled", "false");
@@ -184,7 +184,7 @@ class Issue7308GrpcRestoreImportLeaderRoutingIT extends BaseRaftHATest {
    */
   private ArcadeDbAdminServiceGrpc.ArcadeDbAdminServiceBlockingStub adminStubOn(final int serverIndex) {
     closeChannel();
-    channel = ManagedChannelBuilder.forTarget("localhost:" + (BASE_GRPC_PORT + serverIndex)).usePlaintext().build();
+    channel = ManagedChannelBuilder.forTarget("localhost:" + grpcPorts[serverIndex]).usePlaintext().build();
     return ArcadeDbAdminServiceGrpc.newBlockingStub(channel).withDeadlineAfter(30, TimeUnit.SECONDS);
   }
 

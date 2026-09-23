@@ -1458,15 +1458,17 @@ public class BoltNetworkExecutor extends Thread {
           "writer", "requestedStatus", "currentStatus", "statusMessage", "default", "home",
           "constituents");
       stream.syntheticResults = new ArrayList<>();
+      // The port this connection reached, as the routing table advertises: the configured one may be 0, which asks
+      // the operating system for a free port and is not an address anyone can dial (issue #8209)
       for (final String dbName : server.getDatabaseNames()) {
         stream.syntheticResults.add(List.of(dbName, "standard", List.of(), "read-write",
-            getBoltAddress(server.getConfiguration().getValueAsInteger(GlobalConfiguration.BOLT_PORT)), "primary",
+            getBoltAddress(socket.getLocalPort()), "primary",
             true, "online", "online", "", dbName.equals(database != null ? database.getName() : ""), false,
             List.of()));
       }
       // Also add the virtual "system" database entry
       stream.syntheticResults.add(List.of("system", "system", List.of(), "read-write",
-          getBoltAddress(server.getConfiguration().getValueAsInteger(GlobalConfiguration.BOLT_PORT)), "primary",
+          getBoltAddress(socket.getLocalPort()), "primary",
           false, "online", "online", "", false, false, List.of()));
       return true;
 

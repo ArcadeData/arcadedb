@@ -21,7 +21,6 @@ package com.arcadedb.redis;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -47,9 +46,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  * @see <a href="https://github.com/ArcadeData/arcadedb/issues/6757">Issue #6757</a>
  */
-public class RedisCompositeIndexKeyTest extends BaseGraphServerTest {
+public class RedisCompositeIndexKeyTest extends BaseRedisServerTest {
 
-  private static final int DEF_PORT = GlobalConfiguration.REDIS_PORT.getValueAsInteger();
 
   @Test
   void hmgetReadsABracketedCompositeKeyJustLikeHget() {
@@ -160,7 +158,7 @@ public class RedisCompositeIndexKeyTest extends BaseGraphServerTest {
   }
 
   private Jedis newClient() {
-    final Jedis jedis = new Jedis("localhost", DEF_PORT);
+    final Jedis jedis = new Jedis("localhost", getServerRedisPort());
     jedis.auth("root", DEFAULT_PASSWORD_FOR_TESTS);
     return jedis;
   }

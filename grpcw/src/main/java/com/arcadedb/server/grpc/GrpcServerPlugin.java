@@ -195,7 +195,8 @@ public class GrpcServerPlugin implements ServerPlugin {
 
     // Build status message
     StringBuilder status = new StringBuilder();
-    status.append("gRPC server started on ").append(host).append(":").append(port);
+    // The bound port, not the configured one: 0 asks the operating system for a free port (issue #8209)
+    status.append("gRPC server started on ").append(host).append(":").append(grpcServer.getPort());
     status.append(" (mode: standard");
 
     if (getConfigBoolean(config, CONFIG_TLS_ENABLED, false)) {
@@ -477,6 +478,15 @@ public class GrpcServerPlugin implements ServerPlugin {
    */
   public ArcadeDbGrpcService getService() {
     return grpcService;
+  }
+
+  /**
+   * The port the standard gRPC server ACTUALLY bound, which is not necessarily the configured one: {@code 0} asks the
+   * operating system for a free port (issue #8209). Returns -1 when the server is not running.
+   */
+  public int getPort() {
+    final Server s = grpcServer;
+    return s != null && !s.isShutdown() ? s.getPort() : -1;
   }
 
   /**

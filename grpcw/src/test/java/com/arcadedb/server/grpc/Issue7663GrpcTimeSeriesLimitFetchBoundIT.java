@@ -19,7 +19,6 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 import io.grpc.Channel;
 import io.grpc.ClientInterceptors;
 import io.grpc.ManagedChannel;
@@ -65,9 +64,8 @@ import static org.assertj.core.api.Assertions.catchThrowableOfType;
  *
  * @author Roberto Franchini (r.franchini@arcadedata.com)
  */
-public class Issue7663GrpcTimeSeriesLimitFetchBoundIT extends BaseGraphServerTest {
+public class Issue7663GrpcTimeSeriesLimitFetchBoundIT extends BaseGrpcServerTest {
 
-  private static final int    GRPC_PORT   = 50051;
   private static final String TYPE_NAME   = "reading";
   private static final int    MAX_TS_ROWS = 20;
   private static final int    SAMPLES     = 40;
@@ -86,7 +84,7 @@ public class Issue7663GrpcTimeSeriesLimitFetchBoundIT extends BaseGraphServerTes
 
   @BeforeEach
   void setupGrpcClient() {
-    channel = ManagedChannelBuilder.forAddress("localhost", GRPC_PORT).usePlaintext().build();
+    channel = ManagedChannelBuilder.forAddress("localhost", getServerGrpcPort()).usePlaintext().build();
     final Channel authenticatedChannel = ClientInterceptors.intercept(channel,
         new GrpcTestAuthInterceptor("root", DEFAULT_PASSWORD_FOR_TESTS, getDatabaseName()));
     authenticatedStub = ArcadeDbServiceGrpc.newBlockingStub(authenticatedChannel);

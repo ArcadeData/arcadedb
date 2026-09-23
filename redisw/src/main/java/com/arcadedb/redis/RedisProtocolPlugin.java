@@ -28,7 +28,7 @@ import com.arcadedb.server.network.ServerSocketFactory;
 public class RedisProtocolPlugin implements ServerPlugin {
   private ArcadeDBServer       server;
   private ContextConfiguration configuration;
-  private RedisNetworkListener listener;
+  private volatile RedisNetworkListener listener;
 
   @Override
   public void configure(final ArcadeDBServer arcadeDBServer, final ContextConfiguration configuration) {
@@ -50,5 +50,14 @@ public class RedisProtocolPlugin implements ServerPlugin {
   public void stopService() {
     if (listener != null)
       listener.close();
+  }
+
+  /**
+   * The port the listener ACTUALLY bound, which is not necessarily the configured one: {@code 0} asks the operating
+   * system for a free port (issue #8209). Returns -1 when the service is not listening.
+   */
+  public int getPort() {
+    final RedisNetworkListener l = listener;
+    return l != null ? l.getPort() : -1;
   }
 }

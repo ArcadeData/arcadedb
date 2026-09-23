@@ -22,9 +22,9 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.remote.grpc.BaseGrpcClientServerTest;
 import com.arcadedb.remote.grpc.RemoteGrpcDatabase;
 import com.arcadedb.remote.grpc.RemoteGrpcServer;
-import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -49,9 +49,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * the principal it refused, and {@code GrpcAuthInterceptor} names the database it checked the grant
  * against.
  */
-class Issue7374GrpcPrincipalIT extends BaseGraphServerTest {
+class Issue7374GrpcPrincipalIT extends BaseGrpcClientServerTest {
 
-  private static final int    GRPC_PORT       = 50051;
   private static final String SCOPED_USER     = "scoped7374";
   private static final String SCOPED_PWD      = "scoped7374password";
   private static final String FOREIGN_USER    = "foreign7374";
@@ -155,10 +154,10 @@ class Issue7374GrpcPrincipalIT extends BaseGraphServerTest {
 
   private void connect(final String user, final String password) {
     // The server holds root; the database holds the scoped principal. That is the mismatch #7374 is about.
-    grpcServer = new RemoteGrpcServer("localhost", GRPC_PORT, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    grpcServer = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
     // The port the test server actually bound: the configured range starts at 2480, but a server already
     // listening there pushes this one up.
-    database = new RemoteGrpcDatabase(grpcServer, "localhost", GRPC_PORT,
+    database = new RemoteGrpcDatabase(grpcServer, "localhost", getServerGrpcPort(),
         getServer(0).getHttpServer().getPort(), getDatabaseName(), user, password);
   }
 

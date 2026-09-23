@@ -27,10 +27,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteException;
-import com.arcadedb.server.BaseGraphServerTest;
-import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -49,7 +46,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Integration tests for error handling in gRPC client operations.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
-class ErrorHandlingIT extends BaseGraphServerTest {
+class ErrorHandlingIT extends BaseGrpcClientServerTest {
 
   private static final String TYPE = "ErrorTest";
 
@@ -63,23 +60,13 @@ class ErrorHandlingIT extends BaseGraphServerTest {
         "GRPC:com.arcadedb.server.grpc.GrpcServerPlugin");
   }
 
-  @BeforeAll
-  void setupServer() {
-    grpcServer = new RemoteGrpcServer("localhost", 50051, "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
-  }
-
-  @AfterAll
-  void teardownServer() {
-    if (grpcServer != null) {
-      grpcServer.close();
-    }
-  }
-
   @BeforeEach
   @Override
   public void beginTest() {
     super.beginTest();
-    database = new RemoteGrpcDatabase(grpcServer, "localhost", 50051, getServerHttpPort(), getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
+    // Per test, after the server started: the gRPC port is assigned by the operating system on every start (#8209).
+    grpcServer = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", DEFAULT_PASSWORD_FOR_TESTS, true, List.of());
+    database = new RemoteGrpcDatabase(grpcServer, "localhost", getServerGrpcPort(), getServerHttpPort(), getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
 
     database.command("sql", "CREATE VERTEX TYPE `" + TYPE + "` IF NOT EXISTS BUCKETS 8");
     database.command("sql", "CREATE PROPERTY `" + TYPE + "`.id IF NOT EXISTS STRING");
@@ -96,6 +83,8 @@ class ErrorHandlingIT extends BaseGraphServerTest {
       try { database.rollback(); } catch (Throwable ignore) {}
       database.close();
     }
+    if (grpcServer != null)
+      grpcServer.close();
     super.endTest();
   }
 
@@ -122,11 +111,11 @@ class ErrorHandlingIT extends BaseGraphServerTest {
   void authenticationFailure_throwsSecurityException() {
     // Authentication is checked when creating the database connection (HTTP for cluster config)
     // or when making gRPC calls
-    RemoteGrpcServer badServer = new RemoteGrpcServer("localhost", 50051, "root", "wrongpassword", true, List.of());
+    RemoteGrpcServer badServer = new RemoteGrpcServer("localhost", getServerGrpcPort(), "root", "wrongpassword", true, List.of());
 
     // The authentication error may occur either during construction or during query
     assertThatThrownBy(() -> {
-      RemoteGrpcDatabase badDb = new RemoteGrpcDatabase(badServer, "localhost", 50051, getServerHttpPort(), getDatabaseName(), "root", "wrongpassword");
+      RemoteGrpcDatabase badDb = new RemoteGrpcDatabase(badServer, "localhost", getServerGrpcPort(), getServerHttpPort(), getDatabaseName(), "root", "wrongpassword");
       try {
         badDb.query("sql", "SELECT FROM `" + TYPE + "`");
       } finally {
@@ -197,7 +186,7 @@ class ErrorHandlingIT extends BaseGraphServerTest {
 
     // Two concurrent transactions trying to update the same record
     Runnable update1 = () -> {
-      RemoteGrpcDatabase db1 = new RemoteGrpcDatabase(grpcServer, "localhost", 50051, getServerHttpPort(), getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
+      RemoteGrpcDatabase db1 = new RemoteGrpcDatabase(grpcServer, "localhost", getServerGrpcPort(), getServerHttpPort(), getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
       try {
         startLatch.await();
         db1.begin();
@@ -214,7 +203,7 @@ class ErrorHandlingIT extends BaseGraphServerTest {
     };
 
     Runnable update2 = () -> {
-      RemoteGrpcDatabase db2 = new RemoteGrpcDatabase(grpcServer, "localhost", 50051, getServerHttpPort(), getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
+      RemoteGrpcDatabase db2 = new RemoteGrpcDatabase(grpcServer, "localhost", getServerGrpcPort(), getServerHttpPort(), getDatabaseName(), "root", DEFAULT_PASSWORD_FOR_TESTS);
       try {
         startLatch.await();
         db2.begin();

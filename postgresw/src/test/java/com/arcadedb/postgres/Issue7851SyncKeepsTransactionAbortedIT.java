@@ -18,7 +18,6 @@
  */
 package com.arcadedb.postgres;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 
 import org.junit.jupiter.api.DisplayName;
@@ -80,7 +79,7 @@ class Issue7851SyncKeepsTransactionAbortedIT extends PostgresWireProtocolTestBas
   @DisplayName("[#7851] Sync after an error inside an explicit transaction reports 'E' and refuses further statements")
   void syncDoesNotEndTheAbortedTransactionBlock() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -140,7 +139,7 @@ class Issue7851SyncKeepsTransactionAbortedIT extends PostgresWireProtocolTestBas
   @DisplayName("[#7851] after Sync, an Execute in the aborted block is refused with 25P02 and a Close still completes")
   void executeIsRefusedAndCloseStillCompletesAfterSync() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -185,7 +184,7 @@ class Issue7851SyncKeepsTransactionAbortedIT extends PostgresWireProtocolTestBas
   @DisplayName("[#7851] a BEGIN sent over the extended protocol opens a real transaction that ROLLBACK discards")
   void anExtendedProtocolBeginIsARealTransactionBlock() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -222,7 +221,7 @@ class Issue7851SyncKeepsTransactionAbortedIT extends PostgresWireProtocolTestBas
   @DisplayName("[#7851] a COMMIT that was only parsed, never executed, does not make the next Sync commit")
   void transactionControlTakesEffectAtExecuteNotAtParse() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -260,7 +259,7 @@ class Issue7851SyncKeepsTransactionAbortedIT extends PostgresWireProtocolTestBas
   @DisplayName("[#7851] a COMMIT acknowledged at Execute survives a later failure in the same pipeline")
   void anAcknowledgedCommitCannotBeTakenBackByALaterFailure() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -299,10 +298,10 @@ class Issue7851SyncKeepsTransactionAbortedIT extends PostgresWireProtocolTestBas
   }
 
   @Test
-  @DisplayName("[#7851] re-executing a retained ROLLBACK portal does not roll back a later transaction")
-  void aRetainedTransactionControlPortalAppliesOnlyOnce() throws Exception {
+  @DisplayName("[#7851] a ROLLBACK portal cannot be replayed into a later transaction")
+  void aTransactionControlPortalCannotBeReplayedIntoALaterBlock() throws Exception {
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);
@@ -312,7 +311,8 @@ class Issue7851SyncKeepsTransactionAbortedIT extends PostgresWireProtocolTestBas
         assertThat(messageTypesOf(readUntilReadyForQuery(in))).doesNotContain('E');
 
         // First block: opened, written to, and rolled back through a NAMED portal, which outlives its Execute -
-        // a portal is kept so a limit-hit Execute can be resumed through it (issue #6458).
+        // a portal is kept so a limit-hit Execute can be resumed through it (issue #6458) - but not the block it
+        // was bound in (issue #8212).
         runExtendedStatement(out, "b1", "BEGIN");
         readUntilReadyForQuery(in);
         runExtendedStatement(out, "w1", "INSERT INTO " + REPLAY_TYPE + " SET id = 1");
@@ -323,27 +323,28 @@ class Issue7851SyncKeepsTransactionAbortedIT extends PostgresWireProtocolTestBas
         sendSync(out);
         assertThat(readyForQueryStatusOf(readUntilReadyForQuery(in))).isEqualTo('I');
 
-        // Second block, then an Execute of that SAME retained portal with no new Bind. It must do nothing: the
-        // ROLLBACK it carried was already applied, and re-applying it discarded a block the client never asked
-        // to discard.
+        // Second block, then an Execute of that SAME portal name with no new Bind. The ROLLBACK it carried must
+        // never be re-applied to a block the client never asked to discard: the portal ended with the block its
+        // own ROLLBACK closed, so the Execute is refused with 34000 - which, as in PostgreSQL, aborts the block it
+        // arrived in.
         runExtendedStatement(out, "b2", "BEGIN");
         readUntilReadyForQuery(in);
         runExtendedStatement(out, "w2", "INSERT INTO " + REPLAY_TYPE + " SET id = 2");
         readUntilReadyForQuery(in);
         sendExecute(out, "rb");
         sendSync(out);
-        assertThat(readyForQueryStatusOf(readUntilReadyForQuery(in)))
-            .as("the second block is untouched by the replayed portal").isEqualTo('T');
+        final List<WireMessage> replay = readUntilReadyForQuery(in);
+        assertThat(messageTypesOf(replay)).containsExactly('E', 'Z');
+        assertThat(errorFields(replay.getFirst()).get('C')).as("portal does not exist").isEqualTo("34000");
+        assertThat(readyForQueryStatusOf(replay)).as("the refusal aborts the second block").isEqualTo('E');
 
-        runExtendedStatement(out, "c2", "COMMIT");
+        sendSimpleQuery(out, "ROLLBACK");
         assertThat(readyForQueryStatusOf(readUntilReadyForQuery(in))).isEqualTo('I');
       });
     }
 
-    final Database database = getServerDatabase(0, getDatabaseName());
-    assertThat(database.countType(REPLAY_TYPE, true))
-        .as("the first block was rolled back, the second committed").isEqualTo(1);
-    assertThat(database.query("sql", "SELECT id FROM " + REPLAY_TYPE).next().<Integer>getProperty("id")).isEqualTo(2);
+    assertThat(getServerDatabase(0, getDatabaseName()).countType(REPLAY_TYPE, true))
+        .as("both blocks were rolled back, and the first one's portal ran only once").isZero();
   }
 
   @Test
@@ -356,7 +357,7 @@ class Issue7851SyncKeepsTransactionAbortedIT extends PostgresWireProtocolTestBas
     final long emptyTransactionsBefore = (Long) database.getStats().get("readTx");
 
     try (final Socket socket = new Socket()) {
-      socket.connect(new InetSocketAddress("localhost", GlobalConfiguration.POSTGRES_PORT.getValueAsInteger()), 2000);
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
       final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
       final DataInputStream in = new DataInputStream(socket.getInputStream());
       authenticate(out, in);

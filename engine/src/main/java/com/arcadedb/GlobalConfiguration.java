@@ -199,7 +199,7 @@ public enum GlobalConfiguration {
       "yyyy-MM-dd"),
 
   DATE_TIME_IMPLEMENTATION("arcadedb.dateTimeImplementation", SCOPE.DATABASE,
-      "Default datetime implementation to use on deserialization. By default java.time.LocalDateTime is used, but the following are supported: java.util.Date, java.util.Calendar, java.time.LocalDateTime, java.time.ZonedDateTime, java.time.Instant",
+      "Default datetime implementation to use on deserialization. By default java.time.LocalDateTime is used, but the following are supported: java.util.Date, java.util.Calendar, java.time.LocalDateTime, java.time.ZonedDateTime, java.time.Instant. java.util.Date and java.util.Calendar cannot carry sub-millisecond precision, so with them DATETIME_MICROS and DATETIME_NANOS values are returned as java.time.LocalDateTime",
       Class.class, LocalDateTime.class),
 
   DATE_TIME_FORMAT("arcadedb.dateTimeFormat", SCOPE.DATABASE, "Default date time format using Java SimpleDateFormat syntax",
@@ -2609,7 +2609,8 @@ public enum GlobalConfiguration {
 
   // POSTGRES
   POSTGRES_PORT("arcadedb.postgres.port", SCOPE.SERVER,
-      "TCP/IP port number used for incoming connections for Postgres plugin. Default is 5432", Integer.class, 5432),
+      "TCP/IP port number used for incoming connections for Postgres plugin. Specify a single port, a range `<from>-<to>` or a comma-separated list: the first free one is used. Read it as a string, since a range is not a number. Default is 5432",
+      String.class, "5432"),
 
   POSTGRES_HOST("arcadedb.postgres.host", SCOPE.SERVER,
       "TCP/IP host name used for incoming connections for Postgres plugin. Default is '0.0.0.0'", String.class, "0.0.0.0"),

@@ -20,7 +20,6 @@ package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
-import com.arcadedb.server.BaseGraphServerTest;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
 import io.grpc.ClientCall;
@@ -53,9 +52,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue7029GrpcPagedOrderByIT extends BaseGraphServerTest {
+public class Issue7029GrpcPagedOrderByIT extends BaseGrpcServerTest {
 
-  private static final int GRPC_PORT = 50051;
   private static final int ROWS      = 12;
   private static final int PAGE_SIZE = 5;
 
@@ -84,7 +82,7 @@ public class Issue7029GrpcPagedOrderByIT extends BaseGraphServerTest {
         db.newVertex(VERTEX1_TYPE_NAME).set("id", 9000L + i).set("seq", i).save();
     });
 
-    channel = ManagedChannelBuilder.forAddress("localhost", GRPC_PORT).usePlaintext().build();
+    channel = ManagedChannelBuilder.forAddress("localhost", getServerGrpcPort()).usePlaintext().build();
     final Channel authenticatedChannel = ClientInterceptors.intercept(channel, new AuthClientInterceptor());
     authenticatedStub = ArcadeDbServiceGrpc.newBlockingStub(authenticatedChannel);
   }

@@ -147,7 +147,7 @@ public abstract class BaseRaftHASslTest extends BaseRaftHATest {
     for (int i = 0; i < getServerCount(); i++) {
       if (i > 0)
         sb.append(",");
-      sb.append("localhost:").append(raftPortOf(i)).append(":").append(2480 + i).append(":0:").append(httpsPortOf(i));
+      sb.append("localhost:").append(raftPort(i)).append(":").append(2480 + i).append(":0:").append(httpsPortOf(i));
     }
     return sb.toString();
   }
@@ -179,11 +179,5 @@ public abstract class BaseRaftHASslTest extends BaseRaftHATest {
         httpsAddresses.put(RaftPeerId.valueOf(peerIdForIndex(j)),
             "localhost:" + getServer(j).getHttpServer().getHttpsPort());
     }
-  }
-
-  /** The Raft port node {@code index} listens on, read back from the peer id {@link BaseRaftHATest} assigns. */
-  protected int raftPortOf(final int index) {
-    final String peerId = peerIdForIndex(index);
-    return Integer.parseInt(peerId.substring(peerId.lastIndexOf('_') + 1));
   }
 }

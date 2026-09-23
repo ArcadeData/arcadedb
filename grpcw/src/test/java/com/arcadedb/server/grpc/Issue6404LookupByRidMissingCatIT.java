@@ -19,7 +19,6 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.server.BaseGraphServerTest;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
 import io.grpc.ClientCall;
@@ -57,9 +56,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue6404LookupByRidMissingCatIT extends BaseGraphServerTest {
-
-  private static final int GRPC_PORT = 50051;
+public class Issue6404LookupByRidMissingCatIT extends BaseGrpcServerTest {
 
   private static final Metadata.Key<String> USER_HEADER =
       Metadata.Key.of("x-arcade-user", Metadata.ASCII_STRING_MARSHALLER);
@@ -81,7 +78,7 @@ public class Issue6404LookupByRidMissingCatIT extends BaseGraphServerTest {
 
   @BeforeEach
   void setupGrpcClient() {
-    channel = ManagedChannelBuilder.forAddress("localhost", GRPC_PORT).usePlaintext().build();
+    channel = ManagedChannelBuilder.forAddress("localhost", getServerGrpcPort()).usePlaintext().build();
     final Channel authenticatedChannel = ClientInterceptors.intercept(channel, new AuthClientInterceptor());
     authenticatedStub = ArcadeDbServiceGrpc.newBlockingStub(authenticatedChannel);
   }
