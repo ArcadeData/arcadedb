@@ -32,6 +32,7 @@ import org.apache.tinkerpop.gremlin.driver.Result;
 import org.apache.tinkerpop.gremlin.driver.remote.DriverRemoteConnection;
 import org.apache.tinkerpop.gremlin.process.traversal.AnonymousTraversalSource;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
+import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.__;
 import org.apache.tinkerpop.gremlin.structure.io.binary.TypeSerializerRegistry;
 import org.apache.tinkerpop.gremlin.util.function.Lambda;
 import org.apache.tinkerpop.gremlin.util.ser.GraphBinaryMessageSerializerV1;
@@ -178,6 +179,10 @@ class GremlinScriptingAuthorizationIT extends AbstractGremlinServerIT {
       // A lambda travels in bytecode as Groovy source the server compiles and runs.
       assertThat(catchThrowable(() -> g.V().hasLabel("Probe").map(Lambda.function("it.get().label()")).toList()))
           .as("A non-root user must not run a Groovy lambda carried in bytecode").hasStackTraceContaining(REFUSAL);
+
+      // Nested inside a child traversal it is the same Groovy source.
+      assertThat(catchThrowable(() -> g.V().hasLabel("Probe").union(__.map(Lambda.function("it.get().label()"))).toList()))
+          .as("A non-root user must not run a Groovy lambda nested in a child traversal").hasStackTraceContaining(REFUSAL);
     } finally {
       cluster.close();
     }

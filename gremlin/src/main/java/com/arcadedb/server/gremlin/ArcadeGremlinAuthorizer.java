@@ -21,13 +21,16 @@ package com.arcadedb.server.gremlin;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import org.apache.tinkerpop.gremlin.process.traversal.Bytecode;
-import org.apache.tinkerpop.gremlin.process.traversal.util.BytecodeHelper;
+import org.apache.tinkerpop.gremlin.process.traversal.Traversal;
+import org.apache.tinkerpop.gremlin.process.traversal.TraversalStrategy;
 import org.apache.tinkerpop.gremlin.server.auth.AuthenticatedUser;
 import org.apache.tinkerpop.gremlin.server.authz.AuthorizationException;
 import org.apache.tinkerpop.gremlin.server.authz.Authorizer;
 import org.apache.tinkerpop.gremlin.util.Tokens;
+import org.apache.tinkerpop.gremlin.util.function.Lambda;
 import org.apache.tinkerpop.gremlin.util.message.RequestMessage;
 
+import java.util.Iterator;
 import java.util.Map;
 
 /**
@@ -51,6 +54,8 @@ import java.util.Map;
  */
 public class ArcadeGremlinAuthorizer implements Authorizer {
   static final         String         GREMLIN_LANG = "gremlin-lang";
+  // DEEPER THAN ANY TRAVERSAL A CLIENT BUILDS ON PURPOSE: BEYOND IT THE REQUEST IS TREATED AS CARRYING A LAMBDA
+  private static final int            MAX_LAMBDA_SCAN_DEPTH = 64;
   private              ArcadeDBServer server;
 
   @Override
@@ -70,7 +75,7 @@ public class ArcadeGremlinAuthorizer implements Authorizer {
       for (final String alias : aliases.values())
         checkDatabaseAccess(securityUser, alias);
 
-    if (!securityUser.isServerAdministrator() && BytecodeHelper.getLambdaLanguage(bytecode).isPresent())
+    if (!securityUser.isServerAdministrator() && containsLambda(bytecode, 0))
       throw new AuthorizationException(
           "User '" + securityUser.getName() + "' is not authorized to use lambdas: they are evaluated as Groovy code, which is reserved to the server administrator");
     return bytecode;
@@ -116,6 +121,51 @@ public class ArcadeGremlinAuthorizer implements Authorizer {
       throw new AuthorizationException("Unknown or disabled user '" + user.getName() + "'");
     GremlinAuthContext.set(securityUser);
     return securityUser;
+  }
+
+  /**
+   * Whether a lambda travels anywhere in the request: as a step argument, in a nested traversal, behind a
+   * {@link Bytecode.Binding}, inside a collection, map or array argument, or in the configuration of a strategy passed to
+   * {@code withStrategies()}. TinkerPop's {@code BytecodeHelper.getLambdaLanguage} only follows nested bytecode, so it
+   * would miss the other carriers. Fails closed: a structure nested deeper than {@value #MAX_LAMBDA_SCAN_DEPTH} levels
+   * counts as carrying a lambda.
+   */
+  static boolean containsLambda(final Object value, final int depth) {
+    if (value == null || value instanceof String || value instanceof Number || value instanceof Boolean)
+      return false;
+    if (depth > MAX_LAMBDA_SCAN_DEPTH || value instanceof Lambda)
+      return true;
+
+    final int next = depth + 1;
+    if (value instanceof Bytecode bytecode) {
+      for (final Bytecode.Instruction instruction : bytecode.getInstructions())
+        for (final Object argument : instruction.getArguments())
+          if (containsLambda(argument, next))
+            return true;
+    } else if (value instanceof Bytecode.Binding<?> binding)
+      return containsLambda(binding.value(), next);
+    else if (value instanceof Traversal<?, ?> traversal)
+      return containsLambda(traversal.asAdmin().getBytecode(), next);
+    else if (value instanceof TraversalStrategy<?> strategy) {
+      final var configuration = strategy.getConfiguration();
+      if (configuration != null)
+        for (final Iterator<String> keys = configuration.getKeys(); keys.hasNext(); )
+          if (containsLambda(configuration.getProperty(keys.next()), next))
+            return true;
+    } else if (value instanceof Iterable<?> iterable) {
+      for (final Object element : iterable)
+        if (containsLambda(element, next))
+          return true;
+    } else if (value instanceof Map<?, ?> map) {
+      for (final Map.Entry<?, ?> entry : map.entrySet())
+        if (containsLambda(entry.getKey(), next) || containsLambda(entry.getValue(), next))
+          return true;
+    } else if (value instanceof Object[] array) {
+      for (final Object element : array)
+        if (containsLambda(element, next))
+          return true;
+    }
+    return false;
   }
 
   private void checkDatabaseAccess(final ServerSecurityUser securityUser, final String traversalSourceAlias)
