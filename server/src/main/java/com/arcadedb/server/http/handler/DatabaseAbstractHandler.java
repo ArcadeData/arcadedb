@@ -452,9 +452,11 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
    * <p>
    * What that {@code false} does NOT buy is the parallel shard dispatch, which this javadoc used to give as the
    * reason (issue #7741): {@code TimeSeriesGateway.write} calls {@code database.begin()} itself before the
-   * appends, so {@code TimeSeriesEngine.appendBatch} sees an active transaction and keeps the shard writes
+   * appends whenever no transaction is already active (a resolved session's transaction counts as one), so
+   * {@code TimeSeriesEngine.appendBatch} always sees an active transaction and keeps the shard writes
    * in-thread on this route whatever the wrapper does. The dispatch is taken by callers that append with no
-   * transaction of their own (#4957); the line-protocol ingest has never been one.
+   * transaction of their own (#4957); the line-protocol ingest has never been one. This is the only copy of that
+   * reasoning: {@link PostTimeSeriesWriteHandler}'s class javadoc points here instead of repeating it (#7857).
    */
   protected boolean rejectsUnresolvableSession() {
     return requiresTransaction();
