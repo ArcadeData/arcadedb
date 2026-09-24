@@ -89,6 +89,18 @@ class ChaosConfigTest {
   }
 
   @Test
+  void nodeHeapDefaultsToOneGigabyteAndParsesUnits() {
+    assertThat(ChaosConfig.fromProperties(props()).nodeHeap()).isEqualTo("1G");
+    assertThat(ChaosConfig.fromProperties(props()).nodeHeapBytes()).isEqualTo(1L << 30);
+    assertThat(ChaosConfig.fromProperties(props("chaos.nodeHeap", "2g")).nodeHeapBytes()).isEqualTo(2L << 30);
+    assertThat(ChaosConfig.fromProperties(props("chaos.nodeHeap", "512M")).nodeHeapBytes()).isEqualTo(512L << 20);
+    assertThatThrownBy(() -> ChaosConfig.fromProperties(props("chaos.nodeHeap", "2X")))
+        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("chaos.nodeHeap");
+    assertThatThrownBy(() -> ChaosConfig.fromProperties(props("chaos.nodeHeap", "64M")))
+        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("chaos.nodeHeap");
+  }
+
+  @Test
   void replayCommandCarriesTheDecisions() {
     final ChaosConfig config = ChaosConfig.fromProperties(props("chaos.seed", "42", "chaos.faults", "kill:3,pause"));
     assertThat(config.replayCommand())
@@ -96,6 +108,7 @@ class ChaosConfigTest {
         .contains("-Dfailsafe.excludedGroups=")
         .contains("-Dchaos.seed=42")
         .contains("-Dchaos.faults=kill:3,pause:1")
-        .contains("-Dchaos.holdMin=PT10S");
+        .contains("-Dchaos.holdMin=PT10S")
+        .contains("-Dchaos.nodeHeap=1G");
   }
 }

@@ -30,6 +30,7 @@ import com.github.dockerjava.api.DockerClient;
 import com.github.dockerjava.api.async.ResultCallback;
 import com.github.dockerjava.api.command.InspectContainerResponse;
 import com.github.dockerjava.api.model.ExposedPort;
+import com.github.dockerjava.api.model.Frame;
 import com.github.dockerjava.api.model.Ports;
 import com.github.dockerjava.api.model.Statistics;
 import eu.rekawek.toxiproxy.Proxy;
@@ -70,8 +71,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 class HaChaosIT extends ContainersTestTemplate {
   private static final int    RAFT_PROXY_BASE = 8660;
   private static final int    HTTP_PROXY_BASE = 8670;
-  private static final String NODE_HEAP       = "-Xms1G -Xmx1G";
-  private static final long   NODE_MEMORY     = 2048L * 1024 * 1024;
 
   @Override
   protected boolean useToxiproxy() {
@@ -96,8 +95,8 @@ class HaChaosIT extends ContainersTestTemplate {
     }
     final List<GenericContainer<?>> nodes = new ArrayList<>();
     for (int i = 0; i < config.nodes(); i++)
-      nodes.add(createPersistentArcadeContainer("arcadedb-" + i, serverList.toString(), "majority", network, NODE_HEAP,
-          NODE_MEMORY));
+      nodes.add(createPersistentArcadeContainer("arcadedb-" + i, serverList.toString(), "majority", network,
+          "-Xms" + config.nodeHeap() + " -Xmx" + config.nodeHeap(), 2 * config.nodeHeapBytes()));
 
     final List<ServerWrapper> servers = startCluster();
     final int leader = waitForRaftLeader(servers, 120);
@@ -249,11 +248,14 @@ class HaChaosIT extends ContainersTestTemplate {
     private final List<GenericContainer<?>> nodes;
     private final List<Proxy>               raftProxies;
     private final Endpoint[]                endpoints;
+    private final int[]                     logsCheckedUntil;
+    private       String                    outOfMemory;
 
     DockerNodeControl(final List<GenericContainer<?>> nodes, final List<Proxy> raftProxies) {
       this.nodes = nodes;
       this.raftProxies = raftProxies;
       this.endpoints = new Endpoint[nodes.size()];
+      this.logsCheckedUntil = new int[nodes.size()];
       for (int i = 0; i < nodes.size(); i++)
         refreshEndpoint(i);
     }
@@ -295,6 +297,40 @@ class HaChaosIT extends ContainersTestTemplate {
         final InspectContainerResponse.ContainerState container = docker().inspectContainerCmd(id(i)).exec().getState();
         if (!Boolean.TRUE.equals(container.getRunning()))
           return describeExit(i, container, "exited unexpectedly");
+      }
+      return null;
+    }
+
+    @Override
+    public synchronized String outOfMemory() {
+      if (outOfMemory != null)
+        return outOfMemory;
+      for (int i = 0; i < size(); i++) {
+        // Only the log lines written since the previous check (Docker's granularity is one second, so the
+        // boundary second is read twice, which is harmless for a search)
+        final int now = (int) (System.currentTimeMillis() / 1000);
+        final StringBuilder logs = new StringBuilder();
+        try (final ResultCallback.Adapter<Frame> callback = new ResultCallback.Adapter<>() {
+          @Override
+          public void onNext(final Frame frame) {
+            logs.append(new String(frame.getPayload(), StandardCharsets.UTF_8));
+          }
+        }) {
+          docker().logContainerCmd(id(i)).withStdOut(true).withStdErr(true).withSince(logsCheckedUntil[i]).exec(callback)
+              .awaitCompletion(10, TimeUnit.SECONDS);
+        } catch (final Exception e) {
+          logger.warn("Could not read the logs of node {}: {}", i, e.getMessage());
+          continue;
+        }
+        logsCheckedUntil[i] = now;
+        final int at = logs.indexOf("OutOfMemoryError");
+        if (at >= 0) {
+          final int lineStart = logs.lastIndexOf("\n", at) + 1;
+          final int lineEnd = logs.indexOf("\n", at);
+          final String line = logs.substring(lineStart, lineEnd < 0 ? logs.length() : lineEnd).trim();
+          outOfMemory = "node " + i + " logged an OutOfMemoryError: " + (line.length() > 200 ? line.substring(0, 200) : line);
+          return outOfMemory;
+        }
       }
       return null;
     }

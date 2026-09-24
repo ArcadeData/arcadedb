@@ -27,6 +27,8 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.StringJoiner;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Immutable configuration of a chaos run, read from {@code chaos.*} system properties. The seed drives every random
@@ -35,7 +37,10 @@ import java.util.concurrent.ThreadLocalRandom;
 public record ChaosConfig(long seed, int nodes, Duration duration, int maxSteps, int writers,
                           Map<String, Integer> faultWeights, Duration holdMin, Duration holdMax, Duration calmMin,
                           Duration calmMax, Duration convergenceTimeout, Duration electionTimeout,
-                          Duration availabilityGrace) {
+                          Duration availabilityGrace, String nodeHeap) {
+
+  private static final long    MIN_NODE_HEAP_BYTES = 256L << 20;
+  private static final Pattern HEAP_SIZE           = Pattern.compile("(\\d+)([mMgG])");
 
   public static final List<String> ALL_FAULTS = List.of("kill", "stop", "rolling", "pause", "isolate", "split", "latency",
       "loss");
@@ -57,6 +62,8 @@ public record ChaosConfig(long seed, int nodes, Duration duration, int maxSteps,
       if (!ALL_FAULTS.contains(fault))
         throw new IllegalArgumentException("Unknown fault '" + fault + "', valid faults: " + ALL_FAULTS);
     faultWeights = Collections.unmodifiableMap(new LinkedHashMap<>(faultWeights));
+    if (heapBytes(nodeHeap) < MIN_NODE_HEAP_BYTES)
+      throw new IllegalArgumentException("chaos.nodeHeap must be at least 256M, got " + nodeHeap);
   }
 
   public static ChaosConfig fromProperties(final Properties properties) {
@@ -74,7 +81,8 @@ public record ChaosConfig(long seed, int nodes, Duration duration, int maxSteps,
         duration(properties, "chaos.calmMax", "PT30S"),
         duration(properties, "chaos.convergenceTimeout", "PT2M"),
         duration(properties, "chaos.electionTimeout", "PT60S"),
-        duration(properties, "chaos.availabilityGrace", "PT20S"));
+        duration(properties, "chaos.availabilityGrace", "PT20S"),
+        properties.getProperty("chaos.nodeHeap", "1G").trim());
   }
 
   /**
@@ -118,7 +126,21 @@ public record ChaosConfig(long seed, int nodes, Duration duration, int maxSteps,
         + " -Dchaos.holdMin=" + holdMin
         + " -Dchaos.holdMax=" + holdMax
         + " -Dchaos.calmMin=" + calmMin
-        + " -Dchaos.calmMax=" + calmMax;
+        + " -Dchaos.calmMax=" + calmMax
+        + " -Dchaos.nodeHeap=" + nodeHeap;
+  }
+
+  /** Heap of each ArcadeDB node in bytes; the container limit is twice this, for direct memory and page cache. */
+  public long nodeHeapBytes() {
+    return heapBytes(nodeHeap);
+  }
+
+  private static long heapBytes(final String size) {
+    final Matcher matcher = HEAP_SIZE.matcher(size == null ? "" : size);
+    if (!matcher.matches())
+      throw new IllegalArgumentException("chaos.nodeHeap must look like 512M or 2G, got " + size);
+    final long amount = Long.parseLong(matcher.group(1));
+    return Character.toUpperCase(matcher.group(2).charAt(0)) == 'G' ? amount << 30 : amount << 20;
   }
 
   private static void requireRange(final String name, final Duration min, final Duration max) {

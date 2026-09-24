@@ -124,7 +124,7 @@ public final class ChaosRunner {
   }
 
   private ChaosResult step(final int step, final Random random) throws Exception {
-    failIfANodeExited(step);
+    failIfANodeIsUnhealthy(step);
     final Fault fault = picker.pick(state, random);
     if (fault == null)
       throw new ChaosFailure(ResultKind.HARNESS, "No applicable fault for cluster state " + state);
@@ -138,7 +138,7 @@ public final class ChaosRunner {
       } catch (final Exception e) {
         // A node that crashed while the fault was being applied (typically during a minutes-long rolling restart)
         // makes Docker refuse the next command: report the crash, not the Docker error
-        failIfANodeExited(step);
+        failIfANodeIsUnhealthy(step);
         throw e;
       }
       return holdHealAndCheck(step, fault, targets, leaderBefore, random);
@@ -165,22 +165,24 @@ public final class ChaosRunner {
       final Duration rest = hold.minus(config.availabilityGrace());
       sleeper.sleep(rest.compareTo(MIN_AVAILABILITY_WINDOW) < 0 ? MIN_AVAILABILITY_WINDOW : rest);
       ackedDuringHold = load.acked() - ackedAtGrace;
-      if (ackedDuringHold <= 0)
+      if (ackedDuringHold <= 0) {
+        failIfANodeIsUnhealthy(step);
         throw new ChaosFailure(ResultKind.AVAILABILITY,
             "No write acknowledged during fault '" + fault.name() + "' " + targets + " after the " + config.availabilityGrace()
-                + " election grace (step " + step + ")");
+                + " election grace (step " + step + "). Nodes report: " + control.leaderView());
+      }
     } else
       sleeper.sleep(hold);
 
     try {
       fault.heal(state, control);
     } catch (final Exception e) {
-      failIfANodeExited(step);
+      failIfANodeIsUnhealthy(step);
       throw e;
     }
     final long healedAt = System.nanoTime();
     if (!control.awaitLeader(config.electionTimeout())) {
-      failIfANodeExited(step);
+      failIfANodeIsUnhealthy(step);
       throw new ChaosFailure(ResultKind.AVAILABILITY,
           "No leader known by every node within " + config.electionTimeout() + " after healing fault '" + fault.name() + "' (step " + step
               + "). Nodes report: " + control.leaderView());
@@ -204,11 +206,17 @@ public final class ChaosRunner {
     return result.violations().isEmpty() ? null : fromViolations(result.violations(), step);
   }
 
-  /** A node the runner believes running that exited on its own (crash, OOM kill) is an availability failure. */
-  private void failIfANodeExited(final int step) {
+  /**
+   * A node the runner believes running that exited on its own (crash, OOM kill), or that logged an OutOfMemoryError
+   * (the JVM usually keeps running, unresponsive), is an availability failure.
+   */
+  private void failIfANodeIsUnhealthy(final int step) {
     final String exit = control.unexpectedExit(state);
     if (exit != null)
       throw new ChaosFailure(ResultKind.AVAILABILITY, exit + " (step " + step + ")");
+    final String outOfMemory = control.outOfMemory();
+    if (outOfMemory != null)
+      throw new ChaosFailure(ResultKind.AVAILABILITY, outOfMemory + " (step " + step + ")");
   }
 
   private double acksPerSecond() {
