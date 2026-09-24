@@ -262,22 +262,9 @@ public class BaseExpression extends MathExpression {
         // THIS IS DIFFERENT FROM ORIENTDB CODE BASE
         // @author Luca Garulli
         // @see Postgres Driver
-        if (params != null && !params.isEmpty() && //
-            identifier.getSuffix() != null && identifier.getSuffix().identifier != null) {
-          final String v = identifier.getSuffix().identifier.getValue();
-          if (v.startsWith("$") && v.length() > 1) {
-            final String toParse = v.substring(1);
-
-            final Integer pos = NumberUtils.parsePositiveInteger(toParse);
-            if (pos != null && params.containsKey(String.valueOf(pos - 1)))
-              // POSTGRES PARAMETERS JDBC DRIVER START FROM 1
-              result = params.get(String.valueOf(pos - 1));
-            else
-              result = identifier.execute(currentRecord, context);
-          } else
-            result = identifier.execute(currentRecord, context);
-        } else
-          result = identifier.execute(currentRecord, context);
+        final String positionalKey = postgresPositionalParameterKey(identifier, params);
+        // POSTGRES PARAMETERS JDBC DRIVER START FROM 1
+        result = positionalKey != null ? params.get(positionalKey) : identifier.execute(currentRecord, context);
       } else if (string != null && string.length() > 1) {
         result = decode(string.substring(1, string.length() - 1));
       } else if (inputParam != null) {
@@ -478,15 +465,27 @@ public class BaseExpression extends MathExpression {
    * as an input parameter.
    */
   private boolean isPostgresPositionalParameter(final CommandContext context) {
-    final Map<String, Object> params = context != null ? context.getInputParameters() : null;
+    return postgresPositionalParameterKey(identifier, context != null ? context.getInputParameters() : null) != null;
+  }
+
+  /**
+   * The input-parameter key ({@code "N-1"}, zero-based) that a Postgres client's {@code $N} addresses, when
+   * {@code identifier} is exactly that shape AND a parameter is actually bound at that position - the single test
+   * {@link #execute(Result, CommandContext)} and {@link #isPostgresPositionalParameter(CommandContext)} must agree
+   * on, kept as one method so they cannot drift apart again (issue #8288 review).
+   */
+  private static String postgresPositionalParameterKey(final BaseIdentifier identifier, final Map<String, Object> params) {
     if (params == null || params.isEmpty() || identifier == null || identifier.getSuffix() == null
         || identifier.getSuffix().identifier == null)
-      return false;
+      return null;
     final String v = identifier.getSuffix().identifier.getValue();
     if (v == null || !v.startsWith("$") || v.length() < 2)
-      return false;
+      return null;
     final Integer pos = NumberUtils.parsePositiveInteger(v.substring(1));
-    return pos != null && params.containsKey(String.valueOf(pos - 1));
+    if (pos == null)
+      return null;
+    final String key = String.valueOf(pos - 1);
+    return params.containsKey(key) ? key : null;
   }
 
   /**

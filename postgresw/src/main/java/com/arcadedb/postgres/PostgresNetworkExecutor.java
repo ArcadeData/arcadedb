@@ -77,6 +77,7 @@ import com.arcadedb.utility.StringUtils;
 
 import java.io.EOFException;
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.net.Socket;
 import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
@@ -1858,6 +1859,17 @@ public class PostgresNetworkExecutor extends Thread {
         return null;
       widest = widest == null || numericTypeRank(childType) > numericTypeRank(widest) ? childType : widest;
     }
+
+    // PLUS/MINUS/STAR.apply(Integer, Integer) silently widens to a Long on overflow (no exception, unlike the
+    // Long,Long overload) - the same "depends on the row's values" problem SLASH has above, just for the case
+    // where every operand happens to fit in int4/int2. Reporting int4/int2 here would describe an overflowing
+    // row's actual Long result wrong; LONG never has this problem since its own overflow throws instead of
+    // widening (review of #8285).
+    if (widest == PostgresType.SMALLINT || widest == PostgresType.INTEGER)
+      for (final MathExpression.Operator op : math.getOperators())
+        if (op == MathExpression.Operator.PLUS || op == MathExpression.Operator.MINUS || op == MathExpression.Operator.STAR)
+          return PostgresType.LONG;
+
     return widest;
   }
 
@@ -1910,7 +1922,7 @@ public class PostgresNetworkExecutor extends Thread {
       return PostgresType.REAL;
     if (value instanceof Double)
       return PostgresType.DOUBLE;
-    if (value instanceof java.math.BigDecimal)
+    if (value instanceof BigDecimal)
       return PostgresType.NUMERIC;
     // An integer literal folds the same way ArcadeDB's own arithmetic does: as a Long.
     return PostgresType.LONG;
