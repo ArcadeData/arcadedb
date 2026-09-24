@@ -45,12 +45,17 @@ import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.parser.BaseExpression;
+import com.arcadedb.query.sql.parser.BaseIdentifier;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.query.sql.parser.FromItem;
+import com.arcadedb.query.sql.parser.FunctionCall;
 import com.arcadedb.query.sql.parser.Identifier;
+import com.arcadedb.query.sql.parser.LevelZeroIdentifier;
 import com.arcadedb.query.sql.parser.Limit;
 import com.arcadedb.query.sql.parser.MatchStatement;
+import com.arcadedb.query.sql.parser.MathExpression;
 import com.arcadedb.query.sql.parser.Projection;
 import com.arcadedb.query.sql.parser.ProjectionItem;
 import com.arcadedb.query.sql.parser.SelectStatement;
@@ -72,6 +77,7 @@ import com.arcadedb.utility.StringUtils;
 
 import java.io.EOFException;
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.net.Socket;
 import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
@@ -1601,7 +1607,10 @@ public class PostgresNetworkExecutor extends Thread {
       if (alias == null)
         return null;
 
-      columns.put(alias, PostgresType.VARCHAR);
+      // Empty on purpose: this path only runs when the row source has no discoverable schema (issue #6156), so a
+      // property reference inside the expression could never resolve anyway - only literals and count() can.
+      final PostgresType inferred = inferComputedColumnType(item.getExpression(), Map.of());
+      columns.put(alias, inferred != null ? inferred : PostgresType.VARCHAR);
     }
 
     return columns.isEmpty() ? null : columns;
@@ -1743,9 +1752,13 @@ public class PostgresNetworkExecutor extends Thread {
         continue;
       }
 
-      // resolve the type from the projected expression when it is a plain property, else from the alias itself
-      final String source = item.getExpression() != null ? item.getExpression().toString() : null;
+      // resolve the type from the projected expression when it is a plain property, else infer it from the
+      // parse tree (an aggregate or an arithmetic expression, issue #8285), else from the alias itself
+      final Expression itemExpression = item.getExpression();
+      final String source = itemExpression != null ? itemExpression.toString() : null;
       PostgresType type = source != null ? columns.get(source) : null;
+      if (type == null)
+        type = inferComputedColumnType(itemExpression, columns);
       if (type == null)
         type = columns.getOrDefault(alias, PostgresType.VARCHAR);
 
@@ -1753,6 +1766,173 @@ public class PostgresNetworkExecutor extends Thread {
     }
 
     return projected.isEmpty() ? columns : projected;
+  }
+
+  /**
+   * Statically infers the Postgres type of a computed projection item - {@code count()}/{@code min()}/
+   * {@code max()}/{@code sum()} or an arithmetic expression - from the parse tree and the declared types of the
+   * properties it reads. Without this, {@code Describe('S')} announced {@code varchar} (OID 1043) for every
+   * projection that was not a plain property, even though the RowDescription of an executed query reports the
+   * real type (issue #8285): a statement Describe is the contract later Executes of that statement honor (issue
+   * #6725), so pgjdbc's {@code PreparedStatement} and Arrow's ADBC PostgreSQL driver, which build their schema
+   * from the statement Describe, returned every aggregate and expression as a string for good.
+   *
+   * @param expression    the projected expression, or null
+   * @param sourceColumns the FROM target's declared columns (property name to type), possibly empty when the row
+   *                      source carries no discoverable schema
+   *
+   * @return the inferred type, or null when it cannot be decided statically - the caller then keeps its own
+   * default ({@code varchar})
+   */
+  private static PostgresType inferComputedColumnType(final Expression expression, final Map<String, PostgresType> sourceColumns) {
+    if (expression == null || expression.mathExpression == null)
+      return null;
+
+    final MathExpression math = expression.mathExpression;
+
+    if (!math.getOperators().isEmpty())
+      return inferArithmeticType(math, sourceColumns);
+
+    // A modifier applied to the aggregate/literal (count(*).asString()) runs AFTER it and can change the result's
+    // type entirely - inferring from the un-modified inner node would describe the modifier's input, not its output.
+    if (!(math instanceof BaseExpression base) || base.getModifier() != null)
+      return null;
+
+    if (base.number != null)
+      return numericLiteralType(base.number.getValue());
+
+    final BaseIdentifier identifier = base.getIdentifier();
+    final LevelZeroIdentifier levelZero = identifier != null ? identifier.getLevelZero() : null;
+    final FunctionCall call = levelZero != null ? levelZero.functionCall : null;
+    if (call == null || call.name == null)
+      return null;
+
+    return inferFunctionType(call, sourceColumns);
+  }
+
+  private static PostgresType inferFunctionType(final FunctionCall call, final Map<String, PostgresType> sourceColumns) {
+    final String name = call.name.getStringValue();
+    if (name == null)
+      return null;
+
+    if ("count".equalsIgnoreCase(name))
+      // Every count() overload - count(*), count(prop), count(DISTINCT prop) - answers a row count.
+      return PostgresType.LONG;
+
+    if (("min".equalsIgnoreCase(name) || "max".equalsIgnoreCase(name) || "sum".equalsIgnoreCase(name))
+        && call.params != null && call.params.size() == 1) {
+      final PostgresType argType = resolveOperandType(call.params.get(0), sourceColumns);
+      if (argType == null)
+        return null;
+      return "sum".equalsIgnoreCase(name) ? widenForSum(argType) : argType; // min/max keep the operand's own type
+    }
+
+    return null;
+  }
+
+  /**
+   * The type an argument or arithmetic operand contributes: a plain property's declared type, a number literal's
+   * type, or - for a nested aggregate/arithmetic operand such as {@code sum(a + b)} - resolved the same way a
+   * top-level projected item would be.
+   */
+  private static PostgresType resolveOperandType(final Expression expression, final Map<String, PostgresType> sourceColumns) {
+    if (expression == null)
+      return null;
+    if (expression.mathExpression instanceof BaseExpression base && base.getModifier() == null) {
+      if (base.number != null)
+        return numericLiteralType(base.number.getValue());
+      if (base.getIdentifier() != null)
+        return sourceColumns.get(expression.toString());
+    }
+    return inferComputedColumnType(expression, sourceColumns);
+  }
+
+  private static PostgresType inferArithmeticType(final MathExpression math, final Map<String, PostgresType> sourceColumns) {
+    // SLASH is not statically typeable: MathExpression.Operator.SLASH returns the widest INTEGER/LONG operand
+    // type only when the division happens to be exact, and a DOUBLE otherwise (Type#increment does the same for
+    // NUMERIC) - which one depends on the row's values, not on the declared operand types.
+    //
+    // NULL_COALESCING (??) has the same problem from the opposite direction: it returns whichever operand is
+    // non-null UNCHANGED - never widened to a common type - so `longCol ?? doubleCol` can describe a row's actual
+    // Long as float8 and lose precision on binary encoding, depending on which operand happened to be null.
+    if (math.getOperators().contains(MathExpression.Operator.SLASH)
+        || math.getOperators().contains(MathExpression.Operator.NULL_COALESCING))
+      return null;
+
+    PostgresType widest = null;
+    for (final MathExpression child : math.getChildExpressions()) {
+      final PostgresType childType = childOperandType(child, sourceColumns);
+      if (childType == null || !isNumericPostgresType(childType))
+        return null;
+      widest = widest == null || numericTypeRank(childType) > numericTypeRank(widest) ? childType : widest;
+    }
+
+    // PLUS/MINUS/STAR.apply(Integer, Integer) silently widens to a Long on overflow (no exception, unlike the
+    // Long,Long overload) - the same "depends on the row's values" problem SLASH has above, just for the case
+    // where every operand happens to fit in int4/int2. Reporting int4/int2 here would describe an overflowing
+    // row's actual Long result wrong; LONG never has this problem since its own overflow throws instead of
+    // widening (review of #8285).
+    if (widest == PostgresType.SMALLINT || widest == PostgresType.INTEGER)
+      for (final MathExpression.Operator op : math.getOperators())
+        if (op == MathExpression.Operator.PLUS || op == MathExpression.Operator.MINUS || op == MathExpression.Operator.STAR)
+          return PostgresType.LONG;
+
+    return widest;
+  }
+
+  private static PostgresType childOperandType(final MathExpression child, final Map<String, PostgresType> sourceColumns) {
+    if (!child.getOperators().isEmpty())
+      return inferArithmeticType(child, sourceColumns);
+    if (!(child instanceof BaseExpression base) || base.getModifier() != null)
+      return null;
+    if (base.number != null)
+      return numericLiteralType(base.number.getValue());
+    if (base.getIdentifier() != null)
+      return sourceColumns.get(child.toString());
+    return null;
+  }
+
+  private static boolean isNumericPostgresType(final PostgresType type) {
+    return switch (type) {
+      case SMALLINT, INTEGER, LONG, REAL, DOUBLE, NUMERIC -> true;
+      default -> false;
+    };
+  }
+
+  private static int numericTypeRank(final PostgresType type) {
+    return switch (type) {
+      case SMALLINT -> 0;
+      case INTEGER -> 1;
+      case LONG -> 2;
+      case REAL -> 3;
+      case DOUBLE -> 4;
+      case NUMERIC -> 5;
+      default -> -1;
+    };
+  }
+
+  private static PostgresType widenForSum(final PostgresType argType) {
+    return switch (argType) {
+      case SMALLINT, INTEGER, LONG -> PostgresType.LONG;
+      case REAL, DOUBLE -> PostgresType.DOUBLE;
+      // SQLFunctionSum/Type#increment keep a NUMERIC (BigDecimal) accumulator as BigDecimal: describing it as
+      // float8 would make binary encoding call doubleValue() and lose decimal precision (issue #8285 review).
+      case NUMERIC -> PostgresType.NUMERIC;
+      default -> null;
+    };
+  }
+
+  private static PostgresType numericLiteralType(final Number value) {
+    if (value == null)
+      return null;
+    if (value instanceof Float)
+      return PostgresType.REAL;
+    if (value instanceof Double)
+      return PostgresType.DOUBLE;
+    if (value instanceof BigDecimal)
+      return PostgresType.NUMERIC;
+    // An integer literal folds the same way ArcadeDB's own arithmetic does: as a Long.
+    return PostgresType.LONG;
   }
 
   /**
