@@ -545,14 +545,21 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
    * Loads the content of a scanned record on the producer thread (#8265). The bucket scan hands out lazy records, and
    * left alone the first property access would load each of them on the ONE thread consuming the parallel scan -
    * serializing the page lookup and the after-read events the parallel scan exists to spread across producers.
+   * <p>
+   * Only {@link ImmutableDocument} (plain documents and vertices): edge types ({@code ImmutableEdge}/
+   * {@code ImmutableLightEdge}) do not extend it, so a scan over an edge type stays lazily loaded on the consumer,
+   * same as before this method existed - the producer-side win here is specific to documents and vertices.
    *
-   * @return {@code false} to drop a record deleted concurrently between the scan reading its slot and this load, the
-   * benign race the bucket iterator itself skips silently
+   * @return {@code false} to drop a record the load found already gone: either deleted concurrently between the scan
+   * reading its slot and this load (the benign race the bucket iterator itself skips silently), or filtered away by
+   * an {@code AfterRecordReadListener} - {@link ImmutableDocument#loadContent()}'s own contract, which this must
+   * honor or a filtered record leaks into the batch whenever the consumer never happens to read one of its
+   * properties (e.g. a bare {@code count(*)})
    */
   private static boolean loadContent(final Result result) {
     if (result instanceof ResultInternal internal && internal.element instanceof ImmutableDocument document) {
       try {
-        document.loadContent();
+        return document.loadContent();
       } catch (final RecordNotFoundException e) {
         return false;
       }

@@ -93,8 +93,12 @@ public class ImmutableDocument extends BaseDocument {
           .deserializeProperty(database, content, new EmbeddedModifierProperty(this, propertyName), propertyName, rid,
               absentValue);
     } catch (Exception e) {
+      // deserializeProperty() ALREADY CATCHES EVERYTHING ITSELF (SAME "Possible corrupted record" LOG) AND ANSWERS
+      // absentValue/null PER ITS DOCUMENTED FOUND-VS-NOT-FOUND CONTRACT, SO THIS CATCH IS DEAD TODAY. absentValue,
+      // NOT null, IS STILL THE RIGHT ANSWER IF IT EVER DOES FIRE: null WOULD SILENTLY BREAK THE "TELL ABSENT FROM
+      // NULL" CONTRACT THIS METHOD EXISTS FOR.
       LogManager.instance().log(this, Level.SEVERE, "Error on loading property '%s' from record %s", e, propertyName, rid);
-      return null;
+      return absentValue;
     }
   }
 
