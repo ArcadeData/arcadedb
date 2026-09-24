@@ -329,6 +329,105 @@ class HealthMonitorTest {
     assertThat(fake.divergenceRecover.get()).isZero();
   }
 
+  // --- Debounced visibility of the stuck-divergence streak (issue #8289) ---
+
+  @Test
+  void confirmedFalseWhenNeverObserved() {
+    final FakeHealthTarget fake = new FakeHealthTarget();
+    final AtomicLong clock = new AtomicLong(0);
+    final HealthMonitor monitor = stuckMonitor(fake, clock, 5000, true);
+    monitor.tick();
+    assertThat(monitor.isFollowerStuckDivergedConfirmed()).isFalse();
+  }
+
+  @Test
+  void confirmedFalseOnFirstObservation() {
+    // A single tick must not confirm: that is exactly the brief around-an-election window the debounce
+    // exists to filter (a healthy follower can cross the raw signature for an instant there).
+    final FakeHealthTarget fake = new FakeHealthTarget();
+    fake.stuckDiverged = true;
+    final AtomicLong clock = new AtomicLong(0);
+    final HealthMonitor monitor = stuckMonitor(fake, clock, 5000, true); // interval=1000 (stuckMonitor's constant)
+    monitor.tick(); // t=0: starts the streak
+    assertThat(monitor.isFollowerStuckDivergedConfirmed()).isFalse();
+  }
+
+  @Test
+  void confirmedTrueAfterOneIntervalWellBeforeTheRecoveryDuration() {
+    // The whole point of #8289: an operator must see this LONG before the (much larger) recovery
+    // duration elapses, not only once the reformat itself fires.
+    final FakeHealthTarget fake = new FakeHealthTarget();
+    fake.stuckDiverged = true;
+    final AtomicLong clock = new AtomicLong(0);
+    final HealthMonitor monitor = stuckMonitor(fake, clock, 60_000, true); // interval=1000, recovery=60s
+
+    monitor.tick(); // t=0: starts the streak
+    clock.set(1000);
+    assertThat(monitor.isFollowerStuckDivergedConfirmed()).as("time alone does not confirm").isFalse();
+
+    monitor.tick(); // t=1000: seen again on the next tick
+    assertThat(monitor.isFollowerStuckDivergedConfirmed()).as("second consecutive observation").isTrue();
+    // ... and no reformat has happened yet: the visibility signal is not the recovery action.
+    assertThat(fake.divergenceRecover.get()).isZero();
+  }
+
+  @Test
+  void aSingleObservationThatClearsIsNeverConfirmed() {
+    // The election blip: stuck on one tick, gone before the next. A status read in between - however long after
+    // the first tick - must not report it (review on PR #8294).
+    final FakeHealthTarget fake = new FakeHealthTarget();
+    fake.stuckDiverged = true;
+    final AtomicLong clock = new AtomicLong(0);
+    final HealthMonitor monitor = stuckMonitor(fake, clock, 60_000, true);
+
+    monitor.tick(); // t=0: stuck
+    fake.stuckDiverged = false;
+    clock.set(2500); // the next tick has not run yet
+    assertThat(monitor.isFollowerStuckDivergedConfirmed()).isFalse();
+
+    monitor.tick();
+    assertThat(monitor.isFollowerStuckDivergedConfirmed()).isFalse();
+  }
+
+  @Test
+  void confirmedTrackedEvenWhenAutomaticRecoveryDisabled() {
+    // With arcadedb.ha.divergedFollowerRecovery=false nothing self-heals a stuck follower (per that
+    // setting's own javadoc), which makes this streak the ONLY signal an operator has - so it must keep
+    // being tracked and confirmed regardless of the flag.
+    final FakeHealthTarget fake = new FakeHealthTarget();
+    fake.stuckDiverged = true;
+    final AtomicLong clock = new AtomicLong(0);
+    final HealthMonitor monitor = stuckMonitor(fake, clock, 5000, false);
+
+    monitor.tick();
+    clock.set(1000);
+    monitor.tick();
+    assertThat(monitor.isFollowerStuckDivergedConfirmed()).isTrue();
+
+    clock.set(60_000);
+    monitor.tick();
+    assertThat(fake.divergenceRecover.get()).as("recovery stays disabled").isZero();
+    assertThat(monitor.isFollowerStuckDivergedConfirmed()).as("still tracked and confirmed").isTrue();
+  }
+
+  @Test
+  void confirmedResetsWhenConditionClears() {
+    final FakeHealthTarget fake = new FakeHealthTarget();
+    fake.stuckDiverged = true;
+    final AtomicLong clock = new AtomicLong(0);
+    final HealthMonitor monitor = stuckMonitor(fake, clock, 5000, true);
+
+    monitor.tick();
+    clock.set(1000);
+    monitor.tick();
+    assertThat(monitor.isFollowerStuckDivergedConfirmed()).isTrue();
+
+    fake.stuckDiverged = false;
+    clock.set(1100);
+    monitor.tick(); // condition cleared: streak resets
+    assertThat(monitor.isFollowerStuckDivergedConfirmed()).isFalse();
+  }
+
   @Test
   void divergenceNotTriggeredOnFirstObservation() {
     final FakeHealthTarget fake = new FakeHealthTarget();
@@ -423,6 +522,28 @@ class HealthMonitorTest {
     assertThat(fake.divergenceRecover.get())
         .as("reformats must be capped at the configured maximum")
         .isEqualTo(2);
+  }
+
+  @Test
+  void confirmedStaysTrueOnceTheReformatBudgetIsExhausted() {
+    // Issue #8289: once auto-recovery has given up the node stays stuck for good, so this is when the operator
+    // signal matters most. The exhausted branch used to reset the streak every other tick, hiding it.
+    final FakeHealthTarget fake = new FakeHealthTarget();
+    fake.stuckDiverged = true;
+    final AtomicLong clock = new AtomicLong(0);
+    final HealthMonitor monitor = stuckMonitor(fake, clock, 5000, true, 1);
+
+    runStuckCycle(monitor, clock, 5000); // reformat #1, spends the budget and resets the streak
+    clock.addAndGet(1000);
+    monitor.tick();                      // the post-reformat streak starts here
+    // 20 ticks span four 5s recovery durations: each boundary hits the exhausted branch, which used to clear it.
+    for (int i = 0; i < 20; i++) {
+      clock.addAndGet(1000);
+      monitor.tick();
+      clock.addAndGet(500); // read between two ticks, as an HTTP poll would
+      assertThat(monitor.isFollowerStuckDivergedConfirmed()).as("read after tick " + i).isTrue();
+    }
+    assertThat(fake.divergenceRecover.get()).isEqualTo(1);
   }
 
   @Test

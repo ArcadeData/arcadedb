@@ -163,6 +163,13 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     response.put("localReplicationLag",
         localAppliedIndex >= 0 && localCommitIndex >= 0 ? localCommitIndex - localAppliedIndex : -1L);
 
+    // This node stuck at a stale term after a snapshot install (issue #8289): it has applied everything it
+    // could locally commit, so localReplicationLag above reads 0 and this node looks caught up, yet it keeps
+    // rejecting the leader's current-term entries and does not count toward quorum. Debounced (see
+    // RaftHAServer.isFollowerStuckAtStaleTermConfirmed) so a normal leader change is not reported as one.
+    final boolean stuckAtStaleTerm = raftHAServer.isFollowerStuckAtStaleTermConfirmed();
+    response.put("localStuckAtStaleTerm", stuckAtStaleTerm);
+
     // Per-follower replication health (leader only): replication lag, classified status, heartbeat
     // latency, and how long the follower has been lagging - so Studio and operators can pinpoint a
     // constantly-slow node instead of grepping logs (issue #4812). Keyed by peer id for the loop below.
@@ -345,7 +352,7 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
 
     response.put("alerts",
         ClusterAlerts.scan(httpServer.getServer(), stateMachine, followerSamples, authorizedDatabases, membership,
-            localPeerId.toString(), localResync, nodeStatus));
+            localPeerId.toString(), localResync, nodeStatus, stuckAtStaleTerm));
 
     return new ExecutionResponse(200, response.toString());
   }
