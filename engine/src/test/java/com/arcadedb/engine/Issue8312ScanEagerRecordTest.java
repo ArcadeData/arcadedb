@@ -31,8 +31,10 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -261,5 +263,41 @@ class Issue8312ScanEagerRecordTest extends BucketPageLayoutTestSupport {
     }
     assertThat(scanned).isEqualTo(3_000);
     assertThat(((Number) database.getStats().get("readRecord")).longValue() - before).isEqualTo(3_000L);
+  }
+
+  /**
+   * A record that moved to a placeholder is notified to a before-read listener once, under its own RID, whether it is
+   * scanned or looked up. The loader used to notify it a second time under the internal position of its content.
+   */
+  @Test
+  void placeholderRecordIsNotifiedOnceUnderItsOwnRid() {
+    final RID[] tiny = new RID[1];
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Ph8312", 1).createProperty("v", Type.STRING);
+      tiny[0] = database.newDocument("Ph8312").set("v", "p").save().getIdentity();
+    });
+    sealFirstPage("Ph8312");
+    database.transaction(() -> tiny[0].asDocument(true).modify().set("v", "b".repeat(20 * 1024)).save());
+    assertThat((Long) bucketStats("Ph8312").get("totalPlaceholderRecords")).isPositive();
+
+    final List<RID> notified = new ArrayList<>();
+    final BeforeRecordReadListener listener = rid -> {
+      notified.add(rid);
+      return true;
+    };
+    database.getEvents().registerListener(listener);
+    try {
+      final Iterator<Record> it = database.iterateType("Ph8312", false);
+      while (it.hasNext())
+        it.next();
+      assertThat(notified).as("scan").filteredOn(rid -> rid.getPosition() == tiny[0].getPosition()).hasSize(1);
+      assertThat(notified).as("scan: one notification per record").doesNotHaveDuplicates();
+
+      notified.clear();
+      database.lookupByRID(tiny[0], true);
+      assertThat(notified).as("lookup").containsExactly(tiny[0]);
+    } finally {
+      database.getEvents().unregisterListener(listener);
+    }
   }
 }

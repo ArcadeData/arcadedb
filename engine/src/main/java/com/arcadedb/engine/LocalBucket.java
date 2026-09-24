@@ -715,7 +715,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
                 // LOAD PLACEHOLDER CONTENT
                 final RID placeHolderPointer = new RID(fileId,
                         page.readLong((int) (recordPositionInPage + recordSize[1])));
-                final Binary view = getRecordInternal(placeHolderPointer, true);
+                final Binary view = getRecordInternal(placeHolderPointer, true, false);
                 if (view != null && !callback.onRecord(rid, view))
                   return;
               } else if (recordSize[0] == FIRST_CHUNK) {
@@ -2129,8 +2129,18 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * The caller should call @{@link DatabaseInternal#invokeAfterReadEvents(Record)} after created the record and manage the result correctly.
    */
   public Binary getRecordInternal(final RID rid, final boolean readPlaceHolderContent) {
+    return getRecordInternal(rid, readPlaceHolderContent, true);
+  }
+
+  /**
+   * @param fireEvents {@code false} to read the content a placeholder points to: the before-read events are about the
+   *                   record the caller asked for, under the RID it knows, and already ran for it. Firing them again for
+   *                   the internal position of its content notified a listener twice, the second time with a RID no
+   *                   user ever sees (#8312)
+   */
+  Binary getRecordInternal(final RID rid, final boolean readPlaceHolderContent, final boolean fireEvents) {
     // INVOKE EVENT CALLBACKS
-    if (!fireBeforeReadEvents(rid))
+    if (fireEvents && !fireBeforeReadEvents(rid))
       return null;
 
     final int pageId = (int) (rid.getPosition() / maxRecordsInPage);
@@ -2175,7 +2185,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         // FOUND PLACEHOLDER, LOAD THE REAL RECORD
         final RID placeHolderPointer = new RID(rid.getBucketId(),
                 page.readLong((int) (recordPositionInPage + recordSize[1])));
-        return getRecordInternal(placeHolderPointer, true);
+        return getRecordInternal(placeHolderPointer, true, false);
       } else if (isChunkHead(recordSize[0])) {
         // FOUND 1ST CHUNK, LOAD THE ENTIRE MULTI-PAGE RECORD
         return loadMultiPageRecord(rid, page, recordPositionInPage, recordSize);
