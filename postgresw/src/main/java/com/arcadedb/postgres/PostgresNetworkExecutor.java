@@ -1851,7 +1851,12 @@ public class PostgresNetworkExecutor extends Thread {
     // SLASH is not statically typeable: MathExpression.Operator.SLASH returns the widest INTEGER/LONG operand
     // type only when the division happens to be exact, and a DOUBLE otherwise (Type#increment does the same for
     // NUMERIC) - which one depends on the row's values, not on the declared operand types.
-    if (math.getOperators().contains(MathExpression.Operator.SLASH))
+    //
+    // NULL_COALESCING (??) has the same problem from the opposite direction: it returns whichever operand is
+    // non-null UNCHANGED - never widened to a common type - so `longCol ?? doubleCol` can describe a row's actual
+    // Long as float8 and lose precision on binary encoding, depending on which operand happened to be null.
+    if (math.getOperators().contains(MathExpression.Operator.SLASH)
+        || math.getOperators().contains(MathExpression.Operator.NULL_COALESCING))
       return null;
 
     PostgresType widest = null;

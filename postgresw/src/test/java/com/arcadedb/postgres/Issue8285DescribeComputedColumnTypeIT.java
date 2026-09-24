@@ -20,13 +20,29 @@ package com.arcadedb.postgres;
 
 import org.junit.jupiter.api.Test;
 
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.net.InetSocketAddress;
+import java.net.Socket;
+import java.nio.ByteBuffer;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.Statement;
+import java.util.List;
 import java.util.Properties;
 
+import static com.arcadedb.postgres.PostgresWireMessages.WireMessage;
+import static com.arcadedb.postgres.PostgresWireMessages.firstDataRowValue;
+import static com.arcadedb.postgres.PostgresWireMessages.messageTypesOf;
+import static com.arcadedb.postgres.PostgresWireMessages.readUntilReadyForQuery;
+import static com.arcadedb.postgres.PostgresWireMessages.sendBind;
+import static com.arcadedb.postgres.PostgresWireMessages.sendDescribe;
+import static com.arcadedb.postgres.PostgresWireMessages.sendExecute;
+import static com.arcadedb.postgres.PostgresWireMessages.sendParse;
+import static com.arcadedb.postgres.PostgresWireMessages.sendSimpleQuery;
+import static com.arcadedb.postgres.PostgresWireMessages.sendSync;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -171,6 +187,70 @@ class Issue8285DescribeComputedColumnTypeIT extends PostgresWireProtocolTestBase
         }
       }
     }
+  }
+
+  @Test
+  void nullCoalescingIsNotDescribedAsTheOtherOperandsWiderType() throws Exception {
+    // MathExpression.Operator.NULL_COALESCING (??) returns whichever operand is non-null UNCHANGED - never
+    // widened to a common type - so `n ?? x` (n LONG, x DOUBLE) returns n's own Long when n is non-null, not a
+    // Double. Describing it as the wider operand type (float8) would make binary encoding call doubleValue() on
+    // that Long and risk losing precision (review of #8285, CodeRabbit).
+    //
+    // Sent over the raw wire protocol rather than through pgjdbc: a PreparedStatement's client-side parameter
+    // parsing treats "??" as an escaped literal "?" and rewrites it away before the query ever reaches the
+    // server ("mismatched input '?'"), so this shape cannot be reproduced through pgjdbc's own API.
+    try (final Socket socket = new Socket()) {
+      socket.connect(new InetSocketAddress("localhost", getServerPostgresPort()), 2000);
+      final DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+      final DataInputStream in = new DataInputStream(socket.getInputStream());
+
+      sendStartupMessage(out, "root", getDatabaseName());
+      readMessage(in); // AuthenticationCleartextPassword
+      sendPasswordMessage(out, DEFAULT_PASSWORD_FOR_TESTS);
+      readMessageOfType(in, 'Z'); // drain AuthenticationOk/BackendKeyData/ParameterStatus.../ReadyForQuery
+
+      sendSimpleQuery(out, "CREATE DOCUMENT TYPE Items8285NullCoalescing IF NOT EXISTS");
+      readUntilReadyForQuery(in);
+      sendSimpleQuery(out, "CREATE PROPERTY Items8285NullCoalescing.n IF NOT EXISTS LONG");
+      readUntilReadyForQuery(in);
+      sendSimpleQuery(out, "CREATE PROPERTY Items8285NullCoalescing.x IF NOT EXISTS DOUBLE");
+      readUntilReadyForQuery(in);
+      sendSimpleQuery(out, "INSERT INTO Items8285NullCoalescing SET n = 1, x = 2.5");
+      readUntilReadyForQuery(in);
+
+      sendParse(out, "s", "SELECT n ?? x AS c FROM Items8285NullCoalescing WHERE n = 1");
+      sendDescribe(out, 'S', "s");
+      sendSync(out);
+      final List<WireMessage> described = readUntilReadyForQuery(in);
+      assertThat(messageTypesOf(described)).as("Parse and Describe both succeed").doesNotContain('E');
+
+      final WireMessage rowDescription = described.stream().filter(m -> m.type() == 'T').findFirst()
+          .orElseThrow(() -> new AssertionError("no RowDescription among " + messageTypesOf(described)));
+      assertThat(firstColumnTypeOid(rowDescription))
+          .as("must not commit to float8 (OID 701), the wider operand's type, before execution")
+          .isNotEqualTo(701);
+
+      sendBind(out, "p", "s");
+      sendExecute(out, "p");
+      sendSync(out);
+      final List<WireMessage> executed = readUntilReadyForQuery(in);
+      assertThat(firstDataRowValue(executed)).as("n is non-null, so the value is n's own Long, unchanged")
+          .isEqualTo("1");
+    }
+  }
+
+  /**
+   * The data type OID of a RowDescription's first (and, for these tests, only) column.
+   */
+  private static int firstColumnTypeOid(final WireMessage rowDescription) {
+    final ByteBuffer buffer = ByteBuffer.wrap(rowDescription.body());
+    buffer.getShort(); // field count
+    while (buffer.get() != 0) {
+      // skip the null-terminated field name
+    }
+    buffer.getInt(); // table OID
+    buffer.getShort(); // column attribute number
+    return buffer.getInt(); // data type OID
   }
 
   @Test
