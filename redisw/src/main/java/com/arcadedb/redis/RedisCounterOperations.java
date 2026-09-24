@@ -102,9 +102,15 @@ public final class RedisCounterOperations {
   /**
    * The remapping for INCRBYFLOAT: no integral restriction - it promotes an integral value to float and accepts any
    * stored value it can read as a float ({@code "3.3"} included), refusing only what cannot be parsed as one, with
-   * real Redis' own "value is not a valid float".
+   * real Redis' own "value is not a valid float". {@code Double.parseDouble}/{@code Double.valueOf} both accept the
+   * text "NaN"/"Infinity", and finite plus finite can itself overflow to infinite, so the increment, the stored
+   * value and the result are each checked for finiteness rather than let a non-finite value enter or persist
+   * through this key, refused with real Redis' own "increment would produce NaN or Infinity" (found in review).
    */
   public static UnaryOperator<Object> incrementByFloat(final double delta) {
+    if (!Double.isFinite(delta))
+      throw new RedisException("increment would produce NaN or Infinity");
+
     return stored -> {
       final Number number;
       if (stored == null)
@@ -112,13 +118,21 @@ public final class RedisCounterOperations {
       else if (stored instanceof Number storedNumber)
         number = storedNumber;
       else {
+        final double parsed;
         try {
-          number = Double.parseDouble(stored.toString());
+          parsed = Double.parseDouble(stored.toString());
         } catch (final NumberFormatException e) {
           throw new RedisException("value is not a valid float");
         }
+        if (!Double.isFinite(parsed))
+          throw new RedisException("value is not a valid float");
+        number = parsed;
       }
-      return Type.increment(number, delta);
+
+      final Number result = Type.increment(number, delta);
+      if (!Double.isFinite(result.doubleValue()))
+        throw new RedisException("increment would produce NaN or Infinity");
+      return result;
     };
   }
 }
