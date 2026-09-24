@@ -421,6 +421,12 @@ public final class SnapshotInstaller {
     // reconciliation cannot complete.
     reconcileRetainedBackup(databaseName, dbPath, snapshotBackup, pendingMarker, server);
 
+    // A marker that survives reconciliation over a directory that is not a loadable database is the torn state
+    // recovery refuses to bless (#7139): nothing to reconcile from, so a fresh snapshot is the only cure and the
+    // install proceeds. But if its download fails, the marker is the one thing stopping the torn directory from
+    // being opened and served, so that failure must leave it in place (review finding on PR #8318, issue #7670).
+    final boolean keepMarkerIfDownloadFails = Files.exists(pendingMarker) && !looksLikeADatabaseDirectory(dbPath);
+
     // Clean up any leftover state from a previous failed attempt. Reaching here means the backup (if there was
     // one) has been reconciled away, so these deletes only ever drop genuinely disposable state.
     deleteDirectoryIfExists(snapshotNew);
@@ -454,7 +460,13 @@ public final class SnapshotInstaller {
       // Download failed: the live database has not been touched and is still open. Drop the staging
       // directory and rethrow so the caller (or Raft) can retry later without losing availability.
       deleteDirectoryIfExists(snapshotNew);
-      Files.deleteIfExists(pendingMarker);
+      if (keepMarkerIfDownloadFails)
+        LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
+            "Snapshot download for '%s' failed over a database directory that holds no loadable database; keeping "
+                + "its '%s' marker so the directory stays unopenable until a snapshot install succeeds", null,
+            databaseName, SNAPSHOT_PENDING_FILE);
+      else
+        Files.deleteIfExists(pendingMarker);
       throw e;
     }
 

@@ -172,6 +172,39 @@ class Issue7670InstallResolvesClosedRegisteredDatabaseTest {
     assertThat(reopened.getSchema().existsType(ORIGINAL_TYPE)).as("the previous copy was swapped out").isFalse();
   }
 
+  /**
+   * Review finding on PR #8318. With the lookups no longer refusing, an install now reaches a directory the recovery
+   * pass deliberately left marked: no backup, no staged snapshot, and live files that are not a loadable database -
+   * the torn state #7139 refuses to bless. {@code reconcileRetainedBackup} has nothing to reconcile there, so the
+   * install proceeds, which is right: a fresh snapshot is the only cure. But when its download fails, it must not
+   * take the marker with it. The marker is the only thing stopping that torn directory from being opened and served.
+   */
+  @Test
+  @Timeout(180)
+  void aFailedDownloadKeepsTheMarkerOfATornDirectory(@TempDir final Path root) throws Exception {
+    final Path databasesDir = startServer(root);
+    final Path dbDir = registerThenCloseUnderneathTheRegistry(databasesDir);
+
+    // Torn: what a failed rollback leaves once its backup is gone - some files, but no schema.
+    try (final Stream<Path> entries = Files.list(dbDir)) {
+      for (final Path entry : entries.toList())
+        if (entry.getFileName().toString().startsWith("schema"))
+          Files.delete(entry);
+    }
+    final Path marker = dbDir.resolve(SnapshotInstaller.SNAPSHOT_PENDING_FILE);
+    Files.writeString(marker, "");
+
+    assertThatThrownBy(() -> SnapshotInstaller.install(DB_NAME, SnapshotInstaller.resolveDatabasePath(server, DB_NAME),
+        () -> null, () -> null, null, server))
+        .as("the download fails: no leader address resolves").isInstanceOf(IOException.class);
+
+    assertThat(marker).as("a torn directory keeps the marker that stops it being opened").exists();
+    assertThat(dbDir.resolve(SnapshotInstaller.SNAPSHOT_NEW_DIR)).as("the failed staging is still dropped")
+        .doesNotExist();
+    assertThatThrownBy(() -> server.getDatabase(DB_NAME)).as("the torn directory is still refused")
+        .hasMessageContaining(SnapshotInstaller.SNAPSHOT_PENDING_FILE);
+  }
+
   // ---------------------------------------------------------------------------------------------------------------
 
   /**
