@@ -268,12 +268,13 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private volatile LeaderCommitProber        leaderCommitProber = this::queryLeaderCommitIndex;
   // The Ratis client the prober above talks to the leader through, built lazily for leaderCommitProbeTarget and
   // rebuilt when the leader changes or a call fails (a failed call may mean a stale DNS resolution of a re-IPed
-  // leader, which only a fresh channel re-resolves). Guarded by leaderCommitProbeLock so stop() cannot race a tick
-  // that is just building one.
-  private          RaftClient                leaderCommitProbeClient;
+  // leader, which only a fresh channel re-resolves). Lock-free on purpose (review of PR #8322): stop() must never
+  // wait behind a probe that is blocked in its RPC. It raises leaderCommitProbeClosed and takes the client out of
+  // the reference; closing it fails the in-flight call at once. The health thread, the only builder, re-checks the
+  // flag after publishing a new client, so whichever of the two runs second closes it.
+  private final    AtomicReference<RaftClient> leaderCommitProbeClient = new AtomicReference<>();
   private          RaftPeer                  leaderCommitProbeTarget;
-  private          boolean                   leaderCommitProbeClosed;
-  private final    Object                    leaderCommitProbeLock = new Object();
+  private volatile boolean                   leaderCommitProbeClosed;
   // Failure backoff of the probe above, so an unreachable leader does not stretch every health tick by the probe
   // timeout for as long as it stays unreachable (review of PR #8322). Health-monitor thread only.
   private          int                       leaderCommitProbeFailures;
@@ -3411,27 +3412,34 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * {@code -1} on any failure, after dropping the client so the next tick dials a fresh channel.
    */
   private long queryLeaderCommitIndex(final RaftPeer leader) {
-    synchronized (leaderCommitProbeLock) {
-      if (leaderCommitProbeClosed)
-        return -1L;
-      try {
-        if (leaderCommitProbeClient == null || !leader.equals(leaderCommitProbeTarget)) {
-          closeLeaderCommitProbeClientLocked();
-          leaderCommitProbeClient = newLeaderCommitProbeClient(leader);
-          if (leaderCommitProbeClient == null)
-            return -1L;
-          leaderCommitProbeTarget = leader;
-        }
-        final var reply = leaderCommitProbeClient.getGroupManagementApi(leader.getId()).info(raftGroup.getGroupId());
-        if (reply == null || !reply.isSuccess())
+    if (leaderCommitProbeClosed)
+      return -1L;
+    RaftClient client = leaderCommitProbeClient.get();
+    try {
+      if (client == null || !leader.equals(leaderCommitProbeTarget)) {
+        closeProbeClient(leaderCommitProbeClient.getAndSet(null));
+        client = newLeaderCommitProbeClient(leader);
+        if (client == null)
           return -1L;
-        final long reported = reportedCommitIndexOf(reply.getCommitInfos(), leader.getId());
-        return reported == NO_COMMIT_INFO ? -1L : reported;
-      } catch (final Exception e) {
-        LogManager.instance().log(this, Level.FINE, "Cannot read the commit index of leader %s", e, leader.getId());
-        closeLeaderCommitProbeClientLocked();
-        return -1L;
+        leaderCommitProbeTarget = leader;
+        leaderCommitProbeClient.set(client);
+        if (leaderCommitProbeClosed) {
+          // stop() ran while this client was being built: it may have found the reference still empty.
+          closeProbeClient(leaderCommitProbeClient.getAndSet(null));
+          return -1L;
+        }
       }
+      final var reply = client.getGroupManagementApi(leader.getId()).info(raftGroup.getGroupId());
+      if (reply == null || !reply.isSuccess())
+        return -1L;
+      final long reported = reportedCommitIndexOf(reply.getCommitInfos(), leader.getId());
+      return reported == NO_COMMIT_INFO ? -1L : reported;
+    } catch (final Exception e) {
+      if (!leaderCommitProbeClosed)
+        LogManager.instance().log(this, Level.FINE, "Cannot read the commit index of leader %s", e, leader.getId());
+      if (client != null && leaderCommitProbeClient.compareAndSet(client, null))
+        closeProbeClient(client);
+      return -1L;
     }
   }
 
@@ -3454,17 +3462,13 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         .build();
   }
 
+  /** Called from {@link #stop()}; never blocks on an in-flight probe, whose RPC closing the client fails at once. */
   private void closeLeaderCommitProbeClient() {
-    synchronized (leaderCommitProbeLock) {
-      leaderCommitProbeClosed = true;
-      closeLeaderCommitProbeClientLocked();
-    }
+    leaderCommitProbeClosed = true;
+    closeProbeClient(leaderCommitProbeClient.getAndSet(null));
   }
 
-  private void closeLeaderCommitProbeClientLocked() {
-    final RaftClient client = leaderCommitProbeClient;
-    leaderCommitProbeClient = null;
-    leaderCommitProbeTarget = null;
+  private void closeProbeClient(final RaftClient client) {
     if (client != null)
       try {
         client.close();
