@@ -563,9 +563,9 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
    * left alone the first property access would load each of them on the ONE thread consuming the parallel scan -
    * serializing the page lookup and the after-read events the parallel scan exists to spread across producers.
    * <p>
-   * Only {@link ImmutableDocument} (plain documents and vertices): edge types ({@code ImmutableEdge}/
-   * {@code ImmutableLightEdge}) do not extend it, so a scan over an edge type stays lazily loaded on the consumer,
-   * same as before this method existed - the producer-side win here is specific to documents and vertices.
+   * Every record a bucket scan produces is an {@link ImmutableDocument}: documents, vertices and edges
+   * ({@code ImmutableEdge} extends it too), so all three are loaded here. A lightweight edge has no record and never
+   * comes out of a bucket scan.
    *
    * @return {@code false} to drop a record the load found already gone: either deleted concurrently between the scan
    * reading its slot and this load (the benign race the bucket iterator itself skips silently), or filtered away by
