@@ -19,7 +19,6 @@
 
 package com.arcadedb.containers.ha.chaos;
 
-import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -29,8 +28,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.entry;
 
-@Tag("chaos")
-class ChaosConfigIT {
+class ChaosConfigTest {
 
   static Properties props(final String... keyValues) {
     final Properties properties = new Properties();

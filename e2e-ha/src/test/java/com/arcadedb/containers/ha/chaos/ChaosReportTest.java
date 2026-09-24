@@ -20,7 +20,6 @@
 package com.arcadedb.containers.ha.chaos;
 
 import com.arcadedb.serializer.json.JSONObject;
-import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -30,12 +29,11 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@Tag("chaos")
-class ChaosReportIT {
+class ChaosReportTest {
   @TempDir
   Path dir;
 
-  private final ChaosConfig config = ChaosConfig.fromProperties(ChaosConfigIT.props("chaos.seed", "42"));
+  private final ChaosConfig config = ChaosConfig.fromProperties(ChaosConfigTest.props("chaos.seed", "42"));
 
   @Test
   void stepsAndTrendsAreFlushedAsTheyAreWritten() throws Exception {

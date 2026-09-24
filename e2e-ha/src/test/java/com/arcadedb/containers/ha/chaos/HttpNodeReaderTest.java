@@ -21,7 +21,6 @@ package com.arcadedb.containers.ha.chaos;
 
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -31,8 +30,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-@Tag("chaos")
-class HttpNodeReaderIT {
+class HttpNodeReaderTest {
 
   private static JSONArray rows(final long... keys) {
     final JSONArray rows = new JSONArray();
