@@ -233,12 +233,13 @@ public class BucketIterator implements Iterator<Record> {
 
               final RID rid = new RID(bucket.fileId,
                   ((long) nextPageNumber) * bucket.getMaxRecordsInPage() + currentRecordInPage);
+              // COUNTED HERE, BEFORE ANY EVENT CAN FILTER IT, AS lookupByRID() COUNTS EVERY LOOKUP ON ENTRY
+              ++recordsRead;
 
               // A RECORD THIS TRANSACTION ALREADY HOLDS (POSSIBLY MODIFIED AND NOT SAVED YET) IS ANSWERED FROM IT, NOT
               // FROM THE PAGE, THE SAME WAY lookupByRID() DOES
               final Record inTransaction = database.getTransaction().getRecordFromCache(rid);
               if (inTransaction != null) {
-                ++recordsRead;
                 nextBatch[writeIndex++] = inTransaction;
                 continue;
               }
@@ -301,7 +302,6 @@ public class BucketIterator implements Iterator<Record> {
                 pageVersion = -1;
               }
 
-              ++recordsRead;
               final Record record = newRecord(rid, content, pageVersion);
               if (record != null)
                 nextBatch[writeIndex++] = record;

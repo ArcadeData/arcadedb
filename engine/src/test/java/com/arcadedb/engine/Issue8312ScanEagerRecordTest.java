@@ -263,6 +263,17 @@ class Issue8312ScanEagerRecordTest extends BucketPageLayoutTestSupport {
     }
     assertThat(scanned).isEqualTo(3_000);
     assertThat(((Number) database.getStats().get("readRecord")).longValue() - before).isEqualTo(3_000L);
+
+    // A RECORD A BEFORE-READ EVENT HIDES WAS STILL READ: lookupByRID() COUNTS IT, AND SO DOES THE SCAN
+    final BeforeRecordReadListener hideAll = rid -> false;
+    database.getEvents().registerListener(hideAll);
+    try {
+      final long beforeHidden = ((Number) database.getStats().get("readRecord")).longValue();
+      assertThat(database.iterateType("Doc8312", false).hasNext()).isFalse();
+      assertThat(((Number) database.getStats().get("readRecord")).longValue() - beforeHidden).isEqualTo(3_000L);
+    } finally {
+      database.getEvents().unregisterListener(hideAll);
+    }
   }
 
   /**
@@ -287,11 +298,13 @@ class Issue8312ScanEagerRecordTest extends BucketPageLayoutTestSupport {
     };
     database.getEvents().registerListener(listener);
     try {
+      final List<RID> scanned = new ArrayList<>();
       final Iterator<Record> it = database.iterateType("Ph8312", false);
       while (it.hasNext())
-        it.next();
-      assertThat(notified).as("scan").filteredOn(rid -> rid.getPosition() == tiny[0].getPosition()).hasSize(1);
-      assertThat(notified).as("scan: one notification per record").doesNotHaveDuplicates();
+        scanned.add(it.next().getIdentity());
+      // EXACTLY ONE NOTIFICATION PER RECORD RETURNED, UNDER THAT RECORD'S RID: NONE UNDER THE CONTENT'S INTERNAL ONE
+      assertThat(scanned).contains(tiny[0]);
+      assertThat(notified).as("scan").containsExactlyInAnyOrderElementsOf(scanned);
 
       notified.clear();
       database.lookupByRID(tiny[0], true);
