@@ -202,9 +202,10 @@ public class BucketIterator implements Iterator<Record> {
               final RID rid = new RID(bucket.fileId,
                   ((long) nextPageNumber) * bucket.getMaxRecordsInPage() + currentRecordInPage);
 
-              if (!bucket.existsRecord(rid))
-                continue;
-
+              // NO bucket.existsRecord(rid) HERE (#8265): IT RE-READ, THROUGH A FRESH PAGE LOOKUP AND PERMISSION CHECK,
+              // THE SAME SIZE MARKER JUST READ FROM currentPage AND TESTED ABOVE, WITH THE SAME CONDITION. ALL IT ADDED
+              // WAS NOTICING A DELETE COMMITTED IN THE SUB-MICROSECOND GAP BEFORE lookupByRID(); A DELETE AFTER THAT IS
+              // NOTICED WHEN THE RECORD IS LOADED, AS IT ALWAYS WAS, SO THE WINDOW THAT MATTERS DID NOT CHANGE.
               try {
                 nextBatch[writeIndex++] = database.lookupByRID(rid, false);
               } catch (final BrokenChunkChainException e) {
@@ -263,7 +264,7 @@ public class BucketIterator implements Iterator<Record> {
                   view, null);
             }
           } catch (final RecordNotFoundException e) {
-            // BENIGN RACE: the record existed a moment ago when bucket.existsRecord(rid) was checked above, but
+            // BENIGN RACE: the record existed a moment ago when its slot was read from currentPage above, but
             // was concurrently deleted before lookupByRID()/getRecordInternal() executed. Skip it silently, the
             // same way the other "turned out to be gone" checks in this loop already do with a plain `continue`.
           } catch (final SerializationException e) {

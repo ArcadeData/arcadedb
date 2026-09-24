@@ -21,9 +21,11 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.ParallelScanProducerPool;
@@ -64,7 +66,13 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
   int       currentStep = 0;
 
   // Parallel scanning state
-  private BlockingQueue<Result> parallelQueue;
+  // Batches, not single rows (#8265): one queue hand-off per SCAN_BATCH_SIZE rows instead of one per row, which is what
+  // made the per-row poll()/signalNotFull() wake-ups a visible share of a parallel scan's profile.
+  private BlockingQueue<List<Result>> parallelQueue;
+  // The batch the consumer is draining, and its position in it. Step fields, not ResultSet fields: a consumer pulling
+  // in pages smaller than a batch gets a new ResultSet per page and must resume where the previous one stopped.
+  private List<Result>         parallelBatch;
+  private int                  parallelBatchIndex;
   private volatile boolean     parallelScanComplete = false;
   private List<Future<?>>      scanFutures;
   // First producer failure: surfaced to the consumer as an exception instead of silently returning fewer
@@ -78,6 +86,8 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
   // into the (blocking) result queue. Small enough to keep DDL/close wait bounded, large enough to amortize
   // the uncontended read-lock cost to noise.
   private static final int SCAN_BATCH_SIZE = 256;
+  // Queue capacity in batches: the same 4096 rows the queue held when it carried one row per entry.
+  private static final int PARALLEL_QUEUE_BATCHES = 4096 / SCAN_BATCH_SIZE;
 
   protected FetchFromTypeExecutionStep(final CommandContext context) {
     super(context);
@@ -315,7 +325,9 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
   private ResultSet syncPullParallel(final CommandContext context, final int nRecords) {
     if (parallelQueue == null) {
       // Bounded queue: prevents memory explosion while allowing parallelism
-      parallelQueue = new LinkedBlockingQueue<>(4096);
+      parallelQueue = new LinkedBlockingQueue<>(PARALLEL_QUEUE_BATCHES);
+      parallelBatch = null;
+      parallelBatchIndex = 0;
       parallelScanComplete = false;
       parallelScanFailure = null;
       // NOTE: the consumer-liveness clock starts HERE, at scan submission, not at the first hasNext():
@@ -365,11 +377,11 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
             // lock and emitting outside also matches the sequential scan path, which holds no database-level
             // lock across iteration at all.
             final AbstractExecutionStep execStep = (AbstractExecutionStep) step;
-            final List<Result> batch = new ArrayList<>(SCAN_BATCH_SIZE);
             final ResultSet[] rsHolder = new ResultSet[1];
             boolean more = true;
             while (more) {
-              batch.clear();
+              // A NEW LIST PER BATCH: THE BATCH ITSELF IS HANDED TO THE CONSUMER, WHICH OWNS IT FROM THEN ON
+              final List<Result> batch = new ArrayList<>(SCAN_BATCH_SIZE);
               more = db.executeInReadLock(() -> {
                 ResultSet rs = rsHolder[0];
                 if (rs == null)
@@ -380,12 +392,14 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
                     if (!rs.hasNext())
                       return false;
                   }
-                  batch.add(rs.next());
+                  final Result r = rs.next();
+                  if (loadContent(r))
+                    batch.add(r);
                 }
                 return true;
               });
 
-              for (final Result r : batch) {
+              if (!batch.isEmpty()) {
                 // Bounded offer instead of a forever-blocking put(): a ResultSet that is opened but never
                 // drained NOR closed would otherwise park this producer (and its pool thread) permanently.
                 // As long as the consumer shows signs of life (polls the queue) the producer keeps waiting;
@@ -393,7 +407,7 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
                 // records the failure (surfaced if the consumer ever comes back) and frees its thread.
                 while (true) {
                   try {
-                    if (parallelQueue.offer(r, 1, TimeUnit.SECONDS))
+                    if (parallelQueue.offer(batch, 1, TimeUnit.SECONDS))
                       break;
                   } catch (final InterruptedException e) {
                     // Cancellation via ResultSet.close()/step close(): expected, exit silently.
@@ -473,18 +487,33 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
         if (nextItem != null)
           return true;
 
-        // Poll from the queue, waiting briefly for results
         while (nextItem == null) {
+          final List<Result> batch = parallelBatch;
+          if (batch != null && parallelBatchIndex < batch.size()) {
+            // Still a sign of life per row, as when every row was a poll: a slow downstream draining one batch must
+            // not look like an abandoned result set to the producers
+            parallelLastConsumed = System.currentTimeMillis();
+            nextItem = batch.get(parallelBatchIndex);
+            batch.set(parallelBatchIndex++, null); // EARLY CLEANSE FOR GC
+            break;
+          }
+          parallelBatch = null;
+
+          // Poll the next batch from the queue, waiting briefly for one
           parallelLastConsumed = System.currentTimeMillis();
+          final List<Result> polled;
           try {
-            nextItem = parallelQueue.poll(10, TimeUnit.MILLISECONDS);
+            polled = parallelQueue.poll(10, TimeUnit.MILLISECONDS);
           } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
             return false;
           }
           if (parallelScanFailure != null)
             throw new CommandExecutionException("Parallel scan failed", parallelScanFailure);
-          if (nextItem == null && parallelScanComplete && parallelQueue.isEmpty())
+          if (polled != null) {
+            parallelBatch = polled;
+            parallelBatchIndex = 0;
+          } else if (parallelScanComplete && parallelQueue.isEmpty())
             return false;
         }
         return true;
@@ -510,6 +539,25 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
           ((AbstractExecutionStep) step).close();
       }
     };
+  }
+
+  /**
+   * Loads the content of a scanned record on the producer thread (#8265). The bucket scan hands out lazy records, and
+   * left alone the first property access would load each of them on the ONE thread consuming the parallel scan -
+   * serializing the page lookup and the after-read events the parallel scan exists to spread across producers.
+   *
+   * @return {@code false} to drop a record deleted concurrently between the scan reading its slot and this load, the
+   * benign race the bucket iterator itself skips silently
+   */
+  private static boolean loadContent(final Result result) {
+    if (result instanceof ResultInternal internal && internal.element instanceof ImmutableDocument document) {
+      try {
+        document.loadContent();
+      } catch (final RecordNotFoundException e) {
+        return false;
+      }
+    }
+    return true;
   }
 
   @Override

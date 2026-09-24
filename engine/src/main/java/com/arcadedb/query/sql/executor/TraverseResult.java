@@ -42,6 +42,14 @@ public class TraverseResult extends ResultInternal {
   }
 
   @Override
+  public Object getPropertyIfPresent(final String name, final Object absentValue) {
+    if ("$depth".equalsIgnoreCase(name))
+      // ANSWERED BY getProperty() BUT NOT REPORTED BY hasProperty(): KEEP WHAT THE PAIR SAID
+      return hasProperty(name) ? getProperty(name) : absentValue;
+    return super.getPropertyIfPresent(name, absentValue);
+  }
+
+  @Override
   public ResultInternal setProperty(final String name, final Object value) {
     if ("$depth".equalsIgnoreCase(name)) {
       if (value instanceof Number number) {

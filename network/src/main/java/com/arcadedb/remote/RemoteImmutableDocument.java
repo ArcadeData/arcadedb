@@ -141,6 +141,12 @@ public class RemoteImmutableDocument extends ImmutableDocument {
   }
 
   @Override
+  public synchronized Object getIfPresent(final String propertyName, final Object absentValue) {
+    final Object value = map.get(propertyName);
+    return value != null || map.containsKey(propertyName) ? value : absentValue;
+  }
+
+  @Override
   public synchronized MutableDocument modify() {
     return new RemoteMutableDocument(this);
   }

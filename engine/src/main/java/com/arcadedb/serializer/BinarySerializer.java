@@ -387,6 +387,9 @@ public class BinarySerializer {
         return false;
 
       final int fieldId = database.getSchema().getDictionary().getIdByName(fieldName, false);
+      if (fieldId < 0)
+        // A PROPERTY NAME IS ALWAYS WRITTEN THROUGH THE DICTIONARY: ONE IT DOES NOT KNOW IS IN NO RECORD
+        return false;
 
       for (int i = 0; i < properties; ++i) {
         if (fieldId == (int) buffer.getUnsignedNumber())
@@ -402,6 +405,19 @@ public class BinarySerializer {
 
   public Object deserializeProperty(final Database database, final Binary buffer, final EmbeddedModifier embeddedModifier,
       final String fieldName, final RID rid) {
+    return deserializeProperty(database, buffer, embeddedModifier, fieldName, rid, null);
+  }
+
+  /**
+   * Deserializes one property in a single pass over the record header, telling a property that is not in the record
+   * ({@code absentValue} is returned) from one stored with a {@code null} value ({@code null} is returned). It answers
+   * what {@link #hasProperty} followed by {@link #deserializeProperty(Database, Binary, EmbeddedModifier, String, RID)}
+   * answered together, including on a corrupted record: a header that cannot be read means absent (as
+   * {@link #hasProperty} says), a value that cannot be read after its name matched means {@code null}.
+   */
+  public Object deserializeProperty(final Database database, final Binary buffer, final EmbeddedModifier embeddedModifier,
+      final String fieldName, final RID rid, final Object absentValue) {
+    boolean found = false;
     try {
       final int initialPosition = buffer.position();
       final int headerEndOffset = buffer.getInt();
@@ -409,10 +425,13 @@ public class BinarySerializer {
 
       if (properties == 0)
         // EMPTY: NOT FOUND
-        return null;
+        return absentValue;
 
       final Dictionary dictionary = database.getSchema().getDictionary();
       final int fieldId = dictionary.getIdByName(fieldName, false);
+      if (fieldId < 0)
+        // A PROPERTY NAME IS ALWAYS WRITTEN THROUGH THE DICTIONARY: ONE IT DOES NOT KNOW IS IN NO RECORD
+        return absentValue;
 
       for (int i = 0; i < properties; ++i) {
         final int nameId = (int) buffer.getUnsignedNumber();
@@ -421,6 +440,7 @@ public class BinarySerializer {
         if (fieldId != nameId)
           continue;
 
+        found = true;
         buffer.position(headerEndOffset + contentPosition);
 
         final byte type = buffer.getByte();
@@ -439,8 +459,9 @@ public class BinarySerializer {
       }
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Possible corrupted record %s", e, rid);
+      return found ? null : absentValue;
     }
-    return null;
+    return absentValue;
   }
 
   public void serializeValue(final Database database, final Binary serialized, final byte type, Object value) {

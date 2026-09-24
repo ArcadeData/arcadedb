@@ -63,6 +63,11 @@ public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
     return false;
   }
 
+  @Override
+  public Object getIfPresent(final String propertyName, final Object absentValue) {
+    return absentValue;
+  }
+
   public MutableEdge modify() {
     throw new IllegalStateException("Lightweight edges cannot be modified");
   }

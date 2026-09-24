@@ -50,6 +50,19 @@ public interface Document extends Record {
 
   Object get(String propertyName);
 
+  /**
+   * Returns the property value when the record has the property, {@code absentValue} otherwise: the answer of
+   * {@link #has(String)} followed by {@link #get(String)}, in one lookup where the implementation can do it (a record
+   * read from disk scans its header once instead of twice). A property stored with a {@code null} value is present, so
+   * it answers {@code null}; pass a marker object as {@code absentValue} to tell the two apart.
+   *
+   * @param propertyName the property name
+   * @param absentValue  the value returned when the record does not have the property
+   */
+  default Object getIfPresent(final String propertyName, final Object absentValue) {
+    return has(propertyName) ? get(propertyName) : absentValue;
+  }
+
   String getString(String propertyName);
 
   Boolean getBoolean(String propertyName);

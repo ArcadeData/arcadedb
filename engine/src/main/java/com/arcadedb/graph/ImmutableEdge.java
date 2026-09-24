@@ -110,6 +110,15 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
     return super.get(propertyName);
   }
 
+  /**
+   * Under the same monitor as {@link #get(String)}. {@code @in}/{@code @out} are answered by {@code get()} but not reported
+   * by {@code has()}, so here they are absent, exactly as the {@code has()}-then-{@code get()} pair said.
+   */
+  @Override
+  public synchronized Object getIfPresent(final String propertyName, final Object absentValue) {
+    return super.getIfPresent(propertyName, absentValue);
+  }
+
   @Override
   public synchronized RID getOut() {
     checkForLazyLoading();
