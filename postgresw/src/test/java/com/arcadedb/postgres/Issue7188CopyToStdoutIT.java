@@ -358,7 +358,7 @@ class Issue7188CopyToStdoutIT extends PostgresWireProtocolTestBase {
       sendSync(out);
       assertThat(readWireMessage(in).type()).isEqualTo('1');
       assertThat(readWireMessage(in).type()).isEqualTo('2');
-      assertThat(readWireMessage(in).type()).isEqualTo('T');
+      // No RowDescription: nothing Described this statement, and Execute never sends one (issue #8244)
       assertThat(readWireMessage(in).type()).isEqualTo('D');
       assertThat(readWireMessage(in).type()).isEqualTo('C');
       assertThat(readWireMessage(in).type()).isEqualTo('Z');

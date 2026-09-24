@@ -148,8 +148,8 @@ class Issue6698PreparedStatementCloseIT extends PostgresWireProtocolTestBase {
         sendExecute(out, "P1", 0);
         sendSync(out);
         List<WireMessage> messages = readUntilReadyForQuery(in);
-        // ParseComplete, BindComplete, CloseComplete, RowDescription, DataRow, CommandComplete, ReadyForQuery
-        assertThat(messageTypesOf(messages)).containsExactly('1', '2', '3', 'T', 'D', 'C', 'Z');
+        // ParseComplete, BindComplete, CloseComplete, DataRow (no RowDescription: nothing was Described, issue #8244), CommandComplete, ReadyForQuery
+        assertThat(messageTypesOf(messages)).containsExactly('1', '2', '3', 'D', 'C', 'Z');
 
         // 5. New portal "P2" bound from closed statement "S1" is refused (issue #8211)
         sendBind(out, "P2", "S1");
@@ -233,7 +233,7 @@ class Issue6698PreparedStatementCloseIT extends PostgresWireProtocolTestBase {
         List<WireMessage> messages = readUntilReadyForQuery(in);
         assertThat(messageTypesOf(messages))
             .as("the rebind from a closed statement is refused, and P1 does not answer again")
-            .containsExactly('1', '2', 'T', 'D', 'C', '3', 'E', 'Z');
+            .containsExactly('1', '2', 'D', 'C', '3', 'E', 'Z');
 
         // 6. P1 is gone: the refused Bind removed it, and the aborted block would have dropped it anyway
         sendExecute(out, "P1", 0);
