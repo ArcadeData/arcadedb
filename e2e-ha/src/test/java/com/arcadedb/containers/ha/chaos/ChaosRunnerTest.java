@@ -133,9 +133,10 @@ class ChaosRunnerTest {
   void missingLeaderAfterHealIsAnAvailabilityFailure() throws IOException {
     final Harness harness = harness(config("chaos.faults", "kill"));
     harness.control().leaderAvailable = false;
+    harness.control().leaderView = "node 0: connect failed on 127.0.0.1:32918 (Connection refused)";
     final ChaosResult result = harness.runner().run();
     assertThat(result.kind()).isEqualTo(ResultKind.AVAILABILITY);
-    assertThat(result.message()).contains("No leader");
+    assertThat(result.message()).contains("No leader").contains("node 0: connect failed on 127.0.0.1:32918");
   }
 
   @Test

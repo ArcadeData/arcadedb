@@ -23,6 +23,7 @@ import com.arcadedb.containers.ha.chaos.ClusterState.NodeState;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.remote.RemoteHttpComponent;
 import com.arcadedb.remote.RemoteServer;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.ServerWrapper;
 import com.github.dockerjava.api.DockerClient;
@@ -45,11 +46,13 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.HttpURLConnection;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
@@ -360,6 +363,8 @@ class HaChaosIT extends ContainersTestTemplate {
     @Override
     public void reconnect(final int node) {
       reconnectToNetwork(nodes.get(node));
+      // On Linux, reconnecting a container to its only network publishes it on a NEW ephemeral host port
+      refreshEndpoint(node);
     }
 
     @Override
@@ -390,6 +395,41 @@ class HaChaosIT extends ContainersTestTemplate {
         return false;
       // A node that never learns the leader (e.g. it crashed) must fail here, so the runner's crash check reports it
       return allNodesKnowLeader(servers, (int) timeout.toSeconds());
+    }
+
+    @Override
+    public String leaderView() {
+      final StringBuilder view = new StringBuilder();
+      for (int i = 0; i < size(); i++) {
+        if (i > 0)
+          view.append("; ");
+        final Endpoint endpoint = endpoint(i);
+        view.append("node ").append(i).append(": ");
+        try {
+          final HttpURLConnection connection = (HttpURLConnection) URI.create(
+              "http://" + endpoint.host() + ":" + endpoint.port() + "/api/v1/cluster").toURL().openConnection();
+          connection.setRequestProperty("Authorization",
+              "Basic " + Base64.getEncoder().encodeToString(("root:" + PASSWORD).getBytes(StandardCharsets.UTF_8)));
+          connection.setConnectTimeout(2_000);
+          connection.setReadTimeout(2_000);
+          try {
+            final int status = connection.getResponseCode();
+            view.append("HTTP ").append(status);
+            if (status == 200) {
+              final JSONObject json = new JSONObject(
+                  new String(connection.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
+              view.append(" isLeader=").append(json.getBoolean("isLeader", false))
+                  .append(" leader=").append(json.isNull("leaderHttpAddress") ? "none" : json.getString("leaderHttpAddress"));
+            }
+          } finally {
+            connection.disconnect();
+          }
+        } catch (final Exception e) {
+          view.append("unreachable on ").append(endpoint.host()).append(':').append(endpoint.port()).append(" (")
+              .append(e.getClass().getSimpleName()).append(": ").append(e.getMessage()).append(')');
+        }
+      }
+      return view.toString();
     }
 
     private List<ServerWrapper> servers() {

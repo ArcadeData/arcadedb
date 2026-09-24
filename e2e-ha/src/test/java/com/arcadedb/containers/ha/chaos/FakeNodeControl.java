@@ -33,6 +33,8 @@ final class FakeNodeControl implements NodeControl {
   RuntimeException       failure;
   /** Reported by {@link #unexpectedExit} once {@code checksBeforeExit} checks have passed. */
   String                 unexpectedExit;
+  /** Returned by {@link #leaderView()}. */
+  String                 leaderView       = "";
   int                    checksBeforeExit;
 
   private void log(final String call) {
@@ -100,6 +102,11 @@ final class FakeNodeControl implements NodeControl {
   public boolean awaitLeader(final Duration timeout) {
     calls.add("awaitLeader");
     return leaderAvailable;
+  }
+
+  @Override
+  public String leaderView() {
+    return leaderView;
   }
 
   @Override

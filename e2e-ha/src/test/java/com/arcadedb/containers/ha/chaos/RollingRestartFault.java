@@ -54,7 +54,8 @@ public final class RollingRestartFault implements Fault {
       state.set(node, NodeState.UP);
       if (!control.awaitLeader(electionTimeout))
         throw new ChaosFailure(ResultKind.AVAILABILITY,
-            "No leader within " + electionTimeout + " after restarting node " + node + " during a rolling restart");
+            "No leader known by every node within " + electionTimeout + " after restarting node " + node
+                + " during a rolling restart. Nodes report: " + control.leaderView());
     }
     return "ALL in index order";
   }

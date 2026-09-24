@@ -182,7 +182,8 @@ public final class ChaosRunner {
     if (!control.awaitLeader(config.electionTimeout())) {
       failIfANodeExited(step);
       throw new ChaosFailure(ResultKind.AVAILABILITY,
-          "No leader known by every node within " + config.electionTimeout() + " after healing fault '" + fault.name() + "' (step " + step + ")");
+          "No leader known by every node within " + config.electionTimeout() + " after healing fault '" + fault.name() + "' (step " + step
+              + "). Nodes report: " + control.leaderView());
     }
     final long timeToLeaderMs = (System.nanoTime() - healedAt) / 1_000_000;
     final int leaderAfter = control.findLeader();
