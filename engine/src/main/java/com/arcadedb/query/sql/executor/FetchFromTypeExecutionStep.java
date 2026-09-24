@@ -393,6 +393,10 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
                       return false;
                   }
                   final Result r = rs.next();
+                  // EVERY ROW IN THE BATCH PAYS THIS, WHETHER THE CONSUMER EVER ASKS FOR IT OR NOT: A LIMIT-BOUNDED
+                  // QUERY DESERIALIZES THE DISCARDED TAIL OF EACH BATCH TOO (UP TO SCAN_BATCH_SIZE - 1 WIDE ROWS PER
+                  // FETCH), WHERE IT USED TO STAY LAZY. ACCEPTED: THE BENCHMARK IN #8265 IS FOR THE FULL-SCAN CASE
+                  // THIS METHOD EXISTS FOR, AND A SMALL LIMIT ON A WIDE TYPE IS THE ONE SHAPE THAT CAN LOSE FROM IT
                   if (loadContent(r))
                     batch.add(r);
                 }
