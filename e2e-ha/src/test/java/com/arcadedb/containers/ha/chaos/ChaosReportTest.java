@@ -71,6 +71,17 @@ class ChaosReportTest {
   }
 
   @Test
+  void ledgerDiffPrefersPerKeyDetails() throws Exception {
+    try (final ChaosReport report = new ChaosReport(dir, config)) {
+      report.ledgerDiff(List.of(new Violation(ResultKind.SAFETY, "CONVERGENCE", "31 keys differ",
+          new long[] { Ledger.key(0, 3) }, List.of("w0-3 outcome=ACKED pair=false present=[1, 2] missing=[0] withEdge=[]"))));
+    }
+    final String diff = Files.readString(dir.resolve("ledger-diff.txt"));
+    assertThat(diff).contains("== CONVERGENCE (SAFETY): 31 keys differ")
+        .contains("w0-3 outcome=ACKED pair=false present=[1, 2] missing=[0] withEdge=[]");
+  }
+
+  @Test
   void ledgerDiffListsKeysPerViolation() throws Exception {
     try (final ChaosReport report = new ChaosReport(dir, config)) {
       report.ledgerDiff(List.of(new Violation(ResultKind.SAFETY, "I1", "1 acknowledged writes are missing",

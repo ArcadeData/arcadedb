@@ -19,10 +19,17 @@
 
 package com.arcadedb.containers.ha.chaos;
 
+import java.util.List;
+
 /**
- * One violated invariant, with up to {@link InvariantChecker#MAX_KEYS} offending ledger keys.
+ * One violated invariant, with up to {@link InvariantChecker#MAX_KEYS} offending ledger keys and, when the checker
+ * knows more than the key, one human-readable detail line per key (outcome, and which nodes hold it).
  */
-public record Violation(ResultKind kind, String invariant, String message, long[] keys) {
+public record Violation(ResultKind kind, String invariant, String message, long[] keys, List<String> details) {
+  public Violation(final ResultKind kind, final String invariant, final String message, final long[] keys) {
+    this(kind, invariant, message, keys, List.of());
+  }
+
   public String describe() {
     return invariant + " (" + kind + "): " + message;
   }
