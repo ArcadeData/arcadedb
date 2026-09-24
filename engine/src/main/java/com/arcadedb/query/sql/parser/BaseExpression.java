@@ -463,7 +463,30 @@ public class BaseExpression extends MathExpression {
     if (expression != null)
       return expression.isEarlyCalculated(context);
 
+    // `$1`, `$2`... from a Postgres client: execute() resolves it from the input parameters, so it is as constant
+    // for the query as `?` is, and an index can serve it. Without this the planner saw an undeclared identifier and
+    // fell back to a full scan (issue #8288).
+    if (isPostgresPositionalParameter(context))
+      return true;
+
     return identifier != null && identifier.isEarlyCalculated(context);
+  }
+
+  /**
+   * True when this expression is the {@code $N} that {@link #execute(Result, CommandContext)} reads from the input
+   * parameters: the Postgres wire's positional parameter, which the SQL lexer tokenizes as an identifier rather than
+   * as an input parameter.
+   */
+  private boolean isPostgresPositionalParameter(final CommandContext context) {
+    final Map<String, Object> params = context != null ? context.getInputParameters() : null;
+    if (params == null || params.isEmpty() || identifier == null || identifier.getSuffix() == null
+        || identifier.getSuffix().identifier == null)
+      return false;
+    final String v = identifier.getSuffix().identifier.getValue();
+    if (v == null || !v.startsWith("$") || v.length() < 2)
+      return false;
+    final Integer pos = NumberUtils.parsePositiveInteger(v.substring(1));
+    return pos != null && params.containsKey(String.valueOf(pos - 1));
   }
 
   /**
