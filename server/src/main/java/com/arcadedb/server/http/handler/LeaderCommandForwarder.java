@@ -812,7 +812,9 @@ public final class LeaderCommandForwarder {
       byte[] chunk = null;
       while (true) {
         final long remaining = deadlineNanos - System.nanoTime();
-        final Object signal = remaining > 0 ? signals.poll(remaining, TimeUnit.NANOSECONDS) : null;
+        // Past the deadline, a signal already queued - the leader's last chunk, or its completion - is still taken
+        // rather than reported as a timeout: only a wait that would have to BLOCK is refused.
+        final Object signal = remaining > 0 ? signals.poll(remaining, TimeUnit.NANOSECONDS) : signals.poll();
         if (signal == null) {
           cancel();
           return false;
