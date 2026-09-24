@@ -1790,7 +1790,9 @@ public class PostgresNetworkExecutor extends Thread {
     if (!math.getOperators().isEmpty())
       return inferArithmeticType(math, sourceColumns);
 
-    if (!(math instanceof BaseExpression base))
+    // A modifier applied to the aggregate/literal (count(*).asString()) runs AFTER it and can change the result's
+    // type entirely - inferring from the un-modified inner node would describe the modifier's input, not its output.
+    if (!(math instanceof BaseExpression base) || base.getModifier() != null)
       return null;
 
     if (base.number != null)
@@ -1843,6 +1845,12 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   private PostgresType inferArithmeticType(final MathExpression math, final Map<String, PostgresType> sourceColumns) {
+    // SLASH is not statically typeable: MathExpression.Operator.SLASH returns the widest INTEGER/LONG operand
+    // type only when the division happens to be exact, and a DOUBLE otherwise (Type#increment does the same for
+    // NUMERIC) - which one depends on the row's values, not on the declared operand types.
+    if (math.getOperators().contains(MathExpression.Operator.SLASH))
+      return null;
+
     PostgresType widest = null;
     for (final MathExpression child : math.getChildExpressions()) {
       final PostgresType childType = childOperandType(child, sourceColumns);
@@ -1887,7 +1895,10 @@ public class PostgresNetworkExecutor extends Thread {
   private static PostgresType widenForSum(final PostgresType argType) {
     return switch (argType) {
       case SMALLINT, INTEGER, LONG -> PostgresType.LONG;
-      case REAL, DOUBLE, NUMERIC -> PostgresType.DOUBLE;
+      case REAL, DOUBLE -> PostgresType.DOUBLE;
+      // SQLFunctionSum/Type#increment keep a NUMERIC (BigDecimal) accumulator as BigDecimal: describing it as
+      // float8 would make binary encoding call doubleValue() and lose decimal precision (issue #8285 review).
+      case NUMERIC -> PostgresType.NUMERIC;
       default -> null;
     };
   }
