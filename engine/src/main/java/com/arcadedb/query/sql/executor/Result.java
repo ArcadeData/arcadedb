@@ -66,6 +66,20 @@ public interface Result {
   <T> T getProperty(String name, Object defaultValue);
 
   /**
+   * Returns what {@link #getProperty(String)} answers when {@link #hasProperty(String)} is true, and {@code absentValue}
+   * otherwise, in one lookup where the implementation can do it (issue #8266). Unlike
+   * {@link #getProperty(String, Object)}, which falls back to the element when the projected content lacks the name,
+   * this keeps exactly the precedence of the {@code hasProperty()}-then-{@code getProperty()} pair. A present property
+   * with a {@code null} value answers {@code null}: pass a marker object as {@code absentValue} to tell the two apart.
+   *
+   * @param name        the property name
+   * @param absentValue the value returned when the property is not present
+   */
+  default Object getPropertyIfPresent(final String name, final Object absentValue) {
+    return hasProperty(name) ? getProperty(name) : absentValue;
+  }
+
+  /**
    * returns an OElement property from the result
    *
    * @param name the property name

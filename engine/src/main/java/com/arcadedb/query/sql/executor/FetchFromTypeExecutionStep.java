@@ -21,9 +21,12 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Binary;
+import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.ParallelScanProducerPool;
@@ -64,7 +67,13 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
   int       currentStep = 0;
 
   // Parallel scanning state
-  private BlockingQueue<Result> parallelQueue;
+  // Batches, not single rows (#8265): one queue hand-off per SCAN_BATCH_SIZE rows instead of one per row, which is what
+  // made the per-row poll()/signalNotFull() wake-ups a visible share of a parallel scan's profile.
+  private BlockingQueue<List<Result>> parallelQueue;
+  // The batch the consumer is draining, and its position in it. Step fields, not ResultSet fields: a consumer pulling
+  // in pages smaller than a batch gets a new ResultSet per page and must resume where the previous one stopped.
+  private List<Result>         parallelBatch;
+  private int                  parallelBatchIndex;
   private volatile boolean     parallelScanComplete = false;
   private List<Future<?>>      scanFutures;
   // First producer failure: surfaced to the consumer as an exception instead of silently returning fewer
@@ -78,6 +87,10 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
   // into the (blocking) result queue. Small enough to keep DDL/close wait bounded, large enough to amortize
   // the uncontended read-lock cost to noise.
   private static final int SCAN_BATCH_SIZE = 256;
+  // Queue capacity in batches, at least the same 4096-row equivalent the queue held when it carried one row per
+  // entry: ceiling division, not a plain 4096 / SCAN_BATCH_SIZE, so a future SCAN_BATCH_SIZE that does not evenly
+  // divide 4096 rounds the capacity UP instead of silently truncating it below the documented row count.
+  private static final int PARALLEL_QUEUE_BATCHES = (4096 + SCAN_BATCH_SIZE - 1) / SCAN_BATCH_SIZE;
 
   protected FetchFromTypeExecutionStep(final CommandContext context) {
     super(context);
@@ -315,7 +328,9 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
   private ResultSet syncPullParallel(final CommandContext context, final int nRecords) {
     if (parallelQueue == null) {
       // Bounded queue: prevents memory explosion while allowing parallelism
-      parallelQueue = new LinkedBlockingQueue<>(4096);
+      parallelQueue = new LinkedBlockingQueue<>(PARALLEL_QUEUE_BATCHES);
+      parallelBatch = null;
+      parallelBatchIndex = 0;
       parallelScanComplete = false;
       parallelScanFailure = null;
       // NOTE: the consumer-liveness clock starts HERE, at scan submission, not at the first hasNext():
@@ -327,6 +342,14 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
       final DatabaseInternal db = context.getDatabase();
       final long abandonedTimeoutMs = db.getConfiguration()
           .getValueAsLong(GlobalConfiguration.PARALLEL_SCAN_ABANDONED_TIMEOUT);
+      // MEMORY BACKPRESSURE COMPLEMENTING SCAN_BATCH_SIZE (CodeRabbit, PR #8311): a producer now loads each row's
+      // content before queuing it, so unlike the lazy shells the queue used to carry, a row-count-only bound does
+      // not bound a batch's retained bytes for wide or multi-page records. See GlobalConfiguration's javadoc.
+      // 0 OR NEGATIVE DISABLES THE BYTE BOUND (ROW COUNT ONLY), LIKE 0 DISABLES PARALLEL_SCAN_ABANDONED_TIMEOUT. TAKEN AS A
+      // LIMIT IT WOULD NEVER ADMIT A ROW, AND EVERY PRODUCER WOULD SPIN FOREVER ON EMPTY BATCHES
+      final long configuredMaxBatchBytes = db.getConfiguration()
+          .getValueAsLong(GlobalConfiguration.QUERY_PARALLEL_SCAN_MAX_BATCH_BYTES);
+      final long maxBatchBytes = configuredMaxBatchBytes > 0 ? configuredMaxBatchBytes : Long.MAX_VALUE;
       // #4948/#4950: producers BLOCK on the bounded result queue, so they must never run on the shared
       // QueryEngineManager pool: its caller-runs rejection executed the whole bucket scan synchronously on
       // the CONSUMER thread (which then blocked forever on its own full queue - self-deadlock), and blocked
@@ -365,27 +388,48 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
             // lock and emitting outside also matches the sequential scan path, which holds no database-level
             // lock across iteration at all.
             final AbstractExecutionStep execStep = (AbstractExecutionStep) step;
-            final List<Result> batch = new ArrayList<>(SCAN_BATCH_SIZE);
             final ResultSet[] rsHolder = new ResultSet[1];
             boolean more = true;
             while (more) {
-              batch.clear();
+              // CANCELLATION (ResultSet.close() -> future.cancel(true)) IS SEEN HERE TOO, NOT ONLY IN THE BLOCKING offer():
+              // A PRODUCER WHOSE ROWS ARE ALL FILTERED AWAY NEVER OFFERS ANYTHING, SO IT WOULD NEVER NOTICE IT OTHERWISE
+              if (Thread.currentThread().isInterrupted())
+                return;
+              // A NEW LIST PER BATCH: THE BATCH ITSELF IS HANDED TO THE CONSUMER, WHICH OWNS IT FROM THEN ON
+              final List<Result> batch = new ArrayList<>(SCAN_BATCH_SIZE);
+              // SINGLE-ELEMENT HOLDER, NOT A LOCAL long: MUTATED FROM INSIDE THE LAMBDA BELOW, SAME PATTERN AS rsHolder
+              final long[] batchBytes = new long[1];
               more = db.executeInReadLock(() -> {
                 ResultSet rs = rsHolder[0];
                 if (rs == null)
                   rs = rsHolder[0] = execStep.syncPull(workerContext, nRecords);
-                while (batch.size() < SCAN_BATCH_SIZE) {
+                // THE BYTE BOUND NEVER BLOCKS PROGRESS: IT IS CHECKED BEFORE ADDING, SO A SINGLE RECORD LARGER THAN
+                // maxBatchBytes STILL GOES INTO ITS OWN (OVER-BUDGET) BATCH RATHER THAN NEVER FITTING ANYWHERE.
+                // examined BOUNDS THE ROWS READ UNDER ONE READ-LOCK ACQUISITION, NOT ONLY THE ROWS KEPT: WITH AN
+                // AFTER-READ LISTENER FILTERING MOST ROWS AWAY, FILLING 256 SURVIVORS COULD OTHERWISE HOLD THE LOCK FOR AN
+                // UNBOUNDED STRETCH OF THE BUCKET. A SHORT (EVEN EMPTY) BATCH IS FINE: THE OUTER LOOP COMES BACK FOR MORE
+                int examined = 0;
+                while (examined < SCAN_BATCH_SIZE && batch.size() < SCAN_BATCH_SIZE && batchBytes[0] < maxBatchBytes) {
                   if (!rs.hasNext()) {
                     rs = rsHolder[0] = execStep.syncPull(workerContext, nRecords);
                     if (!rs.hasNext())
                       return false;
                   }
-                  batch.add(rs.next());
+                  final Result r = rs.next();
+                  ++examined;
+                  // EVERY ROW IN THE BATCH PAYS THIS, WHETHER THE CONSUMER EVER ASKS FOR IT OR NOT: A LIMIT-BOUNDED
+                  // QUERY DESERIALIZES THE DISCARDED TAIL OF EACH BATCH TOO (UP TO SCAN_BATCH_SIZE - 1 WIDE ROWS PER
+                  // FETCH), WHERE IT USED TO STAY LAZY. ACCEPTED: THE BENCHMARK IN #8265 IS FOR THE FULL-SCAN CASE
+                  // THIS METHOD EXISTS FOR, AND A SMALL LIMIT ON A WIDE TYPE IS THE ONE SHAPE THAT CAN LOSE FROM IT
+                  if (loadContent(r)) {
+                    batch.add(r);
+                    batchBytes[0] += loadedContentBytes(r);
+                  }
                 }
                 return true;
               });
 
-              for (final Result r : batch) {
+              if (!batch.isEmpty()) {
                 // Bounded offer instead of a forever-blocking put(): a ResultSet that is opened but never
                 // drained NOR closed would otherwise park this producer (and its pool thread) permanently.
                 // As long as the consumer shows signs of life (polls the queue) the producer keeps waiting;
@@ -393,7 +437,7 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
                 // records the failure (surfaced if the consumer ever comes back) and frees its thread.
                 while (true) {
                   try {
-                    if (parallelQueue.offer(r, 1, TimeUnit.SECONDS))
+                    if (parallelQueue.offer(batch, 1, TimeUnit.SECONDS))
                       break;
                   } catch (final InterruptedException e) {
                     // Cancellation via ResultSet.close()/step close(): expected, exit silently.
@@ -473,18 +517,33 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
         if (nextItem != null)
           return true;
 
-        // Poll from the queue, waiting briefly for results
         while (nextItem == null) {
+          final List<Result> batch = parallelBatch;
+          if (batch != null && parallelBatchIndex < batch.size()) {
+            // Still a sign of life per row, as when every row was a poll: a slow downstream draining one batch must
+            // not look like an abandoned result set to the producers
+            parallelLastConsumed = System.currentTimeMillis();
+            nextItem = batch.get(parallelBatchIndex);
+            batch.set(parallelBatchIndex++, null); // EARLY CLEANSE FOR GC
+            break;
+          }
+          parallelBatch = null;
+
+          // Poll the next batch from the queue, waiting briefly for one
           parallelLastConsumed = System.currentTimeMillis();
+          final List<Result> polled;
           try {
-            nextItem = parallelQueue.poll(10, TimeUnit.MILLISECONDS);
+            polled = parallelQueue.poll(10, TimeUnit.MILLISECONDS);
           } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
             return false;
           }
           if (parallelScanFailure != null)
             throw new CommandExecutionException("Parallel scan failed", parallelScanFailure);
-          if (nextItem == null && parallelScanComplete && parallelQueue.isEmpty())
+          if (polled != null) {
+            parallelBatch = polled;
+            parallelBatchIndex = 0;
+          } else if (parallelScanComplete && parallelQueue.isEmpty())
             return false;
         }
         return true;
@@ -510,6 +569,47 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
           ((AbstractExecutionStep) step).close();
       }
     };
+  }
+
+  /**
+   * Loads the content of a scanned record on the producer thread (#8265). The bucket scan hands out lazy records, and
+   * left alone the first property access would load each of them on the ONE thread consuming the parallel scan -
+   * serializing the page lookup and the after-read events the parallel scan exists to spread across producers.
+   * <p>
+   * Every record a bucket scan produces is an {@link ImmutableDocument}: documents, vertices and edges
+   * ({@code ImmutableEdge} extends it too), so all three are loaded here. A lightweight edge has no record and never
+   * comes out of a bucket scan.
+   *
+   * @return {@code false} to drop a record the load found already gone: either deleted concurrently between the scan
+   * reading its slot and this load (the benign race the bucket iterator itself skips silently), or filtered away by
+   * an {@code AfterRecordReadListener} - {@link ImmutableDocument#loadContent()}'s own contract, which this must
+   * honor or a filtered record leaks into the batch whenever the consumer never happens to read one of its
+   * properties (e.g. a bare {@code count(*)})
+   */
+  private static boolean loadContent(final Result result) {
+    if (result instanceof ResultInternal internal && internal.element instanceof ImmutableDocument document) {
+      try {
+        return document.loadContent();
+      } catch (final RecordNotFoundException e) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * The size {@link #loadContent(Result)} just brought into memory, for the byte-bound half of the batch limit
+   * (issue #8311 CodeRabbit review): a row-count bound alone does not cap a batch's retained bytes once the content
+   * is loaded eagerly rather than left as a lazy shell. {@code 0} for anything {@link #loadContent(Result)} did not
+   * load (an edge, or a filtered/deleted record whose caller already dropped it from the batch).
+   */
+  private static long loadedContentBytes(final Result result) {
+    if (result instanceof ResultInternal internal && internal.element instanceof ImmutableDocument document) {
+      final Binary buffer = document.getBuffer();
+      if (buffer != null)
+        return buffer.size();
+    }
+    return 0L;
   }
 
   @Override

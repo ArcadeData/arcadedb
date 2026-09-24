@@ -185,6 +185,13 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     return map.get(propertyName);
   }
 
+  @Override
+  public Object getIfPresent(final String propertyName, final Object absentValue) {
+    checkForLazyLoadingProperties();
+    final Object value = map.get(propertyName);
+    return value != null || map.containsKey(propertyName) ? value : absentValue;
+  }
+
   /**
    * Sets the property value in the document. If the property has been defined in the schema, the value is converted
    * according to the property type.

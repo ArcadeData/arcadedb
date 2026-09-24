@@ -49,6 +49,11 @@ public class UpdatableResult extends ResultInternal {
   }
 
   @Override
+  public Object getPropertyIfPresent(final String name, final Object absentValue) {
+    return element != null ? element.getIfPresent(name, absentValue) : absentValue;
+  }
+
+  @Override
   public boolean isElement() {
     return true;
   }

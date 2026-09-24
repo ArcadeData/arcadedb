@@ -51,6 +51,12 @@ public class SuffixIdentifier extends SimpleNode {
   protected RecordAttribute recordAttribute;
   public boolean         star = false;
 
+  /**
+   * Marks a property {@link Result#getPropertyIfPresent(String, Object)} did not find, as opposed to one present with a
+   * {@code null} value.
+   */
+  private static final Object ABSENT = new Object();
+
   public SuffixIdentifier() {
   }
 
@@ -158,9 +164,11 @@ public class SuffixIdentifier extends SimpleNode {
         }
       }
       if (currentRecord != null) {
-        if (currentRecord.hasProperty(varName)) {
-          return currentRecord.getProperty(varName);
-        }
+        // ONE LOOKUP, NOT hasProperty() THEN getProperty(): ON A RECORD READ FROM DISK THAT IS ONE PASS OVER ITS HEADER
+        // INSTEAD OF TWO, FOR EVERY PROPERTY AN EXPRESSION READS (ISSUE #8266)
+        final Object value = currentRecord.getPropertyIfPresent(varName, ABSENT);
+        if (value != ABSENT)
+          return value;
         if (currentRecord.getMetadataKeys().contains(varName)) {
           return currentRecord.getMetadata(varName);
         }
