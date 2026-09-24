@@ -106,7 +106,7 @@ public class SelectTreeNode {
     else if (left instanceof SelectPropertyValue || left instanceof SelectParameterValue)
       json.put(left.toString());
     else
-      json.put(left);
+      json.put(encodeLiteralOperand(left));
 
     if (operator != SelectOperator.run)
       json.put(operator.name);
@@ -117,8 +117,22 @@ public class SelectTreeNode {
       else if (right instanceof SelectPropertyValue || right instanceof SelectParameterValue)
         json.put(right.toString());
       else
-        json.put(right);
+        json.put(encodeLiteralOperand(right));
     }
     return json;
+  }
+
+  /**
+   * #8257: {@code Select.parseJsonOperand()} reads a string beginning with {@code ":"} as a property and one
+   * beginning with {@code "#"} as a parameter, so a LITERAL string that happens to begin with either sigil is
+   * indistinguishable from a reference once written verbatim - {@code where s = ':alice'} round-tripped into
+   * {@code where s = <value of property alice>}. Doubling the leading sigil makes the encoding lossless:
+   * {@code parseJsonOperand()} treats a single leading sigil as a reference and two as an escaped literal,
+   * stripping exactly the one this method adds. A literal that does not begin with either sigil is unaffected.
+   */
+  private static Object encodeLiteralOperand(final Object value) {
+    if (value instanceof String string && (string.startsWith(":") || string.startsWith("#")))
+      return string.charAt(0) + string;
+    return value;
   }
 }

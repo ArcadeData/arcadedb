@@ -49,6 +49,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Consumer;
 import java.util.logging.Level;
 
 /**
@@ -91,6 +92,18 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   // threads, not thread confinement. Safe only as long as that lock still wraps both paths.
   private SnapshotHttpHandler       snapshotHttpHandler;
   private PostVerifyDatabaseHandler postVerifyDatabaseHandler;
+
+  /**
+   * Test-only: runs at the start of {@link #startService()} on the server being started, before this plugin has
+   * touched anything. Lets a test hold a starting node in the window between its network listeners accepting
+   * requests and its databases being wrapped for replication (issue #8270), which in-process lasts a few
+   * milliseconds and in a container half a second.
+   * <p>
+   * JVM-wide, like the other test hooks of this module: every in-process server of a test sees it, so a test must
+   * filter on the server it is handed and clear the hook in a {@code finally}. It assumes no other test starts a
+   * server in the same JVM concurrently, which holds as long as this module's tests run serially.
+   */
+  static volatile Consumer<ArcadeDBServer> TEST_BEFORE_START_HOOK = null;
 
   @Override
   public void configure(final ArcadeDBServer arcadeDBServer, final ContextConfiguration configuration) {
@@ -138,28 +151,43 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
       return;
     }
 
+    final Consumer<ArcadeDBServer> beforeStart = TEST_BEFORE_START_HOOK;
+    if (beforeStart != null)
+      beforeStart.accept(server);
+
     validateConfiguration();
 
     try {
-      raftHAServer = new RaftHAServer(server, configuration);
-      // The state machine is fully wired (server + raftHAServer) inside RaftHAServer itself, both at
-      // construction and on every HealthMonitor-driven Ratis restart, so no external wiring is needed
-      // here (issue #4839).
-      raftHAServer.start();
+      final RaftHAServer raft = new RaftHAServer(server, configuration);
+      raftHAServer = raft;
 
       // Register the database wrapper so the server wraps databases with RaftReplicatedDatabase.
       // A database joining HA is also the natural point to warn (once) about single-bucket types:
       // in a cluster every write lands on the leader, so a single-bucket type serializes concurrent
       // writers on one page and drives the "Concurrent modification on page ..." retry storms.
+      //
+      // Installed, and the already-loaded databases re-wrapped, BEFORE the Raft server starts (issue #8270). The
+      // network listeners are already accepting requests, and until the wrap a database is the plain LocalDatabase
+      // the server opened, refusing writes; starting Raft first kept that window open for the whole of the start -
+      // half a second on a container, in which a node refused every write it could have forwarded. The wrapper
+      // needs only the constructed server: a command reaching it before the start completes is forwarded once a
+      // leader is known, waiting for one within the HA forward timeout exactly as it does during an election, and a
+      // transaction committed on it before then fails and is rolled back - either way nothing is applied locally
+      // without going through Raft.
       server.setDatabaseWrapper(db -> {
         warnIfSingleBucketTypes(db);
         // Shared client, not one built per database (review finding on PR #7650): see RaftHAServer's
         // forwardHttpClient field javadoc.
-        return new RaftReplicatedDatabase(server, db, raftHAServer, raftHAServer.getForwardHttpClient());
+        return new RaftReplicatedDatabase(server, db, raft, raft.getForwardHttpClient());
       });
 
       // Re-wrap any databases that were already loaded before this plugin started
       server.rewrapDatabases();
+
+      // The state machine is fully wired (server + raftHAServer) inside RaftHAServer itself, both at
+      // construction and on every HealthMonitor-driven Ratis restart, so no external wiring is needed
+      // here (issue #4839).
+      raft.start();
 
       // Register this plugin as the HA implementation on the server
       server.setHA(this);

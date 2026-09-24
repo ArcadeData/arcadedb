@@ -38,14 +38,13 @@ import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.redis.RedisCounterOperations;
 import com.arcadedb.redis.RedisException;
 import com.arcadedb.redis.RedisIndexKeys;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalEdgeType;
 import com.arcadedb.schema.LocalVertexType;
-import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.utility.NumberUtils;
 
 import java.util.*;
 import java.util.logging.Level;
@@ -438,55 +437,38 @@ public class RedisQueryEngine implements QueryEngine {
     return count;
   }
 
+  /**
+   * #8271: THE ARITHMETIC AND VALIDATION ARE NOW THE SAME REMAPPING {@code RedisNetworkExecutor} (THE RESP WIRE
+   * PATH) USES, so the two surfaces cannot answer this command differently again - a 64-bit increment, a checked
+   * add that refuses to overflow silently, and real Redis' own error text. THE READ, THE ARITHMETIC AND THE WRITE
+   * ARE ALSO ONE ATOMIC OPERATION ON THE KEY, THE SAME databases.computeGlobalVariable PRIMITIVE #8248 GAVE THE
+   * WIRE PATH FOR THIS EXACT REASON - A GET FOLLOWED BY A SET LETS TWO CONCURRENT INCR CALLS BOTH READ THE SAME
+   * STARTING VALUE AND LOSE ONE OF THE TWO INCREMENTS.
+   */
   private Number incrBy(final List<String> parts, final boolean decimal) {
     if (parts.size() < 2) {
       throw new CommandParsingException("INCR/INCRBY requires a key: INCR <key> [increment]");
     }
     final String key = parts.get(1);
-    final Number increment;
-    if (parts.size() > 2) {
-      increment = decimal ? Double.parseDouble(parts.get(2)) : Integer.parseInt(parts.get(2));
-    } else {
-      increment = 1;
+
+    if (decimal) {
+      final double increment = parts.size() > 2 ? Double.parseDouble(parts.get(2)) : 1D;
+      return (Number) database.computeGlobalVariable(key, RedisCounterOperations.incrementByFloat(increment));
     }
 
-    Object current = database.getGlobalVariable(key);
-    if (current == null) {
-      current = 0L;
-    } else if (!(current instanceof Number)) {
-      if (NumberUtils.isIntegerNumber(current.toString())) {
-        current = Long.parseLong(current.toString());
-      } else {
-        throw new RedisException("Key '" + key + "' is not a number");
-      }
-    }
-
-    final Number newValue = Type.increment((Number) current, increment);
-    database.setGlobalVariable(key, newValue);
-    return newValue;
+    final long increment = parts.size() > 2 ? Long.parseLong(parts.get(2)) : 1L;
+    return (Number) database.computeGlobalVariable(key, RedisCounterOperations.incrementBy(increment));
   }
 
+  /** See {@link #incrBy}. */
   private Number decrBy(final List<String> parts) {
     if (parts.size() < 2) {
       throw new CommandParsingException("DECR/DECRBY requires a key: DECR <key> [decrement]");
     }
     final String key = parts.get(1);
-    final int decrement = parts.size() > 2 ? Integer.parseInt(parts.get(2)) : 1;
+    final long decrement = parts.size() > 2 ? Long.parseLong(parts.get(2)) : 1L;
 
-    Object current = database.getGlobalVariable(key);
-    if (current == null) {
-      current = 0L;
-    } else if (!(current instanceof Number)) {
-      if (NumberUtils.isIntegerNumber(current.toString())) {
-        current = Long.parseLong(current.toString());
-      } else {
-        throw new RedisException("Key '" + key + "' is not a number");
-      }
-    }
-
-    final Number newValue = Type.decrement((Number) current, decrement);
-    database.setGlobalVariable(key, newValue);
-    return newValue;
+    return (Number) database.computeGlobalVariable(key, RedisCounterOperations.decrementBy(decrement));
   }
 
   // --- Persistent Commands (database operations) ---

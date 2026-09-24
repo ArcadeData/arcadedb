@@ -25,9 +25,12 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.mongo.MongoDBDatabaseWrapper;
 import com.arcadedb.query.OperationType;
 import com.arcadedb.query.QueryEngine;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.query.sql.executor.ResultSet;
 
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -35,7 +38,21 @@ import java.util.logging.Level;
 
 public class MongoQueryEngine implements QueryEngine {
   public static final String                 ENGINE_NAME = "mongo";
-  private final       MongoDBDatabaseWrapper mongoDBWrapper;
+
+  // TOP-LEVEL COMMAND KEYS, GROUPED BY THE OPERATION TYPE THEY DECLARE. CHECKED AGAINST THE PARSED
+  // JSON'S KEYS, NEVER AGAINST THE RAW TEXT, SO A FILTER VALUE LIKE "delete" CANNOT MASQUERADE AS
+  // THE COMMAND VERB (#8255)
+  private static final Set<String> CREATE_KEYS = Set.of("insert", "insertone", "insertmany");
+  private static final Set<String> UPDATE_KEYS = Set.of("update", "updateone", "updatemany", "replaceone");
+  private static final Set<String> DELETE_KEYS = Set.of("delete", "deleteone", "deletemany", "remove");
+  // "collection" IS THE READ SIGNAL, NOT A COMMAND VERB LIKE THE OTHERS HERE: MongoDBDatabaseWrapper.query(String)
+  // ONLY EVER PERFORMS A FIND, WHOSE PAYLOAD IS {"collection":..., "query":...} WITH NO "find" KEY AT ALL - SO ITS
+  // PRESENCE IS WHAT MARKS THE COMMAND AS A READ. CHECKED AFTER SCHEMA_KEYS (SEE BELOW) SINCE IT IS ON EVERY QUERY
+  // THIS ENGINE ACCEPTS AND WOULD OTHERWISE SWALLOW AN EXPLICIT SCHEMA VERB LIKE "dropCollection"
+  private static final Set<String> READ_KEYS   = Set.of("find", "aggregate", "count", "distinct", "collection");
+  private static final Set<String> SCHEMA_KEYS = Set.of("createindex", "createcollection", "drop", "dropcollection", "dropindex");
+
+  private final MongoDBDatabaseWrapper mongoDBWrapper;
 
   protected MongoQueryEngine(final MongoDBDatabaseWrapper mongoDBWrapper) {
     this.mongoDBWrapper = mongoDBWrapper;
@@ -68,27 +85,31 @@ public class MongoQueryEngine implements QueryEngine {
   }
 
   private static Set<OperationType> detectMongoOperationTypes(final String query) {
-    final String trimmed = query.trim();
-    // MongoDB commands are JSON with a collection.method pattern or JSON with command keys
-    final String upper = trimmed.toUpperCase(Locale.ENGLISH);
+    final Set<String> keys;
+    try {
+      final JSONObject json = new JSONObject(query.trim());
+      keys = new HashSet<>();
+      for (final String key : json.keySet())
+        keys.add(key.toLowerCase(Locale.ENGLISH));
+    } catch (final Exception e) {
+      // Not parseable JSON: cannot classify, assume all write types for safety
+      return Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE);
+    }
 
-    if (upper.contains("\"INSERT\"") || upper.contains("\"INSERTONE\"") || upper.contains("\"INSERTMANY\""))
+    if (!Collections.disjoint(keys, CREATE_KEYS))
       return CollectionUtils.singletonSet(OperationType.CREATE);
-    if (upper.contains("\"UPDATE\"") || upper.contains("\"UPDATEONE\"") || upper.contains("\"UPDATEMANY\"")
-        || upper.contains("\"REPLACEONE\""))
+    if (!Collections.disjoint(keys, UPDATE_KEYS))
       return CollectionUtils.singletonSet(OperationType.UPDATE);
-    if (upper.contains("\"DELETE\"") || upper.contains("\"DELETEONE\"") || upper.contains("\"DELETEMANY\"")
-        || upper.contains("\"REMOVE\""))
+    if (!Collections.disjoint(keys, DELETE_KEYS))
       return CollectionUtils.singletonSet(OperationType.DELETE);
-    if (upper.contains("\"FIND\"") || upper.contains("\"AGGREGATE\"") || upper.contains("\"COUNT\"")
-        || upper.contains("\"DISTINCT\"")
-        || upper.contains("COLLECTION"))
-      return CollectionUtils.singletonSet(OperationType.READ);
-    if (upper.contains("\"CREATEINDEX\"") || upper.contains("\"CREATECOLLECTION\"") || upper.contains("\"DROP\"")
-        || upper.contains("\"DROPCOLLECTION\"") || upper.contains("\"DROPINDEX\""))
+    // CHECKED BEFORE READ_KEYS: "collection" IS A READ SIGNAL PRESENT ON EVERY QUERY THIS ENGINE ACCEPTS,
+    // SO IT WOULD OTHERWISE ALWAYS WIN OVER AN EXPLICIT SCHEMA VERB LIKE "dropCollection" (#8255)
+    if (!Collections.disjoint(keys, SCHEMA_KEYS))
       return CollectionUtils.singletonSet(OperationType.SCHEMA);
+    if (!Collections.disjoint(keys, READ_KEYS))
+      return CollectionUtils.singletonSet(OperationType.READ);
 
-    // Cannot classify: assume all write types for safety
+    // No recognized command key at the top level: cannot classify, assume all write types for safety
     return Set.of(OperationType.CREATE, OperationType.UPDATE, OperationType.DELETE);
   }
 

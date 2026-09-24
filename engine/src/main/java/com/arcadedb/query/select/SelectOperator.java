@@ -33,7 +33,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public enum SelectOperator {
-  or("or", true, 0) {
+  or("or", true, 0, false) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
       final Boolean leftValue = (Boolean) SelectExecutor.evaluateValue(record, left);
@@ -44,7 +44,7 @@ public enum SelectOperator {
     }
   },
 
-  and("and", true, 2) {
+  and("and", true, 2, false) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
       final Boolean leftValue = (Boolean) SelectExecutor.evaluateValue(record, left);
@@ -64,7 +64,7 @@ public enum SelectOperator {
    * false FOR EVERY RECORD AND THE QUERY RETURNED NOTHING. EVERY OTHER OPERATOR ROUTES ITS OPERANDS THROUGH
    * SelectExecutor.evaluateValue(); THIS ONE DID NOT.
    */
-  not("not", true, 2) {
+  not("not", true, 2, true) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
       final Object leftValue = SelectExecutor.evaluateValue(record, left);
@@ -74,14 +74,14 @@ public enum SelectOperator {
     }
   },
 
-  eq("=", false, 1) {
+  eq("=", false, 1, false) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
       return BinaryComparator.equals(SelectExecutor.evaluateValue(record, left), SelectExecutor.evaluateValue(record, right));
     }
   },
 
-  neq("<>", false, 1) {
+  neq("<>", false, 1, false) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
       return !BinaryComparator.equals(SelectExecutor.evaluateValue(record, left), SelectExecutor.evaluateValue(record, right));
@@ -104,7 +104,7 @@ public enum SelectOperator {
    * CONSTRUCTION - SO ALL FOUR DIRECTIONS, THE INDEX PLAN AND THE FULL SCAN NOW AGREE. USE {@code is null} /
    * {@code is not null} TO ASK ABOUT ABSENCE.
    */
-  lt("<", false, 1) {
+  lt("<", false, 1, false) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
       final Object leftValue = SelectExecutor.evaluateValue(record, left);
@@ -116,7 +116,7 @@ public enum SelectOperator {
   },
 
   /** #8049: see {@link #lt}. */
-  le("<=", false, 1) {
+  le("<=", false, 1, false) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
       final Object leftValue = SelectExecutor.evaluateValue(record, left);
@@ -128,7 +128,7 @@ public enum SelectOperator {
   },
 
   /** #8049: see {@link #lt}. A null LEFT was already rejected by the sort order; a null RIGHT was not. */
-  gt(">", false, 1) {
+  gt(">", false, 1, false) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
       final Object leftValue = SelectExecutor.evaluateValue(record, left);
@@ -140,7 +140,7 @@ public enum SelectOperator {
   },
 
   /** #8049: see {@link #lt} and {@link #gt}. */
-  ge(">=", false, 1) {
+  ge(">=", false, 1, false) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
       final Object leftValue = SelectExecutor.evaluateValue(record, left);
@@ -158,7 +158,7 @@ public enum SelectOperator {
    * matched by its string form rather than failing a cast, and a multi-value property matches when any item does. Both
    * sides fold with the ENGLISH locale (issue #7900).
    */
-  ilike("ilike", false, 1) {
+  ilike("ilike", false, 1, false) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
       return SQL_ILIKE.execute((DatabaseInternal) record.getDatabase(), SelectExecutor.evaluateValue(record, left),
@@ -167,7 +167,7 @@ public enum SelectOperator {
   },
 
   /** See {@link #ilike}. */
-  like("like", false, 1) {
+  like("like", false, 1, false) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
       return SQL_LIKE.execute((DatabaseInternal) record.getDatabase(), SelectExecutor.evaluateValue(record, left),
@@ -175,7 +175,7 @@ public enum SelectOperator {
     }
   },
 
-  in_op("in", false, 1) {
+  in_op("in", false, 1, false) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
       final Object leftValue = SelectExecutor.evaluateValue(record, left);
@@ -190,7 +190,7 @@ public enum SelectOperator {
     }
   },
 
-  between("between", false, 1) {
+  between("between", false, 1, false) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
       final Object leftValue = SelectExecutor.evaluateValue(record, left);
@@ -207,21 +207,21 @@ public enum SelectOperator {
     }
   },
 
-  is_null("is null", false, 1) {
+  is_null("is null", false, 1, true) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
       return SelectExecutor.evaluateValue(record, left) == null;
     }
   },
 
-  is_not_null("is not null", false, 1) {
+  is_not_null("is not null", false, 1, true) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
       return SelectExecutor.evaluateValue(record, left) != null;
     }
   },
 
-  run("!", true, -1) {
+  run("!", true, -1, true) {
     @Override
     Object eval(final Document record, final Object left, final Object right) {
       return SelectExecutor.evaluateValue(record, left);
@@ -231,15 +231,20 @@ public enum SelectOperator {
   public final   String                      name;
   public final   boolean                     logicOperator;
   public final   int                         precedence;
+  // #8256: WHETHER THIS OPERATOR EVALUATES ONLY ITS left OPERAND - DECLARED HERE, NEXT TO EACH OPERATOR, SO THE
+  // JSON CONDITION PARSER'S ARITY GATE (Select.parseJsonCondition) CAN DERIVE IT FROM THE OPERATOR INSTEAD OF
+  // NAMING A HAND-PICKED SUBSET, WHICH IS WHAT LEFT is_null AND is_not_null EXEMPTED ALONGSIDE not
+  public final   boolean                     unary;
   private static Map<String, SelectOperator> NAMES = new ConcurrentHashMap<>();
   // STATELESS: execute() READS NOTHING BUT ITS ARGUMENTS, SO ONE INSTANCE IS SHARED BY EVERY QUERY AND THREAD
   private static final LikeOperator          SQL_LIKE  = new LikeOperator();
   private static final ILikeOperator         SQL_ILIKE = new ILikeOperator();
 
-  SelectOperator(final String name, final boolean logicOperator, final int precedence) {
+  SelectOperator(final String name, final boolean logicOperator, final int precedence, final boolean unary) {
     this.name = name;
     this.logicOperator = logicOperator;
     this.precedence = precedence;
+    this.unary = unary;
   }
 
   abstract Object eval(final Document record, Object left, Object right);
