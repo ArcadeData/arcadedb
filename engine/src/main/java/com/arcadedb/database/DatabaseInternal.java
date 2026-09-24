@@ -267,6 +267,7 @@ public interface DatabaseInternal extends Database {
    * batch (issue #8312).
    */
   default void countRecordsRead(final long count) {
+    // NO STATISTICS TO UPDATE BY DEFAULT: ONLY THE LOCAL DATABASE KEEPS THEM
   }
 
   void kill();
