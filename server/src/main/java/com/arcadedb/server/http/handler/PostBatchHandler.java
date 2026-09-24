@@ -1100,11 +1100,9 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
           // The read returned between this task being dequeued and this line: nothing to release.
           return;
         expired = true;
-        try {
-          in.close();
-        } catch (final IOException ignored) {
-          // The point was to release the reader; a stream that also failed to close has done that too.
-        }
+        // safeClose swallows whatever close() throws, checked or not: this runs on the XNIO I/O thread, where an
+        // escaping exception would hit the thread rather than the relay. The write watchdog closes the same way.
+        IoUtils.safeClose(in);
       }, timeoutMs);
       return () -> {
         if (armed.compareAndSet(true, false))
