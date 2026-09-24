@@ -97,9 +97,10 @@ class ChaosRunnerTest {
     for (int i = 0; i < ChaosRunner.WARMUP_ACKS; i++)
       harness.ledger().record(harness.ledger().reserve(0, false), Ledger.ACKED);
     harness.load().progress = false;
+    harness.control().leaderView = "node 2: unreachable on 127.0.0.1:32920 (SocketTimeoutException: Read timed out)";
     final ChaosResult result = harness.runner().run();
     assertThat(result.kind()).isEqualTo(ResultKind.AVAILABILITY);
-    assertThat(result.message()).contains("kill");
+    assertThat(result.message()).contains("kill").contains("node 2: unreachable on 127.0.0.1:32920");
     assertThat(result.steps()).isEqualTo(1);
     assertThat(Files.readAllLines(dir.resolve("7/steps.log"))).singleElement().asString()
         .startsWith("step=1 fault=kill targets=").contains("FAILED kind=AVAILABILITY").contains("No write acknowledged");
@@ -161,6 +162,29 @@ class ChaosRunnerTest {
     assertThat(result.message()).contains("node 2 exited unexpectedly");
     assertThat(Files.readAllLines(dir.resolve("7/steps.log"))).singleElement().asString()
         .contains("fault=rolling").contains("FAILED kind=AVAILABILITY");
+  }
+
+  @Test
+  void nodeOutOfMemoryIsAnAvailabilityFailureNamingTheNode() throws IOException {
+    final Harness harness = harness(config("chaos.faults", "kill"));
+    harness.control().outOfMemory = "node 2 logged java.lang.OutOfMemoryError: Java heap space";
+    final ChaosResult result = harness.runner().run();
+    assertThat(result.kind()).isEqualTo(ResultKind.AVAILABILITY);
+    assertThat(result.message()).contains("node 2 logged java.lang.OutOfMemoryError");
+  }
+
+  @Test
+  void outOfMemoryExplainsAHoldWithoutAcknowledgedWrites() throws IOException {
+    final Harness harness = harness(config("chaos.faults", "pause"));
+    for (int i = 0; i < ChaosRunner.WARMUP_ACKS; i++)
+      harness.ledger().record(harness.ledger().reserve(0, false), Ledger.ACKED);
+    harness.load().progress = false;
+    harness.control().outOfMemory = "node 2 logged java.lang.OutOfMemoryError: Java heap space";
+    harness.control().checksBeforeOutOfMemory = 1;
+    final ChaosResult result = harness.runner().run();
+    assertThat(result.kind()).isEqualTo(ResultKind.AVAILABILITY);
+    assertThat(result.message()).contains("OutOfMemoryError");
+    assertThat(Files.readAllLines(dir.resolve("7/steps.log"))).singleElement().asString().contains("OutOfMemoryError");
   }
 
   @Test

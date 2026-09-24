@@ -67,4 +67,11 @@ public interface NodeControl {
    * node that exited on its own (for example {@code "node 1 exited unexpectedly: exitCode=137 OOMKilled=true"})
    */
   String unexpectedExit(ClusterState state);
+
+  /**
+   * @return null when no node has logged an {@code OutOfMemoryError} since the run started, otherwise a description of
+   * the first one found (for example {@code "node 2 logged java.lang.OutOfMemoryError: Java heap space"}). A JVM out of
+   * heap usually keeps running, so {@link #unexpectedExit} cannot see it
+   */
+  String outOfMemory();
 }

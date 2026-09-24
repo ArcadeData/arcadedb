@@ -33,6 +33,9 @@ final class FakeNodeControl implements NodeControl {
   RuntimeException       failure;
   /** Reported by {@link #unexpectedExit} once {@code checksBeforeExit} checks have passed. */
   String                 unexpectedExit;
+  /** Reported by {@link #outOfMemory()} once {@code checksBeforeOutOfMemory} checks have passed. */
+  String                 outOfMemory;
+  int                    checksBeforeOutOfMemory;
   /** Returned by {@link #leaderView()}. */
   String                 leaderView       = "";
   int                    checksBeforeExit;
@@ -102,6 +105,17 @@ final class FakeNodeControl implements NodeControl {
   public boolean awaitLeader(final Duration timeout) {
     calls.add("awaitLeader");
     return leaderAvailable;
+  }
+
+  @Override
+  public String outOfMemory() {
+    if (outOfMemory == null)
+      return null;
+    if (checksBeforeOutOfMemory > 0) {
+      --checksBeforeOutOfMemory;
+      return null;
+    }
+    return outOfMemory;
   }
 
   @Override
