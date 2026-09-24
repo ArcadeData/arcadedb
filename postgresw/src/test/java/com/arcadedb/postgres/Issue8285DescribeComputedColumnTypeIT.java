@@ -22,6 +22,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
+import java.math.BigDecimal;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.ByteBuffer;
@@ -272,7 +273,7 @@ class Issue8285DescribeComputedColumnTypeIT extends PostgresWireProtocolTestBase
 
         try (final ResultSet resultSet = statement.executeQuery()) {
           assertThat(resultSet.next()).isTrue();
-          assertThat(resultSet.getObject(1)).isInstanceOf(java.math.BigDecimal.class);
+          assertThat(resultSet.getObject(1)).isInstanceOf(BigDecimal.class);
         }
       }
     }
@@ -296,7 +297,7 @@ class Issue8285DescribeComputedColumnTypeIT extends PostgresWireProtocolTestBase
 
         try (final ResultSet resultSet = statement.executeQuery()) {
           assertThat(resultSet.next()).isTrue();
-          assertThat(resultSet.getObject(1)).isInstanceOf(java.math.BigDecimal.class);
+          assertThat(resultSet.getObject(1)).isInstanceOf(BigDecimal.class);
         }
       }
     }
