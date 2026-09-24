@@ -245,6 +245,15 @@ public class ArcadeDBServer {
    */
   private final       AtomicInteger                         snapshotInstallsInProgress           = new AtomicInteger(0);
   private volatile    Function<LocalDatabase, DatabaseInternal> databaseWrapper;
+  /**
+   * True while this server is starting with high availability requested and no HA plugin has installed its
+   * {@link #databaseWrapper} yet (issue #8270). The databases are opened and the network listeners started BEFORE the
+   * HA plugin runs, and a database handed out in that window is the plain {@link LocalDatabase}: a write through it
+   * commits here, is never replicated, and the Raft replay that follows splices the cluster's pages over it. Every
+   * database opened while this is true refuses writes ({@link LocalDatabase#refuseWrites}) until it is wrapped, or
+   * until startup concludes that no HA plugin is coming and the node runs standalone.
+   */
+  private volatile    boolean                               awaitingHAWrapper;
   // Micrometer's global composite registry, the meter binders and the per-tuple timer caches of
   // MicrometerQueryMetricsRecorder/AbstractServerHttpHandler are JVM-wide, while a start()/stop() pair is
   // not: a start that adds a backing registry and a stop that removes none grows the composite by one
@@ -425,6 +434,9 @@ public class ArcadeDBServer {
 
     status = STATUS.STARTING;
 
+    // Armed before any database is opened: the HA plugin that wraps them starts only after the network listeners.
+    awaitingHAWrapper = isHARequested();
+
     eventLog.start();
 
     try {
@@ -512,8 +524,7 @@ public class ArcadeDBServer {
     // arcadedb-ha-raft DEPENDENCY: SINCE THE APACHE RATIS MIGRATION THE HA IMPLEMENTATION LIVES IN A
     // SEPARATE MODULE AND IS DISCOVERED VIA ServiceLoader, SO EMBEDDING arcadedb-server ALONE NO LONGER
     // ENABLES HA. WARN LOUDLY INSTEAD OF SILENTLY RUNNING STANDALONE.
-    if ((configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED) || configuration.isHAImplicitlyEnabled())
-        && haServer == null) {
+    if (isHARequested() && haServer == null) {
       final String haWarning = """
           High availability was requested but no HA plugin was found on the classpath. \
           The node will run STANDALONE (no replication). Since the Apache Ratis migration the HA implementation \
@@ -522,6 +533,11 @@ public class ArcadeDBServer {
       LogManager.instance().log(this, Level.WARNING, haWarning);
       getEventLog().reportEvent(ServerEventLog.EVENT_TYPE.WARNING, "HA", null, haWarning);
     }
+
+    // Every plugin has started: a database still unwrapped now stays unwrapped, so the node runs standalone as the
+    // warning above says, and its databases accept writes again (issue #8270).
+    if (databaseWrapper == null)
+      stopAwaitingHAWrapper();
 
     // RELOAD DATABASES: A PLUGIN MAY HAVE REGISTERED A NEW ONE (LIKE THE GREMLIN SERVER), AND HA SNAPSHOT
     // RECOVERY MAY HAVE JUST RECONCILED A DIRECTORY THE FIRST PASS DEFERRED. THIS RUNS BEFORE THE DEFAULT
@@ -1244,8 +1260,7 @@ public class ArcadeDBServer {
         embeddedDatabase = (DatabaseInternal) factory.open(mode);
       }
 
-      if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED) && databaseWrapper != null)
-        embeddedDatabase = databaseWrapper.apply((LocalDatabase) embeddedDatabase);
+      embeddedDatabase = wrapForHA(embeddedDatabase);
 
       serverDatabase = new ServerDatabase(this, embeddedDatabase);
 
@@ -1388,6 +1403,56 @@ public class ArcadeDBServer {
    */
   public void setDatabaseWrapper(final Function<LocalDatabase, DatabaseInternal> wrapper) {
     this.databaseWrapper = wrapper;
+    if (wrapper != null)
+      // From here on every database opened is wrapped at open time; the ones opened before are wrapped - and their
+      // write refusal lifted - by rewrapDatabases().
+      awaitingHAWrapper = false;
+  }
+
+  /**
+   * Whether this server's configuration asks for high availability: explicitly through {@code ha.enabled}, or
+   * implicitly through a non-blank {@code ha.serverList}. The same condition the HA plugin activates on.
+   */
+  public boolean isHARequested() {
+    return configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED) || configuration.isHAImplicitlyEnabled();
+  }
+
+  /**
+   * What every database this server opens or creates is registered as (issue #8270).
+   * <p>
+   * With an HA wrapper installed, the replicated wrapper - regardless of HOW high availability was requested: the
+   * wrapper exists only because the HA plugin activated, and gating it on {@code ha.enabled} alone left a database
+   * opened on an implicitly-enabled cluster (a {@code ha.serverList} and no {@code ha.enabled}) unwrapped, so its
+   * writes and its creation never reached the other nodes. Without one, while the HA plugin is still expected, the
+   * plain database refusing writes until {@link #rewrapDatabases()} wraps it.
+   */
+  private DatabaseInternal wrapForHA(final DatabaseInternal database) {
+    // Read in the reverse of the order setDatabaseWrapper() writes them (wrapper first, then the flag cleared): a
+    // cleared flag read here therefore guarantees the wrapper read next is visible, so a database can never slip
+    // through as neither wrapped nor refusing writes. This relies on both fields being volatile: volatile accesses are
+    // totally ordered consistently with each thread's program order (JLS 17.4.4), so seeing the second write implies
+    // seeing the first. Making either one a plain field breaks it.
+    final boolean awaiting = awaitingHAWrapper;
+    final Function<LocalDatabase, DatabaseInternal> wrapper = databaseWrapper;
+    if (wrapper != null && database instanceof LocalDatabase local)
+      return wrapper.apply(local);
+
+    if (awaiting && database instanceof LocalDatabase local)
+      local.refuseWrites("the server is starting and high availability is not active yet, so a write here would not "
+          + "be replicated. Retry once the server is online");
+    return database;
+  }
+
+  /** Startup concluded that no HA plugin will wrap the databases: lift the write refusal {@link #wrapForHA} put on them. */
+  private void stopAwaitingHAWrapper() {
+    synchronized (databasesLock) {
+      if (!awaitingHAWrapper)
+        return;
+      awaitingHAWrapper = false;
+      for (final ServerDatabase serverDb : databases.values())
+        if (serverDb.getWrappedDatabaseInstance() instanceof LocalDatabase local)
+          local.acceptWrites();
+    }
   }
 
   /**
@@ -1421,6 +1486,9 @@ public class ArcadeDBServer {
         final DatabaseInternal newWrapped = databaseWrapper.apply(localDb);
         final ServerDatabase newServerDb = new ServerDatabase(this, newWrapped);
         databases.put(entry.getKey(), newServerDb);
+        // Writes now go through the replicated wrapper, so the refusal wrapForHA() put on the plain database while
+        // it waited for this is lifted (issue #8270).
+        localDb.acceptWrites();
         LogManager.instance().log(this, Level.INFO, "Re-wrapped database '%s' with HA wrapper", entry.getKey());
       }
     }
@@ -1524,8 +1592,10 @@ public class ArcadeDBServer {
     // accepting requests while the HA plugin still has to run rewrapDatabases() under databasesLock to swap the
     // plain LocalDatabase entries for HA-wrapped ones. Bypassing the lock in that window could hand a caller the
     // pre-wrap (non-replicated) instance mid-swap. status flips to ONLINE only after that re-wrapping completes,
-    // so restricting the fast path to ONLINE makes concurrent startup lookups fall through to the locked slow path
-    // and block until the wrapped instances are published - exactly the pre-fast-path behaviour.
+    // so restricting the fast path to ONLINE makes concurrent startup lookups fall through to the locked slow path,
+    // which waits out a swap in progress. It does NOT wait for a swap that has not started: before the HA plugin
+    // runs, the slow path returns the plain instance too (issue #8270). What makes that instance safe to hand out
+    // is the write refusal wrapForHA() puts on it, not this gate.
     //
     // The other lock holder is the runtime HA snapshot installer (close->swap->reopen while ONLINE). The HTTP request
     // path is normally deflected with 503 during an install (snapshotInstallInProgress), though that is a check at
@@ -1600,8 +1670,7 @@ public class ArcadeDBServer {
             embDatabase = (DatabaseInternal) factory.open(defaultDbMode);
         }
 
-        if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED) && databaseWrapper != null)
-          embDatabase = databaseWrapper.apply((LocalDatabase) embDatabase);
+        embDatabase = wrapForHA(embDatabase);
 
         db = new ServerDatabase(this, embDatabase);
 
