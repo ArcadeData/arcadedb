@@ -791,8 +791,10 @@ public enum GlobalConfiguration {
       TIMEOUT clause is enforced alongside it and the earlier of the two wins, so a statement may ask for less \
       time than this setting allows but not for more. Gremlin and the other polyglot scripting \
       engines are NOT covered - they have their own arcadedb.polyglotCommand.timeout - and neither is regular \
-      expression backtracking, which arcadedb.command.regexTimeout bounds separately. Set to 0 (the default) to \
-      disable.""",
+      expression backtracking, which arcadedb.command.regexTimeout bounds separately. On an HA follower a write \
+      forwarded to the leader is waited for this long plus arcadedb.ha.quorumTimeout and \
+      arcadedb.ha.proxyConnectTimeout, so the leader's own answer arrives first (see arcadedb.ha.proxyCommandTimeout). \
+      Set to 0 (the default) to disable.""",
       Long.class, 0),
 
   COMMAND_REGEX_TIMEOUT("arcadedb.command.regexTimeout", SCOPE.DATABASE, """
@@ -2313,7 +2315,8 @@ public enum GlobalConfiguration {
       reusing it). When it wins, the follower waits that budget PLUS arcadedb.ha.quorumTimeout and \
       arcadedb.ha.proxyConnectTimeout (issue #7737): the leader enforces the same budget from a later start and \
       without counting the quorum commit or the response transit, so the headroom is what lets the leader's own \
-      answer - the result, or its timeout error naming arcadedb.command.timeout - reach the client. Defaults to one hour, the same order of magnitude as arcadedb.ha.proxyLongCommandTimeout's \
+      answer - the result, or its timeout error naming arcadedb.command.timeout - reach the client. Defaults \
+      to one hour, the same order of magnitude as arcadedb.ha.proxyLongCommandTimeout's \
       restore/import budget, because arcadedb.command.timeout defaults to 0 (unbounded) and this is what stands \
       between an ordinary forwarded write and an indefinite wait when nobody has opted into a tighter one. A \
       blown deadline is reported as a non-retryable TransactionException, not NeedRetryException: the leader \
