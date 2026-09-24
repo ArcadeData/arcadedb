@@ -106,8 +106,10 @@ class Issue8282StaleHandleCommitReplicatesIT extends BaseRaftHATest {
         failure.set(t);
       }
     }, "issue8282-connection");
+    connection.setDaemon(true);
     connection.start();
     connection.join(30_000);
+    assertThat(connection.isAlive()).as("the commit on the stale handle must complete").isFalse();
     assertThat(failure.get()).as("the commit on the stale handle").isNull();
 
     waitForAllServers();
