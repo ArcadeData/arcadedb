@@ -18,6 +18,7 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.log.LogManager;
@@ -45,6 +46,12 @@ import static com.arcadedb.schema.Property.TYPE_PROPERTY;
  * @author Luca Garulli
  */
 public class ImmutableDocument extends BaseDocument {
+  /**
+   * Version of the page this record's content was read from, when it was read straight from its own page by a scan
+   * (issue #8312), -1 when unknown. It lets {@link #pinPageAndReloadIfStale()} skip the reload of a record whose page
+   * has not changed since: same page version, same bytes.
+   */
+  private long contentPageVersion = -1;
 
   protected ImmutableDocument(final Database graph, final DocumentType type, final RID rid, final Binary buffer) {
     super(graph, type, rid, buffer);
@@ -114,6 +121,38 @@ public class ImmutableDocument extends BaseDocument {
     return buffer != null;
   }
 
+  /**
+   * Records the version of the page the content of this record was read from. Only for content read whole from the
+   * record's own page (not through a placeholder, not a multi-page record), which is the page {@link #modify()} pins.
+   */
+  public void setContentPageVersion(final long pageVersion) {
+    this.contentPageVersion = pageVersion;
+  }
+
+  @Override
+  public void reload() {
+    // THE RELOADED CONTENT COMES FROM THE BUCKET, NOT FROM A PAGE WHOSE VERSION THIS RECORD KNOWS
+    contentPageVersion = -1;
+    super.reload();
+  }
+
+  /**
+   * Pins the record's page in the current transaction, so the commit checks it for concurrent changes, and reloads the
+   * content unless it was read from that very page version: then the reload would read back the same bytes and only
+   * notify the read listeners a second time for a record the caller read once (issue #8312). A page changed since the
+   * content was read still reloads, or the modification would write back stale content over a concurrent commit.
+   * <p>
+   * The page is pinned BEFORE the reload to avoid a loop with triggers (encryption).
+   */
+  protected void pinPageAndReloadIfStale() throws IOException {
+    final BasePage page = database.getTransaction()
+        .getPageToModify(rid.getPageId(database), ((LocalBucket) database.getSchema().getBucketById(rid.getBucketId())).getPageSize(),
+            false);
+    final long readFromVersion = contentPageVersion;
+    if (readFromVersion < 0 || buffer == null || page.getVersion() != readFromVersion)
+      reload();
+  }
+
   @Override
   public MutableDocument modify() {
     final Record recordInCache = database.getTransaction().getRecordFromCache(rid);
@@ -125,10 +164,7 @@ public class ImmutableDocument extends BaseDocument {
         // IT MUST BE RELOADED TO GET THE LATEST CHANGES. FORCE RELOAD
         try {
           // RELOAD THE PAGE FIRST TO AVOID LOOP WITH TRIGGERS (ENCRYPTION)
-          database.getTransaction()
-              .getPageToModify(rid.getPageId(database), ((LocalBucket) database.getSchema().getBucketById(rid.getBucketId())).getPageSize(),
-                  false);
-          reload();
+          pinPageAndReloadIfStale();
         } catch (final IOException e) {
           throw new DatabaseOperationException("Error on reloading document " + rid, e);
         }

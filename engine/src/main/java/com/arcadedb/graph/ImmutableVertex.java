@@ -25,7 +25,6 @@ import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.TransactionContext;
-import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.SerializationException;
 import com.arcadedb.schema.DocumentType;
@@ -97,9 +96,7 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
       // so modifying outside a transaction is legitimate for a vertex, as it already was for a document (issue #7096).
       try {
         // RELOAD THE PAGE FIRST TO AVOID LOOP WITH TRIGGERS (ENCRYPTION)
-        transaction.getPageToModify(rid.getPageId(database),
-            ((LocalBucket) database.getSchema().getBucketById(rid.getBucketId())).getPageSize(), false);
-        reload();
+        pinPageAndReloadIfStale();
       } catch (final IOException e) {
         throw new DatabaseOperationException("Error on reloading vertex " + rid, e);
       }

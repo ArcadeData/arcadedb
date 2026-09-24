@@ -2090,7 +2090,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * The flag lives on {@code DatabaseContextTL} rather than in a thread-local of its own so that it is scoped per
    * DATABASE as well as per thread; see the field's javadoc for why that distinction matters.
    */
-  private boolean fireBeforeReadEvents(final RID rid) {
+  boolean fireBeforeReadEvents(final RID rid) {
     final RecordEventsRegistry databaseEvents = (RecordEventsRegistry) database.getEvents();
     final DocumentType type = database.getSchema().getTypeByBucketId(rid.getBucketId());
     final RecordEventsRegistry typeEvents = type != null ? (RecordEventsRegistry) type.getEvents() : null;

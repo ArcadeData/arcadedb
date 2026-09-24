@@ -261,6 +261,14 @@ public interface DatabaseInternal extends Database {
 
   Record invokeAfterReadEvents(Record record);
 
+  /**
+   * Adds records read without going through {@link #lookupByRID(RID, boolean)}, which counts its own, to the
+   * {@code readRecord} statistic: a bucket scan builds its records straight from the page and reports them here, once per
+   * batch (issue #8312).
+   */
+  default void countRecordsRead(final long count) {
+  }
+
   void kill();
 
   DocumentIndexer getIndexer();
