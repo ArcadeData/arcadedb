@@ -44,7 +44,7 @@ public class BucketIterator implements Iterator<Record> {
   // SAVES THROUGH THE SAME ONE
   private final        DatabaseInternal recordDatabase;
   // RESOLVED ONCE PER ITERATOR, NOT PER RECORD: A BUCKET MOVED TO ANOTHER TYPE (OR ITS TYPE DROPPED) WHILE A SCAN IS OPEN
-  // IS SEEN BY THE NEXT ITERATOR, NOT BY THIS ONE
+  // IS SEEN BY THE NEXT ITERATOR ONLY. THIS ONE KEEPS THE TYPE IT STARTED WITH FOR EVERY BATCH, HOWEVER LONG IT STAYS OPEN
   private final        DocumentType     type;
   private final        LocalBucket      bucket;
   final                Record[]         nextBatch     = new Record[PREFETCH_SIZE];
