@@ -23,7 +23,9 @@ import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Runs with the workload quiesced: waits until every node reports the same row and edge counts twice in a row, scans
@@ -44,6 +46,8 @@ public final class Checkpoint {
   private final Duration         pollInterval;
   private       long[]           lastCounts;
   private       String           lastReadError;
+  private final boolean[]        lastReadable;
+  private final String[]         lastReadErrors;
 
   public Checkpoint(final NodeReader reader, final Ledger ledger, final InvariantChecker checker, final int nodes,
       final Duration convergenceTimeout, final Duration pollInterval) {
@@ -51,6 +55,8 @@ public final class Checkpoint {
     this.ledger = ledger;
     this.checker = checker;
     this.nodes = nodes;
+    this.lastReadable = new boolean[nodes];
+    this.lastReadErrors = new String[nodes];
     this.convergenceTimeout = convergenceTimeout;
     this.pollInterval = pollInterval;
   }
@@ -72,7 +78,7 @@ public final class Checkpoint {
         if (System.nanoTime() > deadline) {
           final String message = "Nodes did not converge within " + convergenceTimeout + ": [ops, edges] per node = "
               + Arrays.toString(lastCounts) + (lastError == null ? "" : ", last read error: " + lastError);
-          return new Result(List.of(new Violation(ResultKind.SAFETY, "CONVERGENCE", message, new long[0])), lastCounts,
+          return new Result(List.of(differingKeys("CONVERGENCE", message, scanReadableNodes())), lastCounts,
               millisSince(start), millisSince(start));
         }
         Thread.sleep(pollInterval.toMillis());
@@ -107,13 +113,10 @@ public final class Checkpoint {
       }
 
       final List<Violation> violations = new ArrayList<>();
-      for (int i = 1; i < nodes; i++) {
-        final long[] diff = snapshots[0].diff(snapshots[i], InvariantChecker.MAX_KEYS);
-        if (diff.length > 0)
-          violations.add(new Violation(ResultKind.SAFETY, "DIVERGENCE",
-              "node " + i + " differs from node 0 in " + diff.length + (diff.length == InvariantChecker.MAX_KEYS ? "+" : "")
-                  + " keys despite equal counts", diff));
-      }
+      final Violation divergence = differingKeys("DIVERGENCE", "nodes hold different keys despite equal counts",
+          new Scan(snapshots, List.of()));
+      if (divergence.keys().length > 0)
+        violations.add(divergence);
       violations.addAll(checker.check(snapshots[0]));
       return new Result(violations, current, convergenceMillis, millisSince(start));
     }
@@ -123,6 +126,90 @@ public final class Checkpoint {
    * @return {@code [ops, edges]} per node, or null when a node could not be read ({@link #lastCounts} then holds what
    * was read, with zeros for the unreadable nodes, and {@link #lastReadError} the error)
    */
+  private record Scan(NodeSnapshot[] snapshots, List<String> notes) {
+  }
+
+  /**
+   * Scans every node that answered the last count poll, so a convergence failure still reports which keys differ.
+   * Nodes that cannot be read are listed in the notes; a failing scan never hides the convergence failure itself.
+   */
+  private Scan scanReadableNodes() {
+    final NodeSnapshot[] snapshots = new NodeSnapshot[nodes];
+    final List<String> notes = new ArrayList<>();
+    for (int i = 0; i < nodes; i++) {
+      if (!lastReadable[i]) {
+        notes.add("node " + i + ": not scanned (" + lastReadErrors[i] + ")");
+        continue;
+      }
+      final NodeSnapshot snapshot = new NodeSnapshot(ledger);
+      try {
+        reader.scan(i, snapshot);
+        snapshots[i] = snapshot;
+      } catch (final IOException e) {
+        notes.add("node " + i + ": not scanned (" + e.getMessage() + ")");
+      }
+    }
+    return new Scan(snapshots, notes);
+  }
+
+  /**
+   * One SAFETY violation listing up to {@link InvariantChecker#MAX_KEYS} keys on which the scanned nodes disagree, each
+   * with its ledger outcome and the nodes that hold it, e.g. {@code w3-17 outcome=ACKED pair=true present=[1, 2]
+   * missing=[0] withEdge=[1, 2]}.
+   */
+  private Violation differingKeys(final String invariant, final String message, final Scan scan) {
+    final NodeSnapshot[] snapshots = scan.snapshots();
+    NodeSnapshot reference = null;
+    for (final NodeSnapshot snapshot : snapshots)
+      if (snapshot != null && reference == null)
+        reference = snapshot;
+    final Set<Long> keys = new LinkedHashSet<>();
+    if (reference != null)
+      for (final NodeSnapshot other : snapshots)
+        if (other != null && other != reference)
+          for (final long key : reference.diff(other, InvariantChecker.MAX_KEYS))
+            if (keys.size() < InvariantChecker.MAX_KEYS)
+              keys.add(key);
+    final List<String> details = new ArrayList<>(scan.notes());
+    for (final long key : keys)
+      details.add(describe(key, snapshots));
+    final long[] keyArray = new long[keys.size()];
+    int i = 0;
+    for (final long key : keys)
+      keyArray[i++] = key;
+    final String summary = keys.isEmpty() ? "" : " (" + keys.size() + (keys.size() == InvariantChecker.MAX_KEYS ? "+" : "")
+        + " differing keys listed in ledger-diff.txt)";
+    return new Violation(ResultKind.SAFETY, invariant, message + summary, keyArray, details);
+  }
+
+  private String describe(final long key, final NodeSnapshot[] snapshots) {
+    final int writer = Ledger.writerOf(key);
+    final long seq = Ledger.seqOf(key);
+    final boolean known = key >= 0 && writer < ledger.writers() && seq < ledger.size(writer);
+    final List<Integer> present = new ArrayList<>();
+    final List<Integer> missing = new ArrayList<>();
+    final List<Integer> withEdge = new ArrayList<>();
+    for (int n = 0; n < snapshots.length; n++) {
+      final NodeSnapshot snapshot = snapshots[n];
+      if (snapshot == null)
+        continue;
+      final boolean has = known ? snapshot.present(writer, (int) seq) : contains(snapshot.phantoms(), key);
+      (has ? present : missing).add(n);
+      if (known && snapshot.hasEdge(writer, (int) seq))
+        withEdge.add(n);
+    }
+    return Ledger.format(key) + (known ?
+        " outcome=" + Ledger.name(ledger.outcome(key)) + " pair=" + ledger.isPair(key) :
+        " outcome=NOT_IN_LEDGER") + " present=" + present + " missing=" + missing + " withEdge=" + withEdge;
+  }
+
+  private static boolean contains(final long[] keys, final long key) {
+    for (final long k : keys)
+      if (k == key)
+        return true;
+    return false;
+  }
+
   private long[] readCounts() {
     final long[] counts = new long[nodes * 2];
     boolean readable = true;
@@ -131,9 +218,12 @@ public final class Checkpoint {
         final long[] node = reader.counts(i);
         counts[i * 2] = node[0];
         counts[i * 2 + 1] = node[1];
+        lastReadable[i] = true;
       } catch (final IOException e) {
         readable = false;
         lastReadError = e.getMessage();
+        lastReadable[i] = false;
+        lastReadErrors[i] = e.getMessage();
       }
     lastCounts = counts;
     return readable ? counts : null;

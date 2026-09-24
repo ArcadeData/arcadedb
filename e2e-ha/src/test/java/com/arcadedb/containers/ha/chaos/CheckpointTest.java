@@ -64,6 +64,8 @@ class CheckpointTest {
 
     @Override
     public void scan(final int node, final NodeSnapshot sink) throws IOException {
+      if (unreadable.contains(node))
+        throw new IOException("node " + node + " down");
       if (beforeScan != null) {
         final Runnable action = beforeScan;
         beforeScan = null;
@@ -114,6 +116,9 @@ class CheckpointTest {
     assertThat(violations).extracting(Violation::invariant).containsExactly("CONVERGENCE");
     assertThat(violations.getFirst().kind()).isEqualTo(ResultKind.SAFETY);
     assertThat(violations.getFirst().message()).contains("[2, 0, 1, 0, 2, 0]");
+    assertThat(violations.getFirst().keys()).containsExactly(b);
+    assertThat(violations.getFirst().details()).containsExactly(
+        Ledger.format(b) + " outcome=ACKED pair=false present=[0, 2] missing=[1] withEdge=[]");
   }
 
   @Test
@@ -126,6 +131,7 @@ class CheckpointTest {
     final List<Violation> violations = checkpoint(reader, Duration.ofMillis(300)).run().violations();
     assertThat(violations).extracting(Violation::invariant).containsExactly("CONVERGENCE");
     assertThat(violations.getFirst().message()).contains("node 1 down");
+    assertThat(violations.getFirst().details()).contains("node 1: not scanned (node 1 down)");
   }
 
   @Test

@@ -80,8 +80,12 @@ public final class ChaosReport implements AutoCloseable {
     final StringBuilder text = new StringBuilder();
     for (final Violation violation : violations) {
       text.append("== ").append(violation.describe()).append('\n');
-      for (final long key : violation.keys())
-        text.append(Ledger.format(key)).append('\n');
+      if (violation.details().isEmpty())
+        for (final long key : violation.keys())
+          text.append(Ledger.format(key)).append('\n');
+      else
+        for (final String line : violation.details())
+          text.append(line).append('\n');
     }
     Files.writeString(dir.resolve("ledger-diff.txt"), text.toString(), StandardCharsets.UTF_8);
   }
