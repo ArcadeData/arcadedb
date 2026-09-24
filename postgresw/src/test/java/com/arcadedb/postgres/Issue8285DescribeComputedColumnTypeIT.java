@@ -148,6 +148,32 @@ class Issue8285DescribeComputedColumnTypeIT extends PostgresWireProtocolTestBase
   }
 
   @Test
+  void sumOfTwoIntegerPropertiesThatOverflowsDescribesAsInt8NotInt4BeforeExecution() throws Exception {
+    // MathExpression.Operator.PLUS.apply(Integer, Integer) silently widens to a Long on overflow (no exception,
+    // unlike the Long,Long overload), so an INTEGER + INTEGER whose sum does not fit in int4 executes to a Long
+    // regardless of the declared operand types - the same "depends on the row's values" problem SLASH has, so
+    // describing this as int4 would make a binary-format client decode the real Long as a truncated int4
+    // (review of #8285).
+    try (final Connection connection = openJdbcConnection()) {
+      try (final Statement statement = connection.createStatement()) {
+        statement.execute("CREATE DOCUMENT TYPE Items8285Overflow IF NOT EXISTS");
+        statement.execute("CREATE PROPERTY Items8285Overflow.a IF NOT EXISTS INTEGER");
+        statement.execute("CREATE PROPERTY Items8285Overflow.b IF NOT EXISTS INTEGER");
+        statement.execute("INSERT INTO Items8285Overflow SET a = " + Integer.MAX_VALUE + ", b = " + Integer.MAX_VALUE);
+      }
+
+      try (final PreparedStatement statement = connection.prepareStatement("SELECT a + b AS s FROM Items8285Overflow")) {
+        assertThat(statement.getMetaData().getColumnTypeName(1)).isEqualTo("int8");
+
+        try (final ResultSet resultSet = statement.executeQuery()) {
+          assertThat(resultSet.next()).isTrue();
+          assertThat(resultSet.getLong(1)).isEqualTo(2L * Integer.MAX_VALUE);
+        }
+      }
+    }
+  }
+
+  @Test
   void sumOfADecimalPropertyDescribesAsNumericNotFloat8BeforeExecution() throws Exception {
     // SQLFunctionSum/Type#increment keep a DECIMAL accumulator as BigDecimal: describing it as float8 would make
     // binary encoding call doubleValue() and lose precision (review of #8285).
