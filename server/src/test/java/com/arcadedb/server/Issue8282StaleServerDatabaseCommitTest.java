@@ -109,6 +109,24 @@ class Issue8282StaleServerDatabaseCommitTest extends TestHelper {
   }
 
   @Test
+  void aHandleBuiltAroundAReplacedWrapperCommitsThroughTheCurrentOne() {
+    // rewrapDatabases() on a plugin restart installs a NEW wrapper on the same LocalDatabase; a handle built around
+    // the previous one must follow, not commit through a wrapper the server has discarded.
+    final AtomicInteger oldCommits = new AtomicInteger();
+    final ServerDatabase handleOnOldWrapper = new ServerDatabase(null, installWrapper(oldCommits));
+    final AtomicInteger newCommits = new AtomicInteger();
+    installWrapper(newCommits);
+
+    handleOnOldWrapper.begin();
+    handleOnOldWrapper.newDocument(TYPE).set("name", "rewrapped").save();
+    handleOnOldWrapper.commit();
+
+    assertThat(newCommits.get()).as("the commit must reach the wrapper installed last").isEqualTo(1);
+    assertThat(oldCommits.get()).as("and not the one it replaced").isZero();
+    assertThat(database.countType(TYPE, true)).isEqualTo(1L);
+  }
+
+  @Test
   void aHandleOnAnUnwrappedDatabaseCommitsLocally() {
     final ServerDatabase handle = new ServerDatabase(null, local());
 

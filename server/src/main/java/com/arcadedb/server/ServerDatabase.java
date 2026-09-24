@@ -24,8 +24,8 @@ import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.DocumentCallback;
 import com.arcadedb.database.DocumentIndexer;
-import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.EmbeddedModifier;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.database.RID;
@@ -200,14 +200,14 @@ public class ServerDatabase implements DatabaseInternal {
    * #8282). A handle resolved before the HA plugin wrapped the database holds the plain {@link LocalDatabase}, whose
    * own {@code commit()} writes locally and never replicates; the wrap installs the replicated wrapper on that same
    * instance ({@link LocalDatabase#setWrappedDatabaseInstance}), so reading it here reaches the wrapper however old the
-   * handle is. Connection-scoped handles - Postgres, MongoDB, Bolt, gRPC - live exactly that long. Resolved here and
-   * not in {@code LocalDatabase.commit()}: engine code calls that one on the inner instance on purpose (a WAL-less
-   * vector graph persist, for one), and must keep doing so.
+   * handle is - and past a re-wrap too, for a handle built around a wrapper a plugin restart has since replaced
+   * ({@code ArcadeDBServer.rewrapDatabases()}). Connection-scoped handles - Postgres, MongoDB, Bolt, gRPC - live
+   * exactly that long. Resolved here and not in {@code LocalDatabase.commit()}: engine code calls that one on the
+   * inner instance on purpose (a WAL-less vector graph persist, for one), and must keep doing so.
    */
   @Override
   public void commit() {
-    final DatabaseInternal target = wrapped instanceof LocalDatabase local ? local.getWrappedDatabaseInstance() : wrapped;
-    target.commit();
+    wrapped.getEmbedded().getWrappedDatabaseInstance().commit();
   }
 
   @Override
