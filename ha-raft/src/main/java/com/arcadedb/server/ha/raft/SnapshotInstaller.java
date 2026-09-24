@@ -749,7 +749,8 @@ public final class SnapshotInstaller {
    *   <li>database registered (or deregistered-but-on-disk, which {@code existsDatabase} reports as
    *       present): returns its live {@code getDatabasePath()}. Note the side effect - {@code getDatabase}
    *       <i>opens and registers</i> a deregistered-but-on-disk database, so do not call this as a pure
-   *       read on a database meant to stay closed;</li>
+   *       read on a database meant to stay closed. A registered entry that is not open and cannot be reopened
+   *       because its {@code .snapshot-pending} marker is on disk falls through to the next case (issue #7670);</li>
    *   <li>database absent: derives the path from {@link GlobalConfiguration#SERVER_DATABASE_DIRECTORY}
    *       without opening anything (nothing to open).</li>
    * </ul>
@@ -770,7 +771,17 @@ public final class SnapshotInstaller {
     // Best-effort: the exists/get pair is not atomic, but it only resolves a path before the download
     // phase (no data at risk) and getDatabase returns a valid path even if it has to reopen.
     if (server.existsDatabase(databaseName))
-      return ((DatabaseInternal) server.getDatabase(databaseName)).getDatabasePath();
+      try {
+        return ((DatabaseInternal) server.getDatabase(databaseName)).getDatabasePath();
+      } catch (final DatabaseNotAvailableException e) {
+        // Registered but not open, with the .snapshot-pending marker on disk: getDatabase refuses to open it, and
+        // refusing here too failed every install driver before the install could reconcile that marker - the one
+        // thing that makes the database openable again (issue #7670). The configured path below is the directory
+        // getDatabase would have opened, so it is the same answer the lookup would have given.
+        LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
+            "Database '%s' is registered but did not resolve while locating it for a snapshot install (%s); "
+                + "using its configured directory", null, databaseName, e.getMessage());
+      }
     return server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY)
         + File.separator + databaseName;
   }
@@ -792,13 +803,18 @@ public final class SnapshotInstaller {
    * installs could both pass the {@code existsDatabase} check and the second {@code close} would see an
    * already-closed instance.
    * <p>
-   * The crash-recovery pass needs the same close with different error handling and needs to know whether anything
-   * was closed, so it goes through {@link #closeRegisteredDatabaseForRepair} instead; both end in
-   * {@link #closeAndDeregister}.
+   * Both callers - {@link #swapAndReopen} and {@link #reconcileRetainedBackup} - run with the
+   * {@code .snapshot-pending} marker on disk, which is the one state in which a registered entry that is
+   * <i>not open</i> cannot be resolved at all: {@link ArcadeDBServer#getDatabase} throws
+   * {@code DatabaseNotAvailableException} for it. So this resolves the instance through the same guarded lookup the
+   * crash-recovery pass uses, {@link #closeRegisteredDatabaseForRepair}, and ignores whether anything was closed:
+   * an entry that failed to resolve is already closed, so there is nothing left for this call to close, and the
+   * callers' own reopen - {@code swapAndReopen} always, {@code reconcileRetainedBackup} once the marker is gone -
+   * replaces the stale entry. Letting the lookup throw instead failed the whole install before it had moved a file,
+   * and left the follower unable to resync from the leader until a restart (issue #7670).
    */
   private static void closeLocalDatabaseIfOpen(final ArcadeDBServer server, final String databaseName) {
-    if (server.existsDatabase(databaseName))
-      closeAndDeregister(server, (DatabaseInternal) server.getDatabase(databaseName), databaseName);
+    closeRegisteredDatabaseForRepair(server, databaseName);
   }
 
   /**
@@ -1222,7 +1238,8 @@ public final class SnapshotInstaller {
 
   /**
    * {@link #closeLocalDatabaseIfOpen} for the crash-recovery pass, which cannot let one database that will not
-   * <i>resolve</i> abort the scan of every other one (issue #7530).
+   * <i>resolve</i> abort the scan of every other one (issue #7530). The install paths reach it too, through
+   * {@code closeLocalDatabaseIfOpen}, because they run with the same marker on disk (issue #7670).
    * <p>
    * {@code closeLocalDatabaseIfOpen} resolves the instance through {@link ArcadeDBServer#getDatabase}, and that
    * throws {@code DatabaseNotAvailableException} for a database that is registered but <i>closed</i> while the
@@ -1262,10 +1279,10 @@ public final class SnapshotInstaller {
       db = (DatabaseInternal) server.getDatabase(databaseName);
     } catch (final DatabaseNotAvailableException e) {
       LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
-          "Database '%s' is registered but did not resolve before repairing its interrupted snapshot swap: %s. Only "
-              + "an entry that is not open can fail to resolve, so it holds no files in the directory being "
-              + "repaired; the repair proceeds under the registry lock and leaves the entry for the next open to "
-              + "pick up once the '%s' marker is cleared", e, databaseName, e.getMessage(), SNAPSHOT_PENDING_FILE);
+          "Database '%s' is registered but did not resolve before its directory is swapped or repaired: %s. Only "
+              + "an entry that is not open can fail to resolve, so it holds no files in that directory; the swap or "
+              + "repair proceeds under the registry lock and leaves the entry for the next open to pick up once the "
+              + "'%s' marker is cleared", e, databaseName, e.getMessage(), SNAPSHOT_PENDING_FILE);
       return false;
     }
 
