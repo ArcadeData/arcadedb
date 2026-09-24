@@ -308,9 +308,6 @@ public final class HealthMonitor {
     // left with its own copy applies every entry it is sent and reports perfect health (issue #6124).
     // Self-throttled by the target, and free when no database took that branch.
     target.verifyBootstrapDivergence();
-    // Also invisible to every follower-local check: a follower whose inbound replication channel is wedged has
-    // commit == applied locally and looks caught up (issue #7619). Only the leader's commit index shows the gap.
-    target.refreshLeaderCommitIndex();
     final LifeCycle.State state = target.getRaftLifeCycleState();
     if (state == LifeCycle.State.CLOSED || state == LifeCycle.State.EXCEPTION) {
       handleUnhealthyState(state);
@@ -333,6 +330,12 @@ public final class HealthMonitor {
     // commit == applied) are mutually exclusive by construction, so at most one arms per tick.
     checkStaleFollower();
     checkStuckFollower();
+    // Also invisible to every follower-local check: a follower whose inbound replication channel is wedged has
+    // commit == applied locally and looks caught up (issue #7619). Only the leader's commit index shows the gap.
+    // LAST, because it is the one step that dials another node (bounded by its own short timeout): a slow or
+    // unreachable leader then delays nothing else in this tick. The early returns above skip it, and lose
+    // nothing by doing so - a CLOSED/EXCEPTION division or a failed log writer is already not Ready on its own.
+    target.refreshLeaderCommitIndex();
   }
 
   /**
